@@ -8,6 +8,7 @@ use crate::{
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
+use aidash_domain::federation::protocol::compatible;
 use async_trait::async_trait;
 use http::header::{AUTHORIZATION, CACHE_CONTROL};
 use reinhardt::http::{Handler, Middleware, ViewResult};
@@ -63,11 +64,11 @@ impl AccessBoundary {
 		match self.requirement {
 			Requirement::Public => return Ok(()),
 			Requirement::Peer => {
-				if request
+				if !request
 					.headers
 					.get("x-aidash-protocol")
 					.and_then(|v| v.to_str().ok())
-					!= Some(PROTOCOL_VERSION)
+					.is_some_and(|peer| compatible(PROTOCOL_VERSION, peer))
 				{
 					return Err(Error::Invalid("unsupported federation protocol".into()));
 				}

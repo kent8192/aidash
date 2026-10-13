@@ -89,6 +89,9 @@ impl DashboardAuthority {
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
 		}
+		if policy.google {
+			scope.provision_personal(account.id).await?;
+		}
 		if let Some(status) = status {
 			self.accounts
 				.record_valid(account.id, started, status.valid_since)

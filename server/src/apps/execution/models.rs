@@ -39,3 +39,5 @@ pub mod generation_remote_usage;
 
 mod inference_usage;
 pub(crate) use inference_usage::InferenceUsage;
+
+pub(crate) mod research;

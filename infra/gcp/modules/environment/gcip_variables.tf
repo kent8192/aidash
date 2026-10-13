@@ -8,7 +8,11 @@ variable "gcip_tenants" {
     saml             = optional(map(object({ idp_entity_id = string, sso_url = string, sp_entity_id = string, certificates = list(string) })), {})
     sign_in_domains  = optional(list(string), [])
     # GCIP enforces the MFA Requirement; Aidash never reads second-factor claims as authority.
-    mfa = optional(object({ state = optional(string, "disabled") }), {})
+    # `totp.adjacent_intervals` is the clock-skew window (30-second steps) GCIP accepts around a code.
+    mfa = optional(object({
+      state = optional(string, "disabled")
+      totp  = optional(object({ adjacent_intervals = optional(number, 5) }), {})
+    }), {})
   }))
   default = {}
   validation {
@@ -22,9 +26,8 @@ variable "gcip_tenants" {
     error_message = "Sign-in Domains must be lowercase ASCII DNS names (punycode for IDN) with at least two labels, not IP addresses, and each domain may route to only one pool."
   }
   validation {
-    # Lift only after the web and desktop sign-in flows resolve and enroll second factors (#201).
-    condition     = alltrue([for pool in values(var.gcip_tenants) : pool.mfa.state == "disabled"])
-    error_message = "Only the disabled MFA Requirement is supported until sign-in clients handle second factors."
+    condition     = alltrue([for pool in values(var.gcip_tenants) : contains(["disabled", "enabled", "mandatory"], pool.mfa.state) && pool.mfa.totp.adjacent_intervals == floor(pool.mfa.totp.adjacent_intervals) && pool.mfa.totp.adjacent_intervals >= 0 && pool.mfa.totp.adjacent_intervals <= 10])
+    error_message = "The MFA Requirement must be disabled, enabled or mandatory, and mfa.totp.adjacent_intervals an integer from 0 to 10."
   }
   validation {
     condition     = alltrue([for pool in values(var.gcip_tenants) : length(pool.oidc) == 0 && length(pool.saml) == 0 || pool.mfa.state == "disabled"])

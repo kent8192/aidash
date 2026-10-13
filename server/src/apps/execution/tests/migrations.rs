@@ -61,7 +61,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0029_embedding_provider_keys");
+	assert_eq!(knowledge[0].name, "0031_embedding_provider_keys");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		23
+		24
 	);
 	let tables = migrations
 		.iter()
@@ -288,14 +288,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0020_policy_probe")
+		.get_migration("execution", "0022_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0019_summary_allowance_state".to_owned()
+			"0021_research_evidence_model_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -556,7 +556,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		23
+		24
 	);
 }
 
@@ -1842,7 +1842,7 @@ async fn model_provider_keys_migration_refuses_installation_overrides_with_crede
 		models::{Definition, Installation},
 		services::states::DefinitionKind,
 	};
-	// Arrange: before 0023 a model installation override could name an
+	// Arrange: before 0024 a model installation override could name an
 	// environment key that its base entry omits.
 	let fixture = fresh_database.await;
 	fixture.migrate().await;
@@ -1853,7 +1853,7 @@ async fn model_provider_keys_migration_refuses_installation_overrides_with_crede
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0023_model_provider_keys")
+			.find(|m| m.app_label == "registry" && m.name == "0024_model_provider_keys")
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -1899,7 +1899,7 @@ async fn model_provider_keys_migration_refuses_installation_overrides_with_crede
 	// Assert: the upgrade is refused instead of breaking admissions later.
 	assert!(
 		error.to_string().contains(
-			"registry 0023_model_provider_keys cannot be applied: 1 installation overrides set credential_env"
+			"registry 0024_model_provider_keys cannot be applied: 1 installation overrides set credential_env"
 		),
 		"{error}"
 	);
@@ -2024,9 +2024,25 @@ async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_desc
 }
 
 #[rstest]
+#[case::retention(
+	"0027_memory_retention_lookup",
+	"memory_unit_retention",
+	"idx_memory_unit_retention_bank_id_dormant_policy_pinned",
+	"USING btree (bank_id, dormant_policy, pinned)"
+)]
+#[case::run_reads_by_unit(
+	"0029_memory_run_read_lookup",
+	"memory_run_reads",
+	"idx_memory_run_reads_unit_id_run_id_revision",
+	"USING btree (unit_id, run_id, revision)"
+)]
 #[tokio::test]
-async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_tables(
+async fn memory_lookup_index_upgrades_and_reverses_without_rewriting_tables(
 	#[future] fresh_database: MigrationFixture,
+	#[case] name: &str,
+	#[case] table: &str,
+	#[case] index: &str,
+	#[case] definition: &str,
 ) {
 	let fixture = fresh_database.await;
 	let migrations =
@@ -2036,9 +2052,7 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 			.unwrap();
 	let lookup = migrations
 		.iter()
-		.find(|migration| {
-			migration.app_label == "knowledge" && migration.name == "0027_memory_retention_lookup"
-		})
+		.find(|migration| migration.app_label == "knowledge" && migration.name == name)
 		.unwrap()
 		.clone();
 	// The baseline omits the lookup and every migration that depends on it, so
@@ -2076,10 +2090,8 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 		.column(Alias::new("indexdef"))
 		.from((Alias::new("pg_catalog"), Alias::new("pg_indexes")))
 		.and_where(Expr::col("schemaname").eq("public"))
-		.and_where(Expr::col("tablename").eq("memory_unit_retention"))
-		.and_where(
-			Expr::col("indexname").eq("idx_memory_unit_retention_bank_id_dormant_policy_pinned"),
-		)
+		.and_where(Expr::col("tablename").eq(table))
+		.and_where(Expr::col("indexname").eq(index))
 		.to_string(PostgresQueryBuilder);
 	assert!(
 		sqlx::query_scalar::<_, String>(&query)
@@ -2094,11 +2106,7 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 		.unwrap();
 	let created: Vec<String> = sqlx::query_scalar(&query).fetch_all(&pool).await.unwrap();
 	assert_eq!(created.len(), 1);
-	assert!(
-		created[0].contains("USING btree (bank_id, dormant_policy, pinned)"),
-		"{}",
-		created[0]
-	);
+	assert!(created[0].contains(definition), "{}", created[0]);
 	executor
 		.rollback_migrations(std::slice::from_ref(&lookup))
 		.await

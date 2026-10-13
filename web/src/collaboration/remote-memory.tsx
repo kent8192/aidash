@@ -143,6 +143,10 @@ const reasons: Record<RemoteSemanticFailure, [string, string]> = {
     "The retrieval operation is in progress.",
     "記憶を検索しています。",
   ],
+  stale: [
+    "The Home memory changed since the reused retrieval. It is retrieved again.",
+    "再利用していた検索結果の後に Home の記憶が変更されました。もう一度検索します。",
+  ],
 };
 const states: Record<string, [string, string]> = {
   disabled: ["Disabled", "無効"],

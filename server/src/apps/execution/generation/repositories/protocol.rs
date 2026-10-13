@@ -14,11 +14,12 @@ use aidash_domain::{
 		dispatch::Input,
 		remote::{Reserved, Usage},
 	},
-	semantic::remote::Operation,
+	semantic::remote::{Operation, reuse::CitedOperation},
 };
 use async_trait::async_trait;
 use reinhardt::query::QueryStatementBuilder as _;
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
+use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, SimpleExpr};
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -119,6 +120,56 @@ impl GenerationProtocolLease for Lease {
 				.await?
 				.map(|bound| bound.admission_id),
 		)
+	}
+	async fn semantic_sources_current(&mut self, grant: Uuid) -> Result<()> {
+		let access = &mut self.reservation.access;
+		if !crate::authorization::remote::live(access, grant).await? {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		access
+			.remote_semantic_sources(grant)
+			.await
+			.map_err(Into::into)
+	}
+	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>> {
+		const COLUMNS: [&str; 5] = [
+			"admission_id",
+			"grant_id",
+			"state",
+			"binding",
+			"corpus_digest",
+		];
+		let row = crate::database::native::query_as::<(Uuid, Uuid, String, Value, Option<String>)>(
+			&Query::select()
+				.columns(COLUMNS.map(Alias::new))
+				.from(Alias::new("semantic_remote_operations"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&COLUMNS)
+		.fetch_optional(&mut **self.reservation.access.tx)
+		.await?;
+		let Some((admission_id, grant_id, state, binding, corpus_digest)) = row else {
+			return Ok(None);
+		};
+		// The journal binds `{"operation":…,"semantic":…}`; the operation's
+		// boundary holds the step it was retrieved at.
+		let operation = Operation::deserialize(&binding["operation"])?;
+		Ok(Some(CitedOperation {
+			admission_id,
+			grant_id,
+			ready: state == "READY",
+			step: operation.boundary.step,
+			corpus_digest,
+		}))
+	}
+	async fn corpus_digest(&mut self) -> Result<String> {
+		crate::semantic::services::memory_context::remote_corpus_digest(
+			self.reservation.access.tx.as_mut(),
+			&self.description,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn finish_verification(self: Box<Self>, result: Result<bool>) -> Result<bool> {
 		self.reservation

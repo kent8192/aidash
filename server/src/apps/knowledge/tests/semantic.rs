@@ -20,6 +20,7 @@ struct ControlledContext {
 	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
 	model_server: reinhardt::test::fixtures::server::TestServerGuard,
 	embedding_server: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	fault: std::sync::Arc<EmbeddingFault>,
 }
 
 #[rstest::fixture]
@@ -34,7 +35,13 @@ async fn controlled_context(
 	#[from(controlled_context_provider)]
 	fixture: ControlledContextProvider,
 
-	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	#[from(embedding_fault)] fault: std::sync::Arc<EmbeddingFault>,
+	#[from(embeddings_router)]
+	#[with(fault.clone())]
+	_embeddings_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[with(_embeddings_router.clone())]
+	embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) -> ControlledContext {
 	let captured = fixture.state.captured;
 	let model_server = fixture.server;
@@ -187,6 +194,7 @@ async fn controlled_context(
 		captured,
 		model_server,
 		embedding_server,
+		fault,
 	}
 }
 
@@ -240,6 +248,151 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
+/// Why automatic semantic retrieval cannot answer during a Run's step.
+#[derive(Debug, Clone, Copy)]
+enum Unavailable {
+	/// The embedding provider answers HTTP 503.
+	ProviderStatus,
+	/// The embedding provider no longer accepts connections.
+	ProviderTransport,
+	/// The embedding provider accepts the request and never answers in time.
+	ProviderTimeout,
+	/// The vector backend holds none of the indexed points.
+	VectorBackend,
+}
+
+/// Issue #154, current contract: a local Run in a Workspace whose index has
+/// `auto_context` enabled does not degrade, retry or pause when semantic
+/// retrieval is unavailable. The step stops before inference, the Run is
+/// delivered as `Failed` and its Task becomes `Failed`. No typed semantic
+/// reason is recorded. This documents today's behavior and does not endorse it.
+#[rstest::rstest]
+#[case::provider_status(Unavailable::ProviderStatus)]
+#[case::provider_transport(Unavailable::ProviderTransport)]
+#[case::provider_timeout(Unavailable::ProviderTimeout)]
+#[case::vector_backend(Unavailable::VectorBackend)]
+#[tokio::test]
+async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavailable(
+	#[case] unavailable: Unavailable,
+	#[future(awt)]
+	#[with(false, true)]
+	controlled_context: ControlledContext,
+) {
+	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
+	let mut fixture = controlled_context;
+	let mut embedding_server = Some(fixture.embedding_server);
+	// Indexing already called the provider; only calls after this point belong to the step.
+	let indexed = fixture.fault.requests();
+	let query_calls = match unavailable {
+		Unavailable::ProviderStatus => {
+			fixture.fault.set(Outage::Unavailable);
+			1
+		}
+		Unavailable::ProviderTimeout => {
+			fixture.fault.set(Outage::Hang);
+			1
+		}
+		Unavailable::ProviderTransport => {
+			let server = std::sync::Arc::into_inner(embedding_server.take().unwrap())
+				.expect("the test owns the embedding provider");
+			let address = server.url.trim_start_matches("http://").to_owned();
+			drop(server);
+			// The guard closes its listener asynchronously; wait until connections are refused.
+			while tokio::net::TcpStream::connect(&address).await.is_ok() {
+				tokio::task::yield_now().await;
+			}
+			// Indexing left keep-alive sockets in the shared client pool; a fresh
+			// client can only open new connections, so the step observes the refusal.
+			fixture.worker.federation.store.semantic_client = semantic::backend::client().unwrap();
+			0
+		}
+		Unavailable::VectorBackend => {
+			let mut connection = fixture.worker.federation.store.pool.begin().await.unwrap();
+			aidash_server::database::native::query(
+				&reinhardt::query::Query::delete()
+					.from_table(reinhardt::query::Alias::new("semantic_vectors"))
+					.to_string(reinhardt::query::PostgresQueryBuilder),
+			)
+			.execute(&mut *connection)
+			.await
+			.unwrap();
+			connection.commit().await.unwrap();
+			// Point presence is checked before the query is embedded.
+			0
+		}
+	};
+	let backend_error = "semantic backend unavailable or invalid; inspect index status and retry";
+
+	// Act: the step that requests semantic context before inference.
+	assert!(fixture.worker.worker_once().await.unwrap());
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+
+	// Assert: one attempt, no retry schedule, no semantic pause reason, no inference.
+	assert_eq!(
+		fixture.fault.requests() - indexed,
+		query_calls,
+		"{unavailable:?}"
+	);
+	assert!(
+		fixture.captured.lock().unwrap().is_empty(),
+		"{unavailable:?}"
+	);
+	assert!(
+		matches!(
+			&run.state,
+			RunState::Waiting(wait) if matches!(**wait, WaitingState::FailureDelivery { target: aidash_server::domain::FailureTarget::Failed, .. })
+		),
+		"{unavailable:?}: {:?}",
+		run.state
+	);
+	assert_eq!(run.error.as_deref(), Some(backend_error), "{unavailable:?}");
+	assert!(run.recovery.retry.is_none(), "{unavailable:?}");
+	assert!(run.recovery.semantic_reason.is_none(), "{unavailable:?}");
+	assert_eq!(run.control.as_str(), "ACTIVE", "{unavailable:?}");
+
+	// The next step delivers the failure to the Task.
+	assert!(fixture.worker.worker_once().await.unwrap());
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	assert_eq!(run.phase().as_str(), "FAILED", "{unavailable:?}");
+	assert_eq!(
+		fixture.f.store.task(run.task_id).await.unwrap().status,
+		TaskStatus::Failed,
+		"{unavailable:?}"
+	);
+	assert!(
+		fixture.captured.lock().unwrap().is_empty(),
+		"{unavailable:?}"
+	);
+
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+/// How the fixture embedding provider fails; it answers normally until one is set.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outage {
+	/// HTTP 503 from the provider.
+	Unavailable = 1,
+	/// The provider accepts the request and never answers within the client timeout.
+	Hang = 2,
+}
+#[derive(Default)]
+struct EmbeddingFault {
+	mode: std::sync::atomic::AtomicU8,
+	requests: std::sync::atomic::AtomicUsize,
+}
+impl EmbeddingFault {
+	fn set(&self, outage: Outage) {
+		self.mode
+			.store(outage as u8, std::sync::atomic::Ordering::Release);
+	}
+	fn requests(&self) -> usize {
+		self.requests.load(std::sync::atomic::Ordering::Acquire)
+	}
+}
 fn spec(endpoint: &str) -> IndexSpec {
 	IndexSpec {
 		embedding: EmbeddingConfig {
@@ -1132,9 +1285,22 @@ use reinhardt::query::SimpleExpr;
 use reinhardt::query::Expr;
 
 #[rstest::fixture]
-fn embeddings_router() -> std::sync::Arc<Router> {
+fn embedding_fault() -> std::sync::Arc<EmbeddingFault> {
+	std::sync::Arc::new(EmbeddingFault::default())
+}
+#[rstest::fixture]
+fn embeddings_router(
+	#[from(embedding_fault)] fault: std::sync::Arc<EmbeddingFault>,
+) -> std::sync::Arc<Router> {
+	use std::sync::atomic::Ordering;
 	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
-.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<Value>().unwrap();async move {
+.route("/v1/embeddings", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();let fault = fault.clone();async move {
+            fault.requests.fetch_add(1, Ordering::AcqRel);
+            match fault.mode.load(Ordering::Acquire) {
+                mode if mode == Outage::Unavailable as u8 => return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap(),
+                mode if mode == Outage::Hang as u8 => tokio::time::sleep(std::time::Duration::from_secs(120)).await,
+                _ => {}
+            }
             let text=input["input"].as_str().unwrap_or_default().to_lowercase();
             // Explicit fixture semantics: related concepts share a vector even
             // when the query and stored text have no common keyword.

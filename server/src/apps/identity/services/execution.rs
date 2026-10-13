@@ -187,6 +187,52 @@ impl WorkerAuthority {
 		}
 	}
 
+	/// Web disclosure approval under the worker's current authority lease. It
+	/// shares the capability approval records, decision API and Run waiting.
+	pub async fn web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: &aidash_application::capabilities::approvals::DisclosureRequest,
+	) -> Result<aidash_application::ports::research::DisclosureState> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::disclose(
+				&mut scope,
+				&run.metadata(),
+				request,
+			)
+			.await
+			.map_err(Error::from)
+		};
+		access.finish(result).await
+	}
+
+	/// Consume a one-time Web disclosure approval of `run` after its attempt
+	/// is reserved.
+	pub async fn consume_web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<bool> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::consume_disclosure(
+				&mut scope,
+				&run.metadata(),
+				approval,
+			)
+			.await
+			.map_err(Error::from)
+		};
+		access.finish(result).await
+	}
+
 	pub async fn memory_mutate(
 		&self,
 		store: &Store,
@@ -573,15 +619,17 @@ impl Guard {
 						.map(|native| native.participant.participant_revision),
 				),
 			};
-			// The Home's corpus is not observable here; the Home journal refresh
-			// before every reuse is the remote recheck.
+			// The Home's corpus is not observable here: its digest arrives with the
+			// describe reply that refreshed this worker's authority, and is absent
+			// from a Home whose protocol predates it or that grants no semantic access.
+			let corpus_digest = self.access.read().await.home_corpus_digest.clone();
 			return Ok(aidash_domain::context::sources::RetrievalScope {
 				tenant: description.source_tenant,
 				subject: description.source_subject,
 				authorization_revision: None,
 				index_revision,
 				participant_revision,
-				corpus_digest: None,
+				corpus_digest,
 			});
 		}
 		let (tenant, subject, authorization_revision) = {

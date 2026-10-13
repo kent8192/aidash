@@ -14,16 +14,17 @@ mock_provider "google" {
   mock_data "google_project" { defaults = { number = "123456789012" } }
 }
 variables {
-  project_id            = "aidash-fixture"
-  byok_project_id       = "aidash-byok-fixture"
-  state_bucket_name     = "aidash-fixture-state"
-  release_bucket_name   = "aidash-fixture-releases"
-  security_alert_emails = ["security@example.test"]
+  project_id               = "aidash-fixture"
+  byok_project_id          = "aidash-byok-fixture"
+  state_bucket_name        = "aidash-fixture-state"
+  release_bucket_name      = "aidash-fixture-releases"
+  notification_bucket_name = "aidash-fixture-notifications"
+  security_alert_emails    = ["security@example.test"]
 }
 run "deploy_boundary" {
   command   = apply
   state_key = "deploy-boundary"
-  variables { byok_broker_environments = ["production", "test"] }
+  variables { byok_broker_environments = ["develop", "test"] }
   override_resource {
     target = google_service_account.automation["deploy"]
     values = {
@@ -32,10 +33,10 @@ run "deploy_boundary" {
     }
   }
   override_resource {
-    target = google_service_account.broker["production"]
+    target = google_service_account.broker["develop"]
     values = {
-      email     = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
-      name      = "projects/aidash-fixture/serviceAccounts/aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
+      email     = "aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com"
+      name      = "projects/aidash-fixture/serviceAccounts/aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com"
       unique_id = "100000000000000000001"
     }
   }
@@ -48,12 +49,12 @@ run "deploy_boundary" {
     }
   }
   override_resource {
-    target = google_kms_key_ring.capability["production"]
-    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability" }
+    target = google_kms_key_ring.capability["develop"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-develop-capability" }
   }
   override_resource {
-    target = google_kms_crypto_key.capability["production"]
-    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability" }
+    target = google_kms_crypto_key.capability["develop"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability" }
   }
   override_resource {
     target = google_kms_key_ring.capability["test"]
@@ -88,7 +89,7 @@ run "deploy_boundary" {
     error_message = "The broker tag lives in the application project."
   }
   assert {
-    condition     = keys(google_tags_tag_binding.broker) == ["production", "test"] && google_tags_tag_binding.broker["production"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000001" && google_tags_tag_binding.broker["test"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000002" && alltrue([for b in google_tags_tag_binding.broker : b.tag_value == "tagValues/2001"])
+    condition     = keys(google_tags_tag_binding.broker) == ["develop", "test"] && google_tags_tag_binding.broker["develop"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000001" && google_tags_tag_binding.broker["test"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000002" && alltrue([for b in google_tags_tag_binding.broker : b.tag_value == "tagValues/2001"])
     error_message = "Every broker service account carries the broker tag, and nothing else does."
   }
   assert {
@@ -96,11 +97,11 @@ run "deploy_boundary" {
     error_message = "Each alert policy lives in the project that writes its audit log."
   }
   assert {
-    condition     = strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "AccessSecretVersion") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.authenticationInfo.principalEmail=(\"aidash-production-broker@aidash-fixture.iam.gserviceaccount.com\" OR \"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com\")") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Fdata_access")
+    condition     = strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "AccessSecretVersion") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.authenticationInfo.principalEmail=(\"aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com\" OR \"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com\")") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Fdata_access")
     error_message = "Alert on every Key Material read except by the exact broker accounts."
   }
   assert {
-    condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "(\"aidash-production-credential-broker\" OR \"aidash-test-credential-broker\")") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "Services.UpdateService")
+    condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "(\"aidash-develop-credential-broker\" OR \"aidash-test-credential-broker\")") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "Services.UpdateService")
     error_message = "Alert on every revision of each broker service."
   }
   assert {

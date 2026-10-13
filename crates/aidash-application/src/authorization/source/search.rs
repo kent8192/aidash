@@ -71,6 +71,11 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		}
 		journal::prepare(repository.journal(), &operation, &description.semantic).await?;
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
+		// Read the corpus before the candidates: a change in between leaves an
+		// older digest on the operation, so reuse fails closed into a new
+		// retrieval and never vouches for entries this search did not see. The
+		// read uses the held lease, never a second pool connection.
+		let corpus = access.corpus_digest(&description).await?;
 		// The current index decides the embedding source. A Tenant-backed source
 		// is embedded by this Home as its Tenant's memory-retrieval maintenance
 		// (ADR 0006), so a missing or revoked Provider Credential Binding fails
@@ -207,7 +212,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 					.await?;
 			}
 			receipt.fit_budget(max_tokens)?;
-			journal::complete(repository.journal(), &attempt, &receipt).await?;
+			journal::complete(repository.journal(), &attempt, &receipt, &corpus).await?;
 			Ok(receipt)
 		}
 		.await;

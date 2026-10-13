@@ -1218,6 +1218,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		model: "test/model".into(),
 		operations: vec![aidash_application::provider_access::Operation::Chat],
 		max_output_tokens: 1024,
+		cache_breakpoints: false,
 	});
 	assert_eq!(
 		enabled

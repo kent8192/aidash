@@ -178,15 +178,19 @@ impl Fixture {
 			ops: vec![Operation::Chat, Operation::Discovery, Operation::Embeddings],
 			model: "author/model".into(),
 			max_output_tokens: 10,
+			cache_breakpoints: false,
 		}
 	}
 	async fn request(&self, claims: &Claims, method: &str, uri: &str, body: Value) -> Response {
-		let token = mint(claims, &self.signer).await.unwrap();
 		let body = if body.is_null() {
 			Body::empty()
 		} else {
 			Body::from(body.to_string())
 		};
+		self.request_body(claims, method, uri, body).await
+	}
+	async fn request_body(&self, claims: &Claims, method: &str, uri: &str, body: Body) -> Response {
+		let token = mint(claims, &self.signer).await.unwrap();
 		self.broker
 			.clone()
 			.router()
@@ -604,6 +608,208 @@ async fn chat_rejects_prompt_cache_directives_recursively_before_key_lookup() {
 		.await;
 	assert_eq!(response.status(), 200);
 	json_body(response).await;
+}
+
+fn marked_text(text: &str) -> Value {
+	json!({"type":"text","text":text,"cache_control":{"type":"ephemeral"}})
+}
+fn chat_with_messages(messages: Value) -> Value {
+	let mut body = chat();
+	body["messages"] = messages;
+	body
+}
+
+#[tokio::test]
+async fn chat_admits_one_to_four_ephemeral_breakpoints_on_text_parts_only_with_the_claim() {
+	let f = Fixture::new().await;
+	let mut granted = f.claims();
+	granted.cache_breakpoints = true;
+	for count in 1..=4 {
+		// The system message and later user parts both carry content arrays.
+		let mut parts = vec![marked_text("system"); count];
+		parts.push(json!({"type":"text","text":"volatile"}));
+		let body = chat_with_messages(json!([
+			{"role":"system","content":parts[..1]},
+			{"role":"user","content":parts[1..]}
+		]));
+		let response = f
+			.request(&granted, "POST", "/api/v1/chat/completions", body.clone())
+			.await;
+		assert_eq!(response.status(), 200, "{count} breakpoints");
+		json_body(response).await;
+		// The same body without the claim is a claim violation before Key Material lookup.
+		let reads = f.source.reads.load(Ordering::SeqCst);
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(
+			response.status(),
+			403,
+			"{count} breakpoints without the claim"
+		);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), reads);
+	}
+}
+
+#[tokio::test]
+async fn chat_rejects_breakpoints_beyond_four_or_outside_message_text_parts() {
+	let f = Fixture::new().await;
+	let mut granted = f.claims();
+	granted.cache_breakpoints = true;
+	let png = "data:image/png;base64,iVBORw0KGgo=";
+	let cases = [
+		(
+			"five",
+			chat_with_messages(json!([{"role":"user","content":vec![marked_text("x"); 5]}])),
+		),
+		(
+			"five across messages",
+			chat_with_messages(json!([
+				{"role":"system","content":vec![marked_text("x"); 3]},
+				{"role":"user","content":vec![marked_text("x"); 2]}
+			])),
+		),
+		(
+			"other type",
+			chat_with_messages(
+				json!([{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"persistent"}}]}]),
+			),
+		),
+		(
+			"ttl",
+			chat_with_messages(
+				json!([{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]),
+			),
+		),
+		(
+			"null",
+			chat_with_messages(
+				json!([{"role":"user","content":[{"type":"text","text":"x","cache_control":null}]}]),
+			),
+		),
+		(
+			"string",
+			chat_with_messages(
+				json!([{"role":"user","content":[{"type":"text","text":"x","cache_control":"ephemeral"}]}]),
+			),
+		),
+		(
+			"image part",
+			chat_with_messages(
+				json!([{"role":"user","content":[{"type":"image_url","image_url":{"url":png},"cache_control":{"type":"ephemeral"}}]}]),
+			),
+		),
+		(
+			"message level",
+			chat_with_messages(
+				json!([{"role":"user","content":"x","cache_control":{"type":"ephemeral"}}]),
+			),
+		),
+		(
+			"string content",
+			chat_with_messages(
+				json!([{"role":"system","content":"x","cache_control":{"type":"ephemeral"}}]),
+			),
+		),
+		(
+			"nested in a text part",
+			chat_with_messages(
+				json!([{"role":"user","content":[{"type":"text","text":"x","extra":{"cache_control":{"type":"ephemeral"}}}]}]),
+			),
+		),
+		(
+			"alongside a valid breakpoint",
+			chat_with_messages(
+				json!([{"role":"user","content":[marked_text("x")],"extra":[{"cache_control":{"type":"ephemeral"}}]}]),
+			),
+		),
+		("top level", {
+			let mut body =
+				chat_with_messages(json!([{"role":"user","content":[marked_text("x")]}]));
+			body["cache_control"] = json!({"type":"ephemeral"});
+			body
+		}),
+		("tools", {
+			let mut body =
+				chat_with_messages(json!([{"role":"user","content":[marked_text("x")]}]));
+			body["tools"] = json!([{"type":"function","function":{"name":"test","cache_control":{"type":"ephemeral"}}}]);
+			body
+		}),
+		("provider", {
+			let mut body =
+				chat_with_messages(json!([{"role":"user","content":[marked_text("x")]}]));
+			body["provider"]["nested"] = json!([{"cache_control":{"type":"ephemeral"}}]);
+			body
+		}),
+		("without messages", {
+			let mut body = chat();
+			body["tools"] = json!([{"type":"function","function":{"name":"test","cache_control":{"type":"ephemeral"}}}]);
+			body
+		}),
+	];
+	for (name, body) in cases {
+		let response = f
+			.request(&granted, "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403, "{name}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation",
+			"{name}"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0, "{name}");
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0, "{name}");
+	}
+}
+
+#[tokio::test]
+async fn chat_rejects_duplicate_object_members_before_key_lookup() {
+	let f = Fixture::new().await;
+	let mut granted = f.claims();
+	granted.cache_breakpoints = true;
+	let provider = r#""provider":{"zdr":true,"require_parameters":true}"#;
+	let cases = [
+		(
+			"first cache_control is unauthorized",
+			format!(
+				r#"{{"model":"author/model","max_tokens":10,{provider},"messages":[{{"role":"user","content":[{{"type":"text","text":"x","cache_control":{{"type":"persistent"}},"cache_control":{{"type":"ephemeral"}}}}]}}]}}"#
+			),
+		),
+		(
+			"escaped duplicate cache_control",
+			format!(
+				r#"{{"model":"author/model","max_tokens":10,{provider},"messages":[{{"role":"user","content":[{{"type":"text","text":"x","cache\u005fcontrol":{{"type":"ephemeral","ttl":"1h"}},"cache_control":{{"type":"ephemeral"}}}}]}}]}}"#
+			),
+		),
+		(
+			"first model is unauthorized",
+			format!(
+				r#"{{"model":"other/model","model":"author/model","max_tokens":10,{provider}}}"#
+			),
+		),
+	];
+	for (name, body) in cases {
+		let response = f
+			.request_body(
+				&granted,
+				"POST",
+				"/api/v1/chat/completions",
+				Body::from(body),
+			)
+			.await;
+		assert_eq!(response.status(), 403, "{name}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation",
+			"{name}"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0, "{name}");
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0, "{name}");
+	}
 }
 
 #[tokio::test]
@@ -1040,6 +1246,7 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 		ops: vec![Operation::Chat],
 		model: "author/model".into(),
 		max_output_tokens: 10,
+		cache_breakpoints: false,
 	};
 	broker.key(&c).await.unwrap();
 	source.unavailable.store(true, Ordering::SeqCst);

@@ -41,5 +41,6 @@ test-support = []
 
 [dev-dependencies]
 rstest.workspace = true
+toml = "1.1"
 
 tokio = { workspace = true, features = ["test-util"] }

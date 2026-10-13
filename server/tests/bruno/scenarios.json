@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 303,
+  "endpoint_count": 304,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -10981,8 +10981,56 @@
       ]
     },
     {
-      "name": "1019 memory-participant - Anonymous request is rejected",
-      "file": "contracts/1019-memory-participant.bru",
+      "name": "1019 memory-impact - Anonymous request is rejected",
+      "file": "contracts/1019-memory-impact.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/impact",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1020 memory-impact - Wrong JSON media type is rejected",
+      "file": "contracts/1020-memory-impact.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/impact",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1021 memory-impact - Malformed JSON cannot reach the use case",
+      "file": "contracts/1021-memory-impact.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/impact",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1022 memory-impact - Incomplete native memory envelope is rejected",
+      "file": "contracts/1022-memory-impact.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/impact",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1023 memory-participant - Anonymous request is rejected",
+      "file": "contracts/1023-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10993,8 +11041,8 @@
       ]
     },
     {
-      "name": "1020 memory-participant - Wrong JSON media type is rejected",
-      "file": "contracts/1020-memory-participant.bru",
+      "name": "1024 memory-participant - Wrong JSON media type is rejected",
+      "file": "contracts/1024-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11005,8 +11053,8 @@
       ]
     },
     {
-      "name": "1021 memory-participant - Malformed JSON cannot reach the use case",
-      "file": "contracts/1021-memory-participant.bru",
+      "name": "1025 memory-participant - Malformed JSON cannot reach the use case",
+      "file": "contracts/1025-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11017,8 +11065,8 @@
       ]
     },
     {
-      "name": "1022 memory-participant - Incomplete native memory envelope is rejected",
-      "file": "contracts/1022-memory-participant.bru",
+      "name": "1026 memory-participant - Incomplete native memory envelope is rejected",
+      "file": "contracts/1026-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -11029,8 +11077,8 @@
       ]
     },
     {
-      "name": "1023 memory-participants - Anonymous request is rejected",
-      "file": "contracts/1023-memory-participants.bru",
+      "name": "1027 memory-participants - Anonymous request is rejected",
+      "file": "contracts/1027-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11040,8 +11088,8 @@
       ]
     },
     {
-      "name": "1024 memory-participants - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1024-memory-participants.bru",
+      "name": "1028 memory-participants - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1028-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -11051,8 +11099,8 @@
       ]
     },
     {
-      "name": "1025 memory-participants - Application read preserves the typed response contract",
-      "file": "contracts/1025-memory-participants.bru",
+      "name": "1029 memory-participants - Application read preserves the typed response contract",
+      "file": "contracts/1029-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -11062,8 +11110,8 @@
       ]
     },
     {
-      "name": "1026 memory-participants - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1026-memory-participants.bru",
+      "name": "1030 memory-participants - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1030-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -11073,8 +11121,8 @@
       ]
     },
     {
-      "name": "1027 memory-participant-assignment - Anonymous request is rejected",
-      "file": "contracts/1027-memory-participant-assignment.bru",
+      "name": "1031 memory-participant-assignment - Anonymous request is rejected",
+      "file": "contracts/1031-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11085,8 +11133,8 @@
       ]
     },
     {
-      "name": "1028 memory-participant-assignment - Wrong JSON media type is rejected",
-      "file": "contracts/1028-memory-participant-assignment.bru",
+      "name": "1032 memory-participant-assignment - Wrong JSON media type is rejected",
+      "file": "contracts/1032-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11097,8 +11145,8 @@
       ]
     },
     {
-      "name": "1029 memory-participant-assignment - Malformed JSON cannot reach the use case",
-      "file": "contracts/1029-memory-participant-assignment.bru",
+      "name": "1033 memory-participant-assignment - Malformed JSON cannot reach the use case",
+      "file": "contracts/1033-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11109,8 +11157,8 @@
       ]
     },
     {
-      "name": "1030 memory-participant-assignment - Incomplete native memory envelope is rejected",
-      "file": "contracts/1030-memory-participant-assignment.bru",
+      "name": "1034 memory-participant-assignment - Incomplete native memory envelope is rejected",
+      "file": "contracts/1034-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -11121,8 +11169,8 @@
       ]
     },
     {
-      "name": "1031 memory-participant-current - Anonymous request is rejected",
-      "file": "contracts/1031-memory-participant-current.bru",
+      "name": "1035 memory-participant-current - Anonymous request is rejected",
+      "file": "contracts/1035-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11132,8 +11180,8 @@
       ]
     },
     {
-      "name": "1032 memory-participant-current - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1032-memory-participant-current.bru",
+      "name": "1036 memory-participant-current - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1036-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -11143,8 +11191,8 @@
       ]
     },
     {
-      "name": "1033 memory-participant-current - Missing scoped authority cannot disclose application data",
-      "file": "contracts/1033-memory-participant-current.bru",
+      "name": "1037 memory-participant-current - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1037-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Missing scoped authority cannot disclose application data",
       "status": 403,
@@ -11154,8 +11202,8 @@
       ]
     },
     {
-      "name": "1034 marketplace-approve-set - Anonymous request is rejected",
-      "file": "contracts/1034-marketplace-approve-set.bru",
+      "name": "1038 marketplace-approve-set - Anonymous request is rejected",
+      "file": "contracts/1038-marketplace-approve-set.bru",
       "endpoint": "POST /api/marketplace/approval-sets",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11166,8 +11214,8 @@
       ]
     },
     {
-      "name": "1035 marketplace-approve-set - Wrong JSON media type is rejected",
-      "file": "contracts/1035-marketplace-approve-set.bru",
+      "name": "1039 marketplace-approve-set - Wrong JSON media type is rejected",
+      "file": "contracts/1039-marketplace-approve-set.bru",
       "endpoint": "POST /api/marketplace/approval-sets",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11178,8 +11226,8 @@
       ]
     },
     {
-      "name": "1036 marketplace-approve-set - Malformed JSON cannot reach the use case",
-      "file": "contracts/1036-marketplace-approve-set.bru",
+      "name": "1040 marketplace-approve-set - Malformed JSON cannot reach the use case",
+      "file": "contracts/1040-marketplace-approve-set.bru",
       "endpoint": "POST /api/marketplace/approval-sets",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11190,8 +11238,8 @@
       ]
     },
     {
-      "name": "1037 marketplace-host-packages - Anonymous request is rejected",
-      "file": "contracts/1037-marketplace-host-packages.bru",
+      "name": "1041 marketplace-host-packages - Anonymous request is rejected",
+      "file": "contracts/1041-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11202,8 +11250,8 @@
       ]
     },
     {
-      "name": "1038 marketplace-host-packages - Wrong JSON media type is rejected",
-      "file": "contracts/1038-marketplace-host-packages.bru",
+      "name": "1042 marketplace-host-packages - Wrong JSON media type is rejected",
+      "file": "contracts/1042-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11214,8 +11262,8 @@
       ]
     },
     {
-      "name": "1039 marketplace-host-packages - Malformed JSON cannot reach the use case",
-      "file": "contracts/1039-marketplace-host-packages.bru",
+      "name": "1043 marketplace-host-packages - Malformed JSON cannot reach the use case",
+      "file": "contracts/1043-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11226,8 +11274,8 @@
       ]
     },
     {
-      "name": "1040 remote-human-answer - Anonymous request is rejected",
-      "file": "contracts/1040-remote-human-answer.bru",
+      "name": "1044 remote-human-answer - Anonymous request is rejected",
+      "file": "contracts/1044-remote-human-answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11238,8 +11286,8 @@
       ]
     },
     {
-      "name": "1041 remote-human-answer - Wrong JSON media type is rejected",
-      "file": "contracts/1041-remote-human-answer.bru",
+      "name": "1045 remote-human-answer - Wrong JSON media type is rejected",
+      "file": "contracts/1045-remote-human-answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11250,8 +11298,8 @@
       ]
     },
     {
-      "name": "1042 remote-human-answer - Malformed JSON cannot reach the use case",
-      "file": "contracts/1042-remote-human-answer.bru",
+      "name": "1046 remote-human-answer - Malformed JSON cannot reach the use case",
+      "file": "contracts/1046-remote-human-answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11262,8 +11310,8 @@
       ]
     },
     {
-      "name": "1043 peer-agent-bindings - Reject unsupported federation protocol",
-      "file": "contracts/1043-peer-agent-bindings.bru",
+      "name": "1047 peer-agent-bindings - Reject unsupported federation protocol",
+      "file": "contracts/1047-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Reject unsupported federation protocol",
       "status": 400,
@@ -11274,8 +11322,8 @@
       ]
     },
     {
-      "name": "1044 peer-agent-bindings - Require the peer node identity",
-      "file": "contracts/1044-peer-agent-bindings.bru",
+      "name": "1048 peer-agent-bindings - Require the peer node identity",
+      "file": "contracts/1048-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Require the peer node identity",
       "status": 401,
@@ -11285,8 +11333,8 @@
       ]
     },
     {
-      "name": "1045 peer-agent-bindings - Require the peer bearer credential",
-      "file": "contracts/1045-peer-agent-bindings.bru",
+      "name": "1049 peer-agent-bindings - Require the peer bearer credential",
+      "file": "contracts/1049-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Require the peer bearer credential",
       "status": 401,
@@ -11296,8 +11344,8 @@
       ]
     },
     {
-      "name": "1046 peer-agent-bindings - Unknown legacy agent has no discovery record",
-      "file": "contracts/1046-peer-agent-bindings.bru",
+      "name": "1050 peer-agent-bindings - Unknown legacy agent has no discovery record",
+      "file": "contracts/1050-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Unknown legacy agent has no discovery record",
       "status": 404,
@@ -11307,8 +11355,8 @@
       ]
     },
     {
-      "name": "1047 remote-agent-inspection - Anonymous request is rejected",
-      "file": "contracts/1047-remote-agent-inspection.bru",
+      "name": "1051 remote-agent-inspection - Anonymous request is rejected",
+      "file": "contracts/1051-remote-agent-inspection.bru",
       "endpoint": "POST /api/tasks/{id}/remote-grants/inspect",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11319,8 +11367,8 @@
       ]
     },
     {
-      "name": "1048 remote-agent-inspection - Wrong JSON media type is rejected",
-      "file": "contracts/1048-remote-agent-inspection.bru",
+      "name": "1052 remote-agent-inspection - Wrong JSON media type is rejected",
+      "file": "contracts/1052-remote-agent-inspection.bru",
       "endpoint": "POST /api/tasks/{id}/remote-grants/inspect",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11331,8 +11379,8 @@
       ]
     },
     {
-      "name": "1049 remote-agent-inspection - Malformed JSON cannot reach the use case",
-      "file": "contracts/1049-remote-agent-inspection.bru",
+      "name": "1053 remote-agent-inspection - Malformed JSON cannot reach the use case",
+      "file": "contracts/1053-remote-agent-inspection.bru",
       "endpoint": "POST /api/tasks/{id}/remote-grants/inspect",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11343,8 +11391,8 @@
       ]
     },
     {
-      "name": "1050 provider-credential-list - Anonymous request is rejected",
-      "file": "contracts/1050-provider-credential-list.bru",
+      "name": "1054 provider-credential-list - Anonymous request is rejected",
+      "file": "contracts/1054-provider-credential-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11354,8 +11402,8 @@
       ]
     },
     {
-      "name": "1051 provider-credential-list - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1051-provider-credential-list.bru",
+      "name": "1055 provider-credential-list - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1055-provider-credential-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
       "scenario": "Forged bearer cannot manage Provider Credentials",
       "status": 401,
@@ -11365,8 +11413,8 @@
       ]
     },
     {
-      "name": "1052 provider-credential-list - Missing Store fails closed for the operator",
-      "file": "contracts/1052-provider-credential-list.bru",
+      "name": "1056 provider-credential-list - Missing Store fails closed for the operator",
+      "file": "contracts/1056-provider-credential-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
       "scenario": "Missing Store fails closed for the operator",
       "status": 404,
@@ -11377,8 +11425,8 @@
       ]
     },
     {
-      "name": "1053 provider-credential-list - Missing Store fails closed for the subject",
-      "file": "contracts/1053-provider-credential-list.bru",
+      "name": "1057 provider-credential-list - Missing Store fails closed for the subject",
+      "file": "contracts/1057-provider-credential-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
       "scenario": "Missing Store fails closed for the subject",
       "status": 404,
@@ -11389,8 +11437,8 @@
       ]
     },
     {
-      "name": "1054 provider-credential-list - Credential paging rejects nonnumeric offsets",
-      "file": "contracts/1054-provider-credential-list.bru",
+      "name": "1058 provider-credential-list - Credential paging rejects nonnumeric offsets",
+      "file": "contracts/1058-provider-credential-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
       "scenario": "Credential paging rejects nonnumeric offsets",
       "status": 400,
@@ -11400,8 +11448,8 @@
       ]
     },
     {
-      "name": "1055 provider-credential-get - Anonymous request is rejected",
-      "file": "contracts/1055-provider-credential-get.bru",
+      "name": "1059 provider-credential-get - Anonymous request is rejected",
+      "file": "contracts/1059-provider-credential-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11411,8 +11459,8 @@
       ]
     },
     {
-      "name": "1056 provider-credential-get - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1056-provider-credential-get.bru",
+      "name": "1060 provider-credential-get - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1060-provider-credential-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Forged bearer cannot manage Provider Credentials",
       "status": 401,
@@ -11422,8 +11470,8 @@
       ]
     },
     {
-      "name": "1057 provider-credential-get - Missing Store fails closed for the operator",
-      "file": "contracts/1057-provider-credential-get.bru",
+      "name": "1061 provider-credential-get - Missing Store fails closed for the operator",
+      "file": "contracts/1061-provider-credential-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Missing Store fails closed for the operator",
       "status": 404,
@@ -11434,8 +11482,8 @@
       ]
     },
     {
-      "name": "1058 provider-credential-get - Missing Store fails closed for the subject",
-      "file": "contracts/1058-provider-credential-get.bru",
+      "name": "1062 provider-credential-get - Missing Store fails closed for the subject",
+      "file": "contracts/1062-provider-credential-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Missing Store fails closed for the subject",
       "status": 404,
@@ -11446,8 +11494,8 @@
       ]
     },
     {
-      "name": "1059 provider-credential-get - Typed credential IDs reject invalid UUIDs",
-      "file": "contracts/1059-provider-credential-get.bru",
+      "name": "1063 provider-credential-get - Typed credential IDs reject invalid UUIDs",
+      "file": "contracts/1063-provider-credential-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Typed credential IDs reject invalid UUIDs",
       "status": 400,
@@ -11457,82 +11505,82 @@
       ]
     },
     {
-      "name": "1060 provider-credential-revoke - Anonymous request is rejected",
-      "file": "contracts/1060-provider-credential-revoke.bru",
-      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1061 provider-credential-revoke - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1061-provider-credential-revoke.bru",
-      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Forged bearer cannot manage Provider Credentials",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1062 provider-credential-revoke - Missing Store fails closed for the operator",
-      "file": "contracts/1062-provider-credential-revoke.bru",
-      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Missing Store fails closed for the operator",
-      "status": 404,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
-      ]
-    },
-    {
-      "name": "1063 provider-credential-revoke - Missing Store fails closed for the subject",
-      "file": "contracts/1063-provider-credential-revoke.bru",
-      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Missing Store fails closed for the subject",
-      "status": 404,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the subject contract"
-      ]
-    },
-    {
-      "name": "1064 provider-credential-revoke - Wrong JSON media type is rejected",
+      "name": "1064 provider-credential-revoke - Anonymous request is rejected",
       "file": "contracts/1064-provider-credential-revoke.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Wrong JSON media type is rejected",
-      "status": 415,
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 415",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
       ]
     },
     {
-      "name": "1065 provider-credential-revoke - Malformed JSON cannot reach the use case",
+      "name": "1065 provider-credential-revoke - Forged bearer cannot manage Provider Credentials",
       "file": "contracts/1065-provider-credential-revoke.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Malformed JSON cannot reach the use case",
-      "status": 400,
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
       "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
       ]
     },
     {
-      "name": "1066 provider-credential-revoke - Required lifecycle fields cannot be omitted",
+      "name": "1066 provider-credential-revoke - Missing Store fails closed for the operator",
       "file": "contracts/1066-provider-credential-revoke.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1067 provider-credential-revoke - Missing Store fails closed for the subject",
+      "file": "contracts/1067-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1068 provider-credential-revoke - Wrong JSON media type is rejected",
+      "file": "contracts/1068-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1069 provider-credential-revoke - Malformed JSON cannot reach the use case",
+      "file": "contracts/1069-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1070 provider-credential-revoke - Required lifecycle fields cannot be omitted",
+      "file": "contracts/1070-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
       "scenario": "Required lifecycle fields cannot be omitted",
       "status": 422,
       "required_checks": [
@@ -11542,8 +11590,8 @@
       ]
     },
     {
-      "name": "1067 provider-credential-revoke - Unknown lifecycle fields are rejected",
-      "file": "contracts/1067-provider-credential-revoke.bru",
+      "name": "1071 provider-credential-revoke - Unknown lifecycle fields are rejected",
+      "file": "contracts/1071-provider-credential-revoke.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
       "scenario": "Unknown lifecycle fields are rejected",
       "status": 422,
@@ -11554,70 +11602,70 @@
       ]
     },
     {
-      "name": "1068 provider-credential-delete - Anonymous request is rejected",
-      "file": "contracts/1068-provider-credential-delete.bru",
-      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1069 provider-credential-delete - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1069-provider-credential-delete.bru",
-      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Forged bearer cannot manage Provider Credentials",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1070 provider-credential-delete - Missing Store fails closed for the operator",
-      "file": "contracts/1070-provider-credential-delete.bru",
-      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Missing Store fails closed for the operator",
-      "status": 404,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
-      ]
-    },
-    {
-      "name": "1071 provider-credential-delete - Missing Store fails closed for the subject",
-      "file": "contracts/1071-provider-credential-delete.bru",
-      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Missing Store fails closed for the subject",
-      "status": 404,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the subject contract"
-      ]
-    },
-    {
-      "name": "1072 provider-credential-delete - Wrong JSON media type is rejected",
+      "name": "1072 provider-credential-delete - Anonymous request is rejected",
       "file": "contracts/1072-provider-credential-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Wrong JSON media type is rejected",
-      "status": 415,
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 415",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
       ]
     },
     {
-      "name": "1073 provider-credential-delete - Malformed JSON cannot reach the use case",
+      "name": "1073 provider-credential-delete - Forged bearer cannot manage Provider Credentials",
       "file": "contracts/1073-provider-credential-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1074 provider-credential-delete - Missing Store fails closed for the operator",
+      "file": "contracts/1074-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1075 provider-credential-delete - Missing Store fails closed for the subject",
+      "file": "contracts/1075-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1076 provider-credential-delete - Wrong JSON media type is rejected",
+      "file": "contracts/1076-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1077 provider-credential-delete - Malformed JSON cannot reach the use case",
+      "file": "contracts/1077-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
       "required_checks": [
@@ -11627,8 +11675,8 @@
       ]
     },
     {
-      "name": "1074 provider-credential-delete - Required lifecycle fields cannot be omitted",
-      "file": "contracts/1074-provider-credential-delete.bru",
+      "name": "1078 provider-credential-delete - Required lifecycle fields cannot be omitted",
+      "file": "contracts/1078-provider-credential-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Required lifecycle fields cannot be omitted",
       "status": 422,
@@ -11639,8 +11687,8 @@
       ]
     },
     {
-      "name": "1075 provider-credential-delete - Unknown lifecycle fields are rejected",
-      "file": "contracts/1075-provider-credential-delete.bru",
+      "name": "1079 provider-credential-delete - Unknown lifecycle fields are rejected",
+      "file": "contracts/1079-provider-credential-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
       "scenario": "Unknown lifecycle fields are rejected",
       "status": 422,
@@ -11651,8 +11699,8 @@
       ]
     },
     {
-      "name": "1076 provider-credential-binding-list - Anonymous request is rejected",
-      "file": "contracts/1076-provider-credential-binding-list.bru",
+      "name": "1080 provider-credential-binding-list - Anonymous request is rejected",
+      "file": "contracts/1080-provider-credential-binding-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11662,8 +11710,8 @@
       ]
     },
     {
-      "name": "1077 provider-credential-binding-list - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1077-provider-credential-binding-list.bru",
+      "name": "1081 provider-credential-binding-list - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1081-provider-credential-binding-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
       "scenario": "Forged bearer cannot manage Provider Credentials",
       "status": 401,
@@ -11673,8 +11721,8 @@
       ]
     },
     {
-      "name": "1078 provider-credential-binding-list - Missing Store fails closed for the operator",
-      "file": "contracts/1078-provider-credential-binding-list.bru",
+      "name": "1082 provider-credential-binding-list - Missing Store fails closed for the operator",
+      "file": "contracts/1082-provider-credential-binding-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
       "scenario": "Missing Store fails closed for the operator",
       "status": 404,
@@ -11685,8 +11733,8 @@
       ]
     },
     {
-      "name": "1079 provider-credential-binding-list - Missing Store fails closed for the subject",
-      "file": "contracts/1079-provider-credential-binding-list.bru",
+      "name": "1083 provider-credential-binding-list - Missing Store fails closed for the subject",
+      "file": "contracts/1083-provider-credential-binding-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
       "scenario": "Missing Store fails closed for the subject",
       "status": 404,
@@ -11697,8 +11745,8 @@
       ]
     },
     {
-      "name": "1080 provider-credential-binding-get - Anonymous request is rejected",
-      "file": "contracts/1080-provider-credential-binding-get.bru",
+      "name": "1084 provider-credential-binding-get - Anonymous request is rejected",
+      "file": "contracts/1084-provider-credential-binding-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11708,8 +11756,8 @@
       ]
     },
     {
-      "name": "1081 provider-credential-binding-get - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1081-provider-credential-binding-get.bru",
+      "name": "1085 provider-credential-binding-get - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1085-provider-credential-binding-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Forged bearer cannot manage Provider Credentials",
       "status": 401,
@@ -11719,8 +11767,8 @@
       ]
     },
     {
-      "name": "1082 provider-credential-binding-get - Missing Store fails closed for the operator",
-      "file": "contracts/1082-provider-credential-binding-get.bru",
+      "name": "1086 provider-credential-binding-get - Missing Store fails closed for the operator",
+      "file": "contracts/1086-provider-credential-binding-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Missing Store fails closed for the operator",
       "status": 404,
@@ -11731,8 +11779,8 @@
       ]
     },
     {
-      "name": "1083 provider-credential-binding-get - Missing Store fails closed for the subject",
-      "file": "contracts/1083-provider-credential-binding-get.bru",
+      "name": "1087 provider-credential-binding-get - Missing Store fails closed for the subject",
+      "file": "contracts/1087-provider-credential-binding-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Missing Store fails closed for the subject",
       "status": 404,
@@ -11743,57 +11791,57 @@
       ]
     },
     {
-      "name": "1084 provider-credential-binding-update - Anonymous request is rejected",
-      "file": "contracts/1084-provider-credential-binding-update.bru",
-      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1085 provider-credential-binding-update - Forged bearer cannot manage Provider Credentials",
-      "file": "contracts/1085-provider-credential-binding-update.bru",
-      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
-      "scenario": "Forged bearer cannot manage Provider Credentials",
-      "status": 401,
-      "required_checks": [
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1086 provider-credential-binding-update - Missing Store fails closed for the operator",
-      "file": "contracts/1086-provider-credential-binding-update.bru",
-      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
-      "scenario": "Missing Store fails closed for the operator",
-      "status": 404,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
-      ]
-    },
-    {
-      "name": "1087 provider-credential-binding-update - Missing Store fails closed for the subject",
-      "file": "contracts/1087-provider-credential-binding-update.bru",
-      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
-      "scenario": "Missing Store fails closed for the subject",
-      "status": 404,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the subject contract"
-      ]
-    },
-    {
-      "name": "1088 provider-credential-binding-update - Wrong JSON media type is rejected",
+      "name": "1088 provider-credential-binding-update - Anonymous request is rejected",
       "file": "contracts/1088-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1089 provider-credential-binding-update - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1089-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1090 provider-credential-binding-update - Missing Store fails closed for the operator",
+      "file": "contracts/1090-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1091 provider-credential-binding-update - Missing Store fails closed for the subject",
+      "file": "contracts/1091-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1092 provider-credential-binding-update - Wrong JSON media type is rejected",
+      "file": "contracts/1092-provider-credential-binding-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11804,8 +11852,8 @@
       ]
     },
     {
-      "name": "1089 provider-credential-binding-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1089-provider-credential-binding-update.bru",
+      "name": "1093 provider-credential-binding-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1093-provider-credential-binding-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11816,8 +11864,8 @@
       ]
     },
     {
-      "name": "1090 provider-credential-binding-update - Required lifecycle fields cannot be omitted",
-      "file": "contracts/1090-provider-credential-binding-update.bru",
+      "name": "1094 provider-credential-binding-update - Required lifecycle fields cannot be omitted",
+      "file": "contracts/1094-provider-credential-binding-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Required lifecycle fields cannot be omitted",
       "status": 422,
@@ -11828,8 +11876,8 @@
       ]
     },
     {
-      "name": "1091 provider-credential-binding-update - Unknown lifecycle fields are rejected",
-      "file": "contracts/1091-provider-credential-binding-update.bru",
+      "name": "1095 provider-credential-binding-update - Unknown lifecycle fields are rejected",
+      "file": "contracts/1095-provider-credential-binding-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
       "scenario": "Unknown lifecycle fields are rejected",
       "status": 422,
@@ -11840,8 +11888,8 @@
       ]
     },
     {
-      "name": "1092 sessions-gcip-transaction - Transaction requires its state query",
-      "file": "contracts/1092-sessions-gcip-transaction.bru",
+      "name": "1096 sessions-gcip-transaction - Transaction requires its state query",
+      "file": "contracts/1096-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "Transaction requires its state query",
       "status": 400,
@@ -11851,8 +11899,8 @@
       ]
     },
     {
-      "name": "1093 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
-      "file": "contracts/1093-sessions-gcip-transaction.bru",
+      "name": "1097 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
+      "file": "contracts/1097-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "OIDC deployment cannot expose GCIP configuration",
       "status": 401,
@@ -11862,8 +11910,8 @@
       ]
     },
     {
-      "name": "1094 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
-      "file": "contracts/1094-sessions-gcip-transaction.bru",
+      "name": "1098 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
+      "file": "contracts/1098-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "Tampered browser cookie cannot expose GCIP configuration",
       "status": 401,
@@ -11873,8 +11921,8 @@
       ]
     },
     {
-      "name": "1095 sessions-gcip-exchange - Exchange requires its typed token envelope",
-      "file": "contracts/1095-sessions-gcip-exchange.bru",
+      "name": "1099 sessions-gcip-exchange - Exchange requires its typed token envelope",
+      "file": "contracts/1099-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "Exchange requires its typed token envelope",
       "status": 422,
@@ -11884,8 +11932,8 @@
       ]
     },
     {
-      "name": "1096 sessions-gcip-exchange - Malformed token envelope is rejected",
-      "file": "contracts/1096-sessions-gcip-exchange.bru",
+      "name": "1100 sessions-gcip-exchange - Malformed token envelope is rejected",
+      "file": "contracts/1100-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "Malformed token envelope is rejected",
       "status": 400,
@@ -11895,8 +11943,8 @@
       ]
     },
     {
-      "name": "1097 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
-      "file": "contracts/1097-sessions-gcip-exchange.bru",
+      "name": "1101 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
+      "file": "contracts/1101-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "OIDC deployment cannot accept a GCIP token",
       "status": 401,
@@ -11906,8 +11954,8 @@
       ]
     },
     {
-      "name": "1098 tenant-administration - Anonymous request is rejected",
-      "file": "contracts/1098-tenant-administration.bru",
+      "name": "1102 tenant-administration - Anonymous request is rejected",
+      "file": "contracts/1102-tenant-administration.bru",
       "endpoint": "GET /api/tenants/{tenant}/administration",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11917,8 +11965,8 @@
       ]
     },
     {
-      "name": "1099 tenant-administration - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1099-tenant-administration.bru",
+      "name": "1103 tenant-administration - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1103-tenant-administration.bru",
       "endpoint": "GET /api/tenants/{tenant}/administration",
       "scenario": "Operator bearer is never a Tenant Administrator",
       "status": 403,
@@ -11928,8 +11976,8 @@
       ]
     },
     {
-      "name": "1100 tenant-administration - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1100-tenant-administration.bru",
+      "name": "1104 tenant-administration - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1104-tenant-administration.bru",
       "endpoint": "GET /api/tenants/{tenant}/administration",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -11939,8 +11987,8 @@
       ]
     },
     {
-      "name": "1101 tenant-registrations - Anonymous request is rejected",
-      "file": "contracts/1101-tenant-registrations.bru",
+      "name": "1105 tenant-registrations - Anonymous request is rejected",
+      "file": "contracts/1105-tenant-registrations.bru",
       "endpoint": "GET /api/tenants/{tenant}/registrations",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11950,8 +11998,8 @@
       ]
     },
     {
-      "name": "1102 tenant-registrations - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1102-tenant-registrations.bru",
+      "name": "1106 tenant-registrations - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1106-tenant-registrations.bru",
       "endpoint": "GET /api/tenants/{tenant}/registrations",
       "scenario": "Operator bearer is never a Tenant Administrator",
       "status": 403,
@@ -11961,8 +12009,8 @@
       ]
     },
     {
-      "name": "1103 tenant-registrations - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1103-tenant-registrations.bru",
+      "name": "1107 tenant-registrations - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1107-tenant-registrations.bru",
       "endpoint": "GET /api/tenants/{tenant}/registrations",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -11972,8 +12020,8 @@
       ]
     },
     {
-      "name": "1104 tenant-registration-approve - Anonymous request is rejected",
-      "file": "contracts/1104-tenant-registration-approve.bru",
+      "name": "1108 tenant-registration-approve - Anonymous request is rejected",
+      "file": "contracts/1108-tenant-registration-approve.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11984,8 +12032,8 @@
       ]
     },
     {
-      "name": "1105 tenant-registration-approve - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1105-tenant-registration-approve.bru",
+      "name": "1109 tenant-registration-approve - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1109-tenant-registration-approve.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
       "scenario": "Operator bearer is never a Tenant Administrator",
       "status": 403,
@@ -11996,8 +12044,8 @@
       ]
     },
     {
-      "name": "1106 tenant-registration-approve - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1106-tenant-registration-approve.bru",
+      "name": "1110 tenant-registration-approve - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1110-tenant-registration-approve.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -12008,8 +12056,8 @@
       ]
     },
     {
-      "name": "1107 tenant-registration-approve - Malformed JSON cannot reach the use case",
-      "file": "contracts/1107-tenant-registration-approve.bru",
+      "name": "1111 tenant-registration-approve - Malformed JSON cannot reach the use case",
+      "file": "contracts/1111-tenant-registration-approve.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -12020,8 +12068,8 @@
       ]
     },
     {
-      "name": "1108 tenant-registration-approve - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1108-tenant-registration-approve.bru",
+      "name": "1112 tenant-registration-approve - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1112-tenant-registration-approve.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -12032,8 +12080,8 @@
       ]
     },
     {
-      "name": "1109 tenant-registration-reject - Anonymous request is rejected",
-      "file": "contracts/1109-tenant-registration-reject.bru",
+      "name": "1113 tenant-registration-reject - Anonymous request is rejected",
+      "file": "contracts/1113-tenant-registration-reject.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12044,8 +12092,8 @@
       ]
     },
     {
-      "name": "1110 tenant-registration-reject - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1110-tenant-registration-reject.bru",
+      "name": "1114 tenant-registration-reject - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1114-tenant-registration-reject.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
       "scenario": "Operator bearer is never a Tenant Administrator",
       "status": 403,
@@ -12056,8 +12104,8 @@
       ]
     },
     {
-      "name": "1111 tenant-registration-reject - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1111-tenant-registration-reject.bru",
+      "name": "1115 tenant-registration-reject - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1115-tenant-registration-reject.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -12068,8 +12116,8 @@
       ]
     },
     {
-      "name": "1112 tenant-registration-reject - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1112-tenant-registration-reject.bru",
+      "name": "1116 tenant-registration-reject - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1116-tenant-registration-reject.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -12080,8 +12128,8 @@
       ]
     },
     {
-      "name": "1113 tenant-mappings - Anonymous request is rejected",
-      "file": "contracts/1113-tenant-mappings.bru",
+      "name": "1117 tenant-mappings - Anonymous request is rejected",
+      "file": "contracts/1117-tenant-mappings.bru",
       "endpoint": "GET /api/tenants/{tenant}/mappings",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12091,8 +12139,8 @@
       ]
     },
     {
-      "name": "1114 tenant-mappings - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1114-tenant-mappings.bru",
+      "name": "1118 tenant-mappings - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1118-tenant-mappings.bru",
       "endpoint": "GET /api/tenants/{tenant}/mappings",
       "scenario": "Operator bearer is never a Tenant Administrator",
       "status": 403,
@@ -12102,8 +12150,8 @@
       ]
     },
     {
-      "name": "1115 tenant-mappings - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1115-tenant-mappings.bru",
+      "name": "1119 tenant-mappings - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1119-tenant-mappings.bru",
       "endpoint": "GET /api/tenants/{tenant}/mappings",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -12113,8 +12161,8 @@
       ]
     },
     {
-      "name": "1116 tenant-mappings - Paging rejects nonnumeric offsets",
-      "file": "contracts/1116-tenant-mappings.bru",
+      "name": "1120 tenant-mappings - Paging rejects nonnumeric offsets",
+      "file": "contracts/1120-tenant-mappings.bru",
       "endpoint": "GET /api/tenants/{tenant}/mappings",
       "scenario": "Paging rejects nonnumeric offsets",
       "status": 400,
@@ -12124,57 +12172,57 @@
       ]
     },
     {
-      "name": "1117 tenant-mapping-disable - Anonymous request is rejected",
-      "file": "contracts/1117-tenant-mapping-disable.bru",
-      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
-      "scenario": "Anonymous request is rejected",
-      "status": 401,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 401",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1118 tenant-mapping-disable - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1118-tenant-mapping-disable.bru",
-      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
-      "scenario": "Operator bearer is never a Tenant Administrator",
-      "status": 403,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1119 tenant-mapping-disable - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1119-tenant-mapping-disable.bru",
-      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
-      "scenario": "Subject Credential bearer is never a Tenant Administrator",
-      "status": 403,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 403",
-        "Stable authorization error envelope"
-      ]
-    },
-    {
-      "name": "1120 tenant-mapping-disable - Malformed JSON cannot reach the use case",
-      "file": "contracts/1120-tenant-mapping-disable.bru",
-      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
-      "scenario": "Malformed JSON cannot reach the use case",
-      "status": 400,
-      "required_checks": [
-        "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
-        "Rejection is diagnostic and does not disclose SQL or credentials"
-      ]
-    },
-    {
-      "name": "1121 tenant-mapping-disable - Typed resource IDs reject invalid UUIDs",
+      "name": "1121 tenant-mapping-disable - Anonymous request is rejected",
       "file": "contracts/1121-tenant-mapping-disable.bru",
       "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1122 tenant-mapping-disable - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1122-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1123 tenant-mapping-disable - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1123-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1124 tenant-mapping-disable - Malformed JSON cannot reach the use case",
+      "file": "contracts/1124-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1125 tenant-mapping-disable - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1125-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
       "required_checks": [
@@ -12184,8 +12232,8 @@
       ]
     },
     {
-      "name": "1122 tenant-subject-groups - Anonymous request is rejected",
-      "file": "contracts/1122-tenant-subject-groups.bru",
+      "name": "1126 tenant-subject-groups - Anonymous request is rejected",
+      "file": "contracts/1126-tenant-subject-groups.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12196,8 +12244,8 @@
       ]
     },
     {
-      "name": "1123 tenant-subject-groups - Operator bearer is never a Tenant Administrator",
-      "file": "contracts/1123-tenant-subject-groups.bru",
+      "name": "1127 tenant-subject-groups - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1127-tenant-subject-groups.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
       "scenario": "Operator bearer is never a Tenant Administrator",
       "status": 403,
@@ -12208,8 +12256,8 @@
       ]
     },
     {
-      "name": "1124 tenant-subject-groups - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1124-tenant-subject-groups.bru",
+      "name": "1128 tenant-subject-groups - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1128-tenant-subject-groups.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -12220,8 +12268,8 @@
       ]
     },
     {
-      "name": "1125 tenant-subject-groups - Malformed JSON cannot reach the use case",
-      "file": "contracts/1125-tenant-subject-groups.bru",
+      "name": "1129 tenant-subject-groups - Malformed JSON cannot reach the use case",
+      "file": "contracts/1129-tenant-subject-groups.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -12232,8 +12280,8 @@
       ]
     },
     {
-      "name": "1126 sessions-admin-erase-display - Anonymous request is rejected",
-      "file": "contracts/1126-sessions-admin-erase-display.bru",
+      "name": "1130 sessions-admin-erase-display - Anonymous request is rejected",
+      "file": "contracts/1130-sessions-admin-erase-display.bru",
       "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12244,8 +12292,8 @@
       ]
     },
     {
-      "name": "1127 sessions-admin-erase-display - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1127-sessions-admin-erase-display.bru",
+      "name": "1131 sessions-admin-erase-display - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1131-sessions-admin-erase-display.bru",
       "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -12256,8 +12304,8 @@
       ]
     },
     {
-      "name": "1128 sessions-admin-erase-display - Unrecognized bearer cannot mutate state",
-      "file": "contracts/1128-sessions-admin-erase-display.bru",
+      "name": "1132 sessions-admin-erase-display - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1132-sessions-admin-erase-display.bru",
       "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
       "scenario": "Unrecognized bearer cannot mutate state",
       "status": 401,
@@ -12268,8 +12316,8 @@
       ]
     },
     {
-      "name": "1129 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain",
-      "file": "contracts/1129-sessions-login-discovery.bru",
+      "name": "1133 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain",
+      "file": "contracts/1133-sessions-login-discovery.bru",
       "endpoint": "POST /auth/login",
       "scenario": "OIDC deployment cannot route a Sign-in Domain",
       "status": 401,
@@ -12280,8 +12328,8 @@
       ]
     },
     {
-      "name": "1130 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery",
-      "file": "contracts/1130-sessions-login-discovery.bru",
+      "name": "1134 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery",
+      "file": "contracts/1134-sessions-login-discovery.bru",
       "endpoint": "POST /auth/login",
       "scenario": "OIDC deployment refuses foreign-origin discovery",
       "status": 401,
@@ -12292,8 +12340,8 @@
       ]
     },
     {
-      "name": "1131 sessions-login-discovery - Discovery without an address reveals nothing",
-      "file": "contracts/1131-sessions-login-discovery.bru",
+      "name": "1135 sessions-login-discovery - Discovery without an address reveals nothing",
+      "file": "contracts/1135-sessions-login-discovery.bru",
       "endpoint": "POST /auth/login",
       "scenario": "Discovery without an address reveals nothing",
       "status": 401,
@@ -12304,8 +12352,8 @@
       ]
     },
     {
-      "name": "1132 provider-authorization-start - Anonymous request is rejected",
-      "file": "contracts/1132-provider-authorization-start.bru",
+      "name": "1136 provider-authorization-start - Anonymous request is rejected",
+      "file": "contracts/1136-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12316,8 +12364,8 @@
       ]
     },
     {
-      "name": "1133 provider-authorization-start - Forged bearer cannot start Provider Authorization",
-      "file": "contracts/1133-provider-authorization-start.bru",
+      "name": "1137 provider-authorization-start - Forged bearer cannot start Provider Authorization",
+      "file": "contracts/1137-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Forged bearer cannot start Provider Authorization",
       "status": 401,
@@ -12327,8 +12375,8 @@
       ]
     },
     {
-      "name": "1134 provider-authorization-start - Operator bearer has no browser session to bind",
-      "file": "contracts/1134-provider-authorization-start.bru",
+      "name": "1138 provider-authorization-start - Operator bearer has no browser session to bind",
+      "file": "contracts/1138-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Operator bearer has no browser session to bind",
       "status": 403,
@@ -12340,8 +12388,8 @@
       ]
     },
     {
-      "name": "1135 provider-authorization-start - Subject bearer has no browser session to bind",
-      "file": "contracts/1135-provider-authorization-start.bru",
+      "name": "1139 provider-authorization-start - Subject bearer has no browser session to bind",
+      "file": "contracts/1139-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Subject bearer has no browser session to bind",
       "status": 403,
@@ -12353,8 +12401,8 @@
       ]
     },
     {
-      "name": "1136 provider-authorization-start - Wrong JSON media type is rejected",
-      "file": "contracts/1136-provider-authorization-start.bru",
+      "name": "1140 provider-authorization-start - Wrong JSON media type is rejected",
+      "file": "contracts/1140-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -12365,8 +12413,8 @@
       ]
     },
     {
-      "name": "1137 provider-authorization-start - Malformed JSON cannot reach the use case",
-      "file": "contracts/1137-provider-authorization-start.bru",
+      "name": "1141 provider-authorization-start - Malformed JSON cannot reach the use case",
+      "file": "contracts/1141-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -12377,8 +12425,8 @@
       ]
     },
     {
-      "name": "1138 provider-authorization-start - Pasted Key Material is not an accepted field",
-      "file": "contracts/1138-provider-authorization-start.bru",
+      "name": "1142 provider-authorization-start - Pasted Key Material is not an accepted field",
+      "file": "contracts/1142-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
       "scenario": "Pasted Key Material is not an accepted field",
       "status": 422,
@@ -12389,8 +12437,8 @@
       ]
     },
     {
-      "name": "1139 provider-authorization-callback - Callback without a browser binding is rejected",
-      "file": "contracts/1139-provider-authorization-callback.bru",
+      "name": "1143 provider-authorization-callback - Callback without a browser binding is rejected",
+      "file": "contracts/1143-provider-authorization-callback.bru",
       "endpoint": "GET /auth/provider-authorizations/{provider}/callback",
       "scenario": "Callback without a browser binding is rejected",
       "status": 401,
@@ -12400,8 +12448,8 @@
       ]
     },
     {
-      "name": "1140 provider-authorization-callback - Tampered browser binding cannot complete an authorization",
-      "file": "contracts/1140-provider-authorization-callback.bru",
+      "name": "1144 provider-authorization-callback - Tampered browser binding cannot complete an authorization",
+      "file": "contracts/1144-provider-authorization-callback.bru",
       "endpoint": "GET /auth/provider-authorizations/{provider}/callback",
       "scenario": "Tampered browser binding cannot complete an authorization",
       "status": 401,
@@ -12411,8 +12459,8 @@
       ]
     },
     {
-      "name": "1141 provider-authorization-callback - Callback without state is rejected",
-      "file": "contracts/1141-provider-authorization-callback.bru",
+      "name": "1145 provider-authorization-callback - Callback without state is rejected",
+      "file": "contracts/1145-provider-authorization-callback.bru",
       "endpoint": "GET /auth/provider-authorizations/{provider}/callback",
       "scenario": "Callback without state is rejected",
       "status": 401,

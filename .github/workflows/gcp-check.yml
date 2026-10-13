@@ -27,6 +27,8 @@ jobs:
             fi
             sleep "$((attempt * 5))"
           done
+      - name: Install the pinned chart verification dependency
+        run: python3 -m pip install PyYAML==6.0.3
       - name: Test infrastructure without cloud credentials or resources
         env:
           CARGO_NET_OFFLINE: "true"

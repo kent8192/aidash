@@ -93,6 +93,37 @@ pub struct Description {
 	pub semantic: crate::semantic::remote::Binding,
 }
 
+/// The Home's reply to a describe request: the Description a receiver pins at
+/// admission, plus the current digest of the Workspace's semantic corpus (#191).
+///
+/// The digest rides beside the Description, not inside it. Admission and every
+/// refresh compare the whole Description with the pinned copy, and the corpus
+/// changes whenever a Home entry does. It is flattened into the same object so
+/// a peer that predates it still parses a reply without it.
+#[derive(Clone, Serialize)]
+pub struct Described {
+	#[serde(flatten)]
+	pub description: Description,
+	/// Absent when the peer's protocol predates it or the grant carries no
+	/// Home semantic access.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub corpus_digest: Option<String>,
+}
+impl Described {
+	/// A reply without a digest is a valid older-protocol reply.
+	pub fn from_value(mut value: serde_json::Value) -> serde_json::Result<Self> {
+		let corpus_digest = value
+			.as_object_mut()
+			.and_then(|fields| fields.remove("corpus_digest"))
+			.map(serde_json::from_value)
+			.transpose()?;
+		Ok(Self {
+			description: serde_json::from_value(value)?,
+			corpus_digest,
+		})
+	}
+}
+
 impl Inspection {
 	pub fn satisfies(&self, pinned: &Self) -> bool {
 		self.binding_snapshot == pinned.binding_snapshot

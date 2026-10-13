@@ -52,6 +52,33 @@ def identity(value):
     return parsed
 
 
+def settled(record):
+    """No writer can still be running: terminal, with termination proven or frozen."""
+    return record['status'] in TERMINAL and bool(record.get('termination_confirmed') or record.get('writer_frozen'))
+
+
+class ActivityAggregate:
+    """Aggregate of the operation journal for /v1/activity.
+
+    The journal keeps every operation file for the life of the volume (an
+    acknowledgement clears the payload, never the file), so deriving activity from
+    the files costs more with each operation ever run. This keeps only the IDs of
+    unsettled operations and the latest completion time, updated whenever a record
+    is saved, so a read is independent of how many operations are retained.
+    Callers serialize updates with the Runner's lock."""
+
+    def __init__(self):
+        self.unsettled = set()
+        self.last_completed = 0
+
+    def track(self, operation, record):
+        if settled(record):
+            self.unsettled.discard(operation)
+        else:
+            self.unsettled.add(operation)
+        self.last_completed = max(self.last_completed, record.get('finished_at', 0))
+
+
 class Runner:
     def __init__(self, config):
         self.config = config
@@ -62,6 +89,9 @@ class Runner:
         self.lock = threading.RLock()
         self.active = set()
         self.admission_operation = None
+        # Seeded by recover(), the final startup scan; until then only the
+        # operations saved during startup are tracked, and nothing serves it yet.
+        self.aggregate = ActivityAggregate()
 
         identity_path = self.root / "instance"
         if not identity_path.exists():
@@ -97,10 +127,21 @@ class Runner:
         if self.config.get("node_guard"):
             self.verify_freeze()
         self.retire_admission_probes()
+        self.recover()
+
+    def operation_files(self):
         for path in self.root.glob("*.json"):
-            if path.name.startswith(("area-", "session-")):
-                continue
+            if not path.name.startswith(("area-", "session-")):
+                yield path
+
+    def recover(self):
+        """Seed the activity aggregate and resume interrupted work in one journal
+        scan at startup, never per request. Each record is tracked before its work
+        restarts, so no later update of it can be overwritten by this read."""
+        for path in self.operation_files():
             record = json.loads(path.read_bytes())
+            with self.lock:
+                self.aggregate.track(path.stem, record)
             if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
 
@@ -142,9 +183,7 @@ class Runner:
         its Pod is gone (graceful deletion completes only after the kubelet stops
         every container) no writer remains. A Pod that cannot be removed keeps the
         record busy: activity stays fail-closed."""
-        for path in self.root.glob("*.json"):
-            if path.name.startswith(("area-", "session-")):
-                continue
+        for path in self.operation_files():
             record = json.loads(path.read_bytes())
             if (not record.get("admission_probe") or record["status"] not in TERMINAL
                     or record.get("termination_confirmed") or record.get("writer_frozen")):
@@ -215,6 +254,7 @@ class Runner:
             record = self.get(operation)
             record.update(changes)
             save(self.path(operation), record)
+            self.aggregate.track(operation, record)
             return record
 
     def public(self, record):
@@ -302,6 +342,7 @@ class Runner:
                     record["pod_uid"] = session["pod_uid"]
                     record["container_id"] = session["container_id"]
             save(self.path(operation), record)
+            self.aggregate.track(operation, record)
             save(area_path, {"epoch": request["epoch"], "operation_id": operation})
             if not request["files"] or session:
                 self.start(operation)
@@ -827,19 +868,12 @@ class Runner:
         return self.public(record)
 
     def activity(self):
-        """Read-only activity; an unproven writer always prevents idle stop."""
+        """Read-only activity; an unproven writer always prevents idle stop. It reads
+        the aggregate only: no journal file is opened and the lock is held for two reads."""
         with self.lock:
-            busy, completed = 0, 0
-            for path in self.root.glob('*.json'):
-                if path.name.startswith(('area-', 'session-')):
-                    continue
-                record = json.loads(path.read_bytes())
-                if record['status'] not in TERMINAL or not (
-                        record.get('termination_confirmed') or record.get('writer_frozen')):
-                    busy += 1
-                completed = max(completed, record.get('finished_at', 0))
-            return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': busy},
-                    'busy': busy > 0, 'last_work_completed': completed}
+            busy, completed = len(self.aggregate.unsettled), self.aggregate.last_completed
+        return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': busy},
+                'busy': busy > 0, 'last_work_completed': completed}
 
 
 class Handler(BaseHTTPRequestHandler):

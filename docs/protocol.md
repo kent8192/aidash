@@ -8,7 +8,7 @@ A node publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, 
 
 The operator token retains privileged bootstrap, legacy operation and recovery access. Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. Legacy `/offers` cannot admit work into scoped workspaces. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
 
-Federation retains the `/federation/v0.1` path namespace and requires protocol `0.2` for Binding contract 1. Earlier peers cannot admit new execution; drain in-flight work before upgrading. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol: 0.2`. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
+Federation retains the `/federation/v0.1` path namespace. A node advertises protocol `0.3` and accepts peers registered at `0.2` or `0.3`; `0.2` is the minimum for Binding contract 1, so earlier peers cannot admit new execution (drain in-flight work before upgrading). Protocol `0.3` adds one thing: the Home's reply to `scoped/execution/grants/describe` carries the current `corpus_digest` of the grant's Workspace when the grant gives the receiver Home semantic access. A node that sends `X-Aidash-Protocol: 0.2` receives the reply it always did, and a reply without the field is valid. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol` set to the version the receiving peer was registered with. Register a peer at `0.3` only after it runs `0.3`; its `/.well-known/aidash` must advertise the version you register. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint             | Purpose                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
@@ -305,6 +305,32 @@ definitions and eager Skill blocks plus the full `metadata_bytes`,
 `schema_bytes` and `skill_bytes` budgets. It also rejects any single tool
 definition over `schema_bytes`, or any Registry or attached Skill block over
 `skill_bytes`, naming the alias and size.
+
+### Remote semantic reuse
+
+The executing peer reserves every remote inference and compaction at the Home
+through `POST /scoped/usage/reserve`; the Home calls back the peer's
+`POST /scoped/usage/verify` before it charges anything. Both carry a `boundary`
+of `{"step":n}`, and the peer's verify requires a READY semantic operation of
+its own for that step. An `ordered` Run reuses one retrieval across steps
+(ADR 0020), so a reuse step instead sends `{"step":n,"reuses":"<operation ID>"}`,
+naming the operation whose receipt it reuses. The boundary is bound in the
+peer's durable dispatch record, so the Home cannot substitute it in the
+callback. The two nodes check the citation against their own journals:
+
+- the executing peer: the operation is READY for this Run and grant, from a
+  step no later than the Run's actual step;
+- the Home: the same against its journal for the step the peer claims, the
+  grant is still live (`403`), no consumed source changed or was revoked
+  (`409`, reason `invalidated`, the same conditions under which
+  `grants/describe` answers 409), and the Workspace corpus digest equals the
+  one it recorded before that retrieval (`409`, reason `stale`).
+
+A `stale` answer makes the Run drop its cached retrieval and retrieve again
+after one second, up to five times in a row. Peers that predate the field
+interoperate: an older executing peer sends no citation, so its reuse steps
+stay pending as before; an older Home ignores the citation, still checks the
+live grant and consumed sources while leasing it, but not the corpus digest.
 
 ### Remote run-message recovery
 

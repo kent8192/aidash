@@ -617,6 +617,79 @@ mod cache_salt {
 		);
 	}
 
+	/// Delegates to `KeylessAccess` and records the signed-scope request of every call.
+	struct Recording(std::sync::Mutex<Vec<(aidash_application::provider_access::Operation, bool)>>);
+	#[async_trait::async_trait]
+	impl ProviderAccess for Recording {
+		async fn resolve(
+			&self,
+			context: &Context,
+			endpoint: &str,
+			source: &Source,
+		) -> Result<aidash_application::provider_access::Access> {
+			let inference = context.inference.as_ref().unwrap();
+			self.0
+				.lock()
+				.unwrap()
+				.push((inference.operations[0], inference.cache_breakpoints));
+			aidash_application::provider_access::KeylessAccess
+				.resolve(context, endpoint, source)
+				.await
+		}
+	}
+
+	#[rstest::rstest]
+	#[case::opted_in(true)]
+	#[case::opted_out(false)]
+	#[tokio::test]
+	async fn chat_asks_the_issuer_for_cache_breakpoints_only_when_the_request_carries_them(
+		#[case] breakpoints: bool,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let access = Arc::new(Recording(Default::default()));
+		let config = json!({
+			"provider": "openrouter",
+			"model_id": "anthropic/claude-fixture",
+			"endpoint": upstream.endpoint,
+			"context_window": 100_000,
+			"modalities": ["text"],
+			"cost": {},
+			"cache_mode": "explicit"
+		});
+		let provider = salted_provider(
+			reqwest::Client::new(),
+			serde_json::from_value(config).unwrap(),
+			access.clone(),
+			Default::default(),
+			Some(keys()),
+		)
+		.unwrap();
+		// Act
+		provider
+			.infer(
+				ModelRequest {
+					cache_breakpoints: breakpoints,
+					..ordered(scope("tenant-a", 1))
+				},
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap();
+		// Assert
+		assert_eq!(
+			*access.0.lock().unwrap(),
+			vec![(
+				aidash_application::provider_access::Operation::Chat,
+				breakpoints
+			)]
+		);
+		assert_eq!(
+			upstream.bodies()[0].to_string().contains("cache_control"),
+			breakpoints
+		);
+	}
+
 	#[rstest::rstest]
 	#[case::undeclared("anthropic/claude-fixture", None)]
 	#[case::automatic("anthropic/claude-fixture", Some("automatic"))]

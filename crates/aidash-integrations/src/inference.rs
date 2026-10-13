@@ -29,12 +29,18 @@ pub struct OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
-	fn call_context(&self, operation: Operation, max_output_tokens: u32) -> Context {
+	fn call_context(
+		&self,
+		operation: Operation,
+		max_output_tokens: u32,
+		cache_breakpoints: bool,
+	) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
 			model: self.config.model_id.clone(),
 			operations: vec![operation],
 			max_output_tokens,
+			cache_breakpoints,
 		});
 		context
 	}
@@ -60,7 +66,11 @@ impl OpenRouterProvider {
 		let access = self
 			.access
 			.resolve(
-				&self.call_context(Operation::Discovery, self.config.output_token_limit()),
+				&self.call_context(
+					Operation::Discovery,
+					self.config.output_token_limit(),
+					false,
+				),
 				&self.config.endpoint,
 				&Source::configured(&self.config.provider_credential),
 			)
@@ -288,7 +298,11 @@ impl ModelProvider for OpenRouterProvider {
 			let access = self
 				.access
 				.resolve(
-					&self.call_context(Operation::Chat, request.max_output_tokens),
+					&self.call_context(
+						Operation::Chat,
+						request.max_output_tokens,
+						request.cache_breakpoints,
+					),
 					&self.config.endpoint,
 					&Source::configured(&self.config.provider_credential),
 				)
