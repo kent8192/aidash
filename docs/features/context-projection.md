@@ -20,7 +20,7 @@ Declare the versions a model accepts, then name one in the Agent definition:
   "provider": "openrouter",
   "model_id": "vendor/model",
   "endpoint": "https://openrouter.ai/api/v1",
-  "credential_env": "AIDASH_SECRET_OPENROUTER",
+  "provider_credential": "openrouter",
   "context_window": 128000,
   "max_output_tokens": 8192,
   "modalities": ["text"],

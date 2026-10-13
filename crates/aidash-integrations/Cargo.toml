@@ -55,6 +55,11 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 openidconnect = "4.0.1"
 gcp_auth = "0.12.7"
 
+[features]
+# Fake-provider constructors for tests (ADR 0006). Production dependencies never
+# enable it; see scripts/check-workspace-boundaries.py.
+test-support = []
+
 [dev-dependencies]
 jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",

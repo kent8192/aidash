@@ -142,7 +142,7 @@ pub(crate) fn native_memory_entries() -> Vec<Entry> {
 		entry(
 			"native-embedding",
 			"embedding",
-			json!({"provider":"openai","endpoint":"https://embedding.invalid","credential_env":null,"model":"fixture","model_version":"1","dimensions":3}),
+			json!({"provider":"openai","endpoint":"https://embedding.invalid","model":"fixture","model_version":"1","dimensions":3}),
 		),
 		entry("native-reranker", "reranker", json!({"provider":"rrf"})),
 		entry(

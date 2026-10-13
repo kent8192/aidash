@@ -398,7 +398,6 @@ fn spec(endpoint: &str) -> IndexSpec {
 		embedding: EmbeddingConfig {
 			provider: "openai".into(),
 			endpoint: format!("{endpoint}/v1"),
-			credential_env: None,
 			provider_credential: None,
 			model: "fixture".into(),
 			model_version: "1".into(),

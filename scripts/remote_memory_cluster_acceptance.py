@@ -120,9 +120,6 @@ class RemoteMemory(Cluster):
         self.service("provider", 8080, {"app": "provider"})
         self.rollout("provider")
         for node in range(2):
-            for role in ("server", "worker"):
-                if node == 0:
-                    self.kube("set", "env", f"deployment/tx-{node}-{role}", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING=fixture-embedding-initial")
             self.rollout(f"tx-{node}-server")
             self.ready(node)
         self.peers_ready()
@@ -150,7 +147,7 @@ class RemoteMemory(Cluster):
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
             self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
             self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "schema_version": 1, "bindings": [{"kind": "memory", "target": {"registry_node": f"aidash://tx-{node:02}", "id": "home-memory", "version": "1.0.0"}, "narrow": {}}], "remove_default": []})
-        self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "credential_env": "AIDASH_SECRET_TEST_REMOTE_EMBEDDING", "model": "home-vector", "model_version": "1", "dimensions": 3}
+        self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "model": "home-vector", "model_version": "1", "dimensions": 3}
         self.register(0, "embedding", "home-embedding", self.embedding)
 
     def workspace(self):
@@ -216,63 +213,6 @@ class RemoteMemory(Cluster):
     def descriptor(self, node, name):
         entry = self.entries[node][name]
         return {"node_id": f"aidash://tx-{node:02}", "entry": ref(entry), "digest": digest(entry), "configuration_digest": digest(entry["config"])}
-
-    def credential_rotation(self):
-        record = {"name": "embedding-credential-revocation-missing-and-rotation", "started_at": now(), "result": "failed"}
-        self.evidence["cases"].append(record)
-        workspace, _ = self.workspace()
-        task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Credential recovery", "description": "Find the relevant non-keyword archive marker"}))["id"]
-        grant, run = self.activate(task, {"id": "research", "version": "1.0.0"})
-        record.update(task=task, grant=grant, run=run)
-        descriptor = self.descriptor(0, "home-embedding")
-        baseline = len(self.captured("embedding"))
-        rejected = len(self.captured("embedding_rejected"))
-        self.provider({"embedding_key": "fixture-embedding-rotated"})
-
-        def paused():
-            row = self.db(1, "runs", task, run)[0]
-            assert row["phase"] != "FAILED", row
-            if row["control"] != "PAUSED":
-                return False
-            assert row["pending"]["recovery"]["semantic_reason"] == "configuration", row
-            return True
-
-        self.scale(1, "worker", 1)
-        self.until(paused, "revoked embedding credential pauses the same Run")
-        assert not self.captured("inference", task)
-        assert len(self.captured("embedding_rejected")) == rejected + 1
-        self.scale(1, "worker", 0)
-        record["revoked"] = self.snapshot(task, run)
-        # A completed rolling update can still leave a terminating Home Pod
-        # eligible for kubectl's Service port-forward. Stop it fully before
-        # changing credentials so resume cannot reach its old configuration.
-        self.scale(0, "server", 0)
-        self.kube("set", "env", "deployment/tx-0-server", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING-")
-        self.scale(0, "server", 1)
-        self.peers_ready()
-        route = f"/api/tasks/{task}/remote-grants/{grant}/control"
-        self.ok(self.user(0, route, {"action": "resume"}))
-        self.scale(1, "worker", 1)
-        self.until(paused, "missing embedding credential pauses without HTTP")
-        assert not self.captured("inference", task)
-        assert len(self.captured("embedding")) == baseline
-        assert len(self.captured("embedding_rejected")) == rejected + 1
-        self.scale(1, "worker", 0)
-        record["missing"] = self.snapshot(task, run)
-        self.scale(0, "server", 0)
-        for role in ("server", "worker"):
-            self.kube("set", "env", f"deployment/tx-0-{role}", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING=fixture-embedding-rotated")
-        self.scale(0, "server", 1)
-        self.peers_ready()
-        self.ok(self.user(0, route, {"action": "resume"}))
-        self.scale(1, "worker", 1)
-        self.finish(task, run)
-        stored = self.ok(self.api(0, "/api/registry/home-embedding/1.0.0"))
-        assert digest(stored) == descriptor["digest"] and digest(stored["config"]) == descriptor["configuration_digest"]
-        assert len(self.captured("embedding")) == baseline + 1
-        assert len(self.captured("inference", task)) == 1
-        record["recovered"] = self.snapshot(task, run)
-        record["result"] = "passed"
 
     def generated_task(self, workspace, policy_suffix=""):
         parent_policy = "remote-parent" + policy_suffix
@@ -429,8 +369,6 @@ def main():
         cluster.configure()
         cluster.ordinary()
         print("Ordinary worker recovery passed", flush=True)
-        cluster.credential_rotation()
-        print("Provider credential rejection, absence and same-binding rotation passed", flush=True)
         cluster.generated()
         print("Generated lineage, Home outage and restart recovery passed", flush=True)
     except Exception as error:

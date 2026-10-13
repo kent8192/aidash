@@ -55,7 +55,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		(
 			"fixture-model",
 			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"fixture-tool",
@@ -236,7 +236,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let operator = f.config.api_token.clone();
-	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
+	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
 	let (status, body) = request(&app, &operator, "POST", "/api/registry", model).await;
 	assert_eq!(status, 200, "model: {body}");
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[

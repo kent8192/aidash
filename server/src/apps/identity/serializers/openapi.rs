@@ -106,6 +106,23 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::provider_credentials::update_binding,
 		&["String", "String"],
 	)?;
+	{
+		use super::provider_authorizations as pa;
+		contracts.request::<_, pa::Start>(document, views::provider_authorizations::start)?;
+		contracts.response::<_, pa::Started>(
+			document,
+			views::provider_authorizations::start,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::provider_authorizations::start,
+			&["String", "String"],
+		)?;
+		// The callback is a browser redirect target, like `/auth/callback`, and
+		// stays out of the API document.
+	}
 
 	contracts.response::<_, desktop::Started>(
 		document,

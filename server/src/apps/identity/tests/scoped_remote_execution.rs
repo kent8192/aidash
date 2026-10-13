@@ -6,6 +6,8 @@ use upstream_fixtures::reply;
 mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
 mod native_memory;
+#[path = "scoped_remote_execution/tenant_embedding.rs"]
+mod tenant_embedding;
 use aidash_server::{
 	domain::{NewTask, qualified_agent},
 	federation::{Federation, Home},
@@ -128,6 +130,7 @@ struct Pair {
 	native: Option<Value>,
 	generation: Option<(Value, Value)>,
 	_memory_recovery_directories: Vec<Arc<tempfile::TempDir>>,
+	tenant_embedding: Option<tenant_embedding::TenantEmbedding>,
 }
 struct SemanticFixture {
 	requests: Arc<Mutex<Vec<Value>>>,
@@ -266,6 +269,7 @@ mod scoped_pair_composition {
 		#[default(false)] native: bool,
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
 		#[default(false)] ordered: bool,
+		#[default(false)] tenant_embedding: bool,
 		#[future(awt)]
 		#[from(scoped_infrastructure)]
 		#[with(native, ordered)]
@@ -293,10 +297,17 @@ mod scoped_pair_composition {
 			.try_init();
 		let source = _aa;
 		let receiver = _ba;
-		let (a, au, aschema) = source.runtime.parts();
+		let (mut a, au, aschema) = source.runtime.parts();
 		let (b, bu, bschema) = receiver.runtime.parts();
 		let owners = vec![source.runtime, receiver.runtime];
 		let aa = source.application;
+		// The Home performs required-Home embeddings with its Tenant's Provider
+		// Credential; its application serves the same reconfigured runtime.
+		let tenant_embedding = tenant_embedding.then(|| {
+			let embedding = tenant_embedding::install(&mut a);
+			aa.context.set_singleton(a.clone());
+			embedding
+		});
 		let ba = receiver.application;
 		let memory_recovery_directories = if native {
 			vec![source_directory, receiver_directory]
@@ -418,6 +429,7 @@ mod scoped_pair_composition {
 				&b.config.node_id,
 				(native, large_native_journal),
 				embedding_provider.await,
+				tenant_embedding.as_ref(),
 			)
 			.await;
 			providers.push(server);
@@ -542,6 +554,7 @@ mod scoped_pair_composition {
 			native,
 			generation,
 			_memory_recovery_directories: memory_recovery_directories,
+			tenant_embedding,
 		}
 	}
 }
@@ -909,6 +922,8 @@ async fn native_remote_fixture(
 	json!({"selection":{"participant":participant["id"],"expected_revision":participant["revision"],"provider":provider},"bank":participant["bank"],"provider":provider,"private":private,"shared":shared})
 }
 
+// Each Home input stays an explicit argument.
+#[allow(clippy::too_many_arguments)]
 async fn configure_semantic(
 	a: &Federation,
 	app: &common::TestApplication,
@@ -917,6 +932,7 @@ async fn configure_semantic(
 	executor: &str,
 	memory_mode: (bool, bool),
 	provider: EmbeddingProvider,
+	tenant: Option<&tenant_embedding::TenantEmbedding>,
 ) -> (
 	SemanticFixture,
 	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
@@ -930,7 +946,14 @@ async fn configure_semantic(
 		server,
 	} = provider;
 	let endpoint = format!("{}/v1", server.url);
-	let embedding = json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"home-vector","model_version":"1","dimensions":3});
+	let embedding = if let Some(tenant) = tenant {
+		// The catalog base URL is fixed; the fake issuer routes calls here.
+		tenant.connect("acme").await;
+		*tenant.endpoint.lock().unwrap() = endpoint.clone();
+		json!({"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"home-vector","model_version":"1","dimensions":3})
+	} else {
+		json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3})
+	};
 	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
@@ -990,6 +1013,60 @@ async fn configure_semantic(
 		},
 		server,
 	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
+	#[with(true, false, false, false, false, (false, false, 32), false, true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// ADR 0006 leaves `provider_credential` as the only keyed embedding shape.
+	// The Home performs required-Home embeddings, so it resolves its own
+	// Tenant's binding as memory-retrieval maintenance; the receiver never
+	// sees the credential, and the same search and disclosure authority applies.
+	let p = scoped_pair;
+	p.step().await;
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+	let requests = p.requests.lock().await;
+	assert_eq!(requests.len(), 1, "{run:?}");
+	let context: Value =
+		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+	let semantic = &context["current"]["semantic_memory"];
+	assert_eq!(semantic["home_node"], p.a.config.node_id, "{context}");
+	let encoded = serde_json::to_string(semantic).unwrap();
+	assert!(encoded.contains("ochre falcon"));
+	assert!(encoded.contains("silver fern"));
+	assert!(!encoded.contains("DO NOT DISCLOSE"));
+	drop(requests);
+	let calls = p.semantic.as_ref().unwrap().requests.lock().await;
+	assert_eq!(calls.len(), 5, "four indexing calls and one search");
+	drop(calls);
+	let mints = p
+		.tenant_embedding
+		.as_ref()
+		.unwrap()
+		.mints
+		.lock()
+		.unwrap()
+		.clone();
+	use aidash_application::provider_access::MaintenancePurpose;
+	let retrieval: Vec<_> = mints
+		.iter()
+		.filter(|(context, _)| context.maintenance == Some(MaintenancePurpose::MemoryRetrieval))
+		.collect();
+	assert_eq!(retrieval.len(), 1, "one Home search embedding: {mints:?}");
+	assert_eq!(retrieval[0].0.tenant, "acme");
+	assert_eq!(retrieval[0].0.run, None);
+	assert!(
+		mints
+			.iter()
+			.all(|(context, id)| context.tenant == "acme" && *id == retrieval[0].1)
+	);
+	p.close().await;
 }
 
 #[rstest::rstest]

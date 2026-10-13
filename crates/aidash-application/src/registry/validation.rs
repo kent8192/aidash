@@ -34,14 +34,8 @@ impl DefinitionValidation {
 		self.provider_credentials_enabled = configured;
 		self
 	}
-	fn provider_source(
-		&self,
-		endpoint: &str,
-		provider: &str,
-		env: Option<&str>,
-		catalog: Option<&str>,
-	) -> Result<()> {
-		aidash_domain::provider_credentials::validate_source(endpoint, provider, env, catalog)?;
+	fn provider_source(&self, endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
+		aidash_domain::provider_credentials::validate_source(endpoint, provider, catalog)?;
 		if catalog.is_some() && !self.provider_credentials_enabled {
 			return Err(Error::Invalid(
 				"Provider Credential Store is not configured".into(),
@@ -130,7 +124,6 @@ impl DefinitionValidation {
 			"embedding" => self.validate_embedding(
 				&serde_json::from_value(e.config.clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?,
-				local,
 			)?,
 			"compactor" => self.validate_compactor(
 				&serde_json::from_value(e.config.clone())
@@ -182,18 +175,7 @@ impl DefinitionValidation {
 						return Err(Error::Invalid("invalid media route evidence".into()));
 					}
 				}
-				self.provider_source(
-					&m.endpoint,
-					&m.provider,
-					m.credential_env.as_deref(),
-					m.provider_credential.as_deref(),
-				)?;
-				if let Some(name) = m.credential_env {
-					validate_secret_reference(&name)?;
-					if local {
-						self.credentials.resolve(&name)?;
-					}
-				}
+				self.provider_source(&m.endpoint, &m.provider, m.provider_credential.as_deref())?;
 			}
 			"agent" => {
 				let input: aidash_domain::registry::bindings::AgentBindings =
@@ -280,7 +262,6 @@ impl DefinitionValidation {
 	pub fn validate_embedding(
 		&self,
 		config: &aidash_domain::semantic::EmbeddingConfig,
-		local: bool,
 	) -> Result<()> {
 		if config.provider_credential.is_some() {
 			aidash_domain::provider_credentials::validate_model_id(&config.model)?;
@@ -288,15 +269,8 @@ impl DefinitionValidation {
 		self.provider_source(
 			&config.endpoint,
 			&config.provider,
-			config.credential_env.as_deref(),
 			config.provider_credential.as_deref(),
 		)?;
-		if let Some(name) = &config.credential_env {
-			validate_secret_reference(name)?;
-			if local {
-				self.credentials.resolve(name)?;
-			}
-		}
 		config.validate_parameters()?;
 		Ok(())
 	}

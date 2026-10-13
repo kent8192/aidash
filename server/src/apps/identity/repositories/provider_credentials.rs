@@ -271,7 +271,6 @@ fn selected_providers(
 			aidash_domain::provider_credentials::validate_source(
 				entry.config["endpoint"].as_str().unwrap_or_default(),
 				entry.config["provider"].as_str().unwrap_or_default(),
-				entry.config["credential_env"].as_str(),
 				Some(provider),
 			)?;
 			providers.insert(provider.to_owned());
@@ -388,9 +387,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
-		use aidash_application::provider_access::{EnvironmentAccess, Source, TenantAccess};
+		use aidash_application::provider_access::{KeylessAccess, Source, TenantAccess};
 		let Source::Tenant { provider } = source else {
-			return crate::bootstrap::environment_provider_access()
+			return crate::bootstrap::keyless_provider_access()
 				.resolve(context, endpoint, source)
 				.await;
 		};
@@ -400,9 +399,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			})?;
 		if context.run.is_none() {
 			return TenantAccess {
-				environment: EnvironmentAccess {
-					credentials: crate::bootstrap::environment_credentials(),
-				},
+				keyless: KeylessAccess,
 				repository: service.repository.clone(),
 				reader: self.store.provider_key_material_reader.clone(),
 				issuer: self.store.capability_issuer.clone(),
@@ -443,9 +440,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			inference: context.inference.clone(),
 		};
 		TenantAccess {
-			environment: EnvironmentAccess {
-				credentials: crate::bootstrap::environment_credentials(),
-			},
+			keyless: KeylessAccess,
 			repository: service.repository.clone(),
 			reader: self.store.provider_key_material_reader.clone(),
 			issuer: self.store.capability_issuer.clone(),
@@ -492,7 +487,6 @@ pub(crate) async fn admit_workspace(
 			aidash_domain::provider_credentials::validate_source(
 				&spec.embedding.endpoint,
 				&spec.embedding.provider,
-				spec.embedding.credential_env.as_deref(),
 				Some(&provider),
 			)?;
 			providers.insert(provider);

@@ -2,11 +2,20 @@ use super::*;
 use axum::{Json, Router, http::HeaderMap, routing::post};
 use rstest::rstest;
 
-struct FixtureCredentials;
-impl aidash_application::ports::Credentials for FixtureCredentials {
-	fn resolve(&self, name: &str) -> Result<String> {
-		assert_eq!(name, "AIDASH_SECRET_OPENROUTER");
-		Ok("fixture-key".into())
+/// A Tenant Provider Credential stand-in: the bearer comes from provider access.
+struct FixtureAccess;
+#[async_trait::async_trait]
+impl aidash_application::provider_access::ProviderAccess for FixtureAccess {
+	async fn resolve(
+		&self,
+		_: &Context,
+		endpoint: &str,
+		_: &aidash_application::provider_access::Source,
+	) -> Result<aidash_application::provider_access::Access> {
+		Ok(aidash_application::provider_access::Access {
+			endpoint: endpoint.into(),
+			bearer: "fixture-key".to_owned().into(),
+		})
 	}
 }
 
@@ -21,7 +30,6 @@ fn configuration(endpoint: String) -> EmbeddingConfig {
 	EmbeddingConfig {
 		provider: "openrouter".into(),
 		endpoint,
-		credential_env: Some("AIDASH_SECRET_OPENROUTER".into()),
 		provider_credential: None,
 		model: "google/gemini-embedding-2".into(),
 		model_version: "1.0.0".into(),
@@ -67,9 +75,7 @@ async fn openrouter_gemini_sends_approved_dimensions_and_bearer_credentials(
 	let mut config = configuration(endpoint);
 	config.dimensions = dimensions;
 	let result = embed(
-		&aidash_application::provider_access::EnvironmentAccess {
-			credentials: Arc::new(FixtureCredentials),
-		},
+		&FixtureAccess,
 		&Context::default(),
 		&client().unwrap(),
 		&config,
@@ -106,9 +112,7 @@ async fn openrouter_withholds_output_that_violates_the_approved_contract(#[case]
 	config.dimensions = 1;
 	assert!(matches!(
 		embed(
-			&aidash_application::provider_access::EnvironmentAccess {
-				credentials: Arc::new(FixtureCredentials)
-			},
+			&aidash_application::provider_access::KeylessAccess,
 			&Context::default(),
 			&client().unwrap(),
 			&config,

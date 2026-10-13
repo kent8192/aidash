@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn index_spec() -> Value {
-	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","credential_env":null,"model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
+	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
 }
 
 #[rstest]
@@ -127,7 +127,13 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			json!("http://999.999.999.999/vectors"),
 			400,
 		),
-		("/embedding/credential_env", json!("OPENAI_API_KEY"), 400),
+		// ADR 0006: embeddings cannot name an environment key at all, so the
+		// field is rejected while decoding, before validation.
+		(
+			"/embedding/credential_env",
+			json!("AIDASH_SECRET_EMBEDDING"),
+			422,
+		),
 		("/embedding/model", json!(" \t\u{2003}"), 400),
 		("/embedding/model", json!("m".repeat(257)), 400),
 		("/embedding/model_version", json!("v".repeat(129)), 400),

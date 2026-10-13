@@ -563,6 +563,34 @@ def render():
                 headers={"Cookie": "aidash-login=tampered"},
             )
             continue
+        if path == "/auth/provider-authorizations/{provider}/callback":
+            # Unbound or unknown states fail before any provider exchange.
+            uri = path.replace("{provider}", "openrouter")
+            add(
+                endpoint,
+                "Callback without a browser binding is rejected",
+                401,
+                path=uri + "?state=invalid&code=invalid",
+            )
+            add(
+                endpoint,
+                "Tampered browser binding cannot complete an authorization",
+                401,
+                path=uri + "?state=invalid&code=invalid",
+                headers={
+                    "Cookie": "aidash-provider-authorization=tampered; __Host-aidash-provider-authorization=tampered"
+                },
+            )
+            add(
+                endpoint,
+                "Callback without state is rejected",
+                401,
+                path=uri + "?code=invalid",
+                headers={
+                    "Cookie": "aidash-provider-authorization=tampered; __Host-aidash-provider-authorization=tampered"
+                },
+            )
+            continue
         if path == "/auth/gcip/transaction":
             add(endpoint, "Transaction requires its state query", 400)
             add(
@@ -722,6 +750,27 @@ def render():
             elif route["query_parameters"]:
                 add(endpoint, "Credential paging rejects nonnumeric offsets", 400,
                     path=uri + "?offset=invalid", headers=OPERATOR)
+            continue
+        if route["source"] == "server/src/apps/identity/views/provider_authorizations.rs":
+            # Provider Authorization binds a browser session; bearer callers
+            # never start one, and Key Material is not an accepted field.
+            uri = path.replace("{provider}", "openrouter")
+            add(endpoint, "Forged bearer cannot start Provider Authorization", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body="{}")
+            for label, headers in [
+                ("Operator bearer has no browser session to bind", OPERATOR),
+                ("Subject bearer has no browser session to bind", SUBJECT),
+            ]:
+                add(endpoint, label, 403, path=uri, headers=headers, body="{}",
+                    checks='expect(res.getHeader("set-cookie") || "").not.to.include("provider-authorization");',
+                    immutable=True)
+            add(endpoint, "Wrong JSON media type is rejected", 415,
+                path=uri, headers=OPERATOR, body="{}", media="text/plain", immutable=True)
+            add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                path=uri, headers=OPERATOR, body="{", immutable=True)
+            add(endpoint, "Pasted Key Material is not an accepted field", 422,
+                path=uri, headers=OPERATOR, body=json.dumps({"key_material": "sk-or-v1-pasted"}),
+                immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
             # Only a browser Mapping context can be a Tenant Administrator.

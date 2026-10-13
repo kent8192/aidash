@@ -24,7 +24,7 @@ struct BindingScope {
 }
 impl BindingScope {
 	fn new() -> Self {
-		let embedding = json!({"provider":"openai","endpoint":"https://embedding.invalid","credential_env":"EMBEDDING","model":"embed","model_version":"1","dimensions":3});
+		let embedding = json!({"provider":"openai","endpoint":"https://embedding.invalid","model":"embed","model_version":"1","dimensions":3});
 		let spec:IndexingSpec=serde_json::from_value(json!({"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":100,"max_results":4,"max_result_tokens":1024,"max_input_bytes":32768})).unwrap();
 		let mut entry = entry("embedding");
 		entry.config = embedding;
@@ -650,18 +650,21 @@ fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] 
 }
 
 #[rstest]
-#[case::environment(false)]
+#[case::keyless(false)]
 #[case::tenant(true)]
 #[tokio::test]
-async fn remote_home_binding_rejects_tenant_embedding_before_provider_or_dispatch_authority(
+async fn remote_home_binding_accepts_keyless_and_tenant_embeddings_under_the_same_authority(
 	#[case] tenant_source: bool,
 ) {
+	// ADR 0006 leaves no environment source: a Tenant Provider Credential is
+	// the only keyed shape, and the Home resolves it through its own binding.
 	let mut scope = BindingScope::new();
 	scope.spec.embedding = serde_json::from_value(json!({
 		"provider":"openrouter", "endpoint":"https://openrouter.ai/api/v1",
-		"credential_env":null, "provider_credential":if tenant_source { Some("openrouter") } else { None },
+		"provider_credential":if tenant_source { Some("openrouter") } else { None },
 		"model":"embed", "model_version":"1", "dimensions":3
-	})).unwrap();
+	}))
+	.unwrap();
 	scope.entry.config = serde_json::to_value(&scope.spec.embedding).unwrap();
 	scope.index.spec = serde_json::to_value(&scope.spec).unwrap();
 	let result = use_case::binding(
@@ -672,14 +675,6 @@ async fn remote_home_binding_rejects_tenant_embedding_before_provider_or_dispatc
 		&request(),
 	)
 	.await;
-	if tenant_source {
-		assert!(matches!(
-			result,
-			Err(Error::RemoteSemantic(Failure::Configuration))
-		));
-		assert_eq!(scope.reads, vec!["index"]);
-	} else {
-		assert!(matches!(result.unwrap(), Binding::RequiredHome { .. }));
-		assert_eq!(scope.reads, vec!["index", "entry", "lineage"]);
-	}
+	assert!(matches!(result.unwrap(), Binding::RequiredHome { .. }));
+	assert_eq!(scope.reads, vec!["index", "entry", "lineage"]);
 }

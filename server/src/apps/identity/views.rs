@@ -15,6 +15,8 @@ pub mod dependencies;
 
 pub mod sessions;
 
+pub mod provider_authorizations;
+
 pub mod management;
 
 pub mod graph;
