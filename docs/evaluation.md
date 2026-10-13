@@ -64,8 +64,10 @@ error or Ctrl-C, with the failure in its `error` field. Server logs stay in
 Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
 `--binary PATH` reuses a built `manage`, `--run-timeout SECONDS` (default 180,
 positive and finite in both tiers) bounds each Run, `--skip-memory` reports
-every memory scenario as `not-run`, and `--skip-rust-evidence` skips the
-`deterministic-test` memory scenario's `cargo test`. The output path is
+every memory scenario as `not-run`, `--skip-rust-evidence` skips the
+`deterministic-test` memory scenario's `cargo test`, and `--evidence-timeout
+SECONDS` (default 1800) bounds that command; a timed-out command is killed
+with its process group and the scenario is recorded as `error`. The output path is
 reserved before setup; when container startup, migration or the health wait
 fails, the manifest is still written with the error, so a retry with the same
 `--output` is refused only when a real record exists. Ctrl-C cancels the
@@ -115,14 +117,17 @@ python3 scripts/evaluate-fixed-tasks.py live \
 `--server-revision` is required and must be 7 to 64 lowercase hexadecimal
 characters (a git commit or a SHA-256): a live manifest has no local build, so
 this is the only identification of the tested source. Every `--task` and
-`--comparison` must name a corpus entry and select at least one runnable pair;
-a misspelled or inapplicable selector is refused rather than silently ignored.
+`--comparison` must name a corpus entry and select at least one runnable pair,
+also after pairs whose corpus model has no `--model` mapping are dropped; a
+misspelled, inapplicable or unmapped selector is refused rather than silently
+ignored.
 
 Before it registers anything or starts a Run, the live tier refuses unless:
 
 - `--base-url` is `https://`; plain `http://` is accepted only for a loopback
   Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are sent
-  with every request;
+  with every request. Redirects are never followed: urllib would resend the
+  bearer token to the new location, so a 30x response is a failed request;
 - both bearer tokens are set (operator for Registry writes, Tenant subject for
   Tasks); neither is copied into the manifest;
 - the named Provider Credential exists, is `active`, and is the credential the
@@ -228,7 +233,9 @@ code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an error and 3 for a ceiling
 refusal.
 
 Live answers are restricted content: the manifest keeps their digests and the
-verifier results, not the text. Fixture tools point at an unroutable endpoint
+verifier results, not the text. Tool-call arguments and every value a verifier
+check observed are kept only as `arguments_sha256` and `observed_sha256`,
+because a model can copy task data into them. Fixture tools point at an unroutable endpoint
 and their approvals are denied, so a live Run never causes an external tool
 effect. Usage Records have no HTTP read endpoint, so live token counts come from
 Workspace events (at most the latest 100) and do not price anything. The live
@@ -252,7 +259,9 @@ references. The memory corpus has its own SHA-256. Changing a task, an input,
 an oracle or the evaluator (`evaluator.sha256` covers the four scripts and the
 two manifest schemas) changes the manifest's identity, and direct comparisons
 with earlier manifests are no longer valid. Each invocation reads the corpus
-files once: Task text and oracles use exactly the bytes that were hashed.
+files once: Task text and oracles use exactly the bytes that were hashed. Both
+tiers pin the evaluator identity, and the schemas validation uses, when they
+start, so editing an evaluator file during a run changes neither.
 
 ### Tasks
 
@@ -335,9 +344,16 @@ task, comparison, arm and repeat; the recorded and skipped Runs are exactly the
 planned keys (variants × repeats), with nothing dropped or added; every group
 of Runs has exactly one aggregate whose outcome counts match its Runs; every
 aggregate's label, rates and metrics, every paired comparison and the memory
-matrix summary equal what the recorded Runs and scenarios produce; no number
-is NaN or infinite, although Python's `json` module accepts them; and the
-spend totals equal the sum of the attempts' charges and their unsettled count.
+matrix summary equal what the recorded Runs and scenarios produce; each Run's
+outcome, `long_context`, `tool_selection` and `constraint_retention` follow
+from its phase, oracle and error (`interrupted` and `infrastructure_failure`
+may follow any phase), and its oracle result agrees with its checks; a
+`passed` or `partial` memory scenario has only passing checks and variants,
+and a `failed` one has a failing check; no number is NaN or infinite,
+although Python's `json` module accepts them; and the spend totals equal the
+sum of the attempts' charges and their unsettled count, stay within the
+ceiling the experiment declares, and include exactly one attempt per recorded
+Run.
 A manifest that fails validation is still written, annotated in
 its `error` field, because it may be the only record of paid work.
 
@@ -383,7 +399,9 @@ outcome count and rate with its denominator (including
 `claimed_success_without_oracle_pass`, `constraint_retention`,
 `tool_selection_correct` and each long-context class), and
 min/median/max/total distributions of the metrics. `comparisons[]` pairs the
-arms, lists per-repeat outcome changes and the median deltas.
+arms, lists per-repeat outcome changes and the median deltas. Arms are
+`comparable` only when both recorded exactly the same repeats; otherwise every
+median delta is `null`.
 
 ## Memory matrix
 

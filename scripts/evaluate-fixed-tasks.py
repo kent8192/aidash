@@ -116,14 +116,24 @@ def require_https(base_url):
                                   f"{base_url!r}; the operator and Tenant subject tokens would travel unencrypted")
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: urllib would resend the bearer token to the new location, which
+    require_https never checked. The 30x response is returned to the caller as a failure."""
+
+    def redirect_request(self, *_):
+        return None
+
+
 def http_transport(base):
+    opener = urllib.request.build_opener(NoRedirect)
+
     def call(method, path, body, token, timeout):
         request = urllib.request.Request(base.rstrip("/") + path, method=method,
                                          data=None if body is None else json.dumps(body).encode(),
                                          headers={"Authorization": f"Bearer {token}",
                                                   "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with opener.open(request, timeout=timeout) as response:
                 raw = response.read()
                 return response.status, json.loads(raw) if raw else None
         except urllib.error.HTTPError as error:
@@ -242,7 +252,8 @@ def usage_reader_for(postgres, database, password, query):
     return read
 
 
-def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs, fixture_url, skip_rust):
+def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs, fixture_url, skip_rust,
+                                evidence_timeout):
     """Execute deterministic memory scenarios once per memory variant, each in an isolated bank."""
     executed = {}
     api_scenarios = [item for item in memory_corpus["scenarios"] if item["evidence"] == "deterministic-api"]
@@ -302,22 +313,39 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
     for scenario in memory_corpus["scenarios"]:
         if scenario["evidence"] != "deterministic-test" or skip_rust:
             continue
-        completed = subprocess.run(scenario["command"], cwd=ROOT, capture_output=True, text=True,
-                                   env={**os.environ, "RUSTC_WRAPPER": ""})
-        tail = (completed.stdout + completed.stderr).strip().splitlines()[-2:]
-        executed[scenario["id"]] = {"status": "passed" if completed.returncode == 0 else "failed", "variants": [],
-                                    "checks": [{"check": "command", "passed": completed.returncode == 0,
-                                                "command": " ".join(scenario["command"]), "tail": tail}],
-                                    "detail": None}
+        executed[scenario["id"]] = evidence_command(scenario["command"], evidence_timeout)
     return executed
 
 
+def evidence_command(command, timeout):
+    """Run a deterministic-test scenario's command, bounded by `timeout` seconds.
+
+    The command runs in its own process group, so a timeout kills Cargo and the
+    test binaries it started; a timed-out command is an `error`, never passing.
+    """
+    process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               env={**os.environ, "RUSTC_WRAPPER": ""}, start_new_session=True)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        detail = f"timed out after {timeout}s"
+        return {"status": "error", "variants": [], "detail": detail,
+                "checks": [{"check": "command", "passed": False, "command": " ".join(command), "tail": [detail]}]}
+    passed = process.returncode == 0
+    return {"status": "passed" if passed else "failed", "variants": [], "detail": None,
+            "checks": [{"check": "command", "passed": passed, "command": " ".join(command),
+                        "tail": output.strip().splitlines()[-2:]}]}
+
+
 def experiment_manifest(tier, corpus, memory_corpus, source, model, harness, variants, repeats, limits, limitations,
-                        created_at=None):
+                        *, evaluator, created_at=None):
+    """`evaluator` is the identity pinned by evaluation.pin_evaluator() before the experiment began."""
     return {"schema_version": 1, "experiment_id": "fte-" + secrets.token_hex(6), "tier": tier,
             "created_at": created_at or timestamp(utc_now()),
             "aidash": source, "corpus": corpus["_snapshot"], "memory_corpus": memory_corpus["_snapshot"],
-            "evaluator": evaluation.evaluator_identity(), "model": model, "harness": harness, "variants": variants,
+            "evaluator": evaluator, "model": model, "harness": harness, "variants": variants,
             "repeat_count": repeats, "limits": limits, "reproducibility_limitations": limitations}
 
 
@@ -388,6 +416,7 @@ def unavailable_arms_error(registration_errors):
 
 
 def deterministic(args):
+    evaluator = evaluation.pin_evaluator()
     corpus = evaluation.load_corpus(args.corpus)
     memory_corpus = evaluation.load_memory_corpus(args.memory_corpus)
     for index, task in enumerate(corpus["tasks"]):
@@ -524,7 +553,7 @@ def deterministic(args):
             if not args.skip_memory:
                 print("evaluation: Runs finished; executing memory scenarios", flush=True)
                 executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs,
-                                                       fixture_url, args.skip_rust_evidence)
+                                                       fixture_url, args.skip_rust_evidence, args.evidence_timeout)
                 memory = evaluation.memory_matrix(memory_corpus, executed)
     except (Exception, KeyboardInterrupt) as failure:
         error = (error + "; " if error else "") + f"{type(failure).__name__}: {failure}"
@@ -543,7 +572,7 @@ def deterministic(args):
     if error is None and len(runs) != len(variants) * args.repeats:
         error = "not every planned Run was recorded"
     experiment_value = experiment_manifest("deterministic", corpus, memory_corpus, source, model, harness, variants,
-                                           args.repeats, limits, DETERMINISTIC_LIMITATIONS)
+                                           args.repeats, limits, DETERMINISTIC_LIMITATIONS, evaluator=evaluator)
     result = assemble(corpus, experiment_value, runs, availability, memory, True, None,
                       DETERMINISTIC_LIMITATIONS, error)
     invalid = finalize(result, reservation)
@@ -569,6 +598,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     After the guard rails pass, the manifest is always written, including after
     an error or an interrupt: it may be the only record of paid work.
     """
+    evaluator = evaluation.pin_evaluator()
     corpus = evaluation.load_corpus(args.corpus)
     memory_corpus = evaluation.load_memory_corpus(args.memory_corpus)
     for index, task in enumerate(corpus["tasks"]):
@@ -611,10 +641,17 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                                        models, args.max_spend_nanocredits, args.max_wall_seconds,
                                                        wall_now())
     evaluation.check_live_models(models)
-    planned_runs = [planned for planned in evaluation.plan(corpus, args.task, args.comparison)
-                    if planned["model"] in mapping]
+    selected = evaluation.plan(corpus, args.task, args.comparison)
+    planned_runs = [planned for planned in selected if planned["model"] in mapping]
     if not planned_runs:
         raise evaluation.GuardRefusal("no planned Run uses a mapped model")
+    # Every explicit selector must still contribute a runnable pair once unmapped models are dropped.
+    uncovered = sorted(set(args.task or []) - {p["task"]["id"] for p in planned_runs}) + sorted(
+        set(args.comparison or []) - {p["comparison"]["id"] for p in planned_runs})
+    if uncovered:
+        unmapped = sorted({p["model"] for p in selected if p["model"] not in mapping})
+        raise evaluation.GuardRefusal(f"selectors {uncovered} match only pairs whose corpus models {unmapped} have no "
+                                      "--model mapping; map them or drop the selectors")
     if any(p["task"]["oracle"]["kind"] == "python-tests" for p in planned_runs):
         raise evaluation.GuardRefusal(
             "python-tests oracles run model-written code and are refused in the live tier: stripping the "
@@ -697,7 +734,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
               "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
               "spend_ceiling_nanocredits": args.max_spend_nanocredits}
     experiment_value = experiment_manifest("live", corpus, memory_corpus, source, model, harness, variants,
-                                           args.repeats, limits, LIVE_LIMITATIONS, created_at)
+                                           args.repeats, limits, LIVE_LIMITATIONS, evaluator=evaluator,
+                                           created_at=created_at)
     availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
     memory = evaluation.memory_matrix(memory_corpus, {})
     result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
@@ -756,6 +794,9 @@ def main(argv=None):
                                        help="report every memory scenario as not-run (for narrowed task runs)")
     deterministic_command.add_argument("--skip-rust-evidence", action="store_true",
                                        help="do not run deterministic-test memory scenarios")
+    deterministic_command.add_argument("--evidence-timeout", type=float, default=1800.0,
+                                       help="seconds each deterministic-test memory scenario command may take "
+                                            "(default 1800); a timed-out command is recorded as an error")
     live_command = commands.choices["live"]
     live_command.add_argument("--base-url", required=True)
     live_command.add_argument("--tenant", required=True)
@@ -783,6 +824,8 @@ def main(argv=None):
     # NaN would make every deadline comparison false, so a Run could poll past every limit.
     if not math.isfinite(args.run_timeout) or args.run_timeout <= 0:
         parser.error("--run-timeout must be a positive, finite number of seconds")
+    if args.command == "deterministic" and (not math.isfinite(args.evidence_timeout) or args.evidence_timeout <= 0):
+        parser.error("--evidence-timeout must be a positive, finite number of seconds")
     try:
         if args.command == "deterministic":
             signal.signal(signal.SIGTERM, terminate)

@@ -6,6 +6,7 @@ through an in-memory fake of the HTTP API.
 import argparse
 import contextlib
 import datetime
+import http.server
 import importlib.util
 import io
 import json
@@ -303,7 +304,7 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(metrics["estimated_tokens"], 42)
 
 
-def full_result(value, runs_override=None):
+def full_result(value, runs_override=None, ceiling=None):
     planned_runs = evaluation.plan(value, ["code-change-hidden-regression"], ["projection"])
     runs = []
     for repeat in (1, 2):
@@ -324,7 +325,8 @@ def full_result(value, runs_override=None):
          "mutable_alias": False},
         {"compaction": "x", "cache_salt": True, "provider_credential": None, "disclosure_approval": None,
          "jev_classifier": "fixture"}, variants, 2,
-        {"run_timeout_seconds": 1, "wall_seconds": 1, "max_output_tokens": 1, "spend_ceiling_nanocredits": None}, [])
+        {"run_timeout_seconds": 1, "wall_seconds": 1, "max_output_tokens": 1, "spend_ceiling_nanocredits": ceiling},
+        [], evaluator=evaluation.evaluator_identity())
     return cli.assemble(value, experiment, runs, evaluation.feature_availability(value),
                         evaluation.memory_matrix(memory_corpus, {}), True, None, [], None)
 
@@ -1069,6 +1071,61 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(len(result["skipped_runs"]), 1)
         self.assertIn("approval attests", result["experiment"]["harness"]["jev_classifier"])
 
+    def test_selectors_left_without_a_mapped_pair_are_refused(self):
+        value = corpus()
+        approval = self.approval(value, max_spend_nanocredits=1_000_000_000)
+        call, registered = self.live_node()
+        args = self.args()
+        # prompt-cache runs on the explicit-cache corpus model, which has no --model mapping.
+        args.comparison = ["projection", "prompt-cache"]
+        with mock.patch.dict(os.environ, self.ENV), \
+                self.assertRaisesRegex(evaluation.GuardRefusal, r"\['prompt-cache'\].*explicit-cache"):
+            cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
+        self.assertEqual(registered, [])
+
+    def test_the_evaluator_identity_is_pinned_before_any_work(self):
+        pinned = {"name": evaluation.EVALUATOR_NAME, "version": evaluation.EVALUATOR_VERSION, "sha256": "f" * 64}
+        call, _ = self.live_node()
+        with mock.patch.object(evaluation, "pin_evaluator", return_value=pinned) as pin, \
+                mock.patch.object(evaluation, "evaluator_identity", side_effect=AssertionError("read late")):
+            _, result = self.run_live(call)
+        pin.assert_called_once_with()
+        self.assertEqual(result["experiment"]["evaluator"], pinned)
+
+    def test_redirects_never_carry_the_bearer_token(self):
+        seen = []
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *_):
+                pass
+
+        target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+
+        class Redirect(Target):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{target.server_port}/stolen")
+                self.end_headers()
+
+        origin = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+        for server in (target, origin):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            status, _ = cli.http_transport(f"http://127.0.0.1:{origin.server_port}")("GET", "/api/state", None,
+                                                                                      "secret-token", 5)
+        finally:
+            for server in (target, origin):
+                server.shutdown()
+                server.server_close()
+        self.assertEqual(status, 302)
+        self.assertEqual(seen, [], "the redirect target must never receive a request")
+
     def test_run_timeout_must_be_positive_and_finite(self):
         live = ["live", "--base-url", "https://node.invalid", "--tenant", "acme", "--server-revision", "0123abc"]
         for value in ("nan", "inf", "0", "-5"):
@@ -1247,24 +1304,35 @@ class HardeningTest(unittest.TestCase):
 
     def test_spend_totals_are_reconciled_with_their_attempts(self):
         value = corpus()
-        key = full_result(value)["runs"][0]["key"]
-        attempt = {"key": key, "reserved": 10, "charged": 10, "reported": None, "state": "uncertain"}
-        cases = (({"committed_nanocredits": 0, "uncertain_attempts": 1, "attempts": [attempt]}, "committed"),
-                 ({"committed_nanocredits": 10, "uncertain_attempts": 0, "attempts": [attempt]}, "uncertain"),
-                 ({"committed_nanocredits": 0, "uncertain_attempts": 0, "attempts": [{}]}, "missing key"),
-                 ({"committed_nanocredits": 3, "uncertain_attempts": 1,
-                   "attempts": [dict(attempt, charged=3)]}, "inconsistently"),
-                 ({"committed_nanocredits": 10, "uncertain_attempts": 1,
-                   "attempts": [dict(attempt, key="other/projection/baseline/1")]}, "not recorded"))
-        for spend, pattern in cases:
+        keys = [run["key"] for run in full_result(value)["runs"]]
+        attempts = [{"key": key, "reserved": 10, "charged": 10, "reported": None, "state": "uncertain"}
+                    for key in keys]
+
+        def spend(items, committed=None, uncertain=None, ceiling=100):
+            return {"ceiling_nanocredits": ceiling, "refusal": None, "attempts": items,
+                    "committed_nanocredits": sum(item.get("charged", 0) for item in items) if committed is None
+                    else committed,
+                    "uncertain_attempts": len(items) if uncertain is None else uncertain}
+        cases = ((spend(attempts, committed=0), 100, "committed"),
+                 (spend(attempts, uncertain=0), 100, "uncertain"),
+                 (spend(attempts + [{}]), 100, "missing key"),
+                 (spend([dict(attempts[0], charged=3)] + attempts[1:]), 100, "inconsistently"),
+                 (spend(attempts + [dict(attempts[0], key="other/projection/baseline/1")]), 100, "not recorded"),
+                 # Paid work cannot disappear from the spend evidence, nor be counted twice.
+                 (spend(attempts[1:]), 100, "has no spend attempt"),
+                 (spend([], committed=0), 100, "has no spend attempt"),
+                 (spend(attempts + attempts[:1]), 100, "more than one spend attempt"),
+                 # The committed total stays under the hard ceiling the experiment declares.
+                 (spend(attempts, ceiling=30), 30, "exceeds the hard spend ceiling"),
+                 (spend(attempts, ceiling=100), 200, "differs from the experiment's spend ceiling"))
+        for recorded, declared, pattern in cases:
             with self.subTest(pattern):
-                result = full_result(value)
-                result["spend"] = {"ceiling_nanocredits": 100, "refusal": None, **spend}
+                result = full_result(value, ceiling=declared)
+                result["spend"] = recorded
                 with self.assertRaisesRegex(evaluation.CorpusError, pattern):
                     evaluation.validate_result(result)
-        result = full_result(value)
-        result["spend"] = {"ceiling_nanocredits": 100, "refusal": None, "committed_nanocredits": 10,
-                           "uncertain_attempts": 1, "attempts": [attempt]}
+        result = full_result(value, ceiling=100)
+        result["spend"] = spend(attempts)
         evaluation.validate_result(result)
 
     def test_non_object_json_answers_are_graded_as_malformed(self):
@@ -1398,6 +1466,124 @@ class HardeningTest(unittest.TestCase):
             self.assertEqual(evaluation.task_description(value, item), before)
             truth = evaluation.overdue_truth(value["_files"]["snapshots/invoices/invoices.csv"], "2026-10-10")
             self.assertIn("Aster Labs", truth)
+
+    def test_live_tool_arguments_and_observed_values_are_kept_as_digests(self):
+        value = corpus()
+        item = task(value, "deferred-tool-selection")
+        arguments = {"invoice_number": "INV-2026-0105", "note": "copied restricted text"}
+        planned = {"task": item, "comparison": {"id": "exposure"}, "arm": "baseline", "label": "legacy",
+                   "agent_fields": {}}
+        item_expected = dict(item, expected_arguments=arguments)
+        calls = [{"name": "invoice_lookup", "arguments": arguments, "error": None, "dispatch_rejected": False,
+                  "loaded": None}]
+        observed = observation(final_answer="It is unpaid.", tool_calls=calls)
+        live = evaluation.run_result(value, dict(planned, task=item_expected), 1, observed, "live", False)
+        self.assertEqual(live["outcome"], "success", "grading still sees the raw arguments")
+        self.assertEqual(live["tool_calls"][0]["arguments_sha256"], evaluation.canonical_sha256(arguments))
+        self.assertNotIn("arguments", live["tool_calls"][0])
+        check = next(check for check in live["oracle"]["checks"] if check["check"] == "arguments")
+        self.assertNotIn("observed", check)
+        self.assertEqual(live["evidence"]["verifier"], live["oracle"]["checks"])
+        self.assertEqual(evaluation.classification_errors(live), [])
+        fixture = evaluation.run_result(value, dict(planned, task=item_expected), 1, observed, "deterministic", True)
+        self.assertEqual(fixture["tool_calls"][0]["arguments"], arguments, "fixture traces keep their arguments")
+
+    def test_arms_are_comparable_only_with_the_same_repeats(self):
+        value = corpus()
+        planned = evaluation.plan(value, ["structured-data-overdue-totals"], ["projection"])
+        answer = observation(final_answer="Done.")
+        for repeats, comparable in (((1,), (2,)), False), (((1,), (1,)), True), (((1, 2), (1,)), False):
+            base, candidate = repeats
+            with self.subTest(repeats=repeats):
+                runs = [evaluation.run_result(value, planned[0], repeat, answer, "deterministic", True)
+                        for repeat in base]
+                runs += [evaluation.run_result(value, planned[1], repeat, answer, "deterministic", True)
+                         for repeat in candidate]
+                row, = evaluation.compare({"projection": "#116"}, evaluation.aggregate(runs), runs)
+                self.assertIs(row["comparable"], comparable)
+                if not comparable:
+                    self.assertTrue(all(delta is None for delta in row["median_deltas"].values()))
+
+    def test_a_run_outcome_must_follow_from_its_evidence(self):
+        value = corpus()
+
+        def tampered(change):
+            result = full_result(value)
+            change(result["runs"])
+            result["aggregates"] = evaluation.aggregate(result["runs"])
+            result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
+            return result
+        cases = {
+            "success without a passing oracle": (lambda runs: runs[0].update(outcome="success"), "do not produce"),
+            "passing oracle with failing checks": (lambda runs: runs[0]["oracle"].update(passed=True),
+                                                   "missing or failing check"),
+            "overflow without an overflow error": (lambda runs: runs[2].update(outcome="overflow_failure",
+                                                                               long_context="terminal_overflow"),
+                                                   "do not produce"),
+            "pruning without compactions": (lambda runs: runs[2].update(long_context="pruning"), "compactions"),
+            "edited verifier": (lambda runs: runs[0]["evidence"].update(verifier=[]), "verifier"),
+        }
+        for label, (change, pattern) in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(evaluation.CorpusError, pattern):
+                evaluation.validate_result(tampered(change))
+        # The evaluator may stop or lose a Run at any phase.
+        evaluation.validate_result(tampered(lambda runs: runs[2].update(outcome="interrupted")))
+
+    def test_a_memory_scenario_status_must_agree_with_its_checks(self):
+        value = corpus()
+        cases = {
+            "passed with a failing check": ({"status": "passed", "checks": [{"check": "a", "passed": False}]},
+                                            "did not pass"),
+            "passed with a variant error": ({"status": "passed", "checks": [{"check": "a", "passed": True}],
+                                             "variants": [{"variant": "v", "error": "boom"}]}, "did not pass"),
+            "passed without checks": ({"status": "passed"}, "did not pass"),
+            "failed with every check passing": ({"status": "failed", "checks": [{"check": "a", "passed": True}]},
+                                                "is failed without a failing check"),
+        }
+        for label, (change, pattern) in cases.items():
+            with self.subTest(label):
+                result = full_result(value)
+                scenario = next(item for item in result["memory_matrix"]["scenarios"] if item["status"] == "not-run")
+                scenario.update(change)
+                summary = {}
+                for item in result["memory_matrix"]["scenarios"]:
+                    summary[item["status"]] = summary.get(item["status"], 0) + 1
+                result["memory_matrix"]["summary"] = summary
+                with self.assertRaisesRegex(evaluation.CorpusError, pattern):
+                    evaluation.validate_result(result)
+
+    def test_pinned_schemas_decide_validation_after_the_files_change(self):
+        result = full_result(corpus())
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(evaluation.PINNED_SCHEMAS, clear=True):
+            root = Path(directory)
+            for name in evaluation.EVALUATOR_FILES:
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(evaluation.ROOT / name, root / name)
+            with mock.patch.object(evaluation, "ROOT", root), \
+                    mock.patch.object(evaluation, "EVALUATION", root / "tests/evaluation"):
+                identity = evaluation.pin_evaluator()
+                (root / "tests/evaluation/schema/result.schema.json").write_text('{"type": "string"}')
+                self.assertNotEqual(evaluation.evaluator_identity()["sha256"], identity["sha256"])
+                # The edited schema would reject the manifest; the pinned one still decides.
+                evaluation.validate_result(result)
+            self.assertTrue(evaluation.validate(result, json.loads(
+                (root / "tests/evaluation/schema/result.schema.json").read_text())))
+
+
+class EvidenceCommandTest(unittest.TestCase):
+    def test_a_hung_evidence_command_is_an_error_not_a_hang(self):
+        # The command starts a grandchild that holds the output pipe, as `cargo test` does.
+        hang = [sys.executable, "-c", "import subprocess, sys, time; "
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"]
+        entry = cli.evidence_command(hang, 0.5)
+        self.assertEqual(entry["status"], "error")
+        self.assertEqual(entry["checks"][0]["passed"], False)
+        self.assertIn("timed out", entry["detail"])
+        self.assertEqual(evaluation.memory_status_errors(dict(entry, id="x", evidence="deterministic-test")), [])
+        passed = cli.evidence_command([sys.executable, "-c", "print('ok')"], 30)
+        self.assertEqual((passed["status"], passed["checks"][0]["tail"]), ("passed", ["ok"]))
+        failed = cli.evidence_command([sys.executable, "-c", "raise SystemExit(3)"], 30)
+        self.assertEqual(failed["status"], "failed")
 
 
 class DeterministicTest(unittest.TestCase):

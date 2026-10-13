@@ -112,9 +112,30 @@ def snapshot(version, base, files, contents=None):
     return {"version": version, "sha256": combined, "files": digests}
 
 
-def evaluator_identity():
-    digest = snapshot(EVALUATOR_VERSION, ROOT, [name for name in EVALUATOR_FILES if (ROOT / name).exists()])
+def evaluator_identity(contents=None):
+    """The evaluator digest; `contents`, when given, receives the bytes that were hashed (see `snapshot`)."""
+    digest = snapshot(EVALUATOR_VERSION, ROOT, [name for name in EVALUATOR_FILES if (ROOT / name).exists()],
+                      contents)
     return {"name": EVALUATOR_NAME, "version": EVALUATOR_VERSION, "sha256": digest["sha256"]}
+
+
+# Manifest schemas read by pin_evaluator(); while set, validation uses them instead of the files.
+PINNED_SCHEMAS = {}
+
+
+def pin_evaluator():
+    """Snapshot the evaluator once, before an experiment does any work, and return its identity.
+
+    The manifest records this identity, and validation uses the schemas from
+    the same bytes, so an evaluator file edited during a long run can neither
+    rename the evaluator that produced the results nor change which evidence
+    is accepted.
+    """
+    contents = {}
+    identity = evaluator_identity(contents)
+    for name in ("experiment.schema.json", "result.schema.json"):
+        PINNED_SCHEMAS[name] = json.loads(contents[f"tests/evaluation/schema/{name}"])
+    return identity
 
 
 def source_identity(binary=None, server_revision=None, root=ROOT):
@@ -139,6 +160,8 @@ def source_identity(binary=None, server_revision=None, root=ROOT):
 
 
 def load_schema(name):
+    if name in PINNED_SCHEMAS:
+        return PINNED_SCHEMAS[name]
     return json.loads((EVALUATION / "schema" / name).read_text())
 
 
@@ -262,6 +285,7 @@ def consistency_errors(result):
     for run in runs:
         if run["key"] != run_key(run["task"], run["comparison"], run["arm"], run["repeat"]):
             errors.append(f"$.runs: key {run['key']} does not name its task, comparison, arm and repeat")
+        errors += [f"$.runs: {run['key']} {problem}" for problem in classification_errors(run)]
     # Every planned (task, comparison, arm, repeat) is recorded or skipped, and nothing else is.
     planned = {run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
                for variant in experiment["variants"] for repeat in range(1, experiment["repeat_count"] + 1)}
@@ -325,6 +349,8 @@ def consistency_errors(result):
     counted = {}
     for scenario in memory["scenarios"]:
         counted[scenario["status"]] = counted.get(scenario["status"], 0) + 1
+        errors += [f"$.memory_matrix: scenario {scenario['id']} {problem}"
+                   for problem in memory_status_errors(scenario)]
     if not json_equal(memory["summary"], counted):
         errors.append("$.memory_matrix.summary does not count its scenarios")
     spend = result.get("spend")
@@ -334,6 +360,10 @@ def consistency_errors(result):
             errors.append("$.spend.committed_nanocredits differs from the sum of the attempts' charges")
         if spend["uncertain_attempts"] != sum(attempt["state"] != "settled" for attempt in attempts):
             errors.append("$.spend.uncertain_attempts differs from the attempts that were not settled")
+        if spend["ceiling_nanocredits"] != experiment["limits"]["spend_ceiling_nanocredits"]:
+            errors.append("$.spend.ceiling_nanocredits differs from the experiment's spend ceiling")
+        if spend["committed_nanocredits"] > spend["ceiling_nanocredits"]:
+            errors.append("$.spend.committed_nanocredits exceeds the hard spend ceiling")
         for attempt in attempts:
             if attempt["state"] == "settled":
                 consistent = attempt["reported"] is not None and attempt["charged"] == attempt["reported"]
@@ -343,7 +373,76 @@ def consistency_errors(result):
                 errors.append(f"$.spend.attempts: {attempt['key']} is charged inconsistently with its state")
             if attempt["key"] not in keys:
                 errors.append(f"$.spend.attempts: {attempt['key']} reserved spend for a Run that is not recorded")
+        # Every dispatched Run was reserved exactly once before dispatch, so paid work cannot vanish.
+        reserved = [attempt["key"] for attempt in attempts]
+        if len(reserved) != len(set(reserved)):
+            errors.append("$.spend.attempts: a Run has more than one spend attempt")
+        for key in sorted(set(keys) - set(reserved)):
+            errors.append(f"$.spend.attempts: recorded Run {key} has no spend attempt")
     return errors
+
+
+def classification_errors(run):
+    """Ways a Run's outcome, oracle and derived fields contradict each other (see `classify`).
+
+    `interrupted` and `infrastructure_failure` can follow any phase, because the
+    evaluator may stop or lose a Run at any point; every other outcome is fixed
+    by the recorded phase, oracle and error.
+    """
+    problems = []
+    oracle, outcome, phase = run["oracle"], run["outcome"], run["phase"]
+    checks = oracle["checks"]
+    if not json_equal(run["evidence"]["verifier"], checks):
+        problems.append("has verifier evidence that differs from its oracle checks")
+    if oracle["passed"] is True and (not checks or not all(check.get("passed") is True for check in checks)):
+        problems.append("has a passing oracle with a missing or failing check")
+    if oracle["passed"] is False and all(check.get("passed") is True for check in checks):
+        problems.append("has a failing oracle without a failing check")
+    escalation = oracle["kind"] == "escalation"
+    required = {
+        "success": phase == "COMPLETED" and oracle["passed"] is True and not escalation,
+        "policy_compliant_escalation": phase == "COMPLETED" and oracle["passed"] is True and escalation,
+        "false_completion": phase == "COMPLETED" and oracle["passed"] is not True,
+        "overflow_failure": phase in ("FAILED", "CANCELLED") and is_overflow(run["error"]),
+        "unresolved": phase in ("FAILED", "CANCELLED") and not is_overflow(run["error"]),
+        "infrastructure_failure": run["error"] is not None,
+        "interrupted": True,
+    }
+    if not required[outcome]:
+        problems.append(f"has outcome {outcome}, which its phase {phase}, oracle and error do not produce")
+    terminal = run["long_context"] == "terminal_overflow"
+    if terminal != (outcome == "overflow_failure"):
+        problems.append("has a long_context that disagrees with its overflow outcome")
+    elif not terminal and run["long_context"] != "summary_recovery" and \
+            run["long_context"] != ("pruning" if (run["compactions"] or 0) > 0 else "none"):
+        problems.append("has a long_context that disagrees with its compactions")
+    if run["tool_selection"] is not None and run["tool_selection"].get("correct") is not (oracle["passed"] is True):
+        problems.append("has a tool_selection result that disagrees with its oracle")
+    retained = [check["passed"] for check in checks if check.get("check") in ("budget", "exclusions")]
+    if oracle["kind"] == "constraint-retention":
+        expected = None if oracle["passed"] is None else all(retained)
+        if run["constraint_retention"] is not expected:
+            problems.append("has a constraint_retention result that disagrees with its oracle")
+    elif run["constraint_retention"] is not None:
+        problems.append("records constraint_retention without a constraint-retention oracle")
+    return problems
+
+
+def memory_status_errors(scenario):
+    """Ways a memory scenario's status contradicts its own checks and variant results."""
+    status, checks, variants = scenario["status"], scenario["checks"], scenario["variants"]
+    failing = [check for check in checks if check.get("passed") is not True]
+    broken = [variant for variant in variants if "error" in variant or variant.get("passed") is False]
+    problems = []
+    if status in ("passed", "partial") and (not checks or failing or broken):
+        problems.append(f"is {status} although a check or variant did not pass")
+    if status == "failed" and (not failing or any("error" in variant for variant in variants)):
+        problems.append("is failed without a failing check, or with a variant error")
+    if status in ("feature-not-available", "requires-live-tier", "not-run") and (checks or variants):
+        problems.append(f"is {status} but records checks or variants")
+    if status in ("feature-not-available", "requires-live-tier") and scenario["evidence"] != status:
+        problems.append(f"is {status} but its evidence is {scenario['evidence']}")
+    return problems
 
 
 # ------------------------------------------------------------------- corpus
@@ -809,6 +908,11 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
         retention = None if oracle["passed"] is None else all(
             check["passed"] for check in oracle["checks"] if check["check"] in ("budget", "exclusions"))
     live = tier == "live"
+    if live:
+        # Live outputs are restricted content: a model can copy task data into tool arguments or
+        # answer fields, so the manifest keeps only their digests. Grading above saw the raw values.
+        tool_calls = [restricted(call, "arguments") for call in tool_calls]
+        oracle = dict(oracle, checks=[restricted(check, "observed") for check in oracle["checks"]])
     return {
         "key": f"{task['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}",
         "task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
@@ -826,6 +930,15 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
                      "final_answer": None if live or answer is None else answer[:EVIDENCE_LIMIT],
                      "verifier": oracle["checks"]},
     }
+
+
+def restricted(entry, field):
+    """`entry` with `field` replaced by `<field>_sha256`, the canonical digest of its value."""
+    if field not in entry:
+        return entry
+    entry = dict(entry)
+    entry[f"{field}_sha256"] = canonical_sha256(entry.pop(field))
+    return entry
 
 
 def distribution(values):
@@ -902,14 +1015,19 @@ def compare(issues, aggregates, runs):
                     run["repeat"] in base_runs and base_runs[run["repeat"]]["outcome"] != run["outcome"]:
                 changes.append({"repeat": run["repeat"], "baseline": base_runs[run["repeat"]]["outcome"],
                                 "candidate": run["outcome"]})
+        candidate_repeats = {run["repeat"] for run in runs
+                             if (run["task"], run["comparison"], run["arm"]) == (task, comparison, "candidate")}
+        # Paired only when both arms recorded exactly the same repeats; otherwise medians describe
+        # unrelated samples, so no delta is reported.
+        comparable = bool(base_runs) and set(base_runs) == candidate_repeats
         deltas = {}
         for name, value in baseline["metrics"].items():
             other = candidate["metrics"][name]
-            deltas[name] = None if value["median"] is None or other["median"] is None else other["median"] - value["median"]
+            deltas[name] = None if not comparable or value["median"] is None or other["median"] is None \
+                else other["median"] - value["median"]
         rows.append({"task": task, "comparison": comparison, "issue": issues.get(comparison),
                      "baseline": baseline["label"], "candidate": candidate["label"],
-                     "comparable": baseline["attempted"] == candidate["attempted"] and baseline["attempted"] > 0,
-                     "outcome_changes": changes, "median_deltas": deltas})
+                     "comparable": comparable, "outcome_changes": changes, "median_deltas": deltas})
     return rows
 
 
