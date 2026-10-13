@@ -201,6 +201,12 @@ def compose(values):
                       gcip_tenants=values["gcip_tenants"][tier])
         if not isinstance(public["gcip_tenants"], dict) or not public["gcip_tenants"]:
             raise Refused("Random preview and production sign-in require explicit GCIP pool definitions")
+        # The browser SDK key is public client configuration (Terraform only marks
+        # the output sensitive); the controller injects it into the runtime secret.
+        api_key = (output.get("gcip_web_api_key") or {}).get("value")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise Refused("GCIP sign-in requires the bootstrap gcip_web_api_key output")
+        public["gcip_web_api_key"] = api_key
         if tier == "nonproduction":
             renewal = output["preview_tls_renewal"]["value"]
             public.update(preview_tls_secret=renewal["secret_id"], acme_state_secret=renewal["acme_state_secret_id"])

@@ -18,7 +18,7 @@ locals {
     "cloudflare_zone_id", "domain", "repository", "develop_branch", "node_count",
     "deployment_tier", "automation_branch", "trusted_branch", "notification_bucket",
     "notification_service_account", "release_flow_enabled", "release_app_bot_login", "preview_tls_secret",
-    "acme_state_secret", "gke_backup_enabled", "gcip_tenants",
+    "acme_state_secret", "gke_backup_enabled", "gcip_tenants", "gcip_web_api_key",
     "nonproduction_project_id", "nonproduction_state_bucket", "production_origin", "staging_release_bucket",
     "staging_project_id", "staging_max_age_seconds", "preview_request_interval_seconds", "max_preview_environments",
   ])

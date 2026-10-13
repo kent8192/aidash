@@ -142,6 +142,7 @@ class SetupTests(unittest.TestCase):
                           "notification_bucket": tier + "-notifications", "deploy_service_account": tier + "-deploy", "notification_service_account": tier + "-notify",
                           "registry": "bootstrap-only-registry", "production_node_service_account": "bootstrap-only-node", "broker_signing_keys": {"production": "bootstrap-only-key"}}
                 setup.private_json(path, {"configuration": {"value": config}, "operations_configuration": {"value": {"gke_backup_enabled": tier == "production"}},
+                                          "gcip_web_api_key": {"value": "public-" + tier + "-browser-key", "sensitive": True},
                                           "preview_tls_renewal": {"value": {"secret_id": "preview-tls", "acme_state_secret_id": "acme-state", "service_account": "renewer", "workload_identity_provider": "wif"}}})
             result = setup.compose(values)
             for tier in ("nonproduction", "production"):
@@ -150,10 +151,19 @@ class SetupTests(unittest.TestCase):
                 self.assertNotIn("production_node_service_account", public)
                 self.assertNotIn("broker_signing_keys", public)
                 self.assertEqual(public["gcip_tenants"], {"default": {"tenant": "public-pool"}})
+                # Without it the first GCIP deployment cannot provision its runtime secret.
+                self.assertEqual(public["gcip_web_api_key"], "public-" + tier + "-browser-key")
             self.assertNotIn("enablement", result)
             self.assertNotIn("activation_validated", result)
             self.assertNotIn("require_staging_check", result)
             self.assertTrue(json.loads(result["production_config_json"])["gke_backup_enabled"])
+            production_output = Path(values["production_output_file"])
+            without_key = json.loads(production_output.read_text())
+            del without_key["gcip_web_api_key"]
+            production_output.unlink()
+            setup.private_json(production_output, without_key)
+            with self.assertRaisesRegex(setup.Refused, "gcip_web_api_key"):
+                setup.compose(values)
             values["gcip_tenants"]["production"] = {}
             with self.assertRaises(setup.Refused):
                 setup.compose(values)
