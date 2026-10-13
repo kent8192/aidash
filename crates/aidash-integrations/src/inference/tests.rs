@@ -682,7 +682,8 @@ mod cache_salt {
 			"context_window": 100_000,
 			"modalities": ["text"],
 			"cost": {},
-			"cache_mode": "explicit"
+			"cache_mode": "explicit",
+			"projection_versions": ["legacy", "ordered"]
 		});
 		let provider = salted_provider(
 			reqwest::Client::new(),
