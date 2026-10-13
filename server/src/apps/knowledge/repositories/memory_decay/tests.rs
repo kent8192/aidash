@@ -1,4 +1,5 @@
 //! Repository tests verify the real Delivery savepoint, rather than a Usage-only mock.
+use super::super::fixture::*;
 use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
@@ -8,10 +9,6 @@ use reinhardt::db::orm::Model;
 use reinhardt::query::QueryStatementBuilder;
 use rstest::rstest;
 use serde_json::json;
-#[allow(dead_code)] // Shared fixture includes helpers used only by the integration binary.
-#[path = "../../tests/native_memory/fixture.rs"]
-mod fixture;
-use fixture::*;
 
 async fn run(store: &Store, bank: &Bank) -> Uuid {
 	let task = store

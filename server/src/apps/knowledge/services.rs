@@ -19,5 +19,7 @@ pub use memory_context::corpus_digest;
 
 pub(crate) mod memory_administration;
 
+pub mod memory_impact;
+
 pub(crate) mod remote_memory;
 pub(crate) mod remote_memory_models;
