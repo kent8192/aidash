@@ -162,6 +162,59 @@ fn native_summary_candidates_are_whole_turns_outside_the_protected_tail() {
 
 #[rstest::rstest]
 #[tokio::test]
+async fn native_compaction_neither_prunes_nor_absorbs_a_marker() {
+	// Arrange: a citation correction between old, unprotected text-less turns.
+	let correction = ContextEvent::CitationCorrectionRequired {
+		invalid: vec!["ev_unknown".into()],
+		instruction: "Correct the answer once.".into(),
+		through_seq: 1,
+	};
+	let mut context = Context::default();
+	for turn in 0..12 {
+		context.push(ContextEvent::Assistant {
+			epoch: turn as i64,
+			text: String::new(),
+			calls: turn_ids(turn),
+		});
+		for id in turn_ids(turn) {
+			context.push(ContextEvent::tool(call(&id), json!("r".repeat(600))));
+		}
+		if turn == 2 {
+			context.push(correction.clone());
+		}
+	}
+	context.journal.inferred_through = context.journal.head;
+	let pinned = json!({"task": "Ship the release"});
+	let full = budget(usize::MAX)
+		.request(&context, &pinned)
+		.estimated_total_tokens();
+	let budget = budget(full * 3 / 4);
+	let policy = policy::Effective::of(None);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	// Act
+	let candidates = native_summary_candidates(&context, 6);
+	super::super::compact(&mut context, &FakeJev::new(drop_all), &fitting)
+		.await
+		.unwrap();
+	// Assert
+	assert!(!candidates.is_empty());
+	assert!(candidates.iter().all(|entry| entry.event != correction));
+	assert!(!rendered_turns(&context).contains(&turn_ids(1)));
+	assert_eq!(
+		context
+			.events()
+			.filter(|event| **event == correction)
+			.count(),
+		1
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn native_summaries_absorb_whole_turns_and_keep_the_recent_ones() {
 	// Arrange: pruning keeps everything, so only the Summary Stage can fit.
 	let mut context = turns(12);
