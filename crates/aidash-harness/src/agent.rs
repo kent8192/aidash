@@ -1948,7 +1948,10 @@ impl<'a> Executor<'a> {
 								let corrected = run.context.events().any(|event| {
 									matches!(event, ContextEvent::CitationCorrectionRequired { through_seq, .. } if *through_seq == run.observed_input_seq)
 								});
-								match citations::verdict(&found, &unknown, corrected) {
+								// A correction needs another inference step; at the step
+								// limit the answer is withheld instead of failing the Run.
+								let no_step_left = run.step.saturating_add(1) >= agent.max_steps;
+								match citations::verdict(&found, &unknown, corrected || no_step_left) {
 									citations::Verdict::Accept => {}
 									citations::Verdict::Correct(invalid) => {
 										let mut context = run.context.clone();

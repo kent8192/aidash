@@ -90,6 +90,23 @@ async fn invalid_citations_get_one_correction_and_never_publish_a_fabricated_ref
 
 #[rstest]
 #[tokio::test]
+async fn invalid_citations_at_the_step_limit_are_withheld_without_a_correction(
+	mut fixture: Fixture,
+) {
+	bind(&mut fixture, "lookup", Scripted::research(Operation::Find));
+	// The fixture Agent allows 64 steps; no inference step remains for a correction.
+	fixture.run.step = 63;
+	answer(&mut fixture.run, format!("Claim [[cite:{UNKNOWN}]]."));
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Completed);
+	assert_eq!(
+		*fixture.backend.0.artifacts.lock().unwrap(),
+		[json!(citations::WITHHELD_ANSWER)]
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn malformed_markers_are_corrected_like_unknown_evidence(mut fixture: Fixture) {
 	bind(&mut fixture, "lookup", Scripted::research(Operation::Find));
 	answer(&mut fixture.run, "Claim [[cite:ev_invented]].".into());
