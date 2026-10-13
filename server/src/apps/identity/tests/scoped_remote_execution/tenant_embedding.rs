@@ -23,7 +23,6 @@ use std::{
 };
 use uuid::Uuid;
 
-
 #[derive(Default)]
 struct MemoryStore(Mutex<BTreeMap<String, usize>>);
 #[async_trait]

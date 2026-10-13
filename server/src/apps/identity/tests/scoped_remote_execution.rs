@@ -1,3 +1,6 @@
+// rstest expands `scoped_pair` into a constructor that an item-level allow
+// cannot reach; each scenario switch and Home input stays an explicit argument.
+#![allow(clippy::too_many_arguments)]
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::ServerRouter as Router;
