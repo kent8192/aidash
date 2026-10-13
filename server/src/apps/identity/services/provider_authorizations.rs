@@ -255,10 +255,16 @@ impl ProviderAuthorizations {
 					Ok(validated) => {
 						key_warnings = validated.key_warnings().next().is_some();
 						if let Target::Connect { id } = target {
-							self.management()
+							// Report `connected` only when Runs will use the new key.
+							if self
+								.management()
 								.bind_if_unbound(actor, pending.tenant.clone(), provider, id)
-								.await;
-							Outcome::Connected
+								.await
+							{
+								Outcome::Connected
+							} else {
+								Outcome::Unbound
+							}
 						} else {
 							// The replaced key stays live at the provider.
 							key_settings_url = validated.previous_key_settings_url;

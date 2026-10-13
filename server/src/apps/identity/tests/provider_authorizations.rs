@@ -536,6 +536,29 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 	assert!(dump.contains(&rotated_digest) && !dump.contains(&digest));
 	assert!(!dump.contains(&key) && !dump.contains(&rotated_key));
 
+	// A Connect that loses to an active binding (here: another connection that
+	// is already bound) stores its key but never reports `connected`.
+	let started = start(&fixture, "browser-a", json!({}), Some(&started.browser)).await;
+	let (code, _) = fixture.provider.consent(&started.challenge, false);
+	let response = callback(
+		&fixture,
+		"browser-a",
+		&started.browser,
+		&format!("state={}&code={code}", started.state),
+	)
+	.await;
+	assert_eq!(
+		location(&response),
+		"/settings?view=providerCredentials&provider_authorization=unbound"
+	);
+	let unbound = credentials(&fixture)
+		.await
+		.into_iter()
+		.find(|row| row["state"] == "active" && row["id"] != rows[0]["id"])
+		.expect("the losing connection is stored")["id"]
+		.clone();
+	assert_eq!(bound_credential(&fixture).await, rows[0]["id"]);
+
 	// A binding to a revoked Provider Credential serves no Run, so the next
 	// connection replaces it instead of leaving the new key unbound.
 	let (status, revoked) = common::request(
@@ -567,7 +590,7 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 	let connected = credentials(&fixture)
 		.await
 		.into_iter()
-		.find(|row| row["state"] == "active")
+		.find(|row| row["state"] == "active" && row["id"] != unbound)
 		.expect("the new connection is active");
 	assert_ne!(connected["id"], rows[0]["id"]);
 	assert_eq!(bound_credential(&fixture).await, connected["id"]);

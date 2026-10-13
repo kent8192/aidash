@@ -38,6 +38,9 @@ pub struct CallbackQuery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
 	Connected,
+	/// The key was stored, but the provider's binding still names another
+	/// Provider Credential (or could not be updated), so Runs do not use it.
+	Unbound,
 	Reconnected,
 	Denied,
 	Failed,
@@ -46,6 +49,7 @@ impl Outcome {
 	pub fn as_str(self) -> &'static str {
 		match self {
 			Self::Connected => "connected",
+			Self::Unbound => "unbound",
 			Self::Reconnected => "reconnected",
 			Self::Denied => "denied",
 			Self::Failed => "failed",

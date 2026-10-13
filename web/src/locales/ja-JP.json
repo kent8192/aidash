@@ -603,6 +603,7 @@
   "providerConnectionConnect": "OpenRouter に接続",
   "providerConnectionReconnect": "再接続",
   "providerConnectionOutcome_connected": "OpenRouter に接続しました。",
+  "providerConnectionOutcome_unbound": "OpenRouter が新しいキーを発行し Aidash に保存しましたが、このテナントには紐付けられていないため、Run は現在の紐付けを使い続けます。Run でこのキーを使う場合は「プロバイダ認証情報の紐付け」で選択してください。",
   "providerConnectionOutcome_reconnected": "新しいキーで OpenRouter に再接続しました。",
   "providerConnectionOutcome_reconnectedPrevious": "新しいキーで OpenRouter に再接続しました。以前のキーは、OpenRouter で削除するまで OpenRouter 上で有効なままです。",
   "providerConnectionKeyWarnings": "OpenRouter から接続したキーについて警告がありました（利用上限が未設定など）。「OpenRouter でキーを管理」から確認してください。",

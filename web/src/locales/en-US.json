@@ -603,6 +603,7 @@
   "providerConnectionConnect": "Connect OpenRouter",
   "providerConnectionReconnect": "Reconnect",
   "providerConnectionOutcome_connected": "OpenRouter is connected.",
+  "providerConnectionOutcome_unbound": "OpenRouter issued and Aidash stored a new key, but it is not bound to this Tenant, so Runs keep using the current binding. Choose the key under Provider Credential bindings if Runs should use it.",
   "providerConnectionOutcome_reconnected": "OpenRouter was reconnected with a new key.",
   "providerConnectionOutcome_reconnectedPrevious": "OpenRouter was reconnected with a new key. The previous key stays valid at OpenRouter until you delete it there.",
   "providerConnectionKeyWarnings": "OpenRouter reported a warning for the connected key, such as a missing spending limit. Review the key with “Manage key at OpenRouter”.",

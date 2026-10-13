@@ -62,7 +62,11 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
    OpenRouter when the Tenant has no usable binding (none, or one to a revoked
    Provider Credential) and the actor may update it.
 4. The callback redirects (303) to the requested same-origin `return_to`
-   with `provider_authorization=connected|reconnected|denied|failed`. When
+   with `provider_authorization=connected|unbound|reconnected|denied|failed`.
+   A connection reports `connected` only when the new Provider Credential is
+   bound afterwards; when another active binding wins (for example a
+   concurrent connection) or the actor may not update the binding, the key is
+   stored but the outcome is `unbound`. When
    the exchange succeeded but storing the key failed, the redirect also
    carries `provider_key_settings_url`, the issued key's settings page; after
    a reconnect it carries the settings page of the key that was replaced. The

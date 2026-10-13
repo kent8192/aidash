@@ -26,7 +26,13 @@ import {
   providerAuthorizationStart,
 } from "./generated/aidash";
 
-const outcomes = ["connected", "reconnected", "denied", "failed"] as const;
+const outcomes = [
+  "connected",
+  "unbound",
+  "reconnected",
+  "denied",
+  "failed",
+] as const;
 type Outcome = (typeof outcomes)[number];
 
 /** OpenRouter's owner-only key-settings page; nothing else is linked. */
@@ -55,7 +61,11 @@ function takeOutcome(): {
   sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
   if (!value || !(outcomes as readonly string[]).includes(value)) return null;
   const outcome = value as Outcome;
-  const connected = outcome === "connected" || outcome === "reconnected";
+  // Each of these stored the issued key, so its validation warnings apply.
+  const stored =
+    outcome === "connected" ||
+    outcome === "unbound" ||
+    outcome === "reconnected";
   return {
     outcome,
     keySettingsUrl:
@@ -64,7 +74,7 @@ function takeOutcome(): {
       keySettingsPattern.test(link)
         ? link
         : null,
-    keyWarnings: connected && warned === "1",
+    keyWarnings: stored && warned === "1",
   };
 }
 

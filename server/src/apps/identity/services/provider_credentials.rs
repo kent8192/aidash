@@ -240,13 +240,16 @@ impl Management {
 	/// A connection serves the Tenant's Runs right away when the provider has no
 	/// usable binding (none, or one to a revoked Provider Credential) and the
 	/// actor may update the binding. An active binding is never replaced.
+	/// Returns whether the connected Provider Credential is now bound; it is not
+	/// when another active binding won (for example a concurrent connection) or
+	/// the binding could not be updated.
 	pub(crate) async fn bind_if_unbound(
 		&self,
 		actor: Actor,
 		tenant: String,
 		provider: Provider,
 		id: Uuid,
-	) {
+	) -> bool {
 		let current = async {
 			let service = self.service()?;
 			let mut scope = service.repository.begin(&tenant).await?;
@@ -264,7 +267,10 @@ impl Management {
 		}
 		.await;
 		let expected_revision = match current {
-			Ok((_, true)) | Err(_) => return,
+			Ok((binding, true)) => {
+				return binding.and_then(|b| b.provider_credential_id) == Some(id);
+			}
+			Err(_) => return false,
 			Ok((binding, false)) => binding.map_or(0, |b| b.revision),
 		};
 		let result = self
@@ -284,6 +290,7 @@ impl Management {
 				"connected Provider Credential was left unbound"
 			);
 		}
+		result.is_ok()
 	}
 	pub async fn list(&self, actor: Actor, tenant: String, page: Page) -> Result<Vec<Metadata>> {
 		let service = self.service()?;

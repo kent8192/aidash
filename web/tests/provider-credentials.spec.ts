@@ -387,6 +387,19 @@ test("the callback outcome is reported once and removed from the address", async
     null,
   );
 });
+test("a connection left unbound is not reported as connected", async ({
+  page,
+}) => {
+  await setup(page, {
+    subject: true,
+    path: "/settings?view=providerCredentials&provider_authorization=unbound",
+  });
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: "it is not bound to this Tenant" });
+  await expect(notice).toBeVisible();
+  await expect(notice).not.toContainText("OpenRouter is connected.");
+});
 test("revocation asks the user to delete the key at OpenRouter", async ({
   page,
 }) => {
