@@ -33,6 +33,11 @@ capabilities:
 # Socket peers (IPs or CIDRs) allowed to supply X-Real-IP, e.g. the edge Pod CIDR.
 trustedProxy:
   cidrs: []
+# Private origins (scheme://host[:port]) that Tenants' Keyless model and
+# embedding endpoints may reach; every other Keyless endpoint connects only to
+# public addresses. Omit default ports: http://ollama.lan, not http://ollama.lan:80.
+keylessEndpoints:
+  permittedPrivateOrigins: []
 # When set, a NetworkPolicy admits backend :8080 only from these same-namespace
 # Pod label sets (plus this release's frontend when enabled).
 backendIngress:

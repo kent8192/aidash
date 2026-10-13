@@ -248,6 +248,19 @@
         }
       }
     },
+    "keylessEndpoints": {
+      "type": "object",
+      "properties": {
+        "permittedPrivateOrigins": {
+          "description": "Exact origins (scheme://host[:port]) a Tenant's Keyless endpoint may reach on a private address, for AIDASH_KEYLESS_PRIVATE_ORIGINS.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://[^/?#@,\\s]+$"
+          }
+        }
+      }
+    },
     "trustedProxy": {
       "type": "object",
       "properties": {

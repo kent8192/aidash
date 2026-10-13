@@ -31,6 +31,13 @@ volume root belongs to root and cannot be chmodded by the application).
 
 ## Edge, settings and network
 
+`keylessEndpoints.permittedPrivateOrigins` sets `AIDASH_KEYLESS_PRIVATE_ORIGINS` on
+the server and workers. A Tenant's model or embedding definition without
+`provider_credential` calls its endpoint without a key, and it may connect only
+to public addresses unless its exact origin, such as `http://ollama.lan:11434`,
+is listed here. Every resolved address is checked when the connection is made,
+and a default port is omitted from an origin.
+
 `trustedProxy.cidrs` sets the server's `AIDASH_AUTH_TRUSTED_PROXY_IPS`: socket
 peers, given as exact IPs or CIDR networks such as the cluster Pod range, that may
 supply a single `X-Real-IP`. Pair it with `backendIngress.podSelectors`, which

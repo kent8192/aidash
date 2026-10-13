@@ -342,6 +342,12 @@ def main():
     fixture_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.handler())
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
     fixture_url = f"http://127.0.0.1:{fixture_server.server_port}"
+    # Keyless model endpoints on loopback reach only origins the Deployment
+    # permits, so reserve the scoped branch's provider port before launch.
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        scoped_provider_port = reserved.getsockname()[1]
+    keyless_origins = f"{fixture_url},http://127.0.0.1:{scoped_provider_port}"
     stream_events = []
     nats_proxy = NatsProxy()
 
@@ -364,7 +370,7 @@ def main():
                     approval_errors.append(str(error))
 
     def launch(node, database, port, mode):
-        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
+        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
         env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
@@ -507,7 +513,7 @@ def main():
         # Scoped scenarios own their exact Home approval poller; completed local
         # fixtures do not need a second full-state poller during fault injection.
         local_approvals.clear()
-        scoped = verify(base_a, base_b, node_a, node_b, remote_worker,
+        scoped = verify(base_a, base_b, node_a, node_b, remote_worker, scoped_provider_port,
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
