@@ -1,5 +1,9 @@
 # Native memory evaluation
 
+This is the measurement harness for Issue #122. It evaluates contracts (b) and (c)
+of the [memory contracts](architecture.md#memory-contracts). Its results do not by
+themselves establish release acceptance; see the [traceability matrix](memory-traceability.md).
+
 `scripts/evaluate-native-memory.py` runs the frozen English/Japanese fixtures in
 `tests/fixtures/native_memory_evaluation.toml` through the authorized native API.
 Use an isolated Workspace with the selected exact Agent, memory policy and

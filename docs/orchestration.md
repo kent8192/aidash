@@ -106,8 +106,8 @@ outage. Configure authentication/TLS for both backends according to your cluster
 boundary. Size PostgreSQL connection capacity for all server/worker replicas and
 their isolated recovery pools; do not assume a fixed total connection budget.
 
-Semantic memory stores vectors and keyword indexes in PostgreSQL using pgvector
-and PGroonga. Provision the extensions from `deploy/postgres/Dockerfile`, persist
+Semantic memory (contract (b) in [architecture](architecture.md#memory-contracts))
+stores vectors and keyword indexes in PostgreSQL using pgvector and PGroonga. Provision the extensions from `deploy/postgres/Dockerfile`, persist
 the PostgreSQL data directory, and select an exact embedding provider version in
 the workspace semantic index. PostgreSQL also holds canonical content and durable
 retry/deletion records. Native memory's PGroonga crash-safe worker settings are
