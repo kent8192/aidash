@@ -590,9 +590,13 @@ impl completion::CompletionChecks for Environment<'_> {
 						.unwrap_or(store.capabilities.0.operation_seconds),
 				})
 			}
+			// The content moved after it was read. An idempotency conflict means the
+			// same attempt was started at another revision before a process cut;
+			// the saved attempt count gives the next start a fresh key.
 			Err(crate::Error::Conflict(reason))
-				if reason.starts_with("AREA_REVISION_CHANGED")
-					|| reason.starts_with("AREA_BUSY") =>
+				if ["AREA_REVISION_CHANGED", "AREA_BUSY", "IDEMPOTENCY_CONFLICT"]
+					.iter()
+					.any(|code| reason.starts_with(code)) =>
 			{
 				Ok(completion::CheckStart::Stale)
 			}
