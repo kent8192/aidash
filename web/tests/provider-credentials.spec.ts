@@ -26,6 +26,12 @@ async function setup(
     keySettingsUrl?: string;
     authorizations?: unknown[];
     path?: string;
+    /** The Tenant the callback's authorization was started for. */
+    startedTenant?: string;
+    /** Holds the credential list until this settles. */
+    holdRows?: Promise<void>;
+    /** Do not open a Tenant through the operator picker. */
+    keepTenant?: boolean;
   } = {},
 ) {
   await installBearerDashboard(
@@ -37,6 +43,13 @@ async function setup(
     (locale) => localStorage.setItem("aidash-locale", locale),
     options.locale ?? "en-US",
   );
+  // The dashboard records the Tenant before it leaves for the consent page.
+  if (options.path?.includes("provider_authorization="))
+    await page.addInitScript(
+      (tenant) =>
+        sessionStorage.setItem("aidash-provider-authorization-tenant", tenant),
+      options.startedTenant ?? "alpha",
+    );
   const access = options.subject
     ? { kind: "subject", tenant: "alpha", subject: "alice" }
     : { kind: "operator" };
@@ -103,6 +116,7 @@ async function setup(
           status: 404,
           json: { error: "Provider Credential Store is not configured" },
         });
+      await options.holdRows;
       return route.fulfill({ json: records });
     }
     if (path === "/api/tenants/alpha/provider-authorizations/openrouter") {
@@ -175,7 +189,7 @@ async function setup(
     }),
   );
   await page.goto(options.path ?? "/settings?view=providerCredentials");
-  if (!options.subject) {
+  if (!options.subject && !options.keepTenant) {
     await page.getByLabel("Tenant", { exact: true }).fill("alpha");
     await page.getByRole("button", { name: "Open", exact: true }).click();
   }
@@ -399,6 +413,49 @@ test("a connection left unbound is not reported as connected", async ({
     .filter({ hasText: "it is not bound to this Tenant" });
   await expect(notice).toBeVisible();
   await expect(notice).not.toContainText("OpenRouter is connected.");
+});
+test("an operator returns to the Tenant the authorization started for", async ({
+  page,
+}) => {
+  await setup(page, {
+    keepTenant: true,
+    path: "/settings?view=providerCredentials&provider_authorization=connected",
+  });
+  await expect(page.getByLabel("Tenant", { exact: true })).toHaveValue("alpha");
+  await expect(page.getByRole("status")).toContainText(
+    "OpenRouter is connected.",
+  );
+});
+test("an outcome is never shown for another Tenant", async ({ page }) => {
+  await setup(page, {
+    subject: true,
+    startedTenant: "beta",
+    path: "/settings?view=providerCredentials&provider_authorization=failed",
+  });
+  await expect(
+    page.getByRole("button", { name: "Connect OpenRouter" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "authorization failed" }),
+  ).toHaveCount(0);
+});
+test("connect waits for the bound record before choosing connect or reconnect", async ({
+  page,
+}) => {
+  let release = () => {};
+  const holdRows = new Promise<void>((resolve) => (release = resolve));
+  await setup(page, { subject: true, bound: true, holdRows });
+  // The binding is known, the credential list is not: no action yet.
+  await expect(
+    page.getByRole("button", { name: "Connect OpenRouter" }),
+  ).toBeDisabled();
+  release();
+  await expect(
+    page.getByRole("button", { name: "Reconnect", exact: true }).first(),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Connect OpenRouter" }),
+  ).toHaveCount(0);
 });
 test("revocation asks the user to delete the key at OpenRouter", async ({
   page,

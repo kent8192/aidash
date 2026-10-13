@@ -38,13 +38,27 @@ type Outcome = (typeof outcomes)[number];
 /** OpenRouter's owner-only key-settings page; nothing else is linked. */
 const keySettingsPattern = /^https:\/\/openrouter\.ai\/keys\/[0-9a-f]{64}$/;
 
+/** The Tenant whose Provider Authorization the browser left for. */
+const tenantKey = "aidash-provider-authorization-tenant";
+
+/**
+ * The Tenant an operator returns to from Provider Authorization: the callback
+ * reloads the dashboard, and the operator's Tenant is otherwise page state.
+ */
+function returningTenant(): string {
+  return sessionStorage.getItem("aidash-provider-authorization")
+    ? (sessionStorage.getItem(tenantKey) ?? "")
+    : "";
+}
+
 /**
  * Reads and clears the callback's `provider_authorization` outcome; the
  * settings page of a key OpenRouter still holds but Aidash does not store (one
  * issued for a failed write, or the key a reconnect replaced); and whether
- * validation warned about the connected key.
+ * validation warned about the connected key. The outcome belongs only to the
+ * Tenant the authorization started for.
  */
-function takeOutcome(): {
+function takeOutcome(tenant: string): {
   outcome: Outcome;
   keySettingsUrl: string | null;
   keyWarnings: boolean;
@@ -56,10 +70,13 @@ function takeOutcome(): {
   const warned = sessionStorage.getItem(
     "aidash-provider-authorization-key-warnings",
   );
+  const started = sessionStorage.getItem(tenantKey);
   sessionStorage.removeItem("aidash-provider-authorization");
   sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
   sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
+  if (value) sessionStorage.removeItem(tenantKey);
   if (!value || !(outcomes as readonly string[]).includes(value)) return null;
+  if (started !== tenant) return null;
   const outcome = value as Outcome;
   // Each of these stored the issued key, so its validation warnings apply.
   const stored =
@@ -100,7 +117,9 @@ export function ProviderCredentialsPage({
   access: State["access"];
 }) {
   const { t } = useI18n();
-  const [selected, select] = useState("");
+  const [selected, select] = useState(() =>
+    access.kind === "operator" ? returningTenant() : "",
+  );
   const tenant = access.kind === "subject" ? access.tenant : selected;
   return (
     <div className="grid max-w-5xl min-w-0 gap-6">
@@ -121,6 +140,7 @@ export function ProviderCredentialsPage({
                 name="tenant"
                 required
                 maxLength={256}
+                defaultValue={selected}
                 className="font-mono text-xs"
               />
             </Field>
@@ -139,7 +159,7 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [callback] = useState(takeOutcome);
+  const [callback] = useState(() => takeOutcome(tenant));
   const outcome = callback?.outcome;
   // Revocation, deletion and a failed authorization leave a live key at
   // OpenRouter; its settings page is where the user deletes it.
@@ -200,12 +220,22 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
         expected_revision: target?.revision ?? null,
         return_to: returnPath(),
       });
+      sessionStorage.setItem(tenantKey, tenant);
       window.location.assign(started.authorization_url);
     });
   const disabled = rows.error instanceof ApiError && rows.error.status === 404;
   const connected = choices.find(
     (row) => row.id === boundId && row.state === "active",
   );
+  // Connect versus Reconnect depends on the bound record's metadata; until it
+  // is known, an enabled Connect would mint another key without a target.
+  const connectionKnown =
+    !!bindings.data &&
+    !!rows.data &&
+    (!boundId ||
+      rows.data.some((row) => row.id === boundId) ||
+      !!boundMetadata.data ||
+      boundMetadata.isError);
   return disabled ? (
     <Notice role="status">{t("providerCredentialsDisabled")}</Notice>
   ) : (
@@ -291,7 +321,7 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
             <Button
               size="sm"
               variant={connected ? "outline" : "default"}
-              disabled={busy || !bindings.data}
+              disabled={busy || !connectionKnown}
               onClick={() =>
                 void authorize(
                   connected
