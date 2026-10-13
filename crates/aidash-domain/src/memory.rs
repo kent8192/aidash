@@ -417,6 +417,10 @@ pub struct Policy {
 	pub retention: Retention,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub decay: Option<Decay>,
+	/// Maximal Marginal Relevance weight in millionths (1..=1_000_000; 700_000 is λ = 0.7).
+	/// Unset keeps relevance-only recall; changing it is a new policy version.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub diversity_lambda_millionths: Option<u32>,
 	pub bounds: Bounds,
 	pub learn_from_runs: bool,
 	/// Automatic work is explicit and pinned to this Registry policy version.
@@ -522,6 +526,14 @@ impl Policy {
 		if !(1..=1_000_000).contains(&self.semantic_link_min_similarity_millionths) {
 			return Err(Error::Invalid(
 				"memory semantic graph cutoff must be explicit and positive".into(),
+			));
+		}
+		if self
+			.diversity_lambda_millionths
+			.is_some_and(|lambda| !(1..=1_000_000).contains(&lambda))
+		{
+			return Err(Error::Invalid(
+				"memory diversity lambda must be within 1..=1_000_000 millionths".into(),
 			));
 		}
 		self.retention.validate(&self.bounds)?;

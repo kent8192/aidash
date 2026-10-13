@@ -95,8 +95,78 @@ run "sign_in_domain_may_have_numeric_inner_labels" {
     error_message = "Only the final label decides whether a host is an IP literal."
   }
 }
-run "password_pool_cannot_enable_mfa_before_clients_support_it" {
+run "password_and_google_pools_accept_enabled_and_mandatory_mfa_with_a_totp_window" {
   command = plan
-  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled" } } } }
+  variables {
+    gcip_tenants = {
+      optional  = { tenant = "acme", google_client_id = "google-client", mfa = { state = "enabled" } }
+      required  = { tenant = "globex", mfa = { state = "mandatory", totp = { adjacent_intervals = 0 } } }
+      widest    = { tenant = "initech", mfa = { state = "enabled", totp = { adjacent_intervals = 10 } } }
+      untouched = { tenant = "umbrella" }
+    }
+    gcip_idp_secrets = { "optional/google.com" = "fixture-google" }
+  }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["optional"]
+    override_during = plan
+    values          = { name = "optional-tenant-id" }
+  }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["required"]
+    override_during = plan
+    values          = { name = "required-tenant-id" }
+  }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["widest"]
+    override_during = plan
+    values          = { name = "widest-tenant-id" }
+  }
+  override_resource {
+    target          = google_identity_platform_tenant.aidash["untouched"]
+    override_during = plan
+    values          = { name = "untouched-tenant-id" }
+  }
+  assert {
+    condition     = output.gcip.mfa[google_identity_platform_tenant.aidash["optional"].name] == { state = "enabled", totp_adjacent_intervals = 5 } && output.gcip.mfa[google_identity_platform_tenant.aidash["required"].name] == { state = "mandatory", totp_adjacent_intervals = 0 } && output.gcip.mfa[google_identity_platform_tenant.aidash["widest"].name].totp_adjacent_intervals == 10
+    error_message = "Each Tenant ID must publish its declared MFA Requirement and TOTP window for the controller to reconcile."
+  }
+  assert {
+    condition     = output.gcip.mfa[google_identity_platform_tenant.aidash["untouched"].name] == { state = "disabled", totp_adjacent_intervals = 5 }
+    error_message = "An omitted MFA Requirement must stay disabled."
+  }
+}
+run "mfa_requirement_must_be_a_known_state" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "required" } } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "totp_window_above_the_gcip_range_is_refused" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled", totp = { adjacent_intervals = 11 } } } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "totp_window_below_the_gcip_range_is_refused" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled", totp = { adjacent_intervals = -1 } } } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "totp_window_must_be_a_whole_number_of_intervals" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled", totp = { adjacent_intervals = 2.5 } } } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "oidc_pool_cannot_enable_mfa" {
+  command = plan
+  variables {
+    gcip_tenants     = { acme = { tenant = "acme", password_sign_up = false, oidc = { "oidc.acme" = { issuer = "https://issuer.example.test", client_id = "acme" } }, mfa = { state = "enabled" } } }
+    gcip_idp_secrets = { "acme/oidc.acme" = "fixture-oidc" }
+  }
+  expect_failures = [var.gcip_tenants]
+}
+run "saml_pool_cannot_enable_mfa" {
+  command = plan
+  variables {
+    gcip_tenants = { acme = { tenant = "acme", password_sign_up = false, saml = { "saml.acme" = { idp_entity_id = "acme", sso_url = "https://sso.example.test", sp_entity_id = "aidash", certificates = ["fixture-certificate"] } }, mfa = { state = "mandatory" } } }
+  }
   expect_failures = [var.gcip_tenants]
 }

@@ -27,7 +27,8 @@ locals {
     length(setsubtract(toset(keys(pool)), toset(["tenant", "password_sign_up", "google_client_id", "oidc", "saml", "sign_in_domains", "mfa"]))) == 0 &&
     alltrue([for provider in values(try(pool.oidc, {})) : length(setsubtract(toset(keys(provider)), toset(["client_id", "issuer"]))) == 0]) &&
     alltrue([for provider in values(try(pool.saml, {})) : length(setsubtract(toset(keys(provider)), toset(["idp_entity_id", "sso_url", "sp_entity_id", "certificates"]))) == 0]) &&
-    length(setsubtract(toset(keys(try(pool.mfa, {}))), toset(["state"]))) == 0
+    length(setsubtract(toset(keys(try(pool.mfa, {}))), toset(["state", "totp"]))) == 0 &&
+    length(setsubtract(toset(keys(try(pool.mfa.totp, {}))), toset(["adjacent_intervals"]))) == 0
   ]])), false)
   disabled_flags = {
     GCP_ENVIRONMENTS_ENABLED             = tostring(var.enablement.nonproduction)

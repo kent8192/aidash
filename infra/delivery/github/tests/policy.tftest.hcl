@@ -317,3 +317,25 @@ run "nested_idp_client_secrets_cannot_enter_public_variables" {
   }
   expect_failures = [terraform_data.contract]
 }
+run "tenant_totp_mfa_and_browser_key_can_be_published" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      gcip_web_api_key = "public-browser-key"
+      gcip_tenants     = { default = { tenant = "public-pool", mfa = { state = "mandatory", totp = { adjacent_intervals = 3 } } } }
+    }))
+  }
+  assert {
+    condition     = jsondecode(github_actions_variable.delivery["AIDASH_GCP_CONFIG"].value).gcip_tenants.default.mfa.totp.adjacent_intervals == 3 && jsondecode(github_actions_variable.delivery["AIDASH_GCP_CONFIG"].value).gcip_web_api_key == "public-browser-key"
+    error_message = "The controller needs the tenant TOTP window and the public browser key from its config."
+  }
+}
+run "unknown_mfa_settings_cannot_enter_public_variables" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      gcip_tenants = { default = { tenant = "public-pool", mfa = { state = "enabled", totp = { adjacent_intervals = 3, secret = "private-never-published" } } } }
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}

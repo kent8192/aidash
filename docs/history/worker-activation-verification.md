@@ -1,5 +1,11 @@
 # Worker activation verification
 
+> Note (2026-10-11): this record is kept as evidence of the run it describes. Its
+> Qdrant fixture and `qdrant_retry` results (including `worker-activation-results.json`
+> in this directory) describe the earlier semantic backend. PR #130, merged on
+> 2026-10-07, removed Qdrant; the current backend is PostgreSQL with pgvector and
+> PGroonga, see [architecture](../architecture.md#memory-contracts).
+
 This is component evidence for Issue #71, not a declaration that every scenario
 in the design acceptance matrix has passed. Validation used the working tree on
 `docs/issue-71-worker-activation-design`, based on
