@@ -912,6 +912,50 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.await
 	.expect("self display erasure must not wait on the boundary's identity lock");
 	assert_eq!(self_erasure.0, 403, "{}", self_erasure.1);
+	// Approving or rejecting one's own Registration Request would also wait on
+	// that lock, so the boundary refuses it before taking the operator lease.
+	let own_registration = Uuid::new_v4();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("dashboard_registration_requests"))
+			.columns(["id", "identity_id", "status", "created_at", "expires_at"].map(Alias::new))
+			.from_subquery(
+				reinhardt::query::Query::select()
+					.expr(Expr::cust("$1"))
+					.expr(Expr::cust("$2"))
+					.expr(Expr::cust("'pending'"))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::cust("clock_timestamp()+interval '7 days'"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(own_registration)
+	.bind(identity_id)
+	.execute(federation.store.pool.driver())
+	.await
+	.unwrap();
+	for (decision, body) in [
+		("approve", json!({"tenant":"acme","subject":"self"})),
+		("reject", Value::Null),
+	] {
+		let (status, response) = tokio::time::timeout(
+			std::time::Duration::from_secs(20),
+			call(
+				&app,
+				"POST",
+				&format!("/api/dashboard/registrations/{own_registration}/{decision}"),
+				true,
+				true,
+				Some("operator"),
+				false,
+				body,
+			),
+		)
+		.await
+		.expect("a self registration decision must not wait on the boundary's identity lock");
+		assert_eq!(status, 403, "{decision}: {response}");
+	}
 	let stream_response = app
 		.streaming_http
 		.clone()

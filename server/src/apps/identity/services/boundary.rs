@@ -1,5 +1,6 @@
 //! Authentication and transaction visibility at the HTTP boundary.
 use super::http_auth::{bearer, browser_operator_allowed, peer_node};
+use crate::apps::identity::models::DashboardRegistrationRequest;
 use crate::{
 	Error, Result,
 	authorization::{Authorization, identity::Actor},
@@ -158,6 +159,28 @@ impl Middleware for AccessBoundary {
 			});
 			if self_identity_write && request.method != Method::GET {
 				return Err(Error::Forbidden);
+			}
+			let registration_decision = request
+				.uri
+				.path()
+				.strip_prefix("/api/dashboard/registrations/")
+				.and_then(|path| {
+					path.strip_suffix("/approve")
+						.or_else(|| path.strip_suffix("/reject"))
+				})
+				.and_then(|id| uuid::Uuid::parse_str(id).ok());
+			if let (Some(origin), Some(registration)) = (browser.as_ref(), registration_decision)
+				&& request.method != Method::GET
+			{
+				// A decision locks the registration's identity for update in its own
+				// transaction, while the operator lease below holds a shared lock on
+				// the operator's identity: deciding one's own request could never finish.
+				let lease = runtime.store.orm_connection()?;
+				if DashboardRegistrationRequest::identity_of(&mut lease.handle(), registration)
+					.await? == Some(origin.identity_id)
+				{
+					return Err(Error::Forbidden);
+				}
 			}
 			let mut operator_lease = if matches!(actor, Some(Actor::Operator))
 				&& request.method != Method::GET

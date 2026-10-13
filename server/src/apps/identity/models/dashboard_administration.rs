@@ -66,6 +66,16 @@ impl DashboardRegistrationRequest {
 			.map(Self::contract))
 	}
 
+	/// The External Identity a Registration Request belongs to; it never changes.
+	pub(crate) async fn identity_of<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Option<Uuid>> {
+		Ok(Self::objects()
+			.filter(Self::field_id().eq(id))
+			.all_with_db(db)
+			.await?
+			.pop()
+			.map(|registration| registration.identity_id()))
+	}
+
 	pub(crate) async fn submit(db: DatabaseConnection, identity: Uuid) -> Result<Registration> {
 		db.atomic(async |tx| {
 			// One identity lock serializes duplicate submissions without extending
