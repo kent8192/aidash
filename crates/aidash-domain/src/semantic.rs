@@ -36,6 +36,10 @@ pub enum Failure {
 	RetriesExhausted,
 	#[error("The semantic operation is already in progress")]
 	Pending,
+	/// A reused retrieval no longer matches the Home corpus; the Run retrieves
+	/// it again instead of pausing.
+	#[error("The reused semantic retrieval is out of date; retrieve it again")]
+	Stale,
 }
 
 impl Failure {

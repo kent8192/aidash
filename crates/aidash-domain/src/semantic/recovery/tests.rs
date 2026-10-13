@@ -7,6 +7,8 @@ use rstest::rstest;
 #[case::unscheduled_pending(Failure::Pending, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::scheduled_outage(Failure::Unavailable, true, &[Action::Wait])]
 #[case::unscheduled_outage(Failure::Unavailable, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
+#[case::scheduled_stale_retrieval(Failure::Stale, true, &[Action::Wait])]
+#[case::unscheduled_stale_retrieval(Failure::Stale, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::exhausted(Failure::RetriesExhausted, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::authority(Failure::Authority, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::configuration(Failure::Configuration, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]

@@ -500,7 +500,7 @@ mod scoped_pair_composition {
 				&token,
 				"POST",
 				&format!("/api/tasks/{task}/remote-grants"),
-				json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal {3600} else {300},"semantic":mode}),
+				json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
 			)
 			.await;
 			assert_eq!(status, 200, "{prepared}");
@@ -1137,19 +1137,21 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 
 /// A remote Ordered Run reuses its Home retrieval while the Home corpus is
 /// unchanged and retrieves again after an entry is inserted or edited, as a
-/// local Ordered Run does. A Home registered at protocol `0.2` sends no digest,
-/// so its Runs keep the reuse they always had.
+/// local Ordered Run does. A receiver that registered its Home at protocol
+/// `0.3` sees the change in the corpus digest and retrieves before it infers.
+/// One that registered it at `0.2` gets no digest and cites the earlier
+/// retrieval; a current Home refuses that citation as stale (#222), so the Run
+/// retrieves again as well.
 ///
 /// The edited entry is one this executor never received: editing a disclosed
 /// source invalidates the Run instead (see
 /// `consumed_home_semantic_revision_blocks_next_remote_inference`).
 #[rstest::rstest]
-#[case::current_protocol("0.3", true)]
-#[case::older_protocol("0.2", false)]
+#[case::current_protocol("0.3")]
+#[case::older_protocol("0.2")]
 #[tokio::test]
 async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 	#[case] protocol: &str,
-	#[case] sees_changes: bool,
 	#[with(true, false, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -1177,9 +1179,8 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 	// An inserted Home entry changes what the Run should see.
 	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
 	step_to_model_request(&p, 3).await;
-	assert_eq!(model_saw(&p, 3, "cobalt heron").await, sees_changes);
-	let inserted = remote_retrievals(&p).await;
-	assert_eq!(inserted, if sees_changes { 2 } else { 1 });
+	assert!(model_saw(&p, 3, "cobalt heron").await);
+	assert_eq!(remote_retrievals(&p).await, 2);
 
 	// An edit does too, even of an entry this executor may not retrieve, and
 	// the fresh retrieval still withholds it.
@@ -1194,7 +1195,7 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 	step_to_model_request(&p, 4).await;
 	assert!(!model_saw(&p, 4, "amber lynx").await);
 	let edited = remote_retrievals(&p).await;
-	assert_eq!(edited, if sees_changes { 3 } else { 1 });
+	assert_eq!(edited, 3);
 
 	// Reuse resumes once the corpus holds still.
 	step_to_model_request(&p, 5).await;
@@ -1282,6 +1283,184 @@ async fn home_describe_omits_the_corpus_digest_without_semantic_access(
 	assert_eq!(response.status(), 200);
 	let body: Value = response.json().await.unwrap();
 	assert!(body.get("corpus_digest").is_none(), "{body}");
+	p.close().await;
+}
+
+/// Step until the Run pauses, within a bound; returns the pausing Run.
+async fn step_until_paused(p: &Pair) -> aidash_server::domain::Run {
+	for _ in 0..5 {
+		let run = p.run().await;
+		if run.control.as_str() == "PAUSED" {
+			return run;
+		}
+		p.step().await;
+	}
+	let run = p.run().await;
+	assert_eq!(
+		run.control.as_str(),
+		"PAUSED",
+		"{:?} {:?}",
+		run.state,
+		run.error
+	);
+	run
+}
+/// The Home journal's corpus digests for the Run's semantic operations.
+async fn home_corpus_digests(p: &Pair) -> Vec<Option<String>> {
+	sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("corpus_digest"))
+			.from(Alias::new("semantic_remote_operations"))
+			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(p.a.store.pool.driver())
+	.await
+	.unwrap()
+}
+
+/// A remote Ordered Run with an unchanged Home corpus retrieves once. Each
+/// later step cites that retrieval's operation, and the Home admits it (#222).
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_reuses_one_retrieval_across_steps(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let recorded = home_corpus_digests(&p).await;
+	assert_eq!(recorded.len(), 1);
+	assert!(
+		recorded[0].is_some(),
+		"the Home records the corpus it retrieved from"
+	);
+	step_to_model_request(&p, 2).await;
+	step_to_model_request(&p, 3).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		1,
+		"an unchanged corpus is reused"
+	);
+	assert!(model_saw(&p, 3, "ochre falcon").await);
+	p.close().await;
+}
+
+/// An insert changes the Home corpus but no consumed source. The Home refuses
+/// the stale reuse, and the Run retrieves once more instead of pausing.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	write_home_entry(&p, "late", None, 0, "Late Home marker: amber heron.").await;
+	step_to_model_request(&p, 2).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		2,
+		"a changed corpus is retrieved again"
+	);
+	assert!(!model_saw(&p, 1, "amber heron").await);
+	assert!(model_saw(&p, 2, "amber heron").await);
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+	step_to_model_request(&p, 3).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		2,
+		"the new retrieval is reused"
+	);
+	p.close().await;
+}
+
+/// Revoking the grant or editing a source the Run consumed stops a reuse step
+/// before inference, through the existing pause and invalidation paths.
+#[rstest::rstest]
+#[case::grant_revoked("revoked", Some("authority"))]
+#[case::consumed_source_edited("edited", Some("invalidated"))]
+#[tokio::test]
+async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
+	#[case] fault: &str,
+	#[case] reason: Option<&str>,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	if fault == "revoked" {
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	} else {
+		write_home_entry(&p, "shared", None, 1, "Edited archive marker: slate owl.").await;
+	}
+	let run = step_until_paused(&p).await;
+	assert_eq!(
+		run.recovery
+			.semantic_reason
+			.map(|reason| serde_json::to_value(reason).unwrap()),
+		reason.map(|reason| json!(reason)),
+		"{:?}",
+		run.error
+	);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(remote_retrievals(&p).await, 1);
+	p.close().await;
+}
+
+/// The Home refuses a citation of an operation it did not retrieve for this
+/// Run and grant at or before the current step, and of one that is not READY.
+#[rstest::rstest]
+#[case::another_run("admission_id", "gen_random_uuid()")]
+#[case::another_grant("grant_id", "gen_random_uuid()")]
+#[case::not_ready("state", "'PENDING'")]
+#[case::future_step(
+	"binding",
+	"jsonb_set(binding,'{operation,boundary,step}','999'::jsonb)"
+)]
+#[tokio::test]
+async fn the_home_refuses_a_foreign_reused_operation(
+	#[case] column: &str,
+	#[case] value: &str,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	// Rewrite only the Home's record of the cited operation; the receiver still
+	// holds and cites its own READY copy.
+	let tampered = sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new(column), Expr::cust(value))
+			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(tampered.rows_affected(), 1);
+	let run = step_until_paused(&p).await;
+	assert_eq!(run.recovery.semantic_reason, None, "{:?}", run.error);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(remote_retrievals(&p).await, 1);
 	p.close().await;
 }
 

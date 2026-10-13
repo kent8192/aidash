@@ -113,6 +113,17 @@ change the budget and therefore the key.
 Every reuse is rechecked against current authority first: revoked or narrowed
 access pauses the Run, and a stale result is retrieved again once.
 
+A remote `ordered` Run reuses a retrieval the Home performed for an earlier
+step, so the Home has no semantic operation for the current step. Its inference
+and compaction admissions therefore cite the operation whose receipt the step
+reuses. The Home admits a cited operation only when it is READY for the same
+Run and grant at or before the current step, the grant is live, no source the
+Run consumed changed, and the Workspace corpus digest still equals the one
+recorded before that retrieval. A revoked grant pauses the Run, and an edited
+consumed source invalidates it as before (a follow-up Task continues the work).
+Any other corpus change, such as a new entry, answers `stale`: the Run drops the
+cached retrieval and retrieves once more. See [protocol](../protocol.md).
+
 ## Explicit prompt caching
 
 Some routes cache a prompt prefix on their own. Others cache only up to a

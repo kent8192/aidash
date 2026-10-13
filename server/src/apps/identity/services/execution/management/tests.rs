@@ -44,6 +44,7 @@ fn inspection(
 		}),
 		context: None,
 		state_error: None,
+		lease_wait: None,
 	}
 }
 

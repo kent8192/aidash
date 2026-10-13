@@ -59,10 +59,9 @@ async fn description_lease_mode(
 	.map_err(Into::into)
 }
 
-/// The corpus a remote Run's semantic read draws from: the Workspace's live
-/// entries and, for native memory, the Home participant's banks. Read from
-/// the grant's own Workspace after the live-grant checks above, and only when
-/// the grant carries Home semantic access.
+/// The corpus a remote Run's semantic read draws from, as the Home records it
+/// for each remote retrieval. Read after the live-grant checks above, and only
+/// when the grant carries Home semantic access.
 ///
 /// The digest covers every live entry of the Workspace, as it does for a local
 /// Run, so it also moves when an entry the executor may not retrieve changes.
@@ -71,11 +70,7 @@ async fn corpus_digest(store: &Store, description: &Description) -> Result<Optio
 	if description.semantic.disabled() {
 		return Ok(None);
 	}
-	let participant = description
-		.semantic
-		.native()
-		.and_then(|native| native.participant.bank.participant);
-	crate::semantic::services::corpus_digest(store, description.task.workspace_id, participant)
+	crate::semantic::services::memory_context::remote_corpus_digest(&store.pool, description)
 		.await
 		.map(Some)
 }

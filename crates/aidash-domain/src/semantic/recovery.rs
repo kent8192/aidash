@@ -40,12 +40,17 @@ impl Recovery {
 	pub fn new(cause: Failure, retry_scheduled: bool) -> Self {
 		use Action::*;
 		let actions = match cause {
-			Failure::Pending | Failure::Unavailable if retry_scheduled => vec![Wait],
+			// A stale reuse retries automatically with a fresh retrieval, like an
+			// outage; once exhausted it pauses as `RetriesExhausted`.
+			Failure::Pending | Failure::Unavailable | Failure::Stale if retry_scheduled => {
+				vec![Wait]
+			}
 			// Retrying the same request cannot change the outcome: the Run's
 			// context already holds obsolete text, or the same budget overflows.
 			Failure::Invalidated | Failure::ContextBudget => vec![CreateFollowUpTask],
 			Failure::Pending
 			| Failure::Unavailable
+			| Failure::Stale
 			| Failure::RetriesExhausted
 			| Failure::Authority
 			| Failure::Configuration
