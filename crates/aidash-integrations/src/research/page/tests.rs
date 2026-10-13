@@ -127,6 +127,22 @@ async fn redirects_never_leave_the_approved_destination_host() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn a_redirect_fragment_is_dropped_from_the_fetched_page_address() {
+	let address = serve(vec![
+		http("302 Found", "Location: /next#section\r\n", ""),
+		http("200 OK", "Content-Type: text/plain\r\n", "Next page"),
+	])
+	.await;
+	let page = reader(address)
+		.fetch(&Url::parse("http://example.com/").unwrap())
+		.await
+		.unwrap();
+	assert_eq!(page.url, "http://example.com/next");
+	assert!(page.validate().is_ok());
+}
+
+#[rstest]
 fn extraction_is_linear_in_unclosed_skipped_elements() {
 	// Many unclosed skipped elements once made each one rescan the rest.
 	let body = "<script>".repeat(200_000) + "visible";
@@ -215,6 +231,11 @@ fn oversized_text_is_marked_incomplete() {
 	"http://example.com/a",
 	"http://example.com/b",
 	Ok("http://example.com/b")
+)]
+#[case(
+	"https://example.com/a",
+	"/next#section",
+	Ok("https://example.com/next")
 )]
 #[case(
 	"https://example.com/a",

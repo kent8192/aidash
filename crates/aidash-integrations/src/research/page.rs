@@ -171,9 +171,10 @@ impl PageProvider for PageReader {
 
 /// The next address of a redirect. The Web disclosure approved one destination
 /// host, so another host needs its own request and approval; an encrypted read
-/// is never downgraded.
+/// is never downgraded. A fragment is never sent, so it is dropped: the page
+/// is recorded under the address actually fetched.
 pub fn redirect_target(current: &Url, location: &str) -> Result<Url, Failure> {
-	let next = current
+	let mut next = current
 		.join(location)
 		.map_err(|_| Failure::ProviderResponseInvalid)?;
 	if next.host_str() != current.host_str() {
@@ -182,6 +183,7 @@ pub fn redirect_target(current: &Url, location: &str) -> Result<Url, Failure> {
 	if current.scheme() == "https" && next.scheme() != "https" {
 		return Err(Failure::InsecureRedirect);
 	}
+	next.set_fragment(None);
 	Ok(next)
 }
 
