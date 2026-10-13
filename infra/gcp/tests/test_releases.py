@@ -1,6 +1,7 @@
 """Release lifecycle and authorization at the actual gh JSON/API boundary."""
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -57,14 +58,16 @@ class GitHubTransport:
         self.branch_reads = 0
         self.advance_on_read = None
 
-    def add_staging(self, value=None, filename="staging-receipt.json"):
+    def add_staging(self, value=None, filename="staging-receipt.json", age=timedelta(minutes=5)):
         self.runs[200] = workflow_run(200, "GCP environments", MAIN, "workflow_run")
         value = receipt() if value is None else value
         content = io.BytesIO()
         with zipfile.ZipFile(content, "w") as zipped:
             zipped.writestr(filename, json.dumps(value))
         self.zipfiles[300] = content.getvalue()
-        self.artifacts = [{"id": 300, "name": "staging-receipt", "expired": False, "size_in_bytes": len(self.zipfiles[300]), "workflow_run": {"id": 200}}]
+        created = (datetime.now(timezone.utc) - age).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.artifacts = [{"id": 300, "name": "staging-receipt", "expired": False, "size_in_bytes": len(self.zipfiles[300]), "created_at": created,
+                           "workflow_run": {"id": 200, "head_sha": MAIN, "head_branch": CONFIG["develop_branch"]}}]
 
     def managed_pr(self, sha=SOURCE, number=1):
         metadata = {"protocol": "aidash-release/1", "source_sha": sha, "source_branch": CONFIG["develop_branch"], "ci_run_id": 100}
@@ -110,7 +113,11 @@ class GitHubTransport:
             runs = [item for item in self.runs.values() if item["workflow_id"] == identifier]
             if "head_sha" in query:
                 runs = [item for item in runs if item["head_sha"] == query["head_sha"][0]]
-            response = {"workflow_runs": sorted(runs, key=lambda item: item["id"], reverse=True)}
+            runs = sorted(runs, key=lambda item: item["id"], reverse=True)
+            size, page = int(query.get("per_page", ["30"])[0]), int(query.get("page", ["1"])[0])
+            response = {"workflow_runs": runs[(page - 1) * size:page * size]}
+        elif path == "actions/artifacts":
+            response = {"artifacts": [value for value in self.artifacts if value["name"] == query["name"][0]]}
         elif path.endswith("/artifacts"):
             response = {"artifacts": self.artifacts if int(path.split("/")[2]) == 200 else []}
         elif path.startswith("actions/runs/"):
@@ -226,6 +233,32 @@ class ReleaseLifecycleTests(unittest.TestCase):
         releases.create_candidate(CONFIG, event(self.github.runs[100]))
         self.assertFalse(self.github.prs[0]["draft"])
         self.assertEqual(self.github.checks[0]["conclusion"], "success")
+
+    def test_replay_finds_receipt_buried_by_later_reconciliation_runs(self):
+        self.github.add_staging(age=timedelta(hours=3))
+        for identifier in range(201, 260):
+            self.github.runs[identifier] = workflow_run(identifier, "GCP environments", MAIN, "schedule")
+        releases.create_candidate(CONFIG, event(self.github.runs[100]))
+        self.assertFalse(self.github.prs[0]["draft"])
+        self.assertEqual(self.github.checks[0]["conclusion"], "success")
+
+    def test_replay_ignores_receipts_older_than_staging_evidence_lifetime(self):
+        self.github.add_staging(age=timedelta(days=8))
+        releases.create_candidate(CONFIG, event(self.github.runs[100]))
+        self.assertTrue(self.github.prs[0]["draft"])
+        self.assertEqual(self.github.checks[0]["status"], "in_progress")
+
+    def test_environment_run_without_staging_receipt_is_a_no_op(self):
+        self.github.prs.append(self.github.managed_pr())
+        self.github.runs[201] = workflow_run(201, "GCP environments", MAIN, "schedule")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "event.json"
+            path.write_text(json.dumps(event(self.github.runs[201])))
+            environment = {"AIDASH_GCP_CONFIG": json.dumps(CONFIG), "GITHUB_REPOSITORY": REPOSITORY, "GITHUB_EVENT_NAME": "workflow_run", "GITHUB_EVENT_PATH": str(path)}
+            with patch.dict(os.environ, environment), patch.object(sys, "argv", ["releases.py", "staging"]):
+                releases.main()
+        self.assertEqual(self.github.writes, [])
+        self.assertTrue(self.github.prs[0]["draft"])
 
     def test_forged_or_stale_receipts_do_not_publish_success_or_ready_pr(self):
         changes = [lambda value, gh: value.update(run_id=999),

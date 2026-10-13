@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from urllib.parse import quote, urlencode
 import zipfile
 
@@ -229,10 +230,13 @@ def create_candidate(config, event):
     return True
 
 
-def download_receipt(config, event):
+def download_receipt(config, event, optional=False):
     completed = completed_run(config, event, "gcp-environments.yml", "GCP environments", {"workflow_run", "schedule", "workflow_dispatch", "issue_comment"})
     artifacts = pages(f"repos/{config['repository']}/actions/runs/{completed['id']}/artifacts", "artifacts")
     owned = [value for value in artifacts if value.get("name") == "staging-receipt"]
+    if optional and not owned:
+        # Scheduled reconciliations and test/PR operations publish no staging evidence.
+        return None
     if len(owned) != 1 or owned[0].get("expired") is not False or owned[0].get("workflow_run", {}).get("id") != completed["id"] or not 0 < owned[0].get("size_in_bytes", 0) <= 32768:
         raise Refused("The trusted workflow has no unique bounded staging artifact")
     archive = run("gh", "api", f"repos/{config['repository']}/actions/artifacts/{int(owned[0]['id'])}/zip", timeout=60)
@@ -246,21 +250,28 @@ def download_receipt(config, event):
 
 
 def replay_staging(config, sha):
-    # The deployment and release-PR workflows may finish in either order. Reuse
-    # only receipts from this trusted workflow; never extract downloaded files.
-    owner = workflow(config, "gcp-environments.yml", "GCP environments")
-    query = urlencode({"status": "success", "branch": config.get("automation_branch", config["develop_branch"])})
-    recent = api(f"repos/{config['repository']}/actions/workflows/gcp-environments.yml/runs?{query}&per_page=20")["workflow_runs"]
-    for completed in recent:
-        if completed.get("workflow_id") != owner["id"] or completed.get("path") != owner["path"]:
-            continue
-        event = {"action": "completed", "repository": {"full_name": config["repository"]}, "workflow_run": completed}
+    # The deployment and release-PR workflows may finish in either order, and
+    # five-minute reconciliations soon bury the producing run in run listings.
+    # Walk only staging receipts, newest first, until they outlive the staging
+    # evidence lifetime. Reuse only receipts from this trusted workflow; never
+    # extract downloaded files.
+    oldest = time.time() - config.get("staging_max_age_seconds", 604800)
+    branch = config.get("automation_branch", config["develop_branch"])
+    artifacts = pages(f"repos/{config['repository']}/actions/artifacts?{urlencode({'name': 'staging-receipt'})}", "artifacts")
+    for artifact in sorted(artifacts, key=lambda value: str(value.get("created_at", "")), reverse=True):
         try:
+            if datetime.fromisoformat(artifact["created_at"].replace("Z", "+00:00")).timestamp() < oldest:
+                return
+            produced = artifact["workflow_run"]
+            if artifact.get("expired") is not False or produced.get("head_branch") != branch:
+                continue
+            event = {"action": "completed", "repository": {"full_name": config["repository"]},
+                     "workflow_run": {"id": produced["id"], "head_sha": produced.get("head_sha")}}
             receipt = download_receipt(config, event)
             if receipt.get("source_sha") == sha:
                 accept_staging(config, event, receipt)
                 return
-        except (Refused, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+        except (Refused, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
             # No current trusted acknowledgement means the PR remains a draft.
             continue
 
@@ -334,8 +345,9 @@ def main():
     else:
         if args.receipt is not None and args.receipt.stat().st_size > 16384:
             raise Refused("A bounded sanitized receipt artifact is required")
-        receipt = json.loads(args.receipt.read_text()) if args.receipt is not None else download_receipt(config, event)
-        accept_staging(config, event, receipt)
+        receipt = json.loads(args.receipt.read_text()) if args.receipt is not None else download_receipt(config, event, optional=True)
+        if receipt is not None:
+            accept_staging(config, event, receipt)
 
 
 if __name__ == "__main__":
