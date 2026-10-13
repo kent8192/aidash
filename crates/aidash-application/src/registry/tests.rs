@@ -2,7 +2,10 @@ use super::*;
 use crate::ports::{Credentials, registry::*};
 use aidash_domain::{
 	model::ModelConfig,
-	registry::{AgentConfig, EntityRef, Projection},
+	registry::{
+		AgentConfig,
+		rules::{digest, overlay_config},
+	},
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -47,7 +50,6 @@ fn skill_instructions(entry: &Entry) -> Result<String> {
 #[derive(Default)]
 struct Scope {
 	entries: BTreeMap<String, Entry>,
-	overlays: BTreeMap<String, Value>,
 	pages: Vec<(String, String, Value)>,
 	generated: BTreeSet<String>,
 	trace: Vec<String>,
@@ -95,10 +97,6 @@ impl DefinitionLookup for Scope {
 			.get(&identity(id, version))
 			.cloned()
 			.ok_or_else(|| Error::NotFound(id.into()))
-	}
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
-		self.trace.push(format!("overlay:{id}@{version}"));
-		Ok(self.overlays.get(&identity(id, version)).cloned())
 	}
 }
 #[async_trait]
@@ -153,119 +151,10 @@ impl RegistryRead for Scope {
 		Ok(self.generated.contains(&identity(id, version)))
 	}
 }
-#[async_trait]
-impl PackageScope for Scope {
-	fn registry_node(&self) -> &str {
-		"aidash://test"
-	}
-	async fn publish(
-		&mut self,
-		id: &str,
-		version: &str,
-		manifest: Value,
-		digest: &str,
-		_: &str,
-	) -> Result<(PackageRecord, bool)> {
-		self.trace.push("publish".into());
-		Ok((
-			PackageRecord {
-				id: id.into(),
-				version: version.into(),
-				manifest,
-				digest: digest.into(),
-			},
-			true,
-		))
-	}
-	async fn install(&mut self, _: &Entry, _: &str, _: Value) -> Result<bool> {
-		self.trace.push("install".into());
-		Ok(true)
-	}
-	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
-		self.event(kind, payload);
-		Ok(())
-	}
-}
 fn definition(id: &str, kind: &str, config: Value) -> Entry {
 	let name = if id.is_empty() { "Fixture" } else { id };
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":name},"description":{"en":"fixture"},"config":config})).unwrap()
 }
-fn package() -> Package {
-	Package {
-		entity: definition(
-			"skill",
-			"skill",
-			json!({"instructions":"Use the original evidence"}),
-		),
-		author: "author".into(),
-		permissions: Vec::new(),
-		dependencies: Vec::new(),
-	}
-}
-fn snapshot(package: &Package) -> PackageSnapshot {
-	let manifest = json!(package);
-	PackageSnapshot {
-		source: manifest.to_string(),
-		digest: digest(&manifest),
-		manifest,
-	}
-}
-
-#[rstest]
-#[case::local(false, "original")]
-#[case::installed(true, "original")]
-#[tokio::test]
-async fn installed_run_never_resolves_mutable_overlays(
-	#[case] installed: bool,
-	#[case] expected: &str,
-) {
-	let mut scope = Scope::default();
-	let mut root = definition("agent", "agent", json!({}));
-	root.installation = installed.then(|| Projection {
-		contract: 1,
-		tenant: "tenant".into(),
-		installation: "installation".into(),
-		revision: 3,
-	});
-	scope.put(root);
-	scope.put(definition(
-		"skill",
-		"skill",
-		json!({"instructions":"original"}),
-	));
-	scope
-		.overlays
-		.insert("skill@1.0.0".into(), json!({"instructions":"overlaid"}));
-	let run = aidash_domain::RunMetadata {
-		id: Uuid::new_v4(),
-		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
-		home_node: "aidash://home".into(),
-		agent_id: "agent".into(),
-		agent_version: "1.0.0".into(),
-		phase: aidash_domain::RunPhase::Ready,
-		control: aidash_domain::RunControl::Active,
-		step: 0,
-		revision: 0,
-		observed_input_seq: 0,
-		ledger_worker_ready: true,
-		error: None,
-		lease_owner: None,
-		lease_until: None,
-		updated_at: chrono::Utc::now(),
-	};
-	let entry = get_for_run(&mut scope, run, "skill", "1.0.0")
-		.await
-		.unwrap();
-	assert_eq!(entry.config["instructions"], expected);
-	assert!(
-		!scope
-			.trace
-			.iter()
-			.any(|event| event.starts_with("overlay:"))
-	);
-}
-
 #[rstest]
 #[tokio::test]
 async fn registration_rejects_wrong_reference_kind_before_any_write(
@@ -296,7 +185,11 @@ async fn idempotent_registration_emits_one_event_and_preserves_input(
 	validation: DefinitionValidation,
 ) {
 	let mut scope = Scope::default();
-	let mut input = package().entity;
+	let mut input = definition(
+		"skill",
+		"skill",
+		json!({"instructions":"Use the original evidence"}),
+	);
 	input.id.clear();
 	let first = register(
 		&mut scope,
@@ -364,85 +257,6 @@ async fn discovery_exclusions_are_counted_before_decoding_metadata() {
 		.unwrap();
 	assert!(empty.entries.is_empty());
 	assert_eq!(empty.next_offset, None);
-}
-
-#[rstest]
-#[case::raw_bytes(true, false)]
-#[case::decoded_value(false, true)]
-fn installation_checks_source_bytes_and_decoded_manifest(
-	#[case] bytes: bool,
-	#[case] manifest: bool,
-) {
-	let mut snapshot = snapshot(&package());
-	let expected = snapshot.digest.clone();
-	if bytes {
-		snapshot.source.push(' ');
-	}
-	if manifest {
-		snapshot.manifest["author"] = json!("changed");
-	}
-	assert_eq!(
-		prepare_install(snapshot, &expected, json!({}))
-			.err()
-			.unwrap()
-			.to_string(),
-		"package digest changed"
-	);
-}
-
-#[test]
-fn agent_installations_may_select_an_exposure_policy() {
-	// Arrange
-	let mut agent = package();
-	agent.entity = definition(
-		"agent",
-		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work."}),
-	);
-	let digest = snapshot(&agent).digest;
-	let exposure = json!({"version":"deferred@1","schema_bytes":4096});
-	// Act
-	let plan = prepare_install(snapshot(&agent), &digest, json!({"exposure":exposure})).unwrap();
-	// Assert
-	assert_eq!(plan.effective.config["exposure"], exposure);
-	assert_eq!(
-		prepare_install(
-			snapshot(&agent),
-			&digest,
-			json!({"exposure_policy":exposure})
-		)
-		.err()
-		.unwrap()
-		.to_string(),
-		"agent installation cannot override exposure_policy"
-	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn missing_package_dependency_prevents_install_and_event(validation: DefinitionValidation) {
-	let mut package = package();
-	package.dependencies.push(EntityRef {
-		id: "missing".into(),
-		version: "1.0.0".into(),
-	});
-	let snapshot = snapshot(&package);
-	let digest = snapshot.digest.clone();
-	let plan = prepare_install(snapshot, &digest, json!({})).unwrap();
-	let mut scope = Scope::default();
-	let error = install(
-		&mut scope,
-		&validation,
-		plan,
-		"aidash://home",
-		"skill",
-		"1.0.0",
-	)
-	.await
-	.unwrap_err();
-	assert_eq!(error.to_string(), "missing");
-	assert_eq!(scope.trace, ["read:missing@1.0.0"]);
-	assert!(scope.events.is_empty());
 }
 
 #[rstest]
@@ -813,44 +627,6 @@ async fn byok_timeout_is_validated_on_registration_import_and_consumption() {
 		);
 		assert!(scope.trace.is_empty());
 		assert!(scope.events.is_empty());
-		let mut bundle = package();
-		bundle.entity = entry.clone();
-		let value = serde_json::to_value(&bundle).unwrap();
-		let source = value.to_string();
-		let hash = digest(&value);
-		let plan = prepare_install(
-			PackageSnapshot {
-				manifest: value,
-				source,
-				digest: hash.clone(),
-			},
-			&hash,
-			json!({}),
-		)
-		.unwrap();
-		assert!(
-			install(
-				&mut scope,
-				&validator,
-				plan,
-				"aidash://home",
-				&entry.id,
-				&entry.version
-			)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("at most 3600")
-		);
-		assert!(scope.trace.is_empty());
-		assert!(scope.events.is_empty());
-		assert!(
-			publish(&mut scope, &validator, bundle)
-				.await
-				.unwrap_err()
-				.to_string()
-				.contains("at most 3600")
-		);
 		assert!(scope.trace.is_empty());
 	}
 	// Direct env configurations keep their existing deadline range.
@@ -902,44 +678,6 @@ async fn byok_model_scope_is_validated_before_registration_and_model_import(
 				.await
 				.is_err()
 		);
-		// Embedding definitions are registered directly, not installed packages.
-		if kind == "model" {
-			let mut bundle = package();
-			bundle.entity = entry.clone();
-			let value = serde_json::to_value(&bundle).unwrap();
-			let hash = digest(&value);
-			let plan = prepare_install(
-				PackageSnapshot {
-					manifest: value.clone(),
-					source: value.to_string(),
-					digest: hash.clone(),
-				},
-				&hash,
-				json!({}),
-			)
-			.unwrap();
-			assert!(
-				install(
-					&mut scope,
-					&validator,
-					plan,
-					"aidash://home",
-					&entry.id,
-					&entry.version
-				)
-				.await
-				.unwrap_err()
-				.to_string()
-				.contains("at most 256")
-			);
-			assert!(
-				publish(&mut scope, &validator, bundle)
-					.await
-					.unwrap_err()
-					.to_string()
-					.contains("at most 256")
-			);
-		}
 		assert!(scope.trace.is_empty());
 		assert!(scope.events.is_empty());
 	}

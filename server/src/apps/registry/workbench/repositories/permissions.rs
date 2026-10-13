@@ -82,7 +82,7 @@ impl PermissionScope for Scope {
 		.await
 	}
 	async fn effective(&mut self, entry: &EntityRef) -> Result<Entry> {
-		crate::apps::registry::services::admission::effective(
+		crate::apps::registry::services::admission::definition(
 			self.tx.as_mut(),
 			&entry.id,
 			&entry.version,

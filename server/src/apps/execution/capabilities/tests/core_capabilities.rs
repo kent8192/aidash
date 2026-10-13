@@ -262,15 +262,6 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	entry.binding_normalization = None;
 	entry.config["bindings"] = json!([]);
 	entry.config["remove_default"] = json!([]);
-	let (status, result) = request(
-		&app,
-		&f.config.api_token,
-		"PUT",
-		"/api/marketplace/compatibility",
-		json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
 	let (status, pending) = request(&app,&f.config.api_token,"POST","/api/marketplace/host-packages",json!({"tenant":"acme","groups":["shell","python","outbound_get","apply_patch","file_share","task_assign"],"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(status, 200, "{pending}");
 	let installations = pending["installations"].as_array().unwrap();

@@ -87,7 +87,7 @@ impl InspectionScope for Scope {
 		.await
 	}
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry> {
-		crate::apps::registry::services::admission::effective(
+		crate::apps::registry::services::admission::definition(
 			self.tx(),
 			&reference.id,
 			&reference.version,

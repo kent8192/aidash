@@ -1,39 +1,19 @@
 use super::*;
-use crate::ports::{
-	Credentials,
-	registry::CoreToolCatalog,
-	transactions::{
-		coordination::{CoordinatorRepository, ParticipantTransport, RecoveryBatch, RecoveryScope},
-		participation::PendingParticipants,
-	},
+use crate::ports::transactions::{
+	coordination::{CoordinatorRepository, ParticipantTransport, RecoveryBatch, RecoveryScope},
+	participation::PendingParticipants,
 };
-use aidash_domain::{
-	capabilities::CoreCapabilities,
-	provider::ToolSpec,
-	transactions::{
-		CoordinatorTransition, Isolation, Mutation, Participant as Node,
-		authority::Status,
-		coordination::{ParticipantOperation, Vote},
-	},
+use aidash_domain::transactions::{
+	CoordinatorTransition, Isolation, Mutation, Participant as Node,
+	authority::Status,
+	coordination::{ParticipantOperation, Vote},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rstest::{fixture, rstest};
 use serde_json::json;
-use std::{collections::BTreeMap, sync::Mutex};
+use std::sync::Mutex;
 use uuid::Uuid;
-
-struct Catalog;
-impl Credentials for Catalog {
-	fn resolve(&self, name: &str) -> Result<String> {
-		Err(Error::NotFound(name.into()))
-	}
-}
-impl CoreToolCatalog for Catalog {
-	fn specifications(&self, _config: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
-		BTreeMap::new()
-	}
-}
 
 #[fixture]
 fn manifest() -> Manifest {
@@ -106,7 +86,6 @@ impl Adapter {
 		Participant::new(
 			Arc::new(self.clone()),
 			Coordinator::new(Arc::new(self.clone()), Arc::new(self.clone())),
-			DefinitionValidation::new(Arc::new(Catalog), Arc::new(Catalog)),
 		)
 	}
 	fn event(&self, event: impl Into<String>) -> Result<()> {

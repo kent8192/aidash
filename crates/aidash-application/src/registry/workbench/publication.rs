@@ -1,5 +1,6 @@
 //! Advisory validation and immutable registration share current draft authority.
 use super::{authorize, validate_content};
+use crate::ports::registry::DefinitionLookup as _;
 use crate::{
 	Error, Result,
 	ports::registry::workbench::{DraftRepository, DraftScope, PublicationScope},
@@ -76,7 +77,7 @@ where
 		.map(|_| digest(&draft.documents));
 	let mut versions = Vec::new();
 	for row in rows {
-		let entry = registry::effective(&mut scope, managed_id, &row.version).await?;
+		let entry = scope.definition(managed_id, &row.version).await?;
 		let registered_knowledge_digest =
 			private_digest(&mut scope, &entry, repository.node_id()).await?;
 		versions.push(RegisteredVersion {
@@ -98,7 +99,7 @@ where
 			.iter()
 			.any(|item| &item.entry.version == source_version)
 	{
-		let entry = registry::effective(&mut scope, managed_id, source_version).await?;
+		let entry = scope.definition(managed_id, source_version).await?;
 		let registered_knowledge_digest =
 			private_digest(&mut scope, &entry, repository.node_id()).await?;
 		versions.push(RegisteredVersion {

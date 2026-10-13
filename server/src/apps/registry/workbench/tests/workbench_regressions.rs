@@ -1,7 +1,5 @@
-use aidash_server::apps::registry::models::Package as PackageModel;
 use aidash_server::authorization::identity::Actor;
 use aidash_server::registry::Registry;
-use reinhardt::db::orm::Model;
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::{Request, Response, ServerRouter};
 #[path = "../../../execution/tests/support/legacy.rs"]
@@ -561,35 +559,16 @@ async fn trust_permissions_use_worker_transport_and_registry_read(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn registry_reload_preserves_registered_and_packaged_behavior_flags(
-	#[future(awt)] workbench: Workbench,
-) {
+async fn registry_reload_preserves_registered_behavior_flags(#[future(awt)] workbench: Workbench) {
 	let wb = workbench;
 	let registered = wb.register().await;
 	let entry: aidash_server::registry::Entry =
 		serde_json::from_value(registered["entry"].clone()).unwrap();
-	let package =
-		wb.f.registry
-			.publish(aidash_server::registry::Package {
-				entity: entry.clone(),
-				author: "Fixture".into(),
-				permissions: vec![],
-				dependencies: vec![],
-			})
-			.await
-			.unwrap();
-	let mut reloaded = Registry::new(wb.f.store.pool.clone(), &wb.f.config.node_id).unwrap();
+	let reloaded = Registry::new(wb.f.store.pool.clone(), &wb.f.config.node_id).unwrap();
 	assert_eq!(
 		reloaded.get(&entry.id, &entry.version).await.unwrap(),
 		entry
 	);
-	let packages = PackageModel::objects()
-		.filter(PackageModel::field_id().eq(&entry.id))
-		.filter(PackageModel::field_version().eq(&entry.version))
-		.get_with_db(&mut reloaded.db)
-		.await
-		.unwrap();
-	assert_eq!(packages.manifest.into_inner(), package.manifest);
 	wb.cleanup().await;
 }
 
@@ -1532,74 +1511,6 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 		matches!(finished["status"].as_str(), Some("blocked" | "failed")),
 		"session: {finished}"
 	);
-	wb.cleanup().await;
-}
-
-#[rstest::fixture]
-fn installed_tool_waiting_for_dispatch(
-	#[future] model_waiting_for_real_tool: (Workbench, Value),
-) -> impl std::future::Future<Output = (Workbench, Value, String)> {
-	// Heap-own the composed setup future to keep libtest stack use bounded.
-	Box::pin(async move {
-		let model_waiting_for_real_tool = model_waiting_for_real_tool.await;
-		let (wb, started) = model_waiting_for_real_tool;
-		let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
-		let package =
-			wb.f.registry
-				.publish(aidash_server::registry::Package {
-					entity: entry,
-					author: "Fixture".into(),
-					permissions: vec![],
-					dependencies: vec![],
-				})
-				.await
-				.unwrap();
-		wb.f.registry
-			.install("fixture-tool", "1.0.0", &package.digest, json!({}))
-			.await
-			.unwrap();
-		(wb, started, package.digest)
-	})
-}
-
-#[rstest::rstest]
-#[case("endpoint")]
-#[case("replay")]
-#[case("credential")]
-#[tokio::test]
-async fn real_dispatch_rejects_effective_tool_isolation_changes(
-	#[future(awt)] installed_tool_waiting_for_dispatch: (Workbench, Value, String),
-	#[case] change: &str,
-) {
-	let (wb, started, digest) = installed_tool_waiting_for_dispatch;
-	let mut transport =
-		wb.f.registry
-			.get("fixture-tool", "1.0.0")
-			.await
-			.unwrap()
-			.config["transport"]
-			.clone();
-	match change {
-		"endpoint" => transport["endpoint"] = json!(format!("{}/test-effect", wb.endpoint)),
-		"replay" => transport["replay"] = json!("unsafe"),
-		"credential" => transport["credential_env"] = json!("AIDASH_SECRET_TEST_PEER"),
-		_ => unreachable!(),
-	}
-	let overlay = json!({"transport":transport});
-	wb.f.registry
-		.install("fixture-tool", "1.0.0", &digest, overlay)
-		.await
-		.unwrap();
-	wb.model_gate.paused.store(false, Ordering::SeqCst);
-	wb.model_gate.release.notify_one();
-	let finished = wb.operator_finished(&started).await;
-	assert_eq!(
-		wb.effect_hits.load(Ordering::SeqCst),
-		0,
-		"isolation changed: {finished}"
-	);
-	assert_eq!(finished["status"], "blocked", "session: {finished}");
-	assert_eq!(finished["tool_calls"][0]["outcome"], "denied");
 	wb.cleanup().await;
 }
 

@@ -6,7 +6,6 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use rstest::rstest;
-use serde_json::Value;
 use uuid::Uuid;
 struct Scope {
 	principal: Principal,
@@ -17,9 +16,6 @@ struct Scope {
 impl DefinitionLookup for Scope {
 	async fn definition(&mut self, _: &str, _: &str) -> Result<Entry> {
 		panic!("inspection authority does not read definitions")
-	}
-	async fn overrides(&mut self, _: &str, _: &str) -> Result<Option<Value>> {
-		panic!("inspection authority does not apply overrides")
 	}
 }
 #[async_trait]

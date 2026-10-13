@@ -6,19 +6,12 @@ use crate::apps::{
 	},
 	federation::remote::models::Delegation,
 	identity::models::{AuthorizationExecution, AuthorizationRunOutput},
-	registry::repositories::NativeScope,
 	workspaces::models::{Task as TaskRecord, Workspace},
 };
-use aidash_application::{
-	Result,
-	ports::{
-		registry::{DefinitionLookup, DefinitionWriter},
-		transactions::mutation::MutationScope,
-	},
-};
+use aidash_application::{Result, ports::transactions::mutation::MutationScope};
 use aidash_domain::{
 	Artifact, ArtifactInput, Task, Workspace as WorkspaceContract,
-	provider::progress::ProgressOutcome, registry::Entry, run_state::RawRun,
+	provider::progress::ProgressOutcome, run_state::RawRun,
 };
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
@@ -31,26 +24,6 @@ pub(crate) struct Scope<'a>(
 	pub(crate) &'a mut dyn TransactionExecutor,
 	pub(crate) Vec<ProgressOutcome>,
 );
-
-#[async_trait]
-impl DefinitionLookup for Scope<'_> {
-	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
-		NativeScope(self.0).definition(id, version).await
-	}
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
-		NativeScope(self.0).overrides(id, version).await
-	}
-	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
-		NativeScope(self.0).executor_kind(id, version).await
-	}
-}
-
-#[async_trait]
-impl DefinitionWriter for Scope<'_> {
-	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
-		NativeScope(self.0).insert_definition(entry).await
-	}
-}
 
 #[async_trait]
 impl MutationScope for Scope<'_> {

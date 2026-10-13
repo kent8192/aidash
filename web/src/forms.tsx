@@ -41,7 +41,6 @@ import {
   personalAgentCreate,
   peerCreate,
   taskDelegate,
-  packagePublish,
 } from "./generated/aidash";
 export type Submit = (request: () => Promise<unknown>) => Promise<boolean>;
 const split = (s: string) =>
@@ -978,73 +977,6 @@ export function AssignForm({
             : "Retry the same execution grant"
           : t("delegate")}
       </Button>
-    </form>
-  );
-}
-export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
-  const { t } = useI18n();
-  const entityLabel = useEntityLabel(data.registry);
-  return (
-    <form
-      className={formClass}
-      onSubmit={(e) => {
-        e.preventDefault();
-        const d = new FormData(e.currentTarget);
-        const entity = data.registry.find(
-          (e) => `${e.id}@${e.version}` === d.get("entity"),
-        );
-        if (!entity) return;
-        void submit(() =>
-          packagePublish({
-            entity,
-            author: String(d.get("author")),
-            permissions: split(String(d.get("permissions"))),
-            dependencies: d.getAll("dependencies").map((value) => {
-              const [id, version] = JSON.parse(String(value)) as [
-                string,
-                string,
-              ];
-              return { id, version };
-            }),
-          }),
-        );
-      }}
-    >
-      <Hint>{t("publishHelp")}</Hint>
-      <Field label={t("packageEntity")}>
-        <NativeSelect name="entity" required defaultValue="">
-          <option value="">{t("choose")}</option>
-          {data.registry
-            .filter((e) => ["agent", "tool", "skill"].includes(e.kind))
-            .map((e) => (
-              <option
-                key={`${e.id}@${e.version}`}
-                value={`${e.id}@${e.version}`}
-              >
-                {entityLabel(e)}
-              </option>
-            ))}
-        </NativeSelect>
-      </Field>
-      <Field label={t("dependencies")}>
-        <select name="dependencies" multiple className={multiSelectClass}>
-          {data.registry.map((entry) => (
-            <option
-              key={`${entry.id}@${entry.version}`}
-              value={JSON.stringify([entry.id, entry.version])}
-            >
-              {entityLabel(entry)}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label={t("author")}>
-        <Input name="author" required />
-      </Field>
-      <Field label={t("permissions")}>
-        <Input name="permissions" placeholder={t("commaSeparated")} />
-      </Field>
-      <Button className="justify-self-end">{t("publish")}</Button>
     </form>
   );
 }

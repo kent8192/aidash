@@ -267,42 +267,6 @@ impl MarketplaceManagement {
 		handoff(&f.store, access, result).await
 	}
 
-	pub(crate) async fn compatibility(&self, actor: Actor) -> Result<Compatibility> {
-		let f = self.runtime.clone();
-		operator(&actor)?;
-		let mut tx = crate::database::native::begin(&f.store.pool).await?;
-		aidash_application::marketplace::operations::compatibility(
-			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
-		)
-		.await
-		.map_err(Into::into)
-	}
-
-	pub(crate) async fn set_compatibility(
-		&self,
-		actor: Actor,
-		browser: Option<BrowserOrigin>,
-		input: CompatibilityInput,
-	) -> Result<Compatibility> {
-		let f = self.runtime.clone();
-		operator(&actor)?;
-		let input = aidash_application::marketplace::operations::CompatibilityChange {
-			enabled: input.enabled,
-			expected_revision: input.expected_revision,
-			compatible_instances_confirmed: input.compatible_instances_confirmed,
-		};
-		aidash_application::marketplace::operations::validate_compatibility(&input)?;
-		let origin = browser.as_ref();
-		let mut tx = operator_begin(&f.store, origin).await?;
-		let result = aidash_application::marketplace::operations::set_compatibility(
-			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
-			&input,
-		)
-		.await?;
-		operator_commit(tx, origin).await?;
-		Ok(result)
-	}
-
 	pub(crate) async fn activate(
 		&self,
 		actor: Actor,
@@ -324,28 +288,6 @@ impl MarketplaceManagement {
 				expected_catalog_revision: input.expected_catalog_revision,
 				enabled: input.enabled,
 			},
-		)
-		.await?;
-		operator_commit(tx, origin).await?;
-		Ok(result)
-	}
-
-	pub(crate) async fn adopt(
-		&self,
-		actor: Actor,
-		browser: Option<BrowserOrigin>,
-		input: Adopt,
-	) -> Result<Installation> {
-		let f = self.runtime.clone();
-		operator(&actor)?;
-		crate::authorization::policy::identifier(&input.tenant)?;
-		let origin = browser.as_ref();
-		let mut tx = operator_begin(&f.store, origin).await?;
-		let result = aidash_application::marketplace::operations::adopt(
-			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
-			&crate::bootstrap::registry_validation_for(&self.runtime.store),
-			&adoption_command(&input),
-			&f.store.node_id,
 		)
 		.await?;
 		operator_commit(tx, origin).await?;
@@ -445,41 +387,5 @@ impl MarketplaceManagement {
 		.await
 		.map_err(Into::into);
 		handoff(&f.store, access, result).await
-	}
-}
-
-fn adoption_command(input: &Adopt) -> aidash_application::marketplace::operations::AdoptionCommand {
-	aidash_application::marketplace::operations::AdoptionCommand {
-		tenant: input.tenant.clone(),
-		source: input.source.clone(),
-		idempotency_key: input.idempotency_key,
-	}
-}
-
-#[cfg(test)]
-mod conversion_tests {
-	use super::*;
-	use reinhardt::core::validators::Validate as _;
-	use rstest::rstest;
-	#[rstest]
-	fn adoption_conversion_preserves_operator_replay_bytes() {
-		let input = Adopt {
-			tenant: "tenant".into(),
-			source: EntityRef {
-				id: "source".into(),
-				version: "1.0.0".into(),
-			},
-			idempotency_key: Uuid::nil(),
-		};
-		input.validate().unwrap();
-		let converted = adoption_command(&input);
-		assert_eq!(
-			serde_json::to_vec(&input).unwrap(),
-			serde_json::to_vec(&converted).unwrap()
-		);
-		assert_eq!(
-			aidash_domain::marketplace::definitions::key(&input),
-			aidash_domain::marketplace::definitions::key(&converted)
-		);
 	}
 }

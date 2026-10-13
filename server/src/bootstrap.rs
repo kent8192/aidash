@@ -1448,7 +1448,6 @@ pub(crate) fn transaction_participant(
 			},
 		),
 		transaction_coordinator(runtime),
-		registry_validation_for(&runtime.store),
 	)
 }
 

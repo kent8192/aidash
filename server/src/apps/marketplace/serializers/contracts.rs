@@ -52,15 +52,6 @@ pub struct Configure {
 	pub idempotency_key: Uuid,
 }
 
-#[derive(Deserialize, JsonSchema, Validate)]
-#[schemars(rename = "MarketplaceCompatibilityInput")]
-#[serde(deny_unknown_fields)]
-pub struct CompatibilityInput {
-	pub enabled: bool,
-	pub expected_revision: i64,
-	pub compatible_instances_confirmed: bool,
-}
-
 #[derive(Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[schemars(rename = "MarketplaceActivate")]
 #[serde(deny_unknown_fields)]
@@ -72,18 +63,9 @@ pub struct Activate {
 	pub enabled: bool,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema, Validate)]
-#[schemars(rename = "MarketplaceAdopt")]
-#[serde(deny_unknown_fields)]
-pub struct Adopt {
-	pub tenant: String,
-	pub source: EntityRef,
-	pub idempotency_key: Uuid,
-}
-
 pub use aidash_domain::registry::Projection;
 
 pub use aidash_domain::marketplace::{
-	Audience, Compatibility, DependencyBinding, Detail, Installation, InstallationRevision,
-	PublicationPreview, Summary,
+	Audience, DependencyBinding, Detail, Installation, InstallationRevision, PublicationPreview,
+	Summary,
 };

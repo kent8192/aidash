@@ -56,10 +56,7 @@ impl AuthorityRepository for Repository {
 		&self.runtime.config.node_id
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
-		aidash_application::transactions::validate(
-			&crate::bootstrap::registry_validation_for(&self.runtime.store),
-			manifest,
-		)
+		aidash_application::transactions::validate(manifest)
 	}
 	async fn origin(&self, id: Uuid) -> Result<Option<Origin>> {
 		persistence::binding::<dto::Origin>(&self.runtime, "atomic_subjects", id)
