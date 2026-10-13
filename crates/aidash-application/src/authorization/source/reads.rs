@@ -35,12 +35,19 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 		let inspection: Inspection = serde_json::from_value(grant.inspection)?;
 		super::authorize(producer.as_mut(), &task, node, &inspection).await?;
 		let binding: Binding = serde_json::from_value(grant.semantic)?;
-		if let Binding::RequiredHome { compactor, .. } = binding {
+		if let Binding::RequiredHome {
+			compactor,
+			summarizer,
+			..
+		} = binding
+		{
+			// Disclosure is rechecked with the same attributes admission evaluated.
 			let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
 			let mut workspace = producer.source_workspace(task.workspace_id).await?;
 			workspace.attributes["remote_node"] = json!(node);
 			workspace.attributes["inference_model"] = json!(agent.model);
 			workspace.attributes["compactor"] = json!(compactor.map(|provider| provider.entry));
+			workspace.attributes["summarizer"] = json!(summarizer.map(|provider| provider.entry));
 			producer
 				.source_require(&workspace, "semantic.disclose")
 				.await?;
