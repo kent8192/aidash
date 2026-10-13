@@ -56,6 +56,11 @@ pub struct Claims {
 	pub ops: Vec<Operation>,
 	pub model: String,
 	pub max_output_tokens: u64,
+	/// Authorizes `{"type":"ephemeral"}` prompt-cache breakpoints on message text
+	/// parts (ADR 0019). Omitted from the wire when unset, so tokens without the
+	/// authority keep their shape and older brokers still read them.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cache_breakpoints: bool,
 }
 
 #[derive(Serialize, Deserialize)]

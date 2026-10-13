@@ -21,6 +21,8 @@ pub struct Inference {
 	pub model: String,
 	pub operations: Vec<Operation>,
 	pub max_output_tokens: u32,
+	/// Requests the signed authority to send explicit `cache_control` breakpoints.
+	pub cache_breakpoints: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {

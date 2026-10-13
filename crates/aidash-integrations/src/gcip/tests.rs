@@ -71,6 +71,39 @@ async fn signed_token_is_scoped_to_transaction_tenant_and_ignores_authority_clai
 		Err(Error::Unauthorized)
 	));
 }
+// GCIP enforces the MFA Requirement; the claims it adds after a second factor
+// are never authority (ADR 0003), so they must not change what a sign-in is.
+#[rstest]
+#[case::absent(None)]
+#[case::totp(Some(("totp", "enrollment-id")))]
+#[case::phone(Some(("phone", "enrollment-id")))]
+#[tokio::test]
+async fn second_factor_claims_never_change_the_verified_sign_in(
+	#[case] second_factor: Option<(&str, &str)>,
+) {
+	let verifier = TokenVerifier {
+		project: "fixture-project".into(),
+		keys: Arc::new(Keys),
+	};
+	let mut claims = claims();
+	if let Some((factor, identifier)) = second_factor {
+		claims["firebase"]["sign_in_second_factor"] = json!(factor);
+		claims["firebase"]["second_factor_identifier"] = json!(identifier);
+	}
+	let sign_in = verifier
+		.verify(&token(&claims), "pool-a", Utc::now())
+		.await
+		.unwrap();
+	assert_eq!(sign_in.subject, "person");
+	assert_eq!(sign_in.gcip_tenant.as_deref(), Some("pool-a"));
+	assert_eq!(sign_in.gcip_provider.as_deref(), Some("password"));
+	assert_eq!(
+		sign_in.verified_email.as_deref(),
+		Some("person@example.test")
+	);
+	assert_eq!(sign_in.display_name.as_deref(), Some("Person"));
+	assert_eq!(sign_in.auth_time.timestamp(), claims["auth_time"]);
+}
 #[tokio::test]
 async fn tampered_signature_and_unsigned_tokens_are_rejected() {
 	let verifier = TokenVerifier {
