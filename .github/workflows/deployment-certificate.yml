@@ -1,0 +1,59 @@
+name: Deployment preview certificate
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+# Serialize certificate operations without canceling an ACME/DNS challenge.
+concurrency:
+  group: aidash-preview-certificate
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    if: github.repository == 'kent8192/aidash' && vars.GCP_CERTIFICATE_RENEWAL_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      trusted: ${{ steps.trusted.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - name: Verify protected default workflow and main code anchor
+        id: trusted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+        run: python3 infra/delivery/control/tls.py preflight
+
+  renew:
+    needs: intake
+    runs-on: ubuntu-24.04
+    environment: certificate-renewal
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.intake.outputs.trusted }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_TLS_RENEWAL_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TLS_RENEWAL_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Renew only the managed preview wildcard
+        env:
+          AIDASH_ACME_EMAIL: ${{ vars.AIDASH_ACME_EMAIL }}
+          AIDASH_TLS_RENEWAL_DAYS: ${{ vars.TLS_RENEWAL_DAYS }}
+          CLOUDFLARE_CERTIFICATE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_CERTIFICATE_DNS_TOKEN }}
+        run: python3 infra/delivery/control/tls.py renew

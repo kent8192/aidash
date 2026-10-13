@@ -1,7 +1,7 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
 use crate::apps::identity::models::{
-	DashboardIdentity, DashboardLoginTransaction, DashboardMapping, DashboardOperatorGrant,
-	DashboardRegistrationRequest, DashboardSession,
+	AuthorizationCredential, DashboardIdentity, DashboardLoginTransaction, DashboardMapping,
+	DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
 };
 use crate::http::validate;
 use http::header;
@@ -540,10 +540,23 @@ impl DashboardSessions {
 		let session = session_from_headers(&f, &headers).await?;
 		let lease = f.store.orm_connection()?;
 		let mut connection = lease.handle();
-		let mappings =
-			DashboardMapping::enabled_for_identity(&mut connection, session.identity_id()).await?;
 		let external = DashboardIdentity::find(&mut connection, session.identity_id()).await?;
 		let policy = f.config.dashboard_policy();
+		// Existing Google sessions receive the same one-time provisioning as a
+		// fresh verified callback, without changing pending shared enrollment.
+		let personal = if policy.as_ref().is_some_and(|policy| policy.google) {
+			crate::apps::identity::repositories::personal_tenant::provision(
+				lease.handle(),
+				external.id,
+			)
+			.await?;
+			Some(
+				aidash_domain::identity::personal_tenant::PersonalTenant::for_identity(external.id),
+			)
+		} else {
+			None
+		};
+		let mappings = DashboardMapping::enabled_for_identity(&mut connection, external.id).await?;
 		let mappings = mappings
 			.into_iter()
 			.filter(|mapping| {
@@ -556,17 +569,30 @@ impl DashboardSessions {
 				.is_ok()
 			})
 			.collect::<Vec<_>>();
+		let active = AuthorizationCredential::active_ids(
+			&mut connection,
+			mappings
+				.iter()
+				.map(|mapping| mapping.credential_id)
+				.collect(),
+		)
+		.await?;
 		let operator =
 			DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
 				.await?;
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
+				personal_account: external.direct_google(),
 				operator,
 				mappings: mappings
 					.into_iter()
 					.map(|row| MappingView {
 						id: row.id,
+						personal: personal
+							.as_ref()
+							.is_some_and(|personal| personal.contains(&row.tenant, &row.subject)),
+						credential_active: active.contains(&row.credential_id),
 						tenant: row.tenant,
 						subject: row.subject,
 					})

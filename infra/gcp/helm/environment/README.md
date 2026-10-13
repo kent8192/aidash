@@ -35,7 +35,10 @@ With `edge.firebaseProject` set, Caddy also transparently proxies `/__/auth/*` a
 `/__/firebase/init.json` to `https://<project>.firebaseapp.com` ahead of admission,
 stripping `Cookie` and `Authorization` upstream and `Set-Cookie` downstream; the
 helper grants no authority, because sign-in completion stays behind admission.
-TLS state is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
+Every edge response sets `Referrer-Policy: no-referrer` after the backend response,
+including HTTP redirects and unknown-host refusals. Caddy routes only the exact
+configured hostname, rejecting all other HTTP Host values.
+Fixed-host TLS state is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
 ConfigMap `<release>-environment-admission` (key `state`, mounted optionally and
 read-only at `/etc/aidash-admission`) says exactly `open`; the chart never renders
 that ConfigMap, so installs and upgrades cannot reset it, and a restarted or
@@ -50,7 +53,35 @@ closing the live gate and `open` only after opening it, so a partial failure
 leaves a restarted edge closed.
 PostgreSQL and NATS accept only same-namespace server/worker and observer traffic.
 
-Preview TLS uses the existing `aidash-preview-tls` disk as one static `Retain`
+`metadataServerEgress.enabled` (default `true`) renders `<release>-environment-metadata-egress`,
+which denies egress to the metadata server (`169.254.169.254/32`) to every Pod of this
+chart: PostgreSQL, NATS, edge and activity hold no Google identity. It selects Pods
+without the label `aidash.run/metadata-server`, which only the application's server and
+worker carry. See the [inventory and GKE probe](../../../../deploy/helm/aidash/README.md#metadata-server-egress).
+
+Random staging/PR hostnames are exactly 32 lowercase hexadecimal characters under
+`preview.aidash.run`. Set `edge.tlsSecret: aidash-preview-tls`; the controller
+validates a currently valid certificate whose sole DNS SAN is
+`*.preview.aidash.run`, verifies its private key, and applies a `kubernetes.io/tls`
+Secret with `tls.crt` and `tls.key`. Only Caddy mounts that Secret, read-only; the
+admission container, application and source build never receive it. The Secret
+Manager configuration is `preview_tls_secret` pointing to JSON with
+`certificate_pem` (full PEM chain) and `private_key_pem`. Provision and renew that
+wildcard through a trusted DNS-01 process, then publish a new secret version; the
+controller reloads the edge when its certificate changes. Random hosts disable
+automatic HTTPS issuance entirely, preventing per-host ACME certificates from
+publishing their random names. Their TLS Secret replaces the TLS PVC.
+
+Random hosts require managed GCIP tenant bindings and `auth_helper: firebase`;
+the IdP callback stays on `<project>.firebaseapp.com`, and the lifecycle
+controller adds/removes only the concrete preview hostname in Identity Platform
+`authorizedDomains` via the [project config API](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects/updateConfig).
+The API has no etag, so all writers of that field must coordinate through the
+controller lifecycle lock. Terraform must preserve controller-managed authorized
+domains instead of replacing the list. Fixed hosts retain their configured
+authentication mode; random hosts reject direct OIDC and `public_origin` helpers.
+
+Legacy fixed-name PR TLS uses the existing `aidash-preview-tls` disk as one static `Retain`
 PersistentVolume. The controller owns that PV and its `preview-tls` claim, and
 rebinds it to the next active pr-N namespace only after the previous edge has no
 Pods and no VolumeAttachment for it. Set `edge.existingTlsClaim: preview-tls`
@@ -74,12 +105,13 @@ and projects that ServiceAccount token only into the collector, so the
 database-facing observer cannot publish a snapshot. The persisted `snapshot.json` uses the
 existing `aidash-infra-activity/1` contract. Failed observations cannot authorize
 stop. A gap longer than 120 seconds is busy and starts a full new idle interval;
-new transfer receipts and actual work completions also renew it. Receipt IDs only
-accumulate, so the snapshot keeps their SHA-256 digest and count rather than the
-set, staying far below the ConfigMap size limit; any change renews the interval.
-A failed observer writes no database evidence but does not fail the Pod, so the
-collector still publishes a fresh busy snapshot; a Pod that never publishes leaves
-an old snapshot that the controller must reject as stale.
+new transfer receipts and actual work completions also renew it. A failed observer
+writes no database evidence but does not fail the Pod, so the collector still
+publishes a fresh busy snapshot; a Pod that never publishes leaves an old snapshot
+that the controller must reject as stale.
+
+The observation sources and their bounds are specified in
+[Activity observation contract](#activity-observation-contract) below.
 
 The Phase 4 idle seal closes admission and gracefully drains **both server and
 worker**. Keep the Runner, edge, database and observer running for the fresh
@@ -102,3 +134,53 @@ helm template env infra/gcp/helm/environment --namespace aidash-develop -f image
   --set edge.backend=app-backend --set activity.existingSecret=env-activity \
   --set activity.runnerEndpoint=http://app-execution-runner:8949
 ```
+
+## Activity observation contract
+
+Three sources feed one snapshot, and each is bounded so that a long-lived
+Environment cannot make the observation fail closed forever. The observer
+(`infra/gcp/observer/src/main.rs`) and the collector (`files/activity.py`) both
+refer here.
+
+- **Observer (database).** Besides the busy `counts` and `last_work_completed`, it
+  reports durable completed-transfer receipts only as
+  `completed_transfers_count` (an integer) and `completed_transfers_digest` (64
+  lowercase hex characters). The query computes both in constant memory: every
+  receipt contributes PostgreSQL's native 64-bit `uuid_hash_extended` of its ID,
+  the contributions are summed (so neither a sort nor an ID list exists anywhere)
+  and the sum is hashed with SHA-256. Receipts have no deletion path, so the
+  output size does not depend on how many exist. The per-receipt work is one
+  native hash, so the summary scan costs about as much as the observer's other
+  predicate scans of `core_records`. The observer never emits the receipt IDs.
+- **Collector.** It stores the same pair in `snapshot.json` and compares it with
+  the previous one: any change, whether a new receipt or a removed one,
+  renews the idle interval, and retries or object reclamation of an existing
+  receipt do not. The pair is the renewal key: a changed count with an unchanged
+  digest renews too. An observation that lacks a well-formed pair (an older
+  observer that still sends the receipt list, with or without the pair, a missing
+  field, a non-hex digest) or whose file exceeds 64 KiB is treated as unavailable
+  and published as busy. The first sample after upgrading from the receipt-list
+  observer therefore sees a different digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.
+- **Edge.** The admission container reports `inflight`, `closed` and `last_active`,
+  the time of the last successful meaningful request. `last_active` is also
+  written, atomically, to `/var/lib/aidash-activity/last_active` on a 1 MiB
+  `emptyDir` mounted only into that container, and reloaded at start. Nginx workers
+  queue their stamps and one worker at a time folds them into `last_active` and
+  the file, so neither moves backwards when workers race. A restart of
+  the admission container between a request and the collector's next once-a-minute
+  sample therefore still reports that request instead of `0`, so its full idle
+  interval is honored. A missing, unreadable or malformed file means never active,
+  and a stamp in the future is clamped to now. The `emptyDir` lives as long as the
+  Pod: a replaced Pod (node loss, preemption) starts without it, and the collector
+  then keeps only the previous snapshot's `last_active`. This file does not cover
+  that case: a request completed shortly before the Pod was lost can receive a
+  shorter idle interval.
+- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory
+  aggregate of the operations whose writer is not proven stopped plus the latest
+  completion time. It is seeded by the Runner's existing startup recovery scan
+  (no additional pass over the journal) and updated each time an operation record
+  is saved, so a request opens no journal file, however many acknowledged
+  operations the volume retains, and holds the Runner's global lock only for two
+  reads. A corrupt record still stops the Runner from starting (as the recovery
+  scan always did) instead of reporting idle. The collector's 15-second timeout therefore cannot be
+  exhausted by journal growth.

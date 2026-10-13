@@ -32,6 +32,7 @@ export async function mockGcip(
   page: Page,
   destination = "/signed-in",
   signUp = true,
+  mfaMandatory = false,
 ) {
   const token = signedToken();
   await page.addInitScript(() =>
@@ -50,8 +51,20 @@ export async function mockGcip(
 const token = ${JSON.stringify(token)};
 // Calls survive the redirect round trip; clearing removes only firebase: keys.
 const record = (call) => sessionStorage.setItem("fixture-calls", JSON.stringify([...JSON.parse(sessionStorage.getItem("fixture-calls") ?? "[]"), call.id ? call.kind + ":" + call.id : call.kind]));
-export function createClient() {
+const secondFactor = (options) => sessionStorage.getItem("fixture-second-factor") || (options.enroll ? "enroll" : "");
+// Mimics the SDK: a first factor that leaves a second factor owed rejects with its code.
+const owed = (options) => {
+  const kind = secondFactor(options);
+  if (kind) throw Object.assign(new Error(kind), { code: kind === "challenge" ? "aidash/second-factor-required" : "aidash/enrollment-required" });
+};
+// Codes pick the outcome: the SDK errors a TOTP code can meet.
+const verdict = (code) => {
+  const failure = { "000000": "auth/invalid-verification-code", "111111": "auth/code-expired", "222222": "auth/too-many-requests", "333333": "auth/internal-error" }[code];
+  if (failure) throw Object.assign(new Error(failure), { code: failure });
+};
+export function createClient(config, options = {}) {
   record({ kind: "create" });
+  if (options.enroll) record({ kind: "intent", id: "enroll" });
   return {
     popup: async (id, hint) => {
       record({ kind: "popup", id });
@@ -61,6 +74,7 @@ export function createClient() {
         await new Promise((resolve) => { window.fixtureFinishPopup = resolve; });
       const code = sessionStorage.getItem("fixture-popup-error");
       if (code) throw Object.assign(new Error(code), { code });
+      owed(options);
       return token;
     },
     redirect: (id) => {
@@ -75,9 +89,17 @@ export function createClient() {
       if (sessionStorage.getItem(${JSON.stringify(pending)}) !== "true") return null;
       localStorage.setItem("firebase:authUser:public-key:aidash-gcip", JSON.stringify({ stsTokenManager: { accessToken: token, refreshToken: "fixture-refresh-token" } }));
       await new Promise((resolve) => { const request = indexedDB.open("firebaseLocalStorageDb"); request.onsuccess = () => { request.result.close(); resolve(); }; });
+      owed(options);
       return token;
     },
-    password: async () => token,
+    password: async () => { owed(options); return token; },
+    // Like the adapter: an enrollment intent continues past a resolved challenge.
+    resolveSecondFactor: async (code) => { record({ kind: "resolve", id: code }); verdict(code); if (options.enroll) throw Object.assign(new Error("enroll"), { code: "aidash/enrollment-required" }); return token; },
+    startEnrollment: async () => {
+      record({ kind: "startEnrollment" });
+      return { secret: "JBSWY3DPEHPK3PXP", uri: "otpauth://totp/Aidash:person@example.test?secret=JBSWY3DPEHPK3PXP&issuer=Aidash" };
+    },
+    finishEnrollment: async (code) => { record({ kind: "enroll", id: code }); verdict(code); return token; },
     register: async () => { record({ kind: "register" }); return true; },
     resend: async () => { record({ kind: "resend" }); return true; },
     close: async () => {
@@ -98,6 +120,7 @@ export function createClient() {
         tenant_id: "pool-a",
         providers: ["google.com", "oidc.company", "saml.company", "password"],
         password_sign_up: signUp,
+        mfa_mandatory: mfaMandatory,
       },
     }),
   );

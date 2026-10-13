@@ -1,16 +1,92 @@
 //! Admission rules for provider-side input processing outside signed authority.
+use std::collections::HashSet;
+
 use aidash_capability::Failure;
 use aidash_domain::provider::{ContentPart, ModelRequest};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::Value;
+use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::{Value, json};
 
-fn has_cache_control(value: &Value) -> bool {
-	match value {
-		Value::Object(fields) => {
-			fields.contains_key("cache_control") || fields.values().any(has_cache_control)
+/// Provider limit on explicit prompt-cache breakpoints per request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+/// Parses an inbound body for admission, rejecting duplicate object members.
+///
+/// `Value` keeps only the last duplicate, but the broker relays the original bytes;
+/// an upstream parser that keeps the first member would see unauthorized fields.
+pub(crate) fn parse(body: &[u8]) -> Result<Value, Failure> {
+	serde_json::from_slice::<UniqueMembers>(body).map_err(|_| Failure::ClaimViolation)?;
+	serde_json::from_slice(body).map_err(|_| Failure::ClaimViolation)
+}
+
+/// Validates that no JSON object at any depth repeats a member name.
+struct UniqueMembers;
+
+impl<'de> Deserialize<'de> for UniqueMembers {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		deserializer.deserialize_any(UniqueMembersVisitor)
+	}
+}
+
+struct UniqueMembersVisitor;
+
+impl<'de> Visitor<'de> for UniqueMembersVisitor {
+	type Value = UniqueMembers;
+
+	fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("JSON without duplicate object members")
+	}
+
+	fn visit_bool<E>(self, _: bool) -> Result<UniqueMembers, E> {
+		Ok(UniqueMembers)
+	}
+
+	fn visit_i64<E>(self, _: i64) -> Result<UniqueMembers, E> {
+		Ok(UniqueMembers)
+	}
+
+	fn visit_u64<E>(self, _: u64) -> Result<UniqueMembers, E> {
+		Ok(UniqueMembers)
+	}
+
+	fn visit_f64<E>(self, _: f64) -> Result<UniqueMembers, E> {
+		Ok(UniqueMembers)
+	}
+
+	fn visit_str<E>(self, _: &str) -> Result<UniqueMembers, E> {
+		Ok(UniqueMembers)
+	}
+
+	fn visit_unit<E>(self) -> Result<UniqueMembers, E> {
+		Ok(UniqueMembers)
+	}
+
+	fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<UniqueMembers, A::Error> {
+		while seq.next_element::<UniqueMembers>()?.is_some() {}
+		Ok(UniqueMembers)
+	}
+
+	fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<UniqueMembers, A::Error> {
+		let mut keys = HashSet::new();
+		while let Some(key) = map.next_key::<String>()? {
+			if !keys.insert(key) {
+				return Err(serde::de::Error::custom("duplicate object member"));
+			}
+			map.next_value::<UniqueMembers>()?;
 		}
-		Value::Array(values) => values.iter().any(has_cache_control),
-		_ => false,
+		Ok(UniqueMembers)
+	}
+}
+
+/// Counts every `cache_control` key at any depth, whatever its value.
+fn count_cache_control(value: &Value) -> usize {
+	match value {
+		Value::Object(fields) => fields
+			.iter()
+			.map(|(key, field)| usize::from(key == "cache_control") + count_cache_control(field))
+			.sum(),
+		Value::Array(values) => values.iter().map(count_cache_control).sum(),
+		_ => 0,
 	}
 }
 
@@ -53,11 +129,26 @@ fn media(part: &Value) -> Result<ContentPart, Failure> {
 	ContentPart::from_media(mime, bytes).map_err(|_| Failure::ClaimViolation)
 }
 
-pub(crate) fn chat_input(value: &Value) -> Result<(), Failure> {
+/// `cache_breakpoints` is the signed authority for explicit prompt-cache writes. Only
+/// exactly `{"type":"ephemeral"}` on a `messages[*].content[*]` text part is allowed,
+/// at most four times; every other `cache_control` key is rejected.
+pub(crate) fn chat_input(value: &Value, cache_breakpoints: bool) -> Result<(), Failure> {
+	// Each admitted breakpoint is counted below; any `cache_control` key left over
+	// sits somewhere else (tools, message level, non-text part, nested) and is rejected.
 	// JSON parsing bounds nesting; inspect keys, not ordinary message text.
-	if has_cache_control(value) {
+	let mut breakpoints = 0;
+	chat_messages(value, cache_breakpoints, &mut breakpoints)?;
+	if count_cache_control(value) != breakpoints {
 		return Err(Failure::ClaimViolation);
 	}
+	Ok(())
+}
+
+fn chat_messages(
+	value: &Value,
+	cache_breakpoints: bool,
+	breakpoints: &mut usize,
+) -> Result<(), Failure> {
 	let Some(messages) = value.get("messages") else {
 		return Ok(());
 	};
@@ -71,6 +162,15 @@ pub(crate) fn chat_input(value: &Value) -> Result<(), Failure> {
 					if part.get("type").and_then(Value::as_str) == Some("text") {
 						if part.get("text").and_then(Value::as_str).is_none() {
 							return Err(Failure::ClaimViolation);
+						}
+						if let Some(control) = part.get("cache_control") {
+							*breakpoints += 1;
+							if !cache_breakpoints
+								|| *breakpoints > MAX_CACHE_BREAKPOINTS
+								|| control != &json!({"type": "ephemeral"})
+							{
+								return Err(Failure::ClaimViolation);
+							}
 						}
 						continue;
 					}

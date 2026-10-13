@@ -7,7 +7,7 @@ use aidash_domain::{
 	},
 	identity::execution::ExecutionPrincipal,
 	policy::Resource,
-	semantic::remote::status::Status as SemanticStatus,
+	semantic::{recovery::Action, remote::status::Status as SemanticStatus},
 };
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -31,6 +31,8 @@ struct State {
 	delay_recheck: bool,
 	created: Option<(NewTask, String, String)>,
 	cancelled: Option<(i64, String, Vec<String>)>,
+	/// The Home's remote semantic operation holds a scheduled retry.
+	semantic_retry: bool,
 	revision: Option<i64>,
 	output_hidden: bool,
 	human_requests: Vec<aidash_domain::HumanRequest>,
@@ -207,9 +209,12 @@ impl HomeRepository for Repository {
 		binding: &Binding,
 		reason: Option<Failure>,
 	) -> Result<SemanticStatus> {
-		Ok(aidash_domain::semantic::remote::status::project(
-			binding, reason, None,
-		)?)
+		let mut status = aidash_domain::semantic::remote::status::project(binding, reason, None)?;
+		if self.state.lock().unwrap().semantic_retry {
+			status.retry_at = Some(Utc::now());
+			status.recovery = reason.map(|reason| Recovery::new(reason, true));
+		}
+		Ok(status)
 	}
 }
 #[async_trait]
@@ -624,6 +629,87 @@ async fn authority_recheck_uses_the_same_status_deadline() {
 	assert!(statuses[0].unavailable);
 	assert_eq!(statuses[0].semantic.reason, Some(Failure::Unavailable));
 	assert_eq!(repository.state.lock().unwrap().scopes, 0);
+}
+/// A cancelled or finished remote Run keeps its semantic cause visible but
+/// offers no recovery action, matching the local management view.
+#[rstest]
+#[case::cancelled(
+	RemoteExecutionPhase::Waiting,
+	RemoteExecutionControlState::Cancelled,
+	false
+)]
+#[case::finished(
+	RemoteExecutionPhase::Failed,
+	RemoteExecutionControlState::Inactive,
+	false
+)]
+#[case::paused(
+	RemoteExecutionPhase::Waiting,
+	RemoteExecutionControlState::Paused,
+	true
+)]
+#[tokio::test]
+async fn terminal_remote_run_reports_its_cause_without_recovery(
+	#[case] phase: RemoteExecutionPhase,
+	#[case] control: RemoteExecutionControlState,
+	#[case] recoverable: bool,
+) {
+	// Arrange
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.semantic = true;
+		let mut reply = activation();
+		reply["phase"] = json!(phase);
+		reply["control"] = json!(control);
+		reply["semantic_reason"] = json!(Failure::Unavailable);
+		state.replies = vec![reply];
+	}
+
+	// Act
+	let statuses = list(&repository, task().id).await.unwrap();
+
+	// Assert
+	assert_eq!(statuses[0].semantic.reason, Some(Failure::Unavailable));
+	assert_eq!(statuses[0].semantic.recovery.is_some(), recoverable);
+}
+/// A paused remote Run claims no retry, so a retry the Home still holds for its
+/// semantic operation is not reported as scheduled, like a paused local Run.
+#[rstest]
+#[case::active_pending(RemoteExecutionControlState::Active, Failure::Pending, &[Action::Wait])]
+#[case::paused_pending(RemoteExecutionControlState::Paused, Failure::Pending, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
+#[case::paused_outage(RemoteExecutionControlState::Paused, Failure::Unavailable, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
+#[case::paused_budget(RemoteExecutionControlState::Paused, Failure::ContextBudget, &[Action::CreateFollowUpTask])]
+#[tokio::test]
+async fn paused_remote_run_never_waits_on_a_scheduled_semantic_retry(
+	#[case] control: RemoteExecutionControlState,
+	#[case] reason: Failure,
+	#[case] actions: &[Action],
+) {
+	// Arrange
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.semantic = true;
+		state.semantic_retry = true;
+		let mut reply = activation();
+		reply["phase"] = json!(RemoteExecutionPhase::Waiting);
+		reply["control"] = json!(control);
+		reply["semantic_reason"] = json!(reason);
+		state.replies = vec![reply];
+	}
+
+	// Act
+	let statuses = list(&repository, task().id).await.unwrap();
+
+	// Assert
+	assert_eq!(
+		statuses[0].semantic.recovery,
+		Some(Recovery {
+			cause: reason,
+			actions: actions.to_vec(),
+		})
+	);
 }
 #[rstest]
 #[tokio::test]

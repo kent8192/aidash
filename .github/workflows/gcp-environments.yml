@@ -62,9 +62,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
+          # The execution/default branch is separate from the protected code anchor.
           persist-credentials: false
       - id: trusted
-        run: printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$RUNNER_TEMP/trusted-branch.json"
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          branch = json.loads((Path(os.environ['RUNNER_TEMP']) / 'trusted-branch.json').read_text())
+          sha = branch['commit']['sha']
+          if not branch.get('protected') or not re.fullmatch('[a-f0-9]{40}', sha):
+              raise SystemExit('The CD code anchor must be protected main')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'sha={sha}\n')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.trusted.outputs.sha }}
+          persist-credentials: false
       - id: filter
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,11 +91,10 @@ jobs:
   prepare:
     needs: intake
     if: needs.intake.outputs.proceed == 'true'
-    # prepare decides whether this run builds, so it cannot choose by that output;
-    # it only reads durable intent. The WIF provider only trusts the two named
-    # Environments (#151).
-    environment: gcp-deploy
+    # Every credentialed job runs in the protected `nonproduction` Environment;
+    # the WIF provider trusts no other Environment for this workflow (#151).
     runs-on: ubuntu-24.04
+    environment: nonproduction
     timeout-minutes: 10
     permissions:
       contents: read
@@ -150,9 +167,8 @@ jobs:
 
   publish:
     needs: [intake, prepare, build]
-    # Publishing new images always needs the reviewed Environment.
-    environment: gcp-deploy-release
     runs-on: ubuntu-24.04
+    environment: nonproduction
     timeout-minutes: 25
     permissions:
       contents: read
@@ -194,10 +210,8 @@ jobs:
   apply:
     needs: [intake, prepare, build, publish]
     if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.build != 'true' || needs.publish.result == 'success')
-    # Applying a run that built new images needs the reviewed Environment; a
-    # no-build reconcile (schedule, CI update) stays unattended.
-    environment: ${{ needs.prepare.outputs.build == 'true' && 'gcp-deploy-release' || 'gcp-deploy' }}
     runs-on: ubuntu-24.04
+    environment: nonproduction
     timeout-minutes: 55
     permissions:
       contents: read
@@ -251,3 +265,12 @@ jobs:
           else
             python3 infra/gcp/control/controller.py reconcile
           fi
+      - name: Export sanitized staging evidence
+        run: python3 infra/gcp/control/controller.py receipt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-receipt
+          path: ${{ runner.temp }}/staging-receipt.json
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 30
