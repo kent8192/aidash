@@ -52,20 +52,13 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 	async fn run(&self, admission: Uuid) -> Result<Run> {
 		self.store.run(admission).await.map_err(Into::into)
 	}
-	async fn semantic_ready(
-		&self,
-		admission: Uuid,
-		grant: Uuid,
-		step: i32,
-		pinned: Option<Uuid>,
-	) -> Result<bool> {
+	async fn semantic_ready(&self, admission: Uuid, grant: Uuid, step: i32) -> Result<bool> {
 		let ready: bool = {
 			let query_bind_1 = admission;
 			let query_bind_2 = grant;
 			let query_bind_3 = step;
-			let query_bind_4 = pinned;
 			crate::database::native::query_scalar(&Query::select().expr(Expr::cust("COUNT(*) > 0")).from(Alias::new("semantic_remote_operations"))
-                .and_where(SimpleExpr::CustomWithExpr("(admission_id=? AND grant_id=? AND state='READY' AND ((binding->'operation'->'boundary'->>'step')::integer=? OR id=?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
+                .and_where(SimpleExpr::CustomWithExpr("(admission_id=? AND grant_id=? AND state='READY' AND (binding->'operation'->'boundary'->>'step')::integer=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
                 .to_string(PostgresQueryBuilder)).scalar_one(&self.store.pool).await?
 		};
 		Ok(ready)
