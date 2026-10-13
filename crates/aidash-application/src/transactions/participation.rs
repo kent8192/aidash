@@ -64,12 +64,18 @@ impl Participant {
 				"participant lost its visibility barrier".into(),
 			));
 		}
+		Self::abort_reserved(scope, manifest).await.map(Some)
+	}
+
+	/// Abort a RESERVED participant whose deadline passed; the caller holds its gate.
+	async fn abort_reserved(
+		scope: &mut dyn ParticipantScope,
+		manifest: &Manifest,
+	) -> Result<LocalStatus> {
 		scope.release_gate(false).await?;
-		Ok(Some(
-			scope
-				.transition(manifest.id, ParticipantPhase::Aborted)
-				.await?,
-		))
+		scope
+			.transition(manifest.id, ParticipantPhase::Aborted)
+			.await
 	}
 
 	pub async fn reserve(&self, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
@@ -135,6 +141,12 @@ impl Participant {
 		if scope.gate_exclusive().await?.is_some() {
 			return Err(Error::TransactionPending);
 		}
+		// Waiting for the gate can outlast the deadline sampled before it.
+		if manifest.deadline <= scope.now().await? {
+			return Err(Error::Invalid(
+				"participant deadline passed while waiting for the visibility barrier".into(),
+			));
+		}
 		let row = scope.insert(manifest, ParticipantPhase::Reserved).await?;
 		scope.reserve_gate(manifest.id).await?;
 		scope.reservation_history(manifest.id).await?;
@@ -149,9 +161,6 @@ impl Participant {
 			.await?
 			.ok_or_else(|| Error::Conflict("participant was not reserved".into()))?;
 		Self::check(&existing, manifest)?;
-		if let Some(aborted) = Self::expire_reserved(scope.as_mut(), manifest, &existing).await? {
-			return scope.finish(Ok(aborted)).await;
-		}
 		if existing.phase != "RESERVED" {
 			return scope.finish(Ok(existing)).await;
 		}
@@ -159,6 +168,12 @@ impl Participant {
 			return Err(Error::Conflict(
 				"participant lost its visibility barrier".into(),
 			));
+		}
+		// Sample the deadline only once the gate is held: waiting for it can
+		// outlast a deadline that was still in the future before the wait.
+		if manifest.deadline <= scope.now().await? {
+			let aborted = Self::abort_reserved(scope.as_mut(), manifest).await?;
+			return scope.finish(Ok(aborted)).await;
 		}
 		scope.validate_mutations(manifest).await?;
 		let row = scope
