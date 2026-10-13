@@ -190,14 +190,18 @@ impl SearchQuery {
 				page.filtered_count += 1;
 				continue;
 			}
-			let (title, title_cut) = bounded(&candidate.title, MAX_TITLE_BYTES);
-			let (snippet, snippet_cut) = bounded(
-				candidate.snippet.as_deref().unwrap_or(""),
-				MAX_SNIPPET_BYTES,
+			// Provider metadata is untrusted text: control characters, which
+			// stored text cannot always hold (NUL), become spaces.
+			let (title, snippet) = (
+				inert(&candidate.title),
+				inert(candidate.snippet.as_deref().unwrap_or("")),
 			);
+			let (title, title_cut) = bounded(&title, MAX_TITLE_BYTES);
+			let (snippet, snippet_cut) = bounded(&snippet, MAX_SNIPPET_BYTES);
 			let (page_age, page_age_cut) =
 				candidate.page_age.as_deref().map_or((None, false), |age| {
-					let (age, cut) = bounded(age, MAX_PAGE_AGE_BYTES);
+					let age = inert(age);
+					let (age, cut) = bounded(&age, MAX_PAGE_AGE_BYTES);
 					(Some(age.to_owned()), cut)
 				});
 			let truncated = title_cut || snippet_cut || page_age_cut;
@@ -321,10 +325,11 @@ pub fn domain_matches(host: &str, domain: &str) -> bool {
 			.is_some_and(|prefix| prefix.ends_with('.'))
 }
 
-/// The host of an absolute http(s) URL without credentials or fragment. Whether
-/// the host is publicly routable is decided only when a page is read.
+/// The host of an absolute http(s) URL without credentials, fragment or
+/// control characters. Whether the host is publicly routable is decided only
+/// when a page is read.
 pub fn candidate_host(raw: &str) -> Option<String> {
-	if raw.len() > MAX_URL_BYTES {
+	if raw.len() > MAX_URL_BYTES || raw.chars().any(char::is_control) {
 		return None;
 	}
 	let url = Url::parse(raw).ok()?;
@@ -336,6 +341,18 @@ pub fn candidate_host(raw: &str) -> Option<String> {
 		return None;
 	}
 	url.host_str().map(str::to_owned)
+}
+
+/// `text` with every control character replaced by a space.
+fn inert(text: &str) -> std::borrow::Cow<'_, str> {
+	if text.chars().any(char::is_control) {
+		text.chars()
+			.map(|c| if c.is_control() { ' ' } else { c })
+			.collect::<String>()
+			.into()
+	} else {
+		text.into()
+	}
 }
 
 fn freshness(value: &Freshness) -> Result<ValidFreshness> {

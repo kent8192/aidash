@@ -118,6 +118,30 @@ fn an_oversized_page_age_is_reported_as_truncated(mut candidate: ProviderResults
 }
 
 #[rstest]
+fn control_characters_never_reach_source_metadata(mut candidate: ProviderResults) {
+	let raw = &mut candidate.candidates[0];
+	raw.title = "Nul\0title\n".into();
+	raw.snippet = Some("tab\there".into());
+	raw.page_age = Some("2\u{0085}days".into());
+	candidate.candidates.push(ProviderCandidate {
+		url: "https://docs.example.com/a\0b".into(),
+		title: "Control URL".into(),
+		snippet: None,
+		page_age: None,
+	});
+	let page = SearchQuery::parse(&json!({"query":"example"}), None)
+		.unwrap()
+		.normalize(candidate);
+	assert_eq!(page.sources.len(), 1);
+	assert_eq!(page.filtered_count, 1, "a URL with a control character");
+	let source = &page.sources[0];
+	assert_eq!(source.title, "Nul title ");
+	assert_eq!(source.snippet, "tab here");
+	assert_eq!(source.page_age.as_deref(), Some("2 days"));
+	assert!(!source.truncated);
+}
+
+#[rstest]
 fn normalization_keeps_at_most_the_requested_count() {
 	let query = SearchQuery::parse(&json!({"query":"example","count":1}), None).unwrap();
 	let candidates = (0..3)
