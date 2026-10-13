@@ -205,9 +205,12 @@ The Brave key is a **tool secret**: the profile's `credential_env` names an
 
 Providers are read once at startup; restart the Node after changing them. The
 page provider reads `text/html`, `application/xhtml+xml` and `text/plain` only,
-up to 4 MiB per response and three same-host redirects. It strips markup, drops script,
-style and template content and never executes page content. PDF and other media
-return `unsupported_media`.
+up to 4 MiB per response and three same-host redirects, on port 80 for `http`
+and 443 for `https`. It decodes a page with its byte order mark, its declared
+`charset` or, for HTML, a `<meta>` declaration, and otherwise as UTF-8 or
+windows-1252; an encoding the Encoding Standard does not support returns
+`unsupported_media`. It strips markup, drops script, style and template content
+and never executes page content. PDF and other media return `unsupported_media`.
 
 ## Implementing another provider
 

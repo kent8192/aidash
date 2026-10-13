@@ -26,7 +26,8 @@ impl Resolver for Rebinding {
 }
 
 /// Serves each scripted response to one connection, in order.
-async fn serve(responses: Vec<String>) -> SocketAddr {
+async fn serve(responses: Vec<impl Into<Vec<u8>>>) -> SocketAddr {
+	let responses: Vec<Vec<u8>> = responses.into_iter().map(Into::into).collect();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let address = listener.local_addr().unwrap();
 	tokio::spawn(async move {
@@ -34,7 +35,7 @@ async fn serve(responses: Vec<String>) -> SocketAddr {
 			let (mut socket, _) = listener.accept().await.unwrap();
 			let mut buffer = [0u8; 4096];
 			let _ = socket.read(&mut buffer).await.unwrap();
-			socket.write_all(response.as_bytes()).await.unwrap();
+			socket.write_all(&response).await.unwrap();
 		}
 	});
 	address
@@ -150,6 +151,7 @@ fn extraction_is_linear_in_unclosed_skipped_elements() {
 	let outcome = extract(
 		&Url::parse("https://example.com/").unwrap(),
 		"text/html",
+		None,
 		body.as_bytes(),
 	);
 	assert!(started.elapsed() < std::time::Duration::from_secs(5));
@@ -203,11 +205,84 @@ async fn unusable_responses_are_typed_failures(
 }
 
 #[rstest]
+#[tokio::test]
+async fn a_declared_charset_decodes_the_page() {
+	let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; Charset=\"windows-1252\"\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_vec();
+	response.extend_from_slice(b"caf\xe9");
+	let page = reader(serve(vec![response]).await)
+		.fetch(&Url::parse("http://example.com/").unwrap())
+		.await
+		.unwrap();
+	assert_eq!(page.lines[0].text, "café");
+}
+
+#[rstest]
+#[case::meta(None, "<meta charset=\"shift_jis\">", "日本語")]
+#[case::http_equiv(
+	None,
+	"<meta http-equiv=\"Content-Type\" content=\"text/html; charset=Shift_JIS\">",
+	"日本語"
+)]
+#[case::header_wins(Some("utf-8"), "<meta charset=\"shift_jis\">", "\u{FFFD}")]
+fn html_declarations_choose_the_encoding(
+	#[case] charset: Option<&str>,
+	#[case] head: &str,
+	#[case] expected: &str,
+) {
+	let (body, _, _) = encoding_rs::SHIFT_JIS.encode("日本語");
+	let mut bytes = format!("<html><head>{head}</head><body><p>").into_bytes();
+	bytes.extend_from_slice(&body);
+	bytes.extend_from_slice(b"</p></body></html>");
+	let page = extract(
+		&Url::parse("https://example.com/").unwrap(),
+		"text/html",
+		charset,
+		&bytes,
+	)
+	.unwrap();
+	assert!(page.lines[0].text.contains(expected), "{:?}", page.lines);
+}
+
+#[rstest]
+#[case::undeclared_utf8("text/plain", None, "café".as_bytes(), Ok("café"))]
+#[case::undeclared_legacy("text/plain", None, b"caf\xe9", Ok("café"))]
+#[case::byte_order_mark(
+	"text/plain",
+	Some("windows-1252"),
+	b"\xef\xbb\xbfcaf\xc3\xa9",
+	Ok("café")
+)]
+#[case::unknown_label(
+	"text/plain",
+	Some("x-unknown"),
+	b"cafe",
+	Err(Failure::UnsupportedMedia)
+)]
+#[case::replacement(
+	"text/html",
+	Some("iso-2022-kr"),
+	b"cafe",
+	Err(Failure::UnsupportedMedia)
+)]
+fn bodies_decode_in_their_web_encoding(
+	#[case] media_type: &str,
+	#[case] charset: Option<&str>,
+	#[case] bytes: &[u8],
+	#[case] expected: Result<&str, Failure>,
+) {
+	assert_eq!(
+		decode_body(media_type, charset, bytes),
+		expected.map(String::from)
+	);
+}
+
+#[rstest]
 fn oversized_text_is_marked_incomplete() {
 	let body = format!("{}\n", "x".repeat(MAX_LINE_BYTES + 10)).repeat(2);
 	let page = extract(
 		&Url::parse("https://example.com/").unwrap(),
 		"text/plain",
+		None,
 		body.as_bytes(),
 	)
 	.unwrap();

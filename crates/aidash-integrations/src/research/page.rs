@@ -12,6 +12,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
+use encoding_rs::{Encoding, REPLACEMENT, UTF_8, UTF_16BE, UTF_16LE, WINDOWS_1252};
 use reqwest::{StatusCode, Url, header};
 use sha2::{Digest, Sha256};
 use std::{net::SocketAddr, time::Duration};
@@ -138,16 +139,25 @@ impl PageProvider for PageReader {
 						},
 					);
 				}
-				let media_type = response
+				let content_type = response
 					.headers()
 					.get(header::CONTENT_TYPE)
 					.and_then(|value| value.to_str().ok())
-					.and_then(|value| value.split(';').next())
+					.unwrap_or("text/plain");
+				let mut parameters = content_type.split(';');
+				let media_type = parameters
+					.next()
 					.map(|value| value.trim().to_ascii_lowercase())
-					.unwrap_or_else(|| "text/plain".into());
+					.unwrap_or_default();
 				if !MEDIA_TYPES.contains(&media_type.as_str()) {
 					return Err(Failure::UnsupportedMedia);
 				}
+				let charset = parameters.find_map(|parameter| {
+					let (name, value) = parameter.split_once('=')?;
+					name.trim()
+						.eq_ignore_ascii_case("charset")
+						.then(|| value.trim().trim_matches(['"', '\'']).to_owned())
+				});
 				let mut bytes = Vec::new();
 				while let Some(chunk) = response
 					.chunk()
@@ -159,7 +169,7 @@ impl PageProvider for PageReader {
 					}
 					bytes.extend_from_slice(&chunk);
 				}
-				return extract(&url, &media_type, &bytes);
+				return extract(&url, &media_type, charset.as_deref(), &bytes);
 			}
 			Err(Failure::ProviderRequestRejected)
 		};
@@ -187,11 +197,17 @@ pub fn redirect_target(current: &Url, location: &str) -> Result<Url, Failure> {
 	Ok(next)
 }
 
-/// Turn a retrieved body into bounded snapshot lines.
-pub fn extract(url: &Url, media_type: &str, bytes: &[u8]) -> Result<ExtractedPage, Failure> {
-	let text = String::from_utf8_lossy(bytes);
+/// Turn a retrieved body into bounded snapshot lines. The body is decoded with
+/// its declared `charset` (see [`decode_body`]).
+pub fn extract(
+	url: &Url,
+	media_type: &str,
+	charset: Option<&str>,
+	bytes: &[u8],
+) -> Result<ExtractedPage, Failure> {
+	let text = decode_body(media_type, charset, bytes)?;
 	let (title, body) = if media_type == "text/plain" {
-		(None, text.into_owned())
+		(None, text)
 	} else {
 		html_text(&text)
 	};
@@ -235,6 +251,63 @@ pub fn extract(url: &Url, media_type: &str, bytes: &[u8]) -> Result<ExtractedPag
 		completeness,
 		lines,
 	})
+}
+
+/// The text of a body in its Web encoding: a byte order mark first, then the
+/// `charset` of the Content-Type, then for HTML a `<meta>` declaration near
+/// the start, and otherwise UTF-8 when the bytes are valid UTF-8 or
+/// windows-1252, the Web's fallback. A declared encoding the Encoding
+/// Standard does not support is refused rather than decoded lossily.
+pub fn decode_body(
+	media_type: &str,
+	charset: Option<&str>,
+	bytes: &[u8],
+) -> Result<String, Failure> {
+	let declared = match charset {
+		Some(label) => Some(
+			Encoding::for_label(label.as_bytes())
+				.filter(|encoding| *encoding != REPLACEMENT)
+				.ok_or(Failure::UnsupportedMedia)?,
+		),
+		None if media_type != "text/plain" => meta_charset(bytes),
+		None => None,
+	};
+	let encoding = declared.unwrap_or(if std::str::from_utf8(bytes).is_ok() {
+		UTF_8
+	} else {
+		WINDOWS_1252
+	});
+	// `decode` lets a byte order mark override the declaration.
+	Ok(encoding.decode(bytes).0.into_owned())
+}
+
+/// The encoding a `<meta charset>` or `<meta http-equiv>` declaration in the
+/// first 1024 bytes names. As in browsers, a UTF-16 label there means UTF-8.
+fn meta_charset(bytes: &[u8]) -> Option<&'static Encoding> {
+	let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
+	head.split("<meta")
+		.skip(1)
+		.find_map(|tag| {
+			let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+			let value = &tag[tag.find("charset")? + "charset".len()..];
+			let value = value
+				.trim_start()
+				.strip_prefix('=')?
+				.trim_start()
+				.trim_start_matches(['"', '\'']);
+			let end = value
+				.find(|c: char| matches!(c, '"' | '\'' | ';' | '/') || c.is_whitespace())
+				.unwrap_or(value.len());
+			Encoding::for_label(&value.as_bytes()[..end])
+		})
+		.map(|encoding| {
+			if encoding == UTF_16BE || encoding == UTF_16LE {
+				UTF_8
+			} else {
+				encoding
+			}
+		})
+		.filter(|encoding| *encoding != REPLACEMENT)
 }
 
 /// Visible text of an HTML document: script, style and template contents are
