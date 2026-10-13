@@ -95,7 +95,9 @@ pub struct RetrievalScope {
 	/// revision of each memory bank the Run recalls. Inserting, editing,
 	/// deleting or (re)indexing an entry, or mutating a memory unit, changes
 	/// it, so ordinary content changes force a fresh retrieval instead of a
-	/// stale reuse. Remote Runs carry none (#191).
+	/// stale reuse. A remote Run carries the Home's digest, returned by its
+	/// admission refresh; `None` when the Home's protocol predates it, which
+	/// keeps the key a remote Run had before (#191).
 	pub corpus_digest: Option<String>,
 }
 

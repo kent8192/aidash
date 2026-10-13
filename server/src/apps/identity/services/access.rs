@@ -80,6 +80,9 @@ pub(crate) struct Access {
 	pub read_grant: Option<Uuid>,
 	/// A batchable read loads its Working Area and records without excluding concurrent reads.
 	pub shared_area: bool,
+	/// A remote worker's Home Workspace corpus digest, from the describe reply
+	/// that refreshed this authority (#191). `None` for every other Access.
+	pub(crate) home_corpus_digest: Option<String>,
 	pub(super) environment: Value,
 }
 
@@ -212,6 +215,7 @@ impl Access {
 			read_run: None,
 			read_grant: None,
 			shared_area: false,
+			home_corpus_digest: None,
 			environment: json!({"node_id":node,"transport":"api"}),
 		}
 	}
@@ -321,6 +325,7 @@ impl Access {
 			read_run: lease.read_run,
 			read_grant: lease.read_grant,
 			shared_area: false,
+			home_corpus_digest: None,
 			environment: lease.environment.clone(),
 		})
 	}

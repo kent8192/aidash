@@ -18,7 +18,7 @@ pub struct Config {
 
 pub use crate::apps::identity::serializers::settings::{GcipConfig, OidcConfig, SessionConfig};
 
-pub const PROTOCOL_VERSION: &str = "0.2";
+pub const PROTOCOL_VERSION: &str = aidash_domain::federation::protocol::CURRENT;
 
 impl Config {
 	pub fn dashboard_session(&self) -> Option<SessionConfig<'_>> {

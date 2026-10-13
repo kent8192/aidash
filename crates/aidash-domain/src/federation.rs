@@ -56,4 +56,6 @@ pub mod execution;
 
 pub mod graph;
 
+pub mod protocol;
+
 pub mod registry_reads;

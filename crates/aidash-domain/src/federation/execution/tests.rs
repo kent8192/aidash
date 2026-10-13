@@ -86,3 +86,46 @@ fn substituted_binding_snapshot_is_rejected_even_when_legacy_inspection_fields_m
 	changed.binding_snapshot = serde_json::from_value(snapshot).unwrap();
 	assert!(!changed.satisfies(&inspection));
 }
+
+#[fixture]
+fn described(inspection: Inspection) -> serde_json::Value {
+	json!({
+		"grant_id": Uuid::nil(),
+		"source_node": "aidash://home",
+		"target_node": "aidash://receiver",
+		"source_tenant": "acme",
+		"source_subject": "alice",
+		"task": {"id":Uuid::nil(),"workspace_id":Uuid::nil(),"title":"Task","description":"Describe","status":"OPEN","requirements":{},"owner":null,"created_by":"human","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-02T00:00:00Z"},
+		"inspection": inspection,
+		"expires_at": "2026-10-02T00:00:00Z",
+	})
+}
+#[rstest]
+fn a_reply_without_a_corpus_digest_is_a_valid_older_protocol_reply(described: serde_json::Value) {
+	let reply = Described::from_value(described.clone()).unwrap();
+	assert_eq!(reply.corpus_digest, None);
+	// The Description parses unchanged and re-serializes without the field.
+	assert_eq!(serde_json::to_value(&reply).unwrap(), described);
+}
+#[rstest]
+fn the_corpus_digest_is_split_from_the_description_it_would_otherwise_change(
+	described: serde_json::Value,
+) {
+	let mut wire = described.clone();
+	wire["corpus_digest"] = json!("sha256:corpus");
+	let reply = Described::from_value(wire.clone()).unwrap();
+	assert_eq!(reply.corpus_digest.as_deref(), Some("sha256:corpus"));
+	// Admission and refresh compare the Description with the pinned copy; the
+	// digest must not take part, or every corpus change would revoke the Run.
+	assert_eq!(serde_json::to_value(&reply.description).unwrap(), described);
+	assert_eq!(serde_json::to_value(&reply).unwrap(), wire);
+}
+#[rstest]
+fn a_malformed_digest_or_an_unknown_description_field_is_rejected(described: serde_json::Value) {
+	let mut wrong_type = described.clone();
+	wrong_type["corpus_digest"] = json!(7);
+	assert!(Described::from_value(wrong_type).is_err());
+	let mut unknown = described;
+	unknown["caller_authority"] = json!(true);
+	assert!(Described::from_value(unknown).is_err());
+}

@@ -4,7 +4,10 @@ use crate::{
 	ports::federation::dependencies::{DependencyScope, DependencyTransport},
 };
 use aidash_domain::{
-	federation::dependencies::{Checked, Input, LIMIT, Reference},
+	federation::{
+		dependencies::{Checked, Input, LIMIT, Reference},
+		protocol::compatible,
+	},
 	registry::{EntityRef, rules::digest},
 };
 use serde_json::json;
@@ -126,7 +129,7 @@ pub async fn verify_all(
 			let Some(peer) = scope.peer(node).await? else {
 				return Ok(false);
 			};
-			if peer.protocol_version != protocol {
+			if !compatible(protocol, &peer.protocol_version) {
 				return Ok(false);
 			}
 			let (tenant, subject) = scope.identity();
