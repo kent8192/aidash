@@ -560,7 +560,7 @@ pub(crate) async fn approval_list(
 	let mut access = access(&f, actor).await?;
 	let result=async {
         let rows:Vec<super::records::Record>={ let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); crate::database::native::query_as(&sessions::select("core_records")
-            .and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("kind")).is_in(["outbound","grant"]))
+            .and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("kind")).is_in(["outbound","grant","disclosure"]))
             .and_where(SimpleExpr::CustomWithExpr("(owner = ? OR data->>'approver' = ?)".into(), vec![Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
             .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned()))).order_by(Alias::new("id"),Order::Asc).limit(51).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? };
         let next_cursor=(rows.len()==51).then(||rows[49].id);
@@ -569,7 +569,7 @@ pub(crate) async fn approval_list(
 			if !super::approvals::visible(&mut access, &row).await? { continue; }
             let run:Uuid=serde_json::from_value(row.data["run_id"].clone())?;
             // Designated approvers see only the scoped card, never Run output.
-            items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":"network.get","expires_at":row.expires_at,"grant_id":row.data["grant_id"]}));
+            items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":row.data["action"].as_str().or_else(||row.data["actions"][0].as_str()).unwrap_or("network.get"),"expires_at":row.expires_at,"grant_id":row.data["grant_id"],"disclosure":if row.kind=="disclosure"{row.data["content"].clone()}else{serde_json::Value::Null}}));
         }
         Ok(json!({"items":items,"next_cursor":next_cursor}))
     }.await;

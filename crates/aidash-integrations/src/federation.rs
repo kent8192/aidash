@@ -15,7 +15,6 @@ use std::{sync::Arc, time::Duration};
 pub struct PeerHttp {
 	pub client: reqwest::Client,
 	pub node_id: String,
-	pub protocol_version: String,
 	pub credentials: Arc<dyn Credentials>,
 }
 
@@ -28,6 +27,8 @@ impl aidash_application::ports::federation::peers::PeerIdentity for PeerHttp {
 impl PeerHttp {
 	/// Outer HTTP adapters can inspect response headers before decoding their
 	/// own protocol. Credentials are resolved at every send, including rotation.
+	/// The request carries the protocol version the peer was registered with, so
+	/// it never contains a field that peer's software would reject.
 	pub async fn send(
 		&self,
 		peer: &Peer,
@@ -64,7 +65,7 @@ impl PeerHttp {
 			.timeout(timeout)
 			.bearer_auth(self.credentials.resolve(&peer.credential_env)?)
 			.header("x-aidash-node", &self.node_id)
-			.header("x-aidash-protocol", &self.protocol_version);
+			.header("x-aidash-protocol", &peer.protocol_version);
 		if let Some(body) = body {
 			request = request.json(body);
 		}

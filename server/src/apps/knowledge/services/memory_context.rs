@@ -303,6 +303,38 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 	})
 }
 
+/// Runs a read's statements one after another, either on a pool or on an
+/// open transaction such as a held authority lease, which must not wait for a
+/// second pool connection.
+pub(crate) trait CorpusReads: Send {
+	fn executor(&mut self) -> impl crate::database::native::Executor + '_;
+}
+impl CorpusReads for &crate::database::native::Pool {
+	fn executor(&mut self) -> impl crate::database::native::Executor + '_ {
+		*self
+	}
+}
+impl<T: reinhardt::db::backends::TransactionExecutor + ?Sized> CorpusReads for &mut T {
+	fn executor(&mut self) -> impl crate::database::native::Executor + '_ {
+		&mut **self
+	}
+}
+
+/// The Home corpus a remote Run's semantic read draws from: the grant's
+/// Workspace and, with native memory, the Home participant's banks. The Home
+/// records it on every remote retrieval and compares it before admitting a
+/// step that reuses that retrieval (ADR 0020).
+pub(crate) async fn remote_corpus_digest(
+	reads: impl CorpusReads,
+	description: &aidash_domain::federation::execution::Description,
+) -> Result<String> {
+	let participant = description
+		.semantic
+		.native()
+		.and_then(|native| native.participant.bank.participant);
+	corpus_reads(reads, description.task.workspace_id, participant).await
+}
+
 /// Digest of the content a Run's semantic read draws from: the Workspace's
 /// live semantic entries and, for a memory participant, its own and the
 /// Workspace-shared memory banks. `semantic_indexes.revision` changes only
@@ -311,6 +343,14 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 /// memory unit mutations (which bump their bank's revision) change this.
 pub async fn corpus_digest(
 	store: &Store,
+	workspace: uuid::Uuid,
+	participant: Option<uuid::Uuid>,
+) -> Result<String> {
+	corpus_reads(&store.pool, workspace, participant).await
+}
+
+async fn corpus_reads(
+	mut reads: impl CorpusReads,
 	workspace: uuid::Uuid,
 	participant: Option<uuid::Uuid>,
 ) -> Result<String> {
@@ -329,7 +369,7 @@ pub async fn corpus_digest(
 			.to_string(PostgresQueryBuilder),
 	)
 	.columns(&ENTRY)
-	.fetch_all(&store.pool)
+	.fetch_all(reads.executor())
 	.await?;
 	let banks = match participant {
 		Some(participant) => {
@@ -350,7 +390,7 @@ pub async fn corpus_digest(
 					.to_string(PostgresQueryBuilder),
 			)
 			.columns(&["id", "revision"])
-			.fetch_all(&store.pool)
+			.fetch_all(reads.executor())
 			.await?
 		}
 		None => Vec::new(),
@@ -379,10 +419,14 @@ pub(crate) async fn recheck(
 		)
 		.await?;
 	}
-	if observed["memory"]["banks"].is_array()
-		&& !super::super::repositories::memory_reads::visible(lease, run.id).await?
-	{
-		return Err(Error::Forbidden);
+	if observed["memory"]["banks"].is_array() {
+		// Lost authority keeps the generic authority pause (ADR 0013); any other
+		// cause pauses with its exact semantic reason, never a re-retrieval.
+		match super::super::repositories::memory_reads::invalidity(lease, run.id).await? {
+			None => {}
+			Some(crate::semantic::remote::Failure::Authority) => return Err(Error::Forbidden),
+			Some(failure) => return Err(Error::RemoteSemantic(failure)),
+		}
 	}
 	Ok(())
 }

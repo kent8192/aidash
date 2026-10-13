@@ -531,7 +531,6 @@ pub(crate) fn peer_transport(f: &Federation) -> aidash_integrations::federation:
 	aidash_integrations::federation::PeerHttp {
 		client: f.client.clone(),
 		node_id: f.config.node_id.clone(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -568,6 +567,9 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
 	) -> aidash_application::Result<()> {
 		use aidash_domain::tool::providers::{ToolTier, requires_runner};
+		if descriptor.provider.starts_with("research.") {
+			return crate::apps::execution::services::research::providers().available(descriptor);
+		}
 		if descriptor.tier != ToolTier::Host || descriptor.operation == "task_assign" {
 			return Ok(());
 		}
@@ -726,7 +728,6 @@ pub(crate) fn dependency_transport(
 	aidash_integrations::federation::PeerHttp {
 		client: access.peer_client.clone(),
 		node_id: access.node_id.clone(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -1160,7 +1161,6 @@ pub(crate) fn native_registry_transport(
 	aidash_integrations::federation::PeerHttp {
 		client: client.clone(),
 		node_id: node.into(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -2004,7 +2004,10 @@ pub(crate) fn activation_scheduling_scope(
 ) -> crate::apps::execution::activation::repositories::scheduling::Scope<
 	&mut dyn reinhardt::db::backends::TransactionExecutor,
 > {
-	crate::apps::execution::activation::repositories::scheduling::Scope { tx }
+	crate::apps::execution::activation::repositories::scheduling::Scope {
+		tx,
+		capabilities: aidash_domain::run_state::PersistedCapability::supported(),
+	}
 }
 
 pub(crate) fn activation_repository(

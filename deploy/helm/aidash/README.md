@@ -49,6 +49,129 @@ to override file settings with "no managed Store"; `null` renders nothing.
 GCIP keys; its `public_origin` must equal `node.endpoint`. It is rendered the same
 way for `AIDASH_GCIP_SETTINGS`. Changing either restarts server and worker.
 
+## Metadata server egress
+
+On GKE every node pool runs `GKE_METADATA`, so a Pod that reaches the metadata
+server (`169.254.169.254`) receives only its own Kubernetes ServiceAccount's
+identity and never the node's credentials. The chart still closes that path for
+Pods that have no use for it, so a compromised Pod holds no federated token
+either. `metadataServerEgress.enabled` (default `true`) renders the NetworkPolicy
+`<release>-aidash-metadata-egress`, which selects every Pod of the release
+namespace that does **not** carry the label `aidash.run/metadata-server` and
+admits all egress except `169.254.169.254/32` and `169.254.169.252/32`. Server and worker carry the label;
+nothing else does, so a new workload is blocked until someone labels it on
+purpose. With `execution.guard` or `execution.installer` enabled, the same policy
+is rendered in their namespaces (`<release>-aidash-guard-metadata-egress`,
+`<release>-aidash-installer-metadata-egress`). The companion
+[environment chart](../../../infra/gcp/helm/environment/README.md) renders its own
+policy for its Pods.
+
+Upgrading a running release from a chart version without the label needs care.
+Helm applies the NetworkPolicy before the Deployments, and the server and worker
+Pods already running lack the label until their replacements roll out, so they
+lose the metadata server (and with it Workload Identity token refresh) for the
+length of that rollout. The GCP controller is unaffected: every upgrade it runs
+(`deploy` and `reload` in `infra/gcp/control/kube.py`) renders server and worker
+at zero replicas and starts labelled replacements afterwards. A direct
+`helm upgrade` of a release with live writers must either scale server and worker
+to zero first, or upgrade once with `metadataServerEgress.enabled=false` and
+enable it in a second upgrade after the labelled Pods are Ready.
+
+NetworkPolicy egress is additive across policies, so no other policy that selects
+these Pods may grant egress. The chart's other policies are ingress-only, and
+`scripts/test_helm_execution.py` fails if one gains an egress rule. The policy
+covers IPv4 only, which is the verified GKE profile; it does not admit IPv6, so
+dual-stack clusters need a reviewed variant. No Aidash Pod uses `hostNetwork`: a
+host-network Pod bypasses NetworkPolicy and reaches the metadata server as the
+node. Every workload template sets `hostNetwork: false`, and the same test fails
+on anything else.
+
+The verified profile is GKE Dataplane V2 (`ADVANCED_DATAPATH` in
+`infra/gcp/environments/cluster.tf`). On GKE, `gke-metadata-server` DNATs
+`169.254.169.254:80` to `169.254.169.252:988` in the nat PREROUTING chain.
+Dataplane V2 enforces policy before the DNAT, so excepting `169.254.169.254/32`
+is enough there. Calico enforces after the DNAT (see
+[kubernetes/kubernetes#68078](https://github.com/kubernetes/kubernetes/issues/68078)),
+so the DNAT target `169.254.169.252/32` is excepted as well. A Calico cluster is
+not a verified profile.
+
+Inventory of Pod kinds (`yes` means the Pod is on the allowlist):
+
+| Pod kind                   | Chart             | Metadata server | Why                                                                                                                                                                                                                                                                                                            |
+| -------------------------- | ----------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server                     | `aidash`          | yes             | Writes Provider Credentials to Secret Manager with its Workload Identity                                                                                                                                                                                                                                       |
+| worker                     | `aidash`          | yes             | Signs with Cloud KMS with its Workload Identity                                                                                                                                                                                                                                                                |
+| frontend (Nginx)           | `aidash`          | no              | Serves the web bundle; holds no Google identity                                                                                                                                                                                                                                                                |
+| Runner                     | `aidash`          | no              | Talks to the Kubernetes API with its own ServiceAccount; no IAM grants                                                                                                                                                                                                                                         |
+| node guard DaemonSet       | `aidash`          | no              | Local host state and `kubectl exec` from the Runner; no API token                                                                                                                                                                                                                                              |
+| gVisor installer DaemonSet | `aidash`          | no              | Patches Cluster Node labels through the Kubernetes API                                                                                                                                                                                                                                                         |
+| migration Job              | controller        | no              | Copies the server's Pod template, ServiceAccount and Workload Identity, then replaces the labels, so it fails closed. It talks only to PostgreSQL, NATS (JetStream, for `activation-provision`) and the recovery volume. Created outside Helm by `infra/gcp/control/kube.py`, so the chart tests cannot see it |
+| Execution Pod              | `aidash` (Runner) | no              | Own namespace; the Runner denies all of its ingress and egress (`aidash-deny`)                                                                                                                                                                                                                                 |
+| PostgreSQL, NATS           | `environment`     | no              | Retained state; no IAM grants                                                                                                                                                                                                                                                                                  |
+| edge (Caddy and admission) | `environment`     | no              | Public traffic and Firebase helper proxy                                                                                                                                                                                                                                                                       |
+| activity CronJob           | `environment`     | no              | Kubernetes API and the Runner only                                                                                                                                                                                                                                                                             |
+
+### Verifying on GKE (needs cloud access; not run by CI)
+
+Run this against a cluster that has `GKE_METADATA` on every pool, with the chart
+installed in an Environment namespace `$NS` as release `$REL`. The probes are
+throwaway Pods that use a curl image, so they do not depend on the (minimal)
+application images. Set `$POOL` to the Environment's node pool name; add a
+matching toleration to `--overrides` if the pool is tainted.
+
+```sh
+URL=http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
+probe() { # probe <name> <service account> <extra label>
+  kubectl -n "$NS" run "$1" --rm -i --restart=Never --image=curlimages/curl $3 \
+    --overrides="{\"spec\":{\"serviceAccountName\":\"$2\",\"nodeSelector\":{\"cloud.google.com/gke-nodepool\":\"$POOL\"}}}" \
+    -- curl -sS -m 5 -H 'Metadata-Flavor: Google' "$URL"
+}
+
+# 1. The policy exists and selects only unlabelled Pods.
+kubectl -n "$NS" get networkpolicy "$REL-aidash-metadata-egress" -o yaml
+
+# 2. A non-allowlisted Pod times out. Expect: curl: (28) ... timed out.
+probe md-denied default ''
+
+# 3. A Pod with the allowlist label and the server's (then the worker's)
+#    ServiceAccount receives that account's Google identity.
+#    Expect an address like ad...-server@<project>.iam.gserviceaccount.com.
+probe md-server "$REL-aidash-server" '--labels=aidash.run/metadata-server=allowed'
+probe md-worker "$REL-aidash-worker" '--labels=aidash.run/metadata-server=allowed'
+
+# 4. The real server and worker are labelled, Ready, and unaffected.
+kubectl -n "$NS" get pods -l 'aidash.run/metadata-server=allowed'
+```
+
+A denied probe that answers means the cluster does not enforce egress policy.
+A probe that times out in step 3 means the label is missing from the Pod or a
+different policy selects it. Finish by confirming a Provider Credential write
+(server) and a signing request (worker) succeed.
+
+The policy also constrains Pods that need the API server. On GKE Dataplane V2,
+anetd rewrites an `ipBlock` that contains node addresses into host, remote-node and
+kube-apiserver selectors, so a `0.0.0.0/0` with an `except` must be checked, not
+assumed. After the apply, confirm each of these still works:
+
+```sh
+# 5. The installer DaemonSet labels its node (needs the API server).
+kubectl -n "$REL-installer" rollout status ds/"$REL-execution-installer" --timeout=300s
+kubectl get nodes -l aidash.run/gvisor   # the execution pool's nodes carry the label
+
+# 6. The Runner creates an Execution Pod (needs the API server).
+kubectl -n "$NS" rollout status deploy/"$REL-execution-runner" --timeout=300s
+# Run any Python cell through the application, then:
+kubectl -n "$REL-sandbox" get pods        # an Execution Pod appears and completes
+
+# 7. The activity CronJob completes (reads the API server and patches its ConfigMap).
+kubectl -n "$NS" create job --from=cronjob/env-environment-activity md-activity
+kubectl -n "$NS" wait --for=condition=complete job/md-activity --timeout=120s
+kubectl -n "$NS" delete job md-activity
+```
+
+If any of these fail while the exempt Pods work, the policy is the suspect: delete
+`<release>-aidash-metadata-egress` and retry to confirm, then widen it.
+
 ## Optional execution components
 
 Enable `execution.createNamespaces`, `execution.runtimeClass.create`,

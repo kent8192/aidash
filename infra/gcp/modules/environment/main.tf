@@ -10,15 +10,16 @@ terraform {
 locals {
   name      = "aidash-${var.environment_id}-${var.environment.incarnation}"
   namespace = "aidash-${var.environment_id}"
-  labels    = { application = "aidash", environment = var.environment_id, lifecycle = "nonproduction" }
+  labels    = { application = "aidash", environment = var.environment_id, lifecycle = var.deployment_tier }
 }
 
 // Only this environment's Pods tolerate the taint; stopping scales the pool to zero.
 resource "google_container_node_pool" "environment" {
-  name       = local.name
-  location   = var.cluster.location
-  cluster    = var.cluster.name
-  node_count = var.environment.running ? var.environment.nodes : 0
+  name           = local.name
+  location       = var.cluster.location
+  cluster        = var.cluster.name
+  node_locations = var.cluster.node_locations
+  node_count     = var.environment.running ? var.environment.nodes : 0
   management {
     auto_repair  = true
     auto_upgrade = true

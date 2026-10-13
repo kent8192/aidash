@@ -1012,6 +1012,17 @@ impl NativeMemory {
 		}
 		mutate(&self.runtime.store, &actor, input).await
 	}
+	pub async fn impact(
+		&self,
+		actor: Actor,
+		workspace: Uuid,
+		input: impact::ImpactQuery,
+	) -> Result<impact::Impact> {
+		if input.bank.workspace != workspace {
+			return Err(Error::Forbidden);
+		}
+		super::memory_impact::impact(&self.runtime.store, &actor, input).await
+	}
 	pub async fn list(&self, actor: Actor, workspace: Uuid, input: ReadBank) -> Result<Vec<Unit>> {
 		if input.bank.workspace != workspace {
 			return Err(Error::Forbidden);

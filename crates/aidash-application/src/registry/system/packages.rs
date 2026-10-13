@@ -1,10 +1,10 @@
-//! Operator declarations for the six host package groups. No executable payloads.
+//! Operator declarations for the host and research package groups. No executable payloads.
 use super::*;
 use crate::{Error, ports::bindings::ProviderCatalog};
 use aidash_domain::{
 	identity::Principal,
 	registry::bindings::{BundleConfig, QualifiedRef},
-	tool::providers::{ToolDescriptor, ToolTier},
+	tool::providers::{ToolDescriptor, ToolTier, research_descriptor},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,6 +23,14 @@ pub const HOST_GROUPS: &[(&str, &[&str])] = &[
 	("apply_patch", &["apply_patch"]),
 	("file_share", &["file_share"]),
 	("task_assign", &["task_assign"]),
+];
+/// Research provider packages, one group per Node provider. Every group's
+/// operations share the research contract, so a Run binding the fixture group
+/// behaves exactly as one binding the Brave and page groups.
+pub const RESEARCH_GROUPS: &[(&str, &str)] = &[
+	("research_brave", "research.brave@1"),
+	("research_page", "research.page@1"),
+	("research_fixture", "research.fixture@1"),
 ];
 #[derive(Clone)]
 pub struct PackageGroup {
@@ -86,43 +94,79 @@ pub fn declarations(
 					})
 				})
 				.collect::<Result<Vec<_>>>()?;
-			let bundle = Entry {
-				binding_normalization: None,
-				installation: None,
-				id: format!("aidash.bundle.{name}"),
-				version: "1.0.0".into(),
-				kind: "bundle".into(),
-				name: BTreeMap::from([("en".into(), format!("Aidash {name}"))]),
-				description: BTreeMap::from([(
-					"en".into(),
-					format!("Node-provided {name} operations"),
-				)]),
-				capabilities: operations
-					.iter()
-					.flat_map(|entry| entry.capabilities.clone())
-					.collect(),
-				tags: vec!["operator".into()],
-				languages: vec![],
-				skills: vec![],
-				schema: json!({}),
-				config: serde_json::to_value(BundleConfig {
-					members: operations
-						.iter()
-						.map(|entry| QualifiedRef {
-							registry_node: node.into(),
-							id: entry.id.clone(),
-							version: entry.version.clone(),
-						})
-						.collect(),
-				})?,
-			};
 			Ok(PackageGroup {
 				name: (*name).into(),
-				bundle,
+				bundle: bundle_entry(node, name, &operations)?,
 				operations,
 			})
 		})
+		.chain(RESEARCH_GROUPS.iter().map(|(name, provider)| {
+			let (_, operations, _) = aidash_domain::tool::providers::RESEARCH_PROVIDERS
+				.iter()
+				.find(|(candidate, _, _)| candidate == provider)
+				.ok_or_else(|| Error::Invalid(format!("unknown research provider {provider}")))?;
+			let stem = provider.trim_end_matches("@1");
+			let operations = operations
+				.iter()
+				.map(|operation| {
+					let descriptor = research_descriptor(node, provider, operation)?;
+					let research = aidash_domain::research::Operation::parse(operation)
+						.expect("declared research operation");
+					let spec = crate::research::specification(research);
+					Ok(Entry {
+						binding_normalization: None,
+						installation: None,
+						id: format!("aidash.{stem}.{operation}"),
+						version: "1.0.0".into(),
+						kind: "tool".into(),
+						name: BTreeMap::from([("en".into(), spec.name.clone())]),
+						description: BTreeMap::from([("en".into(), spec.description)]),
+						capabilities: vec![format!("research.{operation}")],
+						tags: vec!["operator".into(), "research".into()],
+						languages: vec![],
+						skills: vec![],
+						schema: spec.parameters,
+						config: serde_json::to_value(descriptor)?,
+					})
+				})
+				.collect::<Result<Vec<_>>>()?;
+			Ok(PackageGroup {
+				name: (*name).into(),
+				bundle: bundle_entry(node, name, &operations)?,
+				operations,
+			})
+		}))
 		.collect()
+}
+
+fn bundle_entry(node: &str, name: &str, operations: &[Entry]) -> Result<Entry> {
+	Ok(Entry {
+		binding_normalization: None,
+		installation: None,
+		id: format!("aidash.bundle.{name}"),
+		version: "1.0.0".into(),
+		kind: "bundle".into(),
+		name: BTreeMap::from([("en".into(), format!("Aidash {name}"))]),
+		description: BTreeMap::from([("en".into(), format!("Node-provided {name} operations"))]),
+		capabilities: operations
+			.iter()
+			.flat_map(|entry| entry.capabilities.clone())
+			.collect(),
+		tags: vec!["operator".into()],
+		languages: vec![],
+		skills: vec![],
+		schema: json!({}),
+		config: serde_json::to_value(BundleConfig {
+			members: operations
+				.iter()
+				.map(|entry| QualifiedRef {
+					registry_node: node.into(),
+					id: entry.id.clone(),
+					version: entry.version.clone(),
+				})
+				.collect(),
+		})?,
+	})
 }
 
 pub struct ProvisioningPlan {

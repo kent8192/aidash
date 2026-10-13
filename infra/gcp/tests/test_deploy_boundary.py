@@ -201,14 +201,14 @@ class DeployBoundaryTests(unittest.TestCase):
         self.assertIn("auditConfigDeltas", byok[0])
         self.assertIn("NOT protoPayload.authenticationInfo.principalEmail=\"aidash-deploy@aidash-fixture.iam.gserviceaccount.com\"", byok[1])
         self.assertTrue(all("projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Factivity" in f for f in byok))
-        self.assertIn('("aidash-production-credential-broker" OR "aidash-test-credential-broker")', revision[0])
+        self.assertIn('("aidash-develop-credential-broker" OR "aidash-test-credential-broker")', revision[0])
         iam = filters["Credential Broker: IAM policy changed"]
         self.assertIn("Services.SetIamPolicy", iam[0])
         self.assertIn("google.iam.admin.v1.SetIAMPolicy", iam[1])
         read = filters["Provider Credential Key Material read by a non-broker principal"]
         self.assertEqual(len(read), 1)
         self.assertIn("AccessSecretVersion", read[0])
-        for email in ("aidash-production-broker", "aidash-test-broker"):
+        for email in ("aidash-develop-broker", "aidash-test-broker"):
             self.assertIn(f'"{email}@aidash-fixture.iam.gserviceaccount.com"', read[0])
         self.assertEqual(read[0].count("principalEmail"), 1)
 
@@ -271,29 +271,20 @@ class BrokerImageTests(unittest.TestCase):
 
 
 class DeployEntryPointTests(unittest.TestCase):
-    """Every job that can obtain Google credentials runs in the protected Environment."""
+    """Every job that can obtain Google credentials runs in its protected Environment."""
+
+    # The only workflows the WIF providers trust, and the one GitHub Environment the
+    # provider condition accepts for each of them.
+    CREDENTIALED = {
+        "gcp-environments.yml": "nonproduction",
+        "gcp-production.yml": "production",
+        "deployment-notifications.yml": "deployment-notifications",
+        "deployment-certificate.yml": "certificate-renewal",
+    }
 
     @staticmethod
     def workflow(name):
         return yaml.safe_load((WORKFLOWS / name).read_text())
-
-    @staticmethod
-    def wif_environments():
-        source = (BOOTSTRAP / "variables.tf").read_text()
-        return tuple(
-            re.search(rf'variable "{name}" \{{.*?default\s*=\s*"([^"]+)"', source, re.S).group(1)
-            for name in ("deploy_environment", "release_environment")
-        )
-
-    @staticmethod
-    def selected_environment(job, build):
-        """Evaluate a job's `environment:` for a run that does (not) build images."""
-        value = job["environment"]
-        expression = re.fullmatch(r"\$\{\{ needs\.prepare\.outputs\.build == 'true' && '([^']+)' \|\| '([^']+)' \}\}", value)
-        if expression:
-            return expression.group(1) if build else expression.group(2)
-        assert "${{" not in value, value
-        return value
 
     def credentialed_jobs(self, workflow):
         return {
@@ -302,21 +293,13 @@ class DeployEntryPointTests(unittest.TestCase):
             or any("google-github-actions/auth" in step.get("uses", "") for step in job.get("steps", []))
         }
 
-    def test_credentialed_jobs_pick_the_release_environment_only_for_builds(self):
-        unattended, release = self.wif_environments()
-        self.assertEqual((unattended, release), ("gcp-deploy", "gcp-deploy-release"))
-        jobs = self.credentialed_jobs(self.workflow("gcp-environments.yml"))
-        self.assertEqual(sorted(jobs), ["apply", "prepare", "publish"])
-        for build in (True, False):
-            selected = {name: self.selected_environment(job, build) for name, job in jobs.items()}
-            # prepare decides whether to build and only records durable intent.
-            self.assertEqual(selected["prepare"], unattended)
-            # Publishing runs only for builds (the build/publish jobs are skipped otherwise).
-            self.assertEqual(selected["publish"], release)
-            self.assertEqual(selected["apply"], release if build else unattended, build)
-        # Only the two names the WIF provider accepts can ever be selected.
-        names = {self.selected_environment(job, build) for job in jobs.values() for build in (True, False)}
-        self.assertEqual(names, {unattended, release})
+    def test_credentialed_jobs_run_in_the_trusted_environment(self):
+        for name, environment in self.CREDENTIALED.items():
+            jobs = self.credentialed_jobs(self.workflow(name))
+            self.assertTrue(jobs, name)
+            for job_name, job in jobs.items():
+                # A literal name: an expression could select an Environment WIF does not gate.
+                self.assertEqual(job.get("environment"), environment, f"{name}:{job_name}")
 
     def test_publish_and_build_only_run_for_builds(self):
         workflow = self.workflow("gcp-environments.yml")
@@ -336,15 +319,19 @@ class DeployEntryPointTests(unittest.TestCase):
 
     def test_no_other_workflow_authenticates_to_google(self):
         for path in WORKFLOWS.glob("*.yml"):
-            if path.name == "gcp-environments.yml":
+            if path.name in self.CREDENTIALED:
                 continue
             self.assertNotIn("google-github-actions/auth", path.read_text(), path.name)
 
-    def test_provider_condition_names_the_environment_and_the_main_workflow(self):
+    def test_provider_conditions_name_the_environment_and_the_exact_workflow(self):
         source = (BOOTSTRAP / "main.tf").read_text()
-        self.assertIn("assertion.environment in ['${var.deploy_environment}', '${var.release_environment}']", source)
-        self.assertIn("assertion.ref == 'refs/heads/${var.trusted_branch}'", source)
+        self.assertIn('deploy_environment        = var.deployment_tier == "production" ? "production" : "nonproduction"', source)
+        self.assertIn("assertion.environment == '${local.deploy_environment}'", source)
+        self.assertIn("assertion.ref == 'refs/heads/${local.deploy_branch}'", source)
         self.assertIn("assertion.workflow_ref == '${local.workflow_ref}'", source)
+        self.assertIn("assertion.environment == 'deployment-notifications'", source)
+        renewal = (BOOTSTRAP / "tls_renewal.tf").read_text()
+        self.assertIn("assertion.environment == 'certificate-renewal'", renewal)
 
 
 if __name__ == "__main__":

@@ -10,8 +10,6 @@ pub mod provider;
 
 pub mod services_context;
 
-pub mod web_search;
-
 pub mod management;
 
 pub mod state;

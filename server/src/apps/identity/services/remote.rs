@@ -7,7 +7,8 @@ pub(crate) mod execution;
 use super::{access::Access, identity::Actor, peer::execution::Inspection};
 #[cfg(test)]
 use crate::registry::Search;
-use crate::{Result, domain::Task, federation::Federation, registry::EntityRef};
+use crate::{Result, domain::Task, federation::Federation, registry::EntityRef, store::Store};
+use aidash_domain::federation::{execution::Described, protocol::carries_corpus_digest};
 use reinhardt::injectable;
 use serde_json::Value;
 #[cfg(test)]
@@ -56,6 +57,22 @@ async fn description_lease_mode(
 	.await
 	.map(|(scope, description)| (scope.into_access(), description))
 	.map_err(Into::into)
+}
+
+/// The corpus a remote Run's semantic read draws from, as the Home records it
+/// for each remote retrieval. Read after the live-grant checks above, and only
+/// when the grant carries Home semantic access.
+///
+/// The digest covers every live entry of the Workspace, as it does for a local
+/// Run, so it also moves when an entry the executor may not retrieve changes.
+/// The receiver learns only that the Workspace corpus changed, never content.
+async fn corpus_digest(store: &Store, description: &Description) -> Result<Option<String>> {
+	if description.semantic.disabled() {
+		return Ok(None);
+	}
+	crate::semantic::services::memory_context::remote_corpus_digest(&store.pool, description)
+		.await
+		.map(Some)
 }
 
 #[cfg(test)]
@@ -120,11 +137,14 @@ impl RemoteGrants {
 		.await
 		.map_err(Into::into)
 	}
+	/// The pinned Description, plus the Workspace's current corpus digest for a
+	/// peer whose protocol carries it. A peer registered at an older version
+	/// gets exactly the reply it always did.
 	pub(crate) async fn describe(
 		&self,
 		headers: HeaderMap,
 		input: VerifyInput,
-	) -> Result<Description> {
+	) -> Result<Described> {
 		let f = self.runtime.clone();
 		let (access, description) = description_lease(
 			&f,
@@ -132,7 +152,20 @@ impl RemoteGrants {
 			input.grant_id,
 		)
 		.await?;
-		access.finish(Ok(description)).await
+		let description = access.finish(Ok(description)).await?;
+		let corpus_digest = if headers
+			.get("x-aidash-protocol")
+			.and_then(|value| value.to_str().ok())
+			.is_some_and(carries_corpus_digest)
+		{
+			corpus_digest(&f.store, &description).await?
+		} else {
+			None
+		};
+		Ok(Described {
+			description,
+			corpus_digest,
+		})
 	}
 	pub(crate) async fn verify(&self, headers: HeaderMap, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();

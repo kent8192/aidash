@@ -1751,3 +1751,6 @@ fn provider_endpoint(
 }
 #[path = "core_capabilities/deferred_exposure.rs"]
 mod deferred_exposure_tests;
+
+#[path = "core_capabilities/web_research.rs"]
+mod web_research_tests;
