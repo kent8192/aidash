@@ -285,37 +285,55 @@ def blank_observation():
             "wall_ms": 0.0}
 
 
-def stop_run(api, token, task_uuid, run_id, clock, sleep):
+def stop_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=False):
     """Cancel a Run the evaluator stops waiting for; return its latest state, or None without one.
 
     It runs after the Run's own deadline, so its requests get CANCEL_GRACE of their own. When the
     Tenant subject `token` cannot cancel (expired, rejected), the operator token is tried once.
+    `claim_uncertain` means a claim was sent without a definite answer: it may have admitted a
+    Run that appears later, so absence is polled for through the grace period and, if no Run
+    appears, reported as an unresolved cancellation rather than as no Run.
     """
     if task_uuid is None:
         return None
     try:
-        return cancel_run(api, token, task_uuid, run_id, clock, sleep)
+        return cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain)
     except Exception as failure:
         if token is None or token == api.operator:
             raise
         try:
-            return cancel_run(api, None, task_uuid, run_id, clock, sleep)  # None: the operator token.
+            return cancel_run(api, None, task_uuid, run_id, clock, sleep, claim_uncertain)  # None: operator token.
         except Exception as fallback:
             raise fallback from failure
 
 
-def cancel_run(api, token, task_uuid, run_id, clock, sleep):
-    grace = api.until(clock() + CANCEL_GRACE, clock, sleep)
-    if run_id is None:
+def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=False):
+    grace_deadline = clock() + CANCEL_GRACE
+    grace = api.until(grace_deadline, clock, sleep)
+    while run_id is None:
         run_id = next((run["id"] for run in grace.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),
                       None)
-        if run_id is None:
+        if run_id is not None:
+            break
+        if not claim_uncertain:
             return None
+        if clock() >= grace_deadline:
+            raise RuntimeError(f"a claim of Task {task_uuid} may have admitted a Run that did not appear within "
+                               f"{CANCEL_GRACE}s, so it could not be cancelled")
+        sleep(min(1.0, max(0.0, grace_deadline - clock())))
     run = grace.get(f"/api/runs/{run_id}", token)["run"]
     if run["phase"] in TERMINAL:
         return run
     grace.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
     return grace.get(f"/api/runs/{run_id}", token)["run"]
+
+
+def record_final_state(observation, run):
+    """Copy a Run's final phase, steps, compactions and tool calls into its observation."""
+    context = run.get("context") or {}
+    observation.update({"run_id": run["id"], "phase": run["phase"],
+                        "error": run.get("error") or run.get("state_error"), "steps": run.get("step"),
+                        "compactions": context.get("compactions"), "tool_calls": tool_calls_from(context)})
 
 
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
@@ -340,6 +358,8 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
     bounded = api.until(deadline, clock, sleep)
     answers = iter(task.get("human_answers", []))
     task_uuid = None
+    # True from the moment a claim is sent until it is definitely accepted or rejected.
+    claim_uncertain = False
     try:
         try:
             title = f"{experiment.prefix} {task['id']} {planned['label']} r{repeat}"
@@ -354,11 +374,14 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             claim = {"revision": created.get("revision", 0),
                      "agent": {"id": agent_ref["id"], "version": agent_ref["version"]}}
             for attempt in range(api.retries + 1):
+                claim_uncertain = True
                 try:
                     bounded.post(f"/api/tasks/{task_uuid}/claim", claim, token)
                     break
                 except ApiError as error:
                     # A timed-out claim may still have committed: retry only when no Run exists.
+                    if error.status not in Api.TRANSIENT and error.status < 500:
+                        claim_uncertain = False  # Rejected: no Run was admitted.
                     if error.status not in Api.TRANSIENT or attempt == api.retries:
                         raise
                     # A committed claim may already be doing paid work, so the backoff never crosses
@@ -376,8 +399,9 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                 if run_id is None:
                     if clock() > deadline:
                         raise RuntimeError(f"no Run appeared for Task {task_uuid}")
-                    sleep(interval)
+                    sleep(min(interval, max(0.0, deadline - clock())))
             observation["run_id"] = run_id
+            claim_uncertain = False
             if after_claim is not None:
                 after_claim(bounded)
             while True:
@@ -404,21 +428,19 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                                                              "approved": answer.get("approved"),
                                                              "prompt": request["prompt"],
                                                              "tool": approval_tool(request["prompt"])})
-                sleep(interval)
+                # Never sleep across the deadline: the next poll then notices it and cancels at once.
+                sleep(min(interval, max(0.0, deadline - clock())))
         except Exception as error:
             # Past the deadline, whether a poll noticed it or a request stalled into it.
             if not isinstance(error, DeadlineExceeded) and clock() < deadline:
                 raise
-            run = stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
+            run = stop_run(api, token, task_uuid, observation["run_id"], clock, sleep, claim_uncertain)
             if run is None:
                 raise
-            observation.update({"run_id": run["id"], "interrupted": True})
+            observation["interrupted"] = True
         # The Run is finished or cancelled: reading its outcome may take a grace period past the deadline.
         reader = api.until(max(deadline, clock() + CANCEL_GRACE), clock, sleep)
-        context = run.get("context") or {}
-        observation.update({"phase": run["phase"], "error": run.get("error") or run.get("state_error"),
-                            "steps": run.get("step"), "compactions": context.get("compactions"),
-                            "tool_calls": tool_calls_from(context)})
+        record_final_state(observation, run)
         if run["phase"] == "COMPLETED":
             observation["final_answer"] = final_answer(reader, token, observation["workspace"], run)
         if fixture is not None:
@@ -430,7 +452,10 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
         # A failed request says nothing about the Run: it may still be active, so stop it
         # before the caller moves on (stop_run leaves a finished Run alone).
         try:
-            stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
+            run = stop_run(api, token, task_uuid, observation["run_id"], clock, sleep, claim_uncertain)
+            # The final state still shows what the Run did, compactions included, for live_runs to check.
+            if run is not None:
+                record_final_state(observation, run)
         except Exception as cancel_error:
             # The Run may still be running: the caller must not dispatch more work after it.
             observation["cancellation_failed"] = True
@@ -439,7 +464,9 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
     except BaseException:  # Ctrl-C or SIGTERM: stop the Run, keep its record, then unwind.
         observation["interrupted"] = True
         try:
-            stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
+            run = stop_run(api, token, task_uuid, observation["run_id"], clock, sleep, claim_uncertain)
+            if run is not None:
+                record_final_state(observation, run)
         except Exception as error:
             observation["cancellation_failed"] = True
             observation["infrastructure_error"] = f"cancellation after the interrupt failed: {type(error).__name__}: " \

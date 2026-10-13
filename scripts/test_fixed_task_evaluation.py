@@ -347,7 +347,16 @@ def full_result(value, runs_override=None, ceiling=None, tier="deterministic"):
         {"run_timeout_seconds": 1, "wall_seconds": 1, "max_output_tokens": 1, "spend_ceiling_nanocredits": ceiling},
         [], evaluator=evaluation.evaluator_identity())
     return cli.assemble(value, experiment, runs, evaluation.feature_availability(value),
-                        evaluation.memory_matrix(memory_corpus, {}), True, None, [], None)
+                        evaluation.memory_matrix(memory_corpus, {}), tier == "deterministic", None, [], None)
+
+
+def rederive(result, value):
+    """Regenerate every summary derived from the Runs, as a tampering editor would."""
+    result["aggregates"] = evaluation.aggregate(result["runs"])
+    result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
+    if result["calibration"]["applied"]:
+        result["calibration"]["failures"] = evaluation.calibrate(value, result["runs"])
+    return result
 
 
 class ManifestTest(unittest.TestCase):
@@ -638,6 +647,40 @@ class RunnerTest(unittest.TestCase):
                                    timeout=1.5, clock=clock, sleep=clock.sleep)
         self.assertEqual(clock.now, 0.0, "no backoff past the deadline")
         self.assertTrue(node.cancelled, "the possibly admitted Run is cancelled at once")
+        self.assertTrue(observed["interrupted"])
+
+    def test_a_late_run_after_an_ambiguous_claim_is_found_or_reported(self):
+        for appears in (True, False):
+            with self.subTest(appears=appears):
+                node = FakeNode(["RUNNING"])
+                reads = []
+
+                def late(method, path, body, token, timeout=None, node=node, reads=reads, appears=appears):
+                    if path.endswith("/claim"):
+                        return 504, {"error": "gateway timeout"}  # It may still have committed.
+                    if path == "/api/state":
+                        reads.append(path)
+                        if not appears or len(reads) < 3:
+                            return 200, {"runs": [], "human_requests": []}
+                    return node.call(method, path, body, token)
+                clock = Clock()
+                experiment = self.experiment(node)
+                experiment.api = runner.Api(late, "operator")
+                observed = runner.run_task(experiment.api, experiment, self.planned, 1,
+                                           {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock,
+                                           sleep=clock.sleep)
+                self.assertIs(node.cancelled, appears, "a Run that appears late is still cancelled")
+                self.assertIs(observed["cancellation_failed"], not appears,
+                              "a Run that never appears is an unresolved cancellation, not no Run")
+
+    def test_polling_never_sleeps_past_the_deadline(self):
+        node = FakeNode(["RUNNING"])
+        clock = Clock()
+        experiment = self.experiment(node)
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
+                                   timeout=1.5, clock=clock, sleep=clock.sleep)
+        self.assertEqual(clock.now, 1.5, "the second poll interval is cut to the remaining 0.5 s")
+        self.assertTrue(node.cancelled)
         self.assertTrue(observed["interrupted"])
 
     def test_cancellation_falls_back_to_the_operator_token(self):
@@ -1244,6 +1287,26 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(seen, {"proxy": [], "target": ["Bearer secret-token"]})
 
+    def test_compactions_seen_while_cancelling_after_a_failure_stop_dispatch(self):
+        call, _ = self.live_node(phase="RUNNING")
+        failed = []
+
+        def failing_then_compacted(method, path, body, token, timeout=None):
+            if method == "GET" and path == "/api/runs/run-1" and not failed:
+                failed.append(path)
+                return 500, {"error": "internal"}
+            status, value = call(method, path, body, token)
+            if path == "/api/runs/run-1":
+                value["run"]["context"]["compactions"] = 1
+            return status, value
+        status, result = self.run_live(failing_then_compacted, ceiling="500000")
+        self.assertEqual(status, 1)
+        self.assertIn("Jev compactor answered", result["error"])
+        self.assertEqual([run["outcome"] for run in result["runs"]], ["infrastructure_failure"])
+        self.assertEqual(result["runs"][0]["compactions"], 1)
+        self.assertEqual(len(result["skipped_runs"]), 1)
+        evaluation.validate_result(result)
+
     def test_a_failed_cancellation_stops_all_further_dispatch(self):
         call, _ = self.live_node(phase="RUNNING")
         controls = []
@@ -1656,9 +1719,7 @@ class HardeningTest(unittest.TestCase):
         def tampered(change):
             result = full_result(value)
             change(result["runs"])
-            result["aggregates"] = evaluation.aggregate(result["runs"])
-            result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
-            return result
+            return rederive(result, value)
         cases = {
             "success without a passing oracle": (lambda runs: runs[0].update(outcome="success"), "produce"),
             "passing oracle with failing checks": (lambda runs: runs[0]["oracle"].update(passed=True),
@@ -1682,6 +1743,40 @@ class HardeningTest(unittest.TestCase):
         evaluation.validate_result(tampered(lambda runs: runs[0].update(
             outcome="infrastructure_failure", infrastructure_error="ApiError: HTTP 500", error="ApiError: HTTP 500")))
 
+    def test_variants_calibration_and_missing_runs_are_bound_to_the_corpus(self):
+        value = corpus()
+
+        def renamed(result):
+            # Relabel the Runs of one task as another task with the same label and Agent fields.
+            for item in result["experiment"]["variants"] + result["runs"]:
+                item["task"] = "structured-data-overdue-totals"
+            for run in result["runs"]:
+                run["key"] = evaluation.run_key(run["task"], run["comparison"], run["arm"], run["repeat"])
+
+        def dropped_under_an_error(result):
+            result["error"] = "something failed"
+            result["runs"].pop()
+        cases = {
+            "renamed task": (renamed, "does not match its corpus task"),
+            "edited variant label": (lambda r: r["experiment"]["variants"][0].update(label="ordered"),
+                                     "not a corpus pair"),
+            "duplicated variant": (lambda r: r["experiment"]["variants"].append(dict(r["experiment"]["variants"][0])),
+                                   "more than once"),
+            "hidden calibration failures": (lambda r: r.update(calibration={"applied": False, "failures": []}),
+                                            "calibration differs"),
+            "missing Run under an error": (dropped_under_an_error, "neither recorded nor skipped"),
+        }
+        for label, (change, pattern) in cases.items():
+            with self.subTest(label):
+                result = full_result(value)
+                change(result)
+                calibration = dict(result["calibration"])
+                rederive(result, value)
+                if label == "hidden calibration failures":
+                    result["calibration"] = calibration
+                with self.assertRaisesRegex(evaluation.CorpusError, pattern):
+                    evaluation.validate_result(result)
+
     def test_usage_summaries_are_recomputed_from_their_records(self):
         value = corpus()
         record = {"run_id": "run", "outcome": "completed", "input_tokens": 10, "output_tokens": 2,
@@ -1691,9 +1786,7 @@ class HardeningTest(unittest.TestCase):
             result = full_result(value)
             result["runs"][0]["usage"] = evaluation.summarize_usage([record])
             change(result["runs"][0]["usage"])
-            result["aggregates"] = evaluation.aggregate(result["runs"])
-            result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
-            return result
+            return rederive(result, value)
         evaluation.validate_result(with_usage(lambda usage: None))
         for label, change in (("attempts", lambda usage: usage.update(attempts=9)),
                               ("tokens", lambda usage: usage["input_tokens"].update(known=1)),

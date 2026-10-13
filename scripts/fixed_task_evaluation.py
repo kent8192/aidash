@@ -330,6 +330,7 @@ def consistency_errors(result, corpus, memory_corpus):
             errors.append(f"$.runs: {run['key']} has a usage summary that differs from its Usage Records")
     errors += availability_errors(result, corpus)
     errors += memory_corpus_errors(result, memory_corpus)
+    errors += plan_errors(result, corpus)
     # Every planned (task, comparison, arm, repeat) is recorded or skipped, and nothing else is.
     planned = {run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
                for variant in experiment["variants"] for repeat in range(1, experiment["repeat_count"] + 1)}
@@ -342,8 +343,9 @@ def consistency_errors(result, corpus, memory_corpus):
     unplanned = sorted((set(keys) | set(skipped)) - planned)
     if unplanned:
         errors.append(f"$.runs: {unplanned[:5]} are not planned by the experiment's variants and repeats")
+    # An error does not show which Runs were never dispatched, so every missing Run is listed as skipped.
     missing = sorted(planned - set(keys) - set(skipped))
-    if result["error"] is None and missing:
+    if missing:
         errors.append(f"$.runs: planned Runs {missing[:5]} are neither recorded nor skipped; none may be dropped")
     groups = {}
     for run in runs:
@@ -356,6 +358,15 @@ def consistency_errors(result, corpus, memory_corpus):
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         errors.append(f"derived summaries cannot be recomputed from the Runs: {type(error).__name__}: {error}")
         derived_aggregates, expected_rows = [], {}
+    # Calibration applies to the deterministic tier only, and its failures are recomputed.
+    calibration = result["calibration"]
+    applies = experiment["tier"] == "deterministic"
+    try:
+        expected_failures = calibrate(corpus, runs) if applies else []
+    except (KeyError, TypeError) as error:
+        expected_failures = [f"cannot be recomputed: {type(error).__name__}"]
+    if calibration["applied"] is not applies or not json_equal(calibration["failures"], expected_failures):
+        errors.append("$.calibration differs from the calibration the Runs produce for this tier")
     derived = {(item["task"], item["comparison"], item["arm"]): item for item in derived_aggregates}
     aggregated = set()
     for recorded in result["aggregates"]:
@@ -427,6 +438,35 @@ def consistency_errors(result, corpus, memory_corpus):
             errors.append("$.spend.attempts: a Run has more than one spend attempt")
         for key in sorted(set(keys) - set(reserved)):
             errors.append(f"$.spend.attempts: recorded Run {key} has no spend attempt")
+    return errors
+
+
+def plan_errors(result, corpus):
+    """Variants and Runs against the corpus plan: each names a planned (task, comparison, arm) exactly.
+
+    The accepted Run keys derive from `experiment.variants`, so a variant must
+    carry its pair's label and Agent fields, and a Run its pair's label, the
+    task's oracle kind and the digest of the task text sent to the Agent.
+    """
+    if result["experiment"]["corpus"]["sha256"] != corpus["_snapshot"]["sha256"]:
+        return []  # availability_errors reports the corpus mismatch.
+    pairs = {(item["task"]["id"], item["comparison"]["id"], item["arm"]): item for item in plan(corpus)}
+    errors = []
+    variants = [(variant["task"], variant["comparison"], variant["arm"])
+                for variant in result["experiment"]["variants"]]
+    if len(variants) != len(set(variants)):
+        errors.append("$.experiment.variants: a (task, comparison, arm) is listed more than once")
+    for variant in result["experiment"]["variants"]:
+        item = pairs.get((variant["task"], variant["comparison"], variant["arm"]))
+        if item is None or variant["label"] != item["label"] or not json_equal(variant["agent_fields"],
+                                                                              item["agent_fields"]):
+            errors.append(f"$.experiment.variants: {variant['task']}/{variant['comparison']}/{variant['arm']} is not "
+                          "a corpus pair with its label and Agent fields")
+    for run in result["runs"]:
+        item = pairs.get((run["task"], run["comparison"], run["arm"]))
+        if item is None or run["label"] != item["label"] or run["oracle"]["kind"] != item["task"]["oracle"]["kind"] \
+                or run["evidence"]["input_sha256"] != sha256_text(task_description(corpus, item["task"])):
+            errors.append(f"$.runs: {run['key']} does not match its corpus task's label, oracle and input digest")
     return errors
 
 

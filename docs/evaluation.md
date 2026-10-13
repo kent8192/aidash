@@ -75,7 +75,7 @@ fails, the manifest is still written with the error, so a retry with the same
 `--output` is refused only when a real record exists. Ctrl-C and SIGTERM
 cancel the queued Runs, cancel the active ones on the Node, remove the owned
 Node and containers and write the manifest with every finished or interrupted
-Run (exit 143 for SIGTERM); a second SIGTERM while that unwind hangs removes
+Run, listing every Run that was not recorded in `skipped_runs` (exit 143 for SIGTERM); a second SIGTERM while that unwind hangs removes
 the owned Node and containers and exits at once. The checkout and executable
 must stay as recorded: the `cargo test` evidence commands run only while they
 do, and a change found before the manifest is written is recorded as an error.
@@ -247,7 +247,13 @@ may already have admitted the Run, so when its backoff would end past the
 time limit the evaluator cancels the Run at once instead of sleeping. A
 cancellation the Tenant subject token cannot make is retried once with the
 operator token; if that fails too, the Run may still be active, so the
-manifest records it and no further Run is dispatched. After any failure past the guard rails,
+manifest records it and no further Run is dispatched. A claim sent without a
+definite answer may admit a Run that appears later: cancellation polls for it
+through the 30-second grace period, and a Run that never appears counts as an
+unresolved cancellation, which also stops dispatch. Polling never sleeps
+across a Run's time limit, and when cancellation after a failure returns the
+Run's final state, that state (compactions included) is recorded and checked.
+After any failure past the guard rails,
 including Ctrl-C and SIGTERM, the in-flight Run is cancelled and the manifest
 is still written with the error, the ledger and every finished Run; the exit
 code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an error and 3 for a ceiling
@@ -367,8 +373,12 @@ with the rejection as its `detail`.
 The result manifest (`tests/evaluation/schema/result.schema.json`) embeds the
 experiment manifest (`experiment.schema.json`) and is validated against both
 before it is written, together with cross-field rules: every Run key names its
-task, comparison, arm and repeat; the recorded and skipped Runs are exactly the
-planned keys (variants × repeats), with nothing dropped or added; every group
+task, comparison, arm and repeat; every variant is a corpus pair with its
+label and Agent fields, and every Run carries its pair's label, the task's
+oracle kind and the digest of the task text; the recorded and skipped Runs
+are exactly the planned keys (variants × repeats), with nothing dropped or
+added, whether or not the manifest records an error; the calibration is
+applied in the deterministic tier only and its failures are recomputed; every group
 of Runs has exactly one aggregate whose outcome counts match its Runs; every
 aggregate's label, rates and metrics, every paired comparison and the memory
 matrix summary equal what the recorded Runs and scenarios produce; each Run's

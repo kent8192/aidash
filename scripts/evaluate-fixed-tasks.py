@@ -654,10 +654,15 @@ def run_deterministic(args, binary_directory):
               "spend_ceiling_nanocredits": None}
     if error is None and len(runs) != len(variants) * args.repeats:
         error = "not every planned Run was recorded"
+    # Every planned Run without a record (queued when interrupted, or lost to a failure) is listed as skipped.
+    recorded = {run["key"] for run in runs}
+    skipped = [(key, "not recorded: " + (error or "the evaluation stopped")) for key in (
+        evaluation.run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
+        for repeat in range(1, args.repeats + 1) for variant in variants) if key not in recorded]
     experiment_value = experiment_manifest("deterministic", corpus, memory_corpus, source, model, harness, variants,
                                            args.repeats, limits, DETERMINISTIC_LIMITATIONS, evaluator=evaluator)
     result = assemble(corpus, experiment_value, runs, availability, memory, True, None,
-                      DETERMINISTIC_LIMITATIONS, error)
+                      DETERMINISTIC_LIMITATIONS, error, skipped)
     invalid = finalize(result, reservation, corpus, memory_corpus)
     error = result["error"]
     print(evaluation.summary_table(result))
@@ -790,14 +795,6 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     if signal.getsignal(signal.SIGTERM) is raise_terminated:
         # Finalization is short and writes the only record of paid work: let nothing interrupt it.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    recorded = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
-                for planned, repeat, _ in observations}
-    listed = {key for key, _ in skipped}
-    reason = "not dispatched: " + (error or "live dispatch stopped")
-    skipped += [(key, reason) for key in (
-        evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
-        for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
-        if key not in recorded and key not in listed]
     runs = []
     for planned, repeat, observation in observations:
         try:
@@ -805,6 +802,16 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         except Exception as failure:  # A grading fault must not discard the record of paid work.
             error = (error + "; " if error else "") + f"grading failed for run {repeat} of " \
                 f"{planned['task']['id']}: {type(failure).__name__}: {failure}"
+    dispatched = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
+                  for planned, repeat, _ in observations}
+    graded = {run["key"] for run in runs}
+    listed = {key for key, _ in skipped}
+    # Every planned Run without a graded record is listed: undispatched, or dispatched but ungradable.
+    skipped += [(key, ("dispatched, but grading failed: " if key in dispatched else "not dispatched: ") +
+                 (error or "live dispatch stopped")) for key in (
+        evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
+        for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
+        if key not in graded and key not in listed]
     source = evaluation.source_identity(server_revision=args.server_revision)
     source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
     # Neither Usage Records nor model.completed events expose the provider-reported identity (I-5).
