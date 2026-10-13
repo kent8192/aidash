@@ -193,7 +193,10 @@ the current contract authorizes. `GET /api/runs/{id}/management` returns
 nor finished. The view carries no content, so it stays available when the Run's
 content is hidden. On the Home, each entry of
 `GET /api/tasks/{task}/remote-executions` reports the same value for a remote
-Run as `semantic.recovery`.
+Run as `semantic.recovery`, also while semantic memory is disabled, and omits it
+once the remote Run is cancelled or finished. A retry counts as scheduled only
+while the Run is active: a paused Run is never scheduled, so it offers
+`retry_unchanged_binding` instead of `wait`.
 
 | Cause                                                                                                          | Actions                                            |
 | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
@@ -226,10 +229,13 @@ reused retrieval goes stale before it is sent (ADR 0020).
 `POST /api/workspaces/{workspace}/memory/units/impact` takes the provider, the
 Bank and up to the pinned `max_candidates` Unit IDs, and needs `memory.read` on
 that Bank. For each Unit it returns the revision a Run may still read
-(`readable_revision`, `null` once the Unit is deleted, withdrawn or retired), the
-Runs that read it and the live derived Units that depend on it. The same view
-serves as the preview before a change and as the post-change view: a Run read
-is `fenced` once its revision is no longer readable.
+(`readable_revision`, `null` once the Unit is deleted, withdrawn, retired or past
+its retention, even before the maintenance sweep), the Runs that read it and the
+live derived Units that depend on it. A derived Unit is live under the same
+checks as listing: visible (not deleted, stale or withdrawn), within retention
+and with current support. The same view serves as the preview before a change
+and as the post-change view: a Run read is `fenced` once its revision is no
+longer readable.
 
 - The view is content-free: identities, revisions, kinds, phase and control,
   never Unit text, subjects or Run content. The memory page shows it under
@@ -250,7 +256,8 @@ is `fenced` once its revision is no longer readable.
 - The view is neither a lock nor a promise. Every mutation rechecks revisions
   and authority when it commits.
 
-The test is `impact_lists_visible_dependents_before_and_after_a_change`.
+The tests are `impact_lists_visible_dependents_before_and_after_a_change` and
+`impact_reports_only_live_units_and_fences_expired_reads`.
 
 ## Concurrency and restart
 
