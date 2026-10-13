@@ -2836,7 +2836,8 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 			]),
 		})
 		.to_string(PostgresQueryBuilder);
-	let mut tx = f.database.connection.begin().await.unwrap();
+	// Only the table owner can add a constraint; the server role holds DML.
+	let mut tx = f.database.owner_connection.begin().await.unwrap();
 	tx.execute(&statement, vec![]).await.unwrap();
 	tx.commit().await.unwrap();
 	let created = management

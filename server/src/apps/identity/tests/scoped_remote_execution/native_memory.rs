@@ -145,7 +145,11 @@ async fn native_receipt_finalization_failure_rolls_back_all_grant_dependencies(
 			expr: Expr::col("state").ne("COMPLETED"),
 		})
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&statement).execute(pool).await.unwrap();
+	// Only the table owner can add a constraint; the server role holds DML.
+	sqlx::query(&statement)
+		.execute(&common::owner_pool(pool).await)
+		.await
+		.unwrap();
 	for _ in 0..4 {
 		p.step().await;
 	}
