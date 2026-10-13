@@ -27,6 +27,7 @@ import {
   MemoryRecord,
   unitAnchor,
 } from "./memory-view";
+import { MemoryImpactView } from "./memory-impact";
 
 type Bank = {
   home: string;
@@ -977,6 +978,14 @@ export function MemoryWorkspace({
                   {text("Delete this revision", "このrevisionを削除")}
                 </Button>
               </div>
+              {read && (
+                <MemoryImpactView
+                  workspace={workspace}
+                  base={base}
+                  provider={read.provider}
+                  unit={unit}
+                />
+              )}
             </article>
           ))}
       </div>

@@ -246,3 +246,76 @@ fn production_constructors_reject_resource_traversal_and_latest_versions() {
 		.is_err()
 	);
 }
+
+#[rstest::rstest]
+#[case::requested(true)]
+#[case::not_requested(false)]
+#[tokio::test]
+async fn issuer_copies_the_cache_breakpoint_request_into_the_signed_claims(
+	#[case] requested: bool,
+) {
+	use aidash_application::provider_access::{Context, Inference, Operation, TokenIssuer};
+	use aidash_domain::provider_credentials::{Provider, ProviderCredential, State};
+	// Arrange
+	let id = uuid::Uuid::from_u128(100);
+	let resource = format!("projects/app/secrets/aidash-test-cred-{id}");
+	let credential = ProviderCredential {
+		id,
+		tenant: "tenant-a".into(),
+		provider: Provider::Openrouter,
+		base_url: Provider::Openrouter.base_url().into(),
+		secret_resource: resource.clone(),
+		pinned_version: Some(format!("{resource}/versions/3")),
+		fingerprint: String::new(),
+		last4: String::new(),
+		state: State::Active,
+		created_at: chrono::Utc::now(),
+		rotated_at: None,
+		revoked_at: None,
+		revision: 1,
+	};
+	let context = Context {
+		tenant: "tenant-a".into(),
+		run: Some(uuid::Uuid::from_u128(7)),
+		inference: Some(Inference {
+			model: "anthropic/claude-fixture".into(),
+			operations: vec![Operation::Chat],
+			max_output_tokens: 64,
+			cache_breakpoints: requested,
+		}),
+		..Default::default()
+	};
+	let signer = Arc::new(InMemorySigner::new(KID.into(), [7; 32]));
+	let issuer = issuer::CapabilityIssuer::new(
+		issuer::WorkerConfiguration {
+			endpoint: "https://broker.example/api/v1".into(),
+			issuer: "worker".into(),
+			audience: "test".into(),
+			kid: KID.into(),
+		},
+		"app".into(),
+		signer.clone(),
+	)
+	.unwrap();
+	// Act
+	let access = issuer.mint(&context, &credential).await.unwrap();
+	// Assert
+	let mut keys = aidash_capability::PublicKeys::default();
+	keys.insert(KID.into(), signer.public_key());
+	let now = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap()
+		.as_secs();
+	let claims = keys
+		.verify(access.bearer.expose_secret(), "worker", "test", now)
+		.unwrap();
+	assert_eq!(claims.cache_breakpoints, requested);
+	let payload = access.bearer.expose_secret().split('.').nth(1).unwrap();
+	let payload: serde_json::Value = serde_json::from_slice(
+		&base64::engine::general_purpose::URL_SAFE_NO_PAD
+			.decode(payload)
+			.unwrap(),
+	)
+	.unwrap();
+	assert_eq!(payload.get("cache_breakpoints").is_some(), requested);
+}

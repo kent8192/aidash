@@ -72,6 +72,9 @@ pub struct Status {
 	pub result_count: Option<usize>,
 	pub truncated: bool,
 	pub retrieved_at: Option<DateTime<Utc>>,
+	/// The exact cause and the authorized next actions while `reason` is set.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub recovery: Option<crate::semantic::recovery::Recovery>,
 }
 impl From<Receipt> for Provenance {
 	fn from(receipt: Receipt) -> Self {
@@ -152,8 +155,12 @@ pub fn project(
 		result_count: None,
 		truncated: false,
 		retrieved_at: None,
+		recovery: None,
 	};
 	if binding.disabled() {
+		// A disabled Binding schedules no retry; its cause still carries actions.
+		result.recovery =
+			reason.map(|reason| crate::semantic::recovery::Recovery::new(reason, false));
 		return Ok(result);
 	}
 	if let Some(record) = record {
@@ -205,6 +212,10 @@ pub fn project(
 		}
 	}
 	if let Some(reason) = result.reason {
+		result.recovery = Some(crate::semantic::recovery::Recovery::new(
+			reason,
+			result.retry_at.is_some(),
+		));
 		result.state = if reason == Failure::Invalidated {
 			"invalidated"
 		} else if result.retry_at.is_some() {

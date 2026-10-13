@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -308,6 +309,31 @@ class ReconcileTests(unittest.TestCase):
         self.request(action="resume", sha="b" * 40)
         self.reconcile()
         self.assertEqual(self.kube.secret("aidash-test", "aidash-identity"), tokens)
+
+    def test_quiet_running_staging_receives_tls_rotation_without_redeploying_the_application(self):
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        entry = deepcopy(self.store.state["environments"]["develop"])
+        output = self.cloud.outputs()
+        output["develop"]["hostname"] = "0123456789abcdef" * 2 + ".preview.aidash.run"
+        self.config["preview_tls_secret"] = "aidash-preview-wildcard-tls"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+                            "-subj", "/CN=*.preview.aidash.run", "-addext", "subjectAltName=DNS:*.preview.aidash.run",
+                            "-out", str(root / "cert"), "-keyout", str(root / "key")], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            bundle = {"certificate_pem": (root / "cert").read_text(), "private_key_pem": (root / "key").read_text()}
+            self.calls.clear()
+            with patch.object(self.cloud, "outputs", return_value=output), patch.object(controller.delivery, "run", return_value=json.dumps(bundle).encode()):
+                self.reconcile()
+                self.assertEqual(self.kube.secret("aidash-develop", "aidash-preview-tls")["tls.crt"], bundle["certificate_pem"])
+                self.reconcile()
+        current = self.store.state["environments"]["develop"]
+        self.assertEqual(current["status"], "ready")
+        for key in ("generation", "sha", "release", "outcome_at", "outcome_run_id"):
+            self.assertEqual(current[key], entry[key])
+        self.assertFalse(any(call[0] in {"helm", "migrate", "scale"} for call in self.calls))
 
     def test_ready_environment_reconciles_broker_enable_rotation_disable_and_removal(self):
         self.request()
@@ -787,7 +813,7 @@ class ReconcileTests(unittest.TestCase):
             "project_id": "aidash-fixture",
             "tenant_ids": ["pool"],
             "tenant_bindings": {"pool": "acme"},
-            "mfa": {"pool": "disabled"},
+            "mfa": {"pool": {"state": "disabled", "totp_adjacent_intervals": 5}},
         }
 
         def entry():
@@ -878,7 +904,7 @@ class ReconcileTests(unittest.TestCase):
 
         def apply(managed, **kwargs):
             original(managed, **kwargs)
-            self.cloud.gcip["mfa"] = {"pool": "disabled"}
+            self.cloud.gcip["mfa"] = {"pool": {"state": "disabled", "totp_adjacent_intervals": 5}}
 
         with (
             patch.object(controller, "reconcile_mfa", mfa),
@@ -894,6 +920,65 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.calls[0], ("mfa", "test", False))
         self.assertLess(self.calls.index(("mfa", "test", True)), self.calls.index(("admission", "test", "open")))
         self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+
+    def test_mfa_only_change_applies_and_refreshes_the_runtime_without_fencing(self):
+        self.request()
+        self.reconcile()
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "acme"}})
+        self.cloud.gcip = {"project_id": "aidash-fixture", "tenant_ids": ["pool"], "tenant_bindings": {"pool": "acme"}}
+        original = self.cloud.apply
+
+        def apply(managed, **kwargs):
+            original(managed, **kwargs)
+            # The module output follows the declaration only through an apply.
+            declared = config["gcip_tenants"]["company"].get("mfa", {})
+            self.cloud.gcip["mfa"] = {"pool": {"state": declared.get("state", "disabled"), "totp_adjacent_intervals": 5}}
+
+        enforced, published = [], []
+
+        def mfa(output):
+            enforced.append(output["gcip"]["mfa"]["pool"]["state"])
+            return iter(())
+
+        def provision(config, output, kind):
+            published.append(output["gcip"]["mfa"]["pool"]["state"])
+            return deepcopy(RUNTIME)
+
+        with (
+            patch.object(self.cloud, "apply", apply),
+            patch.object(controller, "reconcile_mfa", mfa),
+            patch.object(controller, "provision_secret", provision),
+            patch.object(controller, "reconcile_environment"),
+            patch.dict(os.environ, {"AIDASH_GCIP_IDP_SECRETS": "{}"}),
+        ):
+            controller.reconcile(config, self.store)
+            for state in ("mandatory", "enabled"):
+                with self.subTest(state=state):
+                    config["gcip_tenants"]["company"]["mfa"] = {"state": state}
+                    self.calls.clear()
+                    enforced.clear()
+                    published.clear()
+                    plans = len(self.cloud.plans)
+                    controller.reconcile(config, self.store)
+                    # Neither fence digest moves, yet the declaration is applied,
+                    # enforced and published to the running host without quiescing it.
+                    self.assertGreater(len(self.cloud.plans), plans)
+                    self.assertNotIn(("scale", "test", "runner", 0), self.calls)
+                    self.assertEqual(enforced[0], state)
+                    self.assertEqual(published, [state])
+                    self.assertIn(("helm", "test", "app"), self.calls)
+                    self.assertLess(self.calls.index(("helm", "test", "app")), self.calls.index(("admission", "test", "open")))
+                    entry = self.store.state["environments"]["test"]
+                    self.assertEqual(entry["gcip_mfa_revision"], controller.gcip_mfa_revision(config))
+                    self.assertFalse(entry["gcip_pending"])
+                    # The refreshed declaration is steady state.
+                    self.calls.clear()
+                    published.clear()
+                    plans = len(self.cloud.plans)
+                    controller.reconcile(config, self.store)
+                    self.assertEqual(len(self.cloud.plans), plans)
+                    self.assertEqual(published, [])
+                    self.assertFalse(any(call[0] == "helm" for call in self.calls))
 
     def test_gcip_change_fences_a_running_unpublished_failed_deployment(self):
         self.request()
@@ -1616,6 +1701,29 @@ class IntakeTests(unittest.TestCase):
                         self.assertEqual(
                             output.read_text(), f"proceed={str(allowed).lower()}\n"
                         )
+
+    def test_recreating_a_destroyed_preview_counts_against_the_retention_cap(self):
+        state = {"environments": {
+            "pr-1": {"kind": "pr", "desired": "running"},
+            "pr-2": {"kind": "pr", "desired": "destroyed", "last_comment_at": 0},
+        }}
+        config = dict(CONFIG, max_preview_environments=1)
+        event = {
+            "action": "created",
+            "comment": {"body": "/preview up", "user": {"login": "fixture"}},
+            "issue": {"number": 2, "pull_request": {"url": "https://api.github.com/repos/kent8192/aidash/pulls/2"}},
+        }
+        with (
+            patch.dict(os.environ, {"GITHUB_RUN_ID": "7"}),
+            patch.object(controller, "permission"),
+            patch.object(controller, "source", return_value={}) as source,
+        ):
+            with self.assertRaisesRegex(controller.Refused, "retention budget"):
+                controller.requests(config, event, "issue_comment", state)
+            source.assert_not_called()
+            # A retained preview may still be updated at the cap.
+            state["environments"]["pr-2"]["desired"] = "running"
+            self.assertEqual(controller.requests(config, event, "issue_comment", state)[0]["environment"], "pr-2")
 
     def test_job_setup_time_reduces_the_operation_budget(self):
         with (

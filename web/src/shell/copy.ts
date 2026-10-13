@@ -91,10 +91,17 @@ export const authCopy = {
     operator: "operator",
     request: "登録を申請",
     pending: "登録申請は承認待ちです。",
+    sharedRequest: "共有テナントへの参加を申請",
+    sharedHelp: "共有テナントへの参加には管理者の承認が必要です。",
+    personalPending:
+      "共有テナントへの参加申請は承認待ちです。個人用テナントは引き続き利用できます。",
+    sharedApproved:
+      "前回の共有テナントへの参加申請は承認されました。別の共有テナントへの参加も申請できます。",
     rejected: "登録申請は却下されました。24 時間後に再申請できます。",
     expired: "登録申請の期限が切れました。再申請できます。",
     allDevices: "全端末からログアウト",
     currentDevice: "この端末からログアウト",
+    secondFactor: "2 段階認証を設定",
   },
   "en-US": {
     signIn: "Sign in with Google",
@@ -104,9 +111,16 @@ export const authCopy = {
     operator: "operator",
     request: "Request access",
     pending: "Your registration is awaiting approval.",
+    sharedRequest: "Request access to shared tenant",
+    sharedHelp: "Joining a shared tenant requires administrator approval.",
+    personalPending:
+      "Your shared tenant request is awaiting approval. You can continue using your personal tenant.",
+    sharedApproved:
+      "Your previous shared tenant request was approved. You can request access to another shared tenant.",
     rejected: "Your request was rejected. You can try again after 24 hours.",
     expired: "Your request expired. You can submit another.",
     allDevices: "Log out on all devices",
     currentDevice: "Log out on this device",
+    secondFactor: "Set up two-step verification",
   },
 } as const;

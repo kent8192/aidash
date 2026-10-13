@@ -30,6 +30,25 @@ pub fn validate_capacity(bounds: &Bounds, dimensions: usize) -> Result<()> {
 	Ok(())
 }
 
+/// Euclidean length accumulated in `f64`, shared by edge creation and diversification.
+pub(super) fn norm(values: &[f32]) -> f64 {
+	values
+		.iter()
+		.map(|value| f64::from(*value).powi(2))
+		.sum::<f64>()
+		.sqrt()
+}
+
+/// Cosine similarity of two same-length, finite, non-zero vectors with known norms.
+pub(super) fn cosine(left: &[f32], right: &[f32], left_norm: f64, right_norm: f64) -> f64 {
+	let dot: f64 = left
+		.iter()
+		.zip(right)
+		.map(|(a, b)| f64::from(*a) * f64::from(*b))
+		.sum();
+	(dot / (left_norm * right_norm)).clamp(-1., 1.)
+}
+
 pub fn semantic(
 	units: &[Unit],
 	vectors: &BTreeMap<Uuid, Vec<f32>>,
@@ -64,16 +83,7 @@ pub fn semantic(
 	validate_capacity(bounds, dimension.max(1))?;
 	let norms: BTreeMap<_, _> = vectors
 		.iter()
-		.map(|(id, values)| {
-			(
-				*id,
-				values
-					.iter()
-					.map(|value| f64::from(*value).powi(2))
-					.sum::<f64>()
-					.sqrt(),
-			)
-		})
+		.map(|(id, values)| (*id, norm(values)))
 		.collect();
 	let minimum = f64::from(min_similarity_millionths) / 1_000_000.;
 	let mut result = vec![];
@@ -83,14 +93,12 @@ pub fn semantic(
 			if source.id == target.id || source.bank != target.bank {
 				continue;
 			}
-			let left = &vectors[&source.id];
-			let right = &vectors[&target.id];
-			let dot: f64 = left
-				.iter()
-				.zip(right)
-				.map(|(a, b)| f64::from(*a) * f64::from(*b))
-				.sum();
-			let similarity = (dot / (norms[&source.id] * norms[&target.id])).clamp(-1., 1.);
+			let similarity = cosine(
+				&vectors[&source.id],
+				&vectors[&target.id],
+				norms[&source.id],
+				norms[&target.id],
+			);
 			// Identical finite vectors can round just below one after normalization.
 			if similarity >= minimum || (minimum == 1. && similarity >= 1. - 1e-12) {
 				neighbors.push(Link {
