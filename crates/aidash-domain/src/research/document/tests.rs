@@ -51,6 +51,40 @@ fn delivery_never_splits_a_character(lines: Vec<Line>) {
 }
 
 #[rstest]
+fn a_separator_that_does_not_fit_starts_the_next_delivery() {
+	let lines = ["abc", "def"].map(|text| Line {
+		text: text.into(),
+		page: None,
+	});
+	let first = deliver(&lines, Position::default(), 3).unwrap();
+	assert_eq!(first.passage.text, "abc");
+	assert_eq!(first.next, Some(Position { line: 0, offset: 3 }));
+	let second = deliver(&lines, first.next.unwrap(), 4).unwrap();
+	assert_eq!(second.passage.text, "\ndef");
+	assert_eq!((second.passage.line_start, second.passage.line_end), (2, 2));
+	assert_eq!(second.next, None);
+}
+
+#[rstest]
+fn every_budget_reconstructs_the_snapshot_text(lines: Vec<Line>) {
+	let whole = lines
+		.iter()
+		.map(|line| line.text.as_str())
+		.collect::<Vec<_>>()
+		.join("\n");
+	for budget in 1..=whole.len() {
+		let mut text = String::new();
+		let mut next = Some(Position::default());
+		while let Some(position) = next {
+			let delivery = deliver(&lines, position, budget).unwrap();
+			text.push_str(&delivery.passage.text);
+			next = delivery.next;
+		}
+		assert_eq!(text, whole, "budget {budget}");
+	}
+}
+
+#[rstest]
 #[case(Position { line: 3, offset: 0 })]
 #[case(Position { line: 1, offset: 100 })]
 #[case(Position { line: 1, offset: 9 })]

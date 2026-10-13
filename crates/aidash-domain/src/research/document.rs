@@ -119,7 +119,9 @@ pub struct Delivery {
 /// Deliver at most `max_bytes` of text from `from`. Lines are joined with a
 /// newline; a line is split only at a character boundary. A positive budget
 /// smaller than the next character still delivers that one character, so
-/// every valid budget makes progress.
+/// every valid budget makes progress. When the separator after a completed
+/// line does not fit, the continuation stays at the end of that line and the
+/// next delivery begins with the separator, so no newline is ever lost.
 pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Delivery> {
 	let Position {
 		mut line,
@@ -131,10 +133,19 @@ pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Deliv
 	{
 		return Err(Error::Invalid("invalid continuation position".into()));
 	}
-	let line_start = line + 1;
-	let mut line_end = line_start;
+	if max_bytes == 0 {
+		return Err(Error::Invalid("max_bytes must be positive".into()));
+	}
 	let mut text = String::new();
 	let mut pages = Vec::new();
+	// A continuation at the end of a non-final line resumes with its separator.
+	if offset == lines[line].text.len() && line + 1 < lines.len() {
+		text.push('\n');
+		line += 1;
+		offset = 0;
+	}
+	let line_start = line + 1;
+	let mut line_end = line_start;
 	while line < lines.len() && text.len() < max_bytes {
 		let value = &lines[line].text;
 		let room = max_bytes - text.len();
@@ -159,17 +170,18 @@ pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Deliv
 		if offset < value.len() {
 			break;
 		}
+		if line + 1 == lines.len() {
+			line += 1;
+			offset = 0;
+			break;
+		}
+		// The completed line's separator is delivered only with room for it.
+		if text.len() + 1 > max_bytes {
+			break;
+		}
+		text.push('\n');
 		line += 1;
 		offset = 0;
-		if line < lines.len() {
-			if text.len() + 1 > max_bytes {
-				break;
-			}
-			text.push('\n');
-		}
-	}
-	if (Position { line, offset }) == from {
-		return Err(Error::Invalid("max_bytes must be positive".into()));
 	}
 	Ok(Delivery {
 		passage: Passage {
