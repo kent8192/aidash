@@ -215,8 +215,18 @@ impl Cloud {
 			signer.clone(),
 		)
 		.unwrap();
+		// The fixture provider is a Keyless endpoint on loopback (ADR 0036).
+		let keyless = KeylessAccess::permitting(
+			aidash_domain::keyless::PermittedOrigins::parse([reqwest::Url::parse(
+				&fixture.broker.catalog["openrouter"],
+			)
+			.unwrap()
+			.origin()
+			.ascii_serialization()])
+			.unwrap(),
+		);
 		let access = Arc::new(TenantAccess {
-			keyless: KeylessAccess::default(),
+			keyless,
 			repository: Arc::new(repo.clone()),
 			reader: None,
 			issuer: Some(Arc::new(issuer)),
