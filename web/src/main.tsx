@@ -80,6 +80,8 @@ import { AuthCard } from "./shell/auth-card";
 import { Alert, Loading, Notice } from "./components/patterns";
 import { authCopy, shellCopy } from "./shell/copy";
 import { takeEmailHint } from "./gcip-email-hint";
+import { markEnrollIntent } from "./gcip-intent";
+import { desktopAvailable } from "./desktop";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
 // Move any discovery email handoff out of sessionStorage immediately.
@@ -379,6 +381,16 @@ function Dashboard({
     setRegistrationError("");
     client.clear();
   };
+  // Enrollment re-authenticates through the GCIP Tenant that admitted this
+  // browser session; its Tenant Binding name is the mapping's tenant.
+  const secondFactorTenant =
+    oidcProvider === "gcip" && !desktopAvailable()
+      ? (
+          browserSession?.mappings.find(
+            (mapping) => context === `mapping:${mapping.id}`,
+          ) ?? browserSession?.mappings[0]
+        )?.tenant
+      : undefined;
   const chooseContext = (selected: string) => {
     void client.cancelQueries();
     client.clear();
@@ -821,6 +833,19 @@ function Dashboard({
             chooseContext,
             setLocale,
             logOut: (allDevices) => void logOut(allDevices),
+            // The desktop app signs in through the system browser, so it
+            // enrolls there too; only the web page can start it from here.
+            setUpSecondFactor: secondFactorTenant
+              ? () => {
+                  markEnrollIntent();
+                  const query = new URLSearchParams({
+                    org: secondFactorTenant,
+                    return_to:
+                      window.location.pathname + window.location.search,
+                  });
+                  window.location.assign(`/auth/login?${query}`);
+                }
+              : undefined,
             preference,
             setPreference,
           }}

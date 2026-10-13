@@ -117,9 +117,12 @@ class ProviderCredentialIamTests(unittest.TestCase):
                         if "var.byok_project_id" in body:
                             self.assertNotIn('roles/secretmanager.', body)
                             byok_grants.append((path.relative_to(ROOT).as_posix(), name))
-                        self.assertFalse(kind.startswith("google_secret_manager_secret_iam_"),
-                                         (path.relative_to(ROOT).as_posix(), name))
-        self.assertEqual(readers, [("bootstrap/provider_credentials.tf", "byok_broker_read")])
+                        if kind.startswith("google_secret_manager_secret_iam_"):
+                            self.assertEqual((path.relative_to(ROOT).as_posix(), name), ("bootstrap/tls_renewal.tf", "tls_renewer"))
+                            self.assertRegex(body, r'project\s*=\s*var\.project_id')
+                            self.assertIn("google_service_account.tls_renewer[0].email", body)
+                            self.assertNotIn("byok", body)
+        self.assertEqual(set(readers), {("bootstrap/provider_credentials.tf", "byok_broker_read"), ("bootstrap/tls_renewal.tf", "tls_renewer")})
         self.assertEqual(set(byok_grants), {
             ("bootstrap/provider_credentials.tf", "byok_deploy"),
             ("bootstrap/credential_brokers.tf", "byok_broker_read"),

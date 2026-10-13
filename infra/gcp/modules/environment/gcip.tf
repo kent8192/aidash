@@ -68,6 +68,6 @@ output "gcip" {
     password_sign_up        = [for alias, pool in google_identity_platform_tenant.aidash : pool.name if var.gcip_tenants[alias].password_sign_up]
     sign_in_domains         = merge({}, [for alias, pool in google_identity_platform_tenant.aidash : { for domain in var.gcip_tenants[alias].sign_in_domains : domain => pool.name }]...)
     # Reconciled by the controller: the Google provider has no tenant MFA arguments.
-    mfa = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => var.gcip_tenants[alias].mfa.state }
+    mfa = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => { state = var.gcip_tenants[alias].mfa.state, totp_adjacent_intervals = var.gcip_tenants[alias].mfa.totp.adjacent_intervals } }
   }
 }

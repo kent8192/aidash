@@ -1,5 +1,11 @@
 import { useId, type ReactNode } from "react";
-import { Languages, LogOut, SunMoon, UserRoundCog } from "lucide-react";
+import {
+  Languages,
+  LogOut,
+  ShieldCheck,
+  SunMoon,
+  UserRoundCog,
+} from "lucide-react";
 import { initials } from "../collaboration/avatar";
 import { NativeSelect } from "../components/ui/native-select";
 import { Button } from "../components/ui/button";
@@ -30,6 +36,8 @@ export type Account = {
   chooseContext: (context: string) => void;
   setLocale: (locale: Locale) => void;
   logOut: (allDevices: boolean) => void;
+  /** Present only for a GCIP session that can start two-step verification setup. */
+  setUpSecondFactor?: () => void;
   preference: ThemePreference;
   setPreference: (preference: ThemePreference) => void;
 };
@@ -192,6 +200,18 @@ export function AccountPanel({ account }: { account: Account }) {
           ))}
         </fieldset>
       </Group>
+      {account.setUpSecondFactor && (
+        <div className="grid gap-px border-t border-border pt-1.5">
+          <button
+            type="button"
+            onClick={account.setUpSecondFactor}
+            className="flex h-8 items-center gap-2.5 rounded-md px-2 text-left text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+          >
+            <ShieldCheck aria-hidden className="size-3.5" />
+            {auth.secondFactor}
+          </button>
+        </div>
+      )}
       <div className="grid gap-px border-t border-border pt-1.5">
         {[false, true].map((allDevices) => (
           <button

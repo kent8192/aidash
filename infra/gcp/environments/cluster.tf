@@ -1,11 +1,13 @@
-// One shared zonal GKE Standard cluster. Environments own node pools inside it;
-// the cluster, network and preview TLS disk outlive every Environment.
+// Nonproduction shares one zonal cluster. Production uses a separate regional
+// control plane, with node pools pinned to the retained disks' zone. This is
+// control-plane HA; single-zone RWO data does not promise zonal failover.
 locals {
-  zone          = "us-central1-a"
-  pod_cidr      = "10.44.0.0/14"
-  any_running   = anytrue([for e in values(var.environments) : e.running])
-  cloud_scope   = ["https://www.googleapis.com/auth/cloud-platform"]
-  system_labels = { "aidash.run/pool" = "system" }
+  zone             = "us-central1-a"
+  pod_cidr         = "10.44.0.0/14"
+  any_running      = var.deployment_tier == "production" || anytrue([for e in values(var.environments) : e.running])
+  cluster_location = var.deployment_tier == "production" ? "us-central1" : local.zone
+  cloud_scope      = ["https://www.googleapis.com/auth/cloud-platform"]
+  system_labels    = { "aidash.run/pool" = "system" }
 }
 
 resource "google_compute_network" "aidash" {
@@ -44,30 +46,46 @@ resource "google_compute_router_nat" "aidash" {
 // Host-network Pods can obtain the node identity's token, so it holds no Aidash
 // permission: only GKE's node telemetry role and release image pulls.
 resource "google_service_account" "nodes" {
+  count        = var.deployment_tier == "nonproduction" ? 1 : 0
   account_id   = "aidash-gke-nodes"
   display_name = "Aidash GKE nodes"
+}
+// Preserve existing nonproduction account state when introducing tier ownership.
+moved {
+  from = google_service_account.nodes
+  to   = google_service_account.nodes[0]
+}
+data "google_service_account" "production_nodes" {
+  count      = var.deployment_tier == "production" ? 1 : 0
+  project    = var.project_id
+  account_id = "aidash-gke-nodes"
+}
+locals {
+  node_service_account_email = var.deployment_tier == "production" ? data.google_service_account.production_nodes[0].email : google_service_account.nodes[0].email
+  node_service_account_name  = var.deployment_tier == "production" ? data.google_service_account.production_nodes[0].name : google_service_account.nodes[0].name
 }
 resource "google_project_iam_member" "nodes" {
   project = var.project_id
   role    = "roles/container.defaultNodeServiceAccount"
-  member  = "serviceAccount:${google_service_account.nodes.email}"
+  member  = "serviceAccount:${local.node_service_account_email}"
 }
 resource "google_artifact_registry_repository_iam_member" "nodes" {
   project    = var.project_id
   location   = "us-central1"
   repository = "aidash"
   role       = "roles/artifactregistry.reader"
-  member     = "serviceAccount:${google_service_account.nodes.email}"
+  member     = "serviceAccount:${local.node_service_account_email}"
 }
 resource "google_service_account_iam_member" "nodes_deploy" {
-  service_account_id = google_service_account.nodes.name
+  service_account_id = local.node_service_account_name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${var.deploy_service_account}"
 }
 
 resource "google_container_cluster" "aidash" {
   name                     = "aidash"
-  location                 = local.zone
+  location                 = local.cluster_location
+  node_locations           = [local.zone]
   network                  = google_compute_network.aidash.id
   subnetwork               = google_compute_subnetwork.aidash.id
   min_master_version       = "1.34"
@@ -94,11 +112,12 @@ resource "google_container_cluster" "aidash" {
   master_authorized_networks_config { gcp_public_cidrs_access_enabled = false }
   addons_config {
     gce_persistent_disk_csi_driver_config { enabled = true }
+    gke_backup_agent_config { enabled = var.gke_backup_enabled }
   }
   // The transient default pool is deleted after creation; keep it off the
   // Compute default service account.
   node_config {
-    service_account = google_service_account.nodes.email
+    service_account = local.node_service_account_email
     oauth_scopes    = local.cloud_scope
     workload_metadata_config { mode = "GKE_METADATA" }
   }
@@ -114,10 +133,11 @@ resource "google_container_cluster" "aidash" {
 
 // Untainted cluster add-ons run here only while some Environment runs.
 resource "google_container_node_pool" "system" {
-  name       = "aidash-system"
-  location   = google_container_cluster.aidash.location
-  cluster    = google_container_cluster.aidash.name
-  node_count = local.any_running ? 1 : 0
+  name           = "aidash-system"
+  location       = google_container_cluster.aidash.location
+  cluster        = google_container_cluster.aidash.name
+  node_locations = [local.zone]
+  node_count     = local.any_running ? 1 : 0
   management {
     auto_repair  = true
     auto_upgrade = true
@@ -128,22 +148,22 @@ resource "google_container_node_pool" "system" {
     # (250 GB by default) shared with every Environment pool and retained disk.
     disk_type       = "pd-standard"
     disk_size_gb    = 30
-    service_account = google_service_account.nodes.email
+    service_account = local.node_service_account_email
     oauth_scopes    = local.cloud_scope
     labels          = local.system_labels
-    resource_labels = { application = "aidash", lifecycle = "nonproduction" }
+    resource_labels = { application = "aidash", lifecycle = var.deployment_tier }
     workload_metadata_config { mode = "GKE_METADATA" }
   }
 }
 
-// The hostname belongs to the preview slot, not to an individual PR. Keep its
-// certificate/account store even when the last PR environment is destroyed.
+// ACME account/certificate storage outlives nonproduction incarnations. Production
+// has its own copy in a separate project/backend; never share it across tiers.
 resource "google_compute_disk" "preview_tls" {
   name   = "aidash-preview-tls"
   zone   = local.zone
   type   = "pd-balanced"
   size   = 10
-  labels = { application = "aidash", lifecycle = "nonproduction", purpose = "preview-tls" }
+  labels = { application = "aidash", lifecycle = var.deployment_tier, purpose = "preview-tls" }
   lifecycle { prevent_destroy = true }
 }
 

@@ -105,6 +105,6 @@ recovery, which can show the reconnecting indicator.
 - Release signing/notarization, installer distribution and automatic updating.
 
 The built app is a development artifact. Sidecars, background services and bundled
-PostgreSQL/NATS/Qdrant remain outside this client. The default desktop CSP blocks
+PostgreSQL/NATS remain outside this client. The default desktop CSP blocks
 external font stylesheets; installed fallback fonts are used in the native
 screenshot. API data does not gain native permissions.

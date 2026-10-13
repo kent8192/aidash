@@ -1,0 +1,17 @@
+{{- if .Values.metadataServerEgress.enabled }}
+{{- $name := printf "%s-aidash-metadata-egress" .Release.Name }}
+---
+# Defense in depth for Workload Identity: only server and worker (labelled
+# aidash.run/metadata-server) may reach 169.254.169.254. Every other Pod of the
+# application namespace is denied that address.
+{{ include "aidash.metadataEgressPolicy" (dict "name" $name "namespace" "") }}
+{{- /* The guard and installer namespaces hold only trusted DaemonSets. */ -}}
+{{- $e := .Values.execution }}
+{{- $namespaces := dict }}
+{{- if $e.guard.enabled }}{{ $_ := set $namespaces (default (printf "%s-guard" .Release.Name) $e.trustedNamespace) "guard" }}{{ end }}
+{{- if $e.installer.enabled }}{{ $_ := set $namespaces (default (printf "%s-installer" .Release.Name) $e.installerNamespace) "installer" }}{{ end }}
+{{- range $namespace, $component := $namespaces }}
+---
+{{ include "aidash.metadataEgressPolicy" (dict "name" (printf "%s-aidash-%s-metadata-egress" $.Release.Name $component) "namespace" $namespace) }}
+{{- end }}
+{{- end }}
