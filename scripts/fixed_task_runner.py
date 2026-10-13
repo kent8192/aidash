@@ -23,6 +23,14 @@ PROVIDER_ATTEMPTS_PER_STEP = 6
 APPROVAL_DENIED = "external write approval was denied or expired"
 # How the harness words a workbench approval request (crates/aidash-harness/src/agent.rs).
 APPROVAL_PROMPT = "Approve this exact external tool action once? Tool: "
+# The implicit builtins an Agent gets unless `remove_default` names them, and the ones bound
+# Skills need (crates/aidash-domain/src/registry/bindings.rs, exposure.rs `default_tools` and
+# `skill_support_tools`). test_fixed_task_evaluation.py checks DEFAULT_TOOLS against the Rust list.
+DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
+                 "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
+                 "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
+SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
+SKILL_ASSET_READ = "skill_asset_read"
 
 
 class ApiError(RuntimeError):
@@ -182,6 +190,23 @@ def agent_config(corpus, task, model_ref, tool_refs, fields):
     return config
 
 
+def minimal_defaults(config):
+    """Every implicit builtin the Agent configuration may remove, except the Skill support its bound Skills need.
+
+    The live tier removes them all: delegation (`task_create`, `task_delegate`,
+    `agent_discover`) would start child Runs on other Agents' models, and memory
+    operations may call memory models, none of which the ledger reserves or the
+    evaluator cancels.
+    """
+    exposure = config.get("exposure")
+    deferred = isinstance(exposure, dict) and exposure.get("version") == "deferred@1"
+    defaults = [name for name in DEFAULT_TOOLS if not (deferred and name in SKILL_TOOLS)]
+    defaults += [SKILL_ASSET_READ] if deferred else []
+    support = (SKILL_ASSET_READ,) if deferred else SKILL_TOOLS
+    skills = any(binding["kind"] == "skill" for binding in config["bindings"])
+    return [name for name in defaults if not (skills and name in support)]
+
+
 def agent_id(prefix, planned):
     task_index = planned["task"]["_index"]
     return f"{prefix}-t{task_index:02d}-{planned['comparison']['id']}-{planned['arm']}"
@@ -322,7 +347,12 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                     # A timed-out claim may still have committed: retry only when no Run exists.
                     if error.status not in Api.TRANSIENT or attempt == api.retries:
                         raise
-                    sleep(api.backoff * (attempt + 1))
+                    # A committed claim may already be doing paid work, so the backoff never crosses
+                    # the deadline: when it would, stop now and let the deadline path cancel the Run.
+                    delay = api.backoff * (attempt + 1)
+                    if clock() + delay >= deadline:
+                        raise DeadlineExceeded(f"retrying the claim of Task {task_uuid} would pass the deadline")
+                    sleep(delay)
                     if any(run["task_id"] == task_uuid for run in bounded.get("/api/state", token)["runs"]):
                         break
             run_id = None
@@ -403,14 +433,16 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
     return observation
 
 
-def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url):
+def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url, remove_all_defaults=False):
     """Register tools and one Agent per (task, comparison, arm). Returns variants and per-comparison errors.
 
     The errors are Agent registrations the Node rejected for arms the corpus
     marks available. Callers decide whether that is a failure; the deterministic
     command treats it as one unless explicitly told the arm is expected to be
     rejected. A comparison is run paired or not at all: when any of its arms is
-    rejected, none of its arms stays runnable or is listed as a variant.
+    rejected, none of its arms stays runnable or is listed as a variant. With
+    `remove_all_defaults` (the live tier), each Agent keeps only the builtins it
+    cannot remove and the Skill support its bound Skills need.
     """
     tools = {}
     skills = {}
@@ -441,6 +473,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url)
         config = agent_config(corpus, task, model_ref, bindings, planned["agent_fields"])
         config["bindings"] += [{"kind": "skill", "target": experiment.ref(ref["id"]), "narrow": {}}
                                for ref in skills[task["id"]]]
+        if remove_all_defaults:
+            config["remove_default"] = minimal_defaults(config)
         identifier = agent_id(experiment.prefix, planned)
         try:
             agent = experiment.register("agent", identifier, config)

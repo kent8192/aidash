@@ -47,6 +47,18 @@ UNRUNNABLE_STATUSES = ("feature-not-available", "not-measured")
 COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
                 "escalation", "answer-pattern")
+# The fields each oracle kind reads, checked when the corpus loads so that no Run is dispatched
+# for a task its oracle cannot grade. A `pattern` must compile as a regular expression.
+ORACLE_FIELDS = {
+    "python-tests": {"target": "string", "visible": "strings", "hidden": "strings"},
+    "json-overdue-totals": {"source": "string", "as_of": "string"},
+    "constraint-retention": {"budget_usd": "integer", "excluded_vendors": "strings"},
+    "tool-selection": {"expected_tool": "string", "answer_pattern": "pattern"},
+    "escalation": {"forbidden_tool": "string", "approval_pattern": "pattern", "answer_pattern": "pattern"},
+    "answer-pattern": {"answer_pattern": "pattern"},
+}
+OPTIONAL_ORACLE_FIELDS = {"python-tests": {"timeout_seconds": "positive"},
+                          "answer-pattern": {"forbidden_pattern": "pattern"}}
 # Messages that identify a failed compaction or an over-window request.
 OVERFLOW_PATTERNS = (re.compile(r"(?i)compaction could not fit"), re.compile(r"(?i)context (window|length|overflow)"),
                      re.compile(r"(?i)exceeds? (the )?(model )?(context|window)"), re.compile(r"(?i)too (large|long) for"))
@@ -354,6 +366,10 @@ def consistency_errors(result):
     if not json_equal(memory["summary"], counted):
         errors.append("$.memory_matrix.summary does not count its scenarios")
     spend = result.get("spend")
+    # The live tier reserves spend before every dispatch, so its ledger is mandatory evidence;
+    # the deterministic tier makes no paid call and has none.
+    if (spend is None) != (experiment["tier"] != "live"):
+        errors.append("$.spend must be an object for a live experiment and null otherwise")
     if spend is not None:
         attempts = spend["attempts"]
         if spend["committed_nanocredits"] != sum(attempt["charged"] for attempt in attempts):
@@ -501,16 +517,20 @@ def load_corpus(path=None):
             if skill not in skills:
                 errors.append(f"task {tid} names unknown Skill {skill}")
         oracle = task.get("oracle", {})
-        if oracle.get("kind") not in ORACLE_KINDS:
-            errors.append(f"task {tid} has unknown oracle {oracle.get('kind')}")
-        if oracle.get("kind") == "escalation" and not (oracle.get("forbidden_tool") and oracle.get("approval_pattern")):
-            errors.append(f"task {tid} escalation oracle needs forbidden_tool and approval_pattern")
+        if oracle.get("kind") in ORACLE_KINDS:
+            oracle_problems = oracle_contract_errors(oracle)
+            errors += [f"task {tid} {oracle['kind']} oracle {problem}" for problem in oracle_problems]
+        else:
+            oracle_problems = [f"task {tid} has unknown oracle {oracle.get('kind')}"]
+            errors += oracle_problems
         if task.get("expected", {}).get("outcome") not in OUTCOMES:
             errors.append(f"task {tid} declares an unknown expected outcome")
         declared = task.get("tools", [])
         for alias in ([] if declared == "all" else declared) + [task.get("expected_tool")] * ("expected_tool" in task):
             if alias not in tools:
                 errors.append(f"task {tid} names unknown tool {alias}")
+        if oracle_problems:
+            continue  # Its file fields are malformed; the errors above already refuse the corpus.
         for relative in task.get("inputs", []) + oracle.get("visible", []) + oracle.get("hidden", []) + (
                 [oracle["source"]] if "source" in oracle else []):
             if not (base / relative).is_file():
@@ -525,6 +545,40 @@ def load_corpus(path=None):
     corpus["_files"] = contents
     corpus["_base"] = base
     return corpus
+
+
+def oracle_contract_errors(oracle):
+    """Problems with the fields an oracle of a known kind reads; empty when it can grade a Run."""
+    def problem(value, rule):
+        if rule == "string":
+            return None if isinstance(value, str) and value.strip() else "a non-empty string"
+        if rule == "strings":
+            return None if isinstance(value, list) and all(isinstance(item, str) for item in value) else \
+                "a list of strings"
+        if rule == "integer":
+            return None if isinstance(value, int) and not isinstance(value, bool) else "an integer"
+        if rule == "positive":
+            return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 and \
+                math.isfinite(value) else "a positive number"
+        if not isinstance(value, str) or not value:
+            return "a non-empty regular expression"
+        try:
+            re.compile(value)
+        except re.error as error:
+            return f"a valid regular expression ({error})"
+        return None
+    problems = []
+    kind = oracle["kind"]
+    for required, fields in ((True, ORACLE_FIELDS[kind]), (False, OPTIONAL_ORACLE_FIELDS.get(kind, {}))):
+        for field, rule in fields.items():
+            if field not in oracle:
+                if required:
+                    problems.append(f"needs {field}")
+                continue
+            expected = problem(oracle[field], rule)
+            if expected:
+                problems.append(f"{field} must be {expected}")
+    return problems
 
 
 def task_tools(corpus, task):

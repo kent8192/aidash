@@ -47,8 +47,8 @@ NATS_IMAGE = "nats:2.12-alpine"
 DEFAULT_OUTPUT = ROOT / ".ignore/evaluation"
 # A deployed source fingerprint: a git commit (abbreviated or full) or a SHA-256, lowercase hexadecimal.
 SERVER_REVISION = re.compile(r"[0-9a-f]{7,64}")
-# Emergency cleanups for SIGTERM, which may arrive while worker threads block the
-# main thread: remove owned containers and stop the owned Node, then exit.
+# Emergency cleanups for a second deterministic SIGTERM, if the first one's unwind through
+# cancellation and finalization hangs: remove owned containers and stop the owned Node, then exit.
 CLEANUP = []
 DETERMINISTIC_LIMITATIONS = [
     "The deterministic tier's Agent is a scripted probe; outcomes measure what the harness delivered to it, "
@@ -86,7 +86,7 @@ def timestamp(moment):
 
 
 class Terminated(BaseException):
-    """SIGTERM during a live run, raised so the run unwinds through cancellation and finalization."""
+    """SIGTERM, raised so a run unwinds through cancellation, cleanup and finalization."""
 
 
 class Cancelled(BaseException):
@@ -96,6 +96,13 @@ class Cancelled(BaseException):
 def raise_terminated(*_):
     # One unwind only: a second SIGTERM must not interrupt writing the manifest.
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise Terminated()
+
+
+def raise_terminated_deterministic(*_):
+    # The first SIGTERM unwinds: Runs are cancelled, the Node and containers removed and the
+    # manifest written. Should that hang, a second SIGTERM falls back to the emergency cleanup.
+    signal.signal(signal.SIGTERM, terminate)
     raise Terminated()
 
 
@@ -253,7 +260,7 @@ def usage_reader_for(postgres, database, password, query):
 
 
 def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs, fixture_url, skip_rust,
-                                evidence_timeout):
+                                evidence_timeout, source_drift):
     """Execute deterministic memory scenarios once per memory variant, each in an isolated bank."""
     executed = {}
     api_scenarios = [item for item in memory_corpus["scenarios"] if item["evidence"] == "deterministic-api"]
@@ -310,18 +317,37 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
         failed = any("error" in item for item in results)
         status = "error" if failed else "passed" if all(item["passed"] for item in checks) else "failed"
         executed[scenario["id"]] = {"status": status, "variants": results, "checks": checks, "detail": None}
+    if not skip_rust:
+        executed.update(run_evidence(memory_corpus, evidence_timeout, source_drift))
+    return executed
+
+
+def run_evidence(memory_corpus, timeout, source_drift):
+    """Run every deterministic-test scenario's command from the checkout.
+
+    The commands build and test the working tree, so they run only while it is
+    still the source the manifest records: `source_drift()` returns a reason
+    when it is not, and the scenarios are then recorded as errors.
+    """
+    executed = {}
     for scenario in memory_corpus["scenarios"]:
-        if scenario["evidence"] != "deterministic-test" or skip_rust:
+        if scenario["evidence"] != "deterministic-test":
             continue
-        executed[scenario["id"]] = evidence_command(scenario["command"], evidence_timeout)
+        drift = source_drift()
+        if drift:
+            executed[scenario["id"]] = {"status": "error", "variants": [], "detail": drift, "checks": [
+                {"check": "command", "passed": False, "command": " ".join(scenario["command"]), "tail": [drift]}]}
+        else:
+            executed[scenario["id"]] = evidence_command(scenario["command"], timeout)
     return executed
 
 
 def evidence_command(command, timeout):
     """Run a deterministic-test scenario's command, bounded by `timeout` seconds.
 
-    The command runs in its own process group, so a timeout kills Cargo and the
-    test binaries it started; a timed-out command is an `error`, never passing.
+    The command runs in its own process group, so a timeout, Ctrl-C or SIGTERM
+    kills Cargo and the test binaries it started; a timed-out command is an
+    `error`, never passing.
     """
     process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                env={**os.environ, "RUSTC_WRAPPER": ""}, start_new_session=True)
@@ -333,10 +359,34 @@ def evidence_command(command, timeout):
         detail = f"timed out after {timeout}s"
         return {"status": "error", "variants": [], "detail": detail,
                 "checks": [{"check": "command", "passed": False, "command": " ".join(command), "tail": [detail]}]}
+    except BaseException:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        raise
     passed = process.returncode == 0
     return {"status": "passed" if passed else "failed", "variants": [], "detail": None,
             "checks": [{"check": "command", "passed": passed, "command": " ".join(command),
                         "tail": output.strip().splitlines()[-2:]}]}
+
+
+def pin_binary(binary, directory):
+    """Copy the tested executable into a private directory and return the copy.
+
+    The manifest fingerprints the copy, and diagnostics, migrations and the Node
+    all run it, so a rebuild of the original path during the run changes nothing.
+    """
+    pinned = directory / "manage"
+    pinned.write_bytes(Path(binary).read_bytes())
+    pinned.chmod(0o700)
+    return pinned
+
+
+def source_drift(source, binary):
+    """Why the checkout or executable no longer match the recorded source, or None."""
+    current = evaluation.source_identity(binary)
+    changed = [field for field in ("commit", "dirty", "dirty_diff_sha256", "binary_sha256")
+               if current[field] != source[field]]
+    return f"the tested source changed during the evaluation ({', '.join(changed)})" if changed else None
 
 
 def experiment_manifest(tier, corpus, memory_corpus, source, model, harness, variants, repeats, limits, limitations,
@@ -416,6 +466,12 @@ def unavailable_arms_error(registration_errors):
 
 
 def deterministic(args):
+    """The deterministic tier. Its executable is first copied into a private directory (pin_binary)."""
+    with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-binary-") as directory:
+        return run_deterministic(args, Path(directory))
+
+
+def run_deterministic(args, binary_directory):
     evaluator = evaluation.pin_evaluator()
     corpus = evaluation.load_corpus(args.corpus)
     memory_corpus = evaluation.load_memory_corpus(args.memory_corpus)
@@ -428,10 +484,9 @@ def deterministic(args):
     if subprocess.run(["docker", "image", "inspect", POSTGRES_IMAGE], capture_output=True).returncode != 0:
         # The PostgreSQL image carries the native extensions; build it from compose.yaml.
         checked(["docker", "compose", "build", "postgres"], cwd=ROOT)
-    binary = Path(args.binary).resolve(strict=True) if args.binary else build_manage()
+    binary = pin_binary(Path(args.binary).resolve(strict=True) if args.binary else build_manage(), binary_directory)
     query = json.loads(checked([str(binary), "diagnostics", "evaluation"], cwd=ROOT / "server",
                                env={"PATH": os.environ["PATH"], "TOKIO_WORKER_THREADS": "2"}))["inference_usage"]
-    source = evaluation.source_identity(binary)
     tag = secrets.token_hex(6)
     prefix = "fte" + tag[:6]
     password = secrets.token_urlsafe(24)
@@ -441,12 +496,16 @@ def deterministic(args):
     except FileExistsError:
         print(f"error: --output {output} already exists; manifests are never overwritten", file=sys.stderr)
         return 2
+    # Recorded after the reservation, so an --output inside the checkout is part of the recorded
+    # state; source_drift() later compares the checkout and executable with it.
+    source = evaluation.source_identity(binary)
     log_directory = DEFAULT_OUTPUT / f"logs-{tag}"
     model_ids = runner.fixture_model_ids(corpus, prefix)
     runs, variants, availability, error = [], [], evaluation.feature_availability(corpus, args.comparison), None
     memory = evaluation.memory_matrix(memory_corpus, {})
     model_refs = {}
     fixture = server = None
+    stopped = False
     started = time.monotonic()
     # Everything after the reservation ends in finalize(): a failed setup leaves a manifest with
     # its error, not an empty file that would refuse a retry with the same --output.
@@ -553,15 +612,25 @@ def deterministic(args):
             if not args.skip_memory:
                 print("evaluation: Runs finished; executing memory scenarios", flush=True)
                 executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs,
-                                                       fixture_url, args.skip_rust_evidence, args.evidence_timeout)
+                                                       fixture_url, args.skip_rust_evidence, args.evidence_timeout,
+                                                       lambda: source_drift(source, binary))
                 memory = evaluation.memory_matrix(memory_corpus, executed)
-    except (Exception, KeyboardInterrupt) as failure:
+    except (Exception, KeyboardInterrupt, Terminated) as failure:
+        # SIGTERM unwinds like an error: the Runs are cancelled and the Node and containers removed
+        # on the way out, and the manifest below records every finished Run.
+        stopped = isinstance(failure, Terminated)
         error = (error + "; " if error else "") + f"{type(failure).__name__}: {failure}"
     finally:
         if server is not None:
             server.shutdown()
+    if signal.getsignal(signal.SIGTERM) in (raise_terminated_deterministic, terminate):
+        # Nothing owned is left to clean up; let no further SIGTERM interrupt writing the manifest.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if fixture is not None and fixture.errors:
         error = (error + "; " if error else "") + "fixture faults: " + "; ".join(fixture.errors[:5])
+    drift = source_drift(source, binary)
+    if drift:
+        error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
     harness = {"compaction": "legacy prune-only Context Policy with fixture Jev classifier", "cache_salt": True,
@@ -588,7 +657,7 @@ def deterministic(args):
             print("memory scenario failed: " + line, file=sys.stderr)
         if error:
             print("error: " + error, file=sys.stderr)
-        return 1
+        return 143 if stopped else 1
     return 0
 
 
@@ -691,7 +760,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         # Fixture tools point at an unroutable endpoint and their approvals are denied, so a
         # live Run never reaches an external tool effect.
         variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
-                                                                 args.tool_endpoint)
+                                                                 args.tool_endpoint, remove_all_defaults=True)
         if registration_errors and not args.allow_unavailable_arms:
             error = unavailable_arms_error(registration_errors)
         else:
@@ -827,15 +896,18 @@ def main(argv=None):
     if args.command == "deterministic" and (not math.isfinite(args.evidence_timeout) or args.evidence_timeout <= 0):
         parser.error("--evidence-timeout must be a positive, finite number of seconds")
     try:
+        # Both tiers unwind on SIGTERM, so Runs are cancelled and the manifest is written.
         if args.command == "deterministic":
-            signal.signal(signal.SIGTERM, terminate)
+            signal.signal(signal.SIGTERM, raise_terminated_deterministic)
             return deterministic(args)
-        # A live Run must be cancelled and the manifest written: unwind instead of exiting.
         signal.signal(signal.SIGTERM, raise_terminated)
         return live(args)
     except (evaluation.GuardRefusal, evaluation.CorpusError) as refusal:
         print(f"{args.command} evaluation refused: {refusal}", file=sys.stderr)
         return 2
+    except Terminated:  # Before anything was reserved: there is no manifest to write.
+        print(f"{args.command} evaluation terminated before it started", file=sys.stderr)
+        return 143
 
 
 if __name__ == "__main__":

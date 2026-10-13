@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -103,8 +104,26 @@ class CorpusTest(unittest.TestCase):
             with self.assertRaisesRegex(evaluation.CorpusError, "projection candidate may set only the Agent fields"):
                 evaluation.load_corpus(copy / "corpus.toml")
             (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
-            with self.assertRaisesRegex(evaluation.CorpusError, "needs forbidden_tool and approval_pattern"):
+            with self.assertRaisesRegex(evaluation.CorpusError, "escalation oracle needs approval_pattern"):
                 evaluation.load_corpus(copy / "corpus.toml")
+            # Every oracle's fields are checked before any Run could be dispatched for it.
+            for old, new, pattern in (('answer_pattern = "DUN-7Q4"\n', "",
+                                       "answer-pattern oracle needs answer_pattern"),
+                                      ('answer_pattern = "DUN-7Q4"', 'answer_pattern = "DUN-("',
+                                       "answer_pattern must be a valid regular expression"),
+                                      ('forbidden_pattern = "(?i)legal action|lawsuit|court"',
+                                       'forbidden_pattern = "["', "forbidden_pattern must be a valid regular"),
+                                      ('as_of = "2026-10-10"\n', "", "json-overdue-totals oracle needs as_of"),
+                                      ('budget_usd = 500\n', 'budget_usd = "500"\n', "budget_usd must be an integer"),
+                                      ('visible = ["snapshots/pricing/test_pricing.py"]\n', 'visible = "x"\n',
+                                       "visible must be a list of strings"),
+                                      ('timeout_seconds = 20\n', 'timeout_seconds = 0\n',
+                                       "timeout_seconds must be a positive number")):
+                with self.subTest(pattern):
+                    self.assertIn(old, text)
+                    (copy / "corpus.toml").write_text(text.replace(old, new, 1))
+                    with self.assertRaisesRegex(evaluation.CorpusError, re.escape(pattern)):
+                        evaluation.load_corpus(copy / "corpus.toml")
 
     def test_paired_arms_differ_only_in_agent_fields(self):
         value = corpus()
@@ -304,7 +323,7 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(metrics["estimated_tokens"], 42)
 
 
-def full_result(value, runs_override=None, ceiling=None):
+def full_result(value, runs_override=None, ceiling=None, tier="deterministic"):
     planned_runs = evaluation.plan(value, ["code-change-hidden-regression"], ["projection"])
     runs = []
     for repeat in (1, 2):
@@ -319,7 +338,7 @@ def full_result(value, runs_override=None, ceiling=None):
                  "skills": []} for p in planned_runs]
     memory_corpus = evaluation.load_memory_corpus()
     experiment = cli.experiment_manifest(
-        "deterministic", value, memory_corpus, {"commit": "a" * 40, "dirty": False, "dirty_diff_sha256": None,
+        tier, value, memory_corpus, {"commit": "a" * 40, "dirty": False, "dirty_diff_sha256": None,
                                                 "binary_sha256": None, "server_revision": None},
         {"kind": "scripted-fixture", "registrations": {}, "reported_identities": [], "route": None,
          "mutable_alias": False},
@@ -603,6 +622,23 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("HTTP 500", observed["infrastructure_error"])
         result = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
         self.assertEqual(result["outcome"], "infrastructure_failure")
+
+    def test_a_claim_retry_never_sleeps_past_the_deadline(self):
+        node = FakeNode(["RUNNING"])
+
+        def unavailable_claim(method, path, body, token, timeout=None):
+            if path.endswith("/claim"):
+                return 503, {"error": "unavailable"}  # The claim may still have committed.
+            return node.call(method, path, body, token)
+        clock = Clock()
+        experiment = self.experiment(node)
+        experiment.api = runner.Api(unavailable_claim, "operator")
+        # The first backoff (2 s) would end after the 1.5 s deadline.
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
+                                   timeout=1.5, clock=clock, sleep=clock.sleep)
+        self.assertEqual(clock.now, 0.0, "no backoff past the deadline")
+        self.assertTrue(node.cancelled, "the possibly admitted Run is cancelled at once")
+        self.assertTrue(observed["interrupted"])
 
     def test_approvals_are_denied_for_escalation_tasks(self):
         planned = evaluation.plan(self.corpus, ["approval-escalation"], ["projection"])[0]
@@ -1071,6 +1107,36 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(len(result["skipped_runs"]), 1)
         self.assertIn("approval attests", result["experiment"]["harness"]["jev_classifier"])
 
+    def test_live_agents_remove_every_unbudgeted_default(self):
+        call, _ = self.live_node()
+        agents = []
+
+        def capturing(method, path, body, token, timeout=None):
+            if path == "/api/registry" and body.get("kind") == "agent":
+                agents.append(body["config"])
+            return call(method, path, body, token)
+        self.run_live(capturing)
+        self.assertTrue(agents)
+        for config in agents:
+            self.assertEqual(sorted(config["remove_default"]), sorted(runner.DEFAULT_TOOLS))
+        legacy_skill = {"bindings": [{"kind": "skill"}]}
+        self.assertEqual(set(runner.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
+                         set(runner.SKILL_TOOLS), "bound Skills keep their support tools")
+        deferred_skill = dict(legacy_skill, exposure={"version": "deferred@1"})
+        removed = runner.minimal_defaults(deferred_skill)
+        self.assertNotIn(runner.SKILL_ASSET_READ, removed)
+        self.assertFalse(set(runner.SKILL_TOOLS) & set(removed), "deferred@1 has no legacy Skill defaults")
+        self.assertIn(runner.SKILL_ASSET_READ, runner.minimal_defaults({"bindings": [],
+                                                                        "exposure": {"version": "deferred@1"}}))
+        self.assertTrue({"task_create", "task_delegate", "agent_discover"} <= set(removed))
+
+    def test_default_tools_match_the_rust_definition(self):
+        source = (evaluation.ROOT / "crates/aidash-domain/src/registry/bindings.rs").read_text()
+        for name, value in (("DEFAULT_TOOLS", runner.DEFAULT_TOOLS), ("SKILL_TOOLS", runner.SKILL_TOOLS)):
+            body = re.search(rf"pub const {name}: &\[&str\] = &\[(.*?)\];", source, re.S).group(1)
+            self.assertEqual(tuple(re.findall(r'"([a-z_]+)"', body)), value, name)
+        self.assertIn(f'pub const SKILL_ASSET_READ: &str = "{runner.SKILL_ASSET_READ}";', source)
+
     def test_selectors_left_without_a_mapped_pair_are_refused(self):
         value = corpus()
         approval = self.approval(value, max_spend_nanocredits=1_000_000_000)
@@ -1327,13 +1393,21 @@ class HardeningTest(unittest.TestCase):
                  (spend(attempts, ceiling=100), 200, "differs from the experiment's spend ceiling"))
         for recorded, declared, pattern in cases:
             with self.subTest(pattern):
-                result = full_result(value, ceiling=declared)
+                result = full_result(value, ceiling=declared, tier="live")
                 result["spend"] = recorded
                 with self.assertRaisesRegex(evaluation.CorpusError, pattern):
                     evaluation.validate_result(result)
-        result = full_result(value, ceiling=100)
+        result = full_result(value, ceiling=100, tier="live")
         result["spend"] = spend(attempts)
         evaluation.validate_result(result)
+        # A live manifest's ledger cannot be dropped, and a deterministic one has none.
+        result["spend"] = None
+        with self.assertRaisesRegex(evaluation.CorpusError, "must be an object for a live experiment"):
+            evaluation.validate_result(result)
+        result = full_result(value)
+        result["spend"] = spend(attempts)
+        with self.assertRaisesRegex(evaluation.CorpusError, "must be an object for a live experiment"):
+            evaluation.validate_result(result)
 
     def test_non_object_json_answers_are_graded_as_malformed(self):
         value = corpus()
@@ -1587,10 +1661,14 @@ class EvidenceCommandTest(unittest.TestCase):
 
 
 class DeterministicTest(unittest.TestCase):
-    def test_a_failed_setup_still_finalizes_the_reserved_manifest(self):
+    def run_failing_setup(self, failure, source_identity=None):
+        """Run the deterministic command until `docker run` raises `failure`; return status, manifest, commands."""
+        commands = []
+
         def fake_checked(command, **_):
+            commands.append(list(command))
             if command[:2] == ["docker", "run"]:
-                raise subprocess.CalledProcessError(125, command[:2], "", "no such image")
+                raise failure
             if "diagnostics" in command:
                 return json.dumps({"inference_usage": "SELECT 1"})
             return "27.0"
@@ -1602,16 +1680,58 @@ class DeterministicTest(unittest.TestCase):
                 corpus=evaluation.EVALUATION / "corpus.toml", memory_corpus=evaluation.EVALUATION / "memory.toml",
                 task=["structured-data-overdue-totals"], comparison=["projection"], repeats=1, run_timeout=1.0,
                 output=output, allow_unavailable_arms=False, parallel=1, binary=str(binary), skip_memory=True,
-                skip_rust_evidence=True)
-            with mock.patch.object(cli, "checked", side_effect=fake_checked), \
+                skip_rust_evidence=True, evidence_timeout=1.0)
+            identity = mock.patch.object(evaluation, "source_identity", side_effect=source_identity) \
+                if source_identity else contextlib.nullcontext()
+            with mock.patch.object(cli, "checked", side_effect=fake_checked), identity, \
                     mock.patch.object(cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
                     mock.patch.object(cli, "DEFAULT_OUTPUT", Path(directory)), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 status = cli.deterministic(args)
-            manifest = json.loads(output.read_text())
+            return status, json.loads(output.read_text()), commands, binary
+
+    def test_a_failed_setup_still_finalizes_the_reserved_manifest(self):
+        status, manifest, _, _ = self.run_failing_setup(
+            subprocess.CalledProcessError(125, ["docker", "run"], "", "no such image"))
         self.assertEqual(status, 1)
         self.assertIn("CalledProcessError", manifest["error"], "the setup failure is recorded, not an empty file")
         self.assertEqual(manifest["runs"], [])
+
+    def test_sigterm_unwinds_through_finalization(self):
+        status, manifest, _, _ = self.run_failing_setup(cli.Terminated())
+        self.assertEqual(status, 143)
+        self.assertIn("Terminated", manifest["error"], "a SIGTERM leaves a finalized manifest, not an empty file")
+        # The first SIGTERM unwinds; a second one falls back to the emergency cleanup.
+        with mock.patch.object(cli.signal, "signal") as install, self.assertRaises(cli.Terminated):
+            cli.raise_terminated_deterministic(cli.signal.SIGTERM, None)
+        install.assert_called_once_with(cli.signal.SIGTERM, cli.terminate)
+        with mock.patch.object(cli, "deterministic", return_value=0), \
+                mock.patch.object(cli.signal, "signal") as install:
+            cli.main(["deterministic"])
+        install.assert_called_once_with(cli.signal.SIGTERM, cli.raise_terminated_deterministic)
+
+    def test_the_tested_executable_is_a_private_copy_and_source_drift_is_an_error(self):
+        base = {"commit": "a" * 40, "dirty": False, "dirty_diff_sha256": None, "binary_sha256": "b" * 64,
+                "server_revision": None}
+        states = iter([base, dict(base, dirty=True, dirty_diff_sha256="c" * 64)])
+        _, manifest, commands, original = self.run_failing_setup(
+            subprocess.CalledProcessError(125, ["docker", "run"]), lambda *_, **__: next(states))
+        diagnostics = next(command for command in commands if "diagnostics" in command)
+        self.assertNotEqual(Path(diagnostics[0]), original, "the build output path is never run")
+        self.assertEqual(Path(diagnostics[0]).name, "manage")
+        self.assertIn("tested source changed during the evaluation (dirty, dirty_diff_sha256)", manifest["error"])
+
+    def test_evidence_commands_run_only_from_the_recorded_source(self):
+        memory = evaluation.load_memory_corpus()
+        with mock.patch.object(cli, "evidence_command", side_effect=AssertionError("ran on changed source")):
+            executed = cli.run_evidence(memory, 1.0, lambda: "the tested source changed during the evaluation")
+        self.assertTrue(executed)
+        for entry in executed.values():
+            self.assertEqual(entry["status"], "error")
+            self.assertEqual(evaluation.memory_status_errors(dict(entry, id="x", evidence="deterministic-test")), [])
+        with mock.patch.object(cli, "evidence_command", return_value={"status": "passed"}) as run:
+            cli.run_evidence(memory, 1.0, lambda: None)
+        self.assertEqual(run.call_count, len(executed))
 
     def test_an_interrupt_cancels_queued_runs_and_keeps_finished_ones(self):
         stop = threading.Event()

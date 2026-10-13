@@ -62,7 +62,9 @@ error or Ctrl-C, with the failure in its `error` field. Server logs stay in
 `.ignore/evaluation/logs-<hex>/`.
 
 Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
-`--binary PATH` reuses a built `manage`, `--run-timeout SECONDS` (default 180,
+`--binary PATH` uses a built `manage` (by default the command builds this
+worktree's; either way the executable is copied into a private directory
+first, and the manifest fingerprints and runs that copy), `--run-timeout SECONDS` (default 180,
 positive and finite in both tiers) bounds each Run, `--skip-memory` reports
 every memory scenario as `not-run`, `--skip-rust-evidence` skips the
 `deterministic-test` memory scenario's `cargo test`, and `--evidence-timeout
@@ -70,9 +72,13 @@ SECONDS` (default 1800) bounds that command; a timed-out command is killed
 with its process group and the scenario is recorded as `error`. The output path is
 reserved before setup; when container startup, migration or the health wait
 fails, the manifest is still written with the error, so a retry with the same
-`--output` is refused only when a real record exists. Ctrl-C cancels the
-queued Runs, cancels the active ones on the Node and writes the manifest with
-every finished or interrupted Run.
+`--output` is refused only when a real record exists. Ctrl-C and SIGTERM
+cancel the queued Runs, cancel the active ones on the Node, remove the owned
+Node and containers and write the manifest with every finished or interrupted
+Run (exit 143 for SIGTERM); a second SIGTERM while that unwind hangs removes
+the owned Node and containers and exits at once. The checkout and executable
+must stay as recorded: the `cargo test` evidence commands run only while they
+do, and a change found before the manifest is written is recorded as an error.
 
 Wall time depends heavily on host load. Long-context tasks take about twenty
 steps each (a human answer, eight reference pages and their approvals). On an
@@ -151,6 +157,9 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   unroutable endpoint and their approvals are denied, so such a task could
   only fail or pass by guessing; only `approval-escalation`, which needs the
   denial, keeps its tool;
+- every selected task's oracle names the fields its kind reads, with valid
+  types and regular expressions; the corpus is checked when it loads, so no
+  Run is dispatched for a task that cannot be graded;
 - the `--output` path (default `.ignore/evaluation/live-<prefix>.json`) can be
   created exclusively. It is reserved before the first Registry write, so a
   path held by another invocation is refused before any paid work;
@@ -226,7 +235,9 @@ provider-reported model or route, so the manifest cannot say what served a
 request. `model.route` is only the connected Provider Credential's catalog
 provider. Every request is bounded by the Run's time limit; when it passes,
 even inside a stalled request, the Run is cancelled on the Node, and so it is
-when a request about the Run fails. After any failure past the guard rails,
+when a request about the Run fails. A claim retried after a gateway error
+may already have admitted the Run, so when its backoff would end past the
+time limit the evaluator cancels the Run at once instead of sleeping. After any failure past the guard rails,
 including Ctrl-C and SIGTERM, the in-flight Run is cancelled and the manifest
 is still written with the error, the ledger and every finished Run; the exit
 code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an error and 3 for a ceiling
@@ -303,7 +314,12 @@ oracle and the evaluator stay identical, and each arm gets its own Agent
 version and Workspaces. An arm may set only `projection_version`,
 `prompt_cache` and `exposure`: the model, step limit, bindings and
 instructions come from the task, so live authorization and spend reservations
-price the Agent that actually runs. The corpus is refused otherwise.
+price the Agent that actually runs. The corpus is refused otherwise. Live
+Agents additionally remove every implicit builtin `remove_default` may name,
+keeping only the Skill support tools their bound Skills need: delegation
+(`task_create`, `task_delegate`, `agent_discover`) would start child Runs on
+other Agents' models, and memory operations may call memory models, none of
+which the ledger reserves or the evaluator cancels.
 
 | Comparison     | Baseline → candidate                                | Issue |
 | -------------- | --------------------------------------------------- | ----- |
@@ -328,8 +344,9 @@ with the rejection as its `detail`.
    `oracles/`.
 2. Add a `[[tasks]]` entry with `id`, `kind`, `language`, `title`, `prompt`,
    `inputs`, `model`, `comparisons` and an `[tasks.oracle]` of one of the
-   kinds in `ORACLE_KINDS` (`scripts/fixed_task_evaluation.py`). Add a new
-   oracle kind there, with a test, if none fits.
+   kinds in `ORACLE_KINDS` with the fields `ORACLE_FIELDS` lists for it
+   (`scripts/fixed_task_evaluation.py`). Add a new oracle kind there, with a
+   test, if none fits.
 3. Name or add a scripted behavior in `Fixture.behave` and declare its
    expected deterministic result in `[tasks.expected]`.
 4. Run `python3 scripts/test_fixed_task_evaluation.py` and the deterministic
@@ -350,10 +367,10 @@ from its phase, oracle and error (`interrupted` and `infrastructure_failure`
 may follow any phase), and its oracle result agrees with its checks; a
 `passed` or `partial` memory scenario has only passing checks and variants,
 and a `failed` one has a failing check; no number is NaN or infinite,
-although Python's `json` module accepts them; and the spend totals equal the
-sum of the attempts' charges and their unsettled count, stay within the
-ceiling the experiment declares, and include exactly one attempt per recorded
-Run.
+although Python's `json` module accepts them; a live manifest has a spend
+ledger and a deterministic one has none; and the spend totals equal the sum
+of the attempts' charges and their unsettled count, stay within the ceiling
+the experiment declares, and include exactly one attempt per recorded Run.
 A manifest that fails validation is still written, annotated in
 its `error` field, because it may be the only record of paid work.
 
