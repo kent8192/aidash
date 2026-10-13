@@ -484,7 +484,7 @@ impl ReviewReason {
 			Self::TimeExhausted => "the Run's verification time is spent".into(),
 		};
 		format!(
-			"Completion Review: {reason}. Answer {{\"retry\": true}} to run the Checks again, send a new message to correct the task, or cancel the Run."
+			"Completion Review: {reason}. Answer retry to run the Checks again, send a new message to correct the task, or cancel the Run."
 		)
 	}
 }

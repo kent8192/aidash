@@ -402,7 +402,8 @@ async fn an_unavailable_check_pauses_for_review_and_a_retry_runs_it_again(mut fi
 	assert_eq!(fixture.run.context.completion.repairs, 0);
 
 	*checks(&fixture).unavailable.lock().unwrap() = None;
-	answer_review(&fixture, json!({"retry": true}));
+	// The answer form sends plain text unless it parses as JSON.
+	answer_review(&fixture, json!("Retry"));
 	advance_sources(&mut fixture).await.unwrap();
 	settle(&mut fixture).await;
 	assert!(completed(&fixture));

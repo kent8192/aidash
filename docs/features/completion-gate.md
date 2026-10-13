@@ -83,8 +83,8 @@ Repair Allowance; the Run's `verification_seconds` are never renewed.
 A **Completion Review** is a request for a person, raised when a Check is
 unavailable or refused, the Repair Allowance is spent, or the verification time
 is spent. Until a dedicated request kind exists it is an `INFORMATION_REQUEST`
-whose prompt starts with `Completion Review:`. Answering `{"retry": true}` runs
-the refused Checks again on the same content; any other answer raises a new
+whose prompt starts with `Completion Review:`. Answering `retry` (or
+`{"retry": true}`) runs the refused Checks again on the same content; any other answer raises a new
 review. Sending a new message also ends the review: the candidate is stale and
 the model continues with the correction. Cancelling the Run stops it.
 

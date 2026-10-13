@@ -289,14 +289,20 @@ pub(super) async fn review_superseded(
 		.is_some_and(|input| input.seq > included))
 }
 
-/// Apply a Completion Review answer: `{"retry": true}` runs refused Checks again.
+/// Apply a Completion Review answer: `retry`, as text or `{"retry": true}`,
+/// runs the refused Checks again.
 pub(super) fn answer_review(run: &mut Run, request: Uuid, response: Option<&Value>) {
 	let progress = &mut run.context.completion;
 	if progress.review != Some(request) {
 		return;
 	}
 	progress.review = None;
-	if response.is_some_and(|response| response["retry"] == true) {
+	if response.is_some_and(|response| {
+		response["retry"] == true
+			|| response
+				.as_str()
+				.is_some_and(|text| text.trim().eq_ignore_ascii_case("retry"))
+	}) {
 		progress.retry();
 	}
 }
