@@ -138,6 +138,7 @@ type BrowserSession = {
     tenant: string;
     subject: string;
     personal?: boolean;
+    credential_active?: boolean;
   }[];
 };
 type Registration = { status: string; expires_at: string } | null;
@@ -148,7 +149,11 @@ function sessionContext(session: BrowserSession, selected: string | null) {
       : session.mappings.some((mapping) => selected === `mapping:${mapping.id}`)
   )
     return selected;
-  const personal = session.mappings.filter((mapping) => mapping.personal);
+  // A revoked personal credential would fail with 401 and end the browser
+  // session, so only default into personal authority that can authenticate.
+  const personal = session.mappings.filter(
+    (mapping) => mapping.personal && mapping.credential_active,
+  );
   return personal.length === 1 ? `mapping:${personal[0].id}` : null;
 }
 function App() {

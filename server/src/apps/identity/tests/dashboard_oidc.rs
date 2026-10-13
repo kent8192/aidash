@@ -1543,6 +1543,7 @@ async fn google_session_provisions_private_access_without_registration(
 	assert_eq!(session["operator"], false);
 	assert_eq!(session["mappings"].as_array().unwrap().len(), 1);
 	assert_eq!(session["mappings"][0]["personal"], true);
+	assert_eq!(session["mappings"][0]["credential_active"], true);
 	for (status, concurrent) in &sessions {
 		assert_eq!(*status, 200, "{concurrent}");
 		assert_eq!(concurrent["mappings"], session["mappings"]);
@@ -1908,8 +1909,16 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 		)
 		.await;
 		assert_eq!(status, session_status, "{revoked}: {resumed}");
-		if revoked == "mapping" {
-			assert_eq!(resumed["mappings"], json!([]));
+		match revoked {
+			"mapping" => assert_eq!(resumed["mappings"], json!([])),
+			// The dashboard must not auto-select authority that can only fail
+			// authentication and end the browser session.
+			"credential" => {
+				assert_eq!(resumed["mappings"][0]["personal"], true);
+				assert_eq!(resumed["mappings"][0]["credential_active"], false);
+			}
+			"subject" => assert_eq!(resumed["mappings"][0]["credential_active"], true),
+			_ => {}
 		}
 	}
 	// Assert: the original authority remains fenced and is never replaced or reset.

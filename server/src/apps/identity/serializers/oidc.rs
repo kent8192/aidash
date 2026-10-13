@@ -40,6 +40,9 @@ pub struct MappingView {
 	pub(crate) tenant: String,
 	pub(crate) subject: String,
 	pub(crate) personal: bool,
+	/// False when the mapping's non-exportable credential is revoked or expired,
+	/// so selecting it would fail authentication.
+	pub(crate) credential_active: bool,
 }
 
 #[derive(Serialize, JsonSchema)]

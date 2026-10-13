@@ -1,7 +1,7 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
 use crate::apps::identity::models::{
-	DashboardIdentity, DashboardLoginTransaction, DashboardMapping, DashboardOperatorGrant,
-	DashboardRegistrationRequest, DashboardSession,
+	AuthorizationCredential, DashboardIdentity, DashboardLoginTransaction, DashboardMapping,
+	DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
 };
 use crate::http::validate;
 use http::header;
@@ -569,6 +569,14 @@ impl DashboardSessions {
 				.is_ok()
 			})
 			.collect::<Vec<_>>();
+		let active = AuthorizationCredential::active_ids(
+			&mut connection,
+			mappings
+				.iter()
+				.map(|mapping| mapping.credential_id)
+				.collect(),
+		)
+		.await?;
 		let operator =
 			DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
 				.await?;
@@ -583,6 +591,7 @@ impl DashboardSessions {
 						personal: personal
 							.as_ref()
 							.is_some_and(|personal| personal.contains(&row.tenant, &row.subject)),
+						credential_active: active.contains(&row.credential_id),
 						tenant: row.tenant,
 						subject: row.subject,
 					})

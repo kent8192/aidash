@@ -6,6 +6,7 @@ const personalMapping = {
   tenant: "acme",
   subject: "alice",
   personal: true,
+  credential_active: true,
 };
 
 async function installSession(
@@ -149,6 +150,7 @@ for (const selected of ["mapping:shared-mapping", "operator", null]) {
           tenant: "team",
           subject: "alice",
           personal: false,
+          credential_active: true,
         },
       ],
     });
@@ -225,4 +227,43 @@ test("legacy mappings still require an explicit authority choice", async ({
       exact: true,
     }),
   ).toHaveCount(0);
+});
+
+test("a revoked personal credential is not selected automatically", async ({
+  page,
+}) => {
+  await installSession(page, {
+    operator: true,
+    mappings: [
+      { ...personalMapping, credential_active: false },
+      {
+        id: "shared-mapping",
+        tenant: "team",
+        subject: "alice",
+        personal: false,
+        credential_active: true,
+      },
+    ],
+  });
+  const selected: string[] = [];
+  await page.route("**/api/session", (route) => {
+    selected.push(route.request().headers()["x-aidash-context"]);
+    return route.fallback();
+  });
+  await page.goto("/collaboration");
+  await expect(
+    page.getByRole("heading", {
+      name: "Choose the authority for this tab",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "team / alice", exact: true }),
+  ).toBeVisible();
+  expect(selected).toEqual([]);
+  await page.getByRole("button", { name: "team / alice", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Account settings", exact: true }),
+  ).toBeVisible();
+  expect(selected).toContain("mapping:shared-mapping");
+  expect(selected).not.toContain("mapping:personal-mapping");
 });
