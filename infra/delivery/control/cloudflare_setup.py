@@ -283,7 +283,8 @@ def discover_existing(
         "account_id": account_id,
         "zone_id": zone_id,
         "domain": "aidash.run",
-        "sending_subdomain_id": identifier(sending[0].get("id")),
+        # Cloudflare identifies a Sending subdomain by `tag`; the list has no `id`.
+        "sending_subdomain_id": identifier(sending[0].get("tag")),
         "destination_address_id": identifier(addresses[0].get("id")),
         "destination_email": destination_email,
         "configure_routing_dns": configure_routing_dns,

@@ -44,7 +44,7 @@ class AdoptionTests(unittest.TestCase):
             {"result": {"name": "aidash.run", "enabled": True, "status": "ready"}},
         ]
         api.inventory.side_effect = [
-            [{"name": "aidash.run", "id": "d" * 32, "enabled": True}],
+            [{"name": "aidash.run", "tag": "d" * 32, "enabled": True}],
             [
                 {
                     "email": "private@example.net",
@@ -76,7 +76,7 @@ class AdoptionTests(unittest.TestCase):
         for destination in scenarios:
             api = self.fixture()
             api.inventory.side_effect = [
-                [{"name": "aidash.run", "id": "d" * 32, "enabled": True}],
+                [{"name": "aidash.run", "tag": "d" * 32, "enabled": True}],
                 destination,
                 [],
             ]
@@ -104,7 +104,7 @@ class AdoptionTests(unittest.TestCase):
                 }
             )
             api.inventory.side_effect = [
-                [{"name": "aidash.run", "id": "d" * 32, "enabled": True}],
+                [{"name": "aidash.run", "tag": "d" * 32, "enabled": True}],
                 [{"email": "private@example.net", "id": "e" * 32, "verified": "yes"}],
                 [rule, deepcopy(rule)] if rule_changes.get("duplicate") else [rule],
             ]
