@@ -21,6 +21,7 @@ locals {
     "acme_state_secret", "gke_backup_enabled", "gcip_tenants", "gcip_web_api_key",
     "nonproduction_project_id", "nonproduction_state_bucket", "production_origin", "staging_release_bucket",
     "staging_project_id", "staging_max_age_seconds", "preview_request_interval_seconds", "max_preview_environments",
+    "credential_brokers",
   ])
   public_gcip_valid = try(alltrue(flatten([for config in [local.nonproduction, local.production] : [
     for pool in values(try(config.gcip_tenants, {})) :
@@ -29,6 +30,14 @@ locals {
     alltrue([for provider in values(try(pool.saml, {})) : length(setsubtract(toset(keys(provider)), toset(["idp_entity_id", "sso_url", "sp_entity_id", "certificates"]))) == 0]) &&
     length(setsubtract(toset(keys(try(pool.mfa, {}))), toset(["state", "totp"]))) == 0 &&
     length(setsubtract(toset(keys(try(pool.mfa.totp, {}))), toset(["adjacent_intervals"]))) == 0
+  ]])), false)
+  # Broker intent carries only bootstrap identity/key IDs and operator enablement;
+  # the image digest stays reviewed code, and PR previews never receive a broker.
+  public_brokers_valid = try(alltrue(flatten([for config in [local.nonproduction, local.production] : [
+    for id, broker in try(config.credential_brokers, {}) :
+    length(setsubtract(toset(keys(broker)), toset(["enabled", "byok_project_id", "secret_prefix", "broker_service_account_email", "signing_key_id", "signing_version", "verification_versions"]))) == 0 &&
+    broker.byok_project_id == config.byok_project_id && broker.secret_prefix == "aidash-${id}-cred-" &&
+    !startswith(id, "pr-") && (config.deployment_tier == "production") == (id == "production")
   ]])), false)
   disabled_flags = {
     GCP_ENVIRONMENTS_ENABLED             = tostring(var.enablement.nonproduction)
@@ -105,7 +114,7 @@ resource "terraform_data" "contract" {
         config.repository == var.repository && config.domain == "aidash.run" &&
         config.develop_branch == var.automation_branch && config.automation_branch == var.automation_branch &&
         config.trusted_branch == "main" && config.release_app_bot_login == local.bot_login &&
-        length(setsubtract(toset(keys(config)), local.config_keys)) == 0 && local.public_gcip_valid &&
+        length(setsubtract(toset(keys(config)), local.config_keys)) == 0 && local.public_gcip_valid && local.public_brokers_valid &&
         length(setsubtract(toset(keys(try(config.node_count, {}))), toset(config.deployment_tier == "production" ? ["production"] : ["develop", "test", "pr"]))) == 0 &&
         alltrue([for count in values(try(config.node_count, {})) : count >= 1 && floor(count) == count]) &&
         can(regex("^[a-f0-9]{32}$", config.cloudflare_zone_id)) &&

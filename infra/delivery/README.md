@@ -105,6 +105,12 @@ python3 infra/delivery/control/setup.py secrets --file .ignore/delivery/operator
 Composition publishes only controller fields; it strips bootstrap-only registry,
 node identity and signing-key outputs. `gcip_tenants` contains public pool/IdP
 metadata only. Client secrets belong in the corresponding protected IdP secret.
+Every bootstrap broker in `byok_broker_environments` becomes a
+`credential_brokers` entry built from its bootstrap service account, signing key
+and Secret prefix; an omitted broker would be drained and removed on the next
+reconcile. Each entry is disabled unless the optional per-tier
+`credential_brokers` account input sets `enabled`, `signing_version` or
+`verification_versions` for a bootstrap-created broker ID.
 Composition leaves every workflow disabled, the staging-required flag off and
 all activation acknowledgements false. Complete account setup before activating.
 

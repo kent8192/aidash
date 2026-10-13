@@ -339,3 +339,55 @@ run "unknown_mfa_settings_cannot_enter_public_variables" {
   }
   expect_failures = [terraform_data.contract]
 }
+run "bootstrap_broker_intent_reaches_controller_config" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      byok_project_id = "aidash-byok"
+      credential_brokers = { test = {
+        enabled                      = true
+        byok_project_id              = "aidash-byok"
+        secret_prefix                = "aidash-test-cred-"
+        broker_service_account_email = "aidash-test-broker@aidash-nonproduction.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-nonproduction/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        signing_version              = "2"
+        verification_versions        = ["1", "2"]
+      } }
+    }))
+  }
+  assert {
+    condition     = jsondecode(github_actions_variable.delivery["AIDASH_GCP_CONFIG"].value).credential_brokers.test.enabled && jsondecode(github_actions_variable.delivery["AIDASH_GCP_CONFIG"].value).credential_brokers.test.signing_version == "2"
+    error_message = "Without broker intent the controller drains every bootstrap broker and can never enable one."
+  }
+}
+run "broker_image_cannot_enter_public_variables" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      byok_project_id = "aidash-byok"
+      credential_brokers = { test = {
+        byok_project_id              = "aidash-byok"
+        secret_prefix                = "aidash-test-cred-"
+        broker_service_account_email = "aidash-test-broker@aidash-nonproduction.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-nonproduction/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+        image                        = "attacker.invalid/broker:latest"
+      } }
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}
+run "cross_tier_broker_is_rejected" {
+  command = plan
+  variables {
+    nonproduction_config_json = jsonencode(merge(jsondecode(var.nonproduction_config_json), {
+      byok_project_id = "aidash-byok"
+      credential_brokers = { production = {
+        byok_project_id              = "aidash-byok"
+        secret_prefix                = "aidash-production-cred-"
+        broker_service_account_email = "aidash-production-broker@aidash-nonproduction.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-nonproduction/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+      } }
+    }))
+  }
+  expect_failures = [terraform_data.contract]
+}

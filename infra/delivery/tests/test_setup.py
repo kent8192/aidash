@@ -129,27 +129,34 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(setup.Refused):
             setup.plan_changes({"resource_changes": [binding]}, project)
 
+    def account_inputs(self, root, extra=None):
+        values = {"release_app_file": str(root / "app.json"), "cloudflare_zone_id": "b" * 32,
+                  "production_reviewer_user_ids": [51869472], "gcip_tenants": {tier: {"default": {"tenant": "public-pool"}} for tier in ("nonproduction", "production")}}
+        setup.private_json(root / "app.json", {"release_app": {"id": 12, "client_id": "Iv23.fixture", "slug": "aidash-delivery", "installation_id": 34}})
+        for tier in ("nonproduction", "production"):
+            path = root / (tier + ".json")
+            values[tier + "_output_file"] = str(path)
+            config = {"project_id": "aidash-" + tier, "deployment_tier": tier, "state_bucket": tier + "-state", "release_bucket": tier + "-release",
+                      "notification_bucket": tier + "-notifications", "deploy_service_account": tier + "-deploy", "notification_service_account": tier + "-notify",
+                      "registry": "bootstrap-only-registry", "production_node_service_account": "bootstrap-only-node", "broker_signing_keys": {"production": "bootstrap-only-key"}}
+            output = {"configuration": {"value": config}, "operations_configuration": {"value": {"gke_backup_enabled": tier == "production"}},
+                      "gcip_web_api_key": {"value": "public-" + tier + "-browser-key", "sensitive": True},
+                      "preview_tls_renewal": {"value": {"secret_id": "preview-tls", "acme_state_secret_id": "acme-state", "service_account": "renewer", "workload_identity_provider": "wif"}}}
+            if extra is not None:
+                extra(tier, output)
+            setup.private_json(path, output)
+        return values
+
     def test_composition_filters_bootstrap_only_fields_and_keeps_activation_disabled(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
-            values = {"release_app_file": str(root / "app.json"), "cloudflare_zone_id": "b" * 32,
-                      "production_reviewer_user_ids": [51869472], "gcip_tenants": {tier: {"default": {"tenant": "public-pool"}} for tier in ("nonproduction", "production")}}
-            setup.private_json(root / "app.json", {"release_app": {"id": 12, "client_id": "Iv23.fixture", "slug": "aidash-delivery", "installation_id": 34}})
-            for tier in ("nonproduction", "production"):
-                path = root / (tier + ".json")
-                values[tier + "_output_file"] = str(path)
-                config = {"project_id": "aidash-" + tier, "deployment_tier": tier, "state_bucket": tier + "-state", "release_bucket": tier + "-release",
-                          "notification_bucket": tier + "-notifications", "deploy_service_account": tier + "-deploy", "notification_service_account": tier + "-notify",
-                          "registry": "bootstrap-only-registry", "production_node_service_account": "bootstrap-only-node", "broker_signing_keys": {"production": "bootstrap-only-key"}}
-                setup.private_json(path, {"configuration": {"value": config}, "operations_configuration": {"value": {"gke_backup_enabled": tier == "production"}},
-                                          "gcip_web_api_key": {"value": "public-" + tier + "-browser-key", "sensitive": True},
-                                          "preview_tls_renewal": {"value": {"secret_id": "preview-tls", "acme_state_secret_id": "acme-state", "service_account": "renewer", "workload_identity_provider": "wif"}}})
+            values = self.account_inputs(Path(directory))
             result = setup.compose(values)
             for tier in ("nonproduction", "production"):
                 public = json.loads(result[tier + "_config_json"])
                 self.assertNotIn("registry", public)
                 self.assertNotIn("production_node_service_account", public)
                 self.assertNotIn("broker_signing_keys", public)
+                self.assertNotIn("credential_brokers", public)
                 self.assertEqual(public["gcip_tenants"], {"default": {"tenant": "public-pool"}})
                 # Without it the first GCIP deployment cannot provision its runtime secret.
                 self.assertEqual(public["gcip_web_api_key"], "public-" + tier + "-browser-key")
@@ -167,6 +174,27 @@ class SetupTests(unittest.TestCase):
             values["gcip_tenants"]["production"] = {}
             with self.assertRaises(setup.Refused):
                 setup.compose(values)
+
+    def test_composition_preserves_bootstrap_brokers_and_operator_enablement(self):
+        def brokers(tier, output):
+            identity = "production" if tier == "production" else "test"
+            output["configuration"]["value"].update(byok_project_id="aidash-byok", broker_service_accounts={identity: f"aidash-{identity}-broker@{tier}"})
+            output["broker_signing_keys"] = {"value": {identity: f"projects/{tier}/keyRings/aidash-{identity}-capability/cryptoKeys/capability"}}
+        with TemporaryDirectory() as directory:
+            values = self.account_inputs(Path(directory), brokers)
+            values["credential_brokers"] = {"nonproduction": {"test": {"enabled": True, "signing_version": "2", "verification_versions": ["1", "2"]}}}
+            result = setup.compose(values)
+            self.assertEqual(json.loads(result["nonproduction_config_json"])["credential_brokers"], {"test": {
+                "enabled": True, "signing_version": "2", "verification_versions": ["1", "2"], "byok_project_id": "aidash-byok", "secret_prefix": "aidash-test-cred-",
+                "broker_service_account_email": "aidash-test-broker@nonproduction",
+                "signing_key_id": "projects/nonproduction/keyRings/aidash-test-capability/cryptoKeys/capability"}})
+            # Unconfigured bootstrap brokers stay published but disabled, so reconcile never drains them by omission.
+            self.assertFalse(json.loads(result["production_config_json"])["credential_brokers"]["production"]["enabled"])
+            for settings in ({"develop": {"enabled": True}}, {"test": {"image": "attacker.invalid/broker:latest"}}, {"test": {"enabled": "true"}}):
+                with self.subTest(settings=settings):
+                    values["credential_brokers"] = {"nonproduction": settings}
+                    with self.assertRaises(setup.Refused):
+                        setup.compose(values)
 
     def test_production_state_relocation_preserves_lineage_and_cannot_overwrite_existing_state(self):
         from types import SimpleNamespace

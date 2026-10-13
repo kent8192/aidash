@@ -35,6 +35,7 @@ SECRETS = {
     "deployment-notifications": {"CLOUDFLARE_EMAIL_SENDING_TOKEN"},
     "certificate-renewal": {"CLOUDFLARE_CERTIFICATE_DNS_TOKEN"},
 }
+BROKER_SETTINGS = {"enabled", "signing_version", "verification_versions"}
 
 
 class Refused(ValueError):
@@ -179,6 +180,27 @@ def private_input(path):
         return json.load(source)
 
 
+def compose_brokers(bootstrap, output, settings):
+    """Carry bootstrap broker identities into controller intent.
+
+    Omitting a bootstrap broker would make the controller drain and remove it, so
+    every bootstrap-created broker is published; only enablement and signing
+    versions come from the operator, and every broker defaults to disabled.
+    """
+    accounts = bootstrap.get("broker_service_accounts") or {}
+    keys = (output.get("broker_signing_keys") or {}).get("value") or {}
+    if set(accounts) != set(keys) or not isinstance(settings, dict) or set(settings) - set(accounts):
+        raise Refused("Credential broker settings must name bootstrap-created broker identities and signing keys")
+    brokers = {}
+    for identity in sorted(accounts):
+        chosen = settings.get(identity, {})
+        if not isinstance(chosen, dict) or set(chosen) - BROKER_SETTINGS or not isinstance(chosen.get("enabled", False), bool):
+            raise Refused("Operators may set only broker enablement and signing versions")
+        brokers[identity] = dict({"enabled": False}, **chosen, byok_project_id=bootstrap["byok_project_id"], secret_prefix=f"aidash-{identity}-cred-",
+                                 broker_service_account_email=accounts[identity], signing_key_id=keys[identity])
+    return brokers
+
+
 def compose(values):
     """Generate disabled account inputs from real bootstrap outputs and App metadata."""
     common = {"repository": REPOSITORY, "domain": "aidash.run", "develop_branch": "develop/0.1.0",
@@ -199,6 +221,9 @@ def compose(values):
         public = {key: bootstrap[key] for key in controller_keys if key in bootstrap and bootstrap[key] not in (None, "")}
         public.update(common, node_count={kind: 1 for kind in (["production"] if tier == "production" else ["develop", "test", "pr"])},
                       gcip_tenants=values["gcip_tenants"][tier])
+        brokers = compose_brokers(bootstrap, output, values.get("credential_brokers", {}).get(tier, {}))
+        if brokers:
+            public["credential_brokers"] = brokers
         if not isinstance(public["gcip_tenants"], dict) or not public["gcip_tenants"]:
             raise Refused("Random preview and production sign-in require explicit GCIP pool definitions")
         # The browser SDK key is public client configuration (Terraform only marks

@@ -46,7 +46,11 @@ Nonproduction bootstrap optionally supplies `preview_tls_renewal` with
 `acme_email` supplies `AIDASH_ACME_EMAIL`. Nonproduction controller JSON permits
 `acme_state_secret`; production permits the boolean `gke_backup_enabled`.
 `cloudflare_account_id`, when supplied, is an Environment variable only in
-`deployment-notifications`.
+`deployment-notifications`. Both controller JSON strings permit
+`credential_brokers` with only bootstrap identity/key IDs, the environment's
+`aidash-<id>-cred-` prefix, the config's `byok_project_id`, `enabled` and signing
+versions. A broker `image` is refused, PR previews cannot have one, and only the
+production config may carry the `production` broker.
 
 Account configuration still leaves every workflow disabled. Explicit
 `enablement={nonproduction,production,notifications,certificates}` defaults all
