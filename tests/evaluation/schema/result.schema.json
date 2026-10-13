@@ -197,6 +197,8 @@
         "run_id",
         "phase",
         "error",
+        "interrupted",
+        "infrastructure_error",
         "outcome",
         "claimed_success",
         "oracle",
@@ -222,6 +224,8 @@
         "run_id": { "type": ["string", "null"] },
         "phase": { "type": ["string", "null"] },
         "error": { "type": ["string", "null"] },
+        "interrupted": { "type": "boolean" },
+        "infrastructure_error": { "type": ["string", "null"] },
         "outcome": { "$ref": "#/$defs/outcome" },
         "claimed_success": { "type": ["boolean", "null"] },
         "oracle": {

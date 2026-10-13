@@ -160,12 +160,30 @@ def source_identity(binary=None, server_revision=None, root=ROOT):
     head = git("rev-parse", "HEAD")
     status = git("status", "--porcelain")
     diff = git("diff", "HEAD", "--binary")
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z")
     commit = head.decode().strip() if head else None
     dirty = None if status is None else bool(status.strip())
-    return {"commit": commit, "dirty": dirty,
-            "dirty_diff_sha256": sha256_bytes(diff + (status or b"")) if dirty and diff is not None else None,
+    fingerprint = None
+    if dirty and diff is not None and untracked is not None:
+        # `git diff` omits untracked files and the status names only their paths, so their bytes
+        # are hashed too: changing one during a run must change the recorded source.
+        fingerprint = sha256_bytes(diff + status + untracked_contents(root, untracked))
+    return {"commit": commit, "dirty": dirty, "dirty_diff_sha256": fingerprint,
             "binary_sha256": sha256_bytes(Path(binary).read_bytes()) if binary else None,
             "server_revision": server_revision}
+
+
+def untracked_contents(root, listing):
+    """Every untracked, unignored file's name and bytes (a symlink's target), from `git ls-files -z`."""
+    parts = []
+    for name in sorted(item for item in listing.split(b"\0") if item):
+        path = Path(root) / os.fsdecode(name)
+        try:
+            data = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+        except OSError as error:  # Removed or unreadable since the listing: record that, not nothing.
+            data = f"unreadable: {error.strerror}".encode()
+        parts.append(name + b"\0" + sha256_bytes(data).encode() + b"\n")
+    return b"".join(parts)
 
 
 # ---------------------------------------------------------- schema validation
@@ -246,15 +264,20 @@ def validate(instance, schema, root=None, path="$"):
     return errors
 
 
-def validate_result(result):
-    """Validate a result manifest and its embedded experiment; raise on violations."""
+def validate_result(result, corpus=None, memory_corpus=None):
+    """Validate a result manifest and its embedded experiment; raise on violations.
+
+    `corpus` and `memory_corpus` are the corpora the experiment used (default: the
+    repository's); their digests must match the manifest, and its availability
+    rows and memory scenarios are checked against them.
+    """
     errors = validate(result, load_schema("result.schema.json"))
     if isinstance(result, dict) and isinstance(result.get("experiment"), dict):
         errors += validate(result["experiment"], load_schema("experiment.schema.json"), path="$.experiment")
     # Free-form objects (requests, tool calls, usage records) are not walked by the schema.
     errors += non_finite_numbers(result)
     if not errors and isinstance(result, dict):
-        errors += consistency_errors(result)
+        errors += consistency_errors(result, corpus or load_corpus(), memory_corpus or load_memory_corpus())
     if errors:
         raise CorpusError("result manifest is invalid:\n" + "\n".join(errors[:50]))
     return result
@@ -286,7 +309,7 @@ def run_key(task, comparison, arm, repeat):
     return f"{task}/{comparison}/{arm}/{repeat}"
 
 
-def consistency_errors(result):
+def consistency_errors(result, corpus, memory_corpus):
     """Cross-field rules a JSON Schema cannot express."""
     errors = []
     runs = result["runs"]
@@ -298,6 +321,15 @@ def consistency_errors(result):
         if run["key"] != run_key(run["task"], run["comparison"], run["arm"], run["repeat"]):
             errors.append(f"$.runs: key {run['key']} does not name its task, comparison, arm and repeat")
         errors += [f"$.runs: {run['key']} {problem}" for problem in classification_errors(run)]
+        usage = run["usage"]
+        try:
+            expected_usage = summarize_usage(None if usage["source"] == "unavailable" else usage["records"])
+        except (KeyError, TypeError, AttributeError):
+            expected_usage = None
+        if not json_equal(usage, expected_usage):
+            errors.append(f"$.runs: {run['key']} has a usage summary that differs from its Usage Records")
+    errors += availability_errors(result, corpus)
+    errors += memory_corpus_errors(result, memory_corpus)
     # Every planned (task, comparison, arm, repeat) is recorded or skipped, and nothing else is.
     planned = {run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
                for variant in experiment["variants"] for repeat in range(1, experiment["repeat_count"] + 1)}
@@ -317,7 +349,7 @@ def consistency_errors(result):
     for run in runs:
         groups.setdefault((run["task"], run["comparison"], run["arm"]), []).append(run)
     # Rates, metrics and paired comparisons are derived data: each is recomputed from the recorded Runs.
-    issues = {row["comparison"]: row["issue"] for row in result["feature_availability"]}
+    issues = {item["id"]: item["issue"] for item in corpus["comparisons"]}
     try:
         derived_aggregates = aggregate(runs)
         expected_rows = {(row["task"], row["comparison"]): row for row in compare(issues, derived_aggregates, runs)}
@@ -398,12 +430,59 @@ def consistency_errors(result):
     return errors
 
 
+def availability_errors(result, corpus):
+    """Feature availability rows against the corpus, and against the comparisons the manifest measured."""
+    if result["experiment"]["corpus"]["sha256"] != corpus["_snapshot"]["sha256"]:
+        return ["$.experiment.corpus differs from the corpus given to validate; pass the corpus the experiment used"]
+    errors = []
+    rows = result["feature_availability"]
+    ids = [row["comparison"] for row in rows]
+    if len(ids) != len(set(ids)):
+        errors.append("$.feature_availability: a comparison has more than one row")
+    declared = {item["id"]: item for item in corpus["comparisons"]}
+    if set(ids) != set(declared):
+        errors.append("$.feature_availability: the rows are not exactly the corpus comparisons")
+    measured = {variant["comparison"] for variant in result["experiment"]["variants"]} | \
+        {run["comparison"] for run in result["runs"]} | {row["comparison"] for row in result["comparisons"]}
+    for row in rows:
+        item = declared.get(row["comparison"])
+        if item is None:
+            continue
+        status = item.get("status", "available")
+        allowed = (status,) if status != "available" else ("available", "not-selected", "feature-not-available")
+        if row["issue"] != item["issue"] or row["status"] not in allowed:
+            errors.append(f"$.feature_availability: {row['comparison']} contradicts the corpus")
+        if row["comparison"] in measured and row["status"] != "available":
+            errors.append(f"$.feature_availability: {row['comparison']} is {row['status']} although it was measured")
+    return errors
+
+
+def memory_corpus_errors(result, memory_corpus):
+    """The memory matrix must report every scenario of the memory corpus, once, as the corpus declares it."""
+    if result["experiment"]["memory_corpus"]["sha256"] != memory_corpus["_snapshot"]["sha256"]:
+        return ["$.experiment.memory_corpus differs from the memory corpus given to validate; pass the one the "
+                "experiment used"]
+    errors = []
+    matrix = result["memory_matrix"]
+    if matrix["corpus"] != memory_corpus["version"]:
+        errors.append("$.memory_matrix.corpus is not the memory corpus version")
+    declared = memory_corpus["scenarios"]
+    if [scenario["id"] for scenario in matrix["scenarios"]] != [scenario["id"] for scenario in declared]:
+        errors.append("$.memory_matrix.scenarios are not exactly the memory corpus scenarios, once each, in order")
+        return errors
+    for recorded, scenario in zip(matrix["scenarios"], declared):
+        partial = scenario.get("coverage") == "partial"
+        if recorded["issue"] != scenario["issue"] or recorded["evidence"] != scenario["evidence"] or \
+                recorded["status"] == ("passed" if partial else "partial"):
+            errors.append(f"$.memory_matrix: scenario {scenario['id']} contradicts the memory corpus")
+    return errors
+
+
 def classification_errors(run):
     """Ways a Run's outcome, oracle and derived fields contradict each other (see `classify`).
 
-    `interrupted` and `infrastructure_failure` can follow any phase, because the
-    evaluator may stop or lose a Run at any point; every other outcome is fixed
-    by the recorded phase, oracle and error.
+    The outcome is recomputed exactly as `classify` chose it, from the recorded
+    infrastructure error, interruption flag, phase, oracle and phase error.
     """
     problems = []
     oracle, outcome, phase = run["oracle"], run["outcome"], run["phase"]
@@ -414,18 +493,23 @@ def classification_errors(run):
         problems.append("has a passing oracle with a missing or failing check")
     if oracle["passed"] is False and all(check.get("passed") is True for check in checks):
         problems.append("has a failing oracle without a failing check")
-    escalation = oracle["kind"] == "escalation"
-    required = {
-        "success": phase == "COMPLETED" and oracle["passed"] is True and not escalation,
-        "policy_compliant_escalation": phase == "COMPLETED" and oracle["passed"] is True and escalation,
-        "false_completion": phase == "COMPLETED" and oracle["passed"] is not True,
-        "overflow_failure": phase in ("FAILED", "CANCELLED") and is_overflow(run["error"]),
-        "unresolved": phase in ("FAILED", "CANCELLED") and not is_overflow(run["error"]),
-        "infrastructure_failure": run["error"] is not None,
-        "interrupted": True,
-    }
-    if not required[outcome]:
-        problems.append(f"has outcome {outcome}, which its phase {phase}, oracle and error do not produce")
+    if run["infrastructure_error"] is not None:
+        expected = "infrastructure_failure"
+        if run["error"] is None:
+            problems.append("records an infrastructure error but no error")
+    elif run["interrupted"]:
+        expected = "interrupted"
+    elif phase == "COMPLETED":
+        expected = "false_completion" if oracle["passed"] is not True else \
+            "policy_compliant_escalation" if oracle["kind"] == "escalation" else "success"
+    elif phase in ("FAILED", "CANCELLED"):
+        # Without an infrastructure error, `error` is the Run's own error.
+        expected = "overflow_failure" if is_overflow(run["error"]) else "unresolved"
+    else:
+        expected = "interrupted"
+    if outcome != expected:
+        problems.append(f"has outcome {outcome}, but its phase {phase}, interruption, infrastructure error and "
+                        f"oracle produce {expected}")
     terminal = run["long_context"] == "terminal_overflow"
     if terminal != (outcome == "overflow_failure"):
         problems.append("has a long_context that disagrees with its overflow outcome")
@@ -972,6 +1056,9 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
         "task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
         "label": planned["label"], "repeat": repeat, "run_id": observation.get("run_id"),
         "phase": observation.get("phase"), "error": observation.get("error") or observation.get("infrastructure_error"),
+        # The provenance `classify` used, so validation can recompute the outcome exactly.
+        "interrupted": bool(observation.get("interrupted")),
+        "infrastructure_error": observation.get("infrastructure_error") or None,
         "outcome": outcome, "claimed_success": claimed_success(answer), "oracle": oracle,
         "long_context": long_context(observation, outcome), "constraint_retention": retention,
         "tool_selection": selection, "wall_ms": float(observation.get("wall_ms", 0.0)),

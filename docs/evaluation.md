@@ -79,6 +79,9 @@ Run (exit 143 for SIGTERM); a second SIGTERM while that unwind hangs removes
 the owned Node and containers and exits at once. The checkout and executable
 must stay as recorded: the `cargo test` evidence commands run only while they
 do, and a change found before the manifest is written is recorded as an error.
+The recorded source fingerprint covers the diff, the status and the bytes of
+every untracked, unignored file. Each Run's Usage Record read is bounded to 60
+seconds; a stalled read is recorded as that Run's infrastructure failure.
 
 Wall time depends heavily on host load. Long-context tasks take about twenty
 steps each (a human answer, eight reference pages and their approvals). On an
@@ -86,7 +89,9 @@ idle workstation the whole corpus takes minutes; on a host shared with many
 concurrent builds a single step took up to 100 seconds, so raise
 `--run-timeout` there.
 
-`python3 scripts/evaluate-fixed-tasks.py validate FILE` revalidates a manifest.
+`python3 scripts/evaluate-fixed-tasks.py validate FILE` revalidates a manifest
+against the corpora it used (`--corpus` and `--memory-corpus`, default the
+repository's; their SHA-256 must match the manifest).
 
 ### The scripted fixture Agent
 
@@ -133,7 +138,9 @@ Before it registers anything or starts a Run, the live tier refuses unless:
 - `--base-url` is `https://`; plain `http://` is accepted only for a loopback
   Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are sent
   with every request. Redirects are never followed: urllib would resend the
-  bearer token to the new location, so a 30x response is a failed request;
+  bearer token to the new location, so a 30x response is a failed request.
+  Plain `http://` never goes through an environment proxy (`HTTP_PROXY`),
+  which would otherwise receive both tokens in plaintext;
 - both bearer tokens are set (operator for Registry writes, Tenant subject for
   Tasks); neither is copied into the manifest;
 - the named Provider Credential exists, is `active`, and is the credential the
@@ -237,7 +244,10 @@ provider. Every request is bounded by the Run's time limit; when it passes,
 even inside a stalled request, the Run is cancelled on the Node, and so it is
 when a request about the Run fails. A claim retried after a gateway error
 may already have admitted the Run, so when its backoff would end past the
-time limit the evaluator cancels the Run at once instead of sleeping. After any failure past the guard rails,
+time limit the evaluator cancels the Run at once instead of sleeping. A
+cancellation the Tenant subject token cannot make is retried once with the
+operator token; if that fails too, the Run may still be active, so the
+manifest records it and no further Run is dispatched. After any failure past the guard rails,
 including Ctrl-C and SIGTERM, the in-flight Run is cancelled and the manifest
 is still written with the error, the ledger and every finished Run; the exit
 code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an error and 3 for a ceiling
@@ -362,11 +372,16 @@ planned keys (variants × repeats), with nothing dropped or added; every group
 of Runs has exactly one aggregate whose outcome counts match its Runs; every
 aggregate's label, rates and metrics, every paired comparison and the memory
 matrix summary equal what the recorded Runs and scenarios produce; each Run's
-outcome, `long_context`, `tool_selection` and `constraint_retention` follow
-from its phase, oracle and error (`interrupted` and `infrastructure_failure`
-may follow any phase), and its oracle result agrees with its checks; a
-`passed` or `partial` memory scenario has only passing checks and variants,
-and a `failed` one has a failing check; no number is NaN or infinite,
+usage summary equals the one its Usage Records produce; each Run's outcome,
+`long_context`, `tool_selection` and `constraint_retention` are recomputed as
+`classify` chose them, from its recorded `infrastructure_error`,
+`interrupted` flag, phase, oracle and error, and its oracle result agrees
+with its checks; the feature availability rows are exactly the corpus
+comparisons, agree with it, and say `available` for every measured
+comparison; the memory matrix reports every memory corpus scenario once, in
+order, with its issue, evidence and coverage; a `passed` or `partial` memory
+scenario has only passing checks and variants, and a `failed` one has a
+failing check; no number is NaN or infinite,
 although Python's `json` module accepts them; a live manifest has a spend
 ledger and a deterministic one has none; and the spend totals equal the sum
 of the attempts' charges and their unsettled count, stay within the ceiling

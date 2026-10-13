@@ -50,6 +50,8 @@ SERVER_REVISION = re.compile(r"[0-9a-f]{7,64}")
 # Emergency cleanups for a second deterministic SIGTERM, if the first one's unwind through
 # cancellation and finalization hangs: remove owned containers and stop the owned Node, then exit.
 CLEANUP = []
+# Seconds one Run's Usage Record read (docker exec ... psql) may take before it counts as failed.
+USAGE_READ_TIMEOUT = 60.0
 DETERMINISTIC_LIMITATIONS = [
     "The deterministic tier's Agent is a scripted probe; outcomes measure what the harness delivered to it, "
     "not model quality.",
@@ -132,7 +134,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def http_transport(base):
-    opener = urllib.request.build_opener(NoRedirect)
+    handlers = [NoRedirect]
+    if urllib.parse.urlsplit(base).scheme == "http":
+        # require_https allows plain HTTP only to loopback; an environment proxy (HTTP_PROXY)
+        # would receive both bearer tokens in plaintext instead, so plain HTTP never uses one.
+        handlers.append(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
 
     def call(method, path, body, token, timeout):
         request = urllib.request.Request(base.rstrip("/") + path, method=method,
@@ -153,12 +160,14 @@ def http_transport(base):
 
 
 def checked(command, **kwargs):
-    """Run a command; a failure never carries database passwords from its arguments."""
+    """Run a command; a failure or timeout never carries database passwords from its arguments."""
+    redacted = [evaluation.redact_secrets(part) for part in command]
     try:
         return subprocess.run(command, check=True, capture_output=True, text=True, **kwargs).stdout
     except subprocess.CalledProcessError as error:
-        raise subprocess.CalledProcessError(error.returncode, [evaluation.redact_secrets(part) for part in command],
-                                            error.stdout, error.stderr) from None
+        raise subprocess.CalledProcessError(error.returncode, redacted, error.stdout, error.stderr) from None
+    except subprocess.TimeoutExpired as error:
+        raise subprocess.TimeoutExpired(redacted, error.timeout) from None
 
 
 def free_port():
@@ -248,12 +257,16 @@ def usage_reader_for(postgres, database, password, query):
     def read(run_id):
         try:
             output = checked(["docker", "exec", "-i", "-e", f"PGPASSWORD={password}", postgres, "psql", "-U", "aidash",
-                              "-d", database, "-tA", "-v", "ON_ERROR_STOP=1"], input=query + ";\n")
+                              "-d", database, "-tA", "-v", "ON_ERROR_STOP=1"], input=query + ";\n",
+                             timeout=USAGE_READ_TIMEOUT)
         except subprocess.CalledProcessError as error:
             # The message lands in runs[].error: keep the exit status and a redacted stderr tail only.
             tail = " | ".join((error.stderr or "").strip().splitlines()[-3:])
             raise RuntimeError("usage record read failed (exit "
                                f"{error.returncode}): {evaluation.redact_secrets(tail, password)[:300]}") from None
+        except subprocess.TimeoutExpired:
+            # A stalled Docker or PostgreSQL must not hold the worker forever; the Run records the failure.
+            raise RuntimeError(f"usage record read timed out after {USAGE_READ_TIMEOUT}s") from None
         records = (json.loads(line) for line in output.splitlines() if line.strip())
         return [record for record in records if record["run_id"] == run_id]
     return read
@@ -416,16 +429,17 @@ def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, l
     return result
 
 
-def finalize(result, reservation):
+def finalize(result, reservation, corpus, memory_corpus):
     """Validate a manifest and write it into its reservation. The record is written even when validation fails.
 
     A manifest that fails validation is annotated in its `error` field rather
-    than discarded: it may be the only record of paid work. Returns the
-    validation failure, or None.
+    than discarded: it may be the only record of paid work. `corpus` and
+    `memory_corpus` are the corpora the run loaded. Returns the validation
+    failure, or None.
     """
     failure = None
     try:
-        evaluation.validate_result(result)
+        evaluation.validate_result(result, corpus, memory_corpus)
     except evaluation.CorpusError as invalid:
         failure = invalid
         summary = str(invalid).splitlines()[1:3]
@@ -644,7 +658,7 @@ def run_deterministic(args, binary_directory):
                                            args.repeats, limits, DETERMINISTIC_LIMITATIONS, evaluator=evaluator)
     result = assemble(corpus, experiment_value, runs, availability, memory, True, None,
                       DETERMINISTIC_LIMITATIONS, error)
-    invalid = finalize(result, reservation)
+    invalid = finalize(result, reservation, corpus, memory_corpus)
     error = result["error"]
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
@@ -809,7 +823,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     memory = evaluation.memory_matrix(memory_corpus, {})
     result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
                       LIVE_LIMITATIONS, error, skipped)
-    invalid = finalize(result, reservation)
+    invalid = finalize(result, reservation, corpus, memory_corpus)
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
     if result["error"]:
@@ -823,7 +837,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
 
 def validate_command(args):
     result = json.loads(Path(args.manifest).read_text())
-    evaluation.validate_result(result)
+    evaluation.validate_result(result, evaluation.load_corpus(args.corpus),
+                               evaluation.load_memory_corpus(args.memory_corpus))
     print(f"valid: {args.manifest}")
     return 0
 
@@ -885,6 +900,10 @@ def main(argv=None):
     live_command.add_argument("--max-wall-seconds", type=float)
     validate_parser = commands.add_parser("validate")
     validate_parser.add_argument("manifest", type=Path)
+    validate_parser.add_argument("--corpus", type=Path, default=evaluation.EVALUATION / "corpus.toml",
+                                 help="the corpus the experiment used (its SHA-256 must match the manifest)")
+    validate_parser.add_argument("--memory-corpus", type=Path, default=evaluation.EVALUATION / "memory.toml",
+                                 help="the memory corpus the experiment used")
     args = parser.parse_args(argv)
     if args.command == "validate":
         return validate_command(args)

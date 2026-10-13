@@ -281,16 +281,30 @@ def approves(task, prompt, approve_fixture_tools, prefix):
 def blank_observation():
     return {"run_id": None, "workspace": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
             "final_answer": None, "steps": None, "compactions": None, "requests": None,
-            "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 0.0}
+            "usage_records": None, "interrupted": False, "infrastructure_error": None, "cancellation_failed": False,
+            "wall_ms": 0.0}
 
 
 def stop_run(api, token, task_uuid, run_id, clock, sleep):
     """Cancel a Run the evaluator stops waiting for; return its latest state, or None without one.
 
-    It runs after the Run's own deadline, so its requests get CANCEL_GRACE of their own.
+    It runs after the Run's own deadline, so its requests get CANCEL_GRACE of their own. When the
+    Tenant subject `token` cannot cancel (expired, rejected), the operator token is tried once.
     """
     if task_uuid is None:
         return None
+    try:
+        return cancel_run(api, token, task_uuid, run_id, clock, sleep)
+    except Exception as failure:
+        if token is None or token == api.operator:
+            raise
+        try:
+            return cancel_run(api, None, task_uuid, run_id, clock, sleep)  # None: the operator token.
+        except Exception as fallback:
+            raise fallback from failure
+
+
+def cancel_run(api, token, task_uuid, run_id, clock, sleep):
     grace = api.until(clock() + CANCEL_GRACE, clock, sleep)
     if run_id is None:
         run_id = next((run["id"] for run in grace.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),
@@ -418,6 +432,8 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
         try:
             stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
         except Exception as cancel_error:
+            # The Run may still be running: the caller must not dispatch more work after it.
+            observation["cancellation_failed"] = True
             observation["infrastructure_error"] += f"; cancellation failed: {type(cancel_error).__name__}: " \
                                                    f"{cancel_error}"
     except BaseException:  # Ctrl-C or SIGTERM: stop the Run, keep its record, then unwind.
@@ -425,6 +441,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
         try:
             stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
         except Exception as error:
+            observation["cancellation_failed"] = True
             observation["infrastructure_error"] = f"cancellation after the interrupt failed: {type(error).__name__}: " \
                                                   f"{error}"
         observation["wall_ms"] = round((clock() - started) * 1000, 3)
@@ -683,6 +700,9 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                 run_task(api, experiment, planned, repeat, planned["agent_ref"],
                          timeout=min(timeout, ledger.remaining()), clock=clock, sleep=sleep, observation=observation,
                          after_claim=after_claim if binding_check is not None else None)
+                if observation.get("cancellation_failed"):
+                    stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
+                                 "or the operator token")
                 if observation.get("compactions"):
                     stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
                                  "compactor answered although the approval attests external compaction is disabled")

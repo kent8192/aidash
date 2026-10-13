@@ -640,6 +640,28 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(node.cancelled, "the possibly admitted Run is cancelled at once")
         self.assertTrue(observed["interrupted"])
 
+    def test_cancellation_falls_back_to_the_operator_token(self):
+        node = FakeNode(["RUNNING"])
+        failed, controls = [], []
+
+        def subject_cannot_cancel(method, path, body, token, timeout=None):
+            if method == "GET" and path == "/api/runs/run-1" and not failed:
+                failed.append(path)
+                return 500, {"error": "internal"}
+            if path.endswith("/control"):
+                controls.append(token)
+                if token == "subject":
+                    return 401, {"error": "token expired"}
+            return node.call(method, path, body, token)
+        clock = Clock()
+        experiment = self.experiment(node)
+        experiment.api = runner.Api(subject_cannot_cancel, "operator")
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
+                                   clock=clock, sleep=clock.sleep)
+        self.assertEqual(controls, ["subject", "operator"])
+        self.assertTrue(node.cancelled)
+        self.assertFalse(observed["cancellation_failed"])
+
     def test_approvals_are_denied_for_escalation_tasks(self):
         planned = evaluation.plan(self.corpus, ["approval-escalation"], ["projection"])[0]
         planned["corpus"] = self.corpus
@@ -1192,6 +1214,56 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(status, 302)
         self.assertEqual(seen, [], "the redirect target must never receive a request")
 
+    def test_plain_http_to_loopback_never_uses_an_environment_proxy(self):
+        seen = {"proxy": [], "target": []}
+
+        def handler(name):
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    seen[name].append(self.headers.get("Authorization"))
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+                def log_message(self, *_):
+                    pass
+            return Handler
+        servers = {name: http.server.HTTPServer(("127.0.0.1", 0), handler(name)) for name in seen}
+        for server in servers.values():
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        proxy = f"http://127.0.0.1:{servers['proxy'].server_port}"
+        try:
+            with mock.patch.dict(os.environ, {"HTTP_PROXY": proxy, "http_proxy": proxy, "NO_PROXY": "",
+                                              "no_proxy": ""}):
+                status, _ = cli.http_transport(f"http://127.0.0.1:{servers['target'].server_port}")(
+                    "GET", "/api/state", None, "secret-token", 5)
+        finally:
+            for server in servers.values():
+                server.shutdown()
+                server.server_close()
+        self.assertEqual(status, 200)
+        self.assertEqual(seen, {"proxy": [], "target": ["Bearer secret-token"]})
+
+    def test_a_failed_cancellation_stops_all_further_dispatch(self):
+        call, _ = self.live_node(phase="RUNNING")
+        controls = []
+
+        def unreachable(method, path, body, token, timeout=None):
+            if method == "GET" and path == "/api/runs/run-1":
+                return 500, {"error": "internal"}
+            if path.endswith("/control"):
+                controls.append(token)
+                return 500, {"error": "internal"}
+            return call(method, path, body, token)
+        status, result = self.run_live(unreachable, ceiling="500000")
+        self.assertEqual(status, 1)
+        self.assertEqual(controls, [], "the Run could not even be read, so no cancel was possible")
+        self.assertIn("may still be active", result["error"])
+        self.assertEqual(len(result["runs"]), 1)
+        self.assertEqual([item["key"] for item in result["skipped_runs"]],
+                         ["structured-data-overdue-totals/projection/candidate/1"])
+        evaluation.validate_result(result)
+
     def test_run_timeout_must_be_positive_and_finite(self):
         live = ["live", "--base-url", "https://node.invalid", "--tenant", "acme", "--server-revision", "0123abc"]
         for value in ("nan", "inf", "0", "-5"):
@@ -1527,7 +1599,7 @@ class HardeningTest(unittest.TestCase):
             path = Path(directory) / "result.json"
             path.write_text(json.dumps(result))  # Python writes NaN, which json.loads accepts again.
             with self.assertRaisesRegex(evaluation.CorpusError, "not a finite JSON number"):
-                cli.validate_command(argparse.Namespace(manifest=path))
+                cli.validate_command(argparse.Namespace(manifest=path, corpus=None, memory_corpus=None))
 
     def test_runs_use_the_corpus_bytes_that_were_hashed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1588,20 +1660,98 @@ class HardeningTest(unittest.TestCase):
             result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
             return result
         cases = {
-            "success without a passing oracle": (lambda runs: runs[0].update(outcome="success"), "do not produce"),
+            "success without a passing oracle": (lambda runs: runs[0].update(outcome="success"), "produce"),
             "passing oracle with failing checks": (lambda runs: runs[0]["oracle"].update(passed=True),
                                                    "missing or failing check"),
             "overflow without an overflow error": (lambda runs: runs[2].update(outcome="overflow_failure",
                                                                                long_context="terminal_overflow"),
-                                                   "do not produce"),
+                                                   "produce"),
             "pruning without compactions": (lambda runs: runs[2].update(long_context="pruning"), "compactions"),
             "edited verifier": (lambda runs: runs[0]["evidence"].update(verifier=[]), "verifier"),
+            # Failure outcomes need the provenance classify used, not just any error.
+            "interrupted without an interruption": (lambda runs: runs[0].update(outcome="interrupted"), "produce"),
+            "infrastructure failure from a Run error": (lambda runs: runs[2].update(outcome="infrastructure_failure"),
+                                                        "produce"),
+            "interruption flag hidden": (lambda runs: runs[2].update(interrupted=True), "produce"),
         }
         for label, (change, pattern) in cases.items():
             with self.subTest(label), self.assertRaisesRegex(evaluation.CorpusError, pattern):
                 evaluation.validate_result(tampered(change))
-        # The evaluator may stop or lose a Run at any phase.
-        evaluation.validate_result(tampered(lambda runs: runs[2].update(outcome="interrupted")))
+        # A recorded interruption or infrastructure error decides the outcome at any phase.
+        evaluation.validate_result(tampered(lambda runs: runs[2].update(outcome="interrupted", interrupted=True)))
+        evaluation.validate_result(tampered(lambda runs: runs[0].update(
+            outcome="infrastructure_failure", infrastructure_error="ApiError: HTTP 500", error="ApiError: HTTP 500")))
+
+    def test_usage_summaries_are_recomputed_from_their_records(self):
+        value = corpus()
+        record = {"run_id": "run", "outcome": "completed", "input_tokens": 10, "output_tokens": 2,
+                  "estimated_tokens": 12, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_nanocredits": 5}
+
+        def with_usage(change):
+            result = full_result(value)
+            result["runs"][0]["usage"] = evaluation.summarize_usage([record])
+            change(result["runs"][0]["usage"])
+            result["aggregates"] = evaluation.aggregate(result["runs"])
+            result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
+            return result
+        evaluation.validate_result(with_usage(lambda usage: None))
+        for label, change in (("attempts", lambda usage: usage.update(attempts=9)),
+                              ("tokens", lambda usage: usage["input_tokens"].update(known=1)),
+                              ("cost", lambda usage: usage.update(cost_known_nanocredits=0)),
+                              ("records behind unavailable", lambda usage: usage.update(source="unavailable"))):
+            with self.subTest(label), self.assertRaisesRegex(evaluation.CorpusError, "usage summary"):
+                evaluation.validate_result(with_usage(change))
+
+    def test_memory_scenarios_and_availability_are_checked_against_the_corpora(self):
+        value = corpus()
+
+        def recount(result):
+            summary = {}
+            for item in result["memory_matrix"]["scenarios"]:
+                summary[item["status"]] = summary.get(item["status"], 0) + 1
+            result["memory_matrix"]["summary"] = summary
+        cases = {
+            "every scenario deleted": (lambda r: r["memory_matrix"]["scenarios"].clear(), "exactly the memory corpus"),
+            "a scenario duplicated": (lambda r: r["memory_matrix"]["scenarios"].append(
+                dict(r["memory_matrix"]["scenarios"][0])), "exactly the memory corpus"),
+            "evidence relabeled": (lambda r: r["memory_matrix"]["scenarios"][0].update(issue="#0"),
+                                   "contradicts the memory corpus"),
+            "measured comparison marked absent": (lambda r: next(row for row in r["feature_availability"]
+                                                                 if row["comparison"] == "projection").update(
+                status="feature-not-available"), "although it was measured"),
+            "availability row deleted": (lambda r: r["feature_availability"].pop(), "exactly the corpus comparisons"),
+            "availability row duplicated": (lambda r: r["feature_availability"].append(
+                dict(r["feature_availability"][0])), "more than one row"),
+            "unrunnable comparison marked available": (lambda r: next(
+                row for row in r["feature_availability"] if row["comparison"] == "completion-gate").update(
+                status="available"), "contradicts the corpus"),
+        }
+        for label, (change, pattern) in cases.items():
+            with self.subTest(label):
+                result = full_result(value)
+                change(result)
+                recount(result)
+                with self.assertRaisesRegex(evaluation.CorpusError, pattern):
+                    evaluation.validate_result(result)
+        result = full_result(value)
+        result["experiment"]["memory_corpus"] = dict(result["experiment"]["memory_corpus"], sha256="0" * 64)
+        with self.assertRaisesRegex(evaluation.CorpusError, "memory corpus given to validate"):
+            evaluation.validate_result(result)
+
+    def test_untracked_file_contents_are_part_of_the_source_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for command in (["init", "-q"], ["config", "user.email", "t@example"], ["config", "user.name", "t"]):
+                subprocess.run(["git", *command], cwd=root, check=True)
+            (root / "tracked.rs").write_text("fn main() {}\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+            (root / "new_test.rs").write_text("one\n")
+            first = evaluation.source_identity(root=root)
+            (root / "new_test.rs").write_text("two\n")
+            second = evaluation.source_identity(root=root)
+        self.assertTrue(first["dirty"])
+        self.assertNotEqual(first["dirty_diff_sha256"], second["dirty_diff_sha256"])
 
     def test_a_memory_scenario_status_must_agree_with_its_checks(self):
         value = corpus()
@@ -1627,7 +1777,8 @@ class HardeningTest(unittest.TestCase):
                     evaluation.validate_result(result)
 
     def test_pinned_schemas_decide_validation_after_the_files_change(self):
-        result = full_result(corpus())
+        value, memory = corpus(), evaluation.load_memory_corpus()
+        result = full_result(value)
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(evaluation.PINNED_SCHEMAS, clear=True):
             root = Path(directory)
             for name in evaluation.EVALUATOR_FILES:
@@ -1639,7 +1790,7 @@ class HardeningTest(unittest.TestCase):
                 (root / "tests/evaluation/schema/result.schema.json").write_text('{"type": "string"}')
                 self.assertNotEqual(evaluation.evaluator_identity()["sha256"], identity["sha256"])
                 # The edited schema would reject the manifest; the pinned one still decides.
-                evaluation.validate_result(result)
+                evaluation.validate_result(result, value, memory)
             self.assertTrue(evaluation.validate(result, json.loads(
                 (root / "tests/evaluation/schema/result.schema.json").read_text())))
 
@@ -1816,6 +1967,23 @@ class RedactionTest(unittest.TestCase):
                 read("00000000-0000-0000-0000-000000000000")
         self.assertNotIn("pw-12345", str(raised.exception))
         self.assertIn("exit 2", str(raised.exception))
+
+    def test_a_stalled_database_read_times_out_without_the_password(self):
+        calls = []
+
+        def stalled(command, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        with mock.patch.object(cli.subprocess, "run", side_effect=stalled):
+            read = cli.usage_reader_for("pg", "db", "pw-12345", "select 1")
+            with self.assertRaisesRegex(RuntimeError, "timed out") as raised:
+                read("00000000-0000-0000-0000-000000000000")
+        self.assertEqual(calls, [cli.USAGE_READ_TIMEOUT])
+        self.assertNotIn("pw-12345", str(raised.exception))
+        with mock.patch.object(cli.subprocess, "run", side_effect=stalled), \
+                self.assertRaises(subprocess.TimeoutExpired) as raised:
+            cli.checked(["docker", "exec", "-e", "PGPASSWORD=pw-12345"], timeout=1)
+        self.assertNotIn("pw-12345", str(raised.exception))
 
 
 if __name__ == "__main__":
