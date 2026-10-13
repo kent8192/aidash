@@ -411,6 +411,49 @@ async fn newest_disclosure(
 	Ok(Some((low, newest)))
 }
 
+/// Whether an approved disclosure of `run` still admits what it approved: the
+/// approval has not expired, current policy does not forbid the disclosure,
+/// and unless policy now permits it directly, its approver is still eligible
+/// and an "allow for this Run" decision's grant is still active. As
+/// [`authorize`] does for outbound reads, a decision never outlives these.
+async fn still_approved(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> Result<bool> {
+	if record.expires_at.is_none_or(|t| t <= Utc::now()) {
+		return Ok(false);
+	}
+	let Some(destination) = record.data["destination"].as_str() else {
+		return Ok(false);
+	};
+	let target = disclosure_resource(scope, destination, run.id);
+	match ordinary(scope, &target, DISCLOSE) {
+		Ok(true) => return Ok(true),
+		Ok(false) => {}
+		Err(Error::Forbidden) => return Ok(false),
+		Err(error) => return Err(error),
+	}
+	let Some(approver) = record.data["approver"].as_str() else {
+		return Ok(false);
+	};
+	if !eligible(scope, approver, &record.owner, &target) {
+		return Ok(false);
+	}
+	let Some(grant) = record.data["grant_id"].as_str() else {
+		return Ok(record.data["approval_mode"] == "allow_once");
+	};
+	let Ok(grant) = grant.parse() else {
+		return Ok(false);
+	};
+	let grant = match scope.load(grant, "grant").await {
+		Err(Error::NotFound(_)) => return Ok(false),
+		other => other?,
+	};
+	Ok(grant.state == "active"
+		&& grant.expires_at.is_some_and(|t| t > Utc::now())
+		&& grant.data["run_id"] == json!(run.id)
+		&& grant.data["targets"]
+			.as_array()
+			.is_some_and(|targets| targets.contains(&json!(destination))))
+}
+
 /// Admit one exact Web disclosure of a Run. Policy may permit it directly or
 /// through a Run grant; otherwise a designated approver decides through the
 /// ordinary approval decision, and the Run waits on the returned approval.
@@ -443,9 +486,14 @@ pub async fn disclose(
 					.checked_add(1)
 					.ok_or_else(|| Error::Conflict("DISCLOSURE_GENERATIONS_EXHAUSTED".into()))?,
 				// Consumed only once the attempt is reserved; see consume_disclosure.
+				// An expired or no longer authorized approval admits nothing.
 				"approved" => {
-					return Ok(DisclosureState::Approved {
-						approval_id: record.id,
+					return Ok(if still_approved(scope, run, &record).await? {
+						DisclosureState::Approved {
+							approval_id: record.id,
+						}
+					} else {
+						DisclosureState::Denied
 					});
 				}
 				"pending" if !expired => {
@@ -522,7 +570,8 @@ pub async fn disclose(
 }
 
 /// Consume a one-time Web disclosure approval of `run`, owned by the current
-/// principal. `false` when it is no longer an unconsumed approval.
+/// principal. `false` when it is no longer an unconsumed approval that is
+/// unexpired and still authorized; the disclosure must then not be sent.
 pub async fn consume_disclosure(
 	scope: &mut dyn ApprovalScope,
 	run: &Run,
@@ -535,6 +584,7 @@ pub async fn consume_disclosure(
 	if record.owner != scope.principal()
 		|| record.data["run_id"] != json!(run.id)
 		|| record.state != "approved"
+		|| !still_approved(scope, run, &record).await?
 	{
 		return Ok(false);
 	}

@@ -299,6 +299,75 @@ async fn a_denied_disclosure_stays_denied() {
 	);
 }
 
+/// An approved, not yet consumed disclosure whose admission is about to be
+/// revalidated.
+async fn approved(scope: &mut Fake, choice: ApprovalChoice) -> Uuid {
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	decide_as_bob(scope, approval_id, choice).await.unwrap();
+	assert_eq!(
+		disclose(scope, &run, &request()).await.unwrap(),
+		DisclosureState::Approved { approval_id }
+	);
+	approval_id
+}
+
+async fn admits_nothing(scope: &mut Fake, approval_id: Uuid) {
+	let run = scope.run.clone();
+	assert_eq!(
+		disclose(scope, &run, &request()).await.unwrap(),
+		DisclosureState::Denied
+	);
+	assert!(!consume_disclosure(scope, &run, approval_id).await.unwrap());
+	assert_eq!(scope.records[&approval_id].state, "approved");
+}
+
+#[tokio::test]
+async fn an_expired_approval_admits_nothing() {
+	let mut scope = scope(Value::Null);
+	let approval_id = approved(&mut scope, ApprovalChoice::AllowOnce).await;
+	// The worker resumes only after the approval expired.
+	scope.records.get_mut(&approval_id).unwrap().expires_at =
+		Some(Utc::now() - Duration::seconds(1));
+	admits_nothing(&mut scope, approval_id).await;
+}
+
+#[tokio::test]
+async fn an_approval_admits_nothing_once_policy_forbids_the_disclosure() {
+	let mut scope = scope(Value::Null);
+	let approval_id = approved(&mut scope, ApprovalChoice::AllowOnce).await;
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({"id":"never","effect":"deny","subjects":{"any":true},"actions":["research.disclose"],"resources":{"kinds":["research"]}}))
+			.unwrap(),
+	);
+	admits_nothing(&mut scope, approval_id).await;
+}
+
+#[tokio::test]
+async fn an_approval_admits_nothing_once_its_approver_is_ineligible() {
+	let mut scope = scope(Value::Null);
+	let approval_id = approved(&mut scope, ApprovalChoice::AllowOnce).await;
+	scope
+		.bundle
+		.policies
+		.retain(|policy| policy.id != "approve");
+	admits_nothing(&mut scope, approval_id).await;
+}
+
+#[tokio::test]
+async fn an_allow_run_approval_admits_nothing_once_its_grant_is_revoked() {
+	let mut scope = scope(Value::Null);
+	let approval_id = approved(&mut scope, ApprovalChoice::AllowRun).await;
+	let grant: Uuid =
+		serde_json::from_value(scope.records[&approval_id].data["grant_id"].clone()).unwrap();
+	scope.records.get_mut(&grant).unwrap().state = "revoked".into();
+	admits_nothing(&mut scope, approval_id).await;
+}
+
 #[tokio::test]
 async fn policy_can_permit_or_forbid_a_disclosure_without_approval() {
 	let mut permitted = scope(
