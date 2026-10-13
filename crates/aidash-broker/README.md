@@ -107,10 +107,25 @@ capability does not authorize a separate [pricing tier](https://openrouter.ai/do
 Embeddings require one string `input` within the existing 1 MiB request bound;
 batch arrays, token arrays, missing and malformed inputs are rejected before
 Key Material lookup, matching the application's single-vector contract.
-Any `cache_control` key, including nested message blocks and tool definitions,
-is rejected before Key Material lookup. Explicit
+A `cache_control` key is rejected before Key Material lookup unless the signed
+`cache_breakpoints` claim is set. Explicit
 [prompt-cache writes](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
-have separate pricing outside the signed capability.
+are priced above ordinary input, so the worker's issuer sets the claim only for a
+Run whose Agent opted in with `prompt_cache: explicit` (ADR 0019). With the claim,
+`cache_control` is accepted only as exactly `{"type":"ephemeral"}` on a
+`messages[*].content[*]` text part, at most four times across the request. That
+covers the end of the system message and the last history part of the user
+message; a message whose `content` is a plain string cannot carry one. Any other
+location (a message, an image or audio part, `tools`, `provider`, the request
+root or anything nested), any other value (a different `type`, a `ttl`, extra
+keys, `null`) and a fifth breakpoint are `403 capability_claim_violation`.
+Tokens without the claim keep their previous wire shape, and a broker that
+predates the claim reads them unchanged.
+Chat and embeddings bodies that repeat an object member name at any depth,
+including through escapes such as `cache\u005fcontrol`, are
+`403 capability_claim_violation` before Key Material lookup. Admission inspects
+a parsed value but the broker relays the original bytes, so a duplicate could
+otherwise hide an unauthorized first member from these checks.
 Message content supports text, inline base64 image data URLs and base64
 `input_audio`. Remote URLs and unsupported media content types are rejected
 before Key Material lookup. MIME/format and file signatures use the domain's

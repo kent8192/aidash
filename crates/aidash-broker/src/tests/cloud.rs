@@ -288,6 +288,7 @@ impl Cloud {
 			model: "author/model".into(),
 			operations: vec![operation],
 			max_output_tokens: 10,
+			cache_breakpoints: false,
 		});
 		context
 	}
