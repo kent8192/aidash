@@ -860,11 +860,12 @@ def migrate(cluster, identity, sha):
 
 
 # A table owned by another role predates the owner and server roles: the
-# migration Job could not change it and the server could not read it.
+# migration Job could not change it and the server could not read it. This
+# holds even before the owner role exists, so ownership is matched by name.
 LEGACY_OWNERSHIP_SQL = (
     "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
     " WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')"
-    f" AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = '{OWNER_ROLE}')"
+    f" AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.oid = c.relowner AND r.rolname = '{OWNER_ROLE}')"
     " AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass"
     " AND d.objid = c.oid AND d.deptype = 'e'));"
 )
