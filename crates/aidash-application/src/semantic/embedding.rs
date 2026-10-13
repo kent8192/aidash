@@ -26,19 +26,23 @@ pub async fn invoke(
 	origin: Origin,
 ) -> Result<Vec<f32>> {
 	let reservation = scope.reserve(workspace, config, text, origin).await?;
-	let output = provider.embed(config, text).await.map_err(|error| {
-		// Tenant access failures are admission/state failures, never a retryable
-		// provider outage. Preserve them without changing self-hosted diagnostics.
-		if config.provider_credential.is_some()
-			&& matches!(
-				error,
-				Error::Invalid(_) | Error::NotFound(_) | Error::Forbidden | Error::Conflict(_)
-			) {
-			error
-		} else {
-			Error::SemanticUnavailable
-		}
-	})?;
+	let output = provider
+		.embed(config, text)
+		.await
+		.map_err(|error| match error {
+			// A rejected key (401–403) or a broken response contract is not an
+			// outage: keep its typed reason so the Run pauses instead of retrying.
+			Error::RemoteSemantic(reason) if !reason.transient() => error,
+			// Tenant access failures are admission/state failures, never a retryable
+			// provider outage. Preserve them without changing self-hosted diagnostics.
+			Error::Invalid(_) | Error::NotFound(_) | Error::Forbidden | Error::Conflict(_)
+				if config.provider_credential.is_some() =>
+			{
+				error
+			}
+			// Transport failures, timeouts and 408/429/5xx are a transient outage.
+			_ => Error::SemanticUnavailable,
+		})?;
 	if let Some(reservation) = reservation {
 		reservation.settle(output.tokens).await?;
 	}

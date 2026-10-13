@@ -2093,7 +2093,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 	p.close().await;
 }
 
-/// Issue #154, current contract for a required-Home Run: unlike a local Run,
+/// Issue #154, contract for a required-Home Run: like a local Run (#233),
 /// an unavailable Home embedding provider or vector backend is a typed, transient
 /// `unavailable` semantic failure. The step retries with a persisted delay and
 /// never reaches inference. `semantic_retry_exhaustion_pauses_and_manual_resume_

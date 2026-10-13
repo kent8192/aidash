@@ -136,3 +136,34 @@ fn stalled_streams_retry_like_provider_transport_timeouts() {
 		aidash_application::Error::InferenceStalled
 	));
 }
+
+/// Issue #233: a local semantic outage is the same typed transient failure as a
+/// Home one; a rejected key or a contract violation keeps its own reason.
+#[rstest]
+#[case(
+	Error::SemanticUnavailable,
+	crate::semantic::remote::Failure::Unavailable
+)]
+#[case(
+	Error::RemoteSemantic(crate::semantic::remote::Failure::Configuration),
+	crate::semantic::remote::Failure::Configuration
+)]
+#[case(
+	Error::RemoteSemantic(crate::semantic::remote::Failure::ProviderContract),
+	crate::semantic::remote::Failure::ProviderContract
+)]
+fn semantic_failures_keep_a_typed_reason_for_local_and_home_runs(
+	#[case] error: Error,
+	#[case] expected: crate::semantic::remote::Failure,
+) {
+	// Act
+	let failure = crate::apps::execution::repositories::worker::classify_failure(&error);
+	// Assert
+	assert!(
+		matches!(
+			failure,
+			aidash_application::recovery::ExecutionFailure::Semantic(reason) if reason == expected
+		),
+		"{failure:?}"
+	);
+}

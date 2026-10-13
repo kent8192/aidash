@@ -70,7 +70,7 @@ impl SemanticEmbeddingScope for Scope {
 struct Provider {
 	calls: Calls,
 	reported: Option<u64>,
-	fails: bool,
+	failure: Option<fn() -> Error>,
 }
 #[async_trait]
 impl EmbeddingProvider for Provider {
@@ -78,8 +78,8 @@ impl EmbeddingProvider for Provider {
 		self.calls.lock().unwrap().push("provider");
 		assert_eq!(*config, configuration());
 		assert_eq!(text, "query");
-		if self.fails {
-			Err(Error::External("sensitive provider diagnostic".into()))
+		if let Some(failure) = self.failure {
+			Err(failure())
 		} else {
 			Ok(Embedding {
 				vector: vec![0.25, 0.75],
@@ -102,7 +102,7 @@ fn fixture() -> (Calls, Scope, Provider) {
 		Provider {
 			calls,
 			reported: Some(1),
-			fails: false,
+			failure: None,
 		},
 	)
 }
@@ -167,10 +167,14 @@ async fn refused_allowance_stops_before_provider_effects() {
 	assert!(scope.reported.lock().unwrap().is_empty());
 }
 #[rstest]
+#[case::transport(|| Error::External("sensitive provider diagnostic".into()))]
+#[case::provider_status(|| Error::RemoteSemantic(aidash_domain::semantic::Failure::Unavailable))]
 #[tokio::test]
-async fn provider_failure_keeps_conservative_charge_and_hides_provider_details() {
+async fn provider_outage_keeps_conservative_charge_and_hides_provider_details(
+	#[case] failure: fn() -> Error,
+) {
 	let (calls, mut scope, mut provider) = fixture();
-	provider.fails = true;
+	provider.failure = Some(failure);
 	let error = invoke(
 		&mut scope,
 		&provider,
@@ -185,6 +189,41 @@ async fn provider_failure_keeps_conservative_charge_and_hides_provider_details()
 	assert_eq!(
 		error.to_string(),
 		"semantic backend unavailable or invalid; inspect index status and retry"
+	);
+	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
+	assert!(scope.reported.lock().unwrap().is_empty());
+}
+/// A rejected key or a broken response contract is not an outage, so it must
+/// not become the transient `SemanticUnavailable` that a Run retries.
+#[rstest]
+#[case::key_rejected(
+	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::Configuration),
+	aidash_domain::semantic::Failure::Configuration
+)]
+#[case::provider_contract(
+	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::ProviderContract),
+	aidash_domain::semantic::Failure::ProviderContract
+)]
+#[tokio::test]
+async fn provider_rejection_and_contract_violation_keep_their_typed_reason(
+	#[case] failure: fn() -> Error,
+	#[case] reason: aidash_domain::semantic::Failure,
+) {
+	let (calls, mut scope, mut provider) = fixture();
+	provider.failure = Some(failure);
+	let error = invoke(
+		&mut scope,
+		&provider,
+		Uuid::from_u128(1),
+		&configuration(),
+		"query",
+		Origin::Query(Some(Uuid::from_u128(2))),
+	)
+	.await
+	.unwrap_err();
+	assert!(
+		matches!(error, Error::RemoteSemantic(actual) if actual == reason),
+		"{error:?}"
 	);
 	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
 	assert!(scope.reported.lock().unwrap().is_empty());

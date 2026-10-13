@@ -250,6 +250,10 @@ impl FailureScope for Failure {
 pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 	match error {
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
+		// A local embedding or vector outage retries and pauses like a Home one.
+		NativeError::SemanticUnavailable => {
+			ExecutionFailure::Semantic(crate::semantic::remote::Failure::Unavailable)
+		}
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
 		// The harness owns bounded compact-and-retry; an overflow that escapes
 		// it has exhausted recovery and must pause rather than transport-retry.

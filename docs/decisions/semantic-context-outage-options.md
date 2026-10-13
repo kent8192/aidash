@@ -8,7 +8,7 @@ Adopted: **option 1 (degrade with an explicit marker), narrowed**: only optional
 
 ## 1. What happens today
 
-Established by running the new tests against `develop/0.1.0`, not by reading code alone. "Step" is one `worker_once` of the Harness.
+Established by running the new tests against `develop/0.1.0`, not by reading code alone. "Step" is one `worker_once` of the Harness. The local column records the behavior before [#233](https://github.com/kent8192/aidash/issues/233); see section 7 for the current behavior.
 
 | Cause during a step                                    | Local Run (`auto_context` on)                                                                                                                                                                                                                                                                                  | Required-Home remote Run                                                                                                                                                                                                           |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,7 +19,7 @@ Established by running the new tests against `develop/0.1.0`, not by reading cod
 
 Evidence:
 
-- Local: `local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavailable` (four cases) in `server/src/apps/knowledge/tests/semantic.rs`.
+- Local: `local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavailable` (four cases) in `server/src/apps/knowledge/tests/semantic.rs`, renamed and flipped by #233 (section 7).
 - Required-Home: `semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_history` (existing, 503) and `required_home_semantic_outage_is_a_typed_transient_failure_for_every_cause` (new, refused connection and missing points) in `server/src/apps/identity/tests/scoped_remote_execution.rs`.
 
 ### Why the two paths differ
@@ -128,3 +128,9 @@ Filed after the decision: item 1 → [#233](https://github.com/kent8192/aidash/i
 - Option 1, narrowed as in section 4, is adopted.
 - `degrade` stays opt-in per source: `on_unavailable: pause | degrade`, default `pause`.
 - The local path retries like required-Home before degrading: five retries, six failed attempts in total.
+
+## 7. Local Run behavior since #233
+
+- `classify_failure` maps a local `SemanticUnavailable` (provider transport failure, timeout, HTTP 408/429/5xx, missing vector points) to the transient `unavailable` semantic failure. A local Run retries after 2, 4, 8, 16 and 32 s, then pauses with `retries_exhausted`; manual resume continues the Run. Its Task is not failed.
+- `embedding::invoke` no longer collapses an upstream key rejection (HTTP 401–403, `configuration`) or a contract violation (`provider_contract`) into `SemanticUnavailable`. Both pause the Run at once with their typed reason and are not retried.
+- Evidence: `local_auto_context_semantic_outage_is_a_typed_transient_failure_for_every_cause` (four causes), `local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_provider_recovers` and `local_semantic_key_rejection_and_contract_violation_pause_without_retry` in `server/src/apps/knowledge/tests/semantic.rs`.
