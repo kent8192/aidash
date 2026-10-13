@@ -31,6 +31,13 @@ pub trait GenerationProtocolLease: GenerationProtocolReservation {
 	/// no source it consumed was changed or revoked (`Invalidated`): the same
 	/// conditions under which `grants/describe` refuses the grant.
 	async fn semantic_sources_current(&mut self, grant: Uuid) -> Result<()>;
+	/// This node's journal record of one semantic operation, if it has one,
+	/// read through this lease's own connection.
+	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>>;
+	/// The current corpus digest of this lease's Description Workspace,
+	/// computed as for the Home's remote semantic retrievals and read through
+	/// this lease's own connection.
+	async fn corpus_digest(&mut self) -> Result<String>;
 	async fn finish_verification(self: Box<Self>, result: Result<bool>) -> Result<bool>;
 }
 
@@ -48,9 +55,6 @@ pub trait GenerationProtocolAuthority: Send + Sync {
 	async fn worker(&self, run: &Run) -> Result<Option<Box<dyn GenerationProtocolReservation>>>;
 	async fn verify_semantic(&self, description: &Description, operation: &Operation)
 	-> Result<()>;
-	/// The current corpus digest of the Description's Workspace, computed as for
-	/// the Home's remote semantic retrievals.
-	async fn corpus_digest(&self, description: &Description) -> Result<String>;
 	async fn verify_peer(&self, source: &str, input: &Input) -> Result<bool>;
 	async fn reserve_peer(&self, home: &str, input: &Input) -> Result<Vec<Reserved>>;
 }
@@ -62,6 +66,4 @@ pub trait GenerationProtocolRepository: Send + Sync {
 	async fn run(&self, admission: Uuid) -> Result<Run>;
 	/// Preserve the existing admission, grant, READY state and exact step predicate.
 	async fn semantic_ready(&self, admission: Uuid, grant: Uuid, step: i32) -> Result<bool>;
-	/// This node's journal record of one semantic operation, if it has one.
-	async fn semantic_operation(&self, id: Uuid) -> Result<Option<CitedOperation>>;
 }

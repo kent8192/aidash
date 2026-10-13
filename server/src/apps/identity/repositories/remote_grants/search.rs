@@ -104,7 +104,7 @@ impl SemanticSearchRepository for Repository<'_> {
 	}
 	async fn corpus_digest(&self, description: &Description) -> Result<String> {
 		crate::semantic::services::memory_context::remote_corpus_digest(
-			&self.runtime.store,
+			&self.runtime.store.pool,
 			description,
 		)
 		.await

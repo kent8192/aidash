@@ -15,7 +15,6 @@ pub(crate) async fn reserve(
 	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 	protocol::reserve(
 		&crate::bootstrap::generation_protocol_authority(&f),
-		&crate::bootstrap::generation_protocol_repository(&f.store),
 		source,
 		input,
 	)

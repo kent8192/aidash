@@ -345,6 +345,15 @@ impl GenerationProtocolLease for Lease {
 			_ => Ok(()),
 		}
 	}
+	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>> {
+		self.world.point("semantic.operation").await?;
+		let state = self.world.0.lock().unwrap();
+		Ok(state.cited.clone().filter(|_| id == CITED))
+	}
+	async fn corpus_digest(&mut self) -> Result<String> {
+		self.world.point("corpus").await?;
+		Ok(self.world.0.lock().unwrap().corpus.clone())
+	}
 	async fn finish_verification(mut self: Box<Self>, result: Result<bool>) -> Result<bool> {
 		self.finish(result).await
 	}
@@ -390,14 +399,6 @@ impl GenerationProtocolAuthority for World {
 		assert_eq!(operation.query, "日本");
 		self.point("semantic.verify").await
 	}
-	async fn corpus_digest(&self, description: &Description) -> Result<String> {
-		assert_eq!(
-			description.grant_id,
-			self.0.lock().unwrap().description.grant_id
-		);
-		self.point("corpus").await?;
-		Ok(self.0.lock().unwrap().corpus.clone())
-	}
 	async fn verify_peer(&self, _: &str, input: &Input) -> Result<bool> {
 		assert_eq!(input.usage.purpose, Purpose::Inference);
 		self.point("peer.verify").await?;
@@ -442,11 +443,6 @@ impl GenerationProtocolRepository for World {
 			(state.run.id, state.description.grant_id, state.run.step)
 		);
 		Ok(state.ready)
-	}
-	async fn semantic_operation(&self, id: Uuid) -> Result<Option<CitedOperation>> {
-		self.point("semantic.operation").await?;
-		let state = self.0.lock().unwrap();
-		Ok(state.cited.clone().filter(|_| id == CITED))
 	}
 }
 struct Preparation {
@@ -681,9 +677,7 @@ fn semantic_provider_must_match_every_pin_and_dispatcher(world: World, #[case] p
 #[tokio::test]
 async fn inference_reservation_verifies_the_peer_before_any_local_charge(world: World) {
 	let input = world.input();
-	let receipts = reserve(&world, &world, "aidash://executor", input)
-		.await
-		.unwrap();
+	let receipts = reserve(&world, "aidash://executor", input).await.unwrap();
 	assert_eq!(receipts.len(), 1);
 	assert_eq!(
 		world.events(),
@@ -703,9 +697,7 @@ async fn inference_reservation_verifies_the_peer_before_any_local_charge(world: 
 async fn embedding_reservation_verifies_the_exact_utf8_body_without_a_callback(world: World) {
 	let input = world.embedding_input();
 	assert_eq!(input.usage.reserved_tokens, 1030);
-	reserve(&world, &world, "aidash://home", input)
-		.await
-		.unwrap();
+	reserve(&world, "aidash://home", input).await.unwrap();
 	assert_eq!(
 		world.events(),
 		["leaf", "semantic.verify", "local.reserve", "lease.finish"]
@@ -734,7 +726,7 @@ async fn embedding_body_mismatch_rolls_back_before_local_charge(world: World, #[
 		input.usage.input_digest = aidash_domain::registry::rules::digest(&input.boundary);
 	}
 	assert!(matches!(
-		reserve(&world, &world, "aidash://home", input).await,
+		reserve(&world, "aidash://home", input).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(world.events(), ["leaf", "lease.finish"]);
@@ -755,7 +747,7 @@ async fn rejected_binding_or_peer_never_charges(world: World, #[case] rejected: 
 		}
 	}
 	assert!(matches!(
-		reserve(&world, &world, "aidash://executor", world.input()).await,
+		reserve(&world, "aidash://executor", world.input()).await,
 		Err(Error::Forbidden)
 	));
 	let state = world.0.lock().unwrap();
@@ -774,7 +766,7 @@ async fn reservation_failures_preserve_adapter_errors_and_no_charge(
 ) {
 	world.0.lock().unwrap().failure = Some(failed);
 	assert!(
-		matches!(reserve(&world, &world, "aidash://executor", world.input()).await,
+		matches!(reserve(&world, "aidash://executor", world.input()).await,
         Err(Error::External(message)) if message == format!("{failed} failed"))
 	);
 	let state = world.0.lock().unwrap();
@@ -784,7 +776,7 @@ async fn reservation_failures_preserve_adapter_errors_and_no_charge(
 #[tokio::test]
 async fn wrong_authenticated_dispatcher_is_rejected_before_authority_lookup(world: World) {
 	assert!(matches!(
-		reserve(&world, &world, "aidash://other", world.input()).await,
+		reserve(&world, "aidash://other", world.input()).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(world.events(), Vec::<String>::new());
@@ -796,7 +788,7 @@ async fn cancellation_rolls_back_the_owned_lease(world: World) {
 	assert!(
 		tokio::time::timeout(
 			std::time::Duration::from_millis(10),
-			reserve(&world, &world, "aidash://executor", world.input())
+			reserve(&world, "aidash://executor", world.input())
 		)
 		.await
 		.is_err()
@@ -1099,9 +1091,7 @@ async fn a_step_with_its_own_ready_retrieval_cites_nothing(world: World) {
 #[tokio::test]
 async fn the_home_admits_a_current_citation_before_verifying_the_peer(world: World) {
 	let input = reuse_input(&world);
-	reserve(&world, &world, "aidash://executor", input)
-		.await
-		.unwrap();
+	reserve(&world, "aidash://executor", input).await.unwrap();
 	assert_eq!(
 		world.events(),
 		[
@@ -1132,7 +1122,7 @@ async fn the_home_refuses_a_foreign_citation_or_revoked_grant(
 	change(&mut world.0.lock().unwrap());
 	let input = reuse_input(&world);
 	assert!(matches!(
-		reserve(&world, &world, "aidash://executor", input).await,
+		reserve(&world, "aidash://executor", input).await,
 		Err(Error::Forbidden)
 	));
 	assert_refused_before_the_peer(&world);
@@ -1156,7 +1146,7 @@ async fn the_home_sends_changed_sources_to_invalidation_and_a_changed_corpus_to_
 	change(&mut world.0.lock().unwrap());
 	let input = reuse_input(&world);
 	assert!(matches!(
-		reserve(&world, &world, "aidash://executor", input).await,
+		reserve(&world, "aidash://executor", input).await,
 		Err(Error::RemoteSemantic(reason)) if reason == expected
 	));
 	assert_refused_before_the_peer(&world);

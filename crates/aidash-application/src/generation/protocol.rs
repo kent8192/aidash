@@ -161,12 +161,11 @@ fn refused(refusal: Refusal) -> Error {
 	}
 }
 
-/// A cited operation from this node's journal; an unknown one is foreign.
-async fn cited(repository: &dyn GenerationProtocolRepository, id: Uuid) -> Result<CitedOperation> {
-	repository
-		.semantic_operation(id)
-		.await?
-		.ok_or(Error::Forbidden)
+/// A cited operation from this node's journal, read under the held lease (a
+/// second pool connection could deadlock against concurrent leases); an
+/// unknown one is foreign.
+async fn cited(lease: &mut dyn GenerationProtocolLease, id: Uuid) -> Result<CitedOperation> {
+	lease.semantic_operation(id).await?.ok_or(Error::Forbidden)
 }
 
 /// The Home accepts a remote Ordered reuse step's citation only if every
@@ -181,28 +180,25 @@ async fn cited(repository: &dyn GenerationProtocolRepository, id: Uuid) -> Resul
 /// The Home sees only the step the executing peer claims; that peer's own
 /// `verify` pins it to the Run's actual step before the Home admits usage.
 async fn accept_reuse(
-	authority: &dyn GenerationProtocolAuthority,
-	repository: &dyn GenerationProtocolRepository,
 	lease: &mut dyn GenerationProtocolLease,
 	usage: &Usage,
 	boundary: StepBoundary,
 	operation: Uuid,
 ) -> Result<()> {
-	let operation = cited(repository, operation).await?;
+	let operation = cited(lease, operation).await?;
 	operation
 		.authorizes(usage.admission_id, usage.grant_id, boundary.step)
 		.map_err(refused)?;
 	// Checked before the digest: editing a consumed source also changes the
 	// corpus, and that edit must reach the follow-up Task path, not a retry.
 	lease.semantic_sources_current(usage.grant_id).await?;
-	let current = authority.corpus_digest(lease.description()).await?;
+	let current = lease.corpus_digest().await?;
 	operation.current(&current).map_err(refused)
 }
 
 /// The adapter authenticates the peer before passing its node identity here.
 pub async fn reserve(
 	authority: &dyn GenerationProtocolAuthority,
-	repository: &dyn GenerationProtocolRepository,
 	source: &str,
 	input: Input,
 ) -> Result<Vec<Reserved>> {
@@ -243,15 +239,7 @@ pub async fn reserve(
 			let boundary: StepBoundary =
 				serde_json::from_value(input.boundary.clone()).map_err(|_| Error::Forbidden)?;
 			if let Some(operation) = boundary.reuses {
-				accept_reuse(
-					authority,
-					repository,
-					lease.as_mut(),
-					&input.usage,
-					boundary,
-					operation,
-				)
-				.await?;
+				accept_reuse(lease.as_mut(), &input.usage, boundary, operation).await?;
 			}
 			if !authority.verify_peer(source, &input).await? {
 				return Err(Error::Forbidden);
@@ -275,7 +263,7 @@ pub async fn verify(
 	{
 		return Err(Error::Forbidden);
 	}
-	let lease = authority
+	let mut lease = authority
 		.leaf(source, input.usage.grant_id, input.usage.admission_id)
 		.await?;
 	let description = lease.description().clone();
@@ -295,7 +283,7 @@ pub async fn verify(
 			// A retrieval-reuse step: the record bound above shows that this node
 			// cited the operation itself; its journal must hold it READY for this
 			// Run and grant at or before the Run's actual step.
-			Some(operation) => cited(repository, operation)
+			Some(operation) => cited(lease.as_mut(), operation)
 				.await?
 				.authorizes(run.id, input.usage.grant_id, run.step)
 				.map_err(refused)?,

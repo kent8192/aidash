@@ -19,6 +19,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, SimpleExpr};
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -62,33 +63,6 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
                 .to_string(PostgresQueryBuilder)).scalar_one(&self.store.pool).await?
 		};
 		Ok(ready)
-	}
-	async fn semantic_operation(&self, id: Uuid) -> Result<Option<CitedOperation>> {
-		const COLUMNS: [&str; 5] = ["admission_id", "grant_id", "state", "step", "corpus_digest"];
-		let row = crate::database::native::query_as::<(Uuid, Uuid, String, i32, Option<String>)>(
-			&Query::select()
-				.columns(["admission_id", "grant_id", "state"].map(Alias::new))
-				.expr_as(
-					Expr::cust("(binding->'operation'->'boundary'->>'step')::integer"),
-					Alias::new("step"),
-				)
-				.column(Alias::new("corpus_digest"))
-				.from(Alias::new("semantic_remote_operations"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.columns(&COLUMNS)
-		.fetch_optional(&self.store.pool)
-		.await?;
-		Ok(row.map(
-			|(admission_id, grant_id, state, step, corpus_digest)| CitedOperation {
-				admission_id,
-				grant_id,
-				ready: state == "READY",
-				step,
-				corpus_digest,
-			},
-		))
 	}
 }
 
@@ -156,6 +130,46 @@ impl GenerationProtocolLease for Lease {
 			.remote_semantic_sources(grant)
 			.await
 			.map_err(Into::into)
+	}
+	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>> {
+		const COLUMNS: [&str; 5] = [
+			"admission_id",
+			"grant_id",
+			"state",
+			"binding",
+			"corpus_digest",
+		];
+		let row = crate::database::native::query_as::<(Uuid, Uuid, String, Value, Option<String>)>(
+			&Query::select()
+				.columns(COLUMNS.map(Alias::new))
+				.from(Alias::new("semantic_remote_operations"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&COLUMNS)
+		.fetch_optional(&mut **self.reservation.access.tx)
+		.await?;
+		let Some((admission_id, grant_id, state, binding, corpus_digest)) = row else {
+			return Ok(None);
+		};
+		// The journal binds `{"operation":…,"semantic":…}`; the operation's
+		// boundary holds the step it was retrieved at.
+		let operation = Operation::deserialize(&binding["operation"])?;
+		Ok(Some(CitedOperation {
+			admission_id,
+			grant_id,
+			ready: state == "READY",
+			step: operation.boundary.step,
+			corpus_digest,
+		}))
+	}
+	async fn corpus_digest(&mut self) -> Result<String> {
+		crate::semantic::services::memory_context::remote_corpus_digest(
+			self.reservation.access.tx.as_mut(),
+			&self.description,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn finish_verification(self: Box<Self>, result: Result<bool>) -> Result<bool> {
 		self.reservation
@@ -225,14 +239,6 @@ impl GenerationProtocolAuthority for NativeProtocolAuthority {
 		crate::authorization::peer::semantic::verify_in(&self.federation, description, operation)
 			.await
 			.map_err(Into::into)
-	}
-	async fn corpus_digest(&self, description: &Description) -> Result<String> {
-		crate::semantic::services::memory_context::remote_corpus_digest(
-			&self.federation.store,
-			description,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn verify_peer(&self, source: &str, input: &Input) -> Result<bool> {
 		crate::authorization::peer::authority_request(
