@@ -113,11 +113,18 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/nginx/conf.d/aidash.conf, subPath: admission.conf, readOnly: true }
             - { name: admission-state, mountPath: /etc/aidash-admission, readOnly: true }
+            - { name: activity-state, mountPath: /var/lib/aidash-activity }
       volumes:
         - { name: config, configMap: { name: {{ $name }}-edge } }
         # Desired admission, owned by the lifecycle controller and never rendered
         # here, so an upgrade cannot reset it. Absent or not `open` = closed.
         - { name: admission-state, configMap: { name: {{ $name }}-admission, optional: true } }
+        # Last meaningful request, kept across restarts of the admission container
+        # (not of the Pod) so a restart before the collector's next sample cannot
+        # shorten the idle interval. One small file, so the limit is tiny. The
+        # kubelet creates every emptyDir with mode 0777, so the unprivileged
+        # (www-data) Nginx workers can write it without an fsGroup.
+        - { name: activity-state, emptyDir: { sizeLimit: 1Mi } }
         {{- if $edge.tlsSecret }}
         - name: preview-tls
           secret:

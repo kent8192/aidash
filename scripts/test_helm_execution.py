@@ -1,7 +1,9 @@
 """Chart contract tests for scheduling, privileges and retained single writers."""
 import importlib.util
+import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -106,7 +108,9 @@ class ChartsTest(unittest.TestCase):
         self.assertIn({'podSelector': {'matchLabels': {'app.kubernetes.io/instance': 'app', 'app.kubernetes.io/component': 'frontend'}}},
                       policy['ingress'][0]['from'])
         defaults = render(self.aidash, self.base, 'app')
-        self.assertFalse(any(value['kind'] == 'NetworkPolicy' for value in defaults))
+        # Only the metadata-server egress policy is on by default; backend ingress is opt-in.
+        self.assertEqual([value['metadata']['name'] for value in defaults if value['kind'] == 'NetworkPolicy'],
+                         ['app-aidash-metadata-egress'])
         self.assertEqual(select(defaults, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]['image'], 'aidash:0.1.0')
         self.assertNotIn('annotations', select(defaults, 'Deployment', '-aidash-server')['metadata'])
         self.assertEqual(select(defaults, 'Deployment', '-frontend')['spec']['replicas'], 1)
@@ -559,7 +563,17 @@ class ChartsTest(unittest.TestCase):
                       admission['volumeMounts'])
         caddy = next(container for container in pod['containers'] if container['name'] == 'caddy')
         self.assertNotIn('admission-state', [mount['name'] for mount in caddy['volumeMounts']])
+        # The last meaningful request survives an admission-container restart on a small
+        # emptyDir that only the admission container (not Caddy) can write.
+        persisted = next(volume for volume in pod['volumes'] if volume['name'] == 'activity-state')
+        self.assertEqual(persisted['emptyDir'], {'sizeLimit': '1Mi'})
+        self.assertIn({'name': 'activity-state', 'mountPath': '/var/lib/aidash-activity'}, admission['volumeMounts'])
+        self.assertNotIn('activity-state', [mount['name'] for mount in caddy['volumeMounts']])
         conf = select(named, 'ConfigMap', '-edge')['data']['admission.conf']
+        # One stamp file, restored at start and replaced only by the serialized fold.
+        self.assertEqual(conf.count('/var/lib/aidash-activity/last_active'), 1)
+        self.assertEqual(conf.count('require("aidash_activity").persist()'), 2)
+        self.assertEqual(conf.count('os.rename('), 1)
         self.assertIn('io.open("/etc/aidash-admission/state", "r")', conf)
         self.assertIn('ngx.shared.aidash_activity:set("closed", not open)', conf)
         job = select(objects, 'CronJob', '-activity')['spec']
@@ -696,6 +710,151 @@ class ChartsTest(unittest.TestCase):
                 self.assertEqual((root / 'snapshot/database.json').exists(), published)
 
 
+class MetadataServerEgressTest(unittest.TestCase):
+    """The GKE metadata server (169.254.169.254) is reachable only from server and worker."""
+    # The metadata server and the address gke-metadata-server DNATs it to (169.254.169.252:988):
+    # Dataplane V2 enforces policy before the DNAT, Calico after it, so both must be blocked.
+    metadata = tuple(ipaddress.ip_address(address) for address in ('169.254.169.254', '169.254.169.252'))
+    workloads = ('-aidash-server', '-aidash-worker', '-frontend', '-execution-runner', '-installer', '-guard',
+                 '-environment-postgres', '-environment-nats', '-environment-edge', '-environment-activity')
+    allowlist = frozenset({'server', 'worker'})
+    label = 'aidash.run/metadata-server'
+    aidash = ChartsTest.aidash
+    environment = ChartsTest.environment
+
+    @staticmethod
+    def pod_templates(objects, namespace='environment'):
+        """Yields (kind, name, namespace, pod template) for every workload that creates Pods."""
+        for value in objects:
+            spec = value.get('spec', {})
+            if value['kind'] in ('Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'ReplicaSet'):
+                template = spec['template']
+            elif value['kind'] == 'CronJob':
+                template = spec['jobTemplate']['spec']['template']
+            elif value['kind'] == 'Pod':
+                template = value
+            else:
+                continue
+            yield value['kind'], value['metadata']['name'], value['metadata'].get('namespace', namespace), template
+
+    @staticmethod
+    def selects(selector, labels):
+        """Kubernetes label selector semantics, including that NotIn/DoesNotExist match absent keys."""
+        if any(labels.get(key) != value for key, value in selector.get('matchLabels', {}).items()):
+            return False
+        for expression in selector.get('matchExpressions', []):
+            key, operator, values = expression['key'], expression['operator'], expression.get('values', [])
+            present = key in labels
+            if not {'In': present and labels[key] in values, 'NotIn': not present or labels[key] not in values,
+                    'Exists': present, 'DoesNotExist': not present}[operator]:
+                return False
+        return True
+
+    def everything(self):
+        digest = '@sha256:' + 'b' * 64
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + digest, 'runtimeClass': {'create': True},
+                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'runner' + digest},
+                     'guard': {'enabled': True, 'image': 'guard' + digest},
+                     'installer': {'enabled': True, 'image': 'installer' + digest}}
+        application = render(self.aidash, dict(ChartsTest.base, execution=execution,
+                                               memoryRecovery={'existingClaim': 'ledger'},
+                                               environment={'nodeSelector': {'pool': 'execution'}}))
+        dependencies = render(self.environment, {
+            'postgres': POSTGRES, 'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + digest},
+            'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + digest,
+                         'collectorImage': 'collector' + digest}})
+        return application, dependencies
+
+    def test_policy_selects_every_workload_except_server_and_worker(self):
+        application, dependencies = self.everything()
+        objects = application + dependencies
+        policies = [(value['metadata'].get('namespace', 'environment'), value['spec'])
+                    for value in objects if value['kind'] == 'NetworkPolicy' and 'metadata-egress' in value['metadata']['name']]
+        # One in the release namespace per chart, plus the guard and installer namespaces.
+        self.assertEqual(sorted(namespace for namespace, _ in policies),
+                         ['environment', 'environment', 'fixture-guard', 'fixture-installer'])
+        seen = set()
+        for kind, name, namespace, template in self.pod_templates(objects):
+            labels = template['metadata'].get('labels', {})
+            covered = any(policy_namespace == namespace and self.selects(spec['podSelector'], labels)
+                          for policy_namespace, spec in policies)
+            # The allowlist is named by workload, not read back from the labels under test.
+            allowed = kind == 'Deployment' and re.search(r'-aidash-(server|worker)$', name) is not None
+            with self.subTest(workload=f'{kind}/{name}'):
+                self.assertEqual(covered, not allowed)
+            seen.add((kind, name))
+        # Every Pod kind of both charts took part: the check cannot pass vacuously.
+        for expected in self.workloads:
+            self.assertTrue(any(name.endswith(expected) for _, name in seen), expected)
+        self.assertEqual({name.rsplit('-aidash-', 1)[1] for _, name in seen if name.endswith(('-aidash-server', '-aidash-worker'))},
+                         self.allowlist)
+
+    def test_policy_denies_only_the_metadata_server_and_nothing_else_grants_egress(self):
+        application, dependencies = self.everything()
+        for value in application + dependencies:
+            if value['kind'] != 'NetworkPolicy':
+                continue
+            spec = value['spec']
+            if 'metadata-egress' not in value['metadata']['name']:
+                # Egress rules are additive: any other policy allowing egress would re-open the address.
+                self.assertNotIn('Egress', spec['policyTypes'], value['metadata']['name'])
+                continue
+            self.assertEqual(spec['policyTypes'], ['Egress'])
+            reachable = set()
+            for rule in spec['egress']:
+                self.assertTrue(rule.get('to'), 'a rule without "to" allows every destination')
+                for peer in rule['to']:
+                    if 'ipBlock' not in peer:
+                        # Pod selectors only name in-cluster Pods, never the metadata server.
+                        self.assertEqual(peer, {'namespaceSelector': {}})
+                        continue
+                    block = peer['ipBlock']
+                    excepted = [ipaddress.ip_network(cidr) for cidr in block.get('except', [])]
+                    reachable |= {str(address) for address in self.metadata
+                                  if address in ipaddress.ip_network(block['cidr']) and not any(address in n for n in excepted)}
+            self.assertEqual(reachable, set(), value['metadata']['name'])
+
+    def test_both_charts_render_the_same_policy_spec(self):
+        application, dependencies = self.everything()
+        specs = [next(value['spec'] for value in objects if value['kind'] == 'NetworkPolicy'
+                      and value['metadata']['name'].endswith('-metadata-egress') and 'namespace' not in value['metadata'])
+                 for objects in (application, dependencies)]
+        # The two charts keep separate copies of the template so each installs on its own.
+        self.assertEqual(specs[0], specs[1])
+
+    def test_server_and_worker_keep_the_allowlist_label_without_the_policy(self):
+        objects = render(self.aidash, dict(ChartsTest.base, metadataServerEgress={'enabled': False}))
+        self.assertEqual([value for value in objects if value['kind'] == 'NetworkPolicy'], [])
+        for role in ('server', 'worker'):
+            labels = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['metadata']['labels']
+            self.assertEqual(labels[self.label], 'allowed')
+        environment = render(self.environment, {
+            'metadataServerEgress': {'enabled': False}, 'postgres': POSTGRES,
+            'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission@sha256:' + 'b' * 64},
+            'activity': {'enabled': False}})
+        self.assertFalse(any('metadata-egress' in value['metadata']['name'] for value in environment))
+
+    def test_no_aidash_pod_uses_the_host_network(self):
+        application, dependencies = self.everything()
+        seen = []
+        for kind, name, _, template in self.pod_templates(application + dependencies):
+            with self.subTest(workload=f'{kind}/{name}'):
+                # Explicit false: a Pod on the node's network namespace bypasses every NetworkPolicy
+                # and the Workload Identity metadata server, receiving the node's identity.
+                self.assertIs(template['spec'].get('hostNetwork'), False)
+            seen.append(name)
+        # Every workload of both charts was checked: the loop cannot pass vacuously.
+        for expected in self.workloads:
+            self.assertTrue(any(name.endswith(expected) for name in seen), expected)
+
+    def test_selector_semantics_match_kubernetes(self):
+        selector = {'matchExpressions': [{'key': self.label, 'operator': 'DoesNotExist'}]}
+        self.assertTrue(self.selects(selector, {}))
+        self.assertTrue(self.selects(selector, {'app.kubernetes.io/component': 'edge'}))
+        self.assertFalse(self.selects(selector, {self.label: 'allowed'}))
+        self.assertFalse(self.selects(selector, {self.label: ''}))
+
+
 class ActivityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -703,10 +862,14 @@ class ActivityTest(unittest.TestCase):
         cls.activity = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.activity)
 
+    def summary(self, receipts):
+        # Stand-in for the observer: a fixed-size count and digest of the receipt IDs.
+        return {'completed_transfers_count': len(receipts), 'completed_transfers_digest': self.activity.digest(receipts)}
+
     def combine(self, previous, counts=None, transfers=None, completion=0):
         return self.activity.combine(
-            {'protocol': 'aidash-infra-activity/1', 'counts': counts or {}, 'completed_transfers': transfers or [],
-             'last_work_completed': completion}, {'inflight': 0, 'last_active': 0, 'closed': False},
+            dict(self.summary(transfers or []), protocol='aidash-infra-activity/1', counts=counts or {},
+                 last_work_completed=completion), {'inflight': 0, 'last_active': 0, 'closed': False},
             {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': 0}}, previous, 10000)
 
     def test_observation_gap_blocks_stop_and_renews_full_idle_interval(self):
@@ -754,8 +917,8 @@ class ActivityTest(unittest.TestCase):
 
     def test_concurrent_publication_recombines_against_the_winner(self):
         # The minute CronJob and the controller's seal Job race on one resourceVersion.
-        database = {'protocol': 'aidash-infra-activity/1', 'counts': {'runs': 0}, 'completed_transfers': [],
-                    'last_work_completed': 0}
+        database = dict(self.summary([]), protocol='aidash-infra-activity/1', counts={'runs': 0},
+                        last_work_completed=0)
         snapshots = [('7', {'protocol': 'aidash-infra-activity/1', 'busy': True, 'observed_at': 9900}),
                      ('8', {'protocol': 'aidash-infra-activity/1', 'busy': False, 'observed_at': 9990,
                             'last_active': 5000, 'completed_transfers_digest': self.activity.digest([])})]
@@ -816,12 +979,67 @@ class ActivityTest(unittest.TestCase):
         self.assertEqual(self.combine(settled, transfers=['b', 'a'])['last_active'], 5000)
         self.assertEqual(self.combine(settled, transfers=['a', 'b', 'c'])['last_active'], 10000)
         self.assertEqual(self.combine(settled, transfers=['a'])['last_active'], 10000)
+        # The pair is the renewal key: an unchanged digest with another count renews.
+        self.assertEqual(self.combine(dict(settled, completed_transfers_count=3), transfers=['a', 'b'])['last_active'], 10000)
         legacy = dict(previous, completed_transfers=['a', 'b'])
         self.assertEqual(self.combine(legacy, transfers=['b', 'a'])['last_active'], 5000)
         self.assertEqual(self.combine(legacy, transfers=['a', 'b', 'c'])['last_active'], 10000)
-        many = self.combine(previous, transfers=[f'{n:036d}' for n in range(50000)])
-        self.assertLess(len(json.dumps(many)), 2048)
 
+    def test_a_very_large_receipt_set_keeps_the_observation_and_snapshot_bounded(self):
+        previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}
+        receipts = [f'{n:036d}' for n in range(50000)]
+        settled = dict(self.combine(previous, transfers=receipts), last_active=5000, observed_at=9950)
+        self.assertLess(len(json.dumps(self.summary(receipts))), 512)
+        self.assertLess(len(json.dumps(settled)), 2048)
+        self.assertEqual(self.combine(settled, transfers=receipts)['last_active'], 5000)
+        # One new receipt out of fifty thousand still renews the idle interval.
+        renewed = self.combine(settled, transfers=receipts + ['f' * 36])
+        self.assertEqual(renewed['last_active'], 10000)
+        self.assertEqual(renewed['completed_transfers_count'], 50001)
+
+    def test_an_observation_that_is_not_the_bounded_contract_is_unavailable(self):
+        valid = dict(self.summary(['a']), protocol='aidash-infra-activity/1', counts={})
+        edge, runner = {'inflight': 0, 'last_active': 0, 'closed': False}, {'protocol': 'aidash-runner-activity/1', 'counts': {}}
+        previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}
+        self.activity.combine(valid, edge, runner, previous, 10000)
+        legacy = dict(valid, completed_transfers=['a'])
+        for name, database in (
+                ('receipt list beside a summary', legacy),
+                ('receipt list without a summary', {key: value for key, value in legacy.items() if not key.startswith('completed_transfers_')}),
+                ('missing digest', {key: value for key, value in valid.items() if key != 'completed_transfers_digest'}),
+                ('missing count', {key: value for key, value in valid.items() if key != 'completed_transfers_count'}),
+                ('negative count', dict(valid, completed_transfers_count=-1)),
+                ('boolean count', dict(valid, completed_transfers_count=True)),
+                ('short digest', dict(valid, completed_transfers_digest='abc')),
+                ('uppercase digest', dict(valid, completed_transfers_digest='A' * 64))):
+            with self.subTest(name), self.assertRaises((KeyError, ValueError)):
+                self.activity.combine(database, edge, runner, previous, 10000)
+
+    def test_an_oversized_observation_file_publishes_a_busy_snapshot(self):
+        idle = {'protocol': 'aidash-infra-activity/1', 'busy': False, 'observed_at': 9990, 'last_active': 5000}
+        patches = []
+
+        def request(url, token=None, *, data=None, method=None, context=None):
+            if method == 'PATCH':
+                patches.append(json.loads(data))
+                return {}
+            if url.endswith('/configmaps/activity'):
+                return {'metadata': {'resourceVersion': '7'}, 'data': {'snapshot.json': json.dumps(idle)}}
+            return {'inflight': 0, 'last_active': 0, 'closed': False}
+
+        environment = {'KUBERNETES_SERVICE_HOST': 'api', 'KUBERNETES_SERVICE_PORT': '443',
+                       'ACTIVITY_CONFIGMAP': 'activity', 'EDGE_ACTIVITY_ENDPOINT': 'http://edge',
+                       'RUNNER_ENDPOINT': 'http://runner', 'AIDASH_CORE_RUNNER_TOKEN': 'x' * 32}
+        database = dict(self.summary([]), protocol='aidash-infra-activity/1', counts={}, padding='x' * 70000)
+        with (patch.dict(os.environ, environment),
+              patch.object(self.activity, 'request', request),
+              patch.object(self.activity.ssl, 'create_default_context'),
+              patch.object(Path, 'read_text', return_value='value'),
+              patch.object(Path, 'read_bytes', return_value=json.dumps(database).encode())):
+            self.activity.main()
+        snapshot = json.loads(patches[0]['data']['snapshot.json'])
+        self.assertTrue(snapshot['busy'])
+        self.assertTrue(snapshot['observation_gap'])
 
 if __name__ == '__main__':
     unittest.main()
