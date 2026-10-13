@@ -1,7 +1,7 @@
 //! Bounded request labels and response-body-owned pending metrics.
 use futures_util::{Stream, StreamExt};
 use reinhardt::urls::routers::PathPattern;
-use reinhardt::{Method, Request, Response, http::response::StreamBody};
+use reinhardt::{Method, Response, http::response::StreamBody};
 use std::{
 	pin::Pin,
 	sync::OnceLock,
@@ -15,7 +15,7 @@ struct RouteLabel {
 	methods: Vec<Method>,
 }
 
-fn route_label(request: &Request) -> &'static str {
+fn route_label(method: &Method, uri: &http::Uri) -> &'static str {
 	static ROUTES: OnceLock<Vec<RouteLabel>> = OnceLock::new();
 	let routes = ROUTES.get_or_init(|| {
 		let mut routes: Vec<_> = crate::routes()
@@ -37,7 +37,7 @@ fn route_label(request: &Request) -> &'static str {
 		});
 		routes
 	});
-	let path = request.uri.path();
+	let path = uri.path();
 	let alternate = if path.ends_with('/') {
 		path.trim_end_matches('/').to_owned()
 	} else {
@@ -45,7 +45,7 @@ fn route_label(request: &Request) -> &'static str {
 	};
 	for candidate in [path, alternate.as_str()] {
 		if let Some(route) = routes.iter().find(|route| {
-			(route.methods.is_empty() || route.methods.contains(&request.method))
+			(route.methods.is_empty() || route.methods.contains(method))
 				&& route.pattern.is_match(candidate)
 		}) {
 			return &route.template;
@@ -83,9 +83,11 @@ pub(super) struct Observation {
 	pending: Pending,
 }
 impl Observation {
-	pub fn start(request: &Request) -> Self {
-		let method = method_label(&request.method);
-		let route = route_label(request);
+	/// Start from request metadata alone, so pre-body admission can observe
+	/// rejections before a `Request` exists.
+	pub fn start(method: &Method, uri: &http::Uri) -> Self {
+		let route = route_label(method, uri);
+		let method = method_label(method);
 		let gauge =
 			metrics::gauge!("axum_http_requests_pending", "method" => method, "endpoint" => route);
 		gauge.increment(1);

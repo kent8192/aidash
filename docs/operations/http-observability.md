@@ -39,8 +39,13 @@ completion or cancellation. The native transport hook is supplied by
 
 Global overload and SSE capacity exhaustion return **503** with `Retry-After: 1`.
 Rate limiting returns **429** with `Retry-After`. An HTTP response-start timeout
-returns **504**. Body-size rejection returns **413**. Request IDs and HTTP metrics
-also cover these errors. Client disconnection or timeout cancels the HTTP future;
+returns **504**. Body-size rejection returns **413**. Request IDs, private-route
+headers and HTTP metrics also cover these errors, including overload rejected by
+the native admission hook before the body is read. The exception is a **413** or
+**408** that the native transport itself returns while collecting an admitted
+body: Reinhardt answers those before the Gateway runs and offers no hook to
+finalize them, so they carry no request ID and are absent from the HTTP series.
+Client disconnection or timeout cancels the HTTP future;
 it does not undo a committed task or stop an already scheduled agent. Clients
 must reconcile durable state before retrying a mutation.
 

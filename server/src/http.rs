@@ -388,11 +388,20 @@ impl RequestAdmission for Protection {
 		} else {
 			BODY_LIMIT
 		};
-		let permit = self
-			.permits
-			.clone()
-			.try_acquire_owned()
-			.map_err(|_| rejection(StatusCode::SERVICE_UNAVAILABLE, "server overloaded"))?;
+		let Ok(permit) = self.permits.clone().try_acquire_owned() else {
+			// Overload is answered before `Gateway` runs, so finalize it here
+			// with the same request ID, private headers and HTTP metrics.
+			let id = request_id(head.headers);
+			let observation = observability::Observation::start(head.method, head.uri);
+			return Err(observation.finish(
+				private_response(
+					rejection(StatusCode::SERVICE_UNAVAILABLE, "server overloaded"),
+					&id,
+					private_route(path),
+				),
+				&id,
+			));
+		};
 		Ok(AdmittedRequest::new(
 			limit as u64,
 			self.settings.timeout,
@@ -437,7 +446,7 @@ impl ExceptionHandler for ApiErrors {
 #[async_trait]
 impl Middleware for Gateway {
 	async fn process(&self, mut request: Request, next: Arc<dyn Handler>) -> ViewResult<Response> {
-		let observation = observability::Observation::start(&request);
+		let observation = observability::Observation::start(&request.method, &request.uri);
 		let context = request
 			.get_di_context::<Arc<InjectionContext>>()
 			.ok_or_else(|| {
@@ -448,14 +457,7 @@ impl Middleware for Gateway {
 		let protection = reinhardt::Depends::<Protection>::resolve_from_registry(&context, true)
 			.await
 			.map_err(|e| reinhardt::core::exception::Error::Internal(e.to_string()))?;
-		let id = request
-			.headers
-			.get("x-request-id")
-			.and_then(|v| v.to_str().ok())
-			.filter(|v| v.len() == 36)
-			.and_then(|v| uuid::Uuid::parse_str(v).ok())
-			.unwrap_or_else(uuid::Uuid::new_v4)
-			.to_string();
+		let id = request_id(&request.headers);
 		request.headers.insert(
 			HeaderName::from_static("x-request-id"),
 			HeaderValue::from_str(&id).expect("UUID header"),
@@ -465,9 +467,7 @@ impl Middleware for Gateway {
 			&["authorization", "cookie", "x-aidash-csrf"],
 		);
 		let path = request.uri.path().to_owned();
-		let private = (path.starts_with("/api") && path != "/api/openapi.json")
-			|| path.starts_with("/federation")
-			|| path.starts_with("/auth/");
+		let private = private_route(&path);
 		let sse = path == "/api/events/stream"
 			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
 		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
@@ -582,6 +582,22 @@ fn discovery(request: &Request) -> bool {
 				reqwest::Url::parse(&format!("http://localhost/?{query}"))
 					.is_ok_and(|url| url.query_pairs().any(|(key, _)| key == "org"))
 			}))
+}
+/// The caller's UUID `x-request-id`, or a fresh one when missing or invalid.
+fn request_id(headers: &HeaderMap) -> String {
+	headers
+		.get("x-request-id")
+		.and_then(|v| v.to_str().ok())
+		.filter(|v| v.len() == 36)
+		.and_then(|v| uuid::Uuid::parse_str(v).ok())
+		.unwrap_or_else(uuid::Uuid::new_v4)
+		.to_string()
+}
+/// API, federation and auth responses must not be cached or leak a referrer.
+fn private_route(path: &str) -> bool {
+	(path.starts_with("/api") && path != "/api/openapi.json")
+		|| path.starts_with("/federation")
+		|| path.starts_with("/auth/")
 }
 fn private_response(mut response: Response, id: &str, private: bool) -> Response {
 	response.headers.insert(

@@ -79,6 +79,49 @@ async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
 	assert_eq!(admitted.max_body_size, super::BODY_LIMIT as u64);
 }
 
+#[tokio::test]
+async fn pre_body_overload_rejection_is_correlated_private_and_measured() {
+	// Arrange: a thread-local recorder avoids modifying process-global telemetry.
+	let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+	let handle = recorder.handle();
+	let _recorder = metrics::set_default_local_recorder(&recorder);
+	let protection = Protection::new(Settings {
+		concurrency: 1,
+		..Default::default()
+	});
+	let method = http::Method::POST;
+	let mut headers = http::HeaderMap::new();
+	let id = "7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb";
+	headers.insert("x-request-id", HeaderValue::from_static(id));
+	let uri = "/api/workspaces".parse().unwrap();
+	let head = || RequestHead {
+		method: &method,
+		uri: &uri,
+		headers: &headers,
+		remote_addr: None,
+	};
+	let _held = RequestAdmission::admit(&protection, head()).await.unwrap();
+
+	// Act
+	let denied = RequestAdmission::admit(&protection, head())
+		.await
+		.err()
+		.unwrap();
+
+	// Assert
+	assert_eq!(denied.status, http::StatusCode::SERVICE_UNAVAILABLE);
+	assert_eq!(denied.headers["x-request-id"], id);
+	assert_eq!(denied.headers[header::CACHE_CONTROL], "no-store");
+	assert_eq!(denied.headers["retry-after"], "1");
+	let metrics = handle.render();
+	assert!(metrics.lines().any(|line| {
+		line.starts_with("aidash_http_requests_total{")
+			&& line.contains("route=\"/api/workspaces\"")
+			&& line.contains("status=\"503\"")
+			&& line.ends_with(" 1")
+	}));
+}
+
 #[rstest]
 #[case(true)]
 #[case(false)]
