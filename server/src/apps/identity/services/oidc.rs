@@ -583,6 +583,7 @@ impl DashboardSessions {
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
+				personal_account: external.direct_google(),
 				operator,
 				mappings: mappings
 					.into_iter()

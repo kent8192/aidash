@@ -14,6 +14,7 @@ async function installSession(
   options: {
     locale?: "ja-JP" | "en-US";
     operator?: boolean;
+    personalAccount?: boolean;
     mappings?: (typeof personalMapping)[];
     selected?: string;
   } = {},
@@ -31,6 +32,7 @@ async function installSession(
       json: {
         id: "fixture-browser-session",
         operator: options.operator ?? false,
+        personal_account: options.personalAccount ?? true,
         mappings: options.mappings ?? [personalMapping],
       },
     }),
@@ -203,6 +205,7 @@ test("legacy mappings still require an explicit authority choice", async ({
   page,
 }) => {
   await installSession(page, {
+    personalAccount: false,
     mappings: [{ ...personalMapping, personal: false }],
   });
   await page.goto("/collaboration");
@@ -266,4 +269,85 @@ test("a revoked personal credential is not selected automatically", async ({
   ).toBeVisible();
   expect(selected).toContain("mapping:shared-mapping");
   expect(selected).not.toContain("mapping:personal-mapping");
+});
+
+test("a saved personal selection with an inactive credential returns to the chooser", async ({
+  page,
+}) => {
+  await installSession(page, {
+    operator: true,
+    selected: "mapping:personal-mapping",
+    mappings: [
+      { ...personalMapping, credential_active: false },
+      {
+        id: "shared-mapping",
+        tenant: "team",
+        subject: "alice",
+        personal: false,
+        credential_active: true,
+      },
+    ],
+  });
+  const selected: string[] = [];
+  await page.route("**/api/session", (route) => {
+    selected.push(route.request().headers()["x-aidash-context"]);
+    return route.fallback();
+  });
+  await page.goto("/collaboration");
+  await expect(
+    page.getByRole("heading", {
+      name: "Choose the authority for this tab",
+    }),
+  ).toBeVisible();
+  expect(selected).toEqual([]);
+  await page.getByRole("button", { name: "operator", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Account settings", exact: true }),
+  ).toBeVisible();
+  expect(selected).toContain("operator");
+  expect(selected).not.toContain("mapping:personal-mapping");
+});
+
+test("a disabled personal mapping keeps the shared-access request", async ({
+  page,
+}) => {
+  await installSession(page, {
+    selected: "mapping:shared-mapping",
+    mappings: [
+      {
+        id: "shared-mapping",
+        tenant: "team",
+        subject: "alice",
+        personal: false,
+        credential_active: true,
+      },
+    ],
+  });
+  let registration: { status: string; expires_at: string } | null = null;
+  await page.route("**/auth/registration", (route) => {
+    if (route.request().method() === "POST")
+      registration = {
+        status: "pending",
+        expires_at: "2099-01-01T00:00:00Z",
+      };
+    return route.fulfill({ json: registration });
+  });
+  await page.goto("/collaboration");
+  await page
+    .getByRole("button", { name: "Account settings", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Request access to shared tenant",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText("Your registration is awaiting approval.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("combobox", {
+      name: "Choose the authority for this tab",
+    }),
+  ).toHaveValue("mapping:shared-mapping");
 });

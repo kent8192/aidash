@@ -133,6 +133,7 @@ type Search = { channel?: string; focus?: string; view?: string };
 type BrowserSession = {
   id: string;
   operator: boolean;
+  personal_account?: boolean;
   mappings: {
     id: string;
     tenant: string;
@@ -143,14 +144,18 @@ type BrowserSession = {
 };
 type Registration = { status: string; expires_at: string } | null;
 function sessionContext(session: BrowserSession, selected: string | null) {
+  // An inactive credential fails with 401 and ends the browser session, so
+  // neither a saved selection nor the default may use it.
   if (
     selected === "operator"
       ? session.operator
-      : session.mappings.some((mapping) => selected === `mapping:${mapping.id}`)
+      : session.mappings.some(
+          (mapping) =>
+            selected === `mapping:${mapping.id}` &&
+            mapping.credential_active !== false,
+        )
   )
     return selected;
-  // A revoked personal credential would fail with 401 and end the browser
-  // session, so only default into personal authority that can authenticate.
   const personal = session.mappings.filter(
     (mapping) => mapping.personal && mapping.credential_active,
   );
@@ -805,6 +810,7 @@ function Dashboard({
             context,
             mappings: browserSession?.mappings ?? [],
             operatorAllowed: browserSession?.operator ?? false,
+            personalAccount: browserSession?.personal_account ?? false,
             sharedAccess: {
               status: registration.data?.status,
               loading: registration.isPending,

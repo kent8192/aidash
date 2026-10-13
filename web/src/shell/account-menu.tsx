@@ -18,6 +18,8 @@ export type Account = {
     personal?: boolean;
   }[];
   operatorAllowed: boolean;
+  /** A direct Google account may request shared access even after its personal Mapping is disabled. */
+  personalAccount: boolean;
   sharedAccess: {
     status?: string;
     loading: boolean;
@@ -80,7 +82,7 @@ export function AccountPanel({ account }: { account: Account }) {
   const copy = shellCopy[locale];
   const auth = authCopy[locale];
   const shared = account.sharedAccess;
-  const personal = account.mappings.some((mapping) => mapping.personal);
+  const personalMapping = account.mappings.some((mapping) => mapping.personal);
   const themeGroup = useId();
   return (
     <div className="grid text-[13px]">
@@ -117,14 +119,16 @@ export function AccountPanel({ account }: { account: Account }) {
             )}
           </NativeSelect>
         </label>
-        {personal && (
+        {account.personalAccount && (
           <div className="grid gap-2 pt-1">
             <p
               className="text-xs leading-relaxed text-muted-foreground"
               aria-live="polite"
             >
               {shared.status === "pending"
-                ? auth.personalPending
+                ? personalMapping
+                  ? auth.personalPending
+                  : auth.pending
                 : shared.status === "rejected"
                   ? auth.rejected
                   : shared.status === "expired"

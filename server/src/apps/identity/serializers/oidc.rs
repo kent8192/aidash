@@ -50,6 +50,9 @@ pub(crate) struct SessionView {
 	pub(crate) id: Uuid,
 	pub(crate) operator: bool,
 	pub(crate) mappings: Vec<MappingView>,
+	/// True for a direct Google identity, which may request shared Tenant access
+	/// whether or not its personal Mapping is still enabled.
+	pub(crate) personal_account: bool,
 }
 
 #[derive(Serialize, JsonSchema)]

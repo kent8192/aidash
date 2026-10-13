@@ -92,10 +92,7 @@ impl DashboardRegistrationRequest {
 				// Direct Google accounts retain private authority while requesting
 				// additional shared membership. Each approval remains immutable and
 				// a new request still requires explicit Operator approval.
-				let personal_account = identities.iter().any(|row| {
-					row.issuer == crate::config::GOOGLE_OIDC_ISSUER && row.gcip_tenant.is_empty()
-				});
-				let active_mapping = !personal_account
+				let active_mapping = !identities.iter().any(DashboardIdentity::direct_google)
 					&& previous.status == "approved"
 					&& DashboardMapping::objects()
 						.filter(DashboardMapping::field_identity_id().eq(identity))

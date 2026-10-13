@@ -327,6 +327,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.await;
 	assert_eq!(status, 200);
 	assert_eq!(session["mappings"], json!([]));
+	assert_eq!(session["personal_account"], false);
 	assert_eq!(
 		call(
 			&app,
@@ -1541,6 +1542,7 @@ async fn google_session_provisions_private_access_without_registration(
 	// Assert: personal access is available without granting Operator authority.
 	assert_eq!(*status, 200, "{session}");
 	assert_eq!(session["operator"], false);
+	assert_eq!(session["personal_account"], true);
 	assert_eq!(session["mappings"].as_array().unwrap().len(), 1);
 	assert_eq!(session["mappings"][0]["personal"], true);
 	assert_eq!(session["mappings"][0]["credential_active"], true);
@@ -1910,7 +1912,12 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 		.await;
 		assert_eq!(status, session_status, "{revoked}: {resumed}");
 		match revoked {
-			"mapping" => assert_eq!(resumed["mappings"], json!([])),
+			// A disabled personal Mapping is omitted, but the direct Google
+			// identity can still request shared Tenant access.
+			"mapping" => {
+				assert_eq!(resumed["mappings"], json!([]));
+				assert_eq!(resumed["personal_account"], true);
+			}
 			// The dashboard must not auto-select authority that can only fail
 			// authentication and end the browser session.
 			"credential" => {

@@ -15,10 +15,7 @@ use reinhardt::query::{
 use uuid::Uuid;
 
 fn require_google(identity: &DashboardIdentity) -> Result<()> {
-	if identity.issuer != crate::config::GOOGLE_OIDC_ISSUER
-		|| !identity.gcip_tenant.is_empty()
-		|| identity.disabled_at.is_some()
-	{
+	if !identity.direct_google() || identity.disabled_at.is_some() {
 		return Err(Error::Forbidden);
 	}
 	Ok(())
