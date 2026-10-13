@@ -50,6 +50,7 @@ fn maps_filters_without_relaxing_them(profile: AccountProfile) {
 	assert_eq!(body["search_lang"], "ja");
 	assert_eq!(body["freshness"], "pm");
 	assert_eq!(body["spellcheck"], false);
+	assert_eq!(body["result_filter"], json!(["web"]));
 	assert_eq!(body["country"], "US");
 	let range =
 		self::query(json!({"query":"x","freshness":{"from":"2026-09-01","to":"2026-09-25"}}));

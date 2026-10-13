@@ -87,7 +87,8 @@ impl BraveSearch {
 			"country": query.country,
 			"spellcheck": false,
 			"text_decorations": false,
-			"result_filter": "web",
+			// The POST schema types the filter as `string[]`.
+			"result_filter": ["web"],
 			"enable_rich_callback": false,
 			"operators": true,
 			// The Brave schema lists both ja and jp; use the ISO 639-1 code.
