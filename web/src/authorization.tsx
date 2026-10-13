@@ -32,6 +32,7 @@ import type {
   Snapshot,
 } from "./generated/models";
 import { ApiError } from "./transport";
+import { keylessOrigin } from "./keyless";
 import {
   Badge,
   Empty,
@@ -400,6 +401,13 @@ function TenantAuthorization({
                               {binding.revision}
                             </span>
                           </span>
+                          <KeylessOrigin
+                            entry={entries.find(
+                              (entry) =>
+                                entry.id === binding.entry_id &&
+                                entry.version === binding.entry_version,
+                            )}
+                          />
                         </div>
                         <AccessBadge
                           value={
@@ -939,6 +947,7 @@ function CatalogForm({
   }) => Promise<boolean>;
 }) {
   const { t, local } = useI18n();
+  const [selected, setSelected] = useState("");
   const available = entries.filter(
     (entry) =>
       !bindings.some(
@@ -972,7 +981,12 @@ function CatalogForm({
     >
       <div className="w-full min-w-0 sm:w-96">
         <Field label={t("authCatalogEntry")}>
-          <NativeSelect name="entry" required defaultValue="">
+          <NativeSelect
+            name="entry"
+            required
+            defaultValue=""
+            onChange={(event) => setSelected(event.currentTarget.value)}
+          >
             <option value="" disabled>
               {t("authSelectEntry")}
             </option>
@@ -990,7 +1004,36 @@ function CatalogForm({
       <Button variant="outline" disabled={busy || !available.length}>
         {t("authApprove")}
       </Button>
+      <KeylessNotice
+        entry={available.find(
+          (entry) => JSON.stringify([entry.id, entry.version]) === selected,
+        )}
+      />
     </form>
+  );
+}
+
+/** Before approval: a Keyless definition carries no data retention guarantee (ADR 0036). */
+function KeylessNotice({ entry }: { entry?: Entry }) {
+  const { t } = useI18n();
+  const origin = entry && keylessOrigin(entry);
+  if (!origin) return null;
+  return (
+    <Notice tone="warning" className="keyless-notice w-full">
+      {t("authKeylessNotice")} <span className="font-mono">{origin}</span>
+    </Notice>
+  );
+}
+
+/** On an approved row: where the Keyless definition sends requests. */
+function KeylessOrigin({ entry }: { entry?: Entry }) {
+  const { t } = useI18n();
+  const origin = entry && keylessOrigin(entry);
+  if (!origin) return null;
+  return (
+    <span className="keyless-origin text-[11px] text-warning [overflow-wrap:anywhere]">
+      {t("authKeyless")} · <span className="font-mono">{origin}</span>
+    </span>
   );
 }
 
