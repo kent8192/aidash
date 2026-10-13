@@ -6,10 +6,7 @@ use upstream::reply;
 
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
-use aidash_server::{
-	domain::NewTask,
-	registry::{Entry, Package},
-};
+use aidash_server::{domain::NewTask, registry::Entry};
 use common::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -168,120 +165,6 @@ async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
 		);
 	}
 	assert_ne!(generated[0], generated[1]);
-	cleanup(f, &url, &schema).await;
-}
-#[rstest::rstest]
-#[tokio::test]
-async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
-	#[future(awt)]
-	#[from(common::native_application)]
-	application_fixture: common::ApplicationFixture,
-) {
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
-	let package = Package {
-		entity: tool("installed"),
-		author: "test".into(),
-		permissions: vec![],
-		dependencies: vec![],
-	};
-	let original = package.entity.clone();
-	let (status, published) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/marketplace",
-		json!(package),
-	)
-	.await;
-	assert_eq!(status, 200, "{published}");
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/marketplace",
-			json!(package)
-		)
-		.await
-		.0,
-		200
-	);
-	let path = "/api/marketplace/installed/1.0.0/install";
-	for endpoint in [
-		"http://127.0.0.1:9/first",
-		"http://127.0.0.1:9/second",
-		"http://127.0.0.1:9/second",
-	] {
-		let (status, body) = request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			path,
-			json!({"digest":published["digest"],"config":{"transport":{"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"read_only"}}}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		assert_eq!(
-			f.registry.get("installed", "1.0.0").await.unwrap().config["transport"]["endpoint"],
-			endpoint
-		);
-	}
-	let (_, packages) = request(
-		&app,
-		&f.config.api_token,
-		"GET",
-		"/api/marketplace",
-		Value::Null,
-	)
-	.await;
-	assert_eq!(packages[0]["manifest"]["entity"], json!(original));
-	let events = f.store.events(0, None, 1000).await.unwrap();
-	assert_eq!(
-		events
-			.iter()
-			.filter(|e| e.kind == "package.published")
-			.count(),
-		1
-	);
-	assert_eq!(
-		events
-			.iter()
-			.filter(|e| e.kind == "package.installed")
-			.count(),
-		2
-	);
-	let mut invalid = json!(package);
-	invalid["dependecies"] = json!([]);
-	// Preserve the previous backend's standard JSON extraction rejection.
-	for (endpoint, input) in [
-		("/api/marketplace", invalid),
-		(
-			path,
-			json!({"digest":published["digest"],"configuration":{}}),
-		),
-	] {
-		let rejected = app
-			.raw_http
-			.post(app.url(endpoint))
-			.bearer_auth(&f.config.api_token)
-			.json(&input)
-			.send()
-			.await
-			.unwrap();
-		assert_eq!(rejected.status().as_u16(), 422);
-		assert_eq!(
-			rejected.headers()["content-type"],
-			"text/plain; charset=utf-8"
-		);
-		assert!(
-			rejected
-				.text()
-				.await
-				.unwrap()
-				.contains("Failed to deserialize the JSON body")
-		);
-	}
 	cleanup(f, &url, &schema).await;
 }
 

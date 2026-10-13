@@ -1,5 +1,5 @@
 //! Immutable transaction manifests and monotonic coordinator decisions.
-use crate::{ArtifactInput, Error, configuration::validate_node_id, registry::Entry};
+use crate::{ArtifactInput, Error, configuration::validate_node_id};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,6 @@ pub enum Isolation {
 #[schemars(rename = "TransactionMutation")]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mutation {
-	RegistryRegister {
-		entry: Box<Entry>,
-	},
 	WorkspaceState {
 		workspace_id: Uuid,
 		expected_revision: i64,
@@ -59,10 +56,7 @@ pub struct Manifest {
 #[error("forbidden")]
 pub struct MissingParticipant;
 impl Manifest {
-	pub fn validate_with<E>(
-		&self,
-		mut validate_registry: impl FnMut(&Entry) -> std::result::Result<(), E>,
-	) -> std::result::Result<(), E>
+	pub fn validate<E>(&self) -> std::result::Result<(), E>
 	where
 		E: From<Error> + From<serde_json::Error>,
 	{
@@ -85,10 +79,6 @@ impl Manifest {
 			let mut keys = std::collections::BTreeSet::new();
 			for mutation in &participant.mutations {
 				let key = match mutation {
-					Mutation::RegistryRegister { entry } => {
-						validate_registry(entry)?;
-						format!("registry:{}@{}", entry.id, entry.version)
-					}
 					Mutation::WorkspaceState {
 						workspace_id,
 						expected_revision,

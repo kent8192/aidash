@@ -125,9 +125,6 @@ impl aidash_application::ports::registry::DefinitionLookup for FixtureDefinition
 	) -> aidash_application::Result<aidash_domain::registry::Entry> {
 		self.0.registry.get(id, version).await.map_err(Into::into)
 	}
-	async fn overrides(&mut self, _: &str, _: &str) -> aidash_application::Result<Option<Value>> {
-		Ok(None)
-	}
 }
 
 async fn admitted_run(

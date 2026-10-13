@@ -1,16 +1,13 @@
 //! Management use cases.
-use crate::apps::registry::models::records;
 use crate::{
 	Error, Result,
 	authorization::{catalog, identity::Actor},
 	federation::Federation,
-	registry::{EntityRef, Entry, Package, PackageRecord, Search},
+	registry::{EntityRef, Entry, Search},
 };
 use http::HeaderMap;
 use reinhardt::injectable;
 use uuid::Uuid;
-
-use crate::apps::registry::serializers::management::InstallInput;
 
 #[derive(Clone)]
 pub struct RegistryManagement {
@@ -63,34 +60,6 @@ impl RegistryManagement {
 		request: crate::skill_import::ImportRequest,
 	) -> Result<crate::skill_import::ImportResult> {
 		crate::skill_import::import(request).await
-	}
-	pub(crate) async fn marketplace(&self, query: Search) -> Result<Vec<PackageRecord>> {
-		let f = self.runtime.clone();
-		let all = records::packages(f.registry.db).await?;
-		Ok(all
-			.into_iter()
-			.filter(|p| {
-				serde_json::from_value::<Package>(p.manifest.clone())
-					.is_ok_and(|p| query.matches(&p.entity))
-			})
-			.collect())
-	}
-	pub(crate) async fn package_publish(&self, package: Package) -> Result<PackageRecord> {
-		let f = self.runtime.clone();
-		let p = f.registry.publish(package).await?;
-		Ok(p)
-	}
-	pub(crate) async fn package_install(
-		&self,
-		(id, version): (String, String),
-		input: InstallInput,
-	) -> Result<Entry> {
-		let f = self.runtime.clone();
-		let e = f
-			.registry
-			.install(&id, &version, &input.digest, input.config)
-			.await?;
-		Ok(e)
 	}
 }
 

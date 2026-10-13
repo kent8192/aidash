@@ -112,19 +112,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, Configure>(document, views::management::configure)?;
 	contracts.path(document, views::management::configure, &["String"])?;
-	contracts.response::<_, Compatibility>(
-		document,
-		views::management::compatibility,
-		200,
-		"application/json",
-	)?;
-	contracts.response::<_, Compatibility>(
-		document,
-		views::management::set_compatibility,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, CompatibilityInput>(document, views::management::set_compatibility)?;
 	contracts.response::<_, Installation>(
 		document,
 		views::management::activate,
@@ -133,13 +120,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, Activate>(document, views::management::activate)?;
 	contracts.path(document, views::management::activate, &["String"])?;
-	contracts.response::<_, Installation>(
-		document,
-		views::management::adopt,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, Adopt>(document, views::management::adopt)?;
 	contracts.response::<_, Vec<InstallationRevision>>(
 		document,
 		views::management::administration,

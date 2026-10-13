@@ -360,11 +360,7 @@ pub async fn active(scope: &mut dyn InstallationRead, entry: &Entry) -> Result<b
 	if projection.tenant != scope.tenant() || projection.contract != 1 {
 		return Ok(false);
 	}
-	match scope.installation_gate().await {
-		Ok(()) => {}
-		Err(Error::Forbidden) => return Ok(false),
-		Err(error) => return Err(error),
-	}
+	scope.installation_lease().await?;
 	let Some(installation) = scope
 		.selected_installation(&projection.installation)
 		.await?

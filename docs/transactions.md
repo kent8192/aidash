@@ -4,7 +4,7 @@ This document describes the implemented cross-node transaction protocol for supp
 
 ## Protocol and isolation
 
-Each immutable manifest identifies a global UUID, coordinator, exact ordered participant set, serializable isolation, deadline and typed mutations. Registry versions remain immutable. Workspace, task and execution mutations specify expected revisions. Unknown mutation kinds, including ordinary external tools and A2A effects without a transaction participant, are rejected before admission.
+Each immutable manifest identifies a global UUID, coordinator, exact ordered participant set, serializable isolation, deadline and typed mutations. Workspace, task and execution mutations specify expected revisions. Unknown mutation kinds, including ordinary external tools and A2A effects without a transaction participant, are rejected before admission.
 
 Coordinators reserve participating nodes in ascending node-ID order. A node-wide visibility barrier is deliberately coarse: ordinary operations retain a shared database lease; reservation takes its exclusive counterpart and persists the transaction ID before releasing the database lock. New ordinary operations return a retryable unavailable response while this durable reservation exists. Short lock attempts do not queue behind a reserving transaction, preventing nested federation calls from creating a lock-order cycle.
 
@@ -48,12 +48,11 @@ An abort atomically competes with commit for the first durable decision. It can 
 
 Configure and explicitly trust peers on both nodes before submitting. Scoped participants also need explicit mappings and the permissions above. The coordinator must participate, participant IDs must be unique and sorted, and a new deadline must be within the next hour. Use the exact current revisions for workspace, task and execution changes. Submission returns HTTP 202 after durable coordinator registration; it does not mean Participant admission, commit or completion. Poll the transaction details until `complete` is true and inspect its decision.
 
-| Mutation            | Preconditions and outcome                                                           |
-| ------------------- | ----------------------------------------------------------------------------------- |
-| `registry_register` | Validate and register an immutable Registry version                                 |
-| `workspace_state`   | Replace object state at the expected workspace revision                             |
-| `complete_task`     | Complete an owned running task with no unfinished children and publish one artifact |
-| `finish_run`        | Finalize an idle execution at its expected revision, with no outstanding tool calls |
+| Mutation          | Preconditions and outcome                                                           |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| `workspace_state` | Replace object state at the expected workspace revision                             |
+| `complete_task`   | Complete an owned running task with no unfinished children and publish one artifact |
+| `finish_run`      | Finalize an idle execution at its expected revision, with no outstanding tool calls |
 
 Delegated task completion must include the corresponding execution finalization on its recorded execution node; execution finalization must include completion on the recorded home node. Preparation invokes only the same SQL mutation code used at commit. Ordinary tool calls, provider requests and nonparticipating A2A side effects cannot be embedded in a manifest.
 

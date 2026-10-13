@@ -21,7 +21,6 @@ import {
   session as getSession,
   mesh as getMesh,
   discover,
-  marketplace,
 } from "./generated/aidash";
 import { subscribe } from "./event-stream";
 import {
@@ -296,15 +295,6 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 10000,
   });
-  const packages = useQuery({
-    queryKey: ["packages"],
-    queryFn: () => marketplace(),
-    enabled:
-      connected &&
-      operator &&
-      route.section === "settings" &&
-      route.settings === "marketplace",
-  });
   const go = (
     section: Destination,
     context: {
@@ -519,7 +509,6 @@ function Dashboard({
             "channel-history",
             "run",
             "mesh",
-            "packages",
             "marketplace",
             "generation",
             "provider-credentials",
@@ -988,7 +977,6 @@ function Dashboard({
                     section={route.settings}
                     select={(settings) => go("settings", { settings })}
                     open={open}
-                    packages={packages.isError ? [] : (packages.data ?? [])}
                     disconnect={disconnect}
                     integration={route.integration}
                     channel={currentChannel}

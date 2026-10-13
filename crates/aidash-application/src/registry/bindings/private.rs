@@ -102,9 +102,6 @@ impl DefinitionLookup for Preview<'_> {
 		}
 		self.scope.definition(id, version).await
 	}
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
-		self.scope.overrides(id, version).await
-	}
 	async fn binding_installation(
 		&mut self,
 		projection: &aidash_domain::registry::Projection,

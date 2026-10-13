@@ -2,7 +2,6 @@
 use super::{EntityRef, Entry};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -31,16 +30,6 @@ pub struct Package {
 	pub permissions: Vec<String>,
 	#[serde(default)]
 	pub dependencies: Vec<EntityRef>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PackageRecord {
-	pub id: String,
-	pub version: String,
-
-	#[schemars(with = "Package")]
-	pub manifest: Value,
-	pub digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

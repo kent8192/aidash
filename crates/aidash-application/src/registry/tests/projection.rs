@@ -124,25 +124,6 @@ fn model_definitions_accept_implemented_declarations(
 	validation.validate_in(&model, false).unwrap();
 }
 
-#[rstest]
-#[tokio::test]
-async fn publication_rejects_an_agent_its_model_cannot_render(validation: DefinitionValidation) {
-	// Arrange
-	let mut scope = scope_with(model_config(None));
-	let package = Package {
-		entity: definition("agent", "agent", agent_config(Some("ordered"))),
-		author: "author".into(),
-		permissions: Vec::new(),
-		dependencies: Vec::new(),
-	};
-	// Act
-	let error = publish(&mut scope, &validation, package).await.unwrap_err();
-	// Assert
-	assert!(is_invalid(&error), "{error:?}");
-	assert!(!scope.trace.iter().any(|step| step == "publish"));
-	assert!(scope.events.is_empty());
-}
-
 /// Serializations produced before Projection Versions existed.
 const LEGACY_AGENT: &str = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[],"cluster":null,"max_steps":64}"#;
 const LEGACY_MODEL: &str = r#"{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
@@ -250,26 +231,6 @@ async fn registration_rejects_explicit_prompt_cache_without_ordered_and_an_expli
 	);
 	assert!(!scope.entries.contains_key("agent@1.0.0"));
 	assert!(!scope.trace.iter().any(|step| step == "insert"));
-}
-
-#[rstest]
-#[tokio::test]
-async fn publication_rejects_explicit_prompt_cache_its_model_cannot_receive(
-	validation: DefinitionValidation,
-) {
-	// Arrange
-	let mut scope = scope_with(cache_model("anthropic/claude-fixture", Some("automatic")));
-	let package = Package {
-		entity: definition("agent", "agent", cache_agent(Some("ordered"))),
-		author: "author".into(),
-		permissions: Vec::new(),
-		dependencies: Vec::new(),
-	};
-	// Act
-	let error = publish(&mut scope, &validation, package).await.unwrap_err();
-	// Assert
-	assert!(is_invalid(&error), "{error:?}");
-	assert!(!scope.trace.iter().any(|step| step == "publish"));
 }
 
 #[rstest]

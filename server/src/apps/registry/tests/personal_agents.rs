@@ -11,14 +11,7 @@ mod native_database;
 mod provider_fixtures;
 
 use aidash_server::apps::registry::models::AgentKnowledge;
-use aidash_server::{
-	context,
-	domain::NewTask,
-	harness::Harness,
-	knowledge,
-	registry::{Entry, Package},
-	tool,
-};
+use aidash_server::{context, domain::NewTask, harness::Harness, knowledge, registry::Entry, tool};
 use endpoint::assert_json;
 use execution_fixtures::{ExecutionFixture, execution};
 use reinhardt::db::orm::Model;
@@ -129,22 +122,6 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let state = assert_json(app.operator.get("/api/state").await.unwrap(), 200);
 	assert!(!state.to_string().contains("PRIVATE-REFERENCE"));
 	assert!(!state.to_string().contains("private.pdf"));
-	let package = Package {
-		entity: entry.clone(),
-		author: "fixture".into(),
-		permissions: vec![],
-		dependencies: vec![],
-	};
-	let published = f.registry.publish(package).await.unwrap();
-	f.registry
-		.install(
-			&published.id,
-			&published.version,
-			&published.digest,
-			json!({}),
-		)
-		.await
-		.unwrap();
 	let mut cloned = entry.clone();
 	cloned.id = "cloned-personal".into();
 	cloned.binding_normalization = None;

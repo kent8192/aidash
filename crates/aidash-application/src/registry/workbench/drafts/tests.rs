@@ -147,9 +147,6 @@ impl DefinitionLookup for Scope {
 		entry.version = version.into();
 		Ok(entry)
 	}
-	async fn overrides(&mut self, _: &str, _: &str) -> Result<Option<Value>> {
-		Ok(None)
-	}
 }
 #[async_trait]
 impl DraftAuthority for Scope {

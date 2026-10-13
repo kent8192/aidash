@@ -1018,9 +1018,6 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		) -> Result<aidash_domain::registry::Entry> {
 			self.0.get(id, version).await.map_err(Into::into)
 		}
-		async fn overrides(&mut self, _: &str, _: &str) -> Result<Option<Value>> {
-			Ok(None)
-		}
 	}
 	let snapshot = aidash_application::registry::bindings::resolve(
 		&mut aidash_application::registry::bindings::catalog::LocalCatalog(
