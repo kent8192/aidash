@@ -333,12 +333,14 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 	.execute(pool)
 	.await
 	.unwrap();
-	let reopened = aidash_server::store::Store::from_pool(
+	let mut reopened = aidash_server::store::Store::from_pool(
 		p.b.store.pool.driver().clone(),
 		p.b.store.node_id.clone(),
 	)
 	.await
 	.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	reopened.keyless = p.b.store.keyless.clone();
 	aidash_server::semantic::worker::sweep(&reopened)
 		.await
 		.unwrap();

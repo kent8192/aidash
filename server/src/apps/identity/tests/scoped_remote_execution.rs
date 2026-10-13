@@ -243,9 +243,11 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 		.connect_with(f.store.pool.connect_options().as_ref().clone())
 		.await
 		.unwrap();
-	let store = aidash_server::store::Store::from_pool(pool, f.config.node_id.clone())
+	let mut store = aidash_server::store::Store::from_pool(pool, f.config.node_id.clone())
 		.await
 		.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	store.keyless = f.store.keyless.clone();
 	f.registry =
 		aidash_server::registry::Registry::new(store.pool.clone(), &f.config.node_id).unwrap();
 	f.store.pool.close().await;
