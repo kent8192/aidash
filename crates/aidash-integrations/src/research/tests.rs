@@ -6,6 +6,8 @@ use rstest::rstest;
 #[case("http://example.com:80/", true)]
 #[case("https://93.184.216.34/", true)]
 #[case("https://example.com:8443/", false)]
+#[case("http://example.com:443/", false)]
+#[case("https://example.com:80/", false)]
 #[case("ftp://example.com/", false)]
 #[case("https://user:secret@example.com/", false)]
 #[case("http://localhost/", false)]

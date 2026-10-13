@@ -8,14 +8,15 @@ use aidash_domain::{capabilities::outbound::public_ip, research::Failure};
 use std::net::IpAddr;
 use url::{Host, Url};
 
-/// Literal destination checks shared by every page provider: http(s) on a
-/// standard port, no credentials, and no name or address that is non-public
-/// by construction. Resolved addresses are checked again at dispatch.
+/// Literal destination checks shared by every page provider: http on port 80
+/// or https on port 443, no credentials, and no name or address that is
+/// non-public by construction. Resolved addresses are checked again at dispatch.
 pub fn admit_public_url(url: &Url) -> Result<(), Failure> {
-	if !matches!(url.scheme(), "http" | "https")
-		|| !url.username().is_empty()
+	if !matches!(
+		(url.scheme(), url.port_or_known_default()),
+		("http", Some(80)) | ("https", Some(443))
+	) || !url.username().is_empty()
 		|| url.password().is_some()
-		|| !matches!(url.port_or_known_default(), Some(80 | 443))
 	{
 		return Err(Failure::NonPublicDestination);
 	}
