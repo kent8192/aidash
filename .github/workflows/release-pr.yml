@@ -7,11 +7,13 @@ on:
 permissions:
   contents: read
 
-# Serialize candidate replacement and staging acknowledgement. A dropped older
-# pending run is safe: every write revalidates the latest protected source SHA.
+# Serialize candidate replacement and staging acknowledgement. Queue every run:
+# the default single pending slot would let a staging run replace a pending CI
+# candidate run, and staging acknowledgement cannot create the missing PR.
 concurrency:
   group: release-pr-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   release:
