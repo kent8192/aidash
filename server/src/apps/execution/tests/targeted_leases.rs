@@ -184,3 +184,66 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	// Assert
 	assert_eq!(resumed.unwrap().id, reserved.id);
 }
+
+#[rstest]
+#[tokio::test]
+async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
+	#[future] database: DatabaseFixture,
+	run: Record,
+) {
+	use crate::domain::run_state::PersistedCapability;
+	// Arrange: Runs whose `requires` is malformed, and one a current worker cannot cover.
+	let database = database.await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		"aidash://capability-malformed-test".into(),
+	)
+	.await
+	.unwrap();
+	let mut db = database.lease.handle();
+	let mut ids = vec![];
+	for (offset, requires) in [
+		serde_json::json!(null),
+		serde_json::json!({"tool_batch_state": true}),
+		serde_json::json!([1]),
+		serde_json::json!(["future_capability"]),
+	]
+	.into_iter()
+	.enumerate()
+	{
+		let mut pending = run_fixtures::pending(RunState::Ready(ReadyState {}), Default::default());
+		pending["requires"] = requires;
+		let record = Record {
+			id: Uuid::new_v4(),
+			task_id: Uuid::new_v4(),
+			updated_at: Utc::now() - Duration::minutes(10 - offset as i64),
+			pending: pending.into(),
+			..run.clone()
+		};
+		Record::objects()
+			.create_with_conn(&mut db, &record)
+			.await
+			.unwrap();
+		ids.push(record.id);
+	}
+	let current: &'static [PersistedCapability] = PersistedCapability::supported();
+
+	// Act
+	let mut tx = store.database().begin().await.unwrap();
+	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
+	scope.capabilities = current;
+	let waiting = scope.capability_waits().await.unwrap();
+	let visible: Vec<Uuid> =
+		aidash_application::ports::activation::SchedulingScope::candidates(&mut scope, None, None)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|raw| raw.id)
+			.collect();
+	tx.commit().await.unwrap();
+
+	// Assert: malformed requirements reach decoding (and repair); only the real gap is
+	// hidden, and it is counted.
+	assert_eq!(visible, ids[..3]);
+	assert_eq!(waiting, 1);
+}

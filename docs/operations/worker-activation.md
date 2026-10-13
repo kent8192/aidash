@@ -110,19 +110,22 @@ which of them it needs, and `encode` stores that as a `requires` array in the
 nothing keep the legacy bytes and stay claimable by every worker.
 
 - Run leasing (`candidates`, hence notification claims, recovery scans and startup
-  recovery) excludes Runs whose `requires` is not covered by the worker's
-  capabilities, using the envelope only; the state is not decoded. Such a Run is not
-  stuck, repaired or failed, and burns no recovery attempt. Inspection reports
+  recovery) excludes Runs whose `requires` is a list of names not covered by the
+  worker's capabilities, using the envelope only; the state is not decoded. Such a Run
+  is not stuck, repaired or failed, and burns no recovery attempt. Inspection reports
   `lease_wait: {"reason":"capable_worker","capabilities":[...]}` while no live lease holds
-  it, `aidash_activation_capability_skips_total` counts skips, and a notification that
-  reaches an incapable worker is deferred five seconds. The Run is claimed by the next
-  recovery scan (at most five seconds) or redelivery of a capable worker.
+  it, `aidash_activation_capability_skips_total` counts skips (each recovery scan adds
+  the Runs its candidate query hid), and a notification that reaches an incapable
+  worker is deferred five seconds. The Run is claimed by the next recovery scan (at
+  most five seconds) or redelivery of a capable worker. A malformed `requires` (not a
+  list of strings) is not filtered, so decoding rejects it and the Run is repaired.
 - Decoding recomputes the requirement from the state; a stored requirement that falls
   short of it is a corrupt Run. A stored requirement larger than the derived one is
   accepted (it only keeps old workers away) and is dropped on the next save.
-- A `deny_unknown_fields` or unknown-variant failure while decoding is reported as
-  `UnsupportedState` (a capability mismatch), never as `Invalid`. Leasing leaves such a
-  Run for a newer worker instead of repairing it into failure delivery.
+- A `deny_unknown_fields` or unknown-variant failure, or a `state_version` above the
+  one this build writes, is reported as `UnsupportedState` (a capability mismatch),
+  never as `Invalid`. Leasing leaves such a Run for a newer worker instead of repairing
+  it into failure delivery, and a notification for it is deferred five seconds as above.
 
 To add a capability when a change adds persisted state that older workers reject:
 

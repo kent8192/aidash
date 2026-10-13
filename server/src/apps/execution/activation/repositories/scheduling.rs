@@ -15,8 +15,9 @@ use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::{QueryValue, Row, TransactionExecutor};
 use reinhardt::db::orm::{QueryRow, execution::convert_values};
 use reinhardt::query::{
-	Alias, ColumnRef, Condition, Expr, ExprTrait, IntoIden, LockBehavior, LockType, Order,
-	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, BinOper, ColumnRef, Condition, Expr, ExprTrait, Func, IntoIden, LockBehavior, LockType,
+	Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SelectStatement, SimpleExpr,
+	types::PgBinOper,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -61,15 +62,74 @@ fn approval(row: Row) -> Result<Approval> {
 	})
 }
 
-/// Excludes Runs whose stored requirement (see `StateRequirements`) is not a subset of
-/// the worker's capabilities. Reads the envelope's `requires` only, so the state is not decoded.
-fn requirements_covered(capabilities: &[PersistedCapability]) -> SimpleExpr {
+/// Keeps Runs whose stored requirement (see `StateRequirements`) the worker's capabilities
+/// cover. Reads the envelope's `requires` only, so the state is not decoded. Only a
+/// well-formed list of names is filtered: a malformed one stays visible so decoding rejects
+/// it and the Run reaches invalid-state repair instead of waiting for a worker forever.
+fn requirements_covered(capabilities: &[PersistedCapability]) -> Condition {
+	let requires = || {
+		Expr::col(Alias::new("pending")).binary(
+			BinOper::PgOperator(PgBinOper::JsonGetByIndex),
+			Expr::value("requires"),
+		)
+	};
 	let names: Vec<&str> = capabilities.iter().map(|c| c.name()).collect();
-	Expr::cust_with_values(
-		"COALESCE(pending -> 'requires', '[]'::jsonb) <@ CAST(CAST(? AS text) AS jsonb)",
-		[reinhardt::query::Value::from(json!(names).to_string())],
-	)
-	.into()
+	Condition::any()
+		.add(requires().is_null())
+		.add(
+			SimpleExpr::FunctionCall("jsonb_typeof".into_iden(), vec![requires()])
+				.ne(Expr::value("array")),
+		)
+		.add(SimpleExpr::FunctionCall(
+			"jsonb_path_exists".into_iden(),
+			vec![
+				requires(),
+				Expr::value(r#"$[*] ? (@.type() != "string")"#).cast_as(Alias::new("jsonpath")),
+			],
+		))
+		.add(requires().binary(
+			BinOper::PgOperator(PgBinOper::Contained),
+			Expr::value(json!(names)).into(),
+		))
+}
+
+/// Runs no live lease holds that are runnable now, before the capability filter.
+fn leasable() -> SelectStatement {
+	Query::select()
+		.from(Alias::new("runs"))
+		.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
+		.and_where(Expr::col("control").ne(Expr::value("PAUSED")))
+		.and_where(Expr::col("revision").lt(Expr::value(i64::MAX - 2)))
+		.cond_where(
+			Condition::any()
+				.add(Expr::col("lease_until").is_null())
+				.add(Expr::col("lease_until").lte(Expr::current_timestamp())),
+		)
+		.and_where(run_unblocked())
+		.to_owned()
+}
+
+impl<E: Executor> Scope<E> {
+	/// Runs the candidate query hides from this worker only because their stored
+	/// requirement exceeds its capabilities. `lease` never sees them, so a recovery scan
+	/// counts them here.
+	pub(crate) async fn capability_waits(&mut self) -> Result<u64> {
+		let (sql, values) = leasable()
+			.expr_as(
+				Func::count(Expr::col(ColumnRef::Asterisk).into()),
+				Alias::new("waiting"),
+			)
+			.cond_where(requirements_covered(self.capabilities).not())
+			.build(PostgresQueryBuilder);
+		let waiting: i64 = self
+			.tx
+			.executor()
+			.fetch_one(&sql, convert_values(values))
+			.await?
+			.get("waiting")
+			.map_err(FrameworkError::from)?;
+		Ok(waiting.unsigned_abs())
+	}
 }
 
 #[async_trait]
@@ -96,20 +156,14 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		target: Option<Uuid>,
 		cursor: RecoveryCursor,
 	) -> aidash_application::Result<Vec<RawRun>> {
-		let mut ready = Query::select();
+		if target.is_none() && cursor.is_none() {
+			let waiting = self.capability_waits().await?;
+			metrics::counter!("aidash_activation_capability_skips_total").increment(waiting);
+		}
+		let mut ready = leasable();
 		ready
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
-			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
-			.and_where(Expr::col("control").ne(Expr::value("PAUSED")))
-			.and_where(Expr::col("revision").lt(Expr::value(i64::MAX - 2)))
-			.cond_where(
-				Condition::any()
-					.add(Expr::col("lease_until").is_null())
-					.add(Expr::col("lease_until").lte(Expr::current_timestamp())),
-			)
-			.and_where(run_unblocked())
-			.and_where(requirements_covered(self.capabilities))
+			.cond_where(requirements_covered(self.capabilities))
 			.order_by(Alias::new("updated_at"), Order::Asc)
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(128)
