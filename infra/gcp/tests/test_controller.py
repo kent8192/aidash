@@ -787,7 +787,7 @@ class ReconcileTests(unittest.TestCase):
             "project_id": "aidash-fixture",
             "tenant_ids": ["pool"],
             "tenant_bindings": {"pool": "acme"},
-            "mfa": {"pool": "disabled"},
+            "mfa": {"pool": {"state": "disabled", "totp_adjacent_intervals": 5}},
         }
 
         def entry():
@@ -878,7 +878,7 @@ class ReconcileTests(unittest.TestCase):
 
         def apply(managed, **kwargs):
             original(managed, **kwargs)
-            self.cloud.gcip["mfa"] = {"pool": "disabled"}
+            self.cloud.gcip["mfa"] = {"pool": {"state": "disabled", "totp_adjacent_intervals": 5}}
 
         with (
             patch.object(controller, "reconcile_mfa", mfa),
@@ -894,6 +894,65 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.calls[0], ("mfa", "test", False))
         self.assertLess(self.calls.index(("mfa", "test", True)), self.calls.index(("admission", "test", "open")))
         self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+
+    def test_mfa_only_change_applies_and_refreshes_the_runtime_without_fencing(self):
+        self.request()
+        self.reconcile()
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "acme"}})
+        self.cloud.gcip = {"project_id": "aidash-fixture", "tenant_ids": ["pool"], "tenant_bindings": {"pool": "acme"}}
+        original = self.cloud.apply
+
+        def apply(managed, **kwargs):
+            original(managed, **kwargs)
+            # The module output follows the declaration only through an apply.
+            declared = config["gcip_tenants"]["company"].get("mfa", {})
+            self.cloud.gcip["mfa"] = {"pool": {"state": declared.get("state", "disabled"), "totp_adjacent_intervals": 5}}
+
+        enforced, published = [], []
+
+        def mfa(output):
+            enforced.append(output["gcip"]["mfa"]["pool"]["state"])
+            return iter(())
+
+        def provision(config, output, kind):
+            published.append(output["gcip"]["mfa"]["pool"]["state"])
+            return deepcopy(RUNTIME)
+
+        with (
+            patch.object(self.cloud, "apply", apply),
+            patch.object(controller, "reconcile_mfa", mfa),
+            patch.object(controller, "provision_secret", provision),
+            patch.object(controller, "reconcile_environment"),
+            patch.dict(os.environ, {"AIDASH_GCIP_IDP_SECRETS": "{}"}),
+        ):
+            controller.reconcile(config, self.store)
+            for state in ("mandatory", "enabled"):
+                with self.subTest(state=state):
+                    config["gcip_tenants"]["company"]["mfa"] = {"state": state}
+                    self.calls.clear()
+                    enforced.clear()
+                    published.clear()
+                    plans = len(self.cloud.plans)
+                    controller.reconcile(config, self.store)
+                    # Neither fence digest moves, yet the declaration is applied,
+                    # enforced and published to the running host without quiescing it.
+                    self.assertGreater(len(self.cloud.plans), plans)
+                    self.assertNotIn(("scale", "test", "runner", 0), self.calls)
+                    self.assertEqual(enforced[0], state)
+                    self.assertEqual(published, [state])
+                    self.assertIn(("helm", "test", "app"), self.calls)
+                    self.assertLess(self.calls.index(("helm", "test", "app")), self.calls.index(("admission", "test", "open")))
+                    entry = self.store.state["environments"]["test"]
+                    self.assertEqual(entry["gcip_mfa_revision"], controller.gcip_mfa_revision(config))
+                    self.assertFalse(entry["gcip_pending"])
+                    # The refreshed declaration is steady state.
+                    self.calls.clear()
+                    published.clear()
+                    plans = len(self.cloud.plans)
+                    controller.reconcile(config, self.store)
+                    self.assertEqual(len(self.cloud.plans), plans)
+                    self.assertEqual(published, [])
+                    self.assertFalse(any(call[0] == "helm" for call in self.calls))
 
     def test_gcip_change_fences_a_running_unpublished_failed_deployment(self):
         self.request()

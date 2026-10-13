@@ -95,6 +95,146 @@ pub fn compare(
 		.then(a.cmp(&b))
 }
 
+/// Symmetric structural redundancy: a derived Unit and the candidate Units it cites.
+pub type Related = BTreeMap<Uuid, BTreeSet<Uuid>>;
+
+/// Derived memory (Observation, mental model) is redundant with the exact current
+/// revisions it cites. Citations of Units outside `units` are ignored.
+pub fn related(units: &[Unit]) -> Related {
+	let by_id: BTreeMap<_, _> = units.iter().map(|unit| (unit.id, unit)).collect();
+	let mut related = Related::new();
+	for derived in units.iter().filter(|unit| unit.content.kind.derived()) {
+		for evidence in &derived.content.evidence {
+			let super::Evidence::Unit { bank, id, revision } = evidence else {
+				continue;
+			};
+			if *id != derived.id
+				&& *bank == derived.bank
+				&& by_id
+					.get(id)
+					.is_some_and(|source| source.revision == *revision && source.bank == *bank)
+			{
+				related.entry(derived.id).or_default().insert(*id);
+				related.entry(*id).or_default().insert(derived.id);
+			}
+		}
+	}
+	related
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diversified {
+	pub selected: Vec<Ranked>,
+	/// Candidates without a current vector. They compete on relevance alone and
+	/// neither penalize nor are penalized by embedding similarity.
+	pub skipped: Vec<Uuid>,
+}
+
+/// Maximal Marginal Relevance over an already authorized, reranked candidate list.
+///
+/// Each step picks `argmax λ·relevance − (1−λ)·max_sim(selected)`, where relevance is
+/// the input score scaled to [0, 1] and `max_sim` is the largest non-negative cosine
+/// to a selected candidate. A candidate structurally `related` to a selected one (a
+/// derived summary and its cited sources) counts as maximally similar (1.0), so λ still
+/// decides whether a highly relevant source may follow its summary. Exact ties follow
+/// `compare`: retention when `retention` is given, then the stable Unit ID. This only
+/// reorders or drops the given candidates; it never introduces an ID.
+pub fn diversify(
+	ranked: &[Ranked],
+	vectors: &BTreeMap<Uuid, Vec<f32>>,
+	related: &Related,
+	retention: Option<&BTreeMap<Uuid, f64>>,
+	lambda_millionths: u32,
+	limit: usize,
+) -> Result<Diversified> {
+	if !(1..=1_000_000).contains(&lambda_millionths) {
+		return Err(Error::Invalid(
+			"diversity lambda must be within 1..=1_000_000 millionths".into(),
+		));
+	}
+	let ids: BTreeSet<_> = ranked.iter().map(|hit| hit.id).collect();
+	if ids.len() != ranked.len() || ranked.iter().any(|hit| !hit.score.is_finite()) {
+		return Err(Error::Invalid(
+			"diversification needs unique candidates with finite scores".into(),
+		));
+	}
+	let lambda = f64::from(lambda_millionths) / 1_000_000.;
+	let usable: Vec<_> = ranked.iter().map(|hit| vectors.get(&hit.id)).collect();
+	let dimension = usable.iter().flatten().map(|values| values.len()).next();
+	if usable.iter().flatten().any(|values| {
+		Some(values.len()) != dimension
+			|| values.is_empty()
+			|| values.iter().any(|value| !value.is_finite())
+			|| values.iter().all(|value| *value == 0.)
+	}) {
+		return Err(Error::Invalid("invalid diversification embeddings".into()));
+	}
+	let norms: Vec<_> = usable
+		.iter()
+		.map(|values| values.map(|values| super::graph::norm(values)))
+		.collect();
+	let mut skipped: Vec<_> = ranked
+		.iter()
+		.zip(&usable)
+		.filter(|(_, values)| values.is_none())
+		.map(|(hit, _)| hit.id)
+		.collect();
+	skipped.sort();
+	// Non-negative scores keep their ratio to the top score; a negative score shifts the
+	// scale so the minimum maps to zero. Halving keeps the span finite for any finite scores.
+	let (base, high) = ranked
+		.iter()
+		.fold((0.0_f64, f64::NEG_INFINITY), |(base, high), hit| {
+			(base.min(hit.score), high.max(hit.score))
+		});
+	let span = high / 2. - base / 2.;
+	let relevance: Vec<_> = ranked
+		.iter()
+		.map(|hit| {
+			if span > 0. {
+				(hit.score / 2. - base / 2.) / span
+			} else {
+				1.
+			}
+		})
+		.collect();
+	let mut remaining: Vec<usize> = (0..ranked.len()).collect();
+	let mut max_sim = vec![0.0_f64; ranked.len()];
+	let mut selected = Vec::new();
+	while selected.len() < limit && !remaining.is_empty() {
+		let best = remaining
+			.iter()
+			.copied()
+			.max_by(|a, b| {
+				let value =
+					|index: usize| lambda * relevance[index] - (1. - lambda) * max_sim[index];
+				// Exact ties follow the baseline order: retention (when decay is on), then Unit ID.
+				value(*a).total_cmp(&value(*b)).then_with(|| {
+					compare(ranked[*a].id, 0., ranked[*b].id, 0., retention).reverse()
+				})
+			})
+			.expect("remaining is not empty");
+		remaining.retain(|index| *index != best);
+		let chosen = &ranked[best];
+		for index in remaining.iter().copied() {
+			if related
+				.get(&chosen.id)
+				.is_some_and(|peers| peers.contains(&ranked[index].id))
+			{
+				max_sim[index] = 1.;
+			}
+			if let (Some(left), Some(right), Some(left_norm), Some(right_norm)) =
+				(usable[best], usable[index], norms[best], norms[index])
+			{
+				max_sim[index] =
+					max_sim[index].max(super::graph::cosine(left, right, left_norm, right_norm));
+			}
+		}
+		selected.push(chosen.clone());
+	}
+	Ok(Diversified { selected, skipped })
+}
+
 /// Traversal only sees the preauthorized snapshot. No link grants read permission.
 pub fn graph(units: &[Unit], seeds: &[Uuid], bounds: &Bounds) -> Vec<Uuid> {
 	graph_with_edges(units, seeds, &[], bounds)

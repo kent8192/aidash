@@ -151,6 +151,12 @@ pub struct GcipConfig {
 	#[setting(default = "Default::default()")]
 	#[setting(leaf)]
 	pub password_sign_up: std::collections::BTreeSet<String>,
+	/// Pools whose MFA Requirement is `mandatory`. Only a sign-in page hint that
+	/// leads a user with no second factor through enrollment; GCIP enforces the
+	/// Requirement and second-factor claims are never authority.
+	#[setting(default = "Default::default()")]
+	#[setting(leaf)]
+	pub mfa_mandatory: std::collections::BTreeSet<String>,
 	/// Sign-in Domain → GCIP Tenant ID. Routing only; never authority.
 	#[setting(default = "Default::default()")]
 	pub sign_in_domains: std::collections::BTreeMap<String, String>,
@@ -234,6 +240,7 @@ impl GcipConfig {
 			.providers
 			.keys()
 			.chain(self.password_sign_up.iter())
+			.chain(self.mfa_mandatory.iter())
 			.any(|pool| !self.tenant_bindings.contains_key(pool))
 		{
 			return Err(Error::Invalid(
