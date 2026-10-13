@@ -161,6 +161,14 @@ fn disabled_and_unstarted_bindings_keep_their_original_initial_state(
 	assert_eq!(disabled.state, "disabled");
 	assert_eq!(disabled.operation_id, None);
 	assert_eq!(disabled.reason, Some(Failure::Authority));
+	assert_eq!(
+		disabled.recovery,
+		Some(crate::semantic::recovery::Recovery::new(
+			Failure::Authority,
+			false
+		)),
+		"a disabled Binding still carries the typed actions for its cause"
+	);
 	let pending = project(&binding, None, None).unwrap();
 	assert_eq!(pending.state, "pending");
 	assert_eq!(pending.retry_count, 0);

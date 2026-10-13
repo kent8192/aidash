@@ -36,9 +36,14 @@ impl From<RunInspection> for RunManagement {
 			phase: run.phase,
 			control: run.control,
 			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
+			// A paused Run is excluded from retry scheduling, so its retry only
+			// counts as scheduled while the Run is active.
 			semantic_recovery: run.recovery.as_ref().filter(|_| recoverable).and_then(|r| {
 				r.semantic_reason.map(|cause| {
-					aidash_domain::semantic::recovery::Recovery::new(cause, r.retry.is_some())
+					aidash_domain::semantic::recovery::Recovery::new(
+						cause,
+						r.retry.is_some() && run.control == RunControl::Active,
+					)
 				})
 			}),
 			context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),

@@ -50,6 +50,8 @@ fn inspection(
 #[rstest]
 #[case::invalidated(RunControl::Paused, Failure::Invalidated, false, &[Action::CreateFollowUpTask])]
 #[case::retrying(RunControl::Active, Failure::Unavailable, true, &[Action::Wait])]
+// A paused Run keeps its retry deadline but is never scheduled until resumed.
+#[case::paused_retry(RunControl::Paused, Failure::Unavailable, true, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::exhausted(RunControl::Paused, Failure::RetriesExhausted, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 fn management_reports_the_exact_cause_and_its_authorized_actions(
 	#[case] control: RunControl,

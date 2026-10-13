@@ -276,9 +276,19 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				vec![]
 			}
 		};
-		let semantic = repository
+		let mut semantic = repository
 			.semantic_status(grant.id, &binding, reason)
 			.await?;
+		// A cancelled or finished remote Run keeps its cause visible but, like the
+		// local management view, offers no action that would resume it.
+		if status
+			.as_ref()
+			.ok()
+			.and_then(Option::as_ref)
+			.is_some_and(|activation| !activation.recoverable())
+		{
+			semantic.recovery = None;
+		}
 		Ok(Status {
 			human_requests,
 			semantic,

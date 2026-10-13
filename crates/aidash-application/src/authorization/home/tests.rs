@@ -625,6 +625,49 @@ async fn authority_recheck_uses_the_same_status_deadline() {
 	assert_eq!(statuses[0].semantic.reason, Some(Failure::Unavailable));
 	assert_eq!(repository.state.lock().unwrap().scopes, 0);
 }
+/// A cancelled or finished remote Run keeps its semantic cause visible but
+/// offers no recovery action, matching the local management view.
+#[rstest]
+#[case::cancelled(
+	RemoteExecutionPhase::Waiting,
+	RemoteExecutionControlState::Cancelled,
+	false
+)]
+#[case::finished(
+	RemoteExecutionPhase::Failed,
+	RemoteExecutionControlState::Inactive,
+	false
+)]
+#[case::paused(
+	RemoteExecutionPhase::Waiting,
+	RemoteExecutionControlState::Paused,
+	true
+)]
+#[tokio::test]
+async fn terminal_remote_run_reports_its_cause_without_recovery(
+	#[case] phase: RemoteExecutionPhase,
+	#[case] control: RemoteExecutionControlState,
+	#[case] recoverable: bool,
+) {
+	// Arrange
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.semantic = true;
+		let mut reply = activation();
+		reply["phase"] = json!(phase);
+		reply["control"] = json!(control);
+		reply["semantic_reason"] = json!(Failure::Unavailable);
+		state.replies = vec![reply];
+	}
+
+	// Act
+	let statuses = list(&repository, task().id).await.unwrap();
+
+	// Assert
+	assert_eq!(statuses[0].semantic.reason, Some(Failure::Unavailable));
+	assert_eq!(statuses[0].semantic.recovery.is_some(), recoverable);
+}
 #[rstest]
 #[tokio::test]
 async fn hidden_grant_output_prevents_provenance_reads() {

@@ -158,6 +158,9 @@ pub fn project(
 		recovery: None,
 	};
 	if binding.disabled() {
+		// A disabled Binding schedules no retry; its cause still carries actions.
+		result.recovery =
+			reason.map(|reason| crate::semantic::recovery::Recovery::new(reason, false));
 		return Ok(result);
 	}
 	if let Some(record) = record {
