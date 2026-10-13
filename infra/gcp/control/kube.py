@@ -69,7 +69,12 @@ GCIP_KEYS = {
     "providers", "password_sign_up", "auth_helper", "sign_in_domains", "mfa_mandatory",
     "session_absolute_seconds", "session_idle_seconds",
 }
-IDENTITY_TOKENS = ("database", "api", "runner", "observer")
+IDENTITY_TOKENS = ("database", "api", "runner", "observer", "owner", "server")
+# Migrations log in as the owner of every table. Servers and workers log in as a
+# role that holds only DML, so row-level security binds it (#262). The bootstrap
+# superuser (the "database" token) only provisions these roles and extensions.
+OWNER_ROLE = "aidash_owner"
+SERVER_ROLE = "aidash_server"
 # The activity observer's own login. It reads only the tables queried by
 # infra/gcp/observer/src/main.rs, plus pg_read_all_stats: without it,
 # pg_stat_activity hides other sessions' state and in-flight work would look idle.
@@ -489,12 +494,14 @@ def materialize(cluster, identity, project, output, runtime):
         raise Refused("Google OAuth client configuration is required")
     provider = provider_settings(output.get("provider_credentials"), external)
     tokens = identity_tokens(cluster, namespace)
-    database = f"postgres://aidash:{tokens['database']}@env-environment-postgres:5432/{DATABASE}"
+    server = f"postgres://{SERVER_ROLE}:{tokens['server']}@env-environment-postgres:5432/{DATABASE}"
+    # Only the migration Job receives the owner's login; servers never do.
+    owner = f"postgres://{OWNER_ROLE}:{tokens['owner']}@env-environment-postgres:5432/{DATABASE}"
     # The observer never receives the application's administrative login.
     observer = f"postgres://{OBSERVER_ROLE}:{tokens['observer']}@env-environment-postgres:5432/{DATABASE}"
     values = dict(
         external,
-        DATABASE_URL=database,
+        DATABASE_URL=server,
         NATS_URL="nats://env-environment-nats:4222",
         AIDASH_API_TOKEN=tokens["api"],
         AIDASH_CORE_RUNNER_TOKEN=tokens["runner"],
@@ -503,6 +510,7 @@ def materialize(cluster, identity, project, output, runtime):
         values.update(AIDASH_OIDC_ISSUER="https://accounts.google.com", AIDASH_OIDC_PUBLIC_ORIGIN="https://" + output["hostname"])
     for manifest in (
         secret(namespace, "app-runtime", values),
+        secret(namespace, "app-migration", {"DATABASE_URL": owner}),
         secret(namespace, "app-runner", {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
         secret(namespace, "env-postgres", {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": tokens["database"], "POSTGRES_DB": DATABASE}),
         secret(namespace, "env-activity", {"DATABASE_URL": observer, "AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
@@ -784,6 +792,7 @@ def deploy(cluster, identity, output, release, sha, settings):
         cluster.rollout(namespace, target)
     cluster.scale(namespace, RUNNER, 1)
     cluster.rollout(namespace, RUNNER)
+    database_roles(cluster, identity)
     migrate(cluster, identity, sha)
     observer_role(cluster, identity)
     cluster.rollout(namespace, EDGE)
@@ -804,6 +813,10 @@ def migrate(cluster, identity, sha):
             # as root, while init-if-missing creates the Home as the application UID.
             mount.pop("subPath", None)
             mount["mountPath"] = RECOVERY_ROOT
+    # The Job, unlike the server, logs in as the owner of every table.
+    container["env"] = [item for item in container.get("env", []) if item["name"] != "DATABASE_URL"] + [
+        {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "app-migration", "key": "DATABASE_URL"}}},
+    ]
     container["command"] = ["/bin/sh", "-ec"]
     container["args"] = [
         'aidash migrate && aidash memory-recovery init-if-missing --directory "$AIDASH_MEMORY_RECOVERY_DIR"'
@@ -844,6 +857,79 @@ def migrate(cluster, identity, sha):
     })
     if not wait_job(cluster, namespace, name, 900):
         raise RuntimeError("Migration Job failed; the retained database was not replaced")
+
+
+# A table owned by another role predates the owner and server roles: the
+# migration Job could not change it and the server could not read it.
+LEGACY_OWNERSHIP_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')"
+    f" AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = '{OWNER_ROLE}')"
+    " AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass"
+    " AND d.objid = c.oid AND d.deptype = 'e'));"
+)
+# PGroonga's crash-safe worker starts asynchronously in each database; flushing
+# its catalog proves it is ready before the migration Job builds indexes.
+PGROONGA_SQL = "CREATE EXTENSION IF NOT EXISTS pgroonga;\nSELECT pgroonga_command('io_flush');\n"
+
+
+def database_roles_sql(owner_password, server_password, database=DATABASE):
+    """Idempotent SQL for the owner and server logins, the database's ownership,
+    the superuser-only extensions and the server's default privileges."""
+    if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in (owner_password, server_password)):
+        raise Refused("Database role tokens are invalid")
+    lines = []
+    for role, password in ((OWNER_ROLE, owner_password), (SERVER_ROLE, server_password)):
+        lines += [
+            f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}')"
+            f" THEN CREATE ROLE {role}; END IF; END $$;",
+            f"ALTER ROLE {role} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
+            f" NOBYPASSRLS INHERIT PASSWORD '{password}';",
+        ]
+    return "\n".join((
+        *lines,
+        f"ALTER DATABASE {database} OWNER TO {OWNER_ROLE};",
+        "CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public;",
+        "CREATE EXTENSION IF NOT EXISTS vector;",
+        # Default privileges apply only to objects the owner creates afterwards.
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {OWNER_ROLE} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {SERVER_ROLE};",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {OWNER_ROLE} GRANT USAGE, SELECT ON SEQUENCES TO {SERVER_ROLE};",
+        "",
+    ))
+
+
+def database_roles(cluster, identity):
+    """Provision the owner and server logins before the migration Job runs.
+
+    Passwords travel on stdin through the PostgreSQL container's local socket,
+    as the observer's do.
+    """
+    namespace = namespace_of(identity)
+    tokens = identity_tokens(cluster, namespace)
+
+    def psql(sql, *options):
+        return cluster.exec(
+            namespace, POSTGRES, "postgres", "sh", "-ec",
+            'exec psql --no-psqlrc --quiet -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" ' + " ".join(options),
+            data=sql.encode(),
+        )
+
+    if psql(LEGACY_OWNERSHIP_SQL, "--tuples-only", "--no-align").strip() == b"t":
+        raise Refused(
+            "This Environment's database predates the owner and server roles (#262);"
+            " destroy and recreate the Environment"
+        )
+    psql(database_roles_sql(tokens["owner"], tokens["server"]), "--single-transaction")
+    # A failed PGroonga start is remembered by its backend, so each attempt is a
+    # new psql session; command output stays private, so every failure retries.
+    for attempt in range(30):
+        try:
+            psql(PGROONGA_SQL)
+            return
+        except RuntimeError:
+            if attempt == 29:
+                raise
+            time.sleep(1)
 
 
 def observer_sql(password, database=DATABASE):
@@ -896,7 +982,8 @@ def reload(cluster, identity, output, settings):
     cluster.upgrade(namespace, "app", APP_CHART, values)
     cluster.scale(namespace, RUNNER, 1)
     cluster.rollout(namespace, RUNNER)
-    # materialize() points the activity Secret at the observer login.
+    # materialize() points the runtime Secrets at the server and observer logins.
+    database_roles(cluster, identity)
     observer_role(cluster, identity)
     start_writers(cluster, identity)
 
