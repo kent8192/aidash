@@ -5,11 +5,22 @@ const MAX_SSE_FRAME_CHARS = 64 * 1024;
 
 export type SseFrame = { id?: string; event?: string; data: string };
 
-/** Incremental `text/event-stream` parser. Comment-only blocks yield nothing. */
+/**
+ * Incremental `text/event-stream` parser. Comment-only blocks yield nothing.
+ *
+ * A frame longer than `MAX_SSE_FRAME_CHARS` is never buffered whole: its data
+ * lines are discarded as they stream and only its `id` and `event` survive,
+ * so it yields a frame with empty `data`. The reader still advances its
+ * cursor past it instead of reconnecting to replay the same frame forever.
+ */
 export class SseParser {
   private buffer = "";
   /** The previous chunk ended in CR, so a leading LF completes that CRLF. */
   private pendingLf = false;
+  /** Fields kept from the oversized frame being skipped. */
+  private skipped: SkippedFrame | undefined;
+  /** The rest of the current line of a skipped frame is discarded. */
+  private discardLine = false;
 
   push(chunk: string): SseFrame[] {
     if (!chunk) return [];
@@ -18,19 +29,92 @@ export class SseParser {
     const text = (this.buffer + chunk).replace(/\r\n?/g, "\n");
     const frames: SseFrame[] = [];
     let start = 0;
-    let end;
-    while ((end = text.indexOf("\n\n", start)) >= 0) {
-      if (end - start > MAX_SSE_FRAME_CHARS)
-        throw new Error("SSE frame too large");
-      const frame = parseBlock(text.slice(start, end));
-      if (frame) frames.push(frame);
-      start = end + 2;
+    while (start < text.length) {
+      const skipped = this.skipped;
+      if (!skipped) {
+        const end = text.indexOf("\n\n", start);
+        if ((end < 0 ? text.length : end) - start > MAX_SSE_FRAME_CHARS) {
+          this.skipped = { fields: false };
+          continue;
+        }
+        if (end < 0) break;
+        const frame = parseBlock(text.slice(start, end));
+        if (frame) frames.push(frame);
+        start = end + 2;
+        continue;
+      }
+      const end = text.indexOf("\n", start);
+      if (this.discardLine) {
+        if (end < 0) {
+          start = text.length;
+          break;
+        }
+        this.discardLine = false;
+        start = end + 1;
+        continue;
+      }
+      if (end < 0) {
+        if (!keepsPartialLine(text, start)) {
+          this.discardLine = true;
+          start = text.length;
+        }
+        break;
+      }
+      if (end > start) {
+        skipLine(skipped, text, start, end);
+        start = end + 1;
+        continue;
+      }
+      this.skipped = undefined;
+      start = end + 1;
+      if (!skipped.fields) continue;
+      const frame: SseFrame = { data: "" };
+      if (skipped.id !== undefined) frame.id = skipped.id;
+      if (skipped.event !== undefined) frame.event = skipped.event;
+      frames.push(frame);
     }
     this.buffer = text.slice(start);
-    if (this.buffer.length > MAX_SSE_FRAME_CHARS)
-      throw new Error("SSE frame too large");
     return frames;
   }
+}
+
+type SkippedFrame = { id?: string; event?: string; fields: boolean };
+
+/** Whether `text` from `start` can still become a kept `id`/`event` line. */
+function keepsPartialLine(text: string, start: number): boolean {
+  const length = text.length - start;
+  if (length > MAX_SSE_FRAME_CHARS) return false;
+  return (
+    text.startsWith("id:".slice(0, length), start) ||
+    text.startsWith("event:".slice(0, length), start)
+  );
+}
+
+/** Record one line of a skipped frame without copying its data. */
+function skipLine(
+  skipped: SkippedFrame,
+  text: string,
+  start: number,
+  end: number,
+) {
+  const value = (field: string) => {
+    if (end - start === field.length && text.startsWith(field, start))
+      return "";
+    if (!text.startsWith(field + ":", start)) return undefined;
+    const from = start + field.length + 1;
+    return text.slice(text.startsWith(" ", from) ? from + 1 : from, end);
+  };
+  const id = value("id");
+  const event = id === undefined ? value("event") : undefined;
+  if (id !== undefined && !id.includes("\0")) skipped.id = id;
+  if (event !== undefined) skipped.event = event;
+  if (
+    id !== undefined ||
+    event !== undefined ||
+    (end - start === 4 && text.startsWith("data", start)) ||
+    text.startsWith("data:", start)
+  )
+    skipped.fields = true;
 }
 
 function parseBlock(block: string): SseFrame | undefined {

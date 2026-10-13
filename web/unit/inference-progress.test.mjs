@@ -75,18 +75,31 @@ test("parser buffers partial frames and skips comments", () => {
   );
 });
 
-test("parser rejects oversized complete and unfinished frames", () => {
-  const frame = "data: " + "x".repeat(64 * 1024);
-  assert.throws(
-    () => new SseParser().push(frame + "\n\n"),
-    /SSE frame too large/,
+test("parser skips an oversized frame but keeps its id and event", () => {
+  const data = "x".repeat(300_000);
+  const frames = new SseParser().push(
+    `id: 41\nevent: workspace.updated\ndata: ${data}\n\nid: 42\ndata: ok\n\n`,
   );
+  assert.deepEqual(frames, [
+    { id: "41", event: "workspace.updated", data: "" },
+    { id: "42", data: "ok" },
+  ]);
+});
+
+test("parser streams an oversized frame without buffering its data", () => {
+  const stream =
+    `event: workspace.updated\r\ndata: ${"x".repeat(300_000)}\r\n` +
+    `: note\r\nid: 41\r\n\r\nid: 42\r\ndata: ok\r\n\r\n`;
   const parser = new SseParser();
-  assert.deepEqual(parser.push(frame.slice(0, 32 * 1024)), []);
-  assert.throws(
-    () => parser.push(frame.slice(32 * 1024)),
-    /SSE frame too large/,
-  );
+  const frames = [];
+  for (let offset = 0; offset < stream.length; offset += 7_919) {
+    frames.push(...parser.push(stream.slice(offset, offset + 7_919)));
+    assert.ok(parser.buffer.length <= 64 * 1024);
+  }
+  assert.deepEqual(frames, [
+    { id: "41", event: "workspace.updated", data: "" },
+    { id: "42", data: "ok" },
+  ]);
 });
 
 test("parser accepts many bounded frames in a chunk larger than the frame limit", () => {
