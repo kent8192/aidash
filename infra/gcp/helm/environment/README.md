@@ -80,12 +80,13 @@ and projects that ServiceAccount token only into the collector, so the
 database-facing observer cannot publish a snapshot. The persisted `snapshot.json` uses the
 existing `aidash-infra-activity/1` contract. Failed observations cannot authorize
 stop. A gap longer than 120 seconds is busy and starts a full new idle interval;
-new transfer receipts and actual work completions also renew it. Receipt IDs only
-accumulate, so the snapshot keeps their SHA-256 digest and count rather than the
-set, staying far below the ConfigMap size limit; any change renews the interval.
-A failed observer writes no database evidence but does not fail the Pod, so the
-collector still publishes a fresh busy snapshot; a Pod that never publishes leaves
-an old snapshot that the controller must reject as stale.
+new transfer receipts and actual work completions also renew it. A failed observer
+writes no database evidence but does not fail the Pod, so the collector still
+publishes a fresh busy snapshot; a Pod that never publishes leaves an old snapshot
+that the controller must reject as stale.
+
+The observation sources and their bounds are specified in
+[Activity observation contract](#activity-observation-contract) below.
 
 The Phase 4 idle seal closes admission and gracefully drains **both server and
 worker**. Keep the Runner, edge, database and observer running for the fresh
@@ -108,3 +109,53 @@ helm template env infra/gcp/helm/environment --namespace aidash-develop -f image
   --set edge.backend=app-backend --set activity.existingSecret=env-activity \
   --set activity.runnerEndpoint=http://app-execution-runner:8949
 ```
+
+## Activity observation contract
+
+Three sources feed one snapshot, and each is bounded so that a long-lived
+Environment cannot make the observation fail closed forever. The observer
+(`infra/gcp/observer/src/main.rs`) and the collector (`files/activity.py`) both
+refer here.
+
+- **Observer (database).** Besides the busy `counts` and `last_work_completed`, it
+  reports durable completed-transfer receipts only as
+  `completed_transfers_count` (an integer) and `completed_transfers_digest` (64
+  lowercase hex characters). The query computes both in constant memory: every
+  receipt contributes PostgreSQL's native 64-bit `uuid_hash_extended` of its ID,
+  the contributions are summed (so neither a sort nor an ID list exists anywhere)
+  and the sum is hashed with SHA-256. Receipts have no deletion path, so the
+  output size does not depend on how many exist. The per-receipt work is one
+  native hash, so the summary scan costs about as much as the observer's other
+  predicate scans of `core_records`. The observer never emits the receipt IDs.
+- **Collector.** It stores the same pair in `snapshot.json` and compares it with
+  the previous one: any change, whether a new receipt or a removed one,
+  renews the idle interval, and retries or object reclamation of an existing
+  receipt do not. The pair is the renewal key: a changed count with an unchanged
+  digest renews too. An observation that lacks a well-formed pair (an older
+  observer that still sends the receipt list, with or without the pair, a missing
+  field, a non-hex digest) or whose file exceeds 64 KiB is treated as unavailable
+  and published as busy. The first sample after upgrading from the receipt-list
+  observer therefore sees a different digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.
+- **Edge.** The admission container reports `inflight`, `closed` and `last_active`,
+  the time of the last successful meaningful request. `last_active` is also
+  written, atomically, to `/var/lib/aidash-activity/last_active` on a 1 MiB
+  `emptyDir` mounted only into that container, and reloaded at start. Nginx workers
+  queue their stamps and one worker at a time folds them into `last_active` and
+  the file, so neither moves backwards when workers race. A restart of
+  the admission container between a request and the collector's next once-a-minute
+  sample therefore still reports that request instead of `0`, so its full idle
+  interval is honored. A missing, unreadable or malformed file means never active,
+  and a stamp in the future is clamped to now. The `emptyDir` lives as long as the
+  Pod: a replaced Pod (node loss, preemption) starts without it, and the collector
+  then keeps only the previous snapshot's `last_active`. This file does not cover
+  that case: a request completed shortly before the Pod was lost can receive a
+  shorter idle interval.
+- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory
+  aggregate of the operations whose writer is not proven stopped plus the latest
+  completion time. It is seeded by the Runner's existing startup recovery scan
+  (no additional pass over the journal) and updated each time an operation record
+  is saved, so a request opens no journal file, however many acknowledged
+  operations the volume retains, and holds the Runner's global lock only for two
+  reads. A corrupt record still stops the Runner from starting (as the recovery
+  scan always did) instead of reporting idle. The collector's 15-second timeout therefore cannot be
+  exhausted by journal growth.

@@ -563,7 +563,17 @@ class ChartsTest(unittest.TestCase):
                       admission['volumeMounts'])
         caddy = next(container for container in pod['containers'] if container['name'] == 'caddy')
         self.assertNotIn('admission-state', [mount['name'] for mount in caddy['volumeMounts']])
+        # The last meaningful request survives an admission-container restart on a small
+        # emptyDir that only the admission container (not Caddy) can write.
+        persisted = next(volume for volume in pod['volumes'] if volume['name'] == 'activity-state')
+        self.assertEqual(persisted['emptyDir'], {'sizeLimit': '1Mi'})
+        self.assertIn({'name': 'activity-state', 'mountPath': '/var/lib/aidash-activity'}, admission['volumeMounts'])
+        self.assertNotIn('activity-state', [mount['name'] for mount in caddy['volumeMounts']])
         conf = select(named, 'ConfigMap', '-edge')['data']['admission.conf']
+        # One stamp file, restored at start and replaced only by the serialized fold.
+        self.assertEqual(conf.count('/var/lib/aidash-activity/last_active'), 1)
+        self.assertEqual(conf.count('require("aidash_activity").persist()'), 2)
+        self.assertEqual(conf.count('os.rename('), 1)
         self.assertIn('io.open("/etc/aidash-admission/state", "r")', conf)
         self.assertIn('ngx.shared.aidash_activity:set("closed", not open)', conf)
         job = select(objects, 'CronJob', '-activity')['spec']
@@ -850,10 +860,14 @@ class ActivityTest(unittest.TestCase):
         cls.activity = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.activity)
 
+    def summary(self, receipts):
+        # Stand-in for the observer: a fixed-size count and digest of the receipt IDs.
+        return {'completed_transfers_count': len(receipts), 'completed_transfers_digest': self.activity.digest(receipts)}
+
     def combine(self, previous, counts=None, transfers=None, completion=0):
         return self.activity.combine(
-            {'protocol': 'aidash-infra-activity/1', 'counts': counts or {}, 'completed_transfers': transfers or [],
-             'last_work_completed': completion}, {'inflight': 0, 'last_active': 0, 'closed': False},
+            dict(self.summary(transfers or []), protocol='aidash-infra-activity/1', counts=counts or {},
+                 last_work_completed=completion), {'inflight': 0, 'last_active': 0, 'closed': False},
             {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': 0}}, previous, 10000)
 
     def test_observation_gap_blocks_stop_and_renews_full_idle_interval(self):
@@ -901,8 +915,8 @@ class ActivityTest(unittest.TestCase):
 
     def test_concurrent_publication_recombines_against_the_winner(self):
         # The minute CronJob and the controller's seal Job race on one resourceVersion.
-        database = {'protocol': 'aidash-infra-activity/1', 'counts': {'runs': 0}, 'completed_transfers': [],
-                    'last_work_completed': 0}
+        database = dict(self.summary([]), protocol='aidash-infra-activity/1', counts={'runs': 0},
+                        last_work_completed=0)
         snapshots = [('7', {'protocol': 'aidash-infra-activity/1', 'busy': True, 'observed_at': 9900}),
                      ('8', {'protocol': 'aidash-infra-activity/1', 'busy': False, 'observed_at': 9990,
                             'last_active': 5000, 'completed_transfers_digest': self.activity.digest([])})]
@@ -963,12 +977,67 @@ class ActivityTest(unittest.TestCase):
         self.assertEqual(self.combine(settled, transfers=['b', 'a'])['last_active'], 5000)
         self.assertEqual(self.combine(settled, transfers=['a', 'b', 'c'])['last_active'], 10000)
         self.assertEqual(self.combine(settled, transfers=['a'])['last_active'], 10000)
+        # The pair is the renewal key: an unchanged digest with another count renews.
+        self.assertEqual(self.combine(dict(settled, completed_transfers_count=3), transfers=['a', 'b'])['last_active'], 10000)
         legacy = dict(previous, completed_transfers=['a', 'b'])
         self.assertEqual(self.combine(legacy, transfers=['b', 'a'])['last_active'], 5000)
         self.assertEqual(self.combine(legacy, transfers=['a', 'b', 'c'])['last_active'], 10000)
-        many = self.combine(previous, transfers=[f'{n:036d}' for n in range(50000)])
-        self.assertLess(len(json.dumps(many)), 2048)
 
+    def test_a_very_large_receipt_set_keeps_the_observation_and_snapshot_bounded(self):
+        previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}
+        receipts = [f'{n:036d}' for n in range(50000)]
+        settled = dict(self.combine(previous, transfers=receipts), last_active=5000, observed_at=9950)
+        self.assertLess(len(json.dumps(self.summary(receipts))), 512)
+        self.assertLess(len(json.dumps(settled)), 2048)
+        self.assertEqual(self.combine(settled, transfers=receipts)['last_active'], 5000)
+        # One new receipt out of fifty thousand still renews the idle interval.
+        renewed = self.combine(settled, transfers=receipts + ['f' * 36])
+        self.assertEqual(renewed['last_active'], 10000)
+        self.assertEqual(renewed['completed_transfers_count'], 50001)
+
+    def test_an_observation_that_is_not_the_bounded_contract_is_unavailable(self):
+        valid = dict(self.summary(['a']), protocol='aidash-infra-activity/1', counts={})
+        edge, runner = {'inflight': 0, 'last_active': 0, 'closed': False}, {'protocol': 'aidash-runner-activity/1', 'counts': {}}
+        previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}
+        self.activity.combine(valid, edge, runner, previous, 10000)
+        legacy = dict(valid, completed_transfers=['a'])
+        for name, database in (
+                ('receipt list beside a summary', legacy),
+                ('receipt list without a summary', {key: value for key, value in legacy.items() if not key.startswith('completed_transfers_')}),
+                ('missing digest', {key: value for key, value in valid.items() if key != 'completed_transfers_digest'}),
+                ('missing count', {key: value for key, value in valid.items() if key != 'completed_transfers_count'}),
+                ('negative count', dict(valid, completed_transfers_count=-1)),
+                ('boolean count', dict(valid, completed_transfers_count=True)),
+                ('short digest', dict(valid, completed_transfers_digest='abc')),
+                ('uppercase digest', dict(valid, completed_transfers_digest='A' * 64))):
+            with self.subTest(name), self.assertRaises((KeyError, ValueError)):
+                self.activity.combine(database, edge, runner, previous, 10000)
+
+    def test_an_oversized_observation_file_publishes_a_busy_snapshot(self):
+        idle = {'protocol': 'aidash-infra-activity/1', 'busy': False, 'observed_at': 9990, 'last_active': 5000}
+        patches = []
+
+        def request(url, token=None, *, data=None, method=None, context=None):
+            if method == 'PATCH':
+                patches.append(json.loads(data))
+                return {}
+            if url.endswith('/configmaps/activity'):
+                return {'metadata': {'resourceVersion': '7'}, 'data': {'snapshot.json': json.dumps(idle)}}
+            return {'inflight': 0, 'last_active': 0, 'closed': False}
+
+        environment = {'KUBERNETES_SERVICE_HOST': 'api', 'KUBERNETES_SERVICE_PORT': '443',
+                       'ACTIVITY_CONFIGMAP': 'activity', 'EDGE_ACTIVITY_ENDPOINT': 'http://edge',
+                       'RUNNER_ENDPOINT': 'http://runner', 'AIDASH_CORE_RUNNER_TOKEN': 'x' * 32}
+        database = dict(self.summary([]), protocol='aidash-infra-activity/1', counts={}, padding='x' * 70000)
+        with (patch.dict(os.environ, environment),
+              patch.object(self.activity, 'request', request),
+              patch.object(self.activity.ssl, 'create_default_context'),
+              patch.object(Path, 'read_text', return_value='value'),
+              patch.object(Path, 'read_bytes', return_value=json.dumps(database).encode())):
+            self.activity.main()
+        snapshot = json.loads(patches[0]['data']['snapshot.json'])
+        self.assertTrue(snapshot['busy'])
+        self.assertTrue(snapshot['observation_gap'])
 
 if __name__ == '__main__':
     unittest.main()
