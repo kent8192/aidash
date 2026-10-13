@@ -55,6 +55,16 @@ pub trait MemoryScope: Send {
 	) -> Result<std::collections::BTreeMap<Uuid, f64>> {
 		Ok(std::collections::BTreeMap::new())
 	}
+	/// Current-generation embedding vectors of already authorized Units, for diversification.
+	/// A Unit whose vector is missing or stale is omitted; callers must treat that as
+	/// "diversification skipped for this Unit", never as an error or a reason to drop it.
+	async fn vectors(
+		&mut self,
+		_bank: &Bank,
+		_units: &[Unit],
+	) -> Result<std::collections::BTreeMap<Uuid, Vec<f32>>> {
+		Ok(std::collections::BTreeMap::new())
+	}
 	/// Successful support selection reactivates recall state in the owning transaction.
 	async fn reactivate_support(&mut self, _bank: &Bank, _units: &[Unit]) -> Result<()> {
 		Ok(())

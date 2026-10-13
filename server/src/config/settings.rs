@@ -545,7 +545,8 @@ mod tests {
 				"web_api_key": "public-fixture-key",
 				"tenant_bindings": {"Pool-X": "acme"},
 				"providers": {"Pool-X": ["google.com"]},
-				"password_sign_up": []
+				"password_sign_up": [],
+				"mfa_mandatory": ["Pool-X"]
 			}}}))
 			.unwrap(),
 		)
@@ -566,6 +567,7 @@ mod tests {
 		assert_eq!(gcip.tenant_bindings["Pool-X"], "acme");
 		assert_eq!(gcip.providers["Pool-X"], ["google.com"]);
 		assert!(gcip.password_sign_up.is_empty());
+		assert!(gcip.mfa_mandatory.contains("Pool-X"));
 		assert_eq!(gcip.session_absolute_seconds, 43200);
 		assert_eq!(gcip.session_idle_seconds, 1800);
 	}

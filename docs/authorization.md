@@ -14,6 +14,8 @@ OIDC-origin execution stores an immutable run origin and rechecks its underlying
 
 GCIP is opt-in and replaces direct Google OIDC for a Cloud deployment. A deployment selects exactly one issuer. An External Identity is keyed by issuer, GCIP Tenant ID and uid; OIDC rows use an empty GCIP Tenant ID and retain their issuer/subject identity. Emails, names and GCIP custom claims never link identities or grant authority.
 
+A GCIP Tenant's MFA Requirement (`disabled`, `enabled` or `mandatory`) is enforced by GCIP and completed in the sign-in page with a TOTP code. The token verifier ignores `firebase.sign_in_second_factor` and `second_factor_identifier`: a token that carries them and one that does not produce the same verified sign-in, so a second factor is never authority and never changes a Mapping, Operator grant or Account Status.
+
 Display Attributes (verified email and display name) are stored only on the External Identity, visible only to Operators through `/api/dashboard/identities` and to Tenant Administrators of the Tenant bound to the identity's GCIP Tenant, never logged, and overwritten at each sign-in. They are kept only while the External Identity is not disabled and has a retention basis:
 
 - an enabled Mapping;

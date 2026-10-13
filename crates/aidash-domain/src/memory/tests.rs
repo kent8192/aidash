@@ -1,6 +1,6 @@
 use super::*;
 use crate::memory::recall::{Rankings, fuse, graph, temporal};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn bounds() -> Bounds {
 	Bounds {
@@ -967,5 +967,243 @@ fn decay_policy_validation_and_legacy_serde_byte_identity() {
 	}
 	assert!(serde_json::from_value::<Policy>(serde_json::json!({"dormancy": {}})).is_err());
 	policy.decay = None;
+	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
+}
+
+fn hit(id: u128, score: f64) -> recall::Ranked {
+	recall::Ranked {
+		id: Uuid::from_u128(id),
+		score,
+	}
+}
+fn vectors(entries: &[(u128, [f32; 2])]) -> BTreeMap<Uuid, Vec<f32>> {
+	entries
+		.iter()
+		.map(|(id, values)| (Uuid::from_u128(*id), values.to_vec()))
+		.collect()
+}
+fn order(result: &recall::Diversified) -> Vec<u128> {
+	result.selected.iter().map(|hit| hit.id.as_u128()).collect()
+}
+const LAMBDA: u32 = 700_000;
+
+#[test]
+fn diversification_prefers_a_distinct_unit_over_paraphrases() {
+	// 1..=3 are paraphrases; 4 is distinct and slightly less relevant.
+	let ranked = [hit(1, 1.0), hit(2, 0.95), hit(3, 0.9), hit(4, 0.8)];
+	let vectors = vectors(&[
+		(1, [1., 0.]),
+		(2, [0.99, 0.01]),
+		(3, [0.98, 0.02]),
+		(4, [0., 1.]),
+	]);
+	let result =
+		recall::diversify(&ranked, &vectors, &recall::Related::new(), None, LAMBDA, 4).unwrap();
+	assert_eq!(order(&result), [1, 4, 2, 3]);
+	assert!(result.skipped.is_empty());
+	let two =
+		recall::diversify(&ranked, &vectors, &recall::Related::new(), None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&two), [1, 4]);
+	// λ = 1 is pure relevance: the baseline order survives.
+	let relevance = recall::diversify(
+		&ranked,
+		&vectors,
+		&recall::Related::new(),
+		None,
+		1_000_000,
+		4,
+	)
+	.unwrap();
+	assert_eq!(order(&relevance), [1, 2, 3, 4]);
+}
+
+#[test]
+fn diversification_is_deterministic_and_stays_inside_the_candidates() {
+	let vectors = vectors(&[(1, [1., 0.]), (2, [1., 0.]), (3, [0., 1.]), (9, [1., 1.])]);
+	let forward = [hit(1, 0.5), hit(2, 0.5), hit(3, 0.5)];
+	let backward = [hit(3, 0.5), hit(2, 0.5), hit(1, 0.5)];
+	let first =
+		recall::diversify(&forward, &vectors, &recall::Related::new(), None, LAMBDA, 3).unwrap();
+	let second = recall::diversify(
+		&backward,
+		&vectors,
+		&recall::Related::new(),
+		None,
+		LAMBDA,
+		3,
+	)
+	.unwrap();
+	assert_eq!(first, second);
+	assert_eq!(order(&first), [1, 3, 2], "ties use the lowest Unit ID");
+	// A vector for an ID outside the candidates (9) never adds a result.
+	assert!(
+		first
+			.selected
+			.iter()
+			.all(|hit| hit.id != Uuid::from_u128(9))
+	);
+	let candidates: BTreeSet<_> = forward.iter().map(|hit| hit.id).collect();
+	assert!(
+		first
+			.selected
+			.iter()
+			.all(|hit| candidates.contains(&hit.id))
+	);
+	assert!(
+		recall::diversify(&forward, &vectors, &recall::Related::new(), None, LAMBDA, 0)
+			.unwrap()
+			.selected
+			.is_empty()
+	);
+}
+
+#[test]
+fn a_candidate_without_a_current_vector_is_kept_by_relevance_and_recorded() {
+	let ranked = [hit(1, 1.0), hit(2, 0.9), hit(3, 0.8)];
+	// 2 has no vector: it is neither dropped nor penalized, only reported.
+	let vectors = vectors(&[(1, [1., 0.]), (3, [1., 0.])]);
+	let result =
+		recall::diversify(&ranked, &vectors, &recall::Related::new(), None, LAMBDA, 3).unwrap();
+	assert_eq!(order(&result), [1, 2, 3]);
+	assert_eq!(result.skipped, [Uuid::from_u128(2)]);
+	let none = recall::diversify(
+		&ranked,
+		&BTreeMap::new(),
+		&recall::Related::new(),
+		None,
+		LAMBDA,
+		3,
+	)
+	.unwrap();
+	assert_eq!(order(&none), [1, 2, 3]);
+	assert_eq!(none.skipped.len(), 3);
+}
+
+#[test]
+fn an_observation_and_its_sources_count_as_maximally_similar_so_lambda_still_decides() {
+	let mut observation = unit(10);
+	observation.content.kind = Kind::Observation;
+	observation.content.evidence = [1, 2]
+		.map(|id| Evidence::Unit {
+			bank: observation.bank.clone(),
+			id: Uuid::from_u128(id),
+			revision: 1,
+		})
+		.to_vec();
+	let sources = [unit(1), unit(2)];
+	let unrelated = unit(3);
+	let mut stale_citation = unit(4);
+	stale_citation.revision = 2;
+	let mut stale_observation = unit(11);
+	stale_observation.content.kind = Kind::Observation;
+	stale_observation.content.evidence = vec![Evidence::Unit {
+		bank: stale_observation.bank.clone(),
+		id: Uuid::from_u128(4),
+		revision: 1,
+	}];
+	let units = [
+		observation,
+		sources[0].clone(),
+		sources[1].clone(),
+		unrelated,
+		stale_citation,
+		stale_observation,
+	];
+	let related = recall::related(&units);
+	assert_eq!(
+		related[&Uuid::from_u128(10)],
+		BTreeSet::from([Uuid::from_u128(1), Uuid::from_u128(2)])
+	);
+	assert!(related[&Uuid::from_u128(1)].contains(&Uuid::from_u128(10)));
+	assert!(
+		!related.contains_key(&Uuid::from_u128(11)) && !related.contains_key(&Uuid::from_u128(4)),
+		"a citation of another revision is not redundancy"
+	);
+	let vectors = vectors(&[
+		(10, [1., 0.]),
+		(1, [0.6, 0.8]),
+		(2, [0.8, 0.6]),
+		(3, [0., 1.]),
+	]);
+	// A reasonably relevant unrelated Unit takes the second slot from the summary's sources.
+	let ranked = [hit(10, 1.0), hit(1, 0.9), hit(2, 0.8), hit(3, 0.5)];
+	let two = recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&two), [10, 3], "the unrelated Unit is not excluded");
+	let all = recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 4).unwrap();
+	assert_eq!(
+		order(&all),
+		[10, 3, 1, 2],
+		"sources are still delivered when the budget allows"
+	);
+	// A near-zero-relevance Unit cannot push out a highly relevant source: λ still governs.
+	let weak = [hit(10, 1.0), hit(1, 0.9), hit(2, 0.8), hit(3, 0.05)];
+	let two = recall::diversify(&weak, &vectors, &related, None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&two), [10, 1]);
+}
+
+#[test]
+fn exact_ties_follow_retention_before_unit_id() {
+	let ranked = [hit(1, 0.5), hit(2, 0.5)];
+	let vectors = vectors(&[(1, [1., 0.]), (2, [0., 1.])]);
+	let related = recall::Related::new();
+	let plain = recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&plain), [1, 2]);
+	let retention = BTreeMap::from([(Uuid::from_u128(1), 0.2), (Uuid::from_u128(2), 0.9)]);
+	let kept = recall::diversify(&ranked, &vectors, &related, Some(&retention), LAMBDA, 2).unwrap();
+	assert_eq!(order(&kept), [2, 1]);
+}
+
+#[test]
+fn diversification_rejects_invalid_inputs() {
+	let ranked = [hit(1, 1.0), hit(2, 0.5)];
+	let related = recall::Related::new();
+	let good = vectors(&[(1, [1., 0.]), (2, [0., 1.])]);
+	for lambda in [0, 1_000_001] {
+		assert!(recall::diversify(&ranked, &good, &related, None, lambda, 2).is_err());
+	}
+	assert!(
+		recall::diversify(
+			&[hit(1, 1.0), hit(1, 0.5)],
+			&good,
+			&related,
+			None,
+			LAMBDA,
+			2
+		)
+		.is_err()
+	);
+	assert!(recall::diversify(&[hit(1, f64::NAN)], &good, &related, None, LAMBDA, 1).is_err());
+	for bad in [[0., 0.], [f32::NAN, 1.], [f32::INFINITY, 1.]] {
+		let vectors = vectors(&[(1, [1., 0.]), (2, bad)]);
+		assert!(recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 2).is_err());
+	}
+	let mut mixed = good.clone();
+	mixed.insert(Uuid::from_u128(2), vec![1.]);
+	assert!(recall::diversify(&ranked, &mixed, &related, None, LAMBDA, 2).is_err());
+	// Extreme finite scores cannot overflow the relevance span.
+	let extreme = [hit(1, f64::MAX), hit(2, f64::MIN)];
+	let result = recall::diversify(&extreme, &good, &related, None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&result), [1, 2]);
+}
+
+#[test]
+fn diversity_lambda_is_optional_validated_and_omitted_when_unset() {
+	let baseline =
+		include_str!("../../../../tests/fixtures/native_memory_policy_baseline.json").trim();
+	let mut policy: Policy = serde_json::from_str(baseline).unwrap();
+	assert_eq!(policy.diversity_lambda_millionths, None);
+	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
+	for lambda in [1, 700_000, 1_000_000] {
+		policy.diversity_lambda_millionths = Some(lambda);
+		policy.validate().unwrap();
+		let encoded = serde_json::to_string(&policy).unwrap();
+		assert!(encoded.contains(&format!("\"diversity_lambda_millionths\":{lambda}")));
+		assert_eq!(serde_json::from_str::<Policy>(&encoded).unwrap(), policy);
+	}
+	for lambda in [0, 1_000_001] {
+		policy.diversity_lambda_millionths = Some(lambda);
+		assert!(policy.validate().is_err());
+	}
+	policy.diversity_lambda_millionths = None;
 	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
 }
