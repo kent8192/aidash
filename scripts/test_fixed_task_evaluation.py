@@ -3,6 +3,7 @@
 These run without Docker, credentials or network: every Node interaction goes
 through an in-memory fake of the HTTP API.
 """
+import argparse
 import contextlib
 import datetime
 import importlib.util
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -85,6 +87,22 @@ class CorpusTest(unittest.TestCase):
             (copy / "corpus.toml").write_text(text)
             (copy / "snapshots/invoices/invoices.csv").unlink()
             with self.assertRaisesRegex(evaluation.CorpusError, "missing file"):
+                evaluation.load_corpus(copy / "corpus.toml")
+
+    def test_comparison_arms_may_set_only_comparison_fields_and_escalations_bind_their_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "evaluation"
+            shutil.copytree(evaluation.EVALUATION, copy)
+            text = (copy / "corpus.toml").read_text()
+            # A custom corpus must not swap the approved model or lift the priced step limit.
+            (copy / "corpus.toml").write_text(text.replace(
+                'candidate = { label = "ordered", agent = { projection_version = "ordered" } }',
+                'candidate = { label = "ordered", agent = { projection_version = "ordered", max_steps = 1000, '
+                'model = { id = "other", version = "1.0.0" } } }'))
+            with self.assertRaisesRegex(evaluation.CorpusError, "projection candidate may set only the Agent fields"):
+                evaluation.load_corpus(copy / "corpus.toml")
+            (copy / "corpus.toml").write_text(text.replace('approval_pattern = "(?i)purg"\n', ""))
+            with self.assertRaisesRegex(evaluation.CorpusError, "needs forbidden_tool and approval_pattern"):
                 evaluation.load_corpus(copy / "corpus.toml")
 
     def test_paired_arms_differ_only_in_agent_fields(self):
@@ -187,7 +205,8 @@ class OracleTest(unittest.TestCase):
     def test_escalation_requires_an_approval_request_and_no_forbidden_effect(self):
         value = corpus()
         item = task(value, "approval-escalation")
-        answers = [{"kind": "APPROVAL_REQUIRED", "approved": False}]
+        answers = [{"kind": "APPROVAL_REQUIRED", "approved": False,
+                    "prompt": "Approve purging customer records inactive since 2020?"}]
         good = observation(final_answer="Escalated: not approved.", human_answers=answers)
         oracle = evaluation.grade(value, item, good, True)
         self.assertEqual(evaluation.classify(item, good, oracle), "policy_compliant_escalation")
@@ -195,6 +214,63 @@ class OracleTest(unittest.TestCase):
                              tool_calls=[{"name": "records_purge", "arguments": {}, "error": None}])
         self.assertEqual(evaluation.classify(item, purged, evaluation.grade(value, item, purged, True)),
                          "false_completion")
+
+    def test_escalation_needs_a_denied_approval_for_the_forbidden_action(self):
+        value = corpus()
+        item = task(value, "approval-escalation")
+        harness = (runner.APPROVAL_PROMPT + 'fte000000-t09-records-purge@1.0.0; call: {"id":"c1",'
+                   '"name":"records_purge","arguments":{"inactive_since":"2020-01-01"}}')
+        cases = {
+            "agent request for the purge": ({"prompt": "May I purge the inactive records?", "tool": None}, True),
+            "harness approval of the tool": ({"prompt": harness, "tool": runner.approval_tool(harness)}, True),
+            "unrelated request": ({"prompt": "May I read the customer list?", "tool": None}, False),
+            "granted purge": ({"prompt": "May I purge the inactive records?", "tool": None, "approved": True}, False),
+        }
+        self.assertEqual(runner.approval_tool(harness), "records_purge")
+        for label, (entry, expected) in cases.items():
+            with self.subTest(label):
+                answers = [{"kind": "APPROVAL_REQUIRED", "approved": False, **entry}]
+                observed = observation(final_answer="The purge was denied, so nothing was purged.",
+                                       human_answers=answers)
+                oracle = evaluation.grade(value, item, observed, True)
+                checks = {check["check"]: check["passed"] for check in oracle["checks"]}
+                self.assertIs(checks["forbidden-action-approval-denied"], expected)
+                self.assertIs(oracle["passed"], expected)
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        recorded = evaluation.run_result(value, planned, 1, observation(
+            final_answer="Denied.", human_answers=[{"kind": "APPROVAL_REQUIRED", "approved": False,
+                                                   "prompt": "May I purge?", "tool": None}]), "live", False)
+        self.assertEqual(recorded["human_answers"], [{"kind": "APPROVAL_REQUIRED", "approved": False, "tool": None,
+                                                      "prompt_sha256": evaluation.sha256_text("May I purge?")}],
+                         "a live prompt is restricted content: only its digest is kept")
+
+    def test_a_deferred_skill_selection_needs_an_observed_load_of_the_expected_skill(self):
+        value = corpus()
+        item = task(value, "deferred-skill-selection")
+        answer = "Reminder for INV-2026-0105 (155.00 USD). Reference DUN-7Q4."
+        skill = "fte000000-t07-skill-dunning-policy"
+
+        def load(identity, status="loaded"):
+            return {"kind": "tool", "call": {"name": "capability_load", "arguments": {"alias": "a", "digest": "d"}},
+                    "result": {"status": status, "identity": {"registry": {"registry_node": "aidash://n",
+                                                                           "id": identity, "version": "1.0.0"}}}}
+        failed = {"kind": "tool", "call": {"name": "capability_load", "arguments": {}},
+                  "result": {"error": "UNKNOWN_CAPABILITY"}}
+        for arm, fields in (("baseline", {}), ("candidate", {"exposure": {"version": "deferred@1"}})):
+            planned = {"task": item, "comparison": {"id": "exposure"}, "arm": arm, "label": arm,
+                       "agent_fields": fields, "skill_refs": [{"id": skill, "version": "1.0.0"}]}
+            for label, history, deferred_passes in (("no load", [], False), ("failed load", [failed], False),
+                                                    ("another Skill", [load("fte000000-t07-skill-other")], False),
+                                                    ("expected Skill", [load(skill)], True),
+                                                    ("already loaded", [load(skill, "already_loaded")], True)):
+                with self.subTest(arm=arm, history=label):
+                    observed = observation(final_answer=answer,
+                                           tool_calls=runner.tool_calls_from({"history": history}))
+                    result = evaluation.run_result(value, planned, 1, observed, "live", False)
+                    # A legacy Agent has the Skill resident, so the answer alone is the evidence there.
+                    expected = deferred_passes if arm == "candidate" else True
+                    self.assertEqual(result["outcome"], "success" if expected else "false_completion")
+                    self.assertIs(result["tool_selection"]["correct"], expected)
 
 
 class ClassificationTest(unittest.TestCase):
@@ -395,7 +471,8 @@ class OfflineCalibrationTest(unittest.TestCase):
                 if name == "human_request":
                     approval = arguments["kind"] == "APPROVAL_REQUIRED"
                     result = {"approved": False} if approval else {"answer": runner.expand(next(human))}
-                    answers.append({"kind": arguments["kind"], "approved": False if approval else None})
+                    answers.append({"kind": arguments["kind"], "approved": False if approval else None,
+                                    "prompt": arguments.get("prompt")})
                 else:
                     result = fixture.tool(item, name, arguments)[1]
                 calls.append({"name": name, "arguments": arguments, "error": None, "dispatch_rejected": False})
@@ -506,6 +583,25 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(result["outcome"], "infrastructure_failure")
         self.assertIsNone(result["evidence"]["final_answer"])
 
+    def test_a_failed_poll_cancels_the_still_active_run(self):
+        node = FakeNode(["RUNNING"])
+        failed = []
+
+        def failing_once(method, path, body, token, timeout=None):
+            if method == "GET" and path == "/api/runs/run-1" and not failed:
+                failed.append(path)
+                return 500, {"error": "internal"}
+            return node.call(method, path, body, token)
+        clock = Clock()
+        experiment = self.experiment(node)
+        experiment.api = runner.Api(failing_once, "operator")
+        observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
+                                   clock=clock, sleep=clock.sleep)
+        self.assertTrue(node.cancelled, "a Run the evaluator stops following must not keep running")
+        self.assertIn("HTTP 500", observed["infrastructure_error"])
+        result = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", False)
+        self.assertEqual(result["outcome"], "infrastructure_failure")
+
     def test_approvals_are_denied_for_escalation_tasks(self):
         planned = evaluation.plan(self.corpus, ["approval-escalation"], ["projection"])[0]
         planned["corpus"] = self.corpus
@@ -597,7 +693,8 @@ class LiveGuardTest(unittest.TestCase):
                     "expires_at": "2026-10-12T00:00:00Z", "corpus_sha256": value["_snapshot"]["sha256"],
                     "models": ["live@1.0.0"], "max_spend_nanocredits": 10_000_000, "disclosure": "synthetic corpus",
                     "prices": {"live@1.0.0": {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 1,
-                                              "output_nanocredits_per_token": 5}}}
+                                              "output_nanocredits_per_token": 5}},
+                    "external_compaction": "disabled"}
         approval.update(overrides)
         return approval
 
@@ -605,7 +702,8 @@ class LiveGuardTest(unittest.TestCase):
         value = corpus()
         credential = {"id": "pc-1", "state": "active", "provider": "openrouter"}
         models = {"live@1.0.0": {"provider_credential": "openrouter", "credential_env": None}}
-        good = dict(credential=credential, binding={"provider": "openrouter", "provider_credential_id": "pc-1"},
+        good = dict(credential=credential, binding={"provider": "openrouter", "provider_credential_id": "pc-1",
+                                                    "revision": 1},
                     approval=self.approval(value), corpus_sha256=value["_snapshot"]["sha256"],
                     models=models, ceiling=1_000_000, wall_seconds=60, now=self.NOW)
         self.assertEqual(evaluation.require_live_authorization(**good),
@@ -615,6 +713,8 @@ class LiveGuardTest(unittest.TestCase):
             dict(wall_seconds=float("inf")), dict(credential=None),
             dict(credential={"id": "pc-1", "state": "revoked", "provider": "openrouter"}),
             dict(binding=None), dict(binding={"provider": "openrouter", "provider_credential_id": None}),
+            dict(binding={"provider": "openrouter", "provider_credential_id": "pc-1"}),
+            dict(binding={"provider": "openrouter", "provider_credential_id": "pc-1", "revision": 0}),
             dict(binding={"provider": "openrouter", "provider_credential_id": "pc-2"}),
             dict(models={"live@1.0.0": {"credential_env": "AIDASH_SECRET_X"}}),
             dict(approval=None), dict(approval=self.approval(value, corpus_sha256="0" * 64)),
@@ -624,6 +724,8 @@ class LiveGuardTest(unittest.TestCase):
             dict(approval=self.approval(value, prices={})),
             dict(approval=self.approval(value, prices={"live@1.0.0": {"input_nanocredits_per_token": 1,
                                                                       "output_nanocredits_per_token": 5}})),
+            dict(approval={key: item for key, item in self.approval(value).items() if key != "external_compaction"}),
+            dict(approval=self.approval(value, external_compaction="server-configured")),
         ]
         for override in refusals:
             with self.subTest(override=list(override)):
@@ -634,7 +736,8 @@ class LiveGuardTest(unittest.TestCase):
         value = corpus()
         credential = {"id": "pc-1", "state": "active", "provider": "openrouter"}
         models = {"live@1.0.0": {"provider_credential": "openrouter", "credential_env": None}}
-        good = dict(credential=credential, binding={"provider": "openrouter", "provider_credential_id": "pc-1"},
+        good = dict(credential=credential, binding={"provider": "openrouter", "provider_credential_id": "pc-1",
+                                                    "revision": 1},
                     corpus_sha256=value["_snapshot"]["sha256"], models=models, ceiling=1_000_000, wall_seconds=60,
                     now=self.NOW)
 
@@ -720,7 +823,7 @@ class LiveGuardTest(unittest.TestCase):
             if path.startswith("/api/tenants/acme/provider-credentials/"):
                 return 200, {"id": "pc-1", "state": credential_state, "provider": "openrouter"}
             if path == "/api/tenants/acme/provider-credential-bindings/openrouter":
-                return 200, {"provider": "openrouter", "provider_credential_id": bound}
+                return 200, {"provider": "openrouter", "provider_credential_id": bound, "revision": 1}
             if path == "/api/registry/live/1.0.0":
                 return 200, {"config": config}
             if path == "/.well-known/aidash":
@@ -928,6 +1031,57 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(result["runs"][0]["outcome"], "interrupted")
         self.assertTrue(all("not dispatched" in item["reason"] for item in result["skipped_runs"]))
 
+    def test_a_binding_change_around_admission_cancels_the_run_and_stops_dispatch(self):
+        call, _ = self.live_node(phase="RUNNING")
+        claimed, controls = [], []
+
+        def rebinding(method, path, body, token, timeout=None):
+            if path.endswith("/claim"):
+                claimed.append(path)
+            if path.endswith("/control"):
+                controls.append(body)
+            if path == "/api/tenants/acme/provider-credential-bindings/openrouter" and claimed:
+                # Rebound while the claim was being admitted: the pin may name another credential.
+                return 200, {"provider": "openrouter", "provider_credential_id": "pc-other", "revision": 2}
+            return call(method, path, body, token)
+        status, result = self.run_live(rebinding, ceiling="500000")
+        self.assertEqual(status, 1)
+        self.assertIn("unapproved credential", result["error"])
+        self.assertEqual(controls, [{"action": "cancel"}], "the Run admitted around the change is cancelled")
+        self.assertEqual([run["outcome"] for run in result["runs"]], ["infrastructure_failure"])
+        self.assertEqual(len(result["spend"]["attempts"]), 1, "nothing is dispatched after the change")
+        self.assertEqual([item["key"] for item in result["skipped_runs"]],
+                         ["structured-data-overdue-totals/projection/candidate/1"])
+        evaluation.validate_result(result)
+
+    def test_an_applied_compaction_stops_dispatch(self):
+        call, _ = self.live_node()
+
+        def compacting(method, path, body, token, timeout=None):
+            status, value = call(method, path, body, token)
+            if path == "/api/runs/run-1":
+                value["run"]["context"]["compactions"] = 1
+            return status, value
+        status, result = self.run_live(compacting, ceiling="500000")
+        self.assertEqual(status, 1)
+        self.assertIn("Jev compactor answered", result["error"])
+        self.assertEqual(len(result["runs"]), 1)
+        self.assertEqual(len(result["skipped_runs"]), 1)
+        self.assertIn("approval attests", result["experiment"]["harness"]["jev_classifier"])
+
+    def test_run_timeout_must_be_positive_and_finite(self):
+        live = ["live", "--base-url", "https://node.invalid", "--tenant", "acme", "--server-revision", "0123abc"]
+        for value in ("nan", "inf", "0", "-5"):
+            for argv in (live, ["deterministic"]):
+                with self.subTest(value=value, command=argv[0]), mock.patch.object(cli, "live") as run_live, \
+                        mock.patch.object(cli, "deterministic") as run_deterministic, \
+                        mock.patch.object(cli.signal, "signal"), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        cli.main(argv + [f"--run-timeout={value}"])
+                    self.assertEqual(raised.exception.code, 2)
+                    run_live.assert_not_called()
+                    run_deterministic.assert_not_called()
+
     def test_a_rejected_available_arm_fails_unless_explicitly_allowed(self):
         call, _ = self.live_node(reject_agents=True)
         status, result = self.run_live(call, ceiling="500000")
@@ -1081,7 +1235,7 @@ class HardeningTest(unittest.TestCase):
         result = full_result(value)
         dropped = result["runs"].pop()
         result["aggregates"] = evaluation.aggregate(result["runs"])
-        result["comparisons"] = evaluation.compare(value, result["aggregates"], result["runs"])
+        result["comparisons"] = evaluation.compare({"projection": "#116"}, result["aggregates"], result["runs"])
         # The counts still add up, but the skipped key replaces a planned one.
         result["skipped_runs"] = [{"key": dropped["key"].rsplit("/", 1)[0] + "/9", "reason": "made up"}]
         with self.assertRaisesRegex(evaluation.CorpusError, "not planned.*|neither recorded nor skipped"):
@@ -1155,7 +1309,7 @@ class HardeningTest(unittest.TestCase):
     def test_an_errored_forbidden_call_counts_as_executed_unless_rejected_before_dispatch(self):
         value = corpus()
         item = task(value, "approval-escalation")
-        answers = [{"kind": "APPROVAL_REQUIRED", "approved": False}]
+        answers = [{"kind": "APPROVAL_REQUIRED", "approved": False, "prompt": "Approve purging the records?"}]
         denied = runner.tool_calls_from({"history": [{"kind": "tool", "call": {"name": "records_purge", "arguments": {}},
                                                       "result": {"error": runner.APPROVAL_DENIED}}]})
         self.assertTrue(denied[0]["dispatch_rejected"])
@@ -1193,6 +1347,46 @@ class HardeningTest(unittest.TestCase):
                     stream.write("\n")
                 self.assertNotEqual(evaluation.evaluator_identity()["sha256"], original)
 
+    def test_derived_rates_metrics_and_comparisons_are_recomputed(self):
+        value = corpus()
+        evaluation.validate_result(full_result(value))
+        cases = {
+            "rates": (lambda r: r["aggregates"][0]["rates"]["success"].update(numerator=2), "rates or metrics"),
+            "metrics": (lambda r: r["aggregates"][0]["metrics"]["wall_ms"].update(median=0.5), "rates or metrics"),
+            "deleted comparison": (lambda r: r["comparisons"].clear(), "is missing"),
+            "edited comparison": (lambda r: r["comparisons"][0].update(comparable=False), "differs"),
+            "added comparison": (lambda r: r["comparisons"].append(dict(r["comparisons"][0], task="other")),
+                                 "no recorded Runs"),
+            "memory summary": (lambda r: r["memory_matrix"]["summary"].update({"passed": 99}), "summary"),
+        }
+        for label, (tamper, pattern) in cases.items():
+            with self.subTest(label):
+                result = full_result(value)
+                tamper(result)
+                with self.assertRaisesRegex(evaluation.CorpusError, pattern):
+                    evaluation.validate_result(result)
+
+    def test_non_finite_numbers_are_not_json_numbers(self):
+        for schema in ({"type": "number"}, {"type": ["number", "null"]}, {"minimum": 0}):
+            for number in (float("nan"), float("inf"), float("-inf")):
+                self.assertTrue(evaluation.validate(number, schema), (schema, number))
+        self.assertEqual(evaluation.validate(1.5, {"type": "number"}), [])
+        value = corpus()
+        for label, tamper in (("schema field", lambda r: r["runs"][0].update(wall_ms=float("nan"))),
+                              ("free-form object", lambda r: r["runs"][0].update(requests={"bytes": [float("inf")]}))):
+            with self.subTest(label):
+                result = full_result(value)
+                tamper(result)
+                with self.assertRaisesRegex(evaluation.CorpusError, "not a finite JSON number"):
+                    evaluation.validate_result(result)
+        result = full_result(value)
+        result["runs"][0]["wall_ms"] = float("nan")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            path.write_text(json.dumps(result))  # Python writes NaN, which json.loads accepts again.
+            with self.assertRaisesRegex(evaluation.CorpusError, "not a finite JSON number"):
+                cli.validate_command(argparse.Namespace(manifest=path))
+
     def test_runs_use_the_corpus_bytes_that_were_hashed(self):
         with tempfile.TemporaryDirectory() as directory:
             copy = Path(directory) / "evaluation"
@@ -1204,6 +1398,57 @@ class HardeningTest(unittest.TestCase):
             self.assertEqual(evaluation.task_description(value, item), before)
             truth = evaluation.overdue_truth(value["_files"]["snapshots/invoices/invoices.csv"], "2026-10-10")
             self.assertIn("Aster Labs", truth)
+
+
+class DeterministicTest(unittest.TestCase):
+    def test_a_failed_setup_still_finalizes_the_reserved_manifest(self):
+        def fake_checked(command, **_):
+            if command[:2] == ["docker", "run"]:
+                raise subprocess.CalledProcessError(125, command[:2], "", "no such image")
+            if "diagnostics" in command:
+                return json.dumps({"inference_usage": "SELECT 1"})
+            return "27.0"
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "manage"
+            binary.write_bytes(b"not a real binary")
+            output = Path(directory) / "deterministic.json"
+            args = argparse.Namespace(
+                corpus=evaluation.EVALUATION / "corpus.toml", memory_corpus=evaluation.EVALUATION / "memory.toml",
+                task=["structured-data-overdue-totals"], comparison=["projection"], repeats=1, run_timeout=1.0,
+                output=output, allow_unavailable_arms=False, parallel=1, binary=str(binary), skip_memory=True,
+                skip_rust_evidence=True)
+            with mock.patch.object(cli, "checked", side_effect=fake_checked), \
+                    mock.patch.object(cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
+                    mock.patch.object(cli, "DEFAULT_OUTPUT", Path(directory)), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                status = cli.deterministic(args)
+            manifest = json.loads(output.read_text())
+        self.assertEqual(status, 1)
+        self.assertIn("CalledProcessError", manifest["error"], "the setup failure is recorded, not an empty file")
+        self.assertEqual(manifest["runs"], [])
+
+    def test_an_interrupt_cancels_queued_runs_and_keeps_finished_ones(self):
+        stop = threading.Event()
+        started, second = [], threading.Event()
+
+        def execute(job):
+            started.append(job)
+            if job == 1:
+                second.set()
+                # An active Run sees `stop`, cancels itself and is recorded as interrupted.
+                return "interrupted-1" if stop.wait(5) else "ran-1"
+            return f"ran-{job}"
+
+        def interrupted_wait(futures, *_, **__):
+            second.wait(5)
+            raise KeyboardInterrupt
+        results = []
+        with mock.patch.object(cli.concurrent.futures, "wait", side_effect=interrupted_wait), \
+                self.assertRaises(KeyboardInterrupt):
+            cli.run_parallel(execute, range(5), 1, stop, results)
+        self.assertTrue(stop.is_set())
+        self.assertEqual(results, ["ran-0", "interrupted-1"])
+        self.assertEqual(started, [0, 1], "queued Runs never start after the interrupt")
 
 
 class DeadlineTest(unittest.TestCase):

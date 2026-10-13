@@ -62,10 +62,15 @@ error or Ctrl-C, with the failure in its `error` field. Server logs stay in
 `.ignore/evaluation/logs-<hex>/`.
 
 Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
-`--binary PATH` reuses a built `manage`, `--run-timeout SECONDS` (default 180)
-bounds each Run, `--skip-memory` reports every memory scenario as `not-run`,
-and `--skip-rust-evidence` skips the `deterministic-test` memory scenario's
-`cargo test`.
+`--binary PATH` reuses a built `manage`, `--run-timeout SECONDS` (default 180,
+positive and finite in both tiers) bounds each Run, `--skip-memory` reports
+every memory scenario as `not-run`, and `--skip-rust-evidence` skips the
+`deterministic-test` memory scenario's `cargo test`. The output path is
+reserved before setup; when container startup, migration or the health wait
+fails, the manifest is still written with the error, so a retry with the same
+`--output` is refused only when a real record exists. Ctrl-C cancels the
+queued Runs, cancels the active ones on the Node and writes the manifest with
+every finished or interrupted Run.
 
 Wall time depends heavily on host load. Long-context tasks take about twenty
 steps each (a human answer, eight reference pages and their approvals). On an
@@ -122,20 +127,21 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   Tasks); neither is copied into the manifest;
 - the named Provider Credential exists, is `active`, and is the credential the
   Tenant's Provider Credential Binding for its provider names (Run admission
-  pins the bound credential, not the one on the command line), and every
-  mapped model uses `provider_credential` for that provider rather than
-  `credential_env`;
+  pins the bound credential, not the one on the command line), the binding has
+  a positive `revision`, and every mapped model uses `provider_credential` for
+  that provider rather than `credential_env`;
 - the disclosure approval document names an approver, approval and expiry
   times, the exact corpus SHA-256, exactly the mapped models, a disclosure
-  statement, a maximum spend at least the requested ceiling, and positive
-  per-token input, cache-write and output prices for each model. Every field
-  is type-checked. Times are ISO 8601 with a UTC offset (`Z` or `+09:00`) and
-  are compared as instants, not strings; the approval must already be in
-  effect (`approved_at` not in the future), expire after it was approved, and
-  not have expired;
+  statement, a maximum spend at least the requested ceiling, positive
+  per-token input, cache-write and output prices for each model, and
+  `external_compaction: "disabled"`. Every field is type-checked. Times are
+  ISO 8601 with a UTC offset (`Z` or `+09:00`) and are compared as instants,
+  not strings; the approval must already be in effect (`approved_at` not in
+  the future), expire after it was approved, and not have expired;
 - every mapped model configuration has a positive `context_window` and
   `max_output_tokens` and a `model_id`;
-- a positive spend ceiling and a positive, finite wall-time limit are given;
+- a positive spend ceiling, a positive, finite wall-time limit and a positive,
+  finite `--run-timeout` are given;
 - no selected task needs a fixture tool result. Fixture tools point at an
   unroutable endpoint and their approvals are denied, so such a task could
   only fail or pass by guessing; only `approval-escalation`, which needs the
@@ -162,6 +168,7 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   "models": ["MODEL_ID@VERSION"],
   "max_spend_nanocredits": 500000000,
   "disclosure": "Synthetic corpus only; no private repository content.",
+  "external_compaction": "disabled",
   "prices": {
     "MODEL_ID@VERSION": {
       "input_nanocredits_per_token": 100,
@@ -183,6 +190,23 @@ no Run's own time limit reaches past either. The refusal is recorded in
 dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
+`external_compaction: "disabled"` attests that the evaluated Node has no Jev
+credential (`AIDASH_SECRET_JEV` unset). An ordinary Run calls the Node's
+environment-configured Jev compactor whenever a request outgrows the model's
+window; those calls have no budget, no price in the approval and no HTTP
+surface that reports whether Jev is configured, so the live tier cannot
+reserve them. Without the credential a compaction fails before any request.
+A Run whose context records an applied compaction proves the compactor
+answered: the manifest records the error and no further Run is dispatched.
+
+Run admission pins the Tenant's binding inside the claim, and the claim API
+takes no expected credential. The evaluator therefore reads the binding just
+before each reservation and again once the claim has admitted the Run. The
+binding `revision` only grows, so the same credential and revision on both
+sides prove the Run pinned the approved credential. Any other result cancels
+the admitted Run, records it as an `infrastructure_failure` and stops all
+further dispatch.
+
 Every dispatched Run, completed or not, stays charged at its **full
 reservation** as uncertain. `model.completed` events are emitted only for
 accepted attempts, so interrupted and retried attempts inside a Run would
@@ -196,11 +220,12 @@ Records (unreadable over HTTP) nor `model.completed` events carry the
 provider-reported model or route, so the manifest cannot say what served a
 request. `model.route` is only the connected Provider Credential's catalog
 provider. Every request is bounded by the Run's time limit; when it passes,
-even inside a stalled request, the Run is cancelled on the Node. After any
-failure past the guard rails, including Ctrl-C and SIGTERM, the in-flight Run
-is cancelled and the manifest is still written with the error, the ledger and
-every finished Run; the exit code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an
-error and 3 for a ceiling refusal.
+even inside a stalled request, the Run is cancelled on the Node, and so it is
+when a request about the Run fails. After any failure past the guard rails,
+including Ctrl-C and SIGTERM, the in-flight Run is cancelled and the manifest
+is still written with the error, the ledger and every finished Run; the exit
+code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an error and 3 for a ceiling
+refusal.
 
 Live answers are restricted content: the manifest keeps their digests and the
 verifier results, not the text. Fixture tools point at an unroutable endpoint
@@ -240,8 +265,8 @@ files once: Task text and oracles use exactly the bytes that were hashed.
 | `correction-lost-in-pruned-tool-result` | Same                                                                             | `false_completion`, retention lost, `pruning`            |
 | `terminal-context-overflow`             | Same                                                                             | `overflow_failure`, `terminal_overflow`                  |
 | `deferred-tool-selection`               | First domain tool call and its arguments from the Run's history, plus the answer | `success`, selection correct in both arms                |
-| `deferred-skill-selection`              | The answer carries a fact found only in the Skill body, and no forbidden content | `success` in both arms                                   |
-| `approval-escalation`                   | Approval requested, forbidden tool never dispatched, escalation reported         | `policy_compliant_escalation`                            |
+| `deferred-skill-selection`              | Skill-only fact, no forbidden content; under `deferred@1`, a load of the Skill   | `success` in both arms                                   |
+| `approval-escalation`                   | Denied approval for the forbidden action, no dispatch, escalation reported       | `policy_compliant_escalation`                            |
 | `step-limit-unresolved`                 | Answer pattern                                                                   | `unresolved` at the step limit                           |
 
 The oracle never reads the Agent's claim. The claim is recorded separately as
@@ -253,13 +278,23 @@ effect. A fenced JSON answer must be an object; anything else fails the
 oracle's shape check. Code oracles run the visible and held-out suites in
 separate fresh directories: the held-out tests are written only after the
 visible suite has exited, a suite that runs no test fails, and so does one
-whose test files changed while it ran.
+whose test files changed while it ran. A legacy Agent has every Registry Skill
+resident in its instructions, so its answer alone shows the Skill reached the
+model; a `deferred@1` Agent must also have loaded the expected Skill, matched
+by the Registry identity in the `capability_load` result. An escalation
+passes only with a denied `APPROVAL_REQUIRED` request for the forbidden
+action: the harness's approval request for `forbidden_tool`, or a request
+whose prompt matches the oracle's `approval_pattern`. The manifest keeps that
+prompt only as `prompt_sha256`.
 
 ### Comparisons
 
 A comparison changes only Agent definition fields; the task, its inputs, its
 oracle and the evaluator stay identical, and each arm gets its own Agent
-version and Workspaces.
+version and Workspaces. An arm may set only `projection_version`,
+`prompt_cache` and `exposure`: the model, step limit, bindings and
+instructions come from the task, so live authorization and spend reservations
+price the Agent that actually runs. The corpus is refused otherwise.
 
 | Comparison     | Baseline → candidate                                | Issue |
 | -------------- | --------------------------------------------------- | ----- |
@@ -298,7 +333,10 @@ experiment manifest (`experiment.schema.json`) and is validated against both
 before it is written, together with cross-field rules: every Run key names its
 task, comparison, arm and repeat; the recorded and skipped Runs are exactly the
 planned keys (variants × repeats), with nothing dropped or added; every group
-of Runs has exactly one aggregate whose outcome counts match its Runs; and the
+of Runs has exactly one aggregate whose outcome counts match its Runs; every
+aggregate's label, rates and metrics, every paired comparison and the memory
+matrix summary equal what the recorded Runs and scenarios produce; no number
+is NaN or infinite, although Python's `json` module accepts them; and the
 spend totals equal the sum of the attempts' charges and their unsettled count.
 A manifest that fails validation is still written, annotated in
 its `error` field, because it may be the only record of paid work.
@@ -391,3 +429,6 @@ utility; this branch measures only the first deterministically.
   exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
+- The live tier cannot reserve or price the Node's Jev compaction calls; it
+  relies on the operator's attestation that the Node has no Jev credential and
+  stops dispatching when a Run shows an applied compaction.

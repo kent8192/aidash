@@ -21,6 +21,8 @@ CANCEL_GRACE = 30.0
 PROVIDER_ATTEMPTS_PER_STEP = 6
 # The tool result the harness records when a workbench approval was denied: the call never ran.
 APPROVAL_DENIED = "external write approval was denied or expired"
+# How the harness words a workbench approval request (crates/aidash-harness/src/agent.rs).
+APPROVAL_PROMPT = "Approve this exact external tool action once? Tool: "
 
 
 class ApiError(RuntimeError):
@@ -185,6 +187,16 @@ def agent_id(prefix, planned):
     return f"{prefix}-t{task_index:02d}-{planned['comparison']['id']}-{planned['arm']}"
 
 
+def loaded_identity(call_name, result):
+    """The Registry id a successful `capability_load` loaded (crates/aidash-domain/src/exposure.rs), else None."""
+    if call_name != "capability_load" or not isinstance(result, dict) or result.get("error") is not None or \
+            result.get("status") not in ("loaded", "already_loaded"):
+        return None
+    identity = result.get("identity")
+    registry = identity.get("registry") if isinstance(identity, dict) else None
+    return registry.get("id") if isinstance(registry, dict) and isinstance(registry.get("id"), str) else None
+
+
 def tool_calls_from(context):
     calls = []
     for event in context.get("history", []):
@@ -196,8 +208,20 @@ def tool_calls_from(context):
         calls.append({"name": event["call"]["name"], "arguments": event["call"].get("arguments"), "error": error,
                       "dispatch_rejected": bool(error) and (error == APPROVAL_DENIED or error.startswith(
                           "unavailable tool ") or (error.startswith("capability ") and error.endswith(
-                              ("use capability_load", "call it after the next model request"))))})
+                              ("use capability_load", "call it after the next model request")))),
+                      "loaded": loaded_identity(event["call"]["name"], result)})
     return calls
+
+
+def approval_tool(prompt):
+    """The tool call a harness workbench approval prompt names, else None."""
+    if not prompt.startswith(APPROVAL_PROMPT) or "; call: " not in prompt:
+        return None
+    try:
+        call = json.loads(prompt.split("; call: ", 1)[1])
+    except ValueError:
+        return None
+    return call["name"] if isinstance(call, dict) and isinstance(call.get("name"), str) else None
 
 
 def final_answer(api, token, workspace, run):
@@ -226,7 +250,7 @@ def approves(task, prompt, approve_fixture_tools, prefix):
     evaluator can never grant an external effect the scenario forbids.
     """
     return (approve_fixture_tools and task["kind"] != "escalation"
-            and prompt.startswith(f"Approve this exact external tool action once? Tool: {prefix}-"))
+            and prompt.startswith(f"{APPROVAL_PROMPT}{prefix}-"))
 
 
 def blank_observation():
@@ -256,15 +280,18 @@ def stop_run(api, token, task_uuid, run_id, clock, sleep):
 
 
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
-             interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False, observation=None):
+             interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False, observation=None,
+             after_claim=None):
     """Execute one Task Run end to end and return raw observations; never raises for Run failures.
 
     Every request ends by the Run's deadline. When the deadline passes, even
-    inside a stalled request, and when an interrupt (Ctrl-C, SIGTERM) unwinds
-    through here, the Run is cancelled first, so it cannot keep doing provider
-    work after the evaluator stops waiting for it; an interrupt is then
-    re-raised. `observation`, when given, is filled in place, so a caller
-    still holds the Run's record after an interrupt.
+    inside a stalled request, when a request fails, and when an interrupt
+    (Ctrl-C, SIGTERM) unwinds through here, the Run is cancelled first, so it
+    cannot keep doing provider work after the evaluator stops waiting for it;
+    an interrupt is then re-raised. `observation`, when given, is filled in
+    place, so a caller still holds the Run's record after an interrupt.
+    `after_claim(api)`, when given, runs once the claim has admitted the Run;
+    an exception from it is an infrastructure failure, so the Run is cancelled.
     """
     task = planned["task"]
     token = experiment.token
@@ -307,6 +334,8 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                         raise RuntimeError(f"no Run appeared for Task {task_uuid}")
                     sleep(interval)
             observation["run_id"] = run_id
+            if after_claim is not None:
+                after_claim(bounded)
             while True:
                 run = bounded.get(f"/api/runs/{run_id}", token)["run"]
                 if run["phase"] in TERMINAL:
@@ -324,9 +353,13 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                             text = next(answers, None)
                             answer = {"answer": expand(text) if text is not None else NO_HUMAN}
                         bounded.post(f"/api/human-requests/{request['id']}/answer", answer, token)
+                        # The prompt stays in memory for grading (it names the action asked about);
+                        # run_result keeps only its digest in the manifest.
                         observation["human_answers"].append({"kind": request["kind"],
                                                              "answer_sha256": canonical_sha256(answer),
-                                                             "approved": answer.get("approved")})
+                                                             "approved": answer.get("approved"),
+                                                             "prompt": request["prompt"],
+                                                             "tool": approval_tool(request["prompt"])})
                 sleep(interval)
         except Exception as error:
             # Past the deadline, whether a poll noticed it or a request stalled into it.
@@ -350,6 +383,13 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             observation["usage_records"] = usage_reader(observation["run_id"])
     except Exception as error:  # Counted as an infrastructure failure, never dropped.
         observation["infrastructure_error"] = f"{type(error).__name__}: {error}"
+        # A failed request says nothing about the Run: it may still be active, so stop it
+        # before the caller moves on (stop_run leaves a finished Run alone).
+        try:
+            stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
+        except Exception as cancel_error:
+            observation["infrastructure_error"] += f"; cancellation failed: {type(cancel_error).__name__}: " \
+                                                   f"{cancel_error}"
     except BaseException:  # Ctrl-C or SIGTERM: stop the Run, keep its record, then unwind.
         observation["interrupted"] = True
         try:
@@ -408,6 +448,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url)
             errors[planned["comparison"]["id"]] = f"Agent registration rejected: {str(error)[:300]}"
             continue
         planned["agent_ref"] = agent
+        # Grading needs the Registry ids a deferred Skill load must name.
+        planned["skill_refs"] = skills[task["id"]]
         variants.append({"task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
                          "label": planned["label"], "agent": agent, "agent_fields": planned["agent_fields"],
                          "model": model_ref, "tools": [ref for _, ref in tools[task["id"]]],
@@ -550,7 +592,7 @@ def observed_provider_work(api, token, workspace, run_id):
 
 
 def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout, observations,
-              clock=time.monotonic, sleep=time.sleep):
+              clock=time.monotonic, sleep=time.sleep, binding_check=None):
     """Dispatch live Runs only inside the ledger's spend and time ceilings.
 
     Each Run is reserved at its worst case before dispatch; a refusal stops all
@@ -558,6 +600,15 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     reservation as uncertain: Usage Records have no HTTP read endpoint yet, and
     the Workspace events omit interrupted and retried attempts, so no observed
     cost may release headroom under the hard ceiling.
+
+    `binding_check(api)` raises GuardRefusal unless the Tenant's Provider
+    Credential Binding still has the approved credential and revision. It runs
+    before each reservation and again once the claim has admitted the Run.
+    Admission pins the binding inside the claim and the revision only grows,
+    so passing both reads proves the Run pinned the approved credential; a
+    failed second read cancels the Run and stops all further dispatch. A Run
+    that applied a compaction proves the Node's Jev compactor answered, which
+    the approval attests cannot happen, and also stops all further dispatch.
 
     Appends each finished (planned, repeat, observation) to `observations`,
     which the caller owns so that an exception or interrupt cannot lose the
@@ -576,6 +627,8 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                 skipped.append((key, refusal))
                 continue
             model = planned["live_model"]
+            if binding_check is not None:
+                binding_check(api)
             try:
                 attempt = ledger.reserve(key, run_worst_case(planned["task"], corpus, models[model], prices[model]))
             except GuardRefusal as error:
@@ -583,10 +636,22 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                 skipped.append((key, refusal))
                 continue
             observation = blank_observation()
+            stops = []
+
+            def after_claim(bounded):
+                try:
+                    binding_check(bounded)
+                except GuardRefusal as error:
+                    stops.append(f"Run {key} may have pinned an unapproved credential: {error}")
+                    raise
             try:
                 # A Run's time limit never reaches past the wall-time deadline or the approval's expiry.
                 run_task(api, experiment, planned, repeat, planned["agent_ref"],
-                         timeout=min(timeout, ledger.remaining()), clock=clock, sleep=sleep, observation=observation)
+                         timeout=min(timeout, ledger.remaining()), clock=clock, sleep=sleep, observation=observation,
+                         after_claim=after_claim if binding_check is not None else None)
+                if observation.get("compactions"):
+                    stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
+                                 "compactor answered although the approval attests external compaction is disabled")
                 if observation["run_id"] and observation.get("workspace"):
                     try:
                         attempt["provider_work"] = observed_provider_work(api, experiment.token,
@@ -600,4 +665,20 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
             finally:
                 observations.append((planned, repeat, observation))
                 ledger.settle(attempt, None)
+            if stops:
+                raise GuardRefusal("; ".join(stops))
     return skipped
+
+
+def binding_guard(tenant, provider, expected):
+    """A `binding_check` for live_runs: the binding must still name `expected` credential id and revision."""
+    from fixed_task_evaluation import GuardRefusal
+
+    def check(api):
+        current = api.get(f"/api/tenants/{tenant}/provider-credential-bindings/{provider}")
+        observed = (current.get("provider_credential_id"), current.get("revision")) if isinstance(current, dict) \
+            else None
+        if observed != expected:
+            raise GuardRefusal(f"the Tenant's {provider} Provider Credential Binding changed from {expected} to "
+                               f"{observed} (credential id, revision)")
+    return check

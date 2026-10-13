@@ -20,6 +20,7 @@ import contextlib
 import datetime
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -29,6 +30,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -69,6 +71,8 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
     "(--network none, no host environment, no parent process visibility).",
+    "External Jev compaction is excluded by the operator's attestation that the Node has no Jev credential: the "
+    "Node does not report its compactor over HTTP. A Run that applied a compaction stops all further dispatch.",
 ]
 
 
@@ -83,6 +87,10 @@ def timestamp(moment):
 
 class Terminated(BaseException):
     """SIGTERM during a live run, raised so the run unwinds through cancellation and finalization."""
+
+
+class Cancelled(BaseException):
+    """Raised inside a deterministic worker's Run after Ctrl-C, so the Run is cancelled and recorded."""
 
 
 def raise_terminated(*_):
@@ -320,7 +328,9 @@ def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, l
               "approvals": {"accuracy_claim": False, "cost_claim": False, "production_quality": False,
                             "default_rollout": False},
               "conclusion_scope": evaluation.CONCLUSION_SCOPE, "experiment": experiment, "runs": runs,
-              "aggregates": aggregates, "comparisons": evaluation.compare(corpus, aggregates, runs),
+              "aggregates": aggregates,
+              "comparisons": evaluation.compare({item["id"]: item["issue"] for item in corpus["comparisons"]},
+                                                aggregates, runs),
               "feature_availability": availability, "memory_matrix": memory,
               "calibration": {"applied": calibrate, "failures": evaluation.calibrate(corpus, runs) if calibrate else []},
               "spend": spend, "skipped_runs": [{"key": key, "reason": reason} for key, reason in skipped_runs],
@@ -344,6 +354,31 @@ def finalize(result, reservation):
         result["error"] = "; ".join(filter(None, [result["error"], "manifest failed validation: " + " | ".join(summary)]))
     evaluation.write_manifest(reservation, result)
     return failure
+
+
+def run_parallel(execute, jobs, parallel, stop, results):
+    """Run `execute` over `jobs` on `parallel` threads and append the results to `results` in job order.
+
+    On an interrupt (Ctrl-C reaches only this thread) the queued jobs are
+    cancelled first, so none starts, and then `stop` is set, so active jobs
+    cancel their Runs; the pool is drained, every finished result is kept, and
+    the interrupt is re-raised.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=parallel)
+    futures = [pool.submit(execute, job) for job in jobs]
+    try:
+        concurrent.futures.wait(futures)
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        stop.set()
+        raise
+    finally:
+        pool.shutdown(wait=True)
+        results.extend(future.result() for future in futures if not future.cancelled() and future.exception() is None)
+    failed = next((future.exception() for future in futures if future.exception() is not None), None)
+    if failed is not None:
+        raise failed
 
 
 def unavailable_arms_error(registration_errors):
@@ -378,65 +413,73 @@ def deterministic(args):
         print(f"error: --output {output} already exists; manifests are never overwritten", file=sys.stderr)
         return 2
     log_directory = DEFAULT_OUTPUT / f"logs-{tag}"
-    log_directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     model_ids = runner.fixture_model_ids(corpus, prefix)
-    fixture = Fixture({model_ids[name]: spec["context_window"] for name, spec in corpus["models"].items()})
-    server = fixture.serve({task["id"]: task for task in corpus["tasks"]})
-    fixture_url = f"http://127.0.0.1:{server.server_port}"
-    runs, variants, availability, memory, error = [], [], evaluation.feature_availability(corpus, args.comparison), None, None
+    runs, variants, availability, error = [], [], evaluation.feature_availability(corpus, args.comparison), None
     memory = evaluation.memory_matrix(memory_corpus, {})
     model_refs = {}
+    fixture = server = None
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-") as private_path, contextlib.ExitStack() as stack:
-        private = Path(private_path)
-        postgres = stack.enter_context(container(f"aidash-fte-{tag}-pg", POSTGRES_IMAGE, (
-            ["-p", "127.0.0.1::5432"], ["postgres", "-c", "max_connections=200"]),
-            {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "aidash_evaluation"}))
-        nats = stack.enter_context(container(f"aidash-fte-{tag}-nats", NATS_IMAGE, (["-p", "127.0.0.1::4222"], ["-js"])))
-        wait(lambda: subprocess.run(["docker", "exec", postgres, "pg_isready", "-h", "127.0.0.1", "-U", "aidash",
-                                     "-d", "aidash_evaluation"], capture_output=True).returncode == 0, 120, "PostgreSQL")
-        print("evaluation: disposable PostgreSQL and NATS ready", flush=True)
-        port = free_port()
-        base = f"http://127.0.0.1:{port}"
-        operator = secrets.token_urlsafe(32)
-        node_id = f"aidash://fixed-task-{tag}"
-        web = private / "web"
-        web.mkdir()
-        (web / "index.html").write_text("<!doctype html><title>evaluation</title>\n")
-        environment = {key: value for key, value in os.environ.items() if not key.startswith(("AIDASH_", "REINHARDT_"))}
-        environment.update({
-            "REINHARDT_ENV": "local", "REINHARDT_SETTINGS_DIR": str(settings_directory(private, secrets.token_hex(32))),
-            "DATABASE_URL": f"postgres://aidash:{urllib.parse.quote(password, safe='')}@127.0.0.1:"
-                            f"{published_port(postgres, 5432)}/aidash_evaluation",
-            "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
-            "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": operator,
-            "AIDASH_API_RATE_BURST": "100000", "AIDASH_WEB_DIR": str(web),
-            # A loaded host can exceed the default request deadline on reads that poll Runs.
-            "AIDASH_HTTP_TIMEOUT_SECONDS": "120",
-            # This disposable Node ID owns its JetStream streams and consumers.
-            "AIDASH_ACTIVATION_BOOTSTRAP": "true",
-            "AIDASH_JEV_ENDPOINT": fixture_url + "/jev", "AIDASH_SECRET_JEV": "fixture-classifier-not-a-secret",
-            "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
-        # Native memory needs its independent recovery ledger, initialized once after the
-        # schema exists and before any bank is created (docs/memory-recovery.md).
-        recovery = private / "memory-recovery"
-        environment["AIDASH_MEMORY_RECOVERY_DIR"] = str(recovery)
-        with open(log_directory / "setup.log", "wb") as setup:
-            for command in (["migrate"], ["memory-recovery", "init-if-missing", "--directory", str(recovery)]):
-                subprocess.run([str(binary), *command], cwd=ROOT, env=environment, stdout=setup, stderr=setup,
-                               check=True, timeout=300)
-        child = stack.enter_context(node(binary, environment, log_directory / "server.log"))
+    # Everything after the reservation ends in finalize(): a failed setup leaves a manifest with
+    # its error, not an empty file that would refuse a retry with the same --output.
+    try:
+        log_directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        fixture = Fixture({model_ids[name]: spec["context_window"] for name, spec in corpus["models"].items()})
+        server = fixture.serve({task["id"]: task for task in corpus["tasks"]})
+        fixture_url = f"http://127.0.0.1:{server.server_port}"
+        with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-") as private_path, contextlib.ExitStack() as stack:
+            private = Path(private_path)
+            postgres = stack.enter_context(container(f"aidash-fte-{tag}-pg", POSTGRES_IMAGE, (
+                ["-p", "127.0.0.1::5432"], ["postgres", "-c", "max_connections=200"]),
+                {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "aidash_evaluation"}))
+            nats = stack.enter_context(container(f"aidash-fte-{tag}-nats", NATS_IMAGE,
+                                                 (["-p", "127.0.0.1::4222"], ["-js"])))
+            wait(lambda: subprocess.run(["docker", "exec", postgres, "pg_isready", "-h", "127.0.0.1", "-U", "aidash",
+                                         "-d", "aidash_evaluation"], capture_output=True).returncode == 0, 120,
+                 "PostgreSQL")
+            print("evaluation: disposable PostgreSQL and NATS ready", flush=True)
+            port = free_port()
+            base = f"http://127.0.0.1:{port}"
+            operator = secrets.token_urlsafe(32)
+            node_id = f"aidash://fixed-task-{tag}"
+            web = private / "web"
+            web.mkdir()
+            (web / "index.html").write_text("<!doctype html><title>evaluation</title>\n")
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(("AIDASH_", "REINHARDT_"))}
+            environment.update({
+                "REINHARDT_ENV": "local",
+                "REINHARDT_SETTINGS_DIR": str(settings_directory(private, secrets.token_hex(32))),
+                "DATABASE_URL": f"postgres://aidash:{urllib.parse.quote(password, safe='')}@127.0.0.1:"
+                                f"{published_port(postgres, 5432)}/aidash_evaluation",
+                "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
+                "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": operator,
+                "AIDASH_API_RATE_BURST": "100000", "AIDASH_WEB_DIR": str(web),
+                # A loaded host can exceed the default request deadline on reads that poll Runs.
+                "AIDASH_HTTP_TIMEOUT_SECONDS": "120",
+                # This disposable Node ID owns its JetStream streams and consumers.
+                "AIDASH_ACTIVATION_BOOTSTRAP": "true",
+                "AIDASH_JEV_ENDPOINT": fixture_url + "/jev", "AIDASH_SECRET_JEV": "fixture-classifier-not-a-secret",
+                "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
+            # Native memory needs its independent recovery ledger, initialized once after the
+            # schema exists and before any bank is created (docs/memory-recovery.md).
+            recovery = private / "memory-recovery"
+            environment["AIDASH_MEMORY_RECOVERY_DIR"] = str(recovery)
+            with open(log_directory / "setup.log", "wb") as setup:
+                for command in (["migrate"], ["memory-recovery", "init-if-missing", "--directory", str(recovery)]):
+                    subprocess.run([str(binary), *command], cwd=ROOT, env=environment, stdout=setup, stderr=setup,
+                                   check=True, timeout=300)
+            child = stack.enter_context(node(binary, environment, log_directory / "server.log"))
 
-        def healthy():
-            if child.poll() is not None:
-                raise RuntimeError(f"Aidash exited during startup with code {child.returncode}; see {log_directory}")
-            with urllib.request.urlopen(base + "/health", timeout=2) as response:
-                return response.status == 200
-        wait(healthy, 180, "Aidash health")
-        print(f"evaluation: Node healthy; {len(planned_runs) * args.repeats} Runs planned", flush=True)
-        api = runner.Api(http_transport(base), operator)
-        experiment = runner.Experiment(api, node_id, "evaluation", prefix)
-        try:
+            def healthy():
+                if child.poll() is not None:
+                    raise RuntimeError(f"Aidash exited during startup with code {child.returncode}; see "
+                                       f"{log_directory}")
+                with urllib.request.urlopen(base + "/health", timeout=2) as response:
+                    return response.status == 200
+            wait(healthy, 180, "Aidash health")
+            print(f"evaluation: Node healthy; {len(planned_runs) * args.repeats} Runs planned", flush=True)
+            api = runner.Api(http_transport(base), operator)
+            experiment = runner.Experiment(api, node_id, "evaluation", prefix)
             agent_ids = [runner.agent_id(prefix, planned) for planned in planned_runs]
             agent_ids += [f"{prefix}-memory-agent-{variant['id']}" for variant in memory_corpus["variants"]]
             experiment.authorize(agent_ids)
@@ -455,27 +498,41 @@ def deterministic(args):
             # --parallel of them share the Node's worker slots. Results keep plan order.
             jobs = [(repeat, planned) for repeat in range(1, args.repeats + 1) for planned in planned_runs
                     if "agent_ref" in planned]
+            stop = threading.Event()
 
             def execute(job):
                 repeat, planned = job
-                observation = runner.run_task(api, experiment, planned, repeat, planned["agent_ref"], fixture,
-                                              usage, args.run_timeout, approve_fixture_tools=True)
+                observation = runner.blank_observation()
+
+                def sleep(seconds):
+                    # Ctrl-C reaches only the main thread, which sets `stop`; the Run's next wait
+                    # then raises, so run_task cancels the Run and records it as interrupted.
+                    if observation["interrupted"]:
+                        time.sleep(seconds)  # the cancellation's own retries
+                    elif stop.wait(seconds):
+                        raise Cancelled()
+                try:
+                    runner.run_task(api, experiment, planned, repeat, planned["agent_ref"], fixture, usage,
+                                    args.run_timeout, sleep=sleep, approve_fixture_tools=True, observation=observation)
+                except Cancelled:
+                    pass  # run_task has cancelled the Run and marked it interrupted.
                 result = evaluation.run_result(corpus, planned, repeat, observation, "deterministic", True)
                 detail = f" ({result['error'][:200]})" if result["error"] else ""
                 print(f"{result['key']}: {result['outcome']}{detail}", flush=True)
                 return result
-            with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as pool:
-                runs = list(pool.map(execute, jobs))
+            run_parallel(execute, jobs, args.parallel, stop, runs)
             if not args.skip_memory:
                 print("evaluation: Runs finished; executing memory scenarios", flush=True)
                 executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs,
                                                        fixture_url, args.skip_rust_evidence)
                 memory = evaluation.memory_matrix(memory_corpus, executed)
-        except (Exception, KeyboardInterrupt) as failure:
-            error = (error + "; " if error else "") + f"{type(failure).__name__}: {failure}"
-        if fixture.errors:
-            error = (error + "; " if error else "") + "fixture faults: " + "; ".join(fixture.errors[:5])
-    server.shutdown()
+    except (Exception, KeyboardInterrupt) as failure:
+        error = (error + "; " if error else "") + f"{type(failure).__name__}: {failure}"
+    finally:
+        if server is not None:
+            server.shutdown()
+    if fixture is not None and fixture.errors:
+        error = (error + "; " if error else "") + "fixture faults: " + "; ".join(fixture.errors[:5])
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
     harness = {"compaction": "legacy prune-only Context Policy with fixture Jev classifier", "cache_salt": True,
@@ -602,7 +659,9 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             error = unavailable_arms_error(registration_errors)
         else:
             skipped = runner.live_runs(api, experiment, corpus, planned_runs, args.repeats, ledger, models,
-                                       approval["prices"], args.run_timeout, observations, clock, sleep)
+                                       approval["prices"], args.run_timeout, observations, clock, sleep,
+                                       runner.binding_guard(args.tenant, credential["provider"],
+                                                            (binding["provider_credential_id"], binding["revision"])))
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
         error = f"interrupted by the operator ({type(stop).__name__})"
@@ -632,7 +691,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     model = {"kind": "live-provider", "registrations": model_refs, "reported_identities": None,
              "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True}
     harness = {"compaction": "server-configured", "cache_salt": True, "provider_credential": args.provider_credential,
-               "disclosure_approval": evaluation.canonical_sha256(approval), "jev_classifier": "server-configured"}
+               "disclosure_approval": evaluation.canonical_sha256(approval),
+               "jev_classifier": "excluded: the approval attests the Node has no Jev credential"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
               "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
               "spend_ceiling_nanocredits": args.max_spend_nanocredits}
@@ -720,6 +780,9 @@ def main(argv=None):
         return validate_command(args)
     if not 1 <= args.repeats <= 64:
         parser.error("--repeats must be between 1 and 64")
+    # NaN would make every deadline comparison false, so a Run could poll past every limit.
+    if not math.isfinite(args.run_timeout) or args.run_timeout <= 0:
+        parser.error("--run-timeout must be a positive, finite number of seconds")
     try:
         if args.command == "deterministic":
             signal.signal(signal.SIGTERM, terminate)

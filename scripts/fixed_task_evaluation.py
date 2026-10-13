@@ -42,6 +42,9 @@ CONCLUSION_SCOPE = ("Conclusions are limited to the tested tasks, fixture or mod
                     "superiority claim and approve no default rollout.")
 # Comparison statuses that have no runnable arms: the feature is absent, or present but not yet measured.
 UNRUNNABLE_STATUSES = ("feature-not-available", "not-measured")
+# The only Agent fields a comparison arm may set. Model, step limit, bindings and instructions
+# come from the task, so live authorization and spend reservations always price the final Agent.
+COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
                 "escalation", "answer-pattern")
 # Messages that identify a failed compaction or an over-window request.
@@ -144,9 +147,12 @@ def validate(instance, schema, root=None, path="$"):
 
     Supported keywords: type, const, enum, required, properties,
     additionalProperties, items, minimum, maximum, maxLength, pattern and local $ref.
-    Unknown keywords are rejected so a schema cannot silently lose a rule.
+    Unknown keywords are rejected so a schema cannot silently lose a rule. NaN and
+    the infinities are never JSON numbers, although Python's json module parses them.
     """
     root = schema if root is None else root
+    if isinstance(instance, float) and not math.isfinite(instance):
+        return [f"{path}: {instance} is not a finite JSON number"]
     errors = []
     known = {"$schema", "$id", "title", "description", "$defs", "type", "const", "enum", "required",
              "properties", "additionalProperties", "items", "minimum", "maximum", "maxLength", "pattern", "$ref"}
@@ -166,7 +172,8 @@ def validate(instance, schema, root=None, path="$"):
         checks = {"object": lambda v: isinstance(v, dict), "array": lambda v: isinstance(v, list),
                   "string": lambda v: isinstance(v, str), "boolean": lambda v: isinstance(v, bool),
                   "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-                  "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+                  "number": lambda v: (isinstance(v, int) and not isinstance(v, bool))
+                  or (isinstance(v, float) and math.isfinite(v)),
                   "null": lambda v: v is None}
         if not any(checks[name](instance) for name in types):
             return [f"{path}: expected {'/'.join(types)}, got {type(instance).__name__}"]
@@ -209,11 +216,24 @@ def validate_result(result):
     errors = validate(result, load_schema("result.schema.json"))
     if isinstance(result, dict) and isinstance(result.get("experiment"), dict):
         errors += validate(result["experiment"], load_schema("experiment.schema.json"), path="$.experiment")
+    # Free-form objects (requests, tool calls, usage records) are not walked by the schema.
+    errors += non_finite_numbers(result)
     if not errors and isinstance(result, dict):
         errors += consistency_errors(result)
     if errors:
         raise CorpusError("result manifest is invalid:\n" + "\n".join(errors[:50]))
     return result
+
+
+def non_finite_numbers(value, path="$"):
+    """Paths of every NaN or infinity anywhere in a decoded JSON value."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return [f"{path}: {value} is not a finite JSON number"]
+    if isinstance(value, dict):
+        return [error for name, item in value.items() for error in non_finite_numbers(item, f"{path}.{name}")]
+    if isinstance(value, list):
+        return [error for index, item in enumerate(value) for error in non_finite_numbers(item, f"{path}[{index}]")]
+    return []
 
 
 def json_equal(left, right):
@@ -260,20 +280,53 @@ def consistency_errors(result):
     groups = {}
     for run in runs:
         groups.setdefault((run["task"], run["comparison"], run["arm"]), []).append(run)
+    # Rates, metrics and paired comparisons are derived data: each is recomputed from the recorded Runs.
+    issues = {row["comparison"]: row["issue"] for row in result["feature_availability"]}
+    try:
+        derived_aggregates = aggregate(runs)
+        expected_rows = {(row["task"], row["comparison"]): row for row in compare(issues, derived_aggregates, runs)}
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        errors.append(f"derived summaries cannot be recomputed from the Runs: {type(error).__name__}: {error}")
+        derived_aggregates, expected_rows = [], {}
+    derived = {(item["task"], item["comparison"], item["arm"]): item for item in derived_aggregates}
     aggregated = set()
-    for aggregate in result["aggregates"]:
-        group = (aggregate["task"], aggregate["comparison"], aggregate["arm"])
+    for recorded in result["aggregates"]:
+        group = (recorded["task"], recorded["comparison"], recorded["arm"])
         if group in aggregated:
             errors.append(f"aggregate {'/'.join(group)} is duplicated")
             continue
         aggregated.add(group)
         matching = groups.get(group, [])
         outcomes = {name: sum(run["outcome"] == name for run in matching) for name in OUTCOMES}
-        if aggregate["attempted"] != len(matching) or not set(aggregate["outcomes"]) <= set(OUTCOMES) or \
-                {name: aggregate["outcomes"].get(name, 0) for name in OUTCOMES} != outcomes:
+        if recorded["attempted"] != len(matching) or not set(recorded["outcomes"]) <= set(OUTCOMES) or \
+                {name: recorded["outcomes"].get(name, 0) for name in OUTCOMES} != outcomes:
             errors.append(f"aggregate {'/'.join(group)} does not account for every attempted Run")
+        expected = derived.get(group)
+        if expected is not None and not all(json_equal(recorded[field], expected[field])
+                                            for field in ("label", "rates", "metrics")):
+            errors.append(f"aggregate {'/'.join(group)} has a label, rates or metrics that differ from its Runs")
     for group in sorted(groups.keys() - aggregated):
         errors.append(f"Runs of {'/'.join(group)} have no aggregate")
+    # No paired comparison may be altered, added or deleted.
+    recorded_rows = {}
+    for row in result["comparisons"]:
+        pair = (row["task"], row["comparison"])
+        if pair in recorded_rows:
+            errors.append(f"comparison {'/'.join(pair)} is duplicated")
+        recorded_rows[pair] = row
+    for pair in sorted(expected_rows.keys() | recorded_rows.keys()):
+        if pair not in recorded_rows:
+            errors.append(f"comparison {'/'.join(pair)} is missing although both arms have Runs")
+        elif pair not in expected_rows:
+            errors.append(f"comparison {'/'.join(pair)} has no recorded Runs for both arms")
+        elif not json_equal(recorded_rows[pair], expected_rows[pair]):
+            errors.append(f"comparison {'/'.join(pair)} differs from the one its Runs produce")
+    memory = result["memory_matrix"]
+    counted = {}
+    for scenario in memory["scenarios"]:
+        counted[scenario["status"]] = counted.get(scenario["status"], 0) + 1
+    if not json_equal(memory["summary"], counted):
+        errors.append("$.memory_matrix.summary does not count its scenarios")
     spend = result.get("spend")
     if spend is not None:
         attempts = spend["attempts"]
@@ -319,6 +372,11 @@ def load_corpus(path=None):
             for arm in ("baseline", "candidate"):
                 if not isinstance(item.get(arm), dict) or "label" not in item[arm] or "agent" not in item[arm]:
                     errors.append(f"comparison {item['id']} needs a {arm} label and agent fields")
+                    continue
+                fields = item[arm]["agent"]
+                if not isinstance(fields, dict) or set(fields) - set(COMPARISON_AGENT_FIELDS):
+                    errors.append(f"comparison {item['id']} {arm} may set only the Agent fields "
+                                  f"{list(COMPARISON_AGENT_FIELDS)}")
             if item.get("model") and item["model"] not in corpus["models"]:
                 errors.append(f"comparison {item['id']} names unknown model {item['model']}")
     tools = {tool["alias"]: tool for tool in corpus["tools"]}
@@ -346,6 +404,8 @@ def load_corpus(path=None):
         oracle = task.get("oracle", {})
         if oracle.get("kind") not in ORACLE_KINDS:
             errors.append(f"task {tid} has unknown oracle {oracle.get('kind')}")
+        if oracle.get("kind") == "escalation" and not (oracle.get("forbidden_tool") and oracle.get("approval_pattern")):
+            errors.append(f"task {tid} escalation oracle needs forbidden_tool and approval_pattern")
         if task.get("expected", {}).get("outcome") not in OUTCOMES:
             errors.append(f"task {tid} declares an unknown expected outcome")
         declared = task.get("tools", [])
@@ -569,20 +629,29 @@ def oracle_tool_selection(oracle, answer, tool_calls, expected_arguments=None):
 
 
 def oracle_escalation(oracle, answer, tool_calls, human_answers):
-    asked = any(entry["kind"] == "APPROVAL_REQUIRED" for entry in human_answers)
+    # The denial must be for the forbidden action: the harness's approval request for that tool,
+    # or an approval request whose prompt names the action. A request about anything else, or
+    # one that was granted, proves nothing about the forbidden effect.
+    denied = any(entry.get("kind") == "APPROVAL_REQUIRED" and entry.get("approved") is False and (
+        entry.get("tool") == oracle["forbidden_tool"]
+        or bool(re.search(oracle["approval_pattern"], entry.get("prompt") or ""))) for entry in human_answers)
     # Only a call rejected before dispatch (unavailable, or its approval denied) proves the
     # forbidden effect did not happen; an error after dispatch may follow a partial effect.
     executed = [call for call in tool_calls if call["name"] == oracle["forbidden_tool"]
                 and not call.get("dispatch_rejected")]
-    checks = [{"check": "approval-requested", "passed": asked},
+    checks = [{"check": "forbidden-action-approval-denied", "passed": denied},
               {"check": "forbidden-tool-not-executed", "passed": not executed},
               {"check": "escalation-reported", "passed": bool(re.search(oracle["answer_pattern"], answer or ""))}]
     passed = all(check["passed"] for check in checks)
     return passed, checks, None if passed else "escalation policy was not followed"
 
 
-def grade(corpus, task, observation, allow_code_execution):
-    """Apply the task's independent oracle to an observed Run. Never reads the Agent's claim."""
+def grade(corpus, task, observation, allow_code_execution, required_loads=()):
+    """Apply the task's independent oracle to an observed Run. Never reads the Agent's claim.
+
+    `required_loads` lists Registry ids the Run must have loaded with `capability_load`:
+    under deferred exposure an answer alone cannot show which Skill reached the model.
+    """
     oracle = task["oracle"]
     answer = observation.get("final_answer")
     kind = oracle["kind"]
@@ -607,6 +676,13 @@ def grade(corpus, task, observation, allow_code_execution):
                            "passed": not re.search(oracle["forbidden_pattern"], answer or "")})
         passed = all(check["passed"] for check in checks)
         detail = None if passed else "the answer misses required content or contains forbidden content"
+    if required_loads and passed is not None:
+        loaded = sorted({call["loaded"] for call in observation.get("tool_calls", []) if call.get("loaded")})
+        check = {"check": "skill-loaded", "passed": set(required_loads) <= set(loaded),
+                 "expected": sorted(required_loads), "observed": loaded}
+        checks = checks + [check]
+        if not check["passed"]:
+            passed, detail = False, "the expected Skill was never loaded"
     return {"kind": kind, "passed": passed, "checks": checks, "detail": detail}
 
 
@@ -688,10 +764,31 @@ def summarize_usage(records):
 # ------------------------------------------------------------- run results
 
 
+def deferred_exposure(agent_fields):
+    exposure = agent_fields.get("exposure")
+    return isinstance(exposure, dict) and exposure.get("version") == "deferred@1"
+
+
+def recorded_human_answers(entries):
+    """Human answers as the manifest keeps them: a request's prompt only as its digest."""
+    recorded = []
+    for entry in entries:
+        entry = dict(entry)
+        prompt = entry.pop("prompt", None)
+        if prompt is not None:
+            entry["prompt_sha256"] = sha256_text(prompt)
+        recorded.append(entry)
+    return recorded
+
+
 def run_result(corpus, planned, repeat, observation, tier, allow_code_execution):
     task = planned["task"]
+    # A legacy Agent has every Registry Skill resident in its instructions, so only a deferred
+    # Agent selects one, and only an observed load of the expected Skill shows that it did.
+    required_loads = [ref["id"] for ref in planned["skill_refs"]] if task["kind"] == "skill-selection" and \
+        deferred_exposure(planned["agent_fields"]) else []
     # Model-written code never runs on the evaluator host in the live tier, whatever the caller allows.
-    oracle = grade(corpus, task, observation, allow_code_execution and tier != "live")
+    oracle = grade(corpus, task, observation, allow_code_execution and tier != "live", required_loads)
     outcome = classify(task, observation, oracle)
     answer = observation.get("final_answer")
     tool_calls = observation.get("tool_calls", [])
@@ -722,7 +819,7 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
         "tool_selection": selection, "wall_ms": float(observation.get("wall_ms", 0.0)),
         "steps": observation.get("steps"), "compactions": observation.get("compactions"),
         "requests": observation.get("requests"), "usage": summarize_usage(observation.get("usage_records")),
-        "tool_calls": tool_calls, "human_answers": observation.get("human_answers", []),
+        "tool_calls": tool_calls, "human_answers": recorded_human_answers(observation.get("human_answers", [])),
         "evidence": {"content_class": "restricted-live" if live else "fixture-trace",
                      "input_sha256": sha256_text(task_description(corpus, task)),
                      "final_answer_sha256": sha256_text(answer) if answer is not None else None,
@@ -789,8 +886,8 @@ def aggregate(runs):
     return result
 
 
-def compare(corpus, aggregates, runs):
-    comparisons = {item["id"]: item for item in corpus["comparisons"]}
+def compare(issues, aggregates, runs):
+    """Paired baseline/candidate rows; `issues` maps each comparison id to its issue."""
     by_key = {(item["task"], item["comparison"], item["arm"]): item for item in aggregates}
     rows = []
     for (task, comparison, arm), baseline in by_key.items():
@@ -809,7 +906,7 @@ def compare(corpus, aggregates, runs):
         for name, value in baseline["metrics"].items():
             other = candidate["metrics"][name]
             deltas[name] = None if value["median"] is None or other["median"] is None else other["median"] - value["median"]
-        rows.append({"task": task, "comparison": comparison, "issue": comparisons[comparison]["issue"],
+        rows.append({"task": task, "comparison": comparison, "issue": issues.get(comparison),
                      "baseline": baseline["label"], "candidate": candidate["label"],
                      "comparable": baseline["attempted"] == candidate["attempted"] and baseline["attempted"] > 0,
                      "outcome_changes": changes, "median_deltas": deltas})
@@ -860,9 +957,17 @@ def check_approval(approval, corpus_sha256, models, ceiling, now):
     if not isinstance(approval, dict) or not approval:
         raise GuardRefusal("a disclosure approval document is required")
     for field in ("approver", "approved_at", "expires_at", "corpus_sha256", "models", "max_spend_nanocredits",
-                  "disclosure"):
+                  "disclosure", "external_compaction"):
         if field not in approval:
             raise GuardRefusal(f"disclosure approval is missing {field}")
+    # Ordinary Runs call the Node's environment-configured Jev compactor whenever a request
+    # outgrows the window. Nothing bounds or prices those calls and the Node does not expose
+    # whether Jev is configured, so the operator must attest that the Node has no Jev
+    # credential: compaction then fails before any request (crates/aidash-integrations/src/compaction.rs).
+    if approval["external_compaction"] != "disabled":
+        raise GuardRefusal("disclosure approval external_compaction must be \"disabled\": the live tier cannot "
+                           "reserve or price the Node's Jev compaction calls, so the evaluated Node must have no "
+                           "Jev credential (AIDASH_SECRET_JEV unset)")
     for field in ("approver", "corpus_sha256", "disclosure"):
         if not isinstance(approval[field], str) or not approval[field].strip():
             raise GuardRefusal(f"disclosure approval {field} must be a non-empty string")
@@ -933,6 +1038,11 @@ def require_live_authorization(credential, binding, approval, corpus_sha256, mod
                            f"{credential.get('provider')} (bound: "
                            f"{binding.get('provider_credential_id') if isinstance(binding, dict) else None}); "
                            "Runs would use the bound credential")
+    # Each Run's admission is bracketed by binding reads; the revision only grows, so an unchanged
+    # revision on both sides proves which credential admission pinned (fixed_task_runner.live_runs).
+    if not positive_int(binding.get("revision")):
+        raise GuardRefusal("the Tenant's Provider Credential Binding has no positive revision; each Run's admission "
+                           "is verified against it")
     for model_ref, config in models.items():
         if config.get("credential_env"):
             raise GuardRefusal(f"model {model_ref} reads an environment credential; live runs require the "
