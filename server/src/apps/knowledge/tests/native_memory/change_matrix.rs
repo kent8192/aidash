@@ -562,3 +562,164 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 		serde_json::to_value(&view.units[1]).unwrap()["runs"]
 	);
 }
+
+/// Impact inspection applies the same live-read checks as listing and the Run
+/// recheck: a withdrawn derived Unit is not reported, an expired derived Unit
+/// disappears before the sweep, and an expired root fences its readers.
+#[rstest]
+#[tokio::test]
+async fn impact_reports_only_live_units_and_fences_expired_reads(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	use aidash_domain::memory::impact::ImpactQuery;
+	use aidash_server::{apps::knowledge::services::memory_impact::impact, database::native};
+	// Arrange
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_retention(
+		&database,
+		bounds,
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		Some(1),
+	)
+	.await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let add = |text: &str, evidence: Vec<Evidence>| {
+		let mut draft = content(text);
+		draft.kind = Kind::World;
+		draft.evidence = evidence;
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: draft,
+			},
+		)
+	};
+	let source = memory::mutate(&store, &Actor::Operator, add("Root finding", vec![]))
+		.await
+		.unwrap()
+		.remove(0);
+	let mut derived = Vec::new();
+	for text in ["Live dependent", "Withdrawn dependent"] {
+		derived.push(
+			memory::mutate(&store, &Actor::Operator, add(text, vec![source.evidence()]))
+				.await
+				.unwrap()
+				.remove(0),
+		);
+	}
+	let mut withdrawn = derived[1].content.clone();
+	withdrawn.verification = Verification::Contradicted;
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Correct {
+				id: derived[1].id,
+				expected_revision: 1,
+				content: withdrawn,
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let (scope, run) = recorded_run(&store, &bank, &[source.id]).await;
+	let actor = Actor::Subject(scope.identity.clone());
+	let query = ImpactQuery {
+		provider: reference("p"),
+		bank: bank.clone(),
+		units: vec![source.id],
+	};
+	// Rebase the fixture clock in canonical storage and its recovery fence.
+	let age = |unit: &Unit| {
+		let mut unit = unit.clone();
+		unit.learned_at = chrono::DateTime::from_timestamp_micros(
+			(chrono::Utc::now() - chrono::Duration::days(2)).timestamp_micros(),
+		)
+		.unwrap();
+		let fence_path = database
+			.recovery_directory
+			.path()
+			.join("units")
+			.join(format!("{}.cbor", unit.id));
+		let bytes = std::fs::read(&fence_path).unwrap();
+		let mut record: RecoveryFence = ciborium::de::from_reader(&bytes[40..]).unwrap();
+		record.fence.digest = aidash_domain::memory::recovery::digest(&unit).unwrap();
+		write_fixture_archive(&fence_path, &record);
+		Query::update()
+			.table(Alias::new("memory_units"))
+			.value(Alias::new("learned_at"), unit.learned_at)
+			.and_where(Expr::col("id").eq(Expr::value(unit.id)))
+			.to_string(PostgresQueryBuilder)
+	};
+
+	// Act: everything is within retention
+	let fresh = impact(&store, &actor, query.clone()).await.unwrap();
+
+	// Assert
+	assert_eq!(fresh.units[0].readable_revision, Some(1));
+	assert_eq!(
+		fresh.units[0]
+			.derived
+			.iter()
+			.map(|unit| unit.id)
+			.collect::<Vec<_>>(),
+		vec![derived[0].id],
+		"a withdrawn dependent is not live derived memory"
+	);
+
+	// Act: the live dependent expires before any sweep
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(&age(&derived[0]))
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let dependent_expired = impact(&store, &actor, query.clone()).await.unwrap();
+
+	// Assert
+	assert!(dependent_expired.units[0].derived.is_empty());
+	assert_eq!(dependent_expired.units[0].readable_revision, Some(1));
+	assert_eq!(
+		dependent_expired.units[0]
+			.runs
+			.iter()
+			.map(|run| (run.id, run.fenced))
+			.collect::<Vec<_>>(),
+		vec![(run, false)]
+	);
+
+	// Act: the root expires before any sweep
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(&age(&source))
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let root_expired = impact(&store, &actor, query).await.unwrap();
+
+	// Assert
+	assert_eq!(root_expired.units[0].readable_revision, None);
+	assert_eq!(
+		root_expired.units[0]
+			.runs
+			.iter()
+			.map(|run| (run.id, run.read_revision, run.fenced))
+			.collect::<Vec<_>>(),
+		vec![(run, 1, true)],
+		"the next Run boundary would stop with Invalidated"
+	);
+}

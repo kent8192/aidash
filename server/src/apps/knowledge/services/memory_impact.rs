@@ -39,7 +39,14 @@ pub async fn impact(store: &Store, actor: &Actor, input: ImpactQuery) -> Result<
 				});
 				continue;
 			};
-			let readable_revision = unit.visible().then_some(unit.revision);
+			// Retention fences a read before the maintenance sweep marks the Unit
+			// stale, exactly as the Run recheck does at its next boundary.
+			let readable_revision =
+				if unit.visible() && unexpired(&mut lease, &unit).await?.is_some() {
+					Some(unit.revision)
+				} else {
+					None
+				};
 			let (runs, runs_complete) =
 				runs(store, &mut lease, *id, readable_revision, limits).await?;
 			let (derived, derived_complete) =
@@ -131,7 +138,7 @@ async fn derived(
 			let Some(unit) = units::load(lease, id, false).await? else {
 				continue;
 			};
-			if unit.deleted || unit.stale || !readable(store, lease, &unit).await? {
+			if !unit.visible() || !live(store, lease, &unit).await? {
 				continue;
 			}
 			derived.push(DerivedUnit {
@@ -153,6 +160,45 @@ async fn readable(
 	match scope(store, lease, &unit.bank, "memory.read").await {
 		Ok(()) => Ok(true),
 		Err(Error::Forbidden | Error::Conflict(_)) => Ok(false),
+		Err(error) => Err(error),
+	}
+}
+
+/// Whether `unit` passes the same checks as an ordinary memory listing:
+/// requester authority, retention, and current support.
+async fn live(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	unit: &aidash_domain::memory::Unit,
+) -> Result<bool> {
+	if !readable(store, lease, unit).await? {
+		return Ok(false);
+	}
+	let Some(policy) = unexpired(lease, unit).await? else {
+		return Ok(false);
+	};
+	match units::current(
+		lease,
+		unit.bank.workspace,
+		&unit.content.evidence,
+		policy.bounds.max_graph_visits,
+	)
+	.await
+	{
+		Ok(()) => Ok(true),
+		Err(Error::Conflict(_) | Error::Forbidden) => Ok(false),
+		Err(error) => Err(error),
+	}
+}
+
+/// The Bank policy while `unit` is within retention; `None` once expired.
+async fn unexpired(
+	lease: &mut Lease<'_>,
+	unit: &aidash_domain::memory::Unit,
+) -> Result<Option<aidash_domain::memory::Policy>> {
+	match units::unexpired(lease, unit).await {
+		Ok(policy) => Ok(Some(policy)),
+		Err(Error::Conflict(_) | Error::Forbidden) => Ok(None),
 		Err(error) => Err(error),
 	}
 }
