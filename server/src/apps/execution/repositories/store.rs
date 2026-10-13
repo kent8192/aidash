@@ -44,6 +44,12 @@ pub struct Store {
 	pub control_pool: Pool,
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
+	/// Model and embedding clients: `semantic_client` for Provider Catalog
+	/// endpoints and permitted private origins, a public-only one for every
+	/// other Keyless endpoint (ADR 0036).
+	pub provider_clients: aidash_integrations::keyless::Clients,
+	/// Keyless provider access with this Deployment's permitted private origins.
+	pub keyless: aidash_application::provider_access::KeylessAccess,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
@@ -258,11 +264,14 @@ impl Store {
 				std::sync::Arc::new(recovery)
 					as std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>
 			});
+		let provider_clients = crate::semantic::backend::clients()?;
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
 			node_id,
-			semantic_client: crate::semantic::backend::client()?,
+			semantic_client: provider_clients.direct.clone(),
+			provider_clients,
+			keyless: Default::default(),
 			recovery_cursors: Default::default(),
 			tool_slots,
 			cache_salt: None,
@@ -289,6 +298,14 @@ impl Store {
 		keys: Option<aidash_integrations::inference::CacheSaltKeys>,
 	) -> Self {
 		self.cache_salt = keys;
+		self
+	}
+	/// Permit these private origins for Keyless endpoints (ADR 0036).
+	pub fn with_keyless_origins(
+		mut self,
+		origins: aidash_domain::keyless::PermittedOrigins,
+	) -> Self {
+		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins);
 		self
 	}
 	pub(crate) fn with_memory_recovery(
@@ -337,6 +354,8 @@ impl Store {
 			control_pool: self.control_pool.clone(),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
+			provider_clients: self.provider_clients.clone(),
+			keyless: self.keyless.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
@@ -377,6 +396,8 @@ impl Store {
 				.with_dashboard_policy(self.control_pool.dashboard_policy()),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
+			provider_clients: self.provider_clients.clone(),
+			keyless: self.keyless.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),

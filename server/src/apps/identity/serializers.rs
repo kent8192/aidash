@@ -41,4 +41,6 @@ pub(crate) mod desktop;
 
 pub mod provider_credentials;
 
+pub mod keyless_endpoints;
+
 pub(crate) mod tenant_administration;

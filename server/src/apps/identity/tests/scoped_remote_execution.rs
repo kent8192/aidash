@@ -952,6 +952,8 @@ async fn configure_semantic(
 		*tenant.endpoint.lock().unwrap() = endpoint.clone();
 		json!({"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"home-vector","model_version":"1","dimensions":3})
 	} else {
+		// A Keyless embedding fixture on loopback (ADR 0036).
+		a.store.keyless.permit_origin_of(&endpoint).unwrap();
 		json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3})
 	};
 	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;

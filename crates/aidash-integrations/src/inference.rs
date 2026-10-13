@@ -20,7 +20,7 @@ pub mod cache_salt;
 pub use cache_salt::{CacheSaltKey, CacheSaltKeys};
 
 pub struct OpenRouterProvider {
-	pub client: reqwest::Client,
+	pub clients: crate::keyless::Clients,
 	pub config: ModelConfig,
 	pub access: Arc<dyn ProviderAccess>,
 	pub context: Context,
@@ -90,12 +90,9 @@ impl OpenRouterProvider {
 			}
 			segments.push("endpoints");
 		}
-		let mut endpoints = self
-			.client
-			.get(url)
-			.timeout(std::time::Duration::from_secs(15));
-		let mut zdr = self
-			.client
+		let client = self.clients.select(&access)?;
+		let mut endpoints = client.get(url).timeout(std::time::Duration::from_secs(15));
+		let mut zdr = client
 			.get(format!(
 				"{}/endpoints/zdr",
 				access.endpoint.trim_end_matches('/')
@@ -106,7 +103,7 @@ impl OpenRouterProvider {
 			zdr = zdr.bearer_auth(access.bearer.expose_secret());
 		}
 		let (endpoints, zdr) =
-			tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::http_error)?;
+			tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::keyless::send_error)?;
 		if !endpoints.status().is_success() {
 			return Err(crate::response::provider_rejection(
 				endpoints,
@@ -192,17 +189,17 @@ impl OpenRouterProvider {
 /// A provider without Cache Salt Keys: every salted request is rejected
 /// before any provider traffic.
 pub fn provider(
-	client: reqwest::Client,
+	clients: crate::keyless::Clients,
 	config: ModelConfig,
 	access: Arc<dyn ProviderAccess>,
 	context: Context,
 ) -> Result<Arc<dyn ModelProvider>> {
-	salted_provider(client, config, access, context, None)
+	salted_provider(clients, config, access, context, None)
 }
 
 /// A provider that salts requests carrying a Cache Scope with this node's keys.
 pub fn salted_provider(
-	client: reqwest::Client,
+	clients: crate::keyless::Clients,
 	config: ModelConfig,
 	access: Arc<dyn ProviderAccess>,
 	context: Context,
@@ -218,7 +215,7 @@ pub fn salted_provider(
 			config.request_timeout()?;
 			config.stream_stall_timeout()?;
 			Ok(Arc::new(OpenRouterProvider {
-				client,
+				clients,
 				config,
 				access,
 				context,
@@ -308,7 +305,8 @@ impl ModelProvider for OpenRouterProvider {
 				)
 				.await?;
 			let mut call = self
-			.client
+			.clients
+			.select(&access)?
 			.post(format!(
 				"{}/chat/completions",
 				access.endpoint.trim_end_matches('/')
@@ -329,7 +327,7 @@ impl ModelProvider for OpenRouterProvider {
 			} else {
 				call.send().await
 			}
-			.map_err(crate::http_error)?;
+			.map_err(crate::keyless::send_error)?;
 			metrics::histogram!("aidash_model_response_headers_seconds")
 				.record(started.elapsed().as_secs_f64());
 			if !response.status().is_success() {

@@ -401,7 +401,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 	let a = create(&s, "alpha").await;
 	let b = create(&s, "beta").await;
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: Arc::new(repo),
 		reader: None,
 		issuer: None,
@@ -544,7 +544,7 @@ async fn reader_resolves_current_pin_after_metadata_checks() {
 	let (s, repo, store) = service();
 	let row = create(&s, "alpha").await.provider_credential;
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: Arc::new(repo),
 		reader: Some(Arc::new(store)),
 		issuer: None,
@@ -745,7 +745,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			.contains("cleanup-error-canary")
 	);
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: Arc::new(repo.clone()),
 		reader: Some(Arc::new(store.clone())),
 		issuer: None,

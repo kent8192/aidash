@@ -216,7 +216,7 @@ impl Cloud {
 		)
 		.unwrap();
 		let access = Arc::new(TenantAccess {
-			keyless: KeylessAccess,
+			keyless: KeylessAccess::default(),
 			repository: Arc::new(repo.clone()),
 			reader: None,
 			issuer: Some(Arc::new(issuer)),
@@ -299,7 +299,7 @@ async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding()
 		expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
 	}];
 	let provider = aidash_integrations::inference::provider(
-		reqwest::Client::new(),
+		clients(reqwest::Client::new()),
 		config,
 		c.access.clone(),
 		c.context.clone(),
@@ -339,7 +339,7 @@ async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding()
 async fn transient_signing_failure_is_external_and_recovers_before_any_broker_call() {
 	let c = Cloud::new(false).await;
 	let provider = aidash_integrations::inference::provider(
-		reqwest::Client::new(),
+		clients(reqwest::Client::new()),
 		c.config(),
 		c.access.clone(),
 		c.context.clone(),
@@ -373,7 +373,7 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 	let c = Cloud::new(false).await;
 	let client = reqwest::Client::new();
 	let provider = aidash_integrations::inference::provider(
-		client.clone(),
+		clients(client.clone()),
 		c.config(),
 		c.access.clone(),
 		c.context.clone(),
@@ -396,7 +396,7 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 		expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
 	}];
 	let provider = aidash_integrations::inference::provider(
-		client.clone(),
+		clients(client.clone()),
 		config,
 		c.access.clone(),
 		c.context.clone(),
@@ -416,7 +416,7 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 	let embedding = aidash_integrations::semantic::embed(
 		c.access.as_ref(),
 		&c.context,
-		&client,
+		&clients(client.clone()),
 		&aidash_domain::semantic::EmbeddingConfig {
 			provider: "openrouter".into(),
 			endpoint: Provider::Openrouter.base_url().into(),
@@ -615,7 +615,7 @@ async fn mint_rechecks_metadata_and_run_pin_but_maintenance_uses_current_local_b
 async fn expired_capability_is_non_retryable_without_remint_or_key_read() {
 	let c = Cloud::new(true).await;
 	let provider = aidash_integrations::inference::provider(
-		reqwest::Client::new(),
+		clients(reqwest::Client::new()),
 		c.config(),
 		c.access.clone(),
 		c.context.clone(),
@@ -653,7 +653,7 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 		context.run = None;
 		context.maintenance = Some(purpose);
 		let provider = aidash_integrations::inference::provider(
-			reqwest::Client::new(),
+			clients(reqwest::Client::new()),
 			c.config(),
 			c.access.clone(),
 			context,
@@ -695,7 +695,7 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 	aidash_integrations::semantic::embed(
 		c.access.as_ref(),
 		&context,
-		&reqwest::Client::new(),
+		&clients(reqwest::Client::new()),
 		&config,
 		"test",
 	)
@@ -718,7 +718,7 @@ async fn keyless_configurations_stay_direct_and_send_no_key() {
 	config.endpoint = c.fixture.broker.catalog["openrouter"].clone();
 	config.request_timeout_secs = Some(3601);
 	let provider = aidash_integrations::inference::provider(
-		reqwest::Client::new(),
+		clients(reqwest::Client::new()),
 		config,
 		c.access.clone(),
 		Context::default(),
@@ -737,4 +737,14 @@ async fn keyless_configurations_stay_direct_and_send_no_key() {
 	assert_eq!(c.repo.begins.load(Ordering::SeqCst), 0);
 	assert_eq!(c.signer.claims.lock().unwrap().len(), 0);
 	assert_eq!(c.fixture.source.reads.load(Ordering::SeqCst), 0);
+}
+
+/// Catalog calls use the direct client; the public-only one serves Keyless endpoints (ADR 0036).
+fn clients(direct: reqwest::Client) -> aidash_integrations::keyless::Clients {
+	aidash_integrations::keyless::Clients::new(
+		direct,
+		std::time::Duration::from_secs(120),
+		std::time::Duration::from_secs(10),
+	)
+	.unwrap()
 }

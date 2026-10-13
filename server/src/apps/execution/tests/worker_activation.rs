@@ -1923,6 +1923,8 @@ fn initial_environment(
 		settings.node.background_enabled = true;
 		settings.node.worker_count = worker_count;
 		settings.dashboard.oidc = f.config.oidc.clone();
+		// A child process must reach the same Keyless fixtures (ADR 0036).
+		settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
 		let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 		std::fs::create_dir_all(&destination).unwrap();
 		std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();

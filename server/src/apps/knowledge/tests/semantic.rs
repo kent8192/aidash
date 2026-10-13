@@ -117,6 +117,11 @@ async fn controlled_context(
 	);
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let embedding_endpoint = embeddings.url.clone();
+	// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store
+		.keyless
+		.permit_origin_of(&embedding_endpoint)
+		.unwrap();
 	let embedding_server = embeddings;
 	configure(
 		&app,
@@ -886,6 +891,11 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let embedding_endpoint = embeddings.url.clone();
+	// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store
+		.keyless
+		.permit_origin_of(&embedding_endpoint)
+		.unwrap();
 	let embedding_server = embeddings;
 
 	let endpoint = server.url.clone();

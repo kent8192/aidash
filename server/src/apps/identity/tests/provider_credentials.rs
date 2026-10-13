@@ -1205,6 +1205,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			Ok(aidash_application::provider_access::Access {
 				endpoint: "https://broker.test/api/v1".into(),
 				bearer: "fixture-token".into(),
+				keyless: None,
 			})
 		}
 	}
@@ -1483,7 +1484,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	let resource = store.resource(row.id);
 	let old = format!("{resource}/versions/1");
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: service.repository.clone(),
 		reader: Some(store.clone()),
 		issuer: None,
