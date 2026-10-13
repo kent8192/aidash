@@ -1835,6 +1835,99 @@ async fn model_streaming_migration_composes_with_deferred_exposure_guard(
 
 #[rstest]
 #[tokio::test]
+async fn model_provider_keys_migration_refuses_installation_overrides_with_credential_env(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{
+		models::{Definition, Installation},
+		services::states::DefinitionKind,
+	};
+	// Arrange: before 0023 a model installation override could name an
+	// environment key that its base entry omits.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0023_model_provider_keys")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let metadata = json!({"id":"keyed-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Keyed override fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"openai/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("keyed-model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(metadata.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let keyed = || {
+		Installation::build()
+			.id("keyed-model")
+			.version("1.0.0")
+			.digest("keyed-fixture")
+			.config(json!({"credential_env":"AIDASH_SECRET_OPENROUTER"}).into())
+			.finish()
+	};
+	Installation::objects()
+		.create_with_conn(&mut connection, &keyed())
+		.await
+		.unwrap();
+	// Act
+	let error = executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	// Assert: the upgrade is refused instead of breaking admissions later.
+	assert!(
+		error.to_string().contains(
+			"registry 0023_model_provider_keys cannot be applied: 1 installation overrides set credential_env"
+		),
+		"{error}"
+	);
+	// Without the override the upgrade applies, and the installation guard
+	// rejects the key from then on.
+	sqlx::query(
+		&Query::delete()
+			.from_table(Alias::new("installations"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&pool)
+	.await
+	.unwrap();
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		Installation::objects()
+			.create_with_conn(&mut connection, &keyed())
+			.await
+			.is_err(),
+		"the installation guard must reject credential_env"
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_descriptors(
 	#[future] fresh_database: MigrationFixture,
 ) {

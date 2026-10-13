@@ -2612,6 +2612,8 @@ async fn installation_constraints_validate_model_overrides(
 		json!({"context_window":2047}),
 		json!({"provider":"unsupported"}),
 		json!({"unexpected":true}),
+		// ADR 0006: an override never names an environment key either.
+		json!({"credential_env":"AIDASH_SECRET_OPENROUTER"}),
 	] {
 		check_rejected(
 			update(
