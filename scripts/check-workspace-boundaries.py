@@ -67,7 +67,8 @@ def violations(metadata, root):
             pending.extend((dependency, [*path, packages[dependency]["name"]]) for dependency in graph.get(package, []))
     # ADR 0006: the test-only Provider Credential write port and fake-provider
     # constructors exist only behind `test-support`. Production builds use normal
-    # and build dependencies alone, so none of them may enable it.
+    # and build dependencies alone, so none of them may enable it, and no other
+    # feature may alias it: enabling an alias would enable the cfg as well.
     for name, member in members.items():
         package = packages[member]
         for dependency in package["dependencies"]:
@@ -75,8 +76,8 @@ def violations(metadata, root):
                     and "test-support" in dependency["features"]:
                 errors.append(f"production dependency enables test-support: {name} -> {dependency['name']}")
         for feature, enabled in package["features"].items():
-            if any(value == "test-support" and feature == "default" or value.endswith("/test-support")
-                   for value in enabled):
+            if feature != "test-support" and any(
+                    value == "test-support" or value.endswith("/test-support") for value in enabled):
                 errors.append(f"feature {name}/{feature} must not enable test-support")
     for directory in (root / "crates", root / "server"):
         for path in directory.rglob("mod.rs"):
