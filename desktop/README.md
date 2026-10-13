@@ -45,6 +45,15 @@ client need no changes. Derived desktop sessions retain the browser's original
 `auth_time`, so GCIP `validSince` can revoke both sessions together without
 pausing admitted work. GCIP tokens never enter desktop credentials or storage.
 
+GCIP second factors need no desktop code. The system browser loads the same
+`/sign-in` page the web app uses, so a Tenant with an `enabled` or `mandatory`
+MFA Requirement shows its TOTP challenge (or the enrollment step for a user with
+no factor) there, before the page returns to the consent step. The desktop
+process only receives the loopback code after the browser finishes, and it never
+sees GCIP tokens or second-factor claims. The web account menu's "Set up
+two-step verification" entry is hidden inside the desktop window; sign in once
+through the browser on a `mandatory` Tenant, or use the web app, to enroll.
+
 Configure the self-hosted backend's existing Google client, client secret and registered
 `/auth/callback` URI as described in the root README. No new Google client secret
 is distributed with the desktop client. Servers must advertise
@@ -121,7 +130,7 @@ npm run test:desktop --prefix web
 # Real Chromium submits the production consent page to the exact callback port:
 bash scripts/test-desktop-browser.sh
 RUSTC_WRAPPER= cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
-# Uses the existing disposable Testcontainers PostgreSQL/NATS/Qdrant fixture:
+# Uses the existing disposable Testcontainers PostgreSQL/NATS fixture:
 RUSTC_WRAPPER= RUST_MIN_STACK=8388608 \
   AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789 \
   cargo test --locked --test desktop_auth --test dashboard_oidc
@@ -134,7 +143,7 @@ through the shared transport for both accepted HTTP loopback hosts, as well as
 stale JSON/headers, authority transitions, CSRF, credential destinations,
 401 refresh, uncertain mutation outcomes and SSE cursor
 reconnection. The consent regression starts the production Axum router with a
-disposable PostgreSQL/NATS/Qdrant fixture and an existing browser session. Real
+disposable PostgreSQL/NATS fixture and an existing browser session. Real
 Chromium renders and submits the consent page, follows its redirect to each of
 two ephemeral callback ports, and confirms that other loopback ports are blocked.
 The form policy permits only the current handoff's validated callback origin,

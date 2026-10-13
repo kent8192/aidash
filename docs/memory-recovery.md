@@ -1,6 +1,8 @@
 # New-format memory recovery
 
-This guide covers the managed memory-only recovery profile for Issue #125.
+This guide covers the managed memory-only recovery profile for Issue #125. It
+applies to memory units in the source ingestion and knowledge contracts (b) and
+(c); it does not cover Run-context continuity (see [architecture](architecture.md#memory-contracts)).
 
 Each logical Home has a dedicated persistent `AIDASH_MEMORY_RECOVERY_DIR`.
 HTTP and worker processes for the same Home share this directory. PostgreSQL

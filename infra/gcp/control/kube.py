@@ -61,7 +61,7 @@ RUNTIME_KEYS = {
 }
 GCIP_KEYS = {
     "project_id", "web_api_key", "public_origin", "tenant_bindings",
-    "providers", "password_sign_up", "auth_helper", "sign_in_domains",
+    "providers", "password_sign_up", "auth_helper", "sign_in_domains", "mfa_mandatory",
     "session_absolute_seconds", "session_idle_seconds",
 }
 IDENTITY_TOKENS = ("database", "api", "runner", "observer")

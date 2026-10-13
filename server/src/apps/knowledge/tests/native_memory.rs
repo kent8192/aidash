@@ -31,6 +31,8 @@ mod admission;
 mod change_matrix;
 #[path = "native_memory/decay.rs"]
 mod decay;
+#[path = "native_memory/diversity.rs"]
+mod diversity;
 #[path = "native_memory/policy_bounds.rs"]
 mod policy_bounds;
 #[path = "native_memory/precision.rs"]

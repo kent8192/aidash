@@ -1772,3 +1772,95 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	);
 	lease.finish(Ok(())).await.unwrap();
 }
+
+#[rstest]
+#[tokio::test]
+async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	use crate::apps::knowledge::repositories::memory_scope::Scope;
+	use crate::apps::knowledge::services::memory_models::Models;
+	use aidash_application::ports::memory::MemoryScope;
+	use reinhardt::ServerRouter;
+	use reinhardt::test::fixtures::server::test_server_guard;
+	let model = test_server_guard(ServerRouter::new().endpoint(graph_embedding)).await;
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		&format!("{}/v1", model.url),
+		(false, false, false),
+		None,
+		None,
+	)
+	.await;
+	let mut banks = Vec::new();
+	let mut admitted = Vec::new();
+	for text in ["Authorized bank fact", "Another participant's fact"] {
+		let bank = memory::create_participant(
+			&store,
+			&Actor::Operator,
+			workspace,
+			memory::CreateParticipant {
+				agent: reference("a"),
+			},
+		)
+		.await
+		.unwrap()
+		.bank;
+		admitted.push(
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: Uuid::now_v7(),
+						content: content(text),
+					},
+				),
+			)
+			.await
+			.unwrap()
+			.remove(0),
+		);
+		banks.push(bank);
+	}
+	crate::semantic::worker::sweep(&store).await.unwrap();
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let models = Models::resolve(
+		&store,
+		&mut lease,
+		reference("p"),
+		banks[0].clone(),
+		policy,
+		Uuid::now_v7(),
+		"diversity-vectors-fixture".into(),
+		None,
+	)
+	.await
+	.unwrap();
+	let mut delivered = Vec::new();
+	let mut scope = Scope {
+		store: &store,
+		lease: &mut lease,
+		models: &models,
+		delivered: &mut delivered,
+	};
+	let own = scope.vectors(&banks[0], &admitted[..1]).await.unwrap();
+	assert_eq!(own.keys().copied().collect::<Vec<_>>(), [admitted[0].id]);
+	assert_eq!(own[&admitted[0].id].len(), 3);
+	for (bank, units) in [
+		(&banks[0], &admitted[..]),
+		(&banks[1], &admitted[1..]),
+		(&banks[1], &admitted[..1]),
+	] {
+		assert!(matches!(
+			scope.vectors(bank, units).await,
+			Err(aidash_application::Error::Forbidden)
+		));
+	}
+	lease.finish(Ok(())).await.unwrap();
+}
