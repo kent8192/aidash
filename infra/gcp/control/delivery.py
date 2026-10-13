@@ -315,6 +315,10 @@ def flush_outcomes(config, store):
         stage_pending = identity == "develop" and config.get("release_flow_enabled") and entry.get("staging_publication_pending")
         if entry.get("status") not in {"ready", "failed"} or entry.get("outcome_published") == entry.get("status") and not stage_pending or not entry.get("outcome_at"):
             continue
+        if (identity == "develop" or identity.startswith("pr-")) and not entry.get("hostname_token"):
+            # A retained legacy host predates receipts and has no private hostname
+            # to report; its next verified deployment issues a token and publishes.
+            continue
         try:
             publish_result(config, store, identity, entry["generation"], None, entry["status"])
             def ack(current, identity=identity, generation=entry["generation"], status=entry["status"]):

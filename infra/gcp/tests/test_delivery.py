@@ -169,6 +169,20 @@ class OutcomeTests(unittest.TestCase):
         self.assertEqual((latest["generation"], latest["run_id"]), (2, 124))
         self.assertEqual(len(self.receipts.objects), 3)
 
+    def test_retained_legacy_hosts_defer_publication_without_failing_the_run(self):
+        environments = self.lifecycle.state["environments"]
+        # The unchanged-running path stamps outcome_at on a retained legacy host.
+        environments["pr-7"] = dict(environments["develop"], kind="pr", hostname_token=None)
+        del environments["develop"]["hostname_token"]
+        delivery.flush_outcomes(self.config, self.lifecycle)
+        self.assertEqual(self.notifications.objects, {})
+        self.assertEqual(self.receipts.objects, {})
+        self.assertNotIn("outcome_published", environments["develop"])
+        # Its next verified deployment issues a token and publishes normally.
+        environments["develop"]["hostname_token"] = "f" * 32
+        delivery.flush_outcomes(self.config, self.lifecycle)
+        self.assertEqual(len(self.notifications.objects), 1)
+
     def test_evidence_storage_failure_keeps_deployment_ready_for_outbox_retry(self):
         with patch.object(self.notifications, "write", side_effect=RuntimeError("unavailable")), self.assertRaises(RuntimeError):
             delivery.flush_outcomes(self.config, self.lifecycle)
