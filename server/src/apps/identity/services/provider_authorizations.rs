@@ -48,16 +48,21 @@ fn callback_uri(public_origin: &str, provider: Provider) -> String {
 /// longer stores (one issued for a failed write, or the key a reconnect
 /// replaced), that key's settings page so the user can delete it there.
 /// `key_warnings` reports that the provider's validation flagged the connected
-/// key, for example because it has no spending limit.
+/// key, for example because it has no spending limit. The parameters go into
+/// the query, before any fragment, so the dashboard can read them.
 fn with_outcome(
 	return_to: &str,
 	outcome: Outcome,
 	key_settings_url: Option<&str>,
 	key_warnings: bool,
 ) -> String {
-	let separator = if return_to.contains('?') { '&' } else { '?' };
+	let (path, fragment) = match return_to.split_once('#') {
+		Some((path, fragment)) => (path, Some(fragment)),
+		None => (return_to, None),
+	};
+	let separator = if path.contains('?') { '&' } else { '?' };
 	let mut location = format!(
-		"{return_to}{separator}provider_authorization={}",
+		"{path}{separator}provider_authorization={}",
 		outcome.as_str()
 	);
 	if let Some(url) = key_settings_url {
@@ -69,6 +74,10 @@ fn with_outcome(
 	}
 	if key_warnings {
 		location.push_str("&provider_key_warnings=1");
+	}
+	if let Some(fragment) = fragment {
+		location.push('#');
+		location.push_str(fragment);
 	}
 	location
 }
@@ -343,6 +352,20 @@ mod tests {
 				true
 			),
 			"/settings?provider_authorization=reconnected&provider_key_settings_url=https%3A%2F%2Fopenrouter%2Eai%2Fkeys%2Fab12&provider_key_warnings=1"
+		);
+		// Parameters go before a fragment, where the browser's query can see them.
+		assert_eq!(
+			with_outcome(
+				"/settings?view=providerCredentials#connections",
+				Outcome::Failed,
+				Some("https://openrouter.ai/keys/ab12"),
+				false
+			),
+			"/settings?view=providerCredentials&provider_authorization=failed&provider_key_settings_url=https%3A%2F%2Fopenrouter%2Eai%2Fkeys%2Fab12#connections"
+		);
+		assert_eq!(
+			with_outcome("/settings#a?b", Outcome::Denied, None, false),
+			"/settings?provider_authorization=denied#a?b"
 		);
 		assert_eq!(
 			callback_uri("https://aidash.example", Provider::Openrouter),
