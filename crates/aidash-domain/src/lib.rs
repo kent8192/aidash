@@ -1,5 +1,6 @@
 //! Business models, authorization rules, and state invariants.
 pub mod catalog;
+pub mod completion;
 pub mod context;
 pub mod decision;
 pub mod deployment;

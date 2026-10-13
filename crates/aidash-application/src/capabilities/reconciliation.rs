@@ -5,8 +5,12 @@ use crate::{
 		Loaded, OperationReconciliationRepository, OperationReconciliationScope,
 	},
 };
-use aidash_domain::capabilities::operations::{
-	FileScope, MountedFile, reconciliation::Snapshot, request_validation_failure,
+use aidash_domain::{
+	capabilities::operations::{
+		FileScope, MountedFile, VERIFICATION, capability_of, reconciliation::Snapshot,
+		request_validation_failure,
+	},
+	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
@@ -49,10 +53,12 @@ async fn reconcile(
 	let cancelling = operation.cancelling(limits, &run);
 	if !cancelling {
 		let config = scope.configuration().await?;
-		if !config.permits(&operation.kind) {
+		// A Check runs under the authority of the bound shell operation.
+		let capability = capability_of(&operation.kind);
+		if !config.permits(capability) {
 			return Err(Error::Forbidden);
 		}
-		scope.require_builtin(&operation.kind).await?;
+		scope.require_builtin(capability).await?;
 	}
 	if !cancelling && operation.kind == "python_install" {
 		scope
@@ -112,7 +118,7 @@ async fn reconcile(
 		}
 		let files = files.into_iter().map(|file| json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})).collect::<Vec<_>>();
 		let mut input = json!({"operation_id":operation.id,"area_id":area.id,"epoch":operation.epoch,"digest":operation.digest,
-				"kind":if operation.kind=="code_interpreter"{"python"}else{"shell"},"code":operation.input["command"],"seconds":operation.input["seconds"],"files":files});
+				"kind":match operation.kind.as_str(){"code_interpreter"=>"python",VERIFICATION=>"verify",_=>"shell"},"code":operation.input["command"],"seconds":operation.input["seconds"],"files":files});
 		if operation.kind == "code_interpreter" {
 			input["session_id"] = operation.input["session_id"].clone();
 		}
@@ -145,6 +151,22 @@ async fn reconcile(
 				operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false});
 				scope.set_area("active").await?;
 				return scope.persist(&operation).await;
+			}
+			if operation.kind == VERIFICATION {
+				// A Check never changes the Working Area: nothing is published and
+				// the revision stays. Only the tail of its output is kept.
+				let stdout = STANDARD
+					.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?)
+					.map_err(|_| Error::Invalid("invalid runner output encoding".into()))?;
+				let text = String::from_utf8_lossy(&stdout);
+				scope.set_area("active").await?;
+				operation.revision = area.revision;
+				operation.state = observed["status"].as_str().unwrap().into();
+				operation.result = json!({"preview":bounded_tail(&text, MAX_DIAGNOSTIC_BYTES),"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
+				scope.persist(&operation).await?;
+				return scope
+					.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
+					.await;
 			}
 			let previous = serde_json::from_value::<Vec<MountedFile>>(area.manifest.clone())?;
 			let mut entries = previous

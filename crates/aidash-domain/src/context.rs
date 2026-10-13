@@ -76,6 +76,13 @@ pub struct Context {
 	/// Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs.
 	#[serde(default, skip_serializing_if = "ExposureState::is_empty")]
 	pub exposure: ExposureState,
+	/// Completion Gate progress of a Run whose Agent names a Completion
+	/// Policy; empty and absent otherwise. Never part of a model request.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::completion::CompletionProgress::is_empty"
+	)]
+	pub completion: crate::completion::CompletionProgress,
 }
 
 /// Stored contexts written before the Context Journal carry bare history
@@ -109,6 +116,8 @@ struct StoredContext {
 	message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
 	#[serde(default)]
 	exposure: ExposureState,
+	#[serde(default)]
+	completion: crate::completion::CompletionProgress,
 }
 
 #[derive(Deserialize)]
@@ -196,6 +205,7 @@ impl<'de> Deserialize<'de> for Context {
 			message_read_coverage: stored.message_read_coverage,
 			message_inference_coverage: stored.message_inference_coverage,
 			exposure: stored.exposure,
+			completion: stored.completion,
 		})
 	}
 }
@@ -660,6 +670,14 @@ pub enum ContextEvent {
 	/// second invalid answer to the same input is withheld.
 	CitationCorrectionRequired {
 		invalid: Vec<String>,
+		instruction: String,
+		through_seq: i64,
+	},
+	/// The Completion Gate refused a final answer because a Check did not pass
+	/// on the current files. Each one spends the Repair Allowance of the input
+	/// at `through_seq`.
+	CompletionRepairRequired {
+		checks: Vec<crate::completion::RepairNote>,
 		instruction: String,
 		through_seq: i64,
 	},

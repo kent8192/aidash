@@ -41,6 +41,9 @@ pub struct ExecutionAgent {
 	/// Pinned through the Run's Binding snapshot; `off` when the definition
 	/// names none (ADR 0019).
 	pub prompt_cache: aidash_domain::projection::PromptCache,
+	/// Pinned through the Run's Binding snapshot; `None` requires no
+	/// verification before the Run completes (#112).
+	pub completion: Option<aidash_domain::completion::CompletionPolicy>,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -414,6 +417,11 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
+	/// Runs Completion Gate Checks. `None` makes every applicable Check
+	/// unavailable, so a Run with a Completion Policy pauses for a person.
+	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
+		None
+	}
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
@@ -477,6 +485,8 @@ pub trait ExecutionEnvironment: Send + Sync {
 pub mod media;
 
 pub mod cancellation;
+
+pub mod completion;
 
 pub mod admission;
 

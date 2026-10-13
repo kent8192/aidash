@@ -117,6 +117,13 @@ pub fn request_validation_failure(
 		None
 	}
 }
+/// Operation kind of a Completion Gate Check (#112). It runs under the bound
+/// shell capability, and its files are never exported into the Working Area.
+pub const VERIFICATION: &str = "verification";
+/// The bound operation whose authority an operation kind runs under.
+pub fn capability_of(kind: &str) -> &str {
+	if kind == VERIFICATION { "shell" } else { kind }
+}
 pub fn available(state: &str) -> Result<()> {
 	if state != "active" {
 		return Err(Error::Conflict(

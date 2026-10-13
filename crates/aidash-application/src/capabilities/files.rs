@@ -56,13 +56,14 @@ pub async fn output_file(
 		provenance: json!({"kind":kind,"area_id":area.id}),
 	})
 }
-pub async fn invoke(
+/// Current authority to invoke the Run's bound operation `name` with `input`,
+/// narrowed by its Binding. The admitted definition must be unchanged.
+async fn admit(
 	scope: &mut dyn FileScopePort,
 	run: &RunMetadata,
 	name: &str,
 	input: Value,
-	key: &str,
-) -> Result<Envelope> {
+) -> Result<Value> {
 	settings(scope, run).await?;
 	let binding = scope.binding_snapshot()?.operation(name)?.clone();
 	if binding.identity.registry_node != scope.local_node() {
@@ -89,6 +90,50 @@ pub async fn invoke(
 			"tool.invoke",
 		)
 		.await?;
+	Ok(input)
+}
+/// Start one Completion Gate Check (#112). It passes the same Binding,
+/// narrowing and `tool.invoke` checks as the model's own shell calls; only the
+/// operation kind differs, so the Check's files never reach the Working Area.
+pub async fn verify(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	input: Value,
+	key: &str,
+) -> Result<Value> {
+	let input = admit(scope, run, VERIFICATION_CAPABILITY, input).await?;
+	let mut area = scope.for_run(run).await?;
+	scope.execute(Action::Verify, &mut area, input, key).await
+}
+/// The current result of a Check this Run started.
+pub async fn verification(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	operation_id: Uuid,
+	key: &str,
+) -> Result<Value> {
+	let mut area = scope.for_run(run).await?;
+	scope
+		.execute(
+			Action::Control {
+				kind: aidash_domain::capabilities::operations::VERIFICATION,
+				cancel: false,
+			},
+			&mut area,
+			json!({"operation_id": operation_id}),
+			key,
+		)
+		.await
+}
+const VERIFICATION_CAPABILITY: &str = "shell";
+pub async fn invoke(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	name: &str,
+	input: Value,
+	key: &str,
+) -> Result<Envelope> {
+	let input = admit(scope, run, name, input).await?;
 	if name == "file_share" {
 		scope.serialize_sharing().await?;
 	}

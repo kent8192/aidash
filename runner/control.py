@@ -264,7 +264,9 @@ class Runner:
         if set(request) - {"session_id"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
-        if request["kind"] not in ("shell", "python") or not isinstance(request["code"], str):
+        # "verify" runs like "shell" but never exports /work: a Completion Gate
+        # Check must not change the Working Area it verifies.
+        if request["kind"] not in ("shell", "verify", "python") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
@@ -711,7 +713,8 @@ class Runner:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.25)
-        exported = self.guard(record, 'export', working_bytes=self.writable_bytes(record))
+        exported = ({'files': []} if record['request']['kind'] == 'verify' else
+                    self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
         captured = self.guard(record, 'logs')
         operation = record['operation_id']
         directory = self.root / (operation + '.files')
@@ -804,7 +807,8 @@ class Runner:
                     diagnostic = None
                     if terminal["exitCode"] != 0 and not captured["stdout"]:
                         diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
-                    exported = json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout)
+                    exported = ({"files": []} if record["request"]["kind"] == "verify" else
+                                json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
                     directory = self.root / (operation + ".files")
                     directory.mkdir(exist_ok=True, mode=0o700)
                     for file in exported["files"]:

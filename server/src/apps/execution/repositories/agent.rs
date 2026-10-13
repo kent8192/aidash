@@ -593,6 +593,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			tool_parallelism: usize::from(config.tool_parallelism),
 			projection_version: config.projection_version.unwrap_or_default(),
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
+			completion: config.completion,
 		})
 	}
 	fn tool_slots(&self) -> Option<&ToolSlots> {
