@@ -34,6 +34,10 @@ pub trait SemanticSearchScope: Send {
 	async fn input_message(&mut self, workspace: Uuid, message: Uuid) -> Result<Message>;
 	/// Retain the shared index lock, decoding native configuration defaults.
 	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec>;
+	/// The current corpus digest of the Description's Workspace and, with
+	/// native memory, of the Home participant's banks, read through this
+	/// scope's own lease transaction.
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String>;
 	async fn prepare_search(
 		&mut self,
 		workspace: Uuid,
@@ -88,7 +92,4 @@ pub trait SemanticSearchRepository: Send + Sync {
 	/// Preserve the current peer check and typed bounded response under the same source lease.
 	async fn verify_operation(&self, node: &str, operation: &Operation) -> Result<bool>;
 	async fn receiver_reservations(&self, node: &str, input: &Input) -> Result<Vec<Reserved>>;
-	/// The current corpus digest of the Description's Workspace and, with
-	/// native memory, of the Home participant's banks.
-	async fn corpus_digest(&self, description: &Description) -> Result<String>;
 }

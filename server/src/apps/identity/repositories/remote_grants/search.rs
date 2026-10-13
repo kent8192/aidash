@@ -102,14 +102,6 @@ impl SemanticSearchRepository for Repository<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn corpus_digest(&self, description: &Description) -> Result<String> {
-		crate::semantic::services::memory_context::remote_corpus_digest(
-			&self.runtime.store.pool,
-			description,
-		)
-		.await
-		.map_err(Into::into)
-	}
 }
 #[async_trait]
 impl SemanticSearchScope for Scope {
@@ -139,6 +131,14 @@ impl SemanticSearchScope for Scope {
 	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec> {
 		let index = service::index(self.lease.tx(), workspace, false).await?;
 		index.configuration().map(Into::into).map_err(Into::into)
+	}
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String> {
+		crate::semantic::services::memory_context::remote_corpus_digest(
+			self.lease.tx(),
+			description,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn prepare_search(
 		&mut self,

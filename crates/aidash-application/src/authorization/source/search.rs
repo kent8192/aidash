@@ -73,8 +73,9 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		// Read the corpus before the candidates: a change in between leaves an
 		// older digest on the operation, so reuse fails closed into a new
-		// retrieval and never vouches for entries this search did not see.
-		let corpus = repository.corpus_digest(&description).await?;
+		// retrieval and never vouches for entries this search did not see. The
+		// read uses the held lease, never a second pool connection.
+		let corpus = access.corpus_digest(&description).await?;
 		let spec = access.index_spec(task.workspace_id).await?;
 		// The binding was checked when the grant was issued, but the index can be
 		// reconfigured afterwards. A tenant-backed embedding needs a local Run

@@ -621,11 +621,6 @@ impl SemanticSearchRepository for Repository {
 	async fn receiver_reservations(&self, _: &str, _: &Input) -> Result<Vec<Reserved>> {
 		panic!("empty candidates must not reserve provider usage")
 	}
-	async fn corpus_digest(&self, description: &Description) -> Result<String> {
-		assert_eq!(description.grant_id, operation().grant_id);
-		self.trace.lock().unwrap().push("corpus");
-		Ok("home-corpus".into())
-	}
 }
 #[async_trait]
 impl SemanticSearchScope for Scope {
@@ -674,6 +669,11 @@ impl SemanticSearchScope for Scope {
 			value.embedding.provider_credential = Some("openrouter".into());
 		}
 		Ok(value)
+	}
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String> {
+		assert_eq!(description.grant_id, operation().grant_id);
+		self.trace.lock().unwrap().push("corpus");
+		Ok("home-corpus".into())
 	}
 	async fn prepare_search(
 		&mut self,
