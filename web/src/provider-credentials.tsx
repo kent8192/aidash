@@ -29,19 +29,36 @@ import {
 const outcomes = ["connected", "reconnected", "denied", "failed"] as const;
 type Outcome = (typeof outcomes)[number];
 
-/** Reads and clears the callback's `provider_authorization` outcome. */
-function takeOutcome(): Outcome | null {
+/** OpenRouter's owner-only key-settings page; nothing else is linked. */
+const keySettingsPattern = /^https:\/\/openrouter\.ai\/keys\/[0-9a-f]{64}$/;
+
+/**
+ * Reads and clears the callback's `provider_authorization` outcome and, for a
+ * failure after OpenRouter issued a key, that key's settings page.
+ */
+function takeOutcome(): {
+  outcome: Outcome;
+  keySettingsUrl: string | null;
+} | null {
   const value = sessionStorage.getItem("aidash-provider-authorization");
+  const link = sessionStorage.getItem(
+    "aidash-provider-authorization-key-settings-url",
+  );
   sessionStorage.removeItem("aidash-provider-authorization");
-  return value && (outcomes as readonly string[]).includes(value)
-    ? (value as Outcome)
-    : null;
+  sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
+  if (!value || !(outcomes as readonly string[]).includes(value)) return null;
+  return {
+    outcome: value as Outcome,
+    keySettingsUrl:
+      value === "failed" && link && keySettingsPattern.test(link) ? link : null,
+  };
 }
 
 /** The dashboard path the callback returns to, without a stale outcome. */
 function returnPath(): string {
   const url = new URL(window.location.href);
   url.searchParams.delete("provider_authorization");
+  url.searchParams.delete("provider_key_settings_url");
   return url.pathname + url.search;
 }
 
@@ -97,8 +114,11 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [outcome] = useState(takeOutcome);
-  const [revokedLink, setRevokedLink] = useState<string | null>(null);
+  const [callback] = useState(takeOutcome);
+  const outcome = callback?.outcome;
+  // Revocation, deletion and a failed authorization leave a live key at
+  // OpenRouter; its settings page is where the user deletes it.
+  const [cleanupLink, setCleanupLink] = useState<string | null>(null);
   const rows = useQuery({
     queryKey: ["provider-credentials", tenant, offset],
     queryFn: () => providerCredentialList(path, { offset, limit: 50 }),
@@ -176,15 +196,29 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
               : "warning"
           }
         >
-          {t(`providerConnectionOutcome_${outcome}`)}
+          {callback?.keySettingsUrl ? (
+            <>
+              {t("providerConnectionOutcome_failedIssued")}{" "}
+              <a
+                className="underline"
+                href={callback.keySettingsUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                {t("providerKeySettings")}
+              </a>
+            </>
+          ) : (
+            t(`providerConnectionOutcome_${outcome}`)
+          )}
         </Notice>
       )}
-      {revokedLink && (
+      {cleanupLink && (
         <Notice role="status" tone="warning">
           {t("providerCredentialRevokedNotice")}{" "}
           <a
             className="underline"
-            href={revokedLink}
+            href={cleanupLink}
             target="_blank"
             rel="noreferrer noopener"
           >
@@ -329,7 +363,7 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1.5">
-                        {row.key_settings_url && row.state !== "deleted" && (
+                        {row.key_settings_url && (
                           <Button variant="ghost" size="sm" asChild>
                             <a
                               href={row.key_settings_url}
@@ -367,7 +401,7 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
                                   row.id,
                                   { expected_revision: row.revision },
                                 );
-                                setRevokedLink(
+                                setCleanupLink(
                                   revoked.key_settings_url ?? null,
                                 );
                               })
@@ -384,11 +418,16 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
                               busy || bound?.provider_credential_id === row.id
                             }
                             onClick={() =>
-                              void act(() =>
-                                providerCredentialDelete(path, row.id, {
-                                  expected_revision: row.revision,
-                                }),
-                              )
+                              void act(async () => {
+                                const deleted = await providerCredentialDelete(
+                                  path,
+                                  row.id,
+                                  { expected_revision: row.revision },
+                                );
+                                setCleanupLink(
+                                  deleted.key_settings_url ?? null,
+                                );
+                              })
                             }
                           >
                             {t("delete")}

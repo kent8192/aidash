@@ -1036,8 +1036,8 @@ async fn authorization_connects_and_reconnects_with_a_deep_link_digest() {
 async fn rejected_or_replayed_codes_and_wrong_verifiers_store_nothing() {
 	let (s, repo, store, _) = authorizing(&[("only-code", "sk-or-v1-issued-key")]);
 	let wrong = SecretString::from("wrong-verifier");
-	assert!(
-		s.authorize(
+	let failure = s
+		.authorize(
 			"alpha",
 			Provider::Openrouter,
 			Target::Connect { id: Uuid::now_v7() },
@@ -1046,10 +1046,11 @@ async fn rejected_or_replayed_codes_and_wrong_verifiers_store_nothing() {
 			"actor",
 		)
 		.await
-		.is_err()
-	);
-	assert!(
-		s.authorize(
+		.unwrap_err();
+	// No key was issued, so there is nothing to clean up at the provider.
+	assert!(failure.key_settings_url.is_none());
+	let failure = s
+		.authorize(
 			"alpha",
 			Provider::Openrouter,
 			Target::Connect { id: Uuid::now_v7() },
@@ -1058,7 +1059,31 @@ async fn rejected_or_replayed_codes_and_wrong_verifiers_store_nothing() {
 			"actor",
 		)
 		.await
-		.is_err()
+		.unwrap_err();
+	assert!(failure.key_settings_url.is_none());
+	assert!(repo.0.lock().await.rows.is_empty());
+	assert!(store.state.lock().await.is_empty());
+}
+#[tokio::test]
+async fn failures_after_the_exchange_report_the_issued_key_settings_page() {
+	// The provider issues a key that the write path then refuses.
+	let (s, repo, store, _) = authorizing(&[("code", "bad")]);
+	let failure = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"code",
+			&"fixture-verifier".into(),
+			"actor",
+		)
+		.await
+		.unwrap_err();
+	assert!(matches!(failure.error, Error::Invalid(_)));
+	let digest = crate::provider_authorization::key_digest(&"bad".into());
+	assert_eq!(
+		failure.key_settings_url.as_deref(),
+		Some(format!("https://openrouter.ai/keys/{digest}").as_str())
 	);
 	assert!(repo.0.lock().await.rows.is_empty());
 	assert!(store.state.lock().await.is_empty());
@@ -1080,7 +1105,10 @@ async fn refusals_that_the_write_would_make_happen_before_a_key_is_issued() {
 			"actor",
 		)
 		.await,
-		Err(Error::Conflict(_))
+		Err(AuthorizationFailure {
+			error: Error::Conflict(_),
+			key_settings_url: None,
+		})
 	));
 	// Stale reconnect revision.
 	assert!(

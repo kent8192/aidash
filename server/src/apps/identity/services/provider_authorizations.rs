@@ -8,7 +8,10 @@ use crate::apps::identity::serializers::provider_authorizations::{
 	CallbackQuery, Outcome, Start, Started,
 };
 use crate::{Error, Result, authorization::identity::Actor, federation::Federation};
-use aidash_application::provider_authorization::{self as authorization, Target};
+use aidash_application::{
+	provider_authorization::{self as authorization, Target},
+	provider_credentials::AuthorizationFailure,
+};
 use aidash_domain::provider_credentials::Provider;
 use chrono::{Duration, Utc};
 use http::{HeaderMap, Method, StatusCode};
@@ -41,12 +44,22 @@ fn callback_uri(public_origin: &str, provider: Provider) -> String {
 		provider.id()
 	)
 }
-fn with_outcome(return_to: &str, outcome: Outcome) -> String {
+/// Appends the outcome and, when the provider issued a key that Aidash did not
+/// store, that key's settings page so the user can delete it there.
+fn with_outcome(return_to: &str, outcome: Outcome, key_settings_url: Option<&str>) -> String {
 	let separator = if return_to.contains('?') { '&' } else { '?' };
-	format!(
+	let mut location = format!(
 		"{return_to}{separator}provider_authorization={}",
 		outcome.as_str()
-	)
+	);
+	if let Some(url) = key_settings_url {
+		location.push_str("&provider_key_settings_url=");
+		location.extend(percent_encoding::utf8_percent_encode(
+			url,
+			percent_encoding::NON_ALPHANUMERIC,
+		));
+	}
+	location
 }
 
 impl ProviderAuthorizations {
@@ -141,9 +154,11 @@ impl ProviderAuthorizations {
 		Ok(response)
 	}
 
-	/// Finishes one authorization. A missing, replayed, expired or
-	/// cross-session `state` fails before any provider call; a rejected code or
-	/// verifier fails at the exchange. Neither stores anything.
+	/// Finishes one authorization. A code without `state`, or a replayed,
+	/// expired or cross-session `state`, fails before any provider call; a
+	/// rejected code or verifier fails at the exchange. Neither stores anything.
+	/// A declined consent, which OpenRouter returns without `state`, consumes
+	/// the browser's newest pending authorization and reports `denied`.
 	pub(crate) async fn callback(
 		&self,
 		headers: HeaderMap,
@@ -155,10 +170,27 @@ impl ProviderAuthorizations {
 		// Unbound callbacks fail before any other input is interpreted.
 		let browser = oidc::cookie_value(&headers, &oidc::cookie_name(COOKIE, config))
 			.ok_or(Error::Unauthorized)?;
-		let state = query.state.as_deref().ok_or(Error::Unauthorized)?;
 		let provider = Provider::parse(&provider)?;
 		let lease = f.store.orm_connection()?;
-		let pending = ProviderAuthorization::consume(lease.handle(), hex_digest(state)).await?;
+		let pending = match (query.state.as_deref(), query.code.as_deref()) {
+			(Some(state), _) => {
+				ProviderAuthorization::consume(lease.handle(), hex_digest(state)).await?
+			}
+			// OpenRouter omits `state` when the user declines. That denial alone is
+			// correlated through the browser binding and session; it never
+			// reaches an exchange, and a code without `state` stays refused.
+			(None, None) => {
+				let session = oidc::browser_session_from_headers(f, &headers).await?;
+				ProviderAuthorization::consume_declined(
+					lease.handle(),
+					hex_digest(browser),
+					provider.id(),
+					session.id,
+				)
+				.await?
+			}
+			(None, Some(_)) => return Err(Error::Unauthorized),
+		};
 		if pending.browser_hash != hex_digest(browser)
 			|| pending.provider != provider.id()
 			|| pending.callback_uri != callback_uri(config.public_origin, provider)
@@ -189,6 +221,7 @@ impl ProviderAuthorizations {
 				expected_revision,
 			},
 		};
+		let mut key_settings_url = None;
 		let outcome = match query.code.as_deref() {
 			// The user declined, or the provider reported an error.
 			None => Outcome::Denied,
@@ -216,7 +249,10 @@ impl ProviderAuthorizations {
 							Outcome::Reconnected
 						}
 					}
-					Err(error) => {
+					Err(AuthorizationFailure {
+						error,
+						key_settings_url: issued,
+					}) => {
 						// Static fields only: errors never carry Key Material, but the
 						// provider's code is still a bearer for ten minutes.
 						let reason = match error {
@@ -228,15 +264,20 @@ impl ProviderAuthorizations {
 						tracing::warn!(
 							provider = provider.id(),
 							reason,
+							issued = issued.is_some(),
 							"Provider Authorization failed"
 						);
+						key_settings_url = issued;
 						Outcome::Failed
 					}
 				}
 			}
 		};
-		let mut response = Response::new(StatusCode::SEE_OTHER)
-			.with_location(&with_outcome(&pending.return_to, outcome));
+		let mut response = Response::new(StatusCode::SEE_OTHER).with_location(&with_outcome(
+			&pending.return_to,
+			outcome,
+			key_settings_url.as_deref(),
+		));
 		oidc::no_store(&mut response);
 		Ok(response)
 	}
@@ -248,12 +289,25 @@ mod tests {
 	#[test]
 	fn outcomes_append_to_the_validated_return_path() {
 		assert_eq!(
-			with_outcome("/settings?view=providerCredentials", Outcome::Connected),
+			with_outcome(
+				"/settings?view=providerCredentials",
+				Outcome::Connected,
+				None
+			),
 			"/settings?view=providerCredentials&provider_authorization=connected"
 		);
 		assert_eq!(
-			with_outcome("/settings", Outcome::Failed),
+			with_outcome("/settings", Outcome::Failed, None),
 			"/settings?provider_authorization=failed"
+		);
+		// A key the provider issued but Aidash did not store keeps its cleanup link.
+		assert_eq!(
+			with_outcome(
+				"/settings",
+				Outcome::Failed,
+				Some("https://openrouter.ai/keys/ab12")
+			),
+			"/settings?provider_authorization=failed&provider_key_settings_url=https%3A%2F%2Fopenrouter%2Eai%2Fkeys%2Fab12"
 		);
 		assert_eq!(
 			callback_uri("https://aidash.example", Provider::Openrouter),

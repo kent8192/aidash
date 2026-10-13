@@ -399,3 +399,58 @@ test("revocation asks the user to delete the key at OpenRouter", async ({
     notice.getByRole("link", { name: "Manage key at OpenRouter" }),
   ).toHaveAttribute("href", keySettingsUrl);
 });
+test("deletion keeps the link to delete the key at OpenRouter", async ({
+  page,
+}) => {
+  const keySettingsUrl = "https://openrouter.ai/keys/" + "ef".repeat(32);
+  await setup(page, { subject: true, keySettingsUrl });
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  const notice = page.getByRole("status");
+  await expect(notice).toContainText("The key stays valid at OpenRouter");
+  await expect(
+    notice.getByRole("link", { name: "Manage key at OpenRouter" }),
+  ).toHaveAttribute("href", keySettingsUrl);
+  // The deleted tombstone still links to the provider's settings page.
+  await expect(page.getByText("Deleted", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ hasText: "Deleted" })
+      .getByRole("link", { name: "Manage key at OpenRouter" }),
+  ).toHaveAttribute("href", keySettingsUrl);
+});
+test("a failure after OpenRouter issued a key links to that key", async ({
+  page,
+}) => {
+  const keySettingsUrl = "https://openrouter.ai/keys/" + "01".repeat(32);
+  await setup(page, {
+    subject: true,
+    path:
+      "/settings?view=providerCredentials&provider_authorization=failed&provider_key_settings_url=" +
+      encodeURIComponent(keySettingsUrl),
+  });
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: "OpenRouter issued a key" });
+  await expect(
+    notice.getByRole("link", { name: "Manage key at OpenRouter" }),
+  ).toHaveAttribute("href", keySettingsUrl);
+  const search = new URL(page.url()).searchParams;
+  expect(search.get("provider_authorization")).toBe(null);
+  expect(search.get("provider_key_settings_url")).toBe(null);
+});
+test("a failure never links outside OpenRouter's key settings", async ({
+  page,
+}) => {
+  await setup(page, {
+    subject: true,
+    path:
+      "/settings?view=providerCredentials&provider_authorization=failed&provider_key_settings_url=" +
+      encodeURIComponent("https://attacker.example/keys/" + "01".repeat(32)),
+  });
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: "OpenRouter authorization failed" });
+  await expect(notice).toBeVisible();
+  await expect(notice.getByRole("link")).toHaveCount(0);
+});

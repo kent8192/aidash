@@ -107,6 +107,23 @@ pub struct Validated {
 	pub provider_credential: Metadata,
 	pub warnings: Vec<String>,
 }
+/// A Provider Authorization that ended without storing a key. Once the
+/// exchange succeeds the provider has already issued a live key, so a later
+/// failure carries that key's owner-only settings page: the user's only way to
+/// delete it.
+#[derive(Debug)]
+pub struct AuthorizationFailure<E = Error> {
+	pub error: E,
+	pub key_settings_url: Option<String>,
+}
+impl<E> From<E> for AuthorizationFailure<E> {
+	fn from(error: E) -> Self {
+		Self {
+			error,
+			key_settings_url: None,
+		}
+	}
+}
 /// Each supervised pass advances even when one candidate's external cleanup fails.
 #[derive(Debug)]
 pub struct Reconciliation {
@@ -153,7 +170,8 @@ impl Service {
 	}
 	/// Completes one Provider Authorization: exchanges the code for Key Material
 	/// and writes it as a new Provider Credential or, on reconnect, as a new
-	/// version. A rejected code or verifier stores nothing.
+	/// version. A rejected code or verifier stores nothing; a failure after the
+	/// exchange reports the issued key's settings page.
 	pub async fn authorize(
 		&self,
 		tenant: &str,
@@ -162,9 +180,37 @@ impl Service {
 		code: &str,
 		verifier: &SecretString,
 		actor: &str,
-	) -> Result<Validated> {
-		// Check what the write will check before the provider issues a key, so
-		// a predictable refusal does not leave an unused key behind.
+	) -> std::result::Result<Validated, AuthorizationFailure> {
+		self.check_authorization(tenant, provider, target).await?;
+		let key = self.exchange.exchange(provider, code, verifier).await?;
+		let digest = crate::provider_authorization::key_digest(&key);
+		let key_settings_url = provider.key_settings_url(&digest);
+		let written = match target {
+			Target::Connect { id } => {
+				self.write_new(tenant, id, provider, key, Some(digest), actor)
+					.await
+			}
+			Target::Reconnect {
+				id,
+				expected_revision,
+			} => {
+				self.write_rotation(tenant, id, expected_revision, key, Some(digest), actor)
+					.await
+			}
+		};
+		written.map_err(|error| AuthorizationFailure {
+			error,
+			key_settings_url: Some(key_settings_url),
+		})
+	}
+	/// Checks what the write will check before the provider issues a key, so a
+	/// predictable refusal does not leave an unused key behind.
+	async fn check_authorization(
+		&self,
+		tenant: &str,
+		provider: Provider,
+		target: Target,
+	) -> Result<()> {
 		let mut scope = self.repository.begin(tenant).await?;
 		match target {
 			Target::Connect { .. } => {
@@ -186,22 +232,7 @@ impl Service {
 				}
 			}
 		}
-		scope.commit().await?;
-		let key = self.exchange.exchange(provider, code, verifier).await?;
-		let digest = Some(crate::provider_authorization::key_digest(&key));
-		match target {
-			Target::Connect { id } => {
-				self.write_new(tenant, id, provider, key, digest, actor)
-					.await
-			}
-			Target::Reconnect {
-				id,
-				expected_revision,
-			} => {
-				self.write_rotation(tenant, id, expected_revision, key, digest, actor)
-					.await
-			}
-		}
+		scope.commit().await
 	}
 	async fn write_new(
 		&self,

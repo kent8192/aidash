@@ -7,7 +7,7 @@ use crate::{
 };
 use aidash_application::{
 	provider_authorization::Target,
-	provider_credentials::{Metadata, Service, Validated},
+	provider_credentials::{AuthorizationFailure, Metadata, Service, Validated},
 };
 use aidash_domain::{
 	policy::{Evaluation, Resource},
@@ -203,7 +203,7 @@ impl Management {
 		target: Target,
 		code: &str,
 		verifier: &SecretString,
-	) -> Result<Validated> {
+	) -> std::result::Result<Validated, AuthorizationFailure<Error>> {
 		let service = self.service()?;
 		let authority = self
 			.authorize(
@@ -215,21 +215,27 @@ impl Management {
 				Self::authorization_verb(target),
 			)
 			.await?;
-		authority
-			.finish_operation(
-				service
-					.authorize(
-						&tenant,
-						provider,
-						target,
-						code,
-						verifier,
-						Self::actor(&actor),
-					)
-					.await
-					.map_err(Into::into),
+		let (result, key_settings_url) = match service
+			.authorize(
+				&tenant,
+				provider,
+				target,
+				code,
+				verifier,
+				Self::actor(&actor),
 			)
 			.await
+		{
+			Ok(validated) => (Ok(validated), None),
+			Err(failure) => (Err(failure.error.into()), failure.key_settings_url),
+		};
+		authority
+			.finish_operation(result)
+			.await
+			.map_err(|error| AuthorizationFailure {
+				error,
+				key_settings_url,
+			})
 	}
 	/// A first connection serves the Tenant's Runs right away when no Provider
 	/// Credential is bound yet and the actor may update the binding.

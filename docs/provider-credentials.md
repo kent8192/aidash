@@ -43,9 +43,14 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
 2. OpenRouter redirects to `<public origin>/auth/provider-authorizations/openrouter/callback`
    with `code` and `state`. The callback consumes the pending row exactly
    once, then requires the same browser cookie, the same dashboard session,
-   an unexpired row (10 minutes, OpenRouter's code lifetime) and a live
-   dashboard context. A missing, replayed, cross-browser, cross-session or
-   expired `state` returns 401 before any provider call.
+   an unexpired row and a live dashboard context. The row lives 30 minutes so
+   it also covers the time spent on the consent page; OpenRouter's code
+   expires 10 minutes after it is issued, and the exchange enforces that. A
+   code without `state`, or a replayed, cross-browser, cross-session or
+   expired `state`, returns 401 before any provider call. A declined consent
+   arrives without `state` (OpenRouter omits it); the callback then consumes
+   the newest pending row of the same browser cookie, dashboard session and
+   provider and reports `denied`.
 3. The server exchanges the code with `POST https://openrouter.ai/api/v1/auth/keys`
    (`code`, `code_verifier`, `code_challenge_method: S256`) under a live
    `provider_credential.create`/`.rotate` decision, validates the key with
@@ -54,7 +59,10 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
    version to the same Provider Credential (rotation). A first connection is
    bound to OpenRouter when the Tenant has no binding and the actor may update it.
 4. The callback redirects (303) to the requested same-origin `return_to`
-   with `provider_authorization=connected|reconnected|denied|failed`.
+   with `provider_authorization=connected|reconnected|denied|failed`. When
+   the exchange succeeded but storing the key failed, the redirect also
+   carries `provider_key_settings_url`, the issued key's settings page, and
+   the dashboard asks the user to delete that key at OpenRouter.
 
 The callback must be reachable from the user's browser only; the
 `public_origin` of the dashboard session settings defines it. Key Material is
@@ -67,9 +75,10 @@ At connection time the server also records the key's **unkeyed SHA-256**
 (`https://openrouter.ai/keys/<sha256>`), OpenRouter's owner-only key-settings
 page. This is ADR 0006's deliberate exception to the Fingerprint's
 no-correlation rule: each authorization issues a fresh random key. Revocation
-destroys only Aidash's copy; OpenRouter documents no API for an application to
-delete an OAuth-issued key, so the dashboard links to `key_settings_url` and
-asks the user to delete the key there.
+and deletion destroy only Aidash's copy; OpenRouter documents no API for an
+application to delete an OAuth-issued key, so the dashboard links to
+`key_settings_url`, also on deleted records, and asks the user to delete the
+key there.
 
 Tests and CI register Provider Credentials with fixture Key Material through
 `provider_credentials::testing::KeyMaterialWritePort` and point the exchange

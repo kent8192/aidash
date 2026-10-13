@@ -606,6 +606,7 @@
   "providerConnectionOutcome_reconnected": "新しいキーで OpenRouter に再接続しました。",
   "providerConnectionOutcome_denied": "OpenRouter での承認が拒否されました。何も保存されていません。",
   "providerConnectionOutcome_failed": "OpenRouter での承認に失敗しました。何も保存されていません。もう一度お試しください。",
+  "providerConnectionOutcome_failedIssued": "OpenRouter はキーを発行しましたが、Aidash で保存できませんでした。OpenRouter で削除するまで、キーは OpenRouter 上で有効なままです。削除してから、もう一度お試しください。",
   "providerKeySettings": "OpenRouter でキーを管理",
   "providerCredentialRevokedNotice": "Aidash 側のキーのコピーを削除しました。OpenRouter で削除するまで、キーは OpenRouter 上で有効なままです。"
 }

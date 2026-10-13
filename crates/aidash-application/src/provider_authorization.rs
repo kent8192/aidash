@@ -10,9 +10,11 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// OpenRouter authorization codes expire ten minutes after issue, so a pending
-/// authorization never outlives the code it waits for.
-pub const LIFETIME_MINUTES: i64 = 10;
+/// How long a pending authorization waits for its callback. OpenRouter's code
+/// expires ten minutes after it is issued, which happens only once the user
+/// approves, and the exchange enforces that bound. This window therefore also
+/// covers the time the user spends on the consent page.
+pub const LIFETIME_MINUTES: i64 = 30;
 const KEY_LABEL_MAX_CHARS: usize = 64;
 
 /// Exchanges one authorization code for Key Material. Implementations must

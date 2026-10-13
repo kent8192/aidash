@@ -19,7 +19,9 @@ use aidash_server::{
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::FutureExt;
-use reinhardt::query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use reinhardt::test::TestResponse;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
@@ -62,8 +64,12 @@ impl Exchange for FakeOpenRouter {
 	) -> Result<SecretString> {
 		let rejected = || Error::Invalid("Provider Authorization was rejected".into());
 		// Codes are single-use whether or not the exchange succeeds.
-		let (challenge, expired, key) =
-			self.codes.lock().unwrap().remove(code).ok_or_else(rejected)?;
+		let (challenge, expired, key) = self
+			.codes
+			.lock()
+			.unwrap()
+			.remove(code)
+			.ok_or_else(rejected)?;
 		if expired
 			|| URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.expose_secret().as_bytes()))
 				!= challenge
@@ -98,11 +104,14 @@ impl Store for MemoryStore {
 		Ok(format!("{resource}/versions/{}", entry.len()))
 	}
 	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
-		Ok(
-			(1..=self.versions.lock().unwrap().get(resource).map_or(0, Vec::len))
-				.map(|n| format!("{resource}/versions/{n}"))
-				.collect(),
-		)
+		Ok((1..=self
+			.versions
+			.lock()
+			.unwrap()
+			.get(resource)
+			.map_or(0, Vec::len))
+			.map(|n| format!("{resource}/versions/{n}"))
+			.collect())
 	}
 	async fn disable(&self, _: &str) -> Result<()> {
 		Ok(())
@@ -457,12 +466,14 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 		&fixture.app,
 		"GET",
 		"/api/tenants/alpha/provider-credential-bindings/openrouter",
-		&[("authorization", &format!("Bearer {}", fixture.f.config.api_token))],
+		&[(
+			"authorization",
+			&format!("Bearer {}", fixture.f.config.api_token),
+		)],
 		Value::Null,
 	)
 	.await;
-	let binding: Value =
-		serde_json::from_slice(binding.body()).unwrap();
+	let binding: Value = serde_json::from_slice(binding.body()).unwrap();
 	assert_eq!(binding["provider_credential_id"], row["id"]);
 
 	// Reconnect rotates the same record to a newly issued key.
@@ -631,19 +642,33 @@ async fn replayed_cross_session_and_expired_states_and_rejected_codes_store_noth
 	.await;
 	assert_eq!(response.status(), 401);
 
-	// A declined consent returns without a code.
+	// A code without `state` never reaches the exchange.
 	let started = start(&fixture, "browser-a", json!({}), None).await;
+	let (code, _) = fixture.provider.consent(&started.challenge, false);
 	let response = callback(
 		&fixture,
 		"browser-a",
 		&started.browser,
-		&format!("state={}", started.state),
+		&format!("code={code}"),
 	)
 	.await;
+	assert_eq!(response.status(), 401);
+	assert_eq!(pending_authorizations(&fixture).await, 1);
+
+	// A declined consent returns without a code and, as at OpenRouter, without
+	// `state`; the browser binding and session still correlate it.
+	let response = callback(&fixture, "browser-b", &started.browser, "").await;
+	assert_eq!(response.status(), 401);
+	let response = callback(&fixture, "browser-a", "another-browser", "").await;
+	assert_eq!(response.status(), 401);
+	let response = callback(&fixture, "browser-a", &started.browser, "").await;
 	assert_eq!(
 		location(&response),
 		"/settings?view=providerCredentials&provider_authorization=denied"
 	);
+	assert_eq!(pending_authorizations(&fixture).await, 0);
+	let response = callback(&fixture, "browser-a", &started.browser, "").await;
+	assert_eq!(response.status(), 401);
 
 	let rows = credentials(&fixture).await;
 	assert_eq!(
@@ -671,7 +696,10 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 		"/api/tenants/alpha/provider-authorizations/openrouter",
 		&[
 			("content-type", "application/json"),
-			("authorization", &format!("Bearer {}", fixture.f.config.api_token)),
+			(
+				"authorization",
+				&format!("Bearer {}", fixture.f.config.api_token),
+			),
 		],
 		json!({}),
 	)
@@ -749,8 +777,7 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 		Value::Null,
 	)
 	.await;
-	let registration: Value =
-		serde_json::from_slice(registration.body()).unwrap();
+	let registration: Value = serde_json::from_slice(registration.body()).unwrap();
 	let mapping = send(
 		&fixture.app,
 		"POST",
@@ -760,14 +787,16 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 		),
 		&[
 			("content-type", "application/json"),
-			("authorization", &format!("Bearer {}", fixture.f.config.api_token)),
+			(
+				"authorization",
+				&format!("Bearer {}", fixture.f.config.api_token),
+			),
 		],
 		json!({"tenant":"alpha","subject":"alice"}),
 	)
 	.await;
 	let status = mapping.status();
-	let mapping: Value =
-		serde_json::from_slice(mapping.body()).unwrap();
+	let mapping: Value = serde_json::from_slice(mapping.body()).unwrap();
 	assert_eq!(status, 200, "{mapping}");
 	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
 

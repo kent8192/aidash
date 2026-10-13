@@ -7,7 +7,8 @@ use aidash_application::{
 	Result,
 	provider_authorization::Target,
 	provider_credentials::{
-		KeyValidator, Service, Store, Validation, testing::KeyMaterialWritePort as _,
+		AuthorizationFailure, KeyValidator, Service, Store, Validation,
+		testing::KeyMaterialWritePort as _,
 	},
 };
 use aidash_domain::provider_credentials::Provider;
@@ -489,7 +490,10 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 				&"verifier".into(),
 			)
 			.await,
-		Err(aidash_server::Error::Conflict(_))
+		Err(AuthorizationFailure {
+			error: aidash_server::Error::Conflict(_),
+			key_settings_url: None,
+		})
 	));
 	let malformed = reqwest::Client::new()
 		.put(format!(
@@ -3047,7 +3051,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		runtime.store.provider_credentials = Some(service.clone());
 		let management = Management { runtime };
 		let canary = "failed-create-key-material-canary-9a72";
-		let error = management
+		let failure = management
 			.complete_authorization(
 				actor.clone(),
 				"alpha".into(),
@@ -3058,6 +3062,9 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 			)
 			.await
 			.unwrap_err();
+		// The provider already issued the key, so its settings page survives.
+		assert!(failure.key_settings_url.is_some());
+		let error = failure.error;
 		if fail_store {
 			assert!(
 				matches!(error, aidash_server::Error::External(ref message) if message == "Provider Credential Store unavailable")
