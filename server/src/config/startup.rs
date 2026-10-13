@@ -8,7 +8,6 @@ use crate::{
 use async_trait::async_trait;
 use reinhardt::commands::{RunserverContext, RunserverHook};
 use reinhardt::conf::settings::profile::Profile;
-use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::macros::hook;
 use reinhardt::server::server::shutdown::shutdown_signal;
 use std::error::Error;
@@ -57,9 +56,7 @@ impl RunserverHook for AidashRuntime {
 		let config = crate::config::Config::from_settings(&settings)?;
 		// The application keeps admission/control capacity separate from native
 		// command connections; no migration runs implicitly during startup.
-		let connection =
-			DatabaseConnection::connect_postgres_with_pool_size(&config.database_url, Some(16))
-				.await?;
+		let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 		let federation = bootstrap::initialize(&context.di_context, &settings, connection).await?;
 		ProcessLifecycle::register(&context.di_context, context.shutdown_coordinator.clone());
 		let probes = if let Some(address) = settings.node.probe_listen {

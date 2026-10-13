@@ -38,7 +38,8 @@ impl CapabilityCommand for RunNode {
 				)
 				.try_init();
 			let settings = load_settings()?;
-			bootstrap::migrate(&settings).await?;
+			// The server's login cannot change the schema; `migrate` runs first as its owner.
+			bootstrap::require_migrated(&settings).await?;
 			match self.0 {
 				Role::Worker => super::worker::run(None).await,
 				Role::Serve => bootstrap::serve(settings, true).await,

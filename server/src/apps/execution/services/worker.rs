@@ -7,7 +7,6 @@ use reinhardt::commands::{
 	BaseCommand, CommandArgument, CommandContext, CommandError, CommandResult,
 };
 use reinhardt::commands::{CapabilityCommand, CapabilityContext, CapabilityRequirement};
-use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::server::{ShutdownCoordinator, server::shutdown::shutdown_signal};
 use reinhardt::{InjectionContext, SingletonScope};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -88,8 +87,7 @@ pub async fn run(address: Option<SocketAddr>) -> crate::Result<()> {
 	let settings = load_settings()?;
 	let config = Config::from_settings(&settings)?;
 	let address = address.or(settings.node.probe_listen);
-	let connection =
-		DatabaseConnection::connect_postgres_with_pool_size(&config.database_url, Some(16)).await?;
+	let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let shutdown = ShutdownCoordinator::new(Duration::from_secs(30));
 	let mut stopped = shutdown.subscribe();

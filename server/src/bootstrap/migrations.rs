@@ -98,6 +98,50 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 	Ok(())
 }
 
+/// Confirm that every native migration is applied, without changing the schema.
+///
+/// Servers, workers and maintenance commands log in as a role that cannot
+/// change the schema (#262), so only `aidash migrate`, run as the owner of
+/// every table, applies migrations.
+pub async fn require_current(url: &str, directory: &std::path::Path) -> Result<()> {
+	let connection = DatabaseConnection::connect_postgres(url)
+		.await
+		.map_err(|_| Error::External("Failed to connect to PostgreSQL".into()))?;
+	let migrations = FilesystemSource::new(directory)
+		.all_migrations()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?;
+	let applied = DatabaseMigrationRecorder::new(connection.clone())
+		.get_applied_migrations_if_present()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?;
+	connection
+		.into_postgres()
+		.expect("a PostgreSQL connection")
+		.close()
+		.await;
+	let known: HashSet<_> = migrations
+		.iter()
+		.map(|migration| (migration.app_label.as_str(), migration.name.as_str()))
+		.collect();
+	let recorded: HashSet<_> = applied
+		.iter()
+		.map(|migration| (migration.app.as_str(), migration.name.as_str()))
+		.collect();
+	if migrations.is_empty() || !recorded.is_subset(&known) {
+		return Err(Error::Invalid(
+			"unknown migration history; restore a supported database before continuing".into(),
+		));
+	}
+	let pending = known.difference(&recorded).count();
+	if pending > 0 {
+		return Err(Error::Invalid(format!(
+			"{pending} migrations are not applied; run `aidash migrate` as the database owner first"
+		)));
+	}
+	Ok(())
+}
+
 /// Fake reversal would leave physical objects behind after removing baseline
 /// records, making the next fresh-schema check and replay unsafe.
 fn refuse_fake_baseline_rollback(
