@@ -375,7 +375,7 @@ impl RealDispatchScope for Scope<'_> {
 			entry(
 				"model",
 				"model",
-				json!({"provider":"fixture","model_id":"model","endpoint":"https://model.example/infer","credential_env":"MODEL_TEST","context_window":20000,"max_output_tokens":96,"modalities":["text"],"cost":{}}),
+				json!({"provider":"fixture","model_id":"model","endpoint":"https://model.example/infer","context_window":20000,"max_output_tokens":96,"modalities":["text"],"cost":{}}),
 			)
 		} else {
 			entry(
@@ -465,16 +465,9 @@ impl AdmissionScope for Scope<'_> {
 }
 impl Credentials for Repository {
 	fn resolve(&self, name: &str) -> Result<String> {
-		assert!(matches!(name, "MODEL_TEST" | "TEST_TOOL"));
-		self.state
-			.lock()
-			.unwrap()
-			.order
-			.push(if name == "MODEL_TEST" {
-				"model_fingerprint"
-			} else {
-				"tool_fingerprint"
-			});
+		// Model configurations name no environment key (ADR 0006).
+		assert_eq!(name, "TEST_TOOL");
+		self.state.lock().unwrap().order.push("tool_fingerprint");
 		Ok("fixture".into())
 	}
 }
@@ -525,7 +518,6 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 			"current_authority",
 			"validate_dependencies",
 			"effective_model",
-			"model_fingerprint",
 			"tenant_limits_update_lock",
 			"field_validation",
 			"model_factory",

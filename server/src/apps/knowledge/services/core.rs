@@ -10,24 +10,28 @@ use crate::{Error, Result};
 use reinhardt::core::validators::Validate;
 use uuid::Uuid;
 
-/// Local credential validation is an adapter concern; provider invariants are pure.
+/// Provider-source checks need node settings; provider invariants are pure.
 pub trait EmbeddingValidation {
 	fn validate(&self) -> Result<()>;
-	fn validate_in(&self, local: bool) -> Result<()>;
 }
 impl EmbeddingValidation for EmbeddingConfig {
 	fn validate(&self) -> Result<()> {
-		self.validate_in(true)
-	}
-	fn validate_in(&self, local: bool) -> Result<()> {
 		crate::bootstrap::registry_validation()
-			.validate_embedding(self, local)
+			.validate_embedding(self)
 			.map_err(Into::into)
 	}
 }
 impl IndexSpec {
 	pub fn validate(&self) -> Result<()> {
-		self.embedding.validate()?;
+		self.validate_with(&crate::bootstrap::registry_validation())
+	}
+	/// Validate against a node's runtime composition, so a configured Provider
+	/// Credential Store admits Tenant-backed embeddings.
+	pub fn validate_with(
+		&self,
+		validation: &aidash_application::registry::DefinitionValidation,
+	) -> Result<()> {
+		validation.validate_embedding(&self.embedding)?;
 		if self.vector.provider != "postgres"
 			|| self.vector.endpoint != "local"
 			|| self.vector.credential_env.is_some()

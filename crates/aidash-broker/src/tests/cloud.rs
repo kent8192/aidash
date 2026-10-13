@@ -3,7 +3,7 @@ use super::*;
 use aidash_application::{
 	ports::NoProgress,
 	provider_access::{
-		Context, EnvironmentAccess, Inference, MaintenancePurpose, Operation as CallOperation,
+		Context, Inference, KeylessAccess, MaintenancePurpose, Operation as CallOperation,
 		ProviderAccess, Source as AccessSource, TenantAccess,
 	},
 	provider_credentials::{Repository, Scope},
@@ -105,18 +105,11 @@ impl TokenSigner for Signer {
 		self.inner.sign(input).await
 	}
 }
-struct Env(Mutex<String>);
-impl aidash_application::ports::Credentials for Env {
-	fn resolve(&self, _: &str) -> aidash_application::Result<String> {
-		Ok(self.0.lock().unwrap().clone())
-	}
-}
 struct Cloud {
 	fixture: Fixture,
 	access: Arc<TenantAccess>,
 	repo: Repo,
 	signer: Arc<Signer>,
-	env: Arc<Env>,
 	context: Context,
 	broker_calls: Arc<AtomicUsize>,
 	server: tokio::task::JoinHandle<()>,
@@ -137,6 +130,7 @@ fn row(id: Uuid, tenant: &str, version: &str) -> ProviderCredential {
 		pinned_version: Some(format!("{resource}/versions/{version}")),
 		fingerprint: "fixture".into(),
 		last4: "test".into(),
+		key_digest: None,
 		state: CredentialState::Active,
 		created_at: chrono::Utc::now(),
 		rotated_at: None,
@@ -210,7 +204,6 @@ impl Cloud {
 			.lock()
 			.unwrap()
 			.insert(id, row(id, "tenant-a", "1"));
-		let env = Arc::new(Env(Mutex::new(CANARY.into())));
 		let issuer = CapabilityIssuer::new(
 			WorkerConfiguration {
 				endpoint,
@@ -223,9 +216,7 @@ impl Cloud {
 		)
 		.unwrap();
 		let access = Arc::new(TenantAccess {
-			environment: EnvironmentAccess {
-				credentials: env.clone(),
-			},
+			keyless: KeylessAccess,
 			repository: Arc::new(repo.clone()),
 			reader: None,
 			issuer: Some(Arc::new(issuer)),
@@ -241,7 +232,6 @@ impl Cloud {
 			access,
 			repo,
 			signer,
-			env,
 			context,
 			broker_calls,
 			server,
@@ -252,7 +242,6 @@ impl Cloud {
 			provider: "openrouter".into(),
 			model_id: "author/model".into(),
 			endpoint: Provider::Openrouter.base_url().into(),
-			credential_env: None,
 			provider_credential: Some("openrouter".into()),
 			request_timeout_secs: Some(5),
 			// The fake upstream holds a stream open for the broker's own stream
@@ -431,7 +420,6 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 		&aidash_domain::semantic::EmbeddingConfig {
 			provider: "openrouter".into(),
 			endpoint: Provider::Openrouter.base_url().into(),
-			credential_env: None,
 			provider_credential: Some("openrouter".into()),
 			model: "author/model".into(),
 			model_version: "1".into(),
@@ -699,7 +687,6 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 	let config = aidash_domain::semantic::EmbeddingConfig {
 		provider: "openrouter".into(),
 		endpoint: Provider::Openrouter.base_url().into(),
-		credential_env: None,
 		provider_credential: Some("openrouter".into()),
 		model: "author/model".into(),
 		model_version: "1".into(),
@@ -722,11 +709,12 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 }
 
 #[tokio::test]
-async fn self_hosted_env_stays_direct_and_resolves_the_key_on_every_call() {
+async fn keyless_configurations_stay_direct_and_send_no_key() {
+	// ADR 0006: no environment source exists; without a Provider Credential the
+	// configured endpoint is called without any Authorization header.
 	let c = Cloud::new(false).await;
 	let mut config = c.config();
 	config.provider_credential = None;
-	config.credential_env = Some("AIDASH_SECRET_OPENROUTER".into());
 	config.endpoint = c.fixture.broker.catalog["openrouter"].clone();
 	config.request_timeout_secs = Some(3601);
 	let provider = aidash_integrations::inference::provider(
@@ -744,19 +732,8 @@ async fn self_hosted_env_stays_direct_and_resolves_the_key_on_every_call() {
 			.text,
 		"ok"
 	);
-	*c.env.0.lock().unwrap() = "changed-env-key".into();
-	assert_eq!(
-		provider
-			.infer(Cloud::request(), &NoProgress)
-			.await
-			.unwrap()
-			.text,
-		"ok"
-	);
-	assert_eq!(
-		*c.fixture.provider.bearer.lock().unwrap(),
-		vec![format!("Bearer {CANARY}"), "Bearer changed-env-key".into()]
-	);
+	let bearers = c.fixture.provider.bearer.lock().unwrap().clone();
+	assert!(!bearers.is_empty() && bearers.iter().all(String::is_empty));
 	assert_eq!(c.repo.begins.load(Ordering::SeqCst), 0);
 	assert_eq!(c.signer.claims.lock().unwrap().len(), 0);
 	assert_eq!(c.fixture.source.reads.load(Ordering::SeqCst), 0);

@@ -190,7 +190,7 @@ impl Backend {
 			("agent", 128_000, 4096)
 		};
 		let mut config = json!({
-			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
+			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");

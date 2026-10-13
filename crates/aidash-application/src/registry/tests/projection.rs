@@ -5,7 +5,7 @@ use aidash_domain::{projection::ProjectionVersion, registry::bindings::AgentBind
 const NODE: &str = "aidash://test";
 
 fn model_config(versions: Option<Value>) -> Value {
-	let mut config = json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","credential_env":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}});
+	let mut config = json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}});
 	if let Some(versions) = versions {
 		config["projection_versions"] = versions;
 	}
@@ -145,7 +145,7 @@ async fn publication_rejects_an_agent_its_model_cannot_render(validation: Defini
 
 /// Serializations produced before Projection Versions existed.
 const LEGACY_AGENT: &str = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[],"cluster":null,"max_steps":64}"#;
-const LEGACY_MODEL: &str = r#"{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","credential_env":null,"reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
+const LEGACY_MODEL: &str = r#"{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
 
 #[rstest]
 fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_legacy() {

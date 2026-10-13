@@ -1057,6 +1057,37 @@ const sectionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$section",
 });
+// Provider Authorization reports its outcome once in the callback redirect;
+// keep it past search validation for the Provider connections section. When
+// OpenRouter still holds a key Aidash does not store (a failure after it issued
+// one, or the key a reconnect replaced), the redirect carries that key's
+// settings page; validation warnings about the connected key are flagged.
+const callbackSearch = new URLSearchParams(window.location.search);
+const providerAuthorizationOutcome = callbackSearch.get(
+  "provider_authorization",
+);
+if (providerAuthorizationOutcome) {
+  sessionStorage.setItem(
+    "aidash-provider-authorization",
+    providerAuthorizationOutcome,
+  );
+  const keySettingsUrl = callbackSearch.get("provider_key_settings_url");
+  if (keySettingsUrl)
+    sessionStorage.setItem(
+      "aidash-provider-authorization-key-settings-url",
+      keySettingsUrl,
+    );
+  else
+    sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
+  if (callbackSearch.get("provider_key_warnings") === "1")
+    sessionStorage.setItem("aidash-provider-authorization-key-warnings", "1");
+  else sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
+  const url = new URL(window.location.href);
+  url.searchParams.delete("provider_authorization");
+  url.searchParams.delete("provider_key_settings_url");
+  url.searchParams.delete("provider_key_warnings");
+  window.history.replaceState(window.history.state, "", url);
+}
 const router = createRouter({
   routeTree: rootRoute.addChildren([indexRoute, sectionRoute]),
   parseSearch: parseQuery,

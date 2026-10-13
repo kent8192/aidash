@@ -141,7 +141,7 @@ test("searches and selects a model without credential input", async ({
     provider: "openrouter",
     model_id: "vendor/fixture-model",
     endpoint: "https://openrouter.ai/api/v1",
-    credential_env: "AIDASH_SECRET_OPENROUTER",
+    provider_credential: "openrouter",
     reasoning_effort: "high",
     context_window: 65536,
     max_output_tokens: 65536,

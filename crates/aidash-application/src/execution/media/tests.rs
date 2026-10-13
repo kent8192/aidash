@@ -46,7 +46,6 @@ fn model() -> ModelConfig {
 		provider: "openrouter".into(),
 		model_id: "saved-model".into(),
 		endpoint: "https://provider.example/api".into(),
-		credential_env: None,
 		provider_credential: None,
 		request_timeout_secs: None,
 		streaming: None,

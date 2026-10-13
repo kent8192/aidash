@@ -647,7 +647,7 @@ impl ExecutionCatalog for Bench {
 	async fn get_for_run(&self, _run: &Run, id: &str, _version: &str) -> Result<Entry> {
 		Ok(serde_json::from_value(
 			json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":{
-				"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+				"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
 			}}),
 		)?)
 	}

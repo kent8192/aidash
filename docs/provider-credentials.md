@@ -5,19 +5,101 @@ Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
 Key Material passes from the server-side exchange into the Provider Credential
 Store write port. Pinned reads use a separate narrow read port.
 Aidash exposes no HTTP create/rotate endpoint or dashboard
-form accepting typed or pasted provider keys. OAuth connection and reconnect
-flows are tracked in [#158](https://github.com/kent8192/aidash/issues/158).
+form accepting typed or pasted provider keys; Provider Authorization (below) is
+the only production write path.
 The v1 Provider Catalog contains `openrouter`, with base URL
 `https://openrouter.ai/api/v1`.
 Registry model and embedding configurations use `provider_credential =
-"openrouter"`, mutually exclusive with `credential_env`; they never contain a
-Provider Credential ID. The removal of operator `credential_env` keys and the
-mandatory Store requirement for self-hosted nodes belong to #158's migration.
+"openrouter"` or call their endpoint without a key; they never contain a
+Provider Credential ID or an environment key reference. `credential_env` was
+removed from model and embedding configurations in #158: `provider_access`
+has no environment source, and the `registry_model_provider_keys` and
+`semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
+Every model-provider key therefore comes from a Provider Credential Store, on
+Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
+store references keep their `AIDASH_SECRET_*` configuration; compactors move to
+OpenRouter with Jev (see the #158 PR).
 
 Choose a Provider Credential Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
-unavailable. Until [#158](https://github.com/kent8192/aidash/issues/158) lands,
-a self-hosted node has no production path to create Provider Credentials.
+unavailable.
+
+## Provider Authorization
+
+Tenant settings contain a **Provider connections** section with Connect and
+Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
+
+1. `POST /api/tenants/{tenant}/provider-authorizations/openrouter` (dashboard
+   browser sessions only; CSRF-checked) authorizes `provider_credential.create`,
+   or `.rotate` when the body names `provider_credential_id` and
+   `expected_revision`. It stores a pending authorization bound to the SHA-256
+   of a fresh `state`, the browser (an HttpOnly
+   `__Host-aidash-provider-authorization` cookie), the dashboard session, the
+   dashboard context, the Tenant and the target Provider Credential ID, and
+   returns `authorization_url`. The browser navigates to
+   `https://openrouter.ai/auth` with `callback_url`, an S256
+   `code_challenge`, `key_label` (`Aidash · <tenant>`) and `state`. The PKCE
+   verifier never leaves the server.
+2. OpenRouter redirects to `<public origin>/auth/provider-authorizations/openrouter/callback`
+   with `code` and `state`. The callback consumes the pending row exactly
+   once, then requires the same browser cookie, the same dashboard session,
+   an unexpired row and a live dashboard context. The row lives 30 minutes so
+   it also covers the time spent on the consent page; OpenRouter's code
+   expires 10 minutes after it is issued, and the exchange enforces that. A
+   code without `state`, or a replayed, cross-browser, cross-session or
+   expired `state`, returns 401 before any provider call. A declined consent
+   arrives without `state` (OpenRouter omits it); the callback then consumes
+   the pending row of the same browser cookie, dashboard session and provider
+   and reports `denied`. Each start supersedes any earlier pending row of
+   that browser, session and provider, so a denial always maps to one flow,
+   and a superseded flow's `state` returns 401 before any exchange.
+3. The server exchanges the code with `POST https://openrouter.ai/api/v1/auth/keys`
+   (`code`, `code_verifier`, `code_challenge_method: S256`) under a live
+   `provider_credential.create`/`.rotate` decision, validates the key with
+   `GET /api/v1/key`, and writes it through the Store write path. A rejected
+   code or verifier (OpenRouter 400/403) stores nothing. Reconnect adds a new
+   version to the same Provider Credential (rotation). A connection is bound to
+   OpenRouter when the Tenant has no usable binding (none, or one to a revoked
+   Provider Credential) and the actor may update it.
+4. The callback redirects (303) to the requested same-origin `return_to`
+   with `provider_authorization=connected|unbound|reconnected|denied|failed`
+   (and the parameters below) added to its query, before any fragment. The
+   dashboard reopens the Tenant the authorization started for, including an
+   operator's selected Tenant, and shows the outcome only there.
+   A connection reports `connected` only when the new Provider Credential is
+   bound afterwards; when another active binding wins (for example a
+   concurrent connection) or the actor may not update the binding, the key is
+   stored but the outcome is `unbound`. When
+   the exchange succeeded but storing the key failed, the redirect also
+   carries `provider_key_settings_url`, the issued key's settings page; after
+   a reconnect it carries the settings page of the key that was replaced. The
+   dashboard asks the user to delete that key at OpenRouter. When validation
+   reported a warning about the connected key, such as a missing spending
+   limit, the redirect carries `provider_key_warnings=1` and the dashboard
+   asks the user to review the key at OpenRouter.
+
+The callback must be reachable from the user's browser only; the
+`public_origin` of the dashboard session settings defines it. Key Material is
+never returned, logged, evented or persisted outside the Store. The
+quota and a stale reconnect revision are checked before the exchange, so a
+predictable refusal does not leave an unused key at OpenRouter.
+
+At connection time the server also records the key's **unkeyed SHA-256**
+(`key_digest`). Metadata exposes it only as `key_settings_url`
+(`https://openrouter.ai/keys/<sha256>`), OpenRouter's owner-only key-settings
+page. This is ADR 0006's deliberate exception to the Fingerprint's
+no-correlation rule: each authorization issues a fresh random key. Revocation
+and deletion destroy only Aidash's copy; OpenRouter documents no API for an
+application to delete an OAuth-issued key, so the dashboard links to
+`key_settings_url`, also on deleted records, and asks the user to delete the
+key there.
+
+Tests and CI register Provider Credentials with fixture Key Material through
+`provider_credentials::testing::KeyMaterialWritePort` and point the exchange
+at a fake provider with `OpenRouterAuthorization::at`. Both exist only in
+test builds or behind the `test-support` features of `aidash-application` and
+`aidash-integrations`. `scripts/check-workspace-boundaries.py` rejects any
+production (normal or build) dependency or feature that enables them.
 
 For self-hosted PostgreSQL storage:
 
@@ -81,8 +163,7 @@ versions under an unconfigured key produce a warning with counts; reads fail,
 while revocation and deletion remain available. There is no fallback.
 
 Losing the Master Key loses every Provider Credential and Plan Connection on
-the node. Recovery means reconnecting through OAuth (#158 for Provider
-Credentials).
+the node. Recovery means reconnecting through Provider Authorization.
 A database backup is useless without a separately retained key backup. Keep the
 current and necessary retired keys backed up outside the database.
 
@@ -109,7 +190,7 @@ resource are disabled by normal Revocation, remain present, and keep their
 ciphertext. Unaffected Provider Credentials retain every row and state.
 Recovery never decrypts or re-encrypts version payloads. Restart server and worker
 afterward; normal startup registers the current key. Tenants then delete revoked
-credentials and reconnect through OAuth (#158). The command is safe to rerun
+credentials and reconnect through Provider Authorization. The command is safe to rerun
 after an interrupted recovery. Plan Token recovery will be added by #159.
 
 GCP deployment passes this non-secret Store descriptor to the app chart's
@@ -126,23 +207,28 @@ Lifecycle operations and
 binding updates require the current `expected_revision`; stale writes return 409. Sending `provider_credential_id: null` explicitly unbinds a provider and
 retains its revision history; unbind before deleting the last bound record.
 Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
-`provider_credential_binding.read`, `.update`. Internal Provider Authorization
-writes retain the `.create` and `.rotate` policy decisions. Resources
+`provider_credential_binding.read`, `.update`. Provider Authorization decides
+`.create` (connect) and `.rotate` (reconnect) when it starts and again at the
+callback; these are the Provider Credential management permissions. Resources
 carry the provider attribute and UUID or Provider Catalog ID respectively.
 Authenticated Subjects may operate only within their Tenant; authenticated
 operators retain explicit policy decision audits. Responses use
 `Cache-Control: no-store`.
 
-Tenant settings show metadata, binding selection, revocation and deletion without
-key-entry controls. This example uses test fixture metadata:
+Tenant settings show Provider connections (Connect, Reconnect), metadata,
+binding selection, revocation with the OpenRouter key-settings link, and
+deletion without key-entry controls. This example uses test fixture metadata:
 
 ![Provider Credential metadata and binding management](images/provider-credentials.png)
 
-The application-layer `Service::create` and `Service::rotate` use cases remain
-internal write paths for #158's server-side OAuth callback. Native management
-composition accepts typed providers and `SecretString` directly and runs policy
-decisions; there is no Key Material HTTP serializer, SDK operation, environment
-variable, or settings input for this write path. Tests seed through it directly.
+The application-layer `Service::authorize` completes Provider Authorization:
+it exchanges the code through the `provider_authorization::Exchange` port and
+creates or rotates the Provider Credential. The Key Material writes behind it
+are private to the application crate; only the test-only write port above
+reaches them with caller-supplied Key Material. Native management composition
+passes only the code and verifier and runs the policy decisions; there is no
+Key Material HTTP serializer, SDK operation, environment variable, or settings
+input.
 Creation persists `pending` before provider verification and secret storage.
 Rotation pins a verified new version before disabling the old one. If that
 post-commit disable fails, it returns the committed metadata with a cleanup
@@ -174,11 +260,15 @@ without blocking later Tenants. It never lists Secret Manager secrets.
 
 Admission records a local-only Provider Credential ID per Run and provider.
 This includes the enabled workspace semantic index's embedding provider, even
-when the Agent's Model uses an environment source. Missing embedding bindings
+when the Agent's Model is keyless. Missing embedding bindings
 therefore reject admission before the Run is committed. RequiredHome remote
-semantic bindings reject Tenant-backed workspace embeddings before binding or
-dispatch: this path has no approved local Run pin or BYOK maintenance authority.
-Environment-backed remote embeddings remain supported.
+semantic search accepts keyless and Tenant-backed workspace embeddings. The Home
+embeds the query itself, so a `provider_credential` source resolves the Home
+Tenant's current Provider Credential Binding as memory-retrieval maintenance,
+exactly as local Run-less retrieval does; the receiving node never receives
+Key Material or a Capability Token. Authorization is unchanged:
+`semantic.search`, `semantic.disclose`, `embedding.invoke` and `registry.read`
+on the Home, plus the receiver's reservations.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
 the mapped local Tenant. PostgreSQL resolves the current pinned version through
@@ -193,7 +283,7 @@ retrieval purpose in the access context. Run calls keep their admission pins.
 Both paths check current metadata before access. PostgreSQL reads the pinned
 version; Cloud issues a broker capability token.
 
-Workbench tests currently support environment-backed Models only. A Model using
+Workbench tests currently support keyless Models only. A Model using
 Tenant Provider Credentials is rejected before a sandbox session is admitted;
 Workbench has no Run or memory-maintenance authority for Tenant provider access.
 

@@ -446,22 +446,19 @@ async fn missing_package_dependency_prevents_install_and_event(validation: Defin
 }
 
 #[rstest]
-#[case::remote(false, 0)]
-#[case::local(true, 1)]
-fn remote_structure_validation_does_not_resolve_local_credentials(
-	#[case] local: bool,
-	#[case] resolutions: usize,
-) {
+#[case::remote(false)]
+#[case::local(true)]
+fn embedding_validation_never_resolves_environment_credentials(#[case] local: bool) {
 	let secrets = Arc::new(Secrets::default());
 	let validation = DefinitionValidation::new(secrets.clone(), Arc::new(CoreContracts));
 	let embedding = definition(
 		"embedding",
 		"embedding",
-		json!({"provider":"openai","endpoint":"https://embedding.example.test","credential_env":"AIDASH_SECRET_EMBEDDING","model":"text","model_version":"1","dimensions":3}),
+		json!({"provider":"openai","endpoint":"https://embedding.example.test","model":"text","model_version":"1","dimensions":3}),
 	);
-	let result = validation.validate_in(&embedding, local);
-	assert_eq!(result.is_ok(), !local);
-	assert_eq!(secrets.0.lock().unwrap().len(), resolutions);
+	// ADR 0006: embeddings name a Provider Catalog entry or no key at all.
+	assert!(validation.validate_in(&embedding, local).is_ok());
+	assert!(secrets.0.lock().unwrap().is_empty());
 }
 
 #[rstest]
@@ -578,7 +575,7 @@ fn run_media_routes_follow_current_evidence_and_model_modalities() {
 	let now = chrono::Utc::now();
 	let mut model: ModelConfig = serde_json::from_value(json!({
 		"provider":"openrouter", "model_id":"fixture", "endpoint":"https://example.test",
-		"credential_env":null, "context_window":8192, "modalities":["text","image","audio"],
+		"context_window":8192, "modalities":["text","image","audio"],
 		"cost":{}, "media_routes":[
 			{"tag":"image", "formats":["image/png"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},
 			{"tag":"audio", "formats":["wav"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},

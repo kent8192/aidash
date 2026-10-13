@@ -70,7 +70,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	let f = _federation.await.federation;
 
 	let endpoint = format!("{}/v1", server.url);
-	f.registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	f.registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	let agent = f
 		.registry
 		.register(entry(

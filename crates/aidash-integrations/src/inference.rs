@@ -72,10 +72,7 @@ impl OpenRouterProvider {
 					false,
 				),
 				&self.config.endpoint,
-				&Source::configured(
-					&self.config.credential_env,
-					&self.config.provider_credential,
-				),
+				&Source::configured(&self.config.provider_credential),
 			)
 			.await?;
 		let mut url = reqwest::Url::parse(&access.endpoint)
@@ -214,7 +211,6 @@ pub fn salted_provider(
 	aidash_domain::provider_credentials::validate_source(
 		&config.endpoint,
 		&config.provider,
-		config.credential_env.as_deref(),
 		config.provider_credential.as_deref(),
 	)?;
 	match config.provider.as_str() {
@@ -308,10 +304,7 @@ impl ModelProvider for OpenRouterProvider {
 						request.cache_breakpoints,
 					),
 					&self.config.endpoint,
-					&Source::configured(
-						&self.config.credential_env,
-						&self.config.provider_credential,
-					),
+					&Source::configured(&self.config.provider_credential),
 				)
 				.await?;
 			let mut call = self

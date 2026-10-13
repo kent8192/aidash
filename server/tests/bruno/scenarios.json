@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 302,
+  "endpoint_count": 304,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -12349,6 +12349,124 @@
         "Exact HTTP 401",
         "Stable authorization error envelope",
         "Discovery without an address reveals nothing contract"
+      ]
+    },
+    {
+      "name": "1136 provider-authorization-start - Anonymous request is rejected",
+      "file": "contracts/1136-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1137 provider-authorization-start - Forged bearer cannot start Provider Authorization",
+      "file": "contracts/1137-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Forged bearer cannot start Provider Authorization",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1138 provider-authorization-start - Operator bearer has no browser session to bind",
+      "file": "contracts/1138-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Operator bearer has no browser session to bind",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope",
+        "Operator bearer has no browser session to bind contract"
+      ]
+    },
+    {
+      "name": "1139 provider-authorization-start - Subject bearer has no browser session to bind",
+      "file": "contracts/1139-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Subject bearer has no browser session to bind",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope",
+        "Subject bearer has no browser session to bind contract"
+      ]
+    },
+    {
+      "name": "1140 provider-authorization-start - Wrong JSON media type is rejected",
+      "file": "contracts/1140-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1141 provider-authorization-start - Malformed JSON cannot reach the use case",
+      "file": "contracts/1141-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1142 provider-authorization-start - Pasted Key Material is not an accepted field",
+      "file": "contracts/1142-provider-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
+      "scenario": "Pasted Key Material is not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1143 provider-authorization-callback - Callback without a browser binding is rejected",
+      "file": "contracts/1143-provider-authorization-callback.bru",
+      "endpoint": "GET /auth/provider-authorizations/{provider}/callback",
+      "scenario": "Callback without a browser binding is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1144 provider-authorization-callback - Tampered browser binding cannot complete an authorization",
+      "file": "contracts/1144-provider-authorization-callback.bru",
+      "endpoint": "GET /auth/provider-authorizations/{provider}/callback",
+      "scenario": "Tampered browser binding cannot complete an authorization",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1145 provider-authorization-callback - Callback without state is rejected",
+      "file": "contracts/1145-provider-authorization-callback.bru",
+      "endpoint": "GET /auth/provider-authorizations/{provider}/callback",
+      "scenario": "Callback without state is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
       ]
     }
   ]

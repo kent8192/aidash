@@ -16,7 +16,6 @@ use super::*;
 #[case("model", false)]
 #[case("model_version", true)]
 #[case("endpoint", true)]
-#[case("credential_env", true)]
 #[tokio::test]
 async fn agent_memory_sources_require_the_same_embedding_configuration(
 	validation: DefinitionValidation,
@@ -40,8 +39,8 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 		json!({"provider":"utf8_upper_bound"}),
 	));
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
-	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","credential_env":null,"context_window":32768,"modalities":["text"],"cost":{}})));
-	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","credential_env":null,"model":"text","model_version":"1","dimensions":3});
+	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","context_window":32768,"modalities":["text"],"cost":{}})));
+	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","model":"text","model_version":"1","dimensions":3});
 	let mut other = embedding.clone();
 	if !changed.starts_with("participant_")
 		&& !changed.starts_with("workspace_")
@@ -49,7 +48,6 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	{
 		other[changed] = match changed {
 			"dimensions" => json!(4),
-			"credential_env" => json!("AIDASH_SECRET_OTHER"),
 			"endpoint" => json!("https://other.example.test"),
 			_ => json!("different"),
 		};

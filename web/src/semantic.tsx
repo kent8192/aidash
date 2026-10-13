@@ -634,7 +634,9 @@ function IndexForm({
           embedding: {
             provider: String(values.get("embeddingProvider")),
             endpoint: String(values.get("embedding")),
-            credential_env: String(values.get("embeddingSecret")) || null,
+            ...(String(values.get("embeddingProvider")) === "openrouter"
+              ? { provider_credential: "openrouter" }
+              : {}),
             model: String(values.get("model")),
             model_version: String(values.get("version")),
             dimensions: Number(values.get("dimensions")),
@@ -671,17 +673,6 @@ function IndexForm({
           defaultValue={
             previous?.embedding.endpoint ?? "https://openrouter.ai/api/v1"
           }
-        />
-      </Field>
-      <Field label={t("semanticEmbeddingSecret")}>
-        <Input
-          name="embeddingSecret"
-          defaultValue={
-            previous
-              ? (previous.embedding.credential_env ?? "")
-              : "AIDASH_SECRET_OPENROUTER"
-          }
-          placeholder="AIDASH_SECRET_OPENROUTER"
         />
       </Field>
       <Field label={t("semanticModel")}>

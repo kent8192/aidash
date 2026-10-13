@@ -229,7 +229,7 @@ test("embedding registration defaults to full-dimensional Gemini through OpenRou
     .toEqual({
       provider: "openrouter",
       endpoint: "https://openrouter.ai/api/v1",
-      credential_env: "AIDASH_SECRET_OPENROUTER",
+      provider_credential: "openrouter",
       model: "google/gemini-embedding-2",
       model_version: "1.0.0",
       dimensions: 3072,

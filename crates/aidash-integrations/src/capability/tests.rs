@@ -268,6 +268,7 @@ async fn issuer_copies_the_cache_breakpoint_request_into_the_signed_claims(
 		pinned_version: Some(format!("{resource}/versions/3")),
 		fingerprint: String::new(),
 		last4: String::new(),
+		key_digest: None,
 		state: State::Active,
 		created_at: chrono::Utc::now(),
 		rotated_at: None,

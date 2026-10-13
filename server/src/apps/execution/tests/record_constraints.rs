@@ -12,7 +12,7 @@ fn model() -> Entry {
 		"id":"test-model", "version":"1.0.0", "kind":"model",
 		"name":{"en":"Test model"}, "description":{"en":"Fixture"},
 		"config":{"provider":"openrouter", "model_id":"vendor/model",
-			"endpoint":"http://localhost:9999/v1", "credential_env":null,
+			"endpoint":"http://localhost:9999/v1",
 			"context_window":4096, "max_output_tokens":1024, "modalities":["text"], "cost":{}}
 	}))
 	.unwrap()
@@ -379,6 +379,13 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 	check_rejected(
 		insert_entry(f.store.pool.driver(), &missing).await,
 		"registry_model_config",
+	);
+	// ADR 0006: model configurations never name an environment key.
+	let mut keyed = good.clone();
+	keyed["config"]["credential_env"] = json!("AIDASH_SECRET_OPENROUTER");
+	check_rejected(
+		insert_entry(f.store.pool.driver(), &keyed).await,
+		"registry_model_provider_keys",
 	);
 	let mut malformed = good.clone();
 	malformed["name"] = json!([]);
@@ -1423,7 +1430,6 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 	entry["config"] = json!({
 		"provider":"openai",
 		"endpoint":"http://localhost:9999/v1",
-		"credential_env":null,
 		"model":"embedding-model",
 		"model_version":"1",
 		"dimensions":1536
@@ -1946,7 +1952,12 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 			wrong[section][field] = Value::Null;
 			invalid_specs.push(wrong);
 		}
-		for (field, value) in [("unexpected", json!(true)), ("credential_env", json!(7))] {
+		// An embedding credential_env is rejected by its own constraint below.
+		let mut fields = vec![("unexpected", json!(true))];
+		if section == "vector" {
+			fields.push(("credential_env", json!(7)));
+		}
+		for (field, value) in fields {
 			let mut wrong = spec.clone();
 			wrong[section][field] = value;
 			invalid_specs.push(wrong);
@@ -1971,7 +1982,6 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 			"endpoint",
 			json!("http://999.999.999.999/vectors"),
 		),
-		("embedding", "credential_env", json!("OPENAI_API_KEY")),
 		("embedding", "model", json!("  ")),
 		("embedding", "model", json!("m".repeat(257))),
 		("embedding", "model_version", json!("v".repeat(129))),
@@ -1992,6 +2002,19 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 			"semantic_indexes_revision",
 		);
 	}
+	// ADR 0006: an embedding never names an environment key, even a valid one.
+	let mut keyed = spec.clone();
+	keyed["embedding"]["credential_env"] = json!("AIDASH_SECRET_EMBEDDING");
+	check_rejected(
+		update(
+			f.store.pool.driver(),
+			"semantic_indexes",
+			"spec",
+			Expr::value(keyed),
+		)
+		.await,
+		"semantic_embedding_provider_keys",
+	);
 	insert_values(
 		f.store.pool.driver(),
 		"semantic_entries",
@@ -2589,6 +2612,8 @@ async fn installation_constraints_validate_model_overrides(
 		json!({"context_window":2047}),
 		json!({"provider":"unsupported"}),
 		json!({"unexpected":true}),
+		// ADR 0006: an override never names an environment key either.
+		json!({"credential_env":"AIDASH_SECRET_OPENROUTER"}),
 	] {
 		check_rejected(
 			update(
