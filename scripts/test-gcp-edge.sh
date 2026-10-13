@@ -104,3 +104,66 @@ start "open\\n"
 [[ -z "$(find /var/log/nginx -type f -size +0c)" ]]
 printf "%s\n" "Chart Nginx/Lua: restores only an exact open desired state, otherwise starts closed; public admission blocked; peers cannot toggle admission; private open/close verified; heartbeat counted and kept across an admission restart, polling idle; no file logs"
 '
+
+# Exercise the actual digest-pinned Caddy with the rendered random-host config.
+# The certificate and hosts are disposable fixtures, and the container has no network.
+edge_test_dir=$(mktemp -d)
+caddy_container=""
+trap 'if [[ -n "$caddy_container" ]]; then docker rm -f "$caddy_container" >/dev/null 2>&1; fi; rm -rf "$edge_test_dir"' EXIT
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+  -subj '/CN=*.preview.aidash.run' -addext 'subjectAltName=DNS:*.preview.aidash.run' \
+  -out "$edge_test_dir/tls.crt" -keyout "$edge_test_dir/tls.key" >/dev/null 2>&1
+python3 - "$edge_test_dir" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+import yaml
+
+directory = Path(sys.argv[1])
+digest = '@sha256:' + 'a' * 64
+values = {
+    'postgres': {'existingSecret': 'fixture', 'image': 'postgres' + digest},
+    'edge': {'hostname': 'a' * 32 + '.preview.aidash.run', 'admissionImage': 'edge' + digest,
+             'tlsSecret': 'aidash-preview-tls'},
+    'activity': {'existingSecret': 'fixture', 'observerImage': 'observer' + digest,
+                 'collectorImage': 'collector' + digest},
+}
+objects = yaml.safe_load_all(subprocess.check_output(
+    ['helm', 'template', 'env', 'infra/gcp/helm/environment', '-f', '-'],
+    input=json.dumps(values).encode(),
+))
+caddy = next(value['data']['Caddyfile'] for value in objects
+             if value and value['kind'] == 'ConfigMap' and 'Caddyfile' in value['data'])
+caddy = caddy.replace('/etc/aidash-preview-tls/', '/fixture/')
+# Upstream tries to relax the policy; the edge must overwrite it after proxying.
+caddy += '\n:8088 {\n header Referrer-Policy unsafe-url\n respond "backend-ok" 200\n}\n'
+(directory / 'Caddyfile').write_text(caddy)
+PY
+caddy_image=$(python3 -c 'import yaml; print(yaml.safe_load(open("infra/gcp/helm/environment/values.yaml"))["edge"]["caddyImage"])')
+docker run --rm --network none -v "$edge_test_dir:/fixture:ro" "$caddy_image" \
+  caddy validate --config /fixture/Caddyfile --adapter caddyfile
+caddy_container=$(docker run -d --network none --label purpose=aidash-random-edge-check \
+  -v "$edge_test_dir:/fixture:ro" "$caddy_image" caddy run --config /fixture/Caddyfile --adapter caddyfile)
+docker run --rm --platform linux/amd64 --network "container:$caddy_container" \
+  -v "$edge_test_dir:/fixture:ro" --entrypoint bash "$image" -euc '
+known=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.preview.aidash.run
+unknown=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.preview.aidash.run
+for attempt in $(seq 50); do
+  if curl --http1.1 -fsS --cacert /fixture/tls.crt --resolve "$known:443:127.0.0.1" --max-time 1 "https://$known/" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+check() {
+  local scheme=$1 host=$2 status=$3 port=443 result
+  if [[ "$scheme" == http ]]; then port=80; fi
+  result=$(curl --http1.1 -sS --cacert /fixture/tls.crt --resolve "$host:$port:127.0.0.1" --max-time 3 -D- -o /dev/null "$scheme://$host/")
+  case "$result" in *"HTTP/1.1 $status"*) ;; *) printf "%s\n" "$result"; exit 1;; esac
+  case "$result" in *"Referrer-Policy: no-referrer"*|*"referrer-policy: no-referrer"*) ;; *) printf "%s\n" "$result"; exit 1;; esac
+  case "$result" in *"Referrer-Policy: unsafe-url"*) exit 1;; esac
+}
+check https "$known" 200
+check https "$unknown" 404
+check http "$unknown" 404
+check http "$known" 308
+printf "%s\n" "Chart Caddy: static wildcard TLS, exact-host routing, unknown-host HTTPS/HTTP rejected, redirect and backend responses enforce no-referrer"
+'

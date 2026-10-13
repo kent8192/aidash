@@ -5,10 +5,13 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -23,6 +26,7 @@ OUTPUT = {
     "provider_credentials": None,
 }
 RUNTIME = {"AIDASH_OIDC_CLIENT_ID": "client", "AIDASH_OIDC_CLIENT_SECRET": "client-secret"}
+RANDOM_HOST = "0123456789abcdef" * 2 + ".preview.aidash.run"
 
 
 class ClusterCommandTests(unittest.TestCase):
@@ -145,6 +149,22 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual(settings["gcip"], {"dashboard": {"gcip": gcip}})
         self.assertFalse(any(key.startswith("AIDASH_OIDC_") for key in self.cluster.secret("aidash-pr-2", "app-runtime")))
 
+    def test_random_origin_refuses_legacy_oidc_and_dynamic_auth_helper(self):
+        output = dict(OUTPUT, hostname=RANDOM_HOST)
+        gcip = {
+            "project_id": PROJECT, "web_api_key": "public", "public_origin": "https://" + RANDOM_HOST,
+            "tenant_bindings": {"pool": "acme"},
+        }
+        for runtime in [RUNTIME, {"dashboard": {"gcip": dict(gcip, auth_helper="public_origin")}}]:
+            with self.subTest(runtime=runtime), self.assertRaises(Refused):
+                self.materialize(runtime, output)
+        settings = self.materialize({"dashboard": {"gcip": gcip}}, output)
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        edge = kube.env_values("pr-2", output, release, settings)["edge"]
+        self.assertEqual(edge["tlsSecret"], "aidash-preview-tls")
+        self.assertEqual(edge["existingTlsClaim"], "")
+        self.assertEqual(edge["firebaseProject"], "")
+
     def test_edge_serves_the_firebase_helper_only_when_the_settings_select_it(self):
         release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
         gcip = {"project_id": PROJECT, "web_api_key": "public", "public_origin": "https://pr-2.aidash.run", "tenant_bindings": {}}
@@ -224,6 +244,91 @@ class PreviewTlsTests(unittest.TestCase):
     def test_preview_volume_must_reference_the_managed_disk(self):
         with self.assertRaises(Refused):
             kube.bind_preview_tls(self.cluster, "pr-2", HANDLE.replace("aidash-preview-tls", "other"))
+
+
+class WildcardTlsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.files = TemporaryDirectory()
+        cls.directory = Path(cls.files.name)
+        for name, host in [("preview", "*.preview.aidash.run"), ("other", "*.aidash.run")]:
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+                "-subj", "/CN=" + host, "-addext", "subjectAltName=DNS:" + host,
+                "-out", str(cls.directory / (name + ".crt")), "-keyout", str(cls.directory / (name + ".key")),
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([
+            "openssl", "x509", "-in", str(cls.directory / "preview.crt"),
+            "-signkey", str(cls.directory / "preview.key"), "-days", "0",
+            "-out", str(cls.directory / "expired.crt"),
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.files.cleanup()
+
+    def test_only_valid_matching_wildcard_material_reaches_the_edge_secret(self):
+        cluster = FakeCluster([])
+        certificate = (self.directory / "preview.crt").read_text()
+        key = (self.directory / "preview.key").read_text()
+        kube.install_preview_tls(cluster, "pr-2", certificate, key)
+        tls = cluster.get("secret", "aidash-preview-tls", "aidash-pr-2")
+        self.assertEqual(tls["type"], "kubernetes.io/tls")
+        self.assertEqual(cluster.secret("aidash-pr-2", "aidash-preview-tls"), {"tls.crt": certificate, "tls.key": key})
+        for cert, private, identity in [
+            ((self.directory / "other.crt").read_text(), (self.directory / "other.key").read_text(), "pr-2"),
+            (certificate, (self.directory / "other.key").read_text(), "pr-2"),
+            (certificate, key, "test"),
+            ("not a certificate", key, "develop"),
+            ((self.directory / "expired.crt").read_text(), key, "develop"),
+        ]:
+            with self.subTest(identity=identity, certificate=cert[:20]), self.assertRaises(Refused):
+                kube.install_preview_tls(cluster, identity, cert, private)
+        self.assertEqual(cluster.secret("aidash-pr-2", "aidash-preview-tls")["tls.key"], key)
+
+    def test_rotation_restarts_an_existing_edge_without_exposing_key_in_its_spec(self):
+        cluster = FakeCluster([])
+        cluster.workload("deployment", "aidash-develop", "env-environment-edge", 1)
+        certificate = (self.directory / "preview.crt").read_text()
+        key = (self.directory / "preview.key").read_text()
+        kube.install_preview_tls(cluster, "develop", certificate, key)
+        first = cluster.get("deployment", "env-environment-edge", "aidash-develop")["spec"]["template"]["metadata"]["annotations"]
+        with patch.object(cluster, "patch", wraps=cluster.patch) as restart, patch.object(cluster, "rollout", wraps=cluster.rollout) as readiness:
+            self.assertFalse(kube.install_preview_tls(cluster, "develop", certificate, key))
+        restart.assert_not_called()
+        readiness.assert_called_once_with("aidash-develop", kube.EDGE)
+        rotated = subprocess.check_output([
+            "openssl", "x509", "-in", str(self.directory / "preview.crt"),
+            "-signkey", str(self.directory / "preview.key"), "-set_serial", "2", "-days", "2",
+        ], stderr=subprocess.DEVNULL).decode()
+        self.assertTrue(kube.install_preview_tls(cluster, "develop", rotated, key))
+        spec = cluster.get("deployment", "env-environment-edge", "aidash-develop")["spec"]
+        self.assertNotEqual(spec["template"]["metadata"]["annotations"], first)
+        self.assertNotIn(key, json.dumps(spec))
+
+    def test_random_edge_renders_static_secret_only_in_caddy_and_no_tls_disk(self):
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        output = dict(OUTPUT, hostname=RANDOM_HOST)
+        settings = {"gcip": {"dashboard": {"gcip": {"project_id": PROJECT}}}, "provider": None}
+        rendered = subprocess.check_output([
+            "helm", "template", "env", str(kube.ENV_CHART), "--namespace", "aidash-pr-2", "-f", "-",
+        ], input=json.dumps(kube.env_values("pr-2", output, release, settings)).encode())
+        objects = [obj for obj in yaml.safe_load_all(rendered) if obj]
+        pod = next(obj for obj in objects if obj["kind"] == "Deployment")["spec"]["template"]["spec"]
+        tls = next(volume for volume in pod["volumes"] if volume["name"] == "preview-tls")
+        self.assertEqual(tls["secret"]["secretName"], "aidash-preview-tls")
+        for container in pod["containers"]:
+            mounts = [mount for mount in container["volumeMounts"] if mount["name"] == "preview-tls"]
+            self.assertEqual(len(mounts), int(container["name"] == "caddy"))
+            if mounts:
+                self.assertTrue(mounts[0]["readOnly"])
+        self.assertFalse(any(obj["kind"] == "PersistentVolumeClaim" for obj in objects))
+        caddy = next(obj for obj in objects if obj["kind"] == "ConfigMap" and "Caddyfile" in obj["data"])["data"]["Caddyfile"]
+        self.assertIn("auto_https off", caddy)
+        self.assertIn("tls /etc/aidash-preview-tls/tls.crt /etc/aidash-preview-tls/tls.key", caddy)
+        self.assertIn("@origin host " + RANDOM_HOST, caddy)
+        self.assertIn("header >Referrer-Policy no-referrer", caddy)
+        self.assertIn("respond 404", caddy)
 
 
 class SealAndMigrationTests(unittest.TestCase):

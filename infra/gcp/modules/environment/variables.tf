@@ -1,4 +1,12 @@
 variable "project_id" { type = string }
+variable "deployment_tier" {
+  type    = string
+  default = "nonproduction"
+  validation {
+    condition     = contains(["nonproduction", "production"], var.deployment_tier)
+    error_message = "Deployment tier must be nonproduction or production."
+  }
+}
 variable "environment_id" { type = string }
 variable "hostname" { type = string }
 variable "node_service_account" {
@@ -8,9 +16,10 @@ variable "node_service_account" {
 variable "cluster" {
   description = "Shared GKE cluster that hosts this environment's node pool and Workload Identity principals."
   type = object({
-    name          = string
-    location      = string
-    workload_pool = string
+    name           = string
+    location       = string
+    workload_pool  = string
+    node_locations = optional(list(string))
   })
 }
 variable "environment" {
@@ -23,6 +32,10 @@ variable "environment" {
     machine_type = string
     auth_helper  = optional(string, "firebase")
   })
+  validation {
+    condition     = var.deployment_tier == "production" ? (var.environment_id == "production" && var.environment.kind == "production" && var.environment.running && !var.environment.spot) : var.environment.kind != "production" && var.environment_id != "production"
+    error_message = "Production must be isolated in its own tier, run continuously and use normal nodes."
+  }
 }
 
 variable "byok_project_id" {

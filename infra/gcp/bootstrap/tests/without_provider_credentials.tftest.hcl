@@ -1,9 +1,10 @@
 mock_provider "google" {}
 
 variables {
-  project_id          = "aidash-fixture"
-  state_bucket_name   = "aidash-fixture-state"
-  release_bucket_name = "aidash-fixture-releases"
+  project_id               = "aidash-fixture"
+  state_bucket_name        = "aidash-fixture-state"
+  release_bucket_name      = "aidash-fixture-releases"
+  notification_bucket_name = "aidash-fixture-notifications"
 }
 
 run "legacy_bootstrap_has_no_byok_resources" {
