@@ -383,6 +383,17 @@ pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
 	})?)
 }
 pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryState)> {
+	// A newer writer may bump the version without declaring a capability; its state
+	// is intact, so this is a capability gap rather than damage to the Run.
+	if let Some(version) = pending
+		.get("state_version")
+		.and_then(Value::as_u64)
+		.filter(|version| *version > u64::from(StateVersion::default().0))
+	{
+		return Err(Error::UnsupportedState(format!(
+			"run state version {version}"
+		)));
+	}
 	let pending: PendingState = serde_json::from_value(pending).map_err(|error| {
 		if capability::is_unknown_shape(&error) {
 			Error::UnsupportedState(error.to_string())

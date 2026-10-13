@@ -181,15 +181,33 @@ fn fields_a_worker_does_not_know_are_a_capability_mismatch_not_a_corrupt_run() {
 		json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false},"future":true}),
 	)
 	.unwrap_err();
+	let future_version = decode(
+		RunPhase::Ready,
+		json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+	)
+	.unwrap_err();
 
 	// Assert: each is the typed mismatch, while real damage stays `Invalid`.
-	for error in [undeclared, declared, future_variant, future_envelope] {
+	for error in [
+		undeclared,
+		declared,
+		future_variant,
+		future_envelope,
+		future_version,
+	] {
 		assert!(matches!(error, Error::UnsupportedState(_)), "{error:?}");
 	}
 	let mut damaged = tool_data();
 	damaged.as_object_mut().unwrap().remove("response_epoch");
 	assert!(matches!(
 		decode(RunPhase::ToolCall, envelope(damaged)),
+		Err(Error::Invalid(_))
+	));
+	assert!(matches!(
+		decode(
+			RunPhase::Ready,
+			json!({"state_version":0,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+		),
 		Err(Error::Invalid(_))
 	));
 }
