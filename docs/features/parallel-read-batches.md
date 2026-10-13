@@ -32,6 +32,10 @@ A Tool Batch runs at most min(Run ceiling, process ceiling) calls at once. Calls
 wait their turn for process capacity, and a call never holds capacity while
 waiting for more.
 
+In a fleet that still runs workers built before the persisted-state capability
+gate, keep `AIDASH_TOOL_PARALLELISM` at 1 until every worker is upgraded
+([rollout](../operations/worker-activation.md#persisted-state-capabilities)).
+
 ## Eligible calls
 
 A provider must declare a tool concurrency-safe. Read-only effect or replay

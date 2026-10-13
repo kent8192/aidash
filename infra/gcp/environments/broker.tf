@@ -51,6 +51,7 @@ module "credential_broker" {
   enabled                      = true
   bind_runtime_signer          = false
   project_id                   = var.project_id
+  deployment_tier              = var.deployment_tier
   byok_project_id              = each.value.byok_project_id
   environment_id               = each.key
   environment_kind             = var.environments[each.key].kind

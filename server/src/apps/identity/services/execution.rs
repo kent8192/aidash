@@ -619,15 +619,17 @@ impl Guard {
 						.map(|native| native.participant.participant_revision),
 				),
 			};
-			// The Home's corpus is not observable here; the Home journal refresh
-			// before every reuse is the remote recheck.
+			// The Home's corpus is not observable here: its digest arrives with the
+			// describe reply that refreshed this worker's authority, and is absent
+			// from a Home whose protocol predates it or that grants no semantic access.
+			let corpus_digest = self.access.read().await.home_corpus_digest.clone();
 			return Ok(aidash_domain::context::sources::RetrievalScope {
 				tenant: description.source_tenant,
 				subject: description.source_subject,
 				authorization_revision: None,
 				index_revision,
 				participant_revision,
-				corpus_digest: None,
+				corpus_digest,
 			});
 		}
 		let (tenant, subject, authorization_revision) = {

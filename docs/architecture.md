@@ -128,13 +128,12 @@ source constraints apply to both HTTP and worker entry points.
 
 Authoritative state and derived memory search projections live in PostgreSQL.
 pgvector performs semantic ranking; PGroonga provides multilingual keyword retrieval.
-
-Issue #125's [accepted memory design](design/2026-10-06-hindsight-memory-requirements.md)
-targets a native Rust Hindsight engine with unified PostgreSQL/pgvector/PGroonga
-and Logical Agent private ownership. Its design decisions are resolved, with
-final shared-understanding confirmation pending; implementation is not claimed
-here. Existing JSON memory is discarded, with no legacy migration workflow.
-The persistence description below records the current implementation baseline.
+The native memory provider (Issue #125, merged through PR #130) is a Rust Hindsight
+implementation on this backend. Qdrant is no longer an adapter or deployment service.
+Existing JSON memory was discarded, with no legacy migration workflow. The
+architecture decision for this backend is proposed under Issue #126 and awaits
+the user's approval; the [traceability matrix](memory-traceability.md) records
+the status of each memory requirement.
 
 Reinhardt owns the single migration graph under `server/migrations/`. Its frozen
 baseline retains PostgreSQL functions, triggers, generated columns, constraints,
@@ -163,6 +162,45 @@ Every execution step is persisted before advancing. A leased worker processes on
 State mutations append durable events in the same transaction. An outbox publisher waits for JetStream persistence before marking an event sent. Consumer acknowledgments follow a committed inbox record; redelivery is deduplicated. PostgreSQL scanning also recovers runnable work after restart, including a publication outage. SSE resumes from a durable event sequence and uses the database log, so reconnection does not depend on an in-memory broadcast buffer. Tentative Inference Progress is stored apart from that journal with its own per-Run sequence and a 15-minute retention; the Run inference stream replays it the same way, and only accepted responses become durable Run state ([protocol](protocol.md#inference-progress)).
 
 The marketplace is a self-hosted, versioned manifest repository exposed by the node API. Installation validates metadata and dependencies, verifies the digest and atomically registers the entity with local configuration. Payments, rankings, WASM sandboxing and automatic model routing remain outside this version. Kubernetes orchestration, automatic agent generation, complex RBAC/ABAC, distributed transactions, semantic memory/vector DB and full A2A compatibility are required for v0.1.0. Several protocol and runtime paths exist, but their integrated release acceptance is incomplete. The [generation backend](generation.md) connects revisioned policies and durable quota reservations to atomic registration, scoped worker execution and lifecycle reconciliation.
+
+### Memory contracts
+
+Three contracts are separate ownership areas, each with its owning Issue. They share
+mechanisms: Ordered retrieval reuse from #172 serves contracts (a) and (b), and the
+mutation and recovery rules serve contracts (b) and (c). A change to a shared
+mechanism needs regression and acceptance work in every contract that uses it.
+
+- **(a) Run-context continuity and compaction.** Owned by #113 and #116. It covers how
+  a Run's context survives restart and is reduced when it grows, through the Context
+  Journal and Context Projection. Per-Run retrieval reuse for Ordered Runs is part of
+  #172 (closed) and PR #186 (merged). This contract does not store memory.
+- **(b) Persistent source ingestion and semantic retrieval.** Owned by #110, with
+  retrieval reuse from #172 and PR #186. It covers Source ingestion, the semantic
+  index on PostgreSQL with pgvector and PGroonga, and two retrieval paths that keep
+  provenance, scope, lifecycle and authorization. Workspace Source retrieval searches
+  the pgvector index (FR-MEM-001). Native memory recall is separate and ranks the
+  authorized units of a Bank with four rankings (semantic, keyword, graph and
+  temporal). A reranker is a required policy role: either a registered model or the
+  explicit `Rrf` passthrough. A provider failure is an error, never a fallback to `Rrf`.
+- **(c) Extraction, review and consolidation of reusable knowledge.** Owned by #118,
+  with autonomous admission in #141 (open) and the reviewed native memory path in PR #130.
+  It covers candidates from completed Runs, provenance-bound review, and promotion to
+  canonical memory units.
+
+The mutation rules and managed recovery of memory units (#125, PR #130) apply to
+the units in contracts (b) and (c). Their status for each requirement, and the
+evidence behind it, is in the [traceability matrix](memory-traceability.md).
+
+### Registry boundary
+
+A Registry descriptor (#110) is discoverable metadata for a capability, not its
+content. For a native memory provider, the descriptor configuration holds only the
+engine and policy. Supported operations, exact-version pinning, disclosure and
+Bindings are separate Registry and admission controls (see
+[Native Memory providers](operations/registry-capabilities.md#native-memory-providers)).
+Private memory bodies and credentials are not part of a descriptor. Memory bodies
+stay in the authorized provider storage of the Home, and credentials stay in the
+Provider Credential Store. Catalog metadata never exposes either.
 
 ## Baseline implementation and verification sequence
 

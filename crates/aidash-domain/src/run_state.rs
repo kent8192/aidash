@@ -9,9 +9,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+mod capability;
 mod row;
 #[cfg(test)]
 mod tests;
+pub use capability::{LeaseWait, PersistedCapability, StateRequirements};
 pub use row::RawRun;
 pub use row::{RunInspection, RunMetadata};
 
@@ -358,6 +360,9 @@ struct PendingState {
 	#[serde(deserialize_with = "super::required_json")]
 	data: Value,
 	recovery: RecoveryState,
+	/// Absent unless the state needs capabilities, so legacy envelopes are unchanged.
+	#[serde(default, skip_serializing_if = "StateRequirements::is_empty")]
+	requires: StateRequirements,
 }
 pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
 	state.validate()?;
@@ -374,11 +379,35 @@ pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
 		state_version: StateVersion::default(),
 		data,
 		recovery: recovery.clone(),
+		requires: StateRequirements::of(state),
 	})?)
 }
 pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryState)> {
-	let pending: PendingState = serde_json::from_value(pending)
-		.map_err(|_| Error::Invalid("invalid pending envelope or state version".into()))?;
+	// A newer writer may bump the version without declaring a capability; its state
+	// is intact, so this is a capability gap rather than damage to the Run.
+	if let Some(version) = pending
+		.get("state_version")
+		.and_then(Value::as_u64)
+		.filter(|version| *version > u64::from(StateVersion::default().0))
+	{
+		return Err(Error::UnsupportedState(format!(
+			"run state version {version}"
+		)));
+	}
+	let pending: PendingState = serde_json::from_value(pending).map_err(|error| {
+		if capability::is_unknown_shape(&error) {
+			Error::UnsupportedState(error.to_string())
+		} else {
+			Error::Invalid("invalid pending envelope or state version".into())
+		}
+	})?;
+	let unmet = pending.requires.unmet(PersistedCapability::supported());
+	if !unmet.is_empty() {
+		return Err(Error::UnsupportedState(format!(
+			"needs capabilities {}",
+			unmet.join(", ")
+		)));
+	}
 	let data = pending.data;
 	let state = (|| -> std::result::Result<RunState, serde_json::Error> {
 		Ok(match phase {
@@ -391,8 +420,25 @@ pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryStat
 			RunPhase::Cancelled => RunState::Cancelled(serde_json::from_value(data)?),
 		})
 	})()
-	.map_err(|_| Error::Invalid("invalid phase payload".into()))?;
+	.map_err(|error| {
+		// A field or variant this build lacks was written by a newer build; that is
+		// a capability gap, not damage to the Run.
+		if capability::is_unknown_shape(&error) {
+			Error::UnsupportedState(error.to_string())
+		} else {
+			Error::Invalid("invalid phase payload".into())
+		}
+	})?;
 	state.validate()?;
+	// A stored requirement may exceed what this build derives (it only keeps older
+	// workers away), but one that falls short would let them claim unreadable state.
+	// Records written before the requirement existed are not accepted: Aidash has
+	// no deployment yet, so there is no persisted state to carry forward.
+	if !StateRequirements::of(&state).covered_by(&pending.requires) {
+		return Err(Error::Invalid(
+			"stored capability requirement does not cover the state".into(),
+		));
+	}
 	Ok((state, pending.recovery))
 }
 impl Run {

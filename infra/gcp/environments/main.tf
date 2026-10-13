@@ -2,21 +2,27 @@ module "environment" {
   source   = "../modules/environment"
   for_each = var.environments
 
-  gcip_tenants         = var.gcip_tenants
-  gcip_idp_secrets     = var.gcip_idp_secrets
-  project_id           = var.project_id
-  byok_project_id      = var.byok_project_id
-  broker               = try(module.credential_broker[each.key].worker_configuration, null)
-  environment_id       = each.key
-  environment          = each.value
-  hostname             = "${each.value.kind == "pr" ? "preview" : each.value.kind}.${var.domain}"
-  node_service_account = google_service_account.nodes.email
+  gcip_tenants     = var.gcip_tenants
+  gcip_idp_secrets = var.gcip_idp_secrets
+  project_id       = var.project_id
+  deployment_tier  = var.deployment_tier
+  byok_project_id  = var.byok_project_id
+  broker           = try(module.credential_broker[each.key].worker_configuration, null)
+  environment_id   = each.key
+  environment      = each.value
+  hostname = each.value.kind == "production" ? var.production_hostname : (
+    contains(["develop", "pr"], each.value.kind) ? (
+      each.value.legacy_hostname ? "${each.value.kind == "pr" ? "preview" : "develop"}.${var.domain}" : "${coalesce(each.value.hostname_token, "invalid")}.preview.${var.domain}"
+    ) : "test.${var.domain}"
+  )
+  node_service_account = local.node_service_account_email
   // Cluster attributes order node pools and Workload Identity grants after the
   // cluster and its identity pool exist.
   cluster = {
-    name          = google_container_cluster.aidash.name
-    location      = google_container_cluster.aidash.location
-    workload_pool = google_container_cluster.aidash.workload_identity_config[0].workload_pool
+    name           = google_container_cluster.aidash.name
+    location       = google_container_cluster.aidash.location
+    workload_pool  = google_container_cluster.aidash.workload_identity_config[0].workload_pool
+    node_locations = [local.zone]
   }
 }
 

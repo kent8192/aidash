@@ -12,6 +12,12 @@ tolerations:
       effect: NoExecute,
       tolerationSeconds: 30,
     }
+# Denies 169.254.169.254 (the GKE metadata server) to every Pod this chart runs.
+# None of them holds a Google identity; only the application's server and worker
+# do, and they live in deploy/helm/aidash. Overlaps harmlessly with that chart's
+# policy when both are installed in one namespace.
+metadataServerEgress:
+  enabled: true
 storage:
   # Cluster-wide Retain/WaitForFirstConsumer class ensured by the lifecycle controller.
   className: aidash-retain
@@ -44,6 +50,10 @@ edge:
   tlsSize: 2Gi
   # Preview only: the controller-bound claim of the shared static TLS PV.
   existingTlsClaim: ""
+  # Random preview hosts: trusted controller installs a kubernetes.io/tls Secret
+  # containing only the *.preview.aidash.run wildcard, mounted only by Caddy.
+  # This disables per-host ACME and replaces the persisted TLS claim.
+  tlsSecret: ""
   loadBalancer: true
   # GCIP project whose Firebase sign-in helper (/__/auth/*, /__/firebase/init.json)
   # Caddy proxies from the public origin, ahead of admission; empty proxies none.

@@ -12,9 +12,12 @@ use crate::{
 use aidash_domain::{
 	TaskStatus,
 	configuration::validate_node_id,
-	federation::execution::{
-		Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
-		home::PreparationAuthority,
+	federation::{
+		execution::{
+			Description, Inspection, PrepareInput, Prepared, admission::InspectInput,
+			home::PreparationAuthority,
+		},
+		protocol::compatible,
 	},
 	policy::SubjectKind,
 	qualified_agent,
@@ -325,7 +328,7 @@ pub async fn require_peer<S: SourcePeerScope + ?Sized>(
 	if scope
 		.peer(node)
 		.await?
-		.is_none_or(|peer| peer.protocol_version != protocol)
+		.is_none_or(|peer| !compatible(protocol, &peer.protocol_version))
 	{
 		return Err(Error::Forbidden);
 	}

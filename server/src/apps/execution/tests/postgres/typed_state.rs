@@ -88,18 +88,8 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	for (phase, pending, context) in [
 		(RunPhase::Ready, json!({}), common::context(json!({}))),
 		(
-			RunPhase::Ready,
-			json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
-			common::context(json!({})),
-		),
-		(
 			RunPhase::Waiting,
 			json!({"state_version":1,"data":{"reason":"timer","wake_at":"not-a-timestamp","resume":{"phase":"READY","data":{}}},"recovery":{"retry":null,"lease_recovered":false}}),
-			common::context(json!({})),
-		),
-		(
-			RunPhase::Waiting,
-			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null,"lease_recovered":false}}),
 			common::context(json!({})),
 		),
 		(
@@ -118,6 +108,23 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		let run = create(&store, &agent, workspace.id).await;
 		damage(&store, run.id, phase, pending, context).await;
 		damaged.push(run);
+	}
+	// State a newer build wrote (a later state version, a wait reason this build lacks)
+	// is intact: it waits for a capable worker instead of being repaired into failure.
+	let mut newer = vec![];
+	for (phase, pending) in [
+		(
+			RunPhase::Ready,
+			json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+		),
+		(
+			RunPhase::Waiting,
+			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null,"lease_recovered":false}}),
+		),
+	] {
+		let run = create(&store, &agent, workspace.id).await;
+		damage(&store, run.id, phase, pending, common::context(json!({}))).await;
+		newer.push((run, phase));
 	}
 	// An independent unsafe-effect journal is retained even when the Run state
 	// cannot say which effect completed. No new effect may be inferred/replayed.
@@ -169,6 +176,14 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			TaskStatus::Failed
 		);
 		assert!(!inspected.error.as_ref().unwrap().contains("sensitive"));
+	}
+	for (run, phase) in newer {
+		let inspected = store.inspect_run(run.id).await.unwrap();
+		assert_eq!(inspected.phase, phase, "{inspected:?}");
+		assert_ne!(
+			store.task(run.task_id).await.unwrap().status,
+			TaskStatus::Failed
+		);
 	}
 	let retained: i64 = sqlx::query_scalar(
 		&Query::select()

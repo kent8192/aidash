@@ -366,9 +366,11 @@ To measure both policies on the same tools against a running server, see the
 
 ## Home protocol and Human continuations
 
-Peer execution requires protocol `0.2`; the `/v0.1/` URL namespace remains a path
-name and does not negotiate an old contract. Both Nodes verify the exact protocol
-header and Provider contracts. Remote mandatory workspace and Human operations
+Peer execution requires protocol `0.2` or later; the `/v0.1/` URL namespace remains
+a path name and does not negotiate an old contract. Both Nodes verify that the
+protocol header is a version they accept, and the Provider contracts. Protocol
+`0.3` additionally lets a remote Ordered Run see changes to the Home's semantic
+corpus (see [context projection](../features/context-projection.md)). Remote mandatory workspace and Human operations
 use Home authority under the exact task, grant, admission and Run. Unsupported
 remote defaults have persisted placement exclusions; explicit incompatible
 Bindings fail admission.
@@ -434,7 +436,7 @@ current permissions are rechecked at every test step.
    uncertain effects with the existing software before replacing it.
 2. Preserve historical definitions, grants, receipts, execution journals, private
    references and working objects. Apply the additive Home Human journal migration.
-3. Deploy the Binding contract and peer protocol `0.2` across the fleet. Verify
+3. Deploy the Binding contract and peer protocol `0.2` or later across the fleet. Verify
    seeded system definitions and the deployment's admitted isolation profile.
 4. Register fresh descriptors, explicit context definitions and Binding-only
    Agent versions. Prepare Host groups; review and approve their exact pending
@@ -459,3 +461,5 @@ production isolation profile.
 ## Native Memory providers
 
 A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native workspace `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.
+
+A `memory` descriptor's configuration is the `ProviderConfig` in `crates/aidash-domain/src/memory.rs`: the engine and its policy only. It rejects unknown fields, so do not add operation, pinning, disclosure or binding controls to it. Those are separate Registry and admission controls: the memory operations are their own builtin Tool descriptors, the admitted Binding snapshot pins exact versions, authorization governs disclosure, and the Agent's Binding list selects the provider. Private memory bodies and credentials are not part of a descriptor: they stay in authorized provider storage, and catalog metadata never exposes them (see [Registry boundary](../architecture.md#registry-boundary)). The memory contracts that these providers serve are described in [architecture](../architecture.md#memory-contracts).

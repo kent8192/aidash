@@ -39,6 +39,10 @@ pub struct MappingView {
 	pub(crate) id: Uuid,
 	pub(crate) tenant: String,
 	pub(crate) subject: String,
+	pub(crate) personal: bool,
+	/// False when the mapping's non-exportable credential is revoked or expired,
+	/// so selecting it would fail authentication.
+	pub(crate) credential_active: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -46,6 +50,9 @@ pub(crate) struct SessionView {
 	pub(crate) id: Uuid,
 	pub(crate) operator: bool,
 	pub(crate) mappings: Vec<MappingView>,
+	/// True for a direct Google identity, which may request shared Tenant access
+	/// whether or not its personal Mapping is still enabled.
+	pub(crate) personal_account: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
