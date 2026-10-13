@@ -951,6 +951,7 @@ impl<'a> Executor<'a> {
 				}
 				home.claim(&task, &entry).await?;
 				home.transition(aidash_domain::TaskStatus::Running).await?;
+				self.record_start_content(run, &agent).await?;
 				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
 			}
@@ -1974,6 +1975,15 @@ impl<'a> Executor<'a> {
 								}
 							}
 						}
+						// The Completion Gate: current Verification Evidence for the
+						// exact mounted content, or no applicable Check (#112).
+						let basis = match self
+							.completion_gate(run, token, &agent, home.as_ref(), guard)
+							.await?
+						{
+							completion::Gate::Proceed(basis) => basis,
+							completion::Gate::Saved => return Ok(()),
+						};
 						let artifact = ArtifactInput {
 							kind: "text".into(),
 							name: result_artifact_name(&home.task().await?.title),
@@ -2010,6 +2020,9 @@ impl<'a> Executor<'a> {
 								return Ok(());
 							}
 							return Err(error);
+						}
+						if agent.completion.is_some() {
+							run.context.completion.basis = Some(basis);
 						}
 						run.state = RunState::Completed(TerminalState {});
 
@@ -2375,7 +2388,16 @@ impl<'a> Executor<'a> {
 			.await?,
 			RunState::Waiting(waiting) => {
 				let mut waiting = *waiting;
-				if let Some(id) = waiting.request_id() {
+				// A newer input ends a Completion Review without an answer: the
+				// candidate under review is stale.
+				let superseded = match waiting.request_id() {
+					Some(id) => completion::review_superseded(store, run, id).await?,
+					None => false,
+				};
+				if superseded {
+					run.context.completion.review = None;
+				}
+				if let Some(id) = waiting.request_id().filter(|_| !superseded) {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
@@ -2426,6 +2448,7 @@ impl<'a> Executor<'a> {
 						}
 						_ => {}
 					}
+					completion::answer_review(run, id, Some(&response));
 					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
@@ -2892,6 +2915,7 @@ fn summary_dependencies(
 	dependencies
 }
 
+mod completion;
 mod progress;
 #[cfg(test)]
 mod tests;
