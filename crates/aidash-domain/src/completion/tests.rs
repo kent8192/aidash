@@ -114,11 +114,11 @@ fn content_digest_covers_every_scope_and_ignores_order() {
 		content_digest(&[b.clone(), a.clone()])
 	);
 	assert_ne!(
-		content_digest(&[a.clone()]),
+		content_digest(std::slice::from_ref(&a)),
 		content_digest(&[file(FileScope::Working, "src/lib.rs", "ab")])
 	);
 	assert_ne!(
-		content_digest(&[a.clone()]),
+		content_digest(std::slice::from_ref(&a)),
 		content_digest(&[file(FileScope::Received, "src/lib.rs", "aa")])
 	);
 	assert_ne!(content_digest(&[a, b]), empty_content());
