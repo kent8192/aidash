@@ -107,6 +107,17 @@ fn host_filters_and_bounds_untrusted_provider_candidates() {
 }
 
 #[rstest]
+fn an_oversized_page_age_is_reported_as_truncated(mut candidate: ProviderResults) {
+	candidate.candidates[0].page_age = Some("d".repeat(200));
+	let page = SearchQuery::parse(&json!({"query":"example"}), None)
+		.unwrap()
+		.normalize(candidate);
+	let source = &page.sources[0];
+	assert_eq!(source.page_age.as_deref().map(str::len), Some(128));
+	assert!(source.truncated && page.truncated);
+}
+
+#[rstest]
 fn normalization_keeps_at_most_the_requested_count() {
 	let query = SearchQuery::parse(&json!({"query":"example","count":1}), None).unwrap();
 	let candidates = (0..3)

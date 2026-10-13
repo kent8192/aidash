@@ -195,17 +195,20 @@ impl SearchQuery {
 				candidate.snippet.as_deref().unwrap_or(""),
 				MAX_SNIPPET_BYTES,
 			);
-			page.truncated |= title_cut || snippet_cut;
+			let (page_age, page_age_cut) =
+				candidate.page_age.as_deref().map_or((None, false), |age| {
+					let (age, cut) = bounded(age, MAX_PAGE_AGE_BYTES);
+					(Some(age.to_owned()), cut)
+				});
+			let truncated = title_cut || snippet_cut || page_age_cut;
+			page.truncated |= truncated;
 			page.sources.push(SourceCandidate {
 				url: candidate.url.clone(),
 				title: title.to_owned(),
 				snippet: snippet.to_owned(),
 				rank: u32::try_from(rank + 1).unwrap_or(u32::MAX),
-				page_age: candidate
-					.page_age
-					.as_deref()
-					.map(|age| bounded(age, MAX_PAGE_AGE_BYTES).0.to_owned()),
-				truncated: title_cut || snippet_cut,
+				page_age,
+				truncated,
 			});
 		}
 		page
