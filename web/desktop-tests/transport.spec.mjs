@@ -205,39 +205,48 @@ test("SSE reconnect sends Last-Event-ID and a new authority starts without the o
   expect(result).toEqual(["-1", "41", "-1"]);
 });
 
-test("SSE closes a delimiter-free frame before retaining unbounded text", async ({
+test("SSE skips an oversized frame without retaining its text and resumes after its id", async ({
   page,
 }) => {
   const result = await page.evaluate(async () => {
     const { subscribe } = await import("/src/event-stream.ts");
     const signal = new AbortController();
+    const calls = [];
     const statuses = [];
-    let cancelled = false;
-    window.fetch = async () =>
-      new Response(
+    window.fetch = async (_url, options) => {
+      calls.push(options.headers.get("Last-Event-ID"));
+      return new Response(
         new ReadableStream({
           start(controller) {
-            controller.enqueue(new TextEncoder().encode("x".repeat(65 * 1024)));
-          },
-          cancel() {
-            cancelled = true;
+            const encoder = new TextEncoder();
+            // The first connection streams a 300,000-character frame in
+            // delimiter-free chunks, then closes; the reconnect must resume
+            // after that frame's id instead of replaying it.
+            if (calls.length === 1) {
+              controller.enqueue(encoder.encode("id: 41\ndata: "));
+              for (let chunk = 0; chunk < 5; chunk++)
+                controller.enqueue(encoder.encode("x".repeat(60_000)));
+              controller.enqueue(encoder.encode("\n\n"));
+            }
+            controller.close();
           },
         }),
         { headers: { "content-type": "text/event-stream" } },
       );
+    };
     await subscribe(
       signal.signal,
       () => {},
       (status) => {
         statuses.push(status);
-        if (status === "reconnecting") signal.abort();
+        if (calls.length === 2 && status === "reconnecting") signal.abort();
       },
     );
-    return { statuses, cancelled };
+    return { calls, statuses };
   });
   expect(result).toEqual({
-    statuses: ["live", "reconnecting"],
-    cancelled: true,
+    calls: ["-1", "41"],
+    statuses: ["live", "reconnecting", "live", "reconnecting"],
   });
 });
 
