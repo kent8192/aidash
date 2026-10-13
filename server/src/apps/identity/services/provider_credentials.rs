@@ -11,7 +11,7 @@ use aidash_application::{
 };
 use aidash_domain::{
 	policy::{Evaluation, Resource},
-	provider_credentials::{Binding, Provider},
+	provider_credentials::{Binding, Provider, State},
 };
 use reinhardt::injectable;
 use secrecy::SecretString;
@@ -237,8 +237,9 @@ impl Management {
 				key_settings_url,
 			})
 	}
-	/// A first connection serves the Tenant's Runs right away when no Provider
-	/// Credential is bound yet and the actor may update the binding.
+	/// A connection serves the Tenant's Runs right away when the provider has no
+	/// usable binding (none, or one to a revoked Provider Credential) and the
+	/// actor may update the binding. An active binding is never replaced.
 	pub(crate) async fn bind_if_unbound(
 		&self,
 		actor: Actor,
@@ -249,15 +250,22 @@ impl Management {
 		let current = async {
 			let service = self.service()?;
 			let mut scope = service.repository.begin(&tenant).await?;
-			let bindings = scope.bindings().await?;
+			let binding = scope
+				.bindings()
+				.await?
+				.into_iter()
+				.find(|b| b.provider == provider);
+			let usable = match binding.as_ref().and_then(|b| b.provider_credential_id) {
+				Some(bound) => scope.get(bound).await?.state == State::Active,
+				None => false,
+			};
 			scope.commit().await?;
-			Ok::<_, Error>(bindings.into_iter().find(|b| b.provider == provider))
+			Ok::<_, Error>((binding, usable))
 		}
 		.await;
 		let expected_revision = match current {
-			Ok(Some(binding)) if binding.provider_credential_id.is_some() => return,
-			Ok(binding) => binding.map_or(0, |b| b.revision),
-			Err(_) => return,
+			Ok((_, true)) | Err(_) => return,
+			Ok((binding, false)) => binding.map_or(0, |b| b.revision),
 		};
 		let result = self
 			.bind(

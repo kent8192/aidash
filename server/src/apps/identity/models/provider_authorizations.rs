@@ -53,6 +53,10 @@ const MAX_PENDING: i64 = 10_000;
 const MAX_PENDING_PER_BROWSER: i64 = 8;
 
 impl ProviderAuthorization {
+	/// Stores this pending authorization. It supersedes any earlier pending
+	/// authorization of the same browser, dashboard session and provider, so a
+	/// declined consent, which arrives without `state`, always maps to exactly
+	/// one row; the superseded flow's `state` is refused before any exchange.
 	pub(crate) async fn reserve(&self, db: DatabaseConnection) -> Result<()> {
 		db.atomic(async |tx| {
 			let (sql, values) = Query::select()
@@ -65,6 +69,12 @@ impl ProviderAuthorization {
 			let now = database_time(tx).await?;
 			Self::objects()
 				.filter(Self::field_expires_at().lte(now))
+				.delete_with_conn(tx)
+				.await?;
+			Self::objects()
+				.filter(Self::field_browser_hash().eq(self.browser_hash.clone()))
+				.filter(Self::field_provider().eq(self.provider.clone()))
+				.filter(Self::field_session_id().eq(self.session_id))
 				.delete_with_conn(tx)
 				.await?;
 			let total = Self::objects().all().count_with_db(tx).await?;
@@ -111,10 +121,10 @@ impl ProviderAuthorization {
 		})
 	}
 
-	/// Deletes and returns the newest unexpired pending row of one browser,
-	/// provider and dashboard session. Only a declined consent uses it, because
-	/// OpenRouter omits `state` from that redirect; the row never reaches an
-	/// exchange.
+	/// Deletes and returns the one unexpired pending row of a browser,
+	/// provider and dashboard session; [`Self::reserve`] keeps at most one.
+	/// Only a declined consent uses it, because OpenRouter omits `state` from
+	/// that redirect; the row never reaches an exchange.
 	pub(crate) async fn consume_declined(
 		db: DatabaseConnection,
 		browser_hash: String,
@@ -123,19 +133,20 @@ impl ProviderAuthorization {
 	) -> Result<Self> {
 		db.atomic(async |tx| {
 			let now = database_time(tx).await?;
-			let row = Self::objects()
+			let mut rows = Self::objects()
 				.filter(Self::field_browser_hash().eq(browser_hash))
 				.filter(Self::field_provider().eq(provider.to_owned()))
 				.filter(Self::field_session_id().eq(session_id))
 				.filter(Self::field_expires_at().gt(now))
-				.order_by(&["-expires_at", "state_hash"])
-				.limit(1)
 				.select_for_update()
 				.all_with_executor(tx)
 				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or(Error::Unauthorized)?;
+				.map_err(FrameworkError::from)?;
+			// Never guess between flows: an ambiguous denial consumes nothing.
+			let row = match (rows.pop(), rows.is_empty()) {
+				(Some(row), true) => row,
+				_ => return Err(Error::Unauthorized),
+			};
 			Self::objects()
 				.filter(Self::field_state_hash().eq(row.state_hash.clone()))
 				.delete_with_conn(tx)

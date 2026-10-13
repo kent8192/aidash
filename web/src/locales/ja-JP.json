@@ -604,6 +604,8 @@
   "providerConnectionReconnect": "再接続",
   "providerConnectionOutcome_connected": "OpenRouter に接続しました。",
   "providerConnectionOutcome_reconnected": "新しいキーで OpenRouter に再接続しました。",
+  "providerConnectionOutcome_reconnectedPrevious": "新しいキーで OpenRouter に再接続しました。以前のキーは、OpenRouter で削除するまで OpenRouter 上で有効なままです。",
+  "providerConnectionKeyWarnings": "OpenRouter から接続したキーについて警告がありました（利用上限が未設定など）。「OpenRouter でキーを管理」から確認してください。",
   "providerConnectionOutcome_denied": "OpenRouter での承認が拒否されました。何も保存されていません。",
   "providerConnectionOutcome_failed": "OpenRouter での承認に失敗しました。何も保存されていません。もう一度お試しください。",
   "providerConnectionOutcome_failedIssued": "OpenRouter はキーを発行しましたが、Aidash で保存できませんでした。OpenRouter で削除するまで、キーは OpenRouter 上で有効なままです。削除してから、もう一度お試しください。",

@@ -49,20 +49,27 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
    code without `state`, or a replayed, cross-browser, cross-session or
    expired `state`, returns 401 before any provider call. A declined consent
    arrives without `state` (OpenRouter omits it); the callback then consumes
-   the newest pending row of the same browser cookie, dashboard session and
-   provider and reports `denied`.
+   the pending row of the same browser cookie, dashboard session and provider
+   and reports `denied`. Each start supersedes any earlier pending row of
+   that browser, session and provider, so a denial always maps to one flow,
+   and a superseded flow's `state` returns 401 before any exchange.
 3. The server exchanges the code with `POST https://openrouter.ai/api/v1/auth/keys`
    (`code`, `code_verifier`, `code_challenge_method: S256`) under a live
    `provider_credential.create`/`.rotate` decision, validates the key with
    `GET /api/v1/key`, and writes it through the Store write path. A rejected
    code or verifier (OpenRouter 400/403) stores nothing. Reconnect adds a new
-   version to the same Provider Credential (rotation). A first connection is
-   bound to OpenRouter when the Tenant has no binding and the actor may update it.
+   version to the same Provider Credential (rotation). A connection is bound to
+   OpenRouter when the Tenant has no usable binding (none, or one to a revoked
+   Provider Credential) and the actor may update it.
 4. The callback redirects (303) to the requested same-origin `return_to`
    with `provider_authorization=connected|reconnected|denied|failed`. When
    the exchange succeeded but storing the key failed, the redirect also
-   carries `provider_key_settings_url`, the issued key's settings page, and
-   the dashboard asks the user to delete that key at OpenRouter.
+   carries `provider_key_settings_url`, the issued key's settings page; after
+   a reconnect it carries the settings page of the key that was replaced. The
+   dashboard asks the user to delete that key at OpenRouter. When validation
+   reported a warning about the connected key, such as a missing spending
+   limit, the redirect carries `provider_key_warnings=1` and the dashboard
+   asks the user to review the key at OpenRouter.
 
 The callback must be reachable from the user's browser only; the
 `public_origin` of the dashboard session settings defines it. Key Material is

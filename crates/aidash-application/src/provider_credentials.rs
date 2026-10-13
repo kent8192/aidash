@@ -106,6 +106,25 @@ impl From<ProviderCredential> for Metadata {
 pub struct Validated {
 	pub provider_credential: Metadata,
 	pub warnings: Vec<String>,
+	/// After a rotation, the owner-only settings page of the key it replaced.
+	/// Rotation disables only Aidash's copy; a provider-issued key stays live
+	/// until the user deletes it there, and this is the last place its link
+	/// appears once the new digest is recorded.
+	pub previous_key_settings_url: Option<String>,
+}
+/// The rotation warning about Aidash's own Store cleanup; the reconciler
+/// retries it, and it says nothing about the provider's key.
+const ROTATION_CLEANUP_PENDING: &str =
+	"Provider Credential rotation committed; previous version cleanup is pending";
+impl Validated {
+	/// Warnings the provider's validation reported about the key itself, such
+	/// as a missing spending limit.
+	pub fn key_warnings(&self) -> impl Iterator<Item = &str> {
+		self.warnings
+			.iter()
+			.map(String::as_str)
+			.filter(|warning| *warning != ROTATION_CLEANUP_PENDING)
+	}
 }
 /// A Provider Authorization that ended without storing a key. Once the
 /// exchange succeeds the provider has already issued a live key, so a later
@@ -171,7 +190,8 @@ impl Service {
 	/// Completes one Provider Authorization: exchanges the code for Key Material
 	/// and writes it as a new Provider Credential or, on reconnect, as a new
 	/// version. A rejected code or verifier stores nothing; a failure after the
-	/// exchange reports the issued key's settings page.
+	/// exchange reports the issued key's settings page, and a reconnect reports
+	/// the settings page of the key it replaced.
 	pub async fn authorize(
 		&self,
 		tenant: &str,
@@ -309,6 +329,7 @@ impl Service {
 		Ok(Validated {
 			provider_credential: row.into(),
 			warnings: validation.warnings,
+			previous_key_settings_url: None,
 		})
 	}
 	async fn write_rotation(
@@ -331,6 +352,11 @@ impl Service {
 			.add_version(tenant, &row.secret_resource, &key)
 			.await?;
 		let (fingerprint, last4) = self.fingerprint(tenant, &key);
+		let previous_key_settings_url = row
+			.key_digest
+			.as_deref()
+			.filter(|previous| key_digest.as_deref() != Some(*previous))
+			.map(|previous| row.provider.key_settings_url(previous));
 		row.pinned_version = Some(version.clone());
 		row.fingerprint = fingerprint;
 		row.last4 = last4;
@@ -350,14 +376,12 @@ impl Service {
 		// an error that the caller cannot safely retry at its original revision.
 		let mut warnings = validation.warnings;
 		if self.store.disable(&old).await.is_err() {
-			warnings.push(
-				"Provider Credential rotation committed; previous version cleanup is pending"
-					.into(),
-			);
+			warnings.push(ROTATION_CLEANUP_PENDING.into());
 		}
 		Ok(Validated {
 			provider_credential: row.into(),
 			warnings,
+			previous_key_settings_url,
 		})
 	}
 	pub async fn revoke(

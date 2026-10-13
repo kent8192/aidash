@@ -28,7 +28,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
 	collections::BTreeMap,
-	sync::{Arc, Mutex},
+	sync::{
+		Arc, Mutex,
+		atomic::{AtomicBool, Ordering},
+	},
 };
 use uuid::Uuid;
 
@@ -124,18 +127,31 @@ impl Store for MemoryStore {
 		Ok(())
 	}
 }
-struct Validator;
+/// Reports a missing spending limit, as OpenRouter's validation does, while
+/// `uncapped` is set.
+#[derive(Clone, Default)]
+struct Validator {
+	uncapped: Arc<AtomicBool>,
+}
 #[async_trait]
 impl KeyValidator for Validator {
 	async fn validate(&self, _: Provider, _: &SecretString) -> Result<Validation> {
-		Ok(Validation { warnings: vec![] })
+		Ok(Validation {
+			warnings: if self.uncapped.load(Ordering::SeqCst) {
+				vec!["No spending limit is configured for this Provider Credential".into()]
+			} else {
+				vec![]
+			},
+		})
 	}
 }
 
-/// The fake provider and Store the test observes; shared with the runtime.
+/// The fake provider, validator and Store the test observes; shared with the
+/// runtime.
 #[derive(Clone, Default)]
 struct Parts {
 	provider: FakeOpenRouter,
+	validator: Validator,
 	store: Arc<MemoryStore>,
 }
 #[rstest::fixture]
@@ -240,7 +256,7 @@ fn authorization_runtime(
 				node: f.store.node_id.clone(),
 			}),
 			store: parts.store.clone(),
-			validator: Arc::new(Validator),
+			validator: Arc::new(parts.validator.clone()),
 			exchange: Arc::new(parts.provider.clone()),
 			fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 			max_per_tenant: 5,
@@ -267,6 +283,7 @@ struct Fixture {
 	f: Federation,
 	app: common::TestApplication,
 	provider: FakeOpenRouter,
+	validator: Validator,
 	store: Arc<MemoryStore>,
 	url: String,
 	schema: String,
@@ -278,6 +295,7 @@ impl Fixture {
 			f,
 			app: application.application,
 			provider: parts.provider,
+			validator: parts.validator,
 			store: parts.store,
 			url,
 			schema,
@@ -462,21 +480,12 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 		vec![key.clone()]
 	);
 	// A first connection binds the Tenant's unbound provider.
-	let binding = send(
-		&fixture.app,
-		"GET",
-		"/api/tenants/alpha/provider-credential-bindings/openrouter",
-		&[(
-			"authorization",
-			&format!("Bearer {}", fixture.f.config.api_token),
-		)],
-		Value::Null,
-	)
-	.await;
-	let binding: Value = serde_json::from_slice(binding.body()).unwrap();
-	assert_eq!(binding["provider_credential_id"], row["id"]);
+	assert_eq!(bound_credential(&fixture).await, row["id"]);
 
-	// Reconnect rotates the same record to a newly issued key.
+	// Reconnect rotates the same record to a newly issued key. The replaced key
+	// stays live at OpenRouter, so the redirect carries its settings page, and
+	// OpenRouter's missing-spending-limit warning reaches the dashboard.
+	fixture.validator.uncapped.store(true, Ordering::SeqCst);
 	let started = start(
 		&fixture,
 		"browser-a",
@@ -494,8 +503,11 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 	.await;
 	assert_eq!(
 		location(&response),
-		"/settings?provider_authorization=reconnected"
+		format!(
+			"/settings?provider_authorization=reconnected&provider_key_settings_url=https%3A%2F%2Fopenrouter%2Eai%2Fkeys%2F{digest}&provider_key_warnings=1"
+		)
 	);
+	fixture.validator.uncapped.store(false, Ordering::SeqCst);
 	let rows = credentials(&fixture).await;
 	assert_eq!(rows.len(), 1);
 	assert!(rows[0]["rotated_at"].is_string());
@@ -523,7 +535,60 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 		.collect();
 	assert!(dump.contains(&rotated_digest) && !dump.contains(&digest));
 	assert!(!dump.contains(&key) && !dump.contains(&rotated_key));
+
+	// A binding to a revoked Provider Credential serves no Run, so the next
+	// connection replaces it instead of leaving the new key unbound.
+	let (status, revoked) = common::request(
+		&fixture.app,
+		&fixture.f.config.api_token,
+		"POST",
+		&format!(
+			"/api/tenants/alpha/provider-credentials/{}/revoke",
+			rows[0]["id"].as_str().unwrap()
+		),
+		json!({"expected_revision": rows[0]["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_eq!(bound_credential(&fixture).await, rows[0]["id"]);
+	let started = start(&fixture, "browser-a", json!({}), Some(&started.browser)).await;
+	let (code, _) = fixture.provider.consent(&started.challenge, false);
+	let response = callback(
+		&fixture,
+		"browser-a",
+		&started.browser,
+		&format!("state={}&code={code}", started.state),
+	)
+	.await;
+	assert_eq!(
+		location(&response),
+		"/settings?view=providerCredentials&provider_authorization=connected"
+	);
+	let connected = credentials(&fixture)
+		.await
+		.into_iter()
+		.find(|row| row["state"] == "active")
+		.expect("the new connection is active");
+	assert_ne!(connected["id"], rows[0]["id"]);
+	assert_eq!(bound_credential(&fixture).await, connected["id"]);
 	common::cleanup(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+/// The Provider Credential ID the Tenant's OpenRouter binding names.
+async fn bound_credential(fixture: &Fixture) -> Value {
+	let binding = send(
+		&fixture.app,
+		"GET",
+		"/api/tenants/alpha/provider-credential-bindings/openrouter",
+		&[(
+			"authorization",
+			&format!("Bearer {}", fixture.f.config.api_token),
+		)],
+		Value::Null,
+	)
+	.await;
+	let binding: Value = serde_json::from_slice(binding.body()).unwrap();
+	binding["provider_credential_id"].clone()
 }
 
 #[rstest::rstest]
@@ -669,6 +734,34 @@ async fn replayed_cross_session_and_expired_states_and_rejected_codes_store_noth
 	assert_eq!(pending_authorizations(&fixture).await, 0);
 	let response = callback(&fixture, "browser-a", &started.browser, "").await;
 	assert_eq!(response.status(), 401);
+
+	// A second start in the same browser and session supersedes the first, so
+	// a denial never has to guess which flow it answers. The superseded `state`
+	// is refused before any exchange.
+	let older = start(&fixture, "browser-a", json!({}), Some(&started.browser)).await;
+	let newer = start(
+		&fixture,
+		"browser-a",
+		json!({"return_to": "/settings"}),
+		Some(&started.browser),
+	)
+	.await;
+	assert_eq!(pending_authorizations(&fixture).await, 1);
+	let (code, _) = fixture.provider.consent(&older.challenge, false);
+	let response = callback(
+		&fixture,
+		"browser-a",
+		&older.browser,
+		&format!("state={}&code={code}", older.state),
+	)
+	.await;
+	assert_eq!(response.status(), 401);
+	let response = callback(&fixture, "browser-a", &newer.browser, "").await;
+	assert_eq!(
+		location(&response),
+		"/settings?provider_authorization=denied"
+	);
+	assert_eq!(pending_authorizations(&fixture).await, 0);
 
 	let rows = credentials(&fixture).await;
 	assert_eq!(

@@ -33,24 +33,38 @@ type Outcome = (typeof outcomes)[number];
 const keySettingsPattern = /^https:\/\/openrouter\.ai\/keys\/[0-9a-f]{64}$/;
 
 /**
- * Reads and clears the callback's `provider_authorization` outcome and, for a
- * failure after OpenRouter issued a key, that key's settings page.
+ * Reads and clears the callback's `provider_authorization` outcome; the
+ * settings page of a key OpenRouter still holds but Aidash does not store (one
+ * issued for a failed write, or the key a reconnect replaced); and whether
+ * validation warned about the connected key.
  */
 function takeOutcome(): {
   outcome: Outcome;
   keySettingsUrl: string | null;
+  keyWarnings: boolean;
 } | null {
   const value = sessionStorage.getItem("aidash-provider-authorization");
   const link = sessionStorage.getItem(
     "aidash-provider-authorization-key-settings-url",
   );
+  const warned = sessionStorage.getItem(
+    "aidash-provider-authorization-key-warnings",
+  );
   sessionStorage.removeItem("aidash-provider-authorization");
   sessionStorage.removeItem("aidash-provider-authorization-key-settings-url");
+  sessionStorage.removeItem("aidash-provider-authorization-key-warnings");
   if (!value || !(outcomes as readonly string[]).includes(value)) return null;
+  const outcome = value as Outcome;
+  const connected = outcome === "connected" || outcome === "reconnected";
   return {
-    outcome: value as Outcome,
+    outcome,
     keySettingsUrl:
-      value === "failed" && link && keySettingsPattern.test(link) ? link : null,
+      (outcome === "failed" || outcome === "reconnected") &&
+      link &&
+      keySettingsPattern.test(link)
+        ? link
+        : null,
+    keyWarnings: connected && warned === "1",
   };
 }
 
@@ -59,6 +73,7 @@ function returnPath(): string {
   const url = new URL(window.location.href);
   url.searchParams.delete("provider_authorization");
   url.searchParams.delete("provider_key_settings_url");
+  url.searchParams.delete("provider_key_warnings");
   return url.pathname + url.search;
 }
 
@@ -191,14 +206,20 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
         <Notice
           role="status"
           tone={
-            outcome === "connected" || outcome === "reconnected"
+            (outcome === "connected" || outcome === "reconnected") &&
+            !callback?.keySettingsUrl &&
+            !callback?.keyWarnings
               ? "info"
               : "warning"
           }
         >
           {callback?.keySettingsUrl ? (
             <>
-              {t("providerConnectionOutcome_failedIssued")}{" "}
+              {t(
+                outcome === "reconnected"
+                  ? "providerConnectionOutcome_reconnectedPrevious"
+                  : "providerConnectionOutcome_failedIssued",
+              )}{" "}
               <a
                 className="underline"
                 href={callback.keySettingsUrl}
@@ -211,6 +232,7 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
           ) : (
             t(`providerConnectionOutcome_${outcome}`)
           )}
+          {callback?.keyWarnings && <> {t("providerConnectionKeyWarnings")}</>}
         </Notice>
       )}
       {cleanupLink && (

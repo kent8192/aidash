@@ -604,6 +604,8 @@
   "providerConnectionReconnect": "Reconnect",
   "providerConnectionOutcome_connected": "OpenRouter is connected.",
   "providerConnectionOutcome_reconnected": "OpenRouter was reconnected with a new key.",
+  "providerConnectionOutcome_reconnectedPrevious": "OpenRouter was reconnected with a new key. The previous key stays valid at OpenRouter until you delete it there.",
+  "providerConnectionKeyWarnings": "OpenRouter reported a warning for the connected key, such as a missing spending limit. Review the key with “Manage key at OpenRouter”.",
   "providerConnectionOutcome_denied": "OpenRouter authorization was declined. Nothing was stored.",
   "providerConnectionOutcome_failed": "OpenRouter authorization failed. Nothing was stored; try again.",
   "providerConnectionOutcome_failedIssued": "OpenRouter issued a key, but Aidash could not store it. The key stays valid at OpenRouter until you delete it there; then try again.",

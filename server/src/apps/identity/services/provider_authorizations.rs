@@ -44,9 +44,17 @@ fn callback_uri(public_origin: &str, provider: Provider) -> String {
 		provider.id()
 	)
 }
-/// Appends the outcome and, when the provider issued a key that Aidash did not
-/// store, that key's settings page so the user can delete it there.
-fn with_outcome(return_to: &str, outcome: Outcome, key_settings_url: Option<&str>) -> String {
+/// Appends the outcome and, when the provider holds a live key that Aidash no
+/// longer stores (one issued for a failed write, or the key a reconnect
+/// replaced), that key's settings page so the user can delete it there.
+/// `key_warnings` reports that the provider's validation flagged the connected
+/// key, for example because it has no spending limit.
+fn with_outcome(
+	return_to: &str,
+	outcome: Outcome,
+	key_settings_url: Option<&str>,
+	key_warnings: bool,
+) -> String {
 	let separator = if return_to.contains('?') { '&' } else { '?' };
 	let mut location = format!(
 		"{return_to}{separator}provider_authorization={}",
@@ -58,6 +66,9 @@ fn with_outcome(return_to: &str, outcome: Outcome, key_settings_url: Option<&str
 			url,
 			percent_encoding::NON_ALPHANUMERIC,
 		));
+	}
+	if key_warnings {
+		location.push_str("&provider_key_warnings=1");
 	}
 	location
 }
@@ -158,7 +169,8 @@ impl ProviderAuthorizations {
 	/// expired or cross-session `state`, fails before any provider call; a
 	/// rejected code or verifier fails at the exchange. Neither stores anything.
 	/// A declined consent, which OpenRouter returns without `state`, consumes
-	/// the browser's newest pending authorization and reports `denied`.
+	/// the only pending authorization of this browser, session and provider (a
+	/// new start supersedes earlier ones) and reports `denied`.
 	pub(crate) async fn callback(
 		&self,
 		headers: HeaderMap,
@@ -222,6 +234,7 @@ impl ProviderAuthorizations {
 			},
 		};
 		let mut key_settings_url = None;
+		let mut key_warnings = false;
 		let outcome = match query.code.as_deref() {
 			// The user declined, or the provider reported an error.
 			None => Outcome::Denied,
@@ -239,13 +252,16 @@ impl ProviderAuthorizations {
 					)
 					.await
 				{
-					Ok(_) => {
+					Ok(validated) => {
+						key_warnings = validated.key_warnings().next().is_some();
 						if let Target::Connect { id } = target {
 							self.management()
 								.bind_if_unbound(actor, pending.tenant.clone(), provider, id)
 								.await;
 							Outcome::Connected
 						} else {
+							// The replaced key stays live at the provider.
+							key_settings_url = validated.previous_key_settings_url;
 							Outcome::Reconnected
 						}
 					}
@@ -277,6 +293,7 @@ impl ProviderAuthorizations {
 			&pending.return_to,
 			outcome,
 			key_settings_url.as_deref(),
+			key_warnings,
 		));
 		oidc::no_store(&mut response);
 		Ok(response)
@@ -292,12 +309,13 @@ mod tests {
 			with_outcome(
 				"/settings?view=providerCredentials",
 				Outcome::Connected,
-				None
+				None,
+				false
 			),
 			"/settings?view=providerCredentials&provider_authorization=connected"
 		);
 		assert_eq!(
-			with_outcome("/settings", Outcome::Failed, None),
+			with_outcome("/settings", Outcome::Failed, None, false),
 			"/settings?provider_authorization=failed"
 		);
 		// A key the provider issued but Aidash did not store keeps its cleanup link.
@@ -305,9 +323,20 @@ mod tests {
 			with_outcome(
 				"/settings",
 				Outcome::Failed,
-				Some("https://openrouter.ai/keys/ab12")
+				Some("https://openrouter.ai/keys/ab12"),
+				false
 			),
 			"/settings?provider_authorization=failed&provider_key_settings_url=https%3A%2F%2Fopenrouter%2Eai%2Fkeys%2Fab12"
+		);
+		// So does the key a reconnect replaced; validation warnings are flagged.
+		assert_eq!(
+			with_outcome(
+				"/settings",
+				Outcome::Reconnected,
+				Some("https://openrouter.ai/keys/ab12"),
+				true
+			),
+			"/settings?provider_authorization=reconnected&provider_key_settings_url=https%3A%2F%2Fopenrouter%2Eai%2Fkeys%2Fab12&provider_key_warnings=1"
 		);
 		assert_eq!(
 			callback_uri("https://aidash.example", Provider::Openrouter),

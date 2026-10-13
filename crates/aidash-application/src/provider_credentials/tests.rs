@@ -625,6 +625,11 @@ async fn committed_rotation_returns_metadata_and_reconciles_failed_old_version_c
 			"Provider Credential rotation committed; previous version cleanup is pending",
 		]
 	);
+	// Only the provider's own finding concerns the key the user must review.
+	assert_eq!(
+		rotated.key_warnings().collect::<Vec<_>>(),
+		["No spending limit is configured"]
+	);
 	let serialized = serde_json::to_string(&rotated).unwrap();
 	assert!(!serialized.contains("rotation-cleanup-error-canary"));
 	assert!(!serialized.contains("replacement-key"));
@@ -1018,8 +1023,14 @@ async fn authorization_connects_and_reconnects_with_a_deep_link_digest() {
 			"actor",
 		)
 		.await
-		.unwrap()
-		.provider_credential;
+		.unwrap();
+	// The replaced key stays live at the provider; its settings page is reported
+	// once, because the row now records only the new digest.
+	assert_eq!(
+		reconnected.previous_key_settings_url,
+		connected.key_settings_url
+	);
+	let reconnected = reconnected.provider_credential;
 	assert_eq!(reconnected.id, id);
 	assert!(reconnected.rotated_at.is_some());
 	assert_ne!(reconnected.key_settings_url, connected.key_settings_url);

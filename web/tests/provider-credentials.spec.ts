@@ -439,6 +439,28 @@ test("a failure after OpenRouter issued a key links to that key", async ({
   expect(search.get("provider_authorization")).toBe(null);
   expect(search.get("provider_key_settings_url")).toBe(null);
 });
+test("a reconnect links to the replaced key and reports key warnings", async ({
+  page,
+}) => {
+  const previous = "https://openrouter.ai/keys/" + "02".repeat(32);
+  await setup(page, {
+    subject: true,
+    path:
+      "/settings?view=providerCredentials&provider_authorization=reconnected&provider_key_settings_url=" +
+      encodeURIComponent(previous) +
+      "&provider_key_warnings=1",
+  });
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: "The previous key stays valid at OpenRouter" });
+  await expect(
+    notice.getByRole("link", { name: "Manage key at OpenRouter" }),
+  ).toHaveAttribute("href", previous);
+  await expect(notice).toContainText("missing spending limit");
+  const search = new URL(page.url()).searchParams;
+  expect(search.get("provider_key_settings_url")).toBe(null);
+  expect(search.get("provider_key_warnings")).toBe(null);
+});
 test("a failure never links outside OpenRouter's key settings", async ({
   page,
 }) => {
