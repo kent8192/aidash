@@ -129,14 +129,19 @@ async fn a_notification_for_a_gated_run_backs_off_instead_of_renotifying_at_once
 }
 
 #[rstest]
+#[case::added_field(serde_json::json!({"added_later": true}), 1)]
+#[case::later_version(serde_json::json!({}), 2)]
 #[tokio::test]
 async fn state_this_build_cannot_decode_is_not_repaired_into_a_failed_run(
 	repository: Repository,
 	now: DateTime<Utc>,
+	#[case] data: serde_json::Value,
+	#[case] version: u32,
 ) {
-	// Arrange: a newer build added a field to the Ready state without declaring it.
+	// Arrange: a newer build wrote state this build cannot read without declaring it.
 	let mut row = raw(now);
-	row.pending["data"]["added_later"] = serde_json::json!(true);
+	row.pending["data"] = data;
+	row.pending["state_version"] = version.into();
 	*repository.0.run.lock().unwrap() = Some(row);
 
 	// Act
@@ -145,4 +150,37 @@ async fn state_this_build_cannot_decode_is_not_repaired_into_a_failed_run(
 	// Assert: a capability mismatch, not a corrupt Run.
 	assert!(claimed.is_none());
 	assert!(wrote_nothing(&repository));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_notification_for_undeclared_newer_state_backs_off_instead_of_renotifying_at_once(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Arrange: no `requires`, but the state has a field this build does not know.
+	let mut row = raw(now);
+	row.pending["data"]["added_later"] = serde_json::json!(true);
+	*repository.0.run.lock().unwrap() = Some(row);
+	let envelope = repository
+		.0
+		.obligation
+		.lock()
+		.unwrap()
+		.as_ref()
+		.unwrap()
+		.envelope(repository.node_id());
+
+	// Act
+	let handoff = claim(&repository, &envelope).await.unwrap();
+
+	// Assert: deferred a few seconds out, like a declared requirement; nothing written.
+	assert!(matches!(handoff, Handoff::Recorded));
+	assert!(wrote_nothing(&repository));
+	assert_eq!(
+		*repository.0.deferred.lock().unwrap(),
+		[Some(
+			now + chrono::Duration::seconds(CAPABILITY_RETRY_SECONDS)
+		)]
+	);
 }

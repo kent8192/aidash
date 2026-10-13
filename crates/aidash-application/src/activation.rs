@@ -21,6 +21,18 @@ fn unmet_capabilities(raw: &RawRun, supported: &[PersistedCapability]) -> Vec<St
 		.map(|requires| requires.unmet(supported))
 		.unwrap_or_default()
 }
+/// Why this worker cannot load the Run: the stored requirement it does not meet, or,
+/// for state a newer build wrote without declaring one, the decoding mismatch.
+fn capability_gap(raw: &RawRun, supported: &[PersistedCapability]) -> Vec<String> {
+	let unmet = unmet_capabilities(raw, supported);
+	if !unmet.is_empty() {
+		return unmet;
+	}
+	match raw.decode() {
+		Err(aidash_domain::Error::UnsupportedState(reason)) => vec![reason],
+		_ => Vec::new(),
+	}
+}
 fn skipped_for_capability(run: Uuid, unmet: &[String]) {
 	metrics::counter!("aidash_activation_capability_skips_total").increment(1);
 	tracing::debug!(run_id=%run, missing=%unmet.join(","), "run waits for a worker with the capabilities its state needs");
@@ -213,7 +225,7 @@ pub async fn claim(repository: &dyn ActivationRepository, envelope: &Envelope) -
 	}
 	let now = scope.now().await?;
 	let refreshed = scope.read_run(run.id).await?;
-	let unmet = unmet_capabilities(&refreshed, scope.capabilities());
+	let unmet = capability_gap(&refreshed, scope.capabilities());
 	if !unmet.is_empty() {
 		// Deferring to `now` would renotify this incapable worker in a tight loop.
 		skipped_for_capability(run.id, &unmet);
