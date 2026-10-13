@@ -283,6 +283,7 @@ nats_url = "${{REINHARDT_ACTIVATION_TEST_NATS}}"
 
 #[rstest]
 #[case::acceptance("acceptance")]
+#[case::evaluation("evaluation")]
 #[case::memory("remote-memory")]
 #[tokio::test]
 async fn diagnostics_are_registered_static_commands_instead_of_example_binaries(
