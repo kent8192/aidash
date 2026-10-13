@@ -1,7 +1,7 @@
 //! Run-scoped Research evidence: provider attempts with their cost attribution,
 //! Source records, Document snapshots and delivered Evidence fragments. Every
 //! read filters by Run, so another Run's identifier is simply absent.
-use crate::Result;
+use crate::{Error, Result};
 use aidash_application::ports::research::{Reservation, Reserved};
 use aidash_domain::research::{
 	Operation,
@@ -276,22 +276,26 @@ impl ResearchAttempt {
 				return Ok(Reserved::BudgetExhausted);
 			}
 		}
-		let record =
-			Self::build()
-				.id(Uuid::now_v7())
-				.run_id(run)
-				.invocation_key(reservation.key.clone())
-				.operation(reservation.operation.as_str().to_owned())
-				.provider(reservation.provider.clone())
-				.destination(reservation.destination.clone())
-				.account_id(attribution.map(|attribution| attribution.account_id.clone()))
-				.price_micro_usd(attribution.map(|attribution| {
-					i64::try_from(attribution.price_micro_usd).unwrap_or(i64::MAX)
-				}))
-				.outcome(DISPATCHED.to_owned())
-				.result(None)
-				.completed_at(None)
-				.finish();
+		// Account profiles bound prices to the recorded range; never saturate.
+		let price = attribution
+			.map(|attribution| i64::try_from(attribution.price_micro_usd))
+			.transpose()
+			.map_err(|_| {
+				Error::Invalid("research request price exceeds the recorded range".into())
+			})?;
+		let record = Self::build()
+			.id(Uuid::now_v7())
+			.run_id(run)
+			.invocation_key(reservation.key.clone())
+			.operation(reservation.operation.as_str().to_owned())
+			.provider(reservation.provider.clone())
+			.destination(reservation.destination.clone())
+			.account_id(attribution.map(|attribution| attribution.account_id.clone()))
+			.price_micro_usd(price)
+			.outcome(DISPATCHED.to_owned())
+			.result(None)
+			.completed_at(None)
+			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
 			.await

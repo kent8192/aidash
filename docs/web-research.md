@@ -157,6 +157,8 @@ retention terms, request price and monthly limit. Before dispatch the host
 checks the terms are current and that one more request fits the month's limit
 (base fee plus every charged or still-unknown attempt). The reservation records
 the account and price; failed attempts that were never sent are not charged.
+Charges are recorded as signed 64-bit amounts, so a profile whose monthly limit
+exceeds 9,223,372,036,854,775,807 micro-USD is unavailable.
 
 Per-Run limits block a request before disclosure or dispatch: 20 searches, 50
 page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text. A page

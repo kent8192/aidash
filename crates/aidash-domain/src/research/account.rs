@@ -5,6 +5,11 @@ use chrono::{DateTime, Datelike, TimeZone, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The largest amount, in micro-USD, an account profile may name. Charges are
+/// recorded as signed 64-bit amounts; every admitted request keeps a month's
+/// charges within the monthly limit, so their sum stays representable too.
+pub const MAX_MICRO_USD: u64 = i64::MAX as u64;
+
 /// Operator-attested terms for one paid search account. This record is an
 /// admission prerequisite, not proof that an agreement has been executed.
 /// The operator checks and records the actual agreement.
@@ -47,6 +52,8 @@ impl AccountProfile {
 			|| self.retention_days == 0
 			|| self.deletion_after_termination_days == 0
 			|| self.request_price_micro_usd == 0
+			// The limit also bounds the base fee and the request price.
+			|| self.monthly_limit_micro_usd > MAX_MICRO_USD
 			|| self.monthly_limit_micro_usd
 				< self
 					.monthly_base_fee_micro_usd

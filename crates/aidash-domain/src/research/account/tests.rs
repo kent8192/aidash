@@ -48,6 +48,20 @@ fn admission_requires_current_complete_terms(mut profile: AccountProfile) {
 }
 
 #[rstest]
+fn amounts_must_fit_the_recorded_charge_range(mut profile: AccountProfile) {
+	let now = at("2026-09-25T00:00:00Z");
+	profile.request_price_micro_usd = MAX_MICRO_USD;
+	profile.monthly_limit_micro_usd = MAX_MICRO_USD;
+	assert!(profile.validate_at(now).is_ok());
+	// A price beyond the recorded range needs a limit beyond it as well.
+	profile.request_price_micro_usd = MAX_MICRO_USD + 1;
+	profile.monthly_limit_micro_usd = u64::MAX;
+	assert!(profile.validate_at(now).is_err());
+	profile.request_price_micro_usd = 5_000;
+	assert!(profile.validate_at(now).is_err());
+}
+
+#[rstest]
 fn the_monthly_limit_is_checked_before_one_more_request(mut profile: AccountProfile) {
 	profile.monthly_base_fee_micro_usd = 1_000;
 	profile.monthly_limit_micro_usd = 11_000;
