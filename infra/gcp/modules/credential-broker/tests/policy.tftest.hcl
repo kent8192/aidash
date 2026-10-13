@@ -9,6 +9,7 @@ mock_provider "google" {
 }
 variables {
   project_id                   = "aidash-fixture"
+  deployment_tier              = "production"
   byok_project_id              = "aidash-byok-fixture"
   environment_id               = "production"
   environment_kind             = "production"
@@ -54,6 +55,7 @@ run "production" {
 run "staging" {
   command = apply
   variables {
+    deployment_tier              = "nonproduction"
     enabled                      = true
     environment_id               = "test"
     environment_kind             = "test"
@@ -178,4 +180,13 @@ run "other_repository_forbidden" {
   command = plan
   variables { image = "us-central1-docker.pkg.dev/aidash-fixture/aidash/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
   expect_failures = [var.image]
+}
+
+run "production_broker_cannot_use_nonproduction_tier" {
+  command = plan
+  variables {
+    deployment_tier = "nonproduction"
+    enabled         = true
+  }
+  expect_failures = [var.enabled]
 }

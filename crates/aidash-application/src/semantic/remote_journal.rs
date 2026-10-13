@@ -113,10 +113,13 @@ pub async fn dispatched(
 	};
 	scope.commit().await
 }
+/// `corpus_digest` is the Home Workspace corpus read before the retrieval; a
+/// later reuse step is admitted only while the corpus still has it.
 pub async fn complete(
 	repository: &dyn JournalRepository,
 	attempt: &Attempt,
 	receipt: &Receipt,
+	corpus_digest: &str,
 ) -> Result<()> {
 	let mut scope = repository.begin().await?;
 	let record = scope.current(attempt).await?;
@@ -132,7 +135,7 @@ pub async fn complete(
 		scope.record_source(receipt, source).await?
 	}
 	scope.record_native(receipt).await?;
-	scope.complete_operation(receipt).await?;
+	scope.complete_operation(receipt, corpus_digest).await?;
 	scope.complete_attempt(attempt).await?;
 	scope.commit().await
 }

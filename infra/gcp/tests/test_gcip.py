@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 from gcip import TenantIAM, TenantMFA, READ_ROLE, reconcile_environment, reconcile_mfa
+import gcip
 import controller
 
 MEMBER = "serviceAccount:runtime@aidash-fixture.iam.gserviceaccount.com"
@@ -173,6 +174,55 @@ def totp(state, intervals=5):
 
 
 DECLARED = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": declare("disabled")}))
+
+
+class AuthorizedDomainTests(unittest.TestCase):
+    def test_random_domain_lifecycle_preserves_existing_domains_and_other_configuration(self):
+        hostname = "0123456789abcdef" * 2 + ".preview.aidash.run"
+        output = dict(OUTPUT, hostname=hostname, gcip=dict(OUTPUT["gcip"], auth_helper="firebase"))
+        configuration = {
+            "name": "projects/aidash-fixture/config",
+            "authorizedDomains": ["aidash.run", "operator.example", "aidash-fixture.firebaseapp.com"],
+            "signIn": {"email": {"enabled": False}},
+        }
+        original = deepcopy(configuration)
+        writes = []
+
+        def request(url, method, body=None):
+            self.assertEqual(url.split("?")[0], "https://identitytoolkit.googleapis.com/admin/v2/projects/aidash-fixture/config")
+            if method == "GET":
+                self.assertIsNone(body)
+                return deepcopy(configuration)
+            self.assertEqual((method, url.split("?")[1]), ("PATCH", "updateMask=authorizedDomains"))
+            self.assertEqual(set(body), {"authorizedDomains"})
+            writes.append(deepcopy(body))
+            configuration.update(body)
+            return deepcopy(configuration)
+
+        with patch("gcip.admin_request", side_effect=request):
+            gcip.ensure_authorized_domain(output)
+            gcip.ensure_authorized_domain(output)
+            self.assertEqual(configuration["authorizedDomains"], original["authorizedDomains"] + [hostname])
+            gcip.ensure_authorized_domain(output, enabled=False)
+            gcip.ensure_authorized_domain(output, enabled=False)
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(configuration, original)
+
+    def test_random_domains_require_managed_firebase_auth_and_exact_hostname(self):
+        hostname = "a" * 32 + ".preview.aidash.run"
+        invalid = [
+            {"hostname": hostname},
+            dict(OUTPUT, hostname=hostname),
+            dict(OUTPUT, hostname="*.preview.aidash.run"),
+            dict(OUTPUT, hostname="aidash.run.preview.aidash.run"),
+            dict(OUTPUT, hostname=hostname, gcip=dict(OUTPUT["gcip"], auth_helper="firebase", project_id="../other")),
+        ]
+        with patch("gcip.admin_request") as request:
+            for output in invalid:
+                with self.subTest(output=output), self.assertRaises(ValueError):
+                    gcip.ensure_authorized_domain(output)
+            gcip.ensure_authorized_domain(dict(OUTPUT, hostname="test.aidash.run"))
+        request.assert_not_called()
 
 
 class TenantMFATests(unittest.TestCase):

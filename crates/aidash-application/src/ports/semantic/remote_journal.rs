@@ -41,7 +41,7 @@ pub trait JournalScope: Send {
 		}
 		Ok(())
 	}
-	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()>;
+	async fn complete_operation(&mut self, receipt: &Receipt, corpus_digest: &str) -> Result<()>;
 	async fn complete_attempt(&mut self, attempt: &Attempt) -> Result<()>;
 	async fn fail_operation(
 		&mut self,

@@ -970,6 +970,57 @@ fn decay_policy_validation_and_legacy_serde_byte_identity() {
 	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
 }
 
+/// Issue #127: a caller cannot attach a label that classifies a change as
+/// metadata-only, index-only or otherwise exempt from revision checks. Content,
+/// change and mutation shapes reject unknown fields instead of ignoring them.
+#[rstest::rstest]
+#[case::change_class("change_class", serde_json::json!("metadata_only"))]
+#[case::exemption("exempt", serde_json::json!(true))]
+#[case::index_only("index_only", serde_json::json!(true))]
+fn a_caller_label_cannot_exempt_a_memory_change(
+	#[case] key: &str,
+	#[case] label: serde_json::Value,
+) {
+	// Arrange
+	let content = serde_json::json!({
+		"text": "Deploy from the release branch only.",
+		"kind": "world",
+		"learning": "fact",
+		"verification": "unverified",
+		"occurred": null,
+		"entities": [],
+		"evidence": [],
+		"links": [],
+	});
+	let change = serde_json::json!({
+		"operation": "correct",
+		"id": Uuid::from_u128(7),
+		"expected_revision": 1,
+		"content": content,
+	});
+	let mutation = serde_json::json!({
+		"operation_id": Uuid::from_u128(8),
+		"provider": {"id": "p", "version": "1.0.0"},
+		"bank": {"home": "home", "tenant": "tenant", "workspace": Uuid::from_u128(9), "participant": null},
+		"changes": [change],
+	});
+	serde_json::from_value::<Mutation>(mutation.clone()).expect("the unlabelled request is valid");
+	let labelled = |mut value: serde_json::Value| {
+		value[key] = label.clone();
+		value
+	};
+
+	// Act
+	let content = serde_json::from_value::<Content>(labelled(content));
+	let change = serde_json::from_value::<Change>(labelled(change));
+	let mutation = serde_json::from_value::<Mutation>(labelled(mutation));
+
+	// Assert
+	assert!(content.is_err(), "a labelled Content must be rejected");
+	assert!(change.is_err(), "a labelled Change must be rejected");
+	assert!(mutation.is_err(), "a labelled Mutation must be rejected");
+}
+
 fn hit(id: u128, score: f64) -> recall::Ranked {
 	recall::Ranked {
 		id: Uuid::from_u128(id),

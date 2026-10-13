@@ -112,7 +112,7 @@ spec:
                 - { name: code, mountPath: /opt/activity, readOnly: true }
                 - { name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true }
           volumes:
-            - { name: snapshot, emptyDir: { sizeLimit: 16Mi } }
+            - { name: snapshot, emptyDir: { sizeLimit: 1Mi } }
             - { name: code, configMap: { name: {{ $name }}-activity-code } }
             - name: api
               projected:

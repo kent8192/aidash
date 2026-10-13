@@ -31,6 +31,7 @@ run "bootstrap_keys" {
   variables {
     state_bucket_name        = "aidash-fixture-state"
     release_bucket_name      = "aidash-fixture-releases"
+    notification_bucket_name = "aidash-fixture-notifications"
     byok_broker_environments = ["test"]
     security_alert_emails    = ["security@example.test"]
   }
@@ -168,6 +169,7 @@ run "bootstrap_after_retirement_plan" {
   variables {
     state_bucket_name        = "aidash-fixture-state"
     release_bucket_name      = "aidash-fixture-releases"
+    notification_bucket_name = "aidash-fixture-notifications"
     byok_broker_environments = ["test"]
     security_alert_emails    = ["security@example.test"]
   }

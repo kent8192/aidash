@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -308,6 +309,31 @@ class ReconcileTests(unittest.TestCase):
         self.request(action="resume", sha="b" * 40)
         self.reconcile()
         self.assertEqual(self.kube.secret("aidash-test", "aidash-identity"), tokens)
+
+    def test_quiet_running_staging_receives_tls_rotation_without_redeploying_the_application(self):
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        entry = deepcopy(self.store.state["environments"]["develop"])
+        output = self.cloud.outputs()
+        output["develop"]["hostname"] = "0123456789abcdef" * 2 + ".preview.aidash.run"
+        self.config["preview_tls_secret"] = "aidash-preview-wildcard-tls"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+                            "-subj", "/CN=*.preview.aidash.run", "-addext", "subjectAltName=DNS:*.preview.aidash.run",
+                            "-out", str(root / "cert"), "-keyout", str(root / "key")], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            bundle = {"certificate_pem": (root / "cert").read_text(), "private_key_pem": (root / "key").read_text()}
+            self.calls.clear()
+            with patch.object(self.cloud, "outputs", return_value=output), patch.object(controller.delivery, "run", return_value=json.dumps(bundle).encode()):
+                self.reconcile()
+                self.assertEqual(self.kube.secret("aidash-develop", "aidash-preview-tls")["tls.crt"], bundle["certificate_pem"])
+                self.reconcile()
+        current = self.store.state["environments"]["develop"]
+        self.assertEqual(current["status"], "ready")
+        for key in ("generation", "sha", "release", "outcome_at", "outcome_run_id"):
+            self.assertEqual(current[key], entry[key])
+        self.assertFalse(any(call[0] in {"helm", "migrate", "scale"} for call in self.calls))
 
     def test_ready_environment_reconciles_broker_enable_rotation_disable_and_removal(self):
         self.request()
@@ -1675,6 +1701,29 @@ class IntakeTests(unittest.TestCase):
                         self.assertEqual(
                             output.read_text(), f"proceed={str(allowed).lower()}\n"
                         )
+
+    def test_recreating_a_destroyed_preview_counts_against_the_retention_cap(self):
+        state = {"environments": {
+            "pr-1": {"kind": "pr", "desired": "running"},
+            "pr-2": {"kind": "pr", "desired": "destroyed", "last_comment_at": 0},
+        }}
+        config = dict(CONFIG, max_preview_environments=1)
+        event = {
+            "action": "created",
+            "comment": {"body": "/preview up", "user": {"login": "fixture"}},
+            "issue": {"number": 2, "pull_request": {"url": "https://api.github.com/repos/kent8192/aidash/pulls/2"}},
+        }
+        with (
+            patch.dict(os.environ, {"GITHUB_RUN_ID": "7"}),
+            patch.object(controller, "permission"),
+            patch.object(controller, "source", return_value={}) as source,
+        ):
+            with self.assertRaisesRegex(controller.Refused, "retention budget"):
+                controller.requests(config, event, "issue_comment", state)
+            source.assert_not_called()
+            # A retained preview may still be updated at the cap.
+            state["environments"]["pr-2"]["desired"] = "running"
+            self.assertEqual(controller.requests(config, event, "issue_comment", state)[0]["environment"], "pr-2")
 
     def test_job_setup_time_reduces_the_operation_budget(self):
         with (

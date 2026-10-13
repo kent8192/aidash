@@ -7,7 +7,7 @@ use aidash_domain::{
 		dispatch::Input,
 		remote::{Reserved, Usage},
 	},
-	semantic::remote::Operation,
+	semantic::remote::{Operation, reuse::CitedOperation},
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -27,6 +27,17 @@ pub trait GenerationProtocolReservation: Send {
 pub trait GenerationProtocolLease: GenerationProtocolReservation {
 	fn description(&self) -> &Description;
 	async fn binding_admission(&mut self, grant: Uuid) -> Result<Option<Uuid>>;
+	/// Recheck, under this lease, that the grant is live (`Forbidden`) and that
+	/// no source it consumed was changed or revoked (`Invalidated`): the same
+	/// conditions under which `grants/describe` refuses the grant.
+	async fn semantic_sources_current(&mut self, grant: Uuid) -> Result<()>;
+	/// This node's journal record of one semantic operation, if it has one,
+	/// read through this lease's own connection.
+	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>>;
+	/// The current corpus digest of this lease's Description Workspace,
+	/// computed as for the Home's remote semantic retrievals and read through
+	/// this lease's own connection.
+	async fn corpus_digest(&mut self) -> Result<String>;
 	async fn finish_verification(self: Box<Self>, result: Result<bool>) -> Result<bool>;
 }
 

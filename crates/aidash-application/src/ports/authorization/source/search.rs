@@ -34,6 +34,10 @@ pub trait SemanticSearchScope: Send {
 	async fn input_message(&mut self, workspace: Uuid, message: Uuid) -> Result<Message>;
 	/// Retain the shared index lock, decoding native configuration defaults.
 	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec>;
+	/// The current corpus digest of the Description's Workspace and, with
+	/// native memory, of the Home participant's banks, read through this
+	/// scope's own lease transaction.
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String>;
 	async fn prepare_search(
 		&mut self,
 		workspace: Uuid,

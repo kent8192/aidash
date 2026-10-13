@@ -3216,6 +3216,9 @@ fn authenticated_runtime(
 #[path = "postgres/inference_usage.rs"]
 mod inference_usage;
 
+#[path = "postgres/research.rs"]
+mod research;
+
 #[rstest::rstest]
 #[tokio::test]
 async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction(

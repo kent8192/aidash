@@ -83,6 +83,8 @@ pub trait AccountStatus: Send + Sync {
 pub trait LoginAccounts: Send {
 	async fn find(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Option<Account>>;
 	async fn register(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Account>;
+	/// Create private Subject authority once; never restore withdrawn authority.
+	async fn provision_personal(&mut self, identity: Uuid) -> Result<()>;
 }
 
 /// Retain one native connection lease through the complete recovery pass.

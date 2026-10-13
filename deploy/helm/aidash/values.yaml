@@ -37,6 +37,12 @@ trustedProxy:
 # Pod label sets (plus this release's frontend when enabled).
 backendIngress:
   podSelectors: []
+# Denies 169.254.169.254 (the GKE metadata server) to every Pod of the namespace
+# except server and worker, which need their Workload Identity tokens. Defense in
+# depth: GKE_METADATA already hides node credentials from Pods. Disable only where
+# no metadata server exists to protect and the CNI rejects egress policies.
+metadataServerEgress:
+  enabled: true
 # Managed Provider Credential descriptor {fingerprint_key, store, broker}; null
 # renders nothing. Rendered as {"provider_credentials": ...} for
 # AIDASH_PROVIDER_CREDENTIAL_SETTINGS. Never key material.

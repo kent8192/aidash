@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { initials } from "../collaboration/avatar";
 import { NativeSelect } from "../components/ui/native-select";
+import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import type { ThemePreference } from "../theme";
 import { useI18n, type Locale } from "../ui";
@@ -16,8 +17,22 @@ import { authCopy, shellCopy } from "./copy";
 export type Account = {
   name: string;
   context: string | null;
-  mappings: { id: string; tenant: string; subject: string }[];
+  mappings: {
+    id: string;
+    tenant: string;
+    subject: string;
+    personal?: boolean;
+  }[];
   operatorAllowed: boolean;
+  /** A direct Google account may request shared access even after its personal Mapping is disabled. */
+  personalAccount: boolean;
+  sharedAccess: {
+    status?: string;
+    loading: boolean;
+    submitting: boolean;
+    error?: string;
+    request: () => void;
+  };
   chooseContext: (context: string) => void;
   setLocale: (locale: Locale) => void;
   logOut: (allDevices: boolean) => void;
@@ -74,6 +89,8 @@ export function AccountPanel({ account }: { account: Account }) {
   const { locale, t } = useI18n();
   const copy = shellCopy[locale];
   const auth = authCopy[locale];
+  const shared = account.sharedAccess;
+  const personalMapping = account.mappings.some((mapping) => mapping.personal);
   const themeGroup = useId();
   return (
     <div className="grid text-[13px]">
@@ -110,6 +127,42 @@ export function AccountPanel({ account }: { account: Account }) {
             )}
           </NativeSelect>
         </label>
+        {account.personalAccount && (
+          <div className="grid gap-2 pt-1">
+            <p
+              className="text-xs leading-relaxed text-muted-foreground"
+              aria-live="polite"
+            >
+              {shared.status === "pending"
+                ? personalMapping
+                  ? auth.personalPending
+                  : auth.pending
+                : shared.status === "rejected"
+                  ? auth.rejected
+                  : shared.status === "expired"
+                    ? auth.expired
+                    : shared.status === "approved"
+                      ? auth.sharedApproved
+                      : auth.sharedHelp}
+            </p>
+            {shared.error && (
+              <p role="alert" className="text-xs text-destructive">
+                {shared.error}
+              </p>
+            )}
+            {shared.status !== "pending" && (
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                disabled={shared.loading || shared.submitting}
+                onClick={shared.request}
+              >
+                {auth.sharedRequest}
+              </Button>
+            )}
+          </div>
+        )}
       </Group>
       <Group label={copy.language} icon={Languages}>
         <label>

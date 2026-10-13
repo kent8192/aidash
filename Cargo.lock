@@ -197,6 +197,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "crc32c",
+ "encoding_rs",
  "futures-util",
  "gcp_auth",
  "hmac 0.12.1",
@@ -215,6 +216,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "zeroize",
 ]

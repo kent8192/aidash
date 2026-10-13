@@ -56,6 +56,7 @@ fn persistence_constraints_keep_the_legacy_server_error_envelope(#[case] kind: D
 #[case(crate::semantic::remote::Failure::Pending, 503, "pending")]
 #[case(crate::semantic::remote::Failure::Unavailable, 503, "unavailable")]
 #[case(crate::semantic::remote::Failure::Authority, 409, "authority")]
+#[case(crate::semantic::remote::Failure::Stale, 409, "stale")]
 fn semantic_failures_preserve_status_and_retry_headers(
 	#[case] reason: crate::semantic::remote::Failure,
 	#[case] status: u16,

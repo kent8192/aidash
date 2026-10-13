@@ -83,7 +83,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -186,7 +187,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -874,7 +876,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -991,7 +994,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -1148,7 +1152,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -1298,7 +1303,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -1443,7 +1449,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "Prepared": {
@@ -1976,7 +1983,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "ContextRecoveryFailure": {
@@ -13843,7 +13851,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -24457,7 +24466,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -26628,7 +26638,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -28545,7 +28556,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -30298,6 +30310,16 @@
     "method": "POST",
     "path": "/api/workspaces/{workspace}/memory/units/mutate",
     "name": "memory-mutate",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/units/impact",
+    "name": "memory-impact",
     "source": "server/src/apps/knowledge/views/memory.rs",
     "json": true,
     "uuid_parameters": ["workspace"],

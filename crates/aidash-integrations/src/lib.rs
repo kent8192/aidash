@@ -35,3 +35,5 @@ pub mod oidc;
 pub mod gcip;
 
 pub mod provider_credentials;
+
+pub mod research;

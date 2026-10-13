@@ -6,11 +6,14 @@ kubectl stdin; Helm values files never contain secret material.
 
 import base64
 from copy import deepcopy
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+from tempfile import TemporaryDirectory
 import time
 
 from cloud import bounded_timeout, private_json, run
@@ -24,6 +27,8 @@ STORAGE_CLASS = "aidash-retain"
 PREVIEW_VOLUME = "aidash-preview-tls"
 PREVIEW_CLAIM = "preview-tls"
 PREVIEW_SIZE = "10Gi"
+PREVIEW_TLS_SECRET = "aidash-preview-tls"
+PREVIEW_HOST = re.compile(r"[a-f0-9]{32}\.preview\.aidash\.run")
 CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
 # The Home ledger lives in a child of its claim. A fresh disk's root belongs to
 # root, so the application UID can create the child (fsGroup grants group write)
@@ -284,6 +289,63 @@ def preview_tls_available(cluster, identity):
     return owner is None or not (cluster.items("pods", owner, EDGE_PODS) or preview_attached(cluster))
 
 
+def install_preview_tls(cluster, identity, certificate_pem, private_key_pem):
+    """Validate the managed wildcard and give its key only to the trusted edge.
+
+    Temporary files are private, CLI output is captured, and only kubectl stdin
+    carries the PEM to Kubernetes. Source builds and app-runtime never see it.
+    """
+    namespace = namespace_of(identity)
+    if identity != "develop" and not identity.startswith("pr-"):
+        raise Refused("Wildcard preview TLS is limited to staging and PR environments")
+    if any(not isinstance(value, str) or not value or len(value.encode()) > 1024 * 1024 or "\x00" in value
+           for value in (certificate_pem, private_key_pem)):
+        raise Refused("Invalid preview TLS certificate or private key")
+    with TemporaryDirectory(prefix="aidash-preview-tls-") as directory:
+        certificate = Path(directory) / "certificate.pem"
+        private_key = Path(directory) / "private-key.pem"
+        for path, value in ((certificate, certificate_pem), (private_key, private_key_pem)):
+            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+                file.write(value)
+        try:
+            alternatives = run("openssl", "x509", "-in", certificate, "-noout", "-ext", "subjectAltName", timeout=30).decode()
+            names = re.findall(r"DNS:([^,\s]+)", alternatives)
+            if names != ["*.preview.aidash.run"]:
+                raise Refused("Preview TLS certificate must cover only *.preview.aidash.run")
+            dates = run("openssl", "x509", "-in", certificate, "-noout", "-dates", timeout=30).decode()
+            validity = dict(line.split("=", 1) for line in dates.splitlines())
+            start, end = (datetime.strptime(validity[field], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                          for field in ("notBefore", "notAfter"))
+            if not start <= datetime.now(timezone.utc) < end:
+                raise Refused("Preview TLS certificate is outside its validity period")
+            certificate_public = run("openssl", "x509", "-in", certificate, "-pubkey", "-noout", timeout=30)
+            key_public = run("openssl", "pkey", "-in", private_key, "-pubout", timeout=30)
+            if certificate_public.strip() != key_public.strip():
+                raise Refused("Preview TLS certificate and private key do not match")
+        except (RuntimeError, ValueError, KeyError) as error:
+            raise Refused("Invalid preview TLS certificate or private key") from error
+    manifest = secret(namespace, PREVIEW_TLS_SECRET, {"tls.crt": certificate_pem, "tls.key": private_key_pem}, environment=False)
+    manifest["type"] = "kubernetes.io/tls"
+    cluster.apply(manifest)
+    # Caddy reads the mounted certificate at startup. A changed certificate must
+    # roll the edge even when its routing values and release digest are unchanged.
+    kind, name = EDGE.split("/", 1)
+    edge = cluster.get(kind, name, namespace)
+    if edge:
+        digest = hashlib.sha256(certificate_pem.encode()).hexdigest()
+        annotations = edge.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
+        changed = annotations.get("aidash.run/preview-tls-sha256") != digest
+        if changed:
+            cluster.patch(kind, name, {"spec": {"template": {"metadata": {"annotations": {
+                "aidash.run/preview-tls-sha256": digest,
+            }}}}}, namespace)
+        # A prior reconcile may have timed out after patching. Wait again for
+        # that rollout without creating another restart or deploying app code.
+        cluster.rollout(namespace, EDGE)
+        return changed
+    return False
+
+
 def bind_preview_tls(cluster, identity, volume_handle):
     namespace = namespace_of(identity)
     if not DISK.fullmatch(volume_handle or ""):
@@ -340,7 +402,7 @@ def prepare(cluster, identity, preview_handle=None):
     for name, size in CLAIMS.items():
         if cluster.get("persistentvolumeclaim", name, namespace) is None:
             cluster.create(claim(namespace, name, size))
-    if identity.startswith("pr-"):
+    if identity.startswith("pr-") and preview_handle is not None:
         bind_preview_tls(cluster, identity, preview_handle)
 
 
@@ -383,6 +445,8 @@ def provider_settings(descriptor, external):
 def gcip_settings(project, output, dashboard):
     """Only the managed public GCIP fragment; separate from runtime secrets."""
     if dashboard is None:
+        if PREVIEW_HOST.fullmatch(output["hostname"]):
+            raise Refused("Random preview origins require managed GCIP authentication")
         return None
     if not isinstance(dashboard, dict) or set(dashboard) != {"gcip"}:
         raise Refused("managed dashboard configuration must select GCIP only")
@@ -399,6 +463,10 @@ def gcip_settings(project, output, dashboard):
         or settings.get("auth_helper", "firebase") not in {"firebase", "public_origin"}
     ):
         raise Refused("managed GCIP configuration must match this environment")
+    if PREVIEW_HOST.fullmatch(output["hostname"]) and (
+        settings.get("auth_helper", "firebase") != "firebase" or not settings["tenant_bindings"]
+    ):
+        raise Refused("Random preview origins require the fixed Firebase helper and managed tenant bindings")
     return {"dashboard": {"gcip": deepcopy(settings)}}
 
 
@@ -511,6 +579,7 @@ def app_values(cluster, identity, output, release, sha, settings):
 def env_values(identity, output, release, settings):
     selector, tolerations = scheduling(identity)
     gcip = (settings["gcip"] or {}).get("dashboard", {}).get("gcip", {})
+    preview = bool(PREVIEW_HOST.fullmatch(output["hostname"]))
     return {
         "nodeSelector": selector,
         "tolerations": tolerations,
@@ -521,7 +590,8 @@ def env_values(identity, output, release, settings):
             "backend": "app-backend",
             "caddyImage": image(release, "caddy"),
             "admissionImage": image(release, "edge"),
-            "existingTlsClaim": PREVIEW_CLAIM if identity.startswith("pr-") else "",
+            "existingTlsClaim": PREVIEW_CLAIM if identity.startswith("pr-") and not preview else "",
+            "tlsSecret": PREVIEW_TLS_SECRET if preview else "",
             "loadBalancer": True,
             # Serve Firebase's sign-in helper exactly when the server tells the
             # browser to use this origin for it.

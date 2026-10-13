@@ -149,3 +149,183 @@ fn semantic_recovery_retains_its_reason_and_retry_deadline(#[case] reason: &str)
 	unknown["recovery"]["semantic_reason"] = json!("future_failure");
 	assert!(decode(RunPhase::Thinking, unknown).is_err());
 }
+
+fn requiring(names: &[&str], data: Value) -> Value {
+	let mut input = envelope(data);
+	input["requires"] = json!(names);
+	input
+}
+#[rstest::rstest]
+fn a_state_without_requirements_keeps_the_legacy_envelope_bytes() {
+	let (state, recovery) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
+
+	let stored = encode(&state, &recovery).unwrap();
+
+	assert!(stored.get("requires").is_none());
+	assert_eq!(stored, envelope(tool_data()));
+	assert!(StateRequirements::of(&state).is_empty());
+}
+#[rstest::rstest]
+fn fields_a_worker_does_not_know_are_a_capability_mismatch_not_a_corrupt_run() {
+	// Arrange: a newer build persisted a field this build's `deny_unknown_fields` rejects.
+	let mut data = tool_data();
+	data["future_field"] = json!(2);
+
+	// Act
+	let undeclared = decode(RunPhase::ToolCall, envelope(data.clone())).unwrap_err();
+	let declared = decode(RunPhase::ToolCall, requiring(&["future_capability"], data)).unwrap_err();
+	let future_variant =
+		decode(RunPhase::Waiting, envelope(json!({"reason":"future_wait"}))).unwrap_err();
+	let future_envelope = decode(
+		RunPhase::Ready,
+		json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false},"future":true}),
+	)
+	.unwrap_err();
+	let future_version = decode(
+		RunPhase::Ready,
+		json!({"state_version":2,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+	)
+	.unwrap_err();
+
+	// Assert: each is the typed mismatch, while real damage stays `Invalid`.
+	for error in [
+		undeclared,
+		declared,
+		future_variant,
+		future_envelope,
+		future_version,
+	] {
+		assert!(matches!(error, Error::UnsupportedState(_)), "{error:?}");
+	}
+	let mut damaged = tool_data();
+	damaged.as_object_mut().unwrap().remove("response_epoch");
+	assert!(matches!(
+		decode(RunPhase::ToolCall, envelope(damaged)),
+		Err(Error::Invalid(_))
+	));
+	assert!(matches!(
+		decode(
+			RunPhase::Ready,
+			json!({"state_version":0,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
+		),
+		Err(Error::Invalid(_))
+	));
+}
+#[rstest::rstest]
+fn a_requirement_no_build_declares_is_a_capability_mismatch() {
+	let error = decode(
+		RunPhase::ToolCall,
+		requiring(&["future_capability"], tool_data()),
+	)
+	.unwrap_err();
+
+	assert!(matches!(&error, Error::UnsupportedState(m) if m.contains("future_capability")));
+}
+#[rstest::rstest]
+fn a_stored_requirement_may_exceed_what_the_state_derives() {
+	// Arrange: a newer build reserved a state for capable workers only.
+	let reserved = requiring(&["tool_batch_state"], tool_data());
+
+	// Act
+	let (state, recovery) = decode(RunPhase::ToolCall, reserved).unwrap();
+
+	// Assert: this build derives nothing, so re-saving drops the reservation.
+	assert!(StateRequirements::of(&state).is_empty());
+	assert_eq!(encode(&state, &recovery).unwrap(), envelope(tool_data()));
+	assert!(StateRequirements::default().covered_by(&StateRequirements::default()));
+	assert!(
+		!StateRequirements::from_pending(&requiring(&["tool_batch_state"], json!({})))
+			.unwrap()
+			.covered_by(&StateRequirements::default())
+	);
+}
+#[rstest::rstest]
+fn a_tool_batch_end_requires_the_tool_batch_capability() {
+	// Arrange: a Tool Batch admitted calls up to `batch_end` (#119).
+	let mut data = tool_data();
+	data["batch_end"] = json!(1);
+
+	// Act
+	let (state, recovery) = decode(
+		RunPhase::ToolCall,
+		requiring(&["tool_batch_state"], data.clone()),
+	)
+	.unwrap();
+	let saved = encode(&state, &recovery).unwrap();
+
+	// Assert: the requirement is derived from the state and written on save.
+	assert_eq!(StateRequirements::of(&state).names(), ["tool_batch_state"]);
+	assert_eq!(saved, requiring(&["tool_batch_state"], data));
+	let (plain, _) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
+	assert!(StateRequirements::of(&plain).is_empty());
+}
+#[rstest::rstest]
+fn a_requirement_that_falls_short_is_invalid() {
+	// Arrange: a Tool Batch whose envelope does not declare `tool_batch_state`,
+	// so a worker without that capability could lease it.
+	let mut data = tool_data();
+	data["batch_end"] = json!(1);
+
+	// Act
+	let error = decode(RunPhase::ToolCall, envelope(data)).unwrap_err();
+
+	// Assert
+	assert!(
+		matches!(&error, Error::Invalid(message) if message.contains("does not cover")),
+		"{error:?}"
+	);
+}
+#[rstest::rstest]
+fn requirements_are_read_without_decoding_the_state() {
+	let pending = requiring(&["tool_batch_state", "alpha", "alpha"], json!({"future":1}));
+
+	let requires = StateRequirements::from_pending(&pending).unwrap();
+
+	assert_eq!(requires.names(), ["alpha", "tool_batch_state"]);
+	assert_eq!(requires.unmet(&[]), ["alpha", "tool_batch_state"]);
+	assert_eq!(requires.unmet(PersistedCapability::supported()), ["alpha"]);
+	assert!(
+		StateRequirements::from_pending(&envelope(json!({})))
+			.unwrap()
+			.is_empty()
+	);
+	assert!(StateRequirements::from_pending(&json!({"requires":"tool_batch_state"})).is_err());
+}
+#[rstest::rstest]
+fn a_runnable_run_that_needs_capabilities_is_waiting_for_a_capable_worker() {
+	let requires =
+		StateRequirements::from_pending(&requiring(&["tool_batch_state"], json!({}))).unwrap();
+	let mut run = RunMetadata {
+		id: Uuid::nil(),
+		task_id: Uuid::nil(),
+		workspace_id: Uuid::nil(),
+		home_node: "aidash://home".into(),
+		agent_id: "fixture".into(),
+		agent_version: "1.0.0".into(),
+		phase: RunPhase::ToolCall,
+		control: crate::RunControl::Active,
+		step: 0,
+		revision: 0,
+		observed_input_seq: 0,
+		ledger_worker_ready: false,
+		error: None,
+		lease_owner: None,
+		lease_until: None,
+		updated_at: Utc::now(),
+	};
+
+	assert_eq!(
+		run.lease_wait(&requires),
+		Some(LeaseWait::CapableWorker {
+			capabilities: vec!["tool_batch_state".into()]
+		})
+	);
+	assert_eq!(run.lease_wait(&StateRequirements::default()), None);
+	run.lease_until = Some(Utc::now() + chrono::Duration::seconds(30));
+	assert_eq!(run.lease_wait(&requires), None);
+	run.lease_until = None;
+	run.control = crate::RunControl::Paused;
+	assert_eq!(run.lease_wait(&requires), None);
+	run.control = crate::RunControl::Cancelled;
+	assert_eq!(run.lease_wait(&requires), None);
+}
