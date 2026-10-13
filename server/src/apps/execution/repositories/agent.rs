@@ -6,6 +6,7 @@ use crate::{
 	registry::Registry,
 	store::Store,
 };
+use aidash_application::ports::execution::completion;
 use aidash_application::{
 	Result,
 	ports::{CompactionClassifier, CompactionQuestions, ModelProvider, execution::*},
@@ -528,6 +529,101 @@ impl ExecutionAuthority for Authority<'_> {
 	}
 }
 
+impl Environment<'_> {
+	/// Completion Gate Checks run only under this node's own authority lease.
+	fn worker(&self) -> Option<crate::authorization::execution::WorkerAuthority> {
+		self.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+	}
+}
+
+#[async_trait]
+impl completion::CompletionChecks for Environment<'_> {
+	async fn content(&self, run: &Run) -> Result<Option<completion::MountedContent>> {
+		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		let Some(area) = worker.working_area(&self.federation.store, run).await? else {
+			return Ok(None);
+		};
+		let files: Vec<aidash_domain::capabilities::operations::MountedFile> =
+			serde_json::from_value(area.manifest.clone())?;
+		Ok(Some(completion::MountedContent {
+			digest: aidash_domain::completion::content_digest(&files),
+			revision: area.revision,
+			state: match area.state.as_str() {
+				"active" => completion::ContentState::Ready,
+				"running" => completion::ContentState::Busy,
+				state => {
+					completion::ContentState::Unavailable(format!("the Working Area is {state}"))
+				}
+			},
+		}))
+	}
+	async fn start(
+		&self,
+		run: &Run,
+		request: &completion::CheckRequest<'_>,
+	) -> Result<completion::CheckStart> {
+		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		let input = serde_json::json!({
+			"idempotency_key": request.key,
+			"command": request.command,
+			"timeout_seconds": request.timeout_seconds,
+			"expected_revision": request.revision,
+		});
+		let store = &self.federation.store;
+		match worker
+			.check(store, run, input, &request.key.to_string())
+			.await
+		{
+			Ok(result) => {
+				let operation_id = result["operation_id"]
+					.as_str()
+					.and_then(|id| id.parse().ok())
+					.ok_or_else(|| {
+						aidash_application::Error::Invalid("Check result has no operation".into())
+					})?;
+				Ok(completion::CheckStart::Started {
+					operation_id,
+					timeout_seconds: request
+						.timeout_seconds
+						.unwrap_or(store.capabilities.0.operation_seconds),
+				})
+			}
+			Err(crate::Error::Conflict(reason))
+				if reason.starts_with("AREA_REVISION_CHANGED")
+					|| reason.starts_with("AREA_BUSY") =>
+			{
+				Ok(completion::CheckStart::Stale)
+			}
+			Err(crate::Error::Forbidden | crate::Error::Unauthorized) => Ok(
+				completion::CheckStart::Denied("the shell capability is not authorized".into()),
+			),
+			Err(
+				crate::Error::Invalid(reason)
+				| crate::Error::Conflict(reason)
+				| crate::Error::NotFound(reason),
+			) => Ok(completion::CheckStart::Unavailable(reason)),
+			Err(error) => Err(error.into()),
+		}
+	}
+	async fn status(&self, run: &Run, operation: Uuid) -> Result<completion::CheckStatus> {
+		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		let result = match worker
+			.check_status(&self.federation.store, run, operation)
+			.await
+		{
+			Ok(result) => result,
+			Err(crate::Error::NotFound(reason)) => {
+				return Ok(completion::CheckStatus::Unavailable(reason));
+			}
+			// Revoked authority stops the Run as it does any other step.
+			Err(error) => return Err(error.into()),
+		};
+		Ok(completion::CheckStatus::of(&result))
+	}
+}
+
 pub(crate) struct Environment<'a> {
 	federation: &'a Federation,
 	authority: Option<Authority<'a>>,
@@ -623,6 +719,11 @@ impl ExecutionEnvironment for Environment<'_> {
 	}
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
+	}
+	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
+		self.worker()
+			.is_some()
+			.then_some(self as &dyn completion::CompletionChecks)
 	}
 
 	async fn documents(&self, _entry: &Entry) -> Result<Value> {

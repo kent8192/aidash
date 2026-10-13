@@ -456,13 +456,12 @@ async fn failure_loss_and_exhaustion_stay_distinguishable(mut fixture: Fixture) 
 #[rstest]
 #[tokio::test]
 async fn a_node_without_checks_never_completes_a_gated_run(mut fixture: Fixture) {
-	gated(
-		&mut fixture,
-		tests_policy(
-			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
-		),
-		None,
-	);
+	// Not even `content_changed` can be decided without reading the content.
+	gated(&mut fixture, tests_policy(json!({})), None);
+	fixture.run.state = RunState::Ready(ReadyState::default());
+	fixture.backend.0.task.lock().unwrap().status = TaskStatus::Open;
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.context.completion.start_content, None);
 	answer(&mut fixture, "Done.");
 	settle(&mut fixture).await;
 	assert!(!completed(&fixture));

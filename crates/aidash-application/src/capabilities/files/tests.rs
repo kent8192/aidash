@@ -13,6 +13,8 @@ struct Scope {
 	deny_entry: Option<String>,
 	deny_pinned: Option<String>,
 	changed: Option<String>,
+	/// Inputs of Completion Gate Checks admitted to the operation journal.
+	verified: Vec<Value>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
@@ -94,12 +96,17 @@ impl FileScopePort for Scope {
 	}
 	async fn execute(
 		&mut self,
-		_action: Action<'_>,
+		action: Action<'_>,
 		_area: &mut Area,
-		_input: Value,
+		input: Value,
 		_key: &str,
 	) -> Result<Value> {
-		panic!("unexpected execute effect")
+		assert!(
+			matches!(action, Action::Verify),
+			"unexpected execute effect"
+		);
+		self.verified.push(input);
+		Ok(json!({"operation_id": Uuid::nil(), "status": "prepared"}))
 	}
 	async fn output(&mut self, _area: &Area, _id: Uuid) -> Result<Option<(String, i64, String)>> {
 		panic!("unexpected output effect")
@@ -200,6 +207,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			deny_entry: None,
 			deny_pinned: None,
 			changed: None,
+			verified: vec![],
 		},
 		area,
 		file,
@@ -487,4 +495,53 @@ async fn direct_invocations_recheck_the_bound_definition_before_any_effect(
 	}
 	assert_eq!(scope.opens, 0);
 	assert!(scope.events.is_empty());
+}
+
+#[tokio::test]
+async fn a_completion_check_is_admitted_like_the_models_own_shell_call() {
+	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
+	let input = json!({"idempotency_key":Uuid::nil(),"command":"cargo test","expected_revision":4});
+	verify(&mut scope, &run, input.clone(), "check")
+		.await
+		.unwrap();
+	assert_eq!(scope.verified, [input]);
+}
+
+#[rstest::rstest]
+#[case("catalog")]
+#[case("installation")]
+#[case("digest")]
+#[tokio::test]
+async fn a_completion_check_rechecks_the_bound_shell_before_any_effect(#[case] withdrawal: &str) {
+	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
+	let id = scope
+		.binding_snapshot()
+		.unwrap()
+		.operation("shell")
+		.unwrap()
+		.identity
+		.id
+		.clone();
+	match withdrawal {
+		"catalog" => scope.deny_entry = Some(id),
+		"installation" => scope.deny_pinned = Some(id),
+		_ => scope.changed = Some(id),
+	}
+	let result = verify(&mut scope, &run, json!({"command":"cargo test"}), "check").await;
+	if withdrawal == "digest" {
+		assert!(matches!(result, Err(Error::Conflict(_))));
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	}
+	assert!(scope.verified.is_empty());
+}
+
+#[tokio::test]
+async fn a_completion_check_needs_a_bound_shell() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	assert!(matches!(
+		verify(&mut scope, &run, json!({"command":"cargo test"}), "check").await,
+		Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message.contains("shell")
+	));
+	assert!(scope.verified.is_empty());
 }

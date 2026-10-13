@@ -40,6 +40,9 @@ pub enum CheckStart {
 		/// The timeout the operation runs with, after node defaults and limits.
 		timeout_seconds: u64,
 	},
+	/// The Area changed or became busy after its content was read; the gate
+	/// reads it again instead of starting the Check.
+	Stale,
 	/// The Check could not start; the reason is kept as its evidence.
 	Unavailable(String),
 	/// Authority or the capability's Binding refused the Check.
@@ -58,6 +61,28 @@ pub enum CheckStatus {
 	Unavailable(String),
 }
 
+impl CheckStatus {
+	/// What a polled Check operation result means to the Completion Gate.
+	pub fn of(result: &serde_json::Value) -> Self {
+		match result["status"].as_str().unwrap_or_default() {
+			"completed" | "failed" if result["termination_confirmed"] == true => {
+				let exit_code = result["exit_code"].as_i64();
+				Self::Finished {
+					passed: result["status"] == "completed" && exit_code == Some(0),
+					exit_code,
+					diagnostics: result["output"].as_str().unwrap_or_default().to_owned(),
+				}
+			}
+			"cancelled" => Self::Unavailable("the Check was cancelled".into()),
+			"uncertain" | "withdrawn" => Self::Unavailable(format!(
+				"the Check's outcome is unknown: {}",
+				result["error"]
+			)),
+			_ => Self::Running,
+		}
+	}
+}
+
 #[async_trait]
 pub trait CompletionChecks: Send + Sync {
 	/// `None` when the Run has no Working Area.
@@ -65,3 +90,6 @@ pub trait CompletionChecks: Send + Sync {
 	async fn start(&self, run: &Run, request: &CheckRequest<'_>) -> Result<CheckStart>;
 	async fn status(&self, run: &Run, operation: Uuid) -> Result<CheckStatus>;
 }
+
+#[cfg(test)]
+mod tests;

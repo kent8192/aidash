@@ -38,12 +38,17 @@ impl Executor<'_> {
 		if !policy.needs_start_content() || run.context.completion.start_content.is_some() {
 			return Ok(());
 		}
-		let content = match self.environment.completion_checks() {
-			Some(checks) => checks.content(run).await?,
-			None => None,
+		// A node that cannot run Checks cannot see the content either; the
+		// gate then pauses every candidate, so nothing is recorded.
+		let Some(checks) = self.environment.completion_checks() else {
+			return Ok(());
 		};
-		run.context.completion.start_content =
-			Some(content.map_or_else(empty_content, |content| content.digest));
+		run.context.completion.start_content = Some(
+			checks
+				.content(run)
+				.await?
+				.map_or_else(empty_content, |content| content.digest),
+		);
 		Ok(())
 	}
 
@@ -58,17 +63,22 @@ impl Executor<'_> {
 		let Some(policy) = agent.completion.as_ref() else {
 			return Ok(Gate::Proceed(CompletionBasis::NotRequired));
 		};
-		let checks = self.environment.completion_checks();
 		let now = chrono::Utc::now();
 		let mut progress = run.context.completion.clone();
 		progress.renew(run.state.tool()?.included_input_seq);
+		// Without Checks the node cannot read the mounted content, so not even
+		// `content_changed` can be decided: every candidate waits for a person.
+		let Some(checks) = self.environment.completion_checks() else {
+			let reason = ReviewReason::Unavailable {
+				check: policy.checks()[0].name.clone(),
+				detail: UNAVAILABLE.into(),
+			};
+			return self.review(run, token, home, guard, progress, reason).await;
+		};
 		// A started Check is harvested first. Its evidence belongs to the
 		// content it ran on, whatever the candidate is now.
 		if let Some(pending) = progress.pending.take() {
-			let status = match checks {
-				Some(checks) => checks.status(run, pending.operation_id).await?,
-				None => CheckStatus::Unavailable(UNAVAILABLE.into()),
-			};
+			let status = checks.status(run, pending.operation_id).await?;
 			match status {
 				CheckStatus::Running if !pending.overdue(now) => {
 					progress.pending = Some(pending);
@@ -88,10 +98,7 @@ impl Executor<'_> {
 				}
 			}
 		}
-		let content = match checks {
-			Some(checks) => checks.content(run).await?,
-			None => None,
-		};
+		let content = checks.content(run).await?;
 		// The content is not settled while another operation runs in the Area.
 		if content
 			.as_ref()
@@ -120,15 +127,13 @@ impl Executor<'_> {
 				Decision::Start { check, subject } => {
 					progress.attempts += 1;
 					let attempt = progress.attempts;
-					let start = match (checks, content.as_ref()) {
-						(
-							Some(checks),
-							Some(MountedContent {
-								revision,
-								state: ContentState::Ready,
-								..
-							}),
-						) => {
+					// `decide` starts a Check only for a Run with a Working Area.
+					let start = match content.as_ref() {
+						Some(MountedContent {
+							revision,
+							state: ContentState::Ready,
+							..
+						}) => {
 							let request = CheckRequest {
 								key: subject.key(run.id, attempt),
 								command: &check.command,
@@ -137,13 +142,10 @@ impl Executor<'_> {
 							};
 							checks.start(run, &request).await?
 						}
-						(
-							_,
-							Some(MountedContent {
-								state: ContentState::Unavailable(detail),
-								..
-							}),
-						) => CheckStart::Unavailable(detail.clone()),
+						Some(MountedContent {
+							state: ContentState::Unavailable(detail),
+							..
+						}) => CheckStart::Unavailable(detail.clone()),
 						_ => CheckStart::Unavailable(UNAVAILABLE.into()),
 					};
 					match start {
@@ -160,6 +162,11 @@ impl Executor<'_> {
 							});
 							return self
 								.wait(run, token, progress, "run.completion_check_started")
+								.await;
+						}
+						CheckStart::Stale => {
+							return self
+								.wait(run, token, progress, "run.completion_content_changed")
 								.await;
 						}
 						CheckStart::Unavailable(detail) => progress.record(subject.refused(
