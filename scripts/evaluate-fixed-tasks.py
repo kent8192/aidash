@@ -532,7 +532,9 @@ def run_deterministic(args, binary_directory):
             private = Path(private_path)
             postgres = stack.enter_context(container(f"aidash-fte-{tag}-pg", POSTGRES_IMAGE, (
                 ["-p", "127.0.0.1::5432"], ["postgres", "-c", "max_connections=200"]),
-                {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "aidash_evaluation"}))
+                # The image's init script creates the owner and server roles (#262).
+                {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "aidash_evaluation",
+                 "AIDASH_OWNER_PASSWORD": password, "AIDASH_SERVER_PASSWORD": password}))
             nats = stack.enter_context(container(f"aidash-fte-{tag}-nats", NATS_IMAGE,
                                                  (["-p", "127.0.0.1::4222"], ["-js"])))
             wait(lambda: subprocess.run(["docker", "exec", postgres, "pg_isready", "-h", "127.0.0.1", "-U", "aidash",
@@ -551,7 +553,8 @@ def run_deterministic(args, binary_directory):
             environment.update({
                 "REINHARDT_ENV": "local",
                 "REINHARDT_SETTINGS_DIR": str(settings_directory(private, secrets.token_hex(32))),
-                "DATABASE_URL": f"postgres://aidash:{urllib.parse.quote(password, safe='')}@127.0.0.1:"
+                # Servers log in as the role row-level security binds; setup below as the owner.
+                "DATABASE_URL": f"postgres://aidash_server:{urllib.parse.quote(password, safe='')}@127.0.0.1:"
                                 f"{published_port(postgres, 5432)}/aidash_evaluation",
                 "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
                 "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": operator,
@@ -566,9 +569,11 @@ def run_deterministic(args, binary_directory):
             # schema exists and before any bank is created (docs/memory-recovery.md).
             recovery = private / "memory-recovery"
             environment["AIDASH_MEMORY_RECOVERY_DIR"] = str(recovery)
+            owner = dict(environment, DATABASE_URL=environment["DATABASE_URL"].replace(
+                "postgres://aidash_server:", "postgres://aidash_owner:", 1))
             with open(log_directory / "setup.log", "wb") as setup:
                 for command in (["migrate"], ["memory-recovery", "init-if-missing", "--directory", str(recovery)]):
-                    subprocess.run([str(binary), *command], cwd=ROOT, env=environment, stdout=setup, stderr=setup,
+                    subprocess.run([str(binary), *command], cwd=ROOT, env=owner, stdout=setup, stderr=setup,
                                    check=True, timeout=300)
             child = stack.enter_context(node(binary, environment, log_directory / "server.log"))
 

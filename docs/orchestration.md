@@ -83,14 +83,17 @@ CREATE EXTENSION pg_jsonschema WITH SCHEMA public;
 
 The migration calls `public.jsonschema_is_valid(json)` directly and fails if the
 extension is unavailable; it does not substitute partial JSON shape checks.
-Ensure the Aidash database role can execute that public function. The local
-PostgreSQL image installs the pinned extension package and initializes
-`template1` plus `aidash_a`; `aidash_b` and `aidash_test` inherit it from
-`template1`. The init script runs only for an empty data directory. For an
-existing local volume, a server administrator must create the extension in
-`template1` and every existing Aidash database before applying this migration.
-The Helm chart uses externally managed databases, so provision this prerequisite
-on those databases separately.
+Ensure the Aidash database roles can execute that public function. Migrations
+run as `aidash_owner`, which owns every table; servers and workers run as
+`aidash_server`, which holds only DML and refuses to start as a superuser, a
+`BYPASSRLS` role or an owner of database objects (see the README's database
+roles). The local PostgreSQL image installs the pinned extension package. On an
+empty data directory, when `AIDASH_OWNER_PASSWORD` and `AIDASH_SERVER_PASSWORD`
+are set, its init scripts create both roles and, in `aidash_a`, `aidash_b` and
+`aidash_test`, transfer ownership to `aidash_owner`, create the three extensions
+and grant the server's default privileges. An existing local volume created
+before these roles must be recreated. The Helm chart uses externally managed
+databases, so provision these prerequisites on those databases separately.
 
 The bundled PostgreSQL image applies `pgroonga_crash_safer` preloading and
 `pgroonga.enable_crash_safe=on` on every server start, including retained data
