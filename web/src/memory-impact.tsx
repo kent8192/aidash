@@ -36,6 +36,14 @@ export type MemoryImpact = {
   observed_at: string;
 };
 
+/** A cancelled or finished Run has no next boundary; its read is historical. */
+function finished(run: AffectedRun) {
+  return (
+    run.control === "CANCELLED" ||
+    ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase)
+  );
+}
+
 /** Content-free view of the visible Runs and derived Units that depend on a Unit. */
 export function MemoryImpactView({
   workspace,
@@ -133,15 +141,20 @@ export function MemoryImpactView({
               <Badge value={run.phase} />
               <Badge value={run.control} />
               <span className="text-muted-foreground">
-                {run.fenced
+                {finished(run)
                   ? text(
-                      `read revision ${run.read_revision}; stops at its next boundary`,
-                      `revision ${run.read_revision} を読み取り済み。次の境界で停止します`,
+                      `read revision ${run.read_revision}; already finished, a change does not stop it`,
+                      `revision ${run.read_revision} を読み取り済み。終了済みのため、変更しても停止しません`,
                     )
-                  : text(
-                      `reads revision ${run.read_revision}; a change stops it`,
-                      `revision ${run.read_revision} を読み取り中。変更すると停止します`,
-                    )}
+                  : run.fenced
+                    ? text(
+                        `read revision ${run.read_revision}; stops at its next boundary`,
+                        `revision ${run.read_revision} を読み取り済み。次の境界で停止します`,
+                      )
+                    : text(
+                        `reads revision ${run.read_revision}; a change stops it`,
+                        `revision ${run.read_revision} を読み取り中。変更すると停止します`,
+                      )}
               </span>
             </div>
           ))}

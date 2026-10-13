@@ -3,7 +3,8 @@ use crate::semantic::Failure;
 use rstest::rstest;
 
 #[rstest]
-#[case::pending(Failure::Pending, false, &[Action::Wait])]
+#[case::scheduled_pending(Failure::Pending, true, &[Action::Wait])]
+#[case::unscheduled_pending(Failure::Pending, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::scheduled_outage(Failure::Unavailable, true, &[Action::Wait])]
 #[case::unscheduled_outage(Failure::Unavailable, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::exhausted(Failure::RetriesExhausted, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
@@ -48,7 +49,7 @@ fn recovery_serializes_with_stable_snake_case_names() {
 		value,
 		serde_json::json!({"cause":"invalidated","actions":["create_follow_up_task"]})
 	);
-	let value = serde_json::to_value(Recovery::new(Failure::Pending, false)).unwrap();
+	let value = serde_json::to_value(Recovery::new(Failure::Pending, true)).unwrap();
 	assert_eq!(
 		value,
 		serde_json::json!({"cause":"pending","actions":["wait"]})

@@ -198,14 +198,16 @@ content is hidden. On the Home, each entry of
 Run as `semantic.recovery`, also while semantic memory is disabled, and omits it
 once the remote Run is cancelled or finished. A retry counts as scheduled only
 while the Run is active: a paused Run is never scheduled, so it offers
-`retry_unchanged_binding` instead of `wait`.
+`retry_unchanged_binding` instead of `wait`. While a remote Run reports a
+semantic cause, the Home's remote execution controls follow these actions:
+resume is offered only with `retry_unchanged_binding`, and the follow-up form
+only with `create_follow_up_task`.
 
-| Cause                                                                                                          | Actions                                            |
-| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `pending`                                                                                                      | `wait`                                             |
-| `unavailable` with a scheduled retry                                                                           | `wait`                                             |
-| `unavailable` without one, `retries_exhausted`, `authority`, `configuration`, `allowance`, `provider_contract` | `retry_unchanged_binding`, `create_follow_up_task` |
-| `invalidated`, `context_budget`                                                                                | `create_follow_up_task`                            |
+| Cause                                                                                                                       | Actions                                            |
+| --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `pending` or `unavailable` with a scheduled retry                                                                           | `wait`                                             |
+| `pending` or `unavailable` without one, `retries_exhausted`, `authority`, `configuration`, `allowance`, `provider_contract` | `retry_unchanged_binding`, `create_follow_up_task` |
+| `invalidated`, `context_budget`                                                                                             | `create_follow_up_task`                            |
 
 - `wait`: the Run retries on its own schedule.
 - `retry_unchanged_binding`: an authorized manual resume. It passes only if
@@ -231,17 +233,19 @@ reused retrieval goes stale before it is sent (ADR 0020).
 `POST /api/workspaces/{workspace}/memory/units/impact` takes the provider, the
 Bank and up to the pinned `max_candidates` Unit IDs, and needs `memory.read` on
 that Bank. For each Unit it returns the revision a Run may still read
-(`readable_revision`, `null` once the Unit is deleted, withdrawn, retired or past
-its retention, even before the maintenance sweep), the Runs that read it and the
-live derived Units that depend on it. A derived Unit is live under the same
-checks as listing: visible (not deleted, stale or withdrawn), within retention
-and with current support. The same view serves as the preview before a change
-and as the post-change view: a Run read is `fenced` once its revision is no
-longer readable.
+(`readable_revision`, `null` once the Unit is deleted, withdrawn, retired, past
+its retention or without current support, even before the maintenance sweep),
+the Runs that read it and the live derived Units that depend on it. A derived
+Unit is live under the same checks as listing: visible (not deleted, stale or
+withdrawn), within retention and with current support. The same view serves as
+the preview before a change and as the post-change view: a Run read is `fenced`
+once its revision is no longer readable.
 
 - The view is content-free: identities, revisions, kinds, phase and control,
   never Unit text, subjects or Run content. The memory page shows it under
-  each Unit as "Dependent Runs and derived memory".
+  each Unit as "Dependent Runs and derived memory". A cancelled or finished
+  Run is still listed as a historical reader, but the page does not claim that
+  a change stops it: it has no next boundary.
 - A Run is listed only if its base disclosure holds for the requester (task
   visibility, `run.read` and `memory.read` on its participant). A derived Unit
   is listed only with `memory.read` on its Bank. Traversal continues through
@@ -249,7 +253,10 @@ longer readable.
 - Bounds: at most 64 visible Runs per Unit from at most 256 Run read records,
   and the pinned `max_graph_visits` for derived content. `complete` is `false`
   when a bound stopped a scan; because hidden records also consume the scan,
-  the flag is the only signal they can affect.
+  the flag is the only signal they can affect. Run reads are found through a
+  lookup index that leads with the Unit
+  (`knowledge/0029_memory_run_read_lookup`), so the scan bound also bounds the
+  work.
 - A Unit of another Bank answers exactly like an unknown ID (`null`, no Runs,
   no derived Units), so the view cannot probe identities outside the Bank
   (`impact_answers_a_foreign_unit_like_an_unknown_id`).

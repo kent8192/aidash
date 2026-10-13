@@ -39,14 +39,14 @@ pub async fn impact(store: &Store, actor: &Actor, input: ImpactQuery) -> Result<
 				});
 				continue;
 			};
-			// Retention fences a read before the maintenance sweep marks the Unit
-			// stale, exactly as the Run recheck does at its next boundary.
-			let readable_revision =
-				if unit.visible() && unexpired(&mut lease, &unit).await?.is_some() {
-					Some(unit.revision)
-				} else {
-					None
-				};
+			// Retention and lost support fence a read before the maintenance sweep
+			// marks the Unit stale, exactly as the Run recheck does at its next
+			// boundary.
+			let readable_revision = if unit.visible() && supported(&mut lease, &unit).await? {
+				Some(unit.revision)
+			} else {
+				None
+			};
 			let (runs, runs_complete) =
 				runs(store, &mut lease, *id, readable_revision, limits).await?;
 			let (derived, derived_complete) =
@@ -171,9 +171,12 @@ async fn live(
 	lease: &mut Lease<'_>,
 	unit: &aidash_domain::memory::Unit,
 ) -> Result<bool> {
-	if !readable(store, lease, unit).await? {
-		return Ok(false);
-	}
+	Ok(readable(store, lease, unit).await? && supported(lease, unit).await?)
+}
+
+/// Whether `unit` is within retention and every Unit it rests on is current,
+/// as the Run read recheck requires.
+async fn supported(lease: &mut Lease<'_>, unit: &aidash_domain::memory::Unit) -> Result<bool> {
 	let Some(policy) = unexpired(lease, unit).await? else {
 		return Ok(false);
 	};

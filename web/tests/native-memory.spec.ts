@@ -162,6 +162,44 @@ async function fixture(
       writes.push({ url: path, body });
       return route.fulfill({ json: body.target });
     }
+    if (path.endsWith("/memory/units/impact")) {
+      const run = (id: string, phase: string, control: string) => ({
+        id,
+        task_id: task,
+        phase,
+        control,
+        read_revision: 39,
+        fenced: true,
+      });
+      return route.fulfill({
+        json: {
+          units: [
+            {
+              id: body.units[0],
+              readable_revision: 40,
+              runs: [
+                {
+                  ...run("run-reading", "THINKING", "ACTIVE"),
+                  read_revision: 40,
+                  fenced: false,
+                },
+                run("run-fenced", "WAITING", "ACTIVE"),
+                run("run-completed", "COMPLETED", "ACTIVE"),
+                run("run-cancelled", "WAITING", "CANCELLED"),
+              ],
+              derived: [],
+            },
+          ],
+          complete: true,
+          limits: {
+            runs_per_unit: 64,
+            run_scan_per_unit: 256,
+            derived_visits: 64,
+          },
+          observed_at: "2026-10-06T00:00:00Z",
+        },
+      });
+    }
     if (path.endsWith("/memory/units/query"))
       return route.fulfill({
         json: paged
@@ -704,6 +742,33 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await bankSelect.selectOption(participant);
     await expect(dialog).toHaveCount(0);
     await expect(page.getByText("Recent retained revision 31")).toHaveCount(0);
+  });
+  test(`memory impact never promises to stop a finished Run (${locale})`, async ({
+    page,
+  }) => {
+    await fixture(page, locale, true);
+    const ja = locale === "ja-JP";
+    const summary = ja
+      ? "依存するRunと派生メモリ"
+      : "Dependent Runs and derived memory";
+    await page.getByText(summary, { exact: true }).click();
+    const impact = page
+      .locator("details")
+      .filter({ has: page.getByText(summary, { exact: true }) });
+    const reader = (id: string) =>
+      impact.locator("div").filter({ hasText: id }).last();
+    await expect(reader("run-reading")).toContainText(
+      ja ? "変更すると停止します" : "a change stops it",
+    );
+    await expect(reader("run-fenced")).toContainText(
+      ja ? "次の境界で停止します" : "stops at its next boundary",
+    );
+    for (const id of ["run-completed", "run-cancelled"]) {
+      await expect(reader(id)).toContainText(
+        ja ? "終了済みのため" : "already finished",
+      );
+      await expect(reader(id)).not.toContainText(ja ? "停止します" : "stops");
+    }
   });
   test(`native memory clears retained bodies after disclosure withdrawal (${locale})`, async ({
     page,

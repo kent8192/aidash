@@ -9,7 +9,10 @@ use aidash_domain::{
 		Delegation,
 		execution::{
 			PrepareInput,
-			admission::{Activation, Admission, Message, MessageReceipt, RemoteExecutionControl},
+			admission::{
+				Activation, Admission, Message, MessageReceipt, RemoteExecutionControl,
+				RemoteExecutionControlState,
+			},
 			home::{FollowUpInput, Grant, Status},
 		},
 	},
@@ -17,6 +20,7 @@ use aidash_domain::{
 	registry::EntityRef,
 	semantic::{
 		Failure,
+		recovery::Recovery,
 		remote::{Binding, Request, status::Provenance},
 	},
 };
@@ -280,14 +284,19 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			.semantic_status(grant.id, &binding, reason)
 			.await?;
 		// A cancelled or finished remote Run keeps its cause visible but, like the
-		// local management view, offers no action that would resume it.
-		if status
-			.as_ref()
-			.ok()
-			.and_then(Option::as_ref)
-			.is_some_and(|activation| !activation.recoverable())
-		{
-			semantic.recovery = None;
+		// local management view, offers no action that would resume it. A paused
+		// remote Run claims no retry, so like a paused local Run it has none
+		// scheduled.
+		match status.as_ref().ok().and_then(Option::as_ref) {
+			Some(activation) if !activation.recoverable() => semantic.recovery = None,
+			Some(activation)
+				if matches!(activation.control, RemoteExecutionControlState::Paused) =>
+			{
+				semantic.recovery = semantic
+					.recovery
+					.map(|recovery| Recovery::new(recovery.cause, false));
+			}
+			_ => {}
 		}
 		Ok(Status {
 			human_requests,

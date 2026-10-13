@@ -565,7 +565,8 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 
 /// Impact inspection applies the same live-read checks as listing and the Run
 /// recheck: a withdrawn derived Unit is not reported, an expired derived Unit
-/// disappears before the sweep, and an expired root fences its readers.
+/// disappears before the sweep, an expired root fences its readers, and so does
+/// a root whose support expired.
 #[rstest]
 #[tokio::test]
 async fn impact_reports_only_live_units_and_fences_expired_reads(
@@ -612,7 +613,11 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 		.unwrap()
 		.remove(0);
 	let mut derived = Vec::new();
-	for text in ["Live dependent", "Withdrawn dependent"] {
+	for text in [
+		"Live dependent",
+		"Withdrawn dependent",
+		"Supported dependent",
+	] {
 		derived.push(
 			memory::mutate(&store, &Actor::Operator, add(text, vec![source.evidence()]))
 				.await
@@ -636,7 +641,8 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	)
 	.await
 	.unwrap();
-	let (scope, run) = recorded_run(&store, &bank, &[source.id]).await;
+	let supported = derived[2].clone();
+	let (scope, run) = recorded_run(&store, &bank, &[source.id, supported.id]).await;
 	let actor = Actor::Subject(scope.identity.clone());
 	let query = ImpactQuery {
 		provider: reference("p"),
@@ -677,7 +683,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 			.iter()
 			.map(|unit| unit.id)
 			.collect::<Vec<_>>(),
-		vec![derived[0].id],
+		vec![derived[0].id, supported.id],
 		"a withdrawn dependent is not live derived memory"
 	);
 
@@ -691,7 +697,14 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	let dependent_expired = impact(&store, &actor, query.clone()).await.unwrap();
 
 	// Assert
-	assert!(dependent_expired.units[0].derived.is_empty());
+	assert_eq!(
+		dependent_expired.units[0]
+			.derived
+			.iter()
+			.map(|unit| unit.id)
+			.collect::<Vec<_>>(),
+		vec![supported.id]
+	);
 	assert_eq!(dependent_expired.units[0].readable_revision, Some(1));
 	assert_eq!(
 		dependent_expired.units[0]
@@ -709,7 +722,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 		.await
 		.unwrap();
 	tx.commit().await.unwrap();
-	let root_expired = impact(&store, &actor, query).await.unwrap();
+	let root_expired = impact(&store, &actor, query.clone()).await.unwrap();
 
 	// Assert
 	assert_eq!(root_expired.units[0].readable_revision, None);
@@ -721,5 +734,31 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 			.collect::<Vec<_>>(),
 		vec![(run, 1, true)],
 		"the next Run boundary would stop with Invalidated"
+	);
+
+	// Act: the dependent is unexpired, but the Unit it rests on has expired
+	let unsupported = impact(
+		&store,
+		&actor,
+		ImpactQuery {
+			units: vec![supported.id],
+			..query
+		},
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(
+		unsupported.units[0].readable_revision, None,
+		"listing and the Run recheck reject a Unit without current support"
+	);
+	assert_eq!(
+		unsupported.units[0]
+			.runs
+			.iter()
+			.map(|run| (run.id, run.read_revision, run.fenced))
+			.collect::<Vec<_>>(),
+		vec![(run, 1, true)]
 	);
 }

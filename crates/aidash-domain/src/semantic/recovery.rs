@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "SemanticRecoveryAction")]
 pub enum Action {
-	/// Indexing or the semantic backend is still working; the Run retries on its
-	/// own schedule and nobody needs to act.
+	/// Indexing or the semantic backend is still working and the Run holds an
+	/// automatic retry; it retries on its own schedule and nobody needs to act.
 	Wait,
 	/// An authorized manual retry resumes the Run with its unchanged Binding. The
 	/// retry passes only if every pinned revision and current authority hold.
@@ -35,15 +35,17 @@ pub struct Recovery {
 
 impl Recovery {
 	/// `retry_scheduled` is whether the Run already holds an automatic retry.
+	/// Without one, as for a paused Run, nothing observes a pending operation
+	/// complete, so waiting is never offered.
 	pub fn new(cause: Failure, retry_scheduled: bool) -> Self {
 		use Action::*;
 		let actions = match cause {
-			Failure::Pending => vec![Wait],
-			Failure::Unavailable if retry_scheduled => vec![Wait],
+			Failure::Pending | Failure::Unavailable if retry_scheduled => vec![Wait],
 			// Retrying the same request cannot change the outcome: the Run's
 			// context already holds obsolete text, or the same budget overflows.
 			Failure::Invalidated | Failure::ContextBudget => vec![CreateFollowUpTask],
-			Failure::Unavailable
+			Failure::Pending
+			| Failure::Unavailable
 			| Failure::RetriesExhausted
 			| Failure::Authority
 			| Failure::Configuration

@@ -52,6 +52,9 @@ fn inspection(
 #[case::retrying(RunControl::Active, Failure::Unavailable, true, &[Action::Wait])]
 // A paused Run keeps its retry deadline but is never scheduled until resumed.
 #[case::paused_retry(RunControl::Paused, Failure::Unavailable, true, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
+#[case::pending(RunControl::Active, Failure::Pending, true, &[Action::Wait])]
+// Without a scheduled retry nothing observes the pending operation complete.
+#[case::paused_pending(RunControl::Paused, Failure::Pending, true, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 #[case::exhausted(RunControl::Paused, Failure::RetriesExhausted, false, &[Action::RetryUnchangedBinding, Action::CreateFollowUpTask])]
 fn management_reports_the_exact_cause_and_its_authorized_actions(
 	#[case] control: RunControl,
