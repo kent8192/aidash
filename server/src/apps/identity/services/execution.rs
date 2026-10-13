@@ -187,6 +187,52 @@ impl WorkerAuthority {
 		}
 	}
 
+	/// Web disclosure approval under the worker's current authority lease. It
+	/// shares the capability approval records, decision API and Run waiting.
+	pub async fn web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: &aidash_application::capabilities::approvals::DisclosureRequest,
+	) -> Result<aidash_application::ports::research::DisclosureState> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::disclose(
+				&mut scope,
+				&run.metadata(),
+				request,
+			)
+			.await
+			.map_err(Error::from)
+		};
+		access.finish(result).await
+	}
+
+	/// Consume a one-time Web disclosure approval of `run` after its attempt
+	/// is reserved.
+	pub async fn consume_web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<bool> {
+		let outer = self.access.write().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::consume_disclosure(
+				&mut scope,
+				&run.metadata(),
+				approval,
+			)
+			.await
+			.map_err(Error::from)
+		};
+		access.finish(result).await
+	}
+
 	pub async fn memory_mutate(
 		&self,
 		store: &Store,

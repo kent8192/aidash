@@ -35,6 +35,23 @@ An authenticated operator can request the exact generated groups with `POST /api
 
 The response contains `installations` with exact immutable entry IDs, revision digests, dependency bindings and pending pointers, plus an `unavailable` map. Shell and Python include their poll/cancel operations. All persisted members share the operator transaction. An unavailable runner creates no sandbox revision and selects no fallback. Reusing the key preserves the receipt; retrying provisioning after a runner becomes available requires a new key. Existing installations and grants are not rewritten or activated.
 
+## Research provider packages
+
+Web research providers are packages of the same operator workflow. Their
+groups are `research_brave` (`research.brave@1`: `search`), `research_page`
+(`research.page@1`: `fetch`, `find`) and `research_fixture`
+(`research.fixture@1`: `search`, `fetch`, `find`). Request them by name in
+`POST /api/marketplace/host-packages` or `node.default_host_packages`, then
+review and approve them like Host groups. Entries are named
+`aidash.research.<provider>.<operation>@1.0.0` and use the default Model
+aliases `research_search`, `research_fetch` and `research_find` with the same
+schema for every provider, so a tenant can replace `research_brave` and
+`research_page` with another provider package without changing its Agents. A
+group whose provider is not configured on the Node is reported in
+`unavailable`. Descriptors with a `research.` provider cannot be registered by
+tenants; they come only from these packages. See [Web research](../web-research.md)
+for the contract, evidence store, citation checks and disclosure approval.
+
 ## Review and activation
 
 In Marketplace administration, select a tenant and prepare the desired Host groups. Inspect each pending definition and its dependency bindings, select every member to be approved and use **Approve and activate selected set**. The displayed selection retains the reviewed digest and approval revisions. If it becomes stale, reload the approval selection and review it again. Preparing or reloading a set grants no approval.

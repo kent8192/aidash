@@ -26,6 +26,9 @@ const TEXT_BUDGET: usize = MAX_PROGRESS_ITEM_BYTES - 2 * STORAGE_SLACK;
 /// Coalesces offered progress until the flusher stores it.
 pub(super) struct ProgressBuffer {
 	started: Instant,
+	/// Answer text is not displayed before its Source citations are checked;
+	/// tool-call assembly progress still is.
+	withhold_text: bool,
 	pending: Mutex<Pending>,
 	wake: Notify,
 }
@@ -41,9 +44,17 @@ struct Pending {
 
 impl ProgressBuffer {
 	/// `started` is when the provider call began; first-delta latency counts from it.
+	#[cfg(test)]
 	pub(super) fn new(started: Instant) -> Self {
+		Self::withholding_text(started, false)
+	}
+
+	/// A Run that binds an operation yielding citable evidence verifies its
+	/// answer before publishing it, so tentative answer text is not streamed.
+	pub(super) fn withholding_text(started: Instant, withhold_text: bool) -> Self {
 		Self {
 			started,
+			withhold_text,
 			pending: Mutex::new(Pending::default()),
 			wake: Notify::new(),
 		}
@@ -115,6 +126,9 @@ impl ProgressBuffer {
 
 impl InferenceProgressSink for ProgressBuffer {
 	fn offer(&self, progress: InferenceProgress) {
+		if self.withhold_text && matches!(progress, InferenceProgress::Text { .. }) {
+			return;
+		}
 		let mut pending = self.pending();
 		if pending.closed {
 			return;

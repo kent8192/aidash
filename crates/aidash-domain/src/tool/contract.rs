@@ -142,6 +142,26 @@ pub struct ToolBehavior {
 	/// The output's `"exposure_update"` changes the Run's Exposure set.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub exposure_update: bool,
+	/// Research contract result kinds this operation yields. A Run that binds
+	/// any `Citations` operation has its final answer's Source citations checked.
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub yields: Vec<Yield>,
+	/// The provider sends Run-derived content outside the Node only after a
+	/// Web disclosure approval; the operator waits on it like any approval.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub disclosure_approval: bool,
+}
+
+/// Result kinds of the host-owned research contract, declared per operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Yield {
+	/// Source records from Web search; discovery only, never evidence.
+	Search,
+	/// A Document snapshot from Page reading.
+	Fetch,
+	/// Evidence fragments that a final answer may cite.
+	Citations,
 }
 impl ToolBehavior {
 	pub fn permits(&self, mode: ToolUseMode) -> bool {
@@ -156,6 +176,9 @@ impl ToolBehavior {
 			Some(ResultFitting::SkillText) if input.get("skill").is_none() => None,
 			other => other,
 		}
+	}
+	pub fn yields(&self, kind: Yield) -> bool {
+		self.yields.contains(&kind)
 	}
 	pub fn model_media_result(&self, input: &Value, output: &Value) -> bool {
 		self.yields_model_media
@@ -232,6 +255,8 @@ impl ToolContract {
 				yields_model_media: false,
 				concurrency: Concurrency::Sequential,
 				exposure_update: false,
+				yields: vec![],
+				disclosure_approval: false,
 			},
 			disclosure,
 			remote_exposure: true,
@@ -260,6 +285,8 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			workbench_approval: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
+			yields: vec![],
+			disclosure_approval: false,
 		},
 		disclosure: DisclosureBoundary::Home,
 		remote_exposure: false,
@@ -661,6 +688,23 @@ mod tests {
 		let encoded = serde_json::to_value(builtin_contract("capability_load").unwrap()).unwrap();
 		assert_eq!(encoded["behavior"]["exposure_update"], true);
 	}
+	#[test]
+	fn research_attributes_leave_admitted_builtin_digests_unchanged() {
+		// Admitted Runs pin `provider_contract_digest` over these bytes; the
+		// research `yields` and `disclosure_approval` attributes are omitted
+		// when empty, so existing contracts keep their digests.
+		let contract = builtin_contract("workspace_read").unwrap();
+		assert_eq!(
+			serde_json::to_string(&contract.behavior).unwrap(),
+			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"workbench_approval":false}"#
+		);
+		assert_eq!(
+			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
+			PINNED_WORKSPACE_READ_DIGEST
+		);
+	}
+	const PINNED_WORKSPACE_READ_DIGEST: &str =
+		"sha256:db828953f52fd78d391555cb3bd65a846349e57dc02e015e2ec032544995c271";
 	#[test]
 	fn registry_effects_and_approval_are_independent() {
 		let reference = EntityRef {

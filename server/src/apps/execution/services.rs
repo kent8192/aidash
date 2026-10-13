@@ -21,7 +21,7 @@ pub mod provider;
 
 pub mod runtime;
 
-pub mod web_search;
+pub mod research;
 
 pub mod context;
 
