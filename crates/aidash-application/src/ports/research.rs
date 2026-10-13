@@ -60,11 +60,15 @@ pub struct Reservation {
 	pub destination: String,
 	pub attribution: Option<CostAttribution>,
 	/// The Run's research limits. Attempts of this operation, and the Run's
-	/// Source records (search) or Document snapshots (fetch), are checked
-	/// under the same lock as the reservation.
+	/// Source records (search, or a page read by address) or Document
+	/// snapshots (fetch), are checked under the same lock as the reservation.
 	pub limits: Limits,
 	/// The attributed account's charge limit; checked with the reservation.
 	pub budget: Option<Budget>,
+	/// The address of a page read by address rather than a Source record. Its
+	/// Source record is created with the reservation, within the Run's Source
+	/// record limit, so the slot is held before anything is sent.
+	pub source_url: Option<String>,
 }
 
 /// Charges an account may hold since `since`, including the new attempt.
@@ -78,7 +82,10 @@ pub struct Budget {
 /// concurrent invocations cannot together exceed them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reserved {
-	Reserved,
+	/// `source` is the Source record created for [`Reservation::source_url`].
+	Reserved {
+		source: Option<Uuid>,
+	},
 	/// The key already has an attempt.
 	Duplicate,
 	AttemptLimit,
@@ -115,15 +122,13 @@ pub trait EvidenceStore: Send + Sync {
 		max_sources: u32,
 	) -> Result<Vec<SourceRecord>>;
 	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>>;
-	/// A new Document snapshot; `source` is created when the page was supplied
-	/// by address rather than a Source record. Under the Run's lock, the
-	/// snapshot is refused with `SnapshotLimit` when it would exceed the Run's
-	/// snapshot limits, and with `SourceLimit` when the Source record it would
-	/// create exceeds the Run's Source record limit.
+	/// A new Document snapshot of the Source record `source`. Under the Run's
+	/// lock, the snapshot is refused with `SnapshotLimit` when it would exceed
+	/// the Run's snapshot limits.
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
-		source: Option<Uuid>,
+		source: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
 		limits: &Limits,

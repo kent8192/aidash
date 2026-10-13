@@ -95,6 +95,13 @@ impl EvidenceStore for Memory {
 		{
 			return Ok(Reserved::BudgetExhausted);
 		}
+		let mut sources = self.sources.lock().unwrap();
+		if reservation.source_url.is_some()
+			&& sources.iter().filter(|source| source.run_id == run).count() as u32
+				>= reservation.limits.sources
+		{
+			return Ok(Reserved::SourceLimit);
+		}
 		if let Some(attribution) = &reservation.attribution {
 			*spend += attribution.price_micro_usd;
 		}
@@ -102,7 +109,17 @@ impl EvidenceStore for Memory {
 			(run, reservation.key.clone()),
 			(reservation.clone(), AttemptState::Dispatched),
 		);
-		Ok(Reserved::Reserved)
+		let source = reservation.source_url.as_ref().map(|url| {
+			let record = SourceRecord {
+				id: Uuid::new_v4(),
+				run_id: run,
+				url: url.clone(),
+				title: String::new(),
+			};
+			sources.push(record.clone());
+			record.id
+		});
+		Ok(Reserved::Reserved { source })
 	}
 	async fn settle(
 		&self,
@@ -163,7 +180,7 @@ impl EvidenceStore for Memory {
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
-		source: Option<Uuid>,
+		source_id: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
 		limits: &Limits,
@@ -179,22 +196,6 @@ impl EvidenceStore for Memory {
 		{
 			return Ok(Err(Failure::SnapshotLimit));
 		}
-		let source_id = match source {
-			Some(source) => source,
-			None => {
-				if usage.sources >= limits.sources {
-					return Ok(Err(Failure::SourceLimit));
-				}
-				let record = SourceRecord {
-					id: Uuid::new_v4(),
-					run_id: run,
-					url: page.url.clone(),
-					title: page.title.clone().unwrap_or_default(),
-				};
-				self.sources.lock().unwrap().push(record.clone());
-				record.id
-			}
-		};
 		let snapshot = DocumentSnapshot {
 			id: Uuid::new_v4(),
 			run_id: run,
@@ -689,7 +690,7 @@ impl DisclosureGate for ConcurrentSource<'_> {
 }
 
 #[tokio::test]
-async fn a_concurrent_source_cannot_exceed_the_source_limit_after_the_early_check() {
+async fn a_concurrent_source_cannot_take_the_slot_of_a_page_read_by_address() {
 	let store = Memory::default();
 	let gate = ConcurrentSource { store: &store };
 	let research = Research {
@@ -710,13 +711,56 @@ async fn a_concurrent_source_cannot_exceed_the_source_limit_after_the_early_chec
 		)
 		.await
 		.unwrap();
+	// The reservation finds the slot taken: nothing is sent or reserved.
 	assert_eq!(result["error"]["code"], "source_limit");
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 0);
+	assert_eq!(store.attempt(run, "k1").await.unwrap(), None);
 	assert_eq!(store.sources.lock().unwrap().len(), 1);
 	assert!(store.snapshots.lock().unwrap().is_empty());
-	assert!(matches!(
-		store.attempt(run, "k1").await.unwrap(),
-		Some(AttemptState::Settled { .. })
-	));
+}
+
+#[tokio::test]
+async fn a_page_read_by_address_holds_its_source_slot_from_the_reservation() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			sources: 1,
+			..Limits::default()
+		},
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	let read = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(read["status"], "ok", "{read}");
+	let sources = store.sources.lock().unwrap().clone();
+	assert_eq!(sources.len(), 1);
+	assert_eq!(sources[0].url, "https://example.com/source");
+	assert_eq!(store.snapshots.lock().unwrap()[0].source_id, sources[0].id);
+	// A search reserved later finds no room for its candidates.
+	let candidate = SourceCandidate {
+		url: "https://example.com/later".into(),
+		title: "Later".into(),
+		snippet: String::new(),
+		rank: 1,
+		page_age: None,
+		truncated: false,
+	};
+	assert!(
+		store
+			.record_sources(run, "later", &[candidate], 1)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 }
 
 #[tokio::test]
@@ -812,6 +856,7 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				attribution: None,
 				limits: Limits::default(),
 				budget: None,
+				source_url: None,
 			},
 		)
 		.await
@@ -1109,6 +1154,7 @@ impl DisclosureGate for Concurrent<'_> {
 						..Limits::default()
 					},
 					budget: None,
+					source_url: None,
 				},
 			)
 			.await?;

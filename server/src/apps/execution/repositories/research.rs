@@ -149,7 +149,7 @@ impl EvidenceStore for Evidence {
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
-		source: Option<Uuid>,
+		source: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
 		limits: &Limits,
@@ -169,27 +169,10 @@ impl EvidenceStore for Evidence {
 				{
 					return Ok(Err(Failure::SnapshotLimit));
 				}
-				let source_id = match source {
-					Some(id) => {
-						ResearchSource::get(tx.as_mut(), run, id)
-							.await?
-							.ok_or_else(|| crate::Error::NotFound("source unavailable".into()))?
-							.id
-					}
-					None => {
-						if ResearchSource::count(tx.as_mut(), run).await? >= limits.sources {
-							return Ok(Err(Failure::SourceLimit));
-						}
-						ResearchSource::record(
-							tx.as_mut(),
-							run,
-							&page.url,
-							page.title.as_deref().unwrap_or_default(),
-						)
-						.await?
-						.id
-					}
-				};
+				let source_id = ResearchSource::get(tx.as_mut(), run, source)
+					.await?
+					.ok_or_else(|| crate::Error::NotFound("source unavailable".into()))?
+					.id;
 				let snapshot = DocumentSnapshot {
 					id: Uuid::now_v7(),
 					run_id: run,

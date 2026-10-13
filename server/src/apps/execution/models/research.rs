@@ -257,17 +257,17 @@ impl ResearchAttempt {
 		if Self::count(tx, run, reservation.operation).await? >= maximum {
 			return Ok(Reserved::AttemptLimit);
 		}
-		match reservation.operation {
-			Operation::Search if ResearchSource::count(tx, run).await? >= limits.sources => {
-				return Ok(Reserved::SourceLimit);
+		// A search, or a page read by address, needs room for a Source record.
+		if (reservation.operation == Operation::Search || reservation.source_url.is_some())
+			&& ResearchSource::count(tx, run).await? >= limits.sources
+		{
+			return Ok(Reserved::SourceLimit);
+		}
+		if reservation.operation == Operation::Fetch {
+			let (snapshots, bytes) = ResearchSnapshot::usage(tx, run).await?;
+			if snapshots >= limits.snapshots || bytes >= limits.snapshot_bytes {
+				return Ok(Reserved::SnapshotLimit);
 			}
-			Operation::Fetch => {
-				let (snapshots, bytes) = ResearchSnapshot::usage(tx, run).await?;
-				if snapshots >= limits.snapshots || bytes >= limits.snapshot_bytes {
-					return Ok(Reserved::SnapshotLimit);
-				}
-			}
-			_ => {}
 		}
 		let attribution = reservation.attribution.as_ref();
 		if let (Some(attribution), Some(budget)) = (attribution, &reservation.budget) {
@@ -300,7 +300,13 @@ impl ResearchAttempt {
 			.insert_with_executor(tx, &record)
 			.await
 			.map_err(FrameworkError::from)?;
-		Ok(Reserved::Reserved)
+		// The Source record of a page read by address holds its slot from now
+		// on, under the same Run lock, so nothing is sent without it.
+		let source = match &reservation.source_url {
+			Some(url) => Some(ResearchSource::record(tx, run, url, "").await?.id),
+			None => None,
+		};
+		Ok(Reserved::Reserved { source })
 	}
 
 	/// Settle a dispatched attempt once; a settled attempt is never rewritten.

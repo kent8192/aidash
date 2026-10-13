@@ -13,7 +13,7 @@ use aidash_application::{
 	research::{Call, Research},
 };
 use aidash_domain::research::{
-	Failure, Operation,
+	Operation,
 	account::CostAttribution,
 	citations::EvidenceRef,
 	document::{Completeness, ExtractedPage, Line},
@@ -75,6 +75,7 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 			since: chrono::Utc::now() - chrono::Duration::days(1),
 			limit_micro_usd: 10_000,
 		}),
+		source_url: None,
 	}
 }
 
@@ -95,7 +96,7 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 			.reserve(run.id, &reservation("k1", Some(("operator", 5_000))))
 			.await
 			.unwrap(),
-		Reserved::Reserved
+		Reserved::Reserved { source: None }
 	);
 	assert_eq!(
 		evidence
@@ -142,7 +143,7 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 			.reserve(run.id, &reservation("k2", Some(("operator", 5_000))))
 			.await
 			.unwrap(),
-		Reserved::Reserved
+		Reserved::Reserved { source: None }
 	);
 	// A failed attempt is never charged.
 	evidence
@@ -171,7 +172,7 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 			.reserve(run.id, &reservation("k4", None))
 			.await
 			.unwrap(),
-		Reserved::Reserved
+		Reserved::Reserved { source: None }
 	);
 	assert_eq!(
 		evidence
@@ -399,7 +400,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_page_read_by_address_cannot_exceed_the_source_limit_under_the_run_lock(
+async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
@@ -411,6 +412,37 @@ async fn a_page_read_by_address_cannot_exceed_the_source_limit_under_the_run_loc
 		sources: 1,
 		..Limits::default()
 	};
+	let read = |key: &str, source_url: Option<&str>| Reservation {
+		key: key.into(),
+		operation: Operation::Fetch,
+		provider: "research.page@1".into(),
+		destination: "example.com".into(),
+		attribution: None,
+		limits,
+		budget: None,
+		source_url: source_url.map(Into::into),
+	};
+	let Reserved::Reserved {
+		source: Some(created),
+	} = evidence
+		.reserve(run.id, &read("f1", Some("https://example.com/first")))
+		.await
+		.unwrap()
+	else {
+		panic!("the reservation creates the Source record");
+	};
+	let held = evidence.source(run.id, created).await.unwrap().unwrap();
+	assert_eq!(held.url, "https://example.com/first");
+	// The slot is held: another address is refused before anything is sent,
+	// and a search finds no room for its candidates.
+	assert_eq!(
+		evidence
+			.reserve(run.id, &read("f2", Some("https://example.com/second")))
+			.await
+			.unwrap(),
+		Reserved::SourceLimit
+	);
+	assert_eq!(evidence.attempt(run.id, "f2").await.unwrap(), None);
 	let candidate = SourceCandidate {
 		url: "https://example.com/searched".into(),
 		title: "Searched".into(),
@@ -419,13 +451,22 @@ async fn a_page_read_by_address_cannot_exceed_the_source_limit_under_the_run_loc
 		page_age: None,
 		truncated: false,
 	};
-	let searched = evidence
-		.record_sources(run.id, "s1", &[candidate], limits.sources)
-		.await
-		.unwrap();
+	assert!(
+		evidence
+			.record_sources(run.id, "s1", &[candidate], limits.sources)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	assert_eq!(evidence.usage(run.id).await.unwrap().sources, 1);
+	// Reading the existing Source record needs no new slot.
+	assert_eq!(
+		evidence.reserve(run.id, &read("f3", None)).await.unwrap(),
+		Reserved::Reserved { source: None }
+	);
 	let page = ExtractedPage {
-		url: "https://example.com/elsewhere".into(),
-		title: Some("Elsewhere".into()),
+		url: "https://example.com/first".into(),
+		title: Some("First".into()),
 		media_type: "text/plain".into(),
 		fetched_at: chrono::Utc::now(),
 		raw_digest: "sha256:raw".into(),
@@ -435,22 +476,11 @@ async fn a_page_read_by_address_cannot_exceed_the_source_limit_under_the_run_loc
 			page: None,
 		}],
 	};
-	// A new address would be a second Source record.
-	assert_eq!(
-		evidence
-			.record_snapshot(run.id, None, &page.url, &page, &limits)
-			.await
-			.unwrap()
-			.map(|snapshot| snapshot.id),
-		Err(Failure::SourceLimit)
-	);
-	assert_eq!(evidence.usage(run.id).await.unwrap().sources, 1);
-	// An existing Source record can still be read.
 	let snapshot = evidence
-		.record_snapshot(run.id, Some(searched[0].id), &page.url, &page, &limits)
+		.record_snapshot(run.id, created, &page.url, &page, &limits)
 		.await
 		.unwrap()
 		.unwrap();
-	assert_eq!(snapshot.source_id, searched[0].id);
+	assert_eq!(snapshot.source_id, created);
 	cleanup(store, &url, &schema).await;
 }

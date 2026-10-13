@@ -157,7 +157,7 @@ impl Research<'_> {
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
-		if let Some(blocked) = self
+		if let Err(blocked) = self
 			.reserve(
 				call,
 				Reservation {
@@ -173,6 +173,7 @@ impl Research<'_> {
 							.monthly_limit_micro_usd
 							.saturating_sub(account.monthly_base_fee_micro_usd),
 					}),
+					source_url: None,
 				},
 			)
 			.await?
@@ -318,7 +319,9 @@ impl Research<'_> {
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
-		if let Some(blocked) = self
+		// The reservation creates the Source record of a page read by address,
+		// so a concurrent invocation cannot take its slot before dispatch.
+		let created = match self
 			.reserve(
 				call,
 				Reservation {
@@ -329,12 +332,19 @@ impl Research<'_> {
 					attribution: None,
 					limits: self.limits,
 					budget: None,
+					source_url: source.is_none().then(|| url.to_string()),
 				},
 			)
 			.await?
 		{
-			return Ok(blocked);
-		}
+			Ok(created) => created,
+			Err(blocked) => return Ok(blocked),
+		};
+		let Some(source) = source.or(created) else {
+			return Err(crate::Error::Invalid(
+				"the reservation created no Source record".into(),
+			));
+		};
 		if let Some(blocked) = self.consume(call, operation, approval).await? {
 			return Ok(blocked);
 		}
@@ -347,8 +357,7 @@ impl Research<'_> {
 				.settle_failure(call, operation, Failure::ProviderResponseInvalid)
 				.await;
 		}
-		// The store checks the snapshot and Source record limits under the
-		// Run's lock.
+		// The store checks the snapshot limits under the Run's lock.
 		let snapshot = match self
 			.store
 			.record_snapshot(call.run, source, url.as_str(), &page, &self.limits)
@@ -566,17 +575,22 @@ impl Research<'_> {
 			.map(Some)
 	}
 
-	/// `Some` is the result to return instead of dispatching.
-	async fn reserve(&self, call: &Call<'_>, reservation: Reservation) -> Result<Option<Value>> {
+	/// `Ok` carries the Source record the reservation created; `Err` is the
+	/// result to return instead of dispatching.
+	async fn reserve(
+		&self,
+		call: &Call<'_>,
+		reservation: Reservation,
+	) -> Result<std::result::Result<Option<Uuid>, Value>> {
 		let operation = reservation.operation;
 		Ok(match self.store.reserve(call.run, &reservation).await? {
-			Reserved::Reserved => None,
+			Reserved::Reserved { source } => Ok(source),
 			// A concurrent invocation with the same key owns the attempt.
-			Reserved::Duplicate => Some(failure(operation, Failure::OutcomeUnknown)),
-			Reserved::AttemptLimit => Some(failure(operation, Failure::AttemptLimit)),
-			Reserved::SourceLimit => Some(failure(operation, Failure::SourceLimit)),
-			Reserved::SnapshotLimit => Some(failure(operation, Failure::SnapshotLimit)),
-			Reserved::BudgetExhausted => Some(failure(operation, Failure::BudgetExhausted)),
+			Reserved::Duplicate => Err(failure(operation, Failure::OutcomeUnknown)),
+			Reserved::AttemptLimit => Err(failure(operation, Failure::AttemptLimit)),
+			Reserved::SourceLimit => Err(failure(operation, Failure::SourceLimit)),
+			Reserved::SnapshotLimit => Err(failure(operation, Failure::SnapshotLimit)),
+			Reserved::BudgetExhausted => Err(failure(operation, Failure::BudgetExhausted)),
 		})
 	}
 

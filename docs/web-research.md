@@ -162,8 +162,9 @@ exceeds 9,223,372,036,854,775,807 micro-USD is unavailable.
 
 Per-Run limits block a request before disclosure or dispatch: 20 searches, 50
 page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text. A page
-read by URL creates a Source record, so it counts against the Source record
-limit; reading an existing Source record does not.
+read by URL creates its Source record when its attempt is reserved, before the
+page is requested, so it counts against the Source record limit (and keeps the
+record if the read then fails); reading an existing Source record creates none.
 
 ## Providers
 
