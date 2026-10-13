@@ -326,6 +326,10 @@ def provision_secret(config, output, kind):
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
         settings["sign_in_domains"] = gcip.get("sign_in_domains", {})
+        # A sign-in hint only: GCIP enforces the Requirement and Aidash never reads
+        # second-factor claims as authority. The page uses it to lead a user with no
+        # factor through enrollment. State written before MFA existed lists none.
+        settings["mfa_mandatory"] = sorted(tenant for tenant, declared in gcip.get("mfa", {}).items() if declared["state"] == "mandatory")
         # Firebase's helper is the default and needs no key. Terraform selects the
         # public origin only in the apply that deploys a release, so the SAML ACS,
         # this setting and the edge's helper proxy switch together.
@@ -337,7 +341,7 @@ def provision_secret(config, output, kind):
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
         # boundary; disabling infrastructure cannot leave an old pool admitted.
-        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={})
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={}, mfa_mandatory=[])
     encoded = json.dumps(value, sort_keys=True)
     # Keep latest enabled after a rollback, even when the selected configuration
     # is unchanged, so every reader of "latest" sees the managed version.
@@ -390,6 +394,22 @@ def gcip_revision(config):
         "idp_secrets": json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}"),
         "web_api_key": config.get("gcip_web_api_key"),
     }
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def gcip_mfa_revision(config):
+    """Digest of declared tenant MFA, normalized to the module's defaults.
+
+    The tenant and the runtime's `mfa_mandatory` hint follow a declaration only
+    through an apply and a refresh, so a change needs both; it never fences hosts.
+    """
+    value = {}
+    for alias, pool in config.get("gcip_tenants", {}).items():
+        mfa = pool.get("mfa") or {}
+        value[alias] = {
+            "state": mfa.get("state") or "disabled",
+            "totp_adjacent_intervals": (mfa.get("totp") or {}).get("adjacent_intervals", 5),
+        }
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -489,7 +509,7 @@ def gate_gcip_changes(config, store, terraform, managed, force=False, fenced=())
     """Fence every old binding before any apply can change the shared pools."""
     outputs = terraform.outputs() if managed else {}
     state, _ = store.read("lifecycle/state.json")
-    revision = gcip_revision(config)
+    revision, mfa_revision = gcip_revision(config), gcip_mfa_revision(config)
     affected = {}
     for identity in managed:
         entry = state["environments"][identity]
@@ -501,7 +521,12 @@ def gate_gcip_changes(config, store, terraform, managed, force=False, fenced=())
             or entry.get("gcip_pending")
         ):
             continue
-        if not force and entry.get("gcip_revision") == revision and entry.get("gcip_output_revision") == gcip_output_revision(output) and not entry.get("gcip_pending"):
+        unchanged = (
+            entry.get("gcip_revision") == revision
+            and entry.get("gcip_output_revision") == gcip_output_revision(output)
+            and not entry.get("gcip_pending")
+        )
+        if not force and unchanged and entry.get("gcip_mfa_revision") == mfa_revision:
             continue
         if entry["kind"] == "pr" and entry["desired"] != "destroyed":
             pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
@@ -514,6 +539,11 @@ def gate_gcip_changes(config, store, terraform, managed, force=False, fenced=())
                     desired="destroyed",
                     status="retiring",
                 )
+        if not force and unchanged:
+            # MFA alone alters no Tenant Binding or IdP: apply and refresh without fencing.
+            if entry["desired"] != "destroyed":
+                affected[identity] = entry["generation"]
+            continue
         update_entry(store, identity, entry["generation"], gcip_pending=True)
         if identity not in fenced and output and managed[identity].get("running"):
             quiesce_gcip(terraform, identity)
@@ -553,6 +583,7 @@ def refresh_gcip_environments(config, store, terraform, managed, revision, affec
                 quiesced = False
             update_entry(
                 store, identity, generation, gcip_revision=revision,
+                gcip_mfa_revision=gcip_mfa_revision(config),
                 gcip_output_revision=gcip_output_revision(output), gcip_pending=False,
                 gcip_quiesced=quiesced
             )
@@ -995,6 +1026,7 @@ def reconcile_locked(config, store, terraform, managed):
                 published=True,
                 status="ready",
                 gcip_revision=revision,
+                gcip_mfa_revision=gcip_mfa_revision(config),
                 gcip_output_revision=gcip_output_revision(terraform.outputs()[identity]),
                 gcip_pending=False,
                 gcip_quiesced=False,
