@@ -22,7 +22,7 @@ impl DependencyTransport for PeerHttp {
 			.timeout(remaining.min(Duration::from_secs(10)))
 			.bearer_auth(token)
 			.header("x-aidash-node", &self.node_id)
-			.header("x-aidash-protocol", &self.protocol_version)
+			.header("x-aidash-protocol", &peer.protocol_version)
 			.json(
 				&json!({"tenant":input.tenant,"subject":input.subject,"reference":input.reference}),
 			)

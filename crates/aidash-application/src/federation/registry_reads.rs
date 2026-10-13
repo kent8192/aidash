@@ -8,6 +8,7 @@ use crate::{
 use aidash_domain::{
 	federation::{
 		dependencies::{LIMIT, Reference as Dependency},
+		protocol::compatible,
 		registry_reads::Reference,
 	},
 	qualified_agent,
@@ -82,7 +83,7 @@ async fn check(
 		let Some(peer) = scope.peer(&node).await? else {
 			return Ok(false);
 		};
-		if peer.protocol_version != scope.protocol() {
+		if !compatible(scope.protocol(), &peer.protocol_version) {
 			return Ok(false);
 		}
 		for batch in references.chunks(128) {

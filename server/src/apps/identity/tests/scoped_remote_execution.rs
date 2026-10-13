@@ -1,7 +1,3 @@
-// `scoped_pair` takes one positional `#[with]` switch per scenario. rstest
-// generates its accessor functions without the item's own attributes, so the
-// argument-count lint can only be allowed for this test crate.
-#![allow(clippy::too_many_arguments)]
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::ServerRouter as Router;
@@ -256,293 +252,300 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 	f.notify = notify;
 }
 
-#[rstest::fixture]
-async fn scoped_pair(
-	#[default(false)] semantic: bool,
-	#[default(false)] generated: bool,
-	#[default(false)] approval: bool,
-	#[default(false)] compactor: bool,
-	#[default(false)] native: bool,
-	#[default((false,false,32))] large_native: (bool, bool, usize),
-	#[default(false)] ordered: bool,
-	#[future(awt)]
-	#[from(scoped_infrastructure)]
-	#[with(native, ordered)]
-	infrastructure: ScopedInfrastructure,
-) -> Pair {
-	let ScopedInfrastructure {
-		model_state,
-		model_server,
-		drop_reply,
-		peers,
-		source,
-		receiver,
-		embedding_provider,
-	} = infrastructure;
-	let source_directory = source.application.directory;
-	let receiver_directory = receiver.application.directory;
-	let _aa = source.application.application;
-	let _ba = receiver.application.application;
-	let _aserver = source.server;
-	let _bserver = receiver.server;
-	let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
-	let _ = tracing_subscriber::fmt()
-		.with_env_filter("aidash=debug")
-		.with_test_writer()
-		.try_init();
-	let source = _aa;
-	let receiver = _ba;
-	let (a, au, aschema) = source.runtime.parts();
-	let (b, bu, bschema) = receiver.runtime.parts();
-	let owners = vec![source.runtime, receiver.runtime];
-	let aa = source.application;
-	let ba = receiver.application;
-	let memory_recovery_directories = if native {
-		vec![source_directory, receiver_directory]
-	} else {
-		vec![]
-	};
-	let requests = model_state.requests.clone();
+mod scoped_pair_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Each flag selects an independent Run shape that tests combine through `#[with]`.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) async fn scoped_pair(
+		#[default(false)] semantic: bool,
+		#[default(false)] generated: bool,
+		#[default(false)] approval: bool,
+		#[default(false)] compactor: bool,
+		#[default(false)] native: bool,
+		#[default((false, false, 32))] large_native: (bool, bool, usize),
+		#[default(false)] ordered: bool,
+		#[future(awt)]
+		#[from(scoped_infrastructure)]
+		#[with(native, ordered)]
+		infrastructure: ScopedInfrastructure,
+	) -> Pair {
+		let ScopedInfrastructure {
+			model_state,
+			model_server,
+			drop_reply,
+			peers,
+			source,
+			receiver,
+			embedding_provider,
+		} = infrastructure;
+		let source_directory = source.application.directory;
+		let receiver_directory = receiver.application.directory;
+		let _aa = source.application.application;
+		let _ba = receiver.application.application;
+		let _aserver = source.server;
+		let _bserver = receiver.server;
+		let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
+		let _ = tracing_subscriber::fmt()
+			.with_env_filter("aidash=debug")
+			.with_test_writer()
+			.try_init();
+		let source = _aa;
+		let receiver = _ba;
+		let (a, au, aschema) = source.runtime.parts();
+		let (b, bu, bschema) = receiver.runtime.parts();
+		let owners = vec![source.runtime, receiver.runtime];
+		let aa = source.application;
+		let ba = receiver.application;
+		let memory_recovery_directories = if native {
+			vec![source_directory, receiver_directory]
+		} else {
+			vec![]
+		};
+		let requests = model_state.requests.clone();
 
-	let endpoint = model_server.url.clone();
-	let (mut source_policy, token, mut task) =
-		common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
-	let (receiver_policy, _, _) =
-		common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
-	let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
-	let (status, body) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/registry",
-		compactor_definition,
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(
-		request(
+		let endpoint = model_server.url.clone();
+		let (mut source_policy, token, mut task) =
+			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
+		let (receiver_policy, _, _) =
+			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
+		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
+		let (status, body) = request(
 			&ba,
 			&b.config.api_token,
 			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":0,"enabled":true})
+			"/api/registry",
+			compactor_definition,
 		)
-		.await
-		.0,
-		200
-	);
-	source_policy["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
-		json!({"kind":"agent"});
-	assert_eq!(
-		request(
-			&aa,
-			&a.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":source_policy})
-		)
-		.await
-		.0,
-		200
-	);
-	for (local, other) in [(&a, &b), (&b, &a)] {
-		{
-			let query_bind_1 = &other.config.node_id;
-			let query_bind_2 = &other.config.endpoint;
-			sqlx::query(
-				&Query::insert()
-					.into_table(Alias::new("peers"))
-					.columns(
-						[
-							"node_id",
-							"endpoint",
-							"credential_env",
-							"protocol_version",
-							"enabled",
-						]
-						.map(Alias::new),
-					)
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-							.expr(Expr::cust("'0.2'"))
-							.expr(Expr::cust("TRUE"))
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(
+			request(
+				&ba,
+				&b.config.api_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":0,"enabled":true})
 			)
-			.execute(local.store.pool.driver())
 			.await
+			.0,
+			200
+		);
+		source_policy["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
+			json!({"kind":"agent"});
+		assert_eq!(
+			request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":1,"bundle":source_policy})
+			)
+			.await
+			.0,
+			200
+		);
+		for (local, other) in [(&a, &b), (&b, &a)] {
+			{
+				let query_bind_1 = &other.config.node_id;
+				let query_bind_2 = &other.config.endpoint;
+				sqlx::query(
+					&Query::insert()
+						.into_table(Alias::new("peers"))
+						.columns(
+							[
+								"node_id",
+								"endpoint",
+								"credential_env",
+								"protocol_version",
+								"enabled",
+							]
+							.map(Alias::new),
+						)
+						.from_subquery(
+							Query::select()
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								))
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_2.to_owned()).into()],
+								))
+								.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
+								.expr(Expr::cust("'0.2'"))
+								.expr(Expr::cust("TRUE"))
+								.to_owned(),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(local.store.pool.driver())
+				.await
+			}
+			.unwrap();
 		}
-		.unwrap();
-	}
-	let (_, credential) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
-	if semantic {
-		let (_, home_reader) = request(
-			&aa,
-			&a.config.api_token,
+		let (_, credential) = request(
+			&ba,
+			&b.config.api_token,
 			"POST",
 			"/api/authorization/acme/credentials",
 			json!({"subject":"alice"}),
 		)
 		.await;
-		let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
-		assert_eq!(status, 200, "{body}");
-	}
-	let servers = vec![_aserver, _bserver];
-	let mut providers = vec![model_server];
-	let semantic = if semantic {
-		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let (fixture, server) = configure_semantic(
-			&a,
-			&aa,
-			&token,
-			workspace,
-			&b.config.node_id,
-			(native, large_native_journal),
-			embedding_provider.await,
-		)
-		.await;
-		providers.push(server);
-		Some(fixture)
-	} else {
-		None
-	};
-	let native = if native {
-		assert!(semantic.is_some());
-		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let data = native_remote_fixture(
-			&a,
-			&b,
-			&aa,
-			&ba,
-			&token,
-			workspace,
-			(
-				large_native_graph,
-				large_native_journal,
-				native_graph_visits,
-			),
-		)
-		.await;
-		source_policy["subjects"][qualified_agent(&b.config.node_id, "research-native", "1.0.0")] =
-			json!({"kind":"agent"});
-		let (status, body) = request(
-			&aa,
-			&a.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":2,"bundle":source_policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		Some(data)
-	} else {
-		None
-	};
-	let generation = if generated {
-		let (created, input, prepared) = prepare_generated_pair(
-			&a,
-			&b,
-			&aa,
-			&ba,
-			&token,
+		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
+		if semantic {
+			let (_, home_reader) = request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"alice"}),
+			)
+			.await;
+			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let servers = vec![_aserver, _bserver];
+		let mut providers = vec![model_server];
+		let semantic = if semantic {
+			let workspace = a.store.task(task).await.unwrap().workspace_id;
+			let (fixture, server) = configure_semantic(
+				&a,
+				&aa,
+				&token,
+				workspace,
+				&b.config.node_id,
+				(native, large_native_journal),
+				embedding_provider.await,
+			)
+			.await;
+			providers.push(server);
+			Some(fixture)
+		} else {
+			None
+		};
+		let native = if native {
+			assert!(semantic.is_some());
+			let workspace = a.store.task(task).await.unwrap().workspace_id;
+			let data = native_remote_fixture(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&token,
+				workspace,
+				(
+					large_native_graph,
+					large_native_journal,
+					native_graph_visits,
+				),
+			)
+			.await;
+			source_policy["subjects"]
+				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
+			let (status, body) = request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":2,"bundle":source_policy}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+			Some(data)
+		} else {
+			None
+		};
+		let generation = if generated {
+			let (created, input, prepared) = prepare_generated_pair(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&token,
+				task,
+				(approval, semantic.is_some(), native.is_some()),
+			)
+			.await;
+			task = created;
+			Some((input, prepared))
+		} else {
+			None
+		};
+		if ordered {
+			ordered_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
+		}
+		let agent = generation.as_ref().map_or_else(
+			|| json!({"id":if native.is_some() { "research-native" } else if ordered { "research-ordered" } else { "research" },"version":"1.0.0"}),
+			|(_, prepared)| prepared["agent"].clone(),
+		);
+		let grant = Uuid::new_v4();
+		let mut mode = if semantic.is_some() {
+			json!({"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}})
+		} else {
+			json!({"mode":"disabled"})
+		};
+		if let Some(native) = &native {
+			mode["native"] = native["selection"].clone();
+		}
+		if compactor {
+			mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
+		}
+		let admission = if approval {
+			Uuid::nil()
+		} else {
+			let (status, prepared) = request(
+				&aa,
+				&token,
+				"POST",
+				&format!("/api/tasks/{task}/remote-grants"),
+				json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal || ordered {3600} else {300},"semantic":mode}),
+			)
+			.await;
+			assert_eq!(status, 200, "{prepared}");
+			let (status, activated) = request(
+				&aa,
+				&token,
+				"POST",
+				&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
+				json!({}),
+			)
+			.await;
+			assert_eq!(status, 200, "{activated}");
+			serde_json::from_value(activated["admission_id"].clone()).unwrap()
+		};
+		Pair {
+			_owners: owners,
+			model: model_state,
+			drop_reply,
+			peers,
+			a,
+			b,
+			aa,
+			ba,
+			source_policy,
+			receiver_policy,
+			token,
 			task,
-			(approval, semantic.is_some(), native.is_some()),
-		)
-		.await;
-		task = created;
-		Some((input, prepared))
-	} else {
-		None
-	};
-	if ordered {
-		ordered_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
-	}
-	let agent = generation.as_ref().map_or_else(
-		|| json!({"id":if native.is_some() { "research-native" } else if ordered { "research-ordered" } else { "research" },"version":"1.0.0"}),
-		|(_, prepared)| prepared["agent"].clone(),
-	);
-	let grant = Uuid::new_v4();
-	let mut mode = if semantic.is_some() {
-		json!({"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}})
-	} else {
-		json!({"mode":"disabled"})
-	};
-	if let Some(native) = &native {
-		mode["native"] = native["selection"].clone();
-	}
-	if compactor {
-		mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
-	}
-	let admission = if approval {
-		Uuid::nil()
-	} else {
-		let (status, prepared) = request(
-			&aa,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task}/remote-grants"),
-			json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal {3600} else {300},"semantic":mode}),
-		)
-		.await;
-		assert_eq!(status, 200, "{prepared}");
-		let (status, activated) = request(
-			&aa,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
-			json!({}),
-		)
-		.await;
-		assert_eq!(status, 200, "{activated}");
-		serde_json::from_value(activated["admission_id"].clone()).unwrap()
-	};
-	Pair {
-		_owners: owners,
-		model: model_state,
-		drop_reply,
-		peers,
-		a,
-		b,
-		aa,
-		ba,
-		source_policy,
-		receiver_policy,
-		token,
-		task,
-		grant,
-		admission,
-		requests,
-		receiver_token: credential["token"].as_str().unwrap().into(),
-		servers,
-		providers,
-		au,
-		bu,
-		aschema,
-		bschema,
-		semantic,
-		native,
-		generation,
-		_memory_recovery_directories: memory_recovery_directories,
+			grant,
+			admission,
+			requests,
+			receiver_token: credential["token"].as_str().unwrap().into(),
+			servers,
+			providers,
+			au,
+			bu,
+			aschema,
+			bschema,
+			semantic,
+			native,
+			generation,
+			_memory_recovery_directories: memory_recovery_directories,
+		}
 	}
 }
+use scoped_pair_composition::scoped_pair;
 
 /// A receiver Agent on the Ordered Projection Version, approved on both nodes.
 /// It copies the receiver's `research` Agent, so it keeps the Home semantic
@@ -1086,14 +1089,20 @@ async fn step_to_model_request(p: &Pair, count: usize) {
 	);
 }
 /// Write a Home semantic entry and index it, as a Home operator would.
-async fn write_home_entry(p: &Pair, key: &str, expected_revision: i64, text: &str) {
+async fn write_home_entry(
+	p: &Pair,
+	key: &str,
+	agent: Option<String>,
+	expected_revision: i64,
+	text: &str,
+) {
 	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/entries"),
-		json!({"key":key,"expected_revision":expected_revision,"source":{"kind":"memory","text":text},"metadata":{}}),
+		json!({"key":key,"expected_revision":expected_revision,"source":{"kind":"memory","text":text},"agent":agent,"metadata":{}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -1124,6 +1133,157 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 	serde_json::to_string(&p.requests.lock().await[request - 1])
 		.unwrap()
 		.contains(text)
+}
+
+/// A remote Ordered Run reuses its Home retrieval while the Home corpus is
+/// unchanged and retrieves again after an entry is inserted or edited, as a
+/// local Ordered Run does. A receiver that registered its Home at protocol
+/// `0.3` sees the change in the corpus digest and retrieves before it infers.
+/// One that registered it at `0.2` gets no digest and cites the earlier
+/// retrieval; a current Home refuses that citation as stale (#222), so the Run
+/// retrieves again as well.
+///
+/// The edited entry is one this executor never received: editing a disclosed
+/// source invalidates the Run instead (see
+/// `consumed_home_semantic_revision_blocks_next_remote_inference`).
+#[rstest::rstest]
+#[case::current_protocol("0.3")]
+#[case::older_protocol("0.2")]
+#[tokio::test]
+async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
+	#[case] protocol: &str,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// Arrange: the receiver reaches its Home at the protocol under test.
+	let p = scoped_pair;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("peers"))
+			.value(Alias::new("protocol_version"), protocol)
+			.and_where(Expr::col("node_id").eq(Expr::value(p.a.config.node_id.as_str())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.driver())
+	.await
+	.unwrap();
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+
+	// Act and assert: the first inference retrieves; the second reuses it.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	step_to_model_request(&p, 2).await;
+	assert_eq!(remote_retrievals(&p).await, 1, "unchanged corpus is reused");
+
+	// An inserted Home entry changes what the Run should see.
+	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
+	step_to_model_request(&p, 3).await;
+	assert!(model_saw(&p, 3, "cobalt heron").await);
+	assert_eq!(remote_retrievals(&p).await, 2);
+
+	// An edit does too, even of an entry this executor may not retrieve, and
+	// the fresh retrieval still withholds it.
+	write_home_entry(
+		&p,
+		"other-node",
+		Some(qualified_agent(&p.a.config.node_id, "research", "1.0.0")),
+		1,
+		"DO NOT DISCLOSE: edited marker amber lynx.",
+	)
+	.await;
+	step_to_model_request(&p, 4).await;
+	assert!(!model_saw(&p, 4, "amber lynx").await);
+	let edited = remote_retrievals(&p).await;
+	assert_eq!(edited, 3);
+
+	// Reuse resumes once the corpus holds still.
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, edited);
+	p.close().await;
+}
+
+/// The Home reports its corpus digest only to a peer whose protocol carries it,
+/// and only for a grant that gives the receiver Home semantic access.
+#[rstest::rstest]
+#[tokio::test]
+async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// Arrange
+	let p = scoped_pair;
+	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let describe = |protocol: &'static str| {
+		let p = &p;
+		async move {
+			let response = reqwest::Client::new()
+				.post(format!(
+					"{}/federation/v0.1/scoped/execution/grants/describe",
+					p.a.config.endpoint
+				))
+				.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+				.header("x-aidash-node", &p.b.config.node_id)
+				.header("x-aidash-protocol", protocol)
+				.json(&json!({"grant_id":p.grant}))
+				.send()
+				.await
+				.unwrap();
+			assert_eq!(response.status(), 200);
+			response.json::<Value>().await.unwrap()
+		}
+	};
+	let expected = || async {
+		aidash_server::semantic::services::corpus_digest(&p.a.store, workspace, None)
+			.await
+			.unwrap()
+	};
+
+	// Act
+	let older = describe("0.2").await;
+	let current = describe("0.3").await;
+	let again = describe("0.3").await;
+	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
+	let changed = describe("0.3").await;
+
+	// Assert: an older peer gets exactly the Description it always did.
+	assert!(older.get("corpus_digest").is_none(), "{older}");
+	serde_json::from_value::<aidash_domain::federation::execution::Description>(older.clone())
+		.expect("a 0.2 reply must parse as a plain Description");
+	assert_eq!(current["corpus_digest"], again["corpus_digest"]);
+	assert_ne!(current["corpus_digest"], changed["corpus_digest"]);
+	assert_eq!(changed["corpus_digest"], json!(expected().await));
+	// The digest is not part of the Description a receiver pins and compares.
+	let mut without = changed.clone();
+	without.as_object_mut().unwrap().remove("corpus_digest");
+	assert_eq!(without, older);
+	p.close().await;
+}
+
+/// A grant without Home semantic access must not disclose corpus changes.
+#[rstest::rstest]
+#[tokio::test]
+async fn home_describe_omits_the_corpus_digest_without_semantic_access(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let response = reqwest::Client::new()
+		.post(format!(
+			"{}/federation/v0.1/scoped/execution/grants/describe",
+			p.a.config.endpoint
+		))
+		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+		.header("x-aidash-node", &p.b.config.node_id)
+		.header("x-aidash-protocol", "0.3")
+		.json(&json!({"grant_id":p.grant}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let body: Value = response.json().await.unwrap();
+	assert!(body.get("corpus_digest").is_none(), "{body}");
+	p.close().await;
 }
 
 /// Step until the Run pauses, within a bound; returns the pausing Run.
@@ -1201,7 +1361,7 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 	let p = scoped_pair;
 	p.model.extra_tool_rounds.store(3, Ordering::Release);
 	step_to_model_request(&p, 1).await;
-	write_home_entry(&p, "late", 0, "Late Home marker: amber heron.").await;
+	write_home_entry(&p, "late", None, 0, "Late Home marker: amber heron.").await;
 	step_to_model_request(&p, 2).await;
 	assert_eq!(
 		remote_retrievals(&p).await,
@@ -1247,7 +1407,7 @@ async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	} else {
-		write_home_entry(&p, "shared", 1, "Edited archive marker: slate owl.").await;
+		write_home_entry(&p, "shared", None, 1, "Edited archive marker: slate owl.").await;
 	}
 	let run = step_until_paused(&p).await;
 	assert_eq!(
@@ -5686,7 +5846,6 @@ fn model_script(
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	#[from(compaction_model_state)] _state: CompactionModelState,
 	#[from(bool_state)] force_memory_mutate: Arc<AtomicBool>,
-	#[from(count_state)] extra_tool_rounds: Arc<AtomicUsize>,
 ) -> ModelScript {
 	let CompactionModelState {
 		compactions,
@@ -5703,7 +5862,7 @@ fn model_script(
 		compaction_status,
 		compaction_reservations,
 		force_memory_mutate,
-		extra_tool_rounds,
+		extra_tool_rounds: Arc::new(AtomicUsize::new(0)),
 	}
 }
 #[rstest::fixture]
@@ -5992,34 +6151,6 @@ struct ScopedPeer {
 	application: ScopedApplication,
 	server: upstream_fixtures::FixedServerGuard,
 }
-#[rstest::fixture]
-fn scoped_peer(
-	#[default(false)] _native: bool,
-	#[default("aidash://execution-test")] _node: &str,
-	#[default(false)] _ordered: bool,
-	#[default(RouterObservers::default())] _observers: RouterObservers,
-	#[from(scoped_application)]
-	#[with(_native, _node, _ordered)]
-	application: ScopedApplicationFuture,
-	#[from(scoped_router)]
-	#[with(application.clone(),_observers.clone())]
-	router: upstream_fixtures::RouterFuture,
-	#[from(scoped_listener)]
-	#[with(application.clone())]
-	listener: upstream_fixtures::ListenerFuture,
-	#[from(upstream_fixtures::fixed_upstream)]
-	#[with(None,listener.clone(),router.clone())]
-	server: BoxFuture<'static, upstream_fixtures::FixedServerGuard>,
-) -> BoxFuture<'static, ScopedPeer> {
-	async move {
-		let _ = (router, listener);
-		ScopedPeer {
-			application: application.await,
-			server: server.await,
-		}
-	}
-	.boxed()
-}
 struct ScopedInfrastructure {
 	model_state: ModelScript,
 	model_server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
@@ -6029,35 +6160,70 @@ struct ScopedInfrastructure {
 	receiver: ScopedPeer,
 	embedding_provider: BoxFuture<'static, EmbeddingProvider>,
 }
-#[rstest::fixture]
-fn scoped_infrastructure(
-	#[default(false)] _native: bool,
-	#[default(false)] _ordered: bool,
-	scoped_model: BoxFuture<'static, ScopedModel>,
-	#[from(reply_state)] drop_reply: Arc<Mutex<Option<String>>>,
-	#[from(peer_activity)] peers: Arc<PeerActivity>,
-	#[from(scoped_peer)]
-	#[with(_native,"aidash://execution-test",false,RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
-	source: BoxFuture<'static, ScopedPeer>,
-	#[from(scoped_peer)]
-	#[with(_native,"aidash://scoped-receiver",_ordered,RouterObservers{reply:None,activity:Some(peers.clone())})]
-	receiver: BoxFuture<'static, ScopedPeer>,
-	embedding_provider: BoxFuture<'static, EmbeddingProvider>,
-) -> BoxFuture<'static, ScopedInfrastructure> {
-	async move {
-		let model = scoped_model.await;
-		ScopedInfrastructure {
-			model_state: model.state,
-			model_server: model.server,
-			drop_reply,
-			peers,
-			source: source.await,
-			receiver: receiver.await,
-			embedding_provider,
+mod scoped_peer_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Each peer fixture threads the node shape flags to its runtime explicitly.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) fn scoped_peer(
+		#[default(false)] _native: bool,
+		#[default("aidash://execution-test")] _node: &str,
+		#[default(false)] _ordered: bool,
+		#[default(RouterObservers::default())] _observers: RouterObservers,
+		#[from(scoped_application)]
+		#[with(_native, _node, _ordered)]
+		application: ScopedApplicationFuture,
+		#[from(scoped_router)]
+		#[with(application.clone(),_observers.clone())]
+		router: upstream_fixtures::RouterFuture,
+		#[from(scoped_listener)]
+		#[with(application.clone())]
+		listener: upstream_fixtures::ListenerFuture,
+		#[from(upstream_fixtures::fixed_upstream)]
+		#[with(None,listener.clone(),router.clone())]
+		server: BoxFuture<'static, upstream_fixtures::FixedServerGuard>,
+	) -> BoxFuture<'static, ScopedPeer> {
+		async move {
+			let _ = (router, listener);
+			ScopedPeer {
+				application: application.await,
+				server: server.await,
+			}
 		}
+		.boxed()
 	}
-	.boxed()
+	#[rstest::fixture]
+	pub(super) fn scoped_infrastructure(
+		#[default(false)] _native: bool,
+		#[default(false)] _ordered: bool,
+		scoped_model: BoxFuture<'static, ScopedModel>,
+		#[from(reply_state)] drop_reply: Arc<Mutex<Option<String>>>,
+		#[from(peer_activity)] peers: Arc<PeerActivity>,
+		#[from(scoped_peer)]
+		#[with(_native,"aidash://execution-test",false,RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
+		source: BoxFuture<'static, ScopedPeer>,
+		#[from(scoped_peer)]
+		#[with(_native,"aidash://scoped-receiver",_ordered,RouterObservers{reply:None,activity:Some(peers.clone())})]
+		receiver: BoxFuture<'static, ScopedPeer>,
+		embedding_provider: BoxFuture<'static, EmbeddingProvider>,
+	) -> BoxFuture<'static, ScopedInfrastructure> {
+		async move {
+			let model = scoped_model.await;
+			ScopedInfrastructure {
+				model_state: model.state,
+				model_server: model.server,
+				drop_reply,
+				peers,
+				source: source.await,
+				receiver: receiver.await,
+				embedding_provider,
+			}
+		}
+		.boxed()
+	}
 }
+use scoped_peer_composition::scoped_infrastructure;
 
 #[rstest::rstest]
 #[tokio::test]
