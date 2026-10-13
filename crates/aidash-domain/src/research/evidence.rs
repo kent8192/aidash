@@ -85,13 +85,18 @@ impl EvidenceFragment {
 	}
 }
 
-/// How one research attempt ended. Uncertain outcomes are attributed because
-/// the provider may have performed the request.
+/// How one research attempt ended. Every attempt the provider was called for
+/// is attributed, whether it answered, failed definitively or its outcome is
+/// uncertain; only an attempt stopped before the provider call is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptOutcome {
+	/// The provider was called and answered, with a result or a definitive
+	/// failure such as an HTTP error or an invalid response.
 	Completed,
+	/// Stopped after the reservation without calling the provider.
 	Failed,
+	/// The provider may have performed the request.
 	Unknown,
 }
 

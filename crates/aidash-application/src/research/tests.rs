@@ -1319,6 +1319,43 @@ async fn a_spent_approval_settles_the_reserved_attempt_without_dispatch() {
 	));
 }
 
+/// A provider failure after the call stays attributed; only an attempt
+/// stopped before the call (above) is not.
+#[rstest::rstest]
+#[case::rejected(Failure::ProviderRequestRejected, AttemptOutcome::Completed)]
+#[case::invalid(Failure::ProviderResponseInvalid, AttemptOutcome::Completed)]
+#[case::too_large(Failure::ResponseTooLarge, AttemptOutcome::Completed)]
+#[case::timeout(Failure::Timeout, AttemptOutcome::Unknown)]
+#[tokio::test]
+async fn provider_failures_after_the_call_stay_charged(
+	#[case] error: Failure,
+	#[case] expected: AttemptOutcome,
+) {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let mut provider = Search::new("brave", "api.search.brave.com");
+	provider.outcome = Some(error);
+	let run = Uuid::new_v4();
+	research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	let Some(AttemptState::Settled { outcome, .. }) = store.attempt(run, "k1").await.unwrap()
+	else {
+		panic!("settled");
+	};
+	assert_eq!(outcome, expected);
+	assert!(outcome.charged());
+}
+
 /// A page provider whose every read ends with one recorded failure.
 struct Failing {
 	failure: Failure,

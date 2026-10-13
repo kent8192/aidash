@@ -156,7 +156,10 @@ package reads the operator's account profile, which records the agreement,
 retention terms, request price and monthly limit. Before dispatch the host
 checks the terms are current and that one more request fits the month's limit
 (base fee plus every charged or still-unknown attempt). The reservation records
-the account and price; failed attempts that were never sent are not charged.
+the account and price. An attempt stays charged once the provider was called,
+even if it then failed (for example an HTTP error or an invalid response); only
+an attempt stopped before the call, such as one whose one-time approval was
+already used, is not charged.
 Charges are recorded as signed 64-bit amounts, so a profile whose monthly limit
 exceeds 9,223,372,036,854,775,807 micro-USD is unavailable.
 

@@ -186,7 +186,7 @@ impl Research<'_> {
 		let searched_at = Utc::now();
 		let results = match provider.search(&query).await {
 			Ok(results) => results,
-			Err(error) => return self.settle_failure(call, operation, error).await,
+			Err(error) => return self.settle_failure(call, operation, error, true).await,
 		};
 		let mut page = query.normalize(results);
 		// The store keeps the Run within its Source record limit under its lock.
@@ -350,11 +350,11 @@ impl Research<'_> {
 		}
 		let page = match provider.fetch(&url).await {
 			Ok(page) => page,
-			Err(error) => return self.settle_failure(call, operation, error).await,
+			Err(error) => return self.settle_failure(call, operation, error, true).await,
 		};
 		if page.validate().is_err() {
 			return self
-				.settle_failure(call, operation, Failure::ProviderResponseInvalid)
+				.settle_failure(call, operation, Failure::ProviderResponseInvalid, true)
 				.await;
 		}
 		// The store checks the snapshot limits under the Run's lock.
@@ -570,7 +570,7 @@ impl Research<'_> {
 		if self.gate.consume(call.run, approval).await? {
 			return Ok(None);
 		}
-		self.settle_failure(call, operation, Failure::DisclosureDenied)
+		self.settle_failure(call, operation, Failure::DisclosureDenied, false)
 			.await
 			.map(Some)
 	}
@@ -594,17 +594,22 @@ impl Research<'_> {
 		})
 	}
 
+	/// Settle a failed attempt. Once the provider was `called`, the request
+	/// may have been sent and charged, so its outcome stays attributed.
 	async fn settle_failure(
 		&self,
 		call: &Call<'_>,
 		operation: Operation,
 		error: Failure,
+		called: bool,
 	) -> Result<Value> {
 		let result = failure(operation, error);
-		let outcome = if error.uncertain() {
+		let outcome = if !called {
+			AttemptOutcome::Failed
+		} else if error.uncertain() {
 			AttemptOutcome::Unknown
 		} else {
-			AttemptOutcome::Failed
+			AttemptOutcome::Completed
 		};
 		self.store
 			.settle(call.run, call.key, outcome, &result)
