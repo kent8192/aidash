@@ -50,6 +50,12 @@ closing the live gate and `open` only after opening it, so a partial failure
 leaves a restarted edge closed.
 PostgreSQL and NATS accept only same-namespace server/worker and observer traffic.
 
+`metadataServerEgress.enabled` (default `true`) renders `<release>-environment-metadata-egress`,
+which denies egress to the metadata server (`169.254.169.254/32`) to every Pod of this
+chart: PostgreSQL, NATS, edge and activity hold no Google identity. It selects Pods
+without the label `aidash.run/metadata-server`, which only the application's server and
+worker carry. See the [inventory and GKE probe](../../../../deploy/helm/aidash/README.md#metadata-server-egress).
+
 Preview TLS uses the existing `aidash-preview-tls` disk as one static `Retain`
 PersistentVolume. The controller owns that PV and its `preview-tls` claim, and
 rebinds it to the next active pr-N namespace only after the previous edge has no
