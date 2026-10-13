@@ -168,6 +168,8 @@ page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text. A page
 read by URL creates its Source record when its attempt is reserved, before the
 page is requested, so it counts against the Source record limit (and keeps the
 record if the read then fails); reading an existing Source record creates none.
+A page read in progress holds a snapshot slot until it settles, so concurrent
+reads cannot together exceed the snapshot limit.
 
 ## Providers
 

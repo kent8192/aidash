@@ -61,7 +61,8 @@ pub struct Reservation {
 	pub attribution: Option<CostAttribution>,
 	/// The Run's research limits. Attempts of this operation, and the Run's
 	/// Source records (search, or a page read by address) or Document
-	/// snapshots (fetch), are checked under the same lock as the reservation.
+	/// snapshots (fetch, counting every still dispatched read as one), are
+	/// checked under the same lock as the reservation.
 	pub limits: Limits,
 	/// The attributed account's charge limit; checked with the reservation.
 	pub budget: Option<Budget>,

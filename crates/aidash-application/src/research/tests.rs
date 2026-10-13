@@ -89,6 +89,27 @@ impl EvidenceStore for Memory {
 		if held >= maximum {
 			return Ok(Reserved::AttemptLimit);
 		}
+		// A dispatched read holds a snapshot slot until it settles.
+		if reservation.operation == Operation::Fetch {
+			let snapshots = self
+				.snapshots
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|snapshot| snapshot.run_id == run)
+				.count() as u32;
+			let reading = attempts
+				.iter()
+				.filter(|((owner, _), (held, state))| {
+					*owner == run
+						&& held.operation == Operation::Fetch
+						&& *state == AttemptState::Dispatched
+				})
+				.count() as u32;
+			if snapshots + reading >= reservation.limits.snapshots {
+				return Ok(Reserved::SnapshotLimit);
+			}
+		}
 		let mut spend = self.spend.lock().unwrap();
 		if let (Some(attribution), Some(budget)) = (&reservation.attribution, &reservation.budget)
 			&& *spend + attribution.price_micro_usd > budget.limit_micro_usd

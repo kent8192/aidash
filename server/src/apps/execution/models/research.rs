@@ -145,11 +145,12 @@ fn stored(value: usize) -> i32 {
 	i32::try_from(value).unwrap_or(i32::MAX)
 }
 
+/// Rows of `table` of one Run whose text `columns` equal the given values.
 async fn count(
 	tx: &mut dyn TransactionExecutor,
 	table: &str,
 	run: Uuid,
-	operation: Option<&str>,
+	columns: &[(&'static str, &str)],
 ) -> Result<u32> {
 	let mut query = Query::select();
 	query
@@ -159,8 +160,8 @@ async fn count(
 		)
 		.from(Alias::new(table))
 		.and_where(Expr::col("run_id").eq(Expr::value(run)));
-	if let Some(operation) = operation {
-		query.and_where(Expr::col("operation").eq(Expr::value(operation)));
+	for (column, value) in columns {
+		query.and_where(Expr::col(*column).eq(Expr::value(*value)));
 	}
 	let (sql, values) = query.build(PostgresQueryBuilder);
 	let row = tx.fetch_one(&sql, convert_values(values)).await?;
@@ -203,7 +204,29 @@ impl ResearchAttempt {
 		run: Uuid,
 		operation: Operation,
 	) -> Result<u32> {
-		count(tx, Self::table_name(), run, Some(operation.as_str())).await
+		count(
+			tx,
+			Self::table_name(),
+			run,
+			&[("operation", operation.as_str())],
+		)
+		.await
+	}
+
+	/// Attempts of `operation` still dispatched: their results are not yet
+	/// recorded, so each may still need a Document snapshot.
+	pub(crate) async fn in_flight(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		operation: Operation,
+	) -> Result<u32> {
+		count(
+			tx,
+			Self::table_name(),
+			run,
+			&[("operation", operation.as_str()), ("outcome", DISPATCHED)],
+		)
+		.await
 	}
 
 	/// Charged attempts of one account since `since`, including attempts whose
@@ -264,8 +287,13 @@ impl ResearchAttempt {
 			return Ok(Reserved::SourceLimit);
 		}
 		if reservation.operation == Operation::Fetch {
+			// Every dispatched read may still record a snapshot, so it holds a
+			// snapshot slot until it settles; concurrent reads cannot all pass.
 			let (snapshots, bytes) = ResearchSnapshot::usage(tx, run).await?;
-			if snapshots >= limits.snapshots || bytes >= limits.snapshot_bytes {
+			let reading = Self::in_flight(tx, run, Operation::Fetch).await?;
+			if snapshots.saturating_add(reading) >= limits.snapshots
+				|| bytes >= limits.snapshot_bytes
+			{
 				return Ok(Reserved::SnapshotLimit);
 			}
 		}
@@ -380,7 +408,7 @@ impl ResearchSource {
 	}
 
 	pub(crate) async fn count(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
-		count(tx, Self::table_name(), run, None).await
+		count(tx, Self::table_name(), run, &[]).await
 	}
 }
 

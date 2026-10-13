@@ -484,3 +484,52 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 	assert_eq!(snapshot.source_id, created);
 	cleanup(store, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_dispatched_read_holds_a_snapshot_slot_until_it_settles(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let run = leased_run(&store, &agent(&store).await).await;
+	let evidence = aidash_server::research::evidence_store(store.clone());
+	let read = |key: &str| Reservation {
+		key: key.into(),
+		operation: Operation::Fetch,
+		provider: "research.page@1".into(),
+		destination: "example.com".into(),
+		attribution: None,
+		limits: Limits {
+			snapshots: 1,
+			..Limits::default()
+		},
+		budget: None,
+		source_url: None,
+	};
+	assert_eq!(
+		evidence.reserve(run.id, &read("f1")).await.unwrap(),
+		Reserved::Reserved { source: None }
+	);
+	// The first read may still record the last snapshot: nothing else is sent.
+	assert_eq!(
+		evidence.reserve(run.id, &read("f2")).await.unwrap(),
+		Reserved::SnapshotLimit
+	);
+	// Once it settles without a snapshot, the slot is free again.
+	evidence
+		.settle(
+			run.id,
+			"f1",
+			AttemptOutcome::Completed,
+			&json!({"status":"error"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		evidence.reserve(run.id, &read("f3")).await.unwrap(),
+		Reserved::Reserved { source: None }
+	);
+	cleanup(store, &url, &schema).await;
+}
