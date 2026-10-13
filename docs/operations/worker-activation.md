@@ -142,11 +142,15 @@ To add a capability when a change adds persisted state that older workers reject
 3. Add a rollout test: an old worker (`capabilities: &[]`) never claims the Run, a capable
    one does.
 
-The gate only protects against workers built with it. Workers older than the build that
-introduced the gate (#198) cannot honor `requires`, so finish rolling out that build to
-every worker before any build that writes a capability-requiring state (for example Tool
-Batch admission, #119) runs anywhere. Rolling back below the gate build while such Runs exist
-stalls or fails them exactly as the Projection Version note above describes.
+The gate only protects against workers built with it. An older worker cannot honor
+`requires`: its strict decoder rejects the key and repairs the Run into failure delivery.
+Tool Batch admission (#119), the first capability-requiring state, ships in the same build
+as the gate (#198), and no Aidash release predates it; development builds between #187 and
+the gate are not supported beside it. Stage the rollout with the process ceiling: keep
+`AIDASH_TOOL_PARALLELISM` at its default of 1 on every worker until every worker runs the
+gate build, and only then raise it. A worker at 1 never admits a Tool Batch, so it writes no
+`requires`. Rolling back below the gate build while such Runs exist stalls or fails them
+exactly as the Projection Version note above describes.
 
 On shutdown, stop new pulls/claims and drain the current step. Do not clear a lease
 while an external effect might still run. Never delete the durable on shutdown.
