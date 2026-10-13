@@ -346,14 +346,25 @@ def migrate_legacy():
                 with (ROOT / (path.stem + '.lock')).open('a') as area_lock:
                     fcntl.flock(area_lock, fcntl.LOCK_EX)
                     record = json.loads(path.read_bytes())
-                    # validate checks the live container, Pod UID, image and this
-                    # release's sandbox namespace before adopting an old deadline.
-                    validate(record)
                     target = ROOT / path.name
-                    if target.exists():
-                        continue
-                    save(target, record)
-                    path.unlink()
+                    if record.get('terminated') or gone(record):
+                        # A terminal tombstone needs no live container: its removal is
+                        # expected, and handle() relies on the tombstone to confirm
+                        # termination and permit status/export/log recovery. It only
+                        # matches an exact execution binding and never resurrects a
+                        # sandbox, so it is copied rather than moved: without the
+                        # container this shared directory cannot tell which release's
+                        # namespace owned it, and each release keeps its own proof.
+                        if not target.exists():
+                            save(target, dict(record, terminated=True, deadline=None, frozen=False))
+                    else:
+                        # validate checks the live container, Pod UID, image and this
+                        # release's sandbox namespace before adopting an old deadline.
+                        validate(record)
+                        if target.exists():
+                            continue
+                        save(target, record)
+                        path.unlink()
                 MIGRATION_WARNED.discard(path)
             except Exception as error:
                 if path not in MIGRATION_WARNED:

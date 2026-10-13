@@ -164,6 +164,9 @@ The Runner requires the guard (`execution.guard.enabled`).
 `execution.paths` configures the runtime root, executable paths and cgroup root.
 The guard state defaults to `/var/lib/aidash-node-guard/<release>`: each guard holds
 an exclusive `watch.lock`, so releases sharing a Cluster Node must not share it.
+Each guard migrates the shared legacy `/var/lib/aidash-node-guard` records: a live
+record moves only after its container validates against this release's namespace,
+while a terminal tombstone is copied without one, preserving termination proof.
 
 The Runner selects the guard on the Execution Pod's recorded Cluster Node and
 uses `kubectl exec -i` with the existing stdin/stdout JSON protocol. Old journals

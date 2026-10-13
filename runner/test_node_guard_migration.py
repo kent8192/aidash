@@ -57,6 +57,35 @@ class GuardMigrationTest(unittest.TestCase):
             self.assertEqual(contended, ['area.json'])
             self.assertFalse((legacy / 'area.json').exists())
 
+    def test_terminal_tombstone_migrates_without_a_live_container(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / 'release'
+            legacy = root / 'legacy'
+            legacy.mkdir()
+            area = '00000000-0000-0000-0000-000000000001'
+            binding = {'container_id': 'a' * 64, 'pod_uid': '00000000-0000-0000-0000-000000000002',
+                       'area_id': area, 'epoch': 1, 'image': 'image'}
+            stopped = dict(binding, terminated=True, deadline=None, frozen=False)
+            exited = dict(binding, area_id='00000000-0000-0000-0000-000000000003', terminated=False,
+                          deadline=1, frozen=True, sentry_pid=4242, sentry_start='1')
+            (legacy / (area + '.json')).write_text(json.dumps(stopped))
+            (legacy / (exited['area_id'] + '.json')).write_text(json.dumps(exited))
+
+            with patch.object(node_guard, 'ROOT', current), patch.object(node_guard, 'LEGACY_ROOT', legacy), \
+                    patch.object(node_guard, 'validate', side_effect=FileNotFoundError('container removed')) as validate, \
+                    patch.object(node_guard, 'process_identity', side_effect=FileNotFoundError):
+                node_guard.migrate_legacy()
+                status = node_guard.handle(dict(binding, action='status'))
+
+            validate.assert_not_called()
+            self.assertEqual(status, {'termination_confirmed': True, 'status': 'stopped'})
+            self.assertEqual(json.loads((current / (area + '.json')).read_text()), stopped)
+            self.assertEqual(json.loads((current / (exited['area_id'] + '.json')).read_text()),
+                             dict(exited, terminated=True, deadline=None, frozen=False))
+            # Each release adopts its own copy of the proof.
+            self.assertTrue((legacy / (area + '.json')).exists())
+
 
 if __name__ == '__main__':
     unittest.main()
