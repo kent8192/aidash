@@ -38,10 +38,12 @@ export type MemoryImpact = {
 
 /** Content-free view of the visible Runs and derived Units that depend on a Unit. */
 export function MemoryImpactView({
+  workspace,
   base,
   provider,
   unit,
 }: {
+  workspace: string;
   base: string;
   provider: EntityRef;
   unit: Unit;
@@ -50,7 +52,16 @@ export function MemoryImpactView({
   const text = (en: string, jp: string) => (locale === "ja-JP" ? jp : en);
   const [open, setOpen] = useState(false);
   const impact = useQuery({
-    queryKey: ["memory", "impact", base, unit.bank, unit.id, unit.revision],
+    // Under the page's workspace prefix, so memory changes and Refresh refetch
+    // it: another Unit's change can alter dependents at the same revision.
+    queryKey: [
+      "memory",
+      workspace,
+      "impact",
+      unit.bank,
+      unit.id,
+      unit.revision,
+    ],
     queryFn: () =>
       apiFetch<MemoryImpact>(`${base}/units/impact`, {
         method: "POST",

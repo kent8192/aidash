@@ -739,7 +739,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(
       unit.getByRole("list", { name: ja ? "エンティティ" : "Entities" }),
     ).toContainText("Postgres · ポストグレス");
-    await unit.locator("summary").click();
+    await unit
+      .locator("summary", {
+        hasText: ja ? "出典・エンティティ・時刻" : "Sources, entities and time",
+      })
+      .click();
     const proof = unit.getByLabel(
       ja ? "根拠のつながり" : "Evidence connections",
     );

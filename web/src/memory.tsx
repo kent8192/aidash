@@ -980,6 +980,7 @@ export function MemoryWorkspace({
               </div>
               {read && (
                 <MemoryImpactView
+                  workspace={workspace}
                   base={base}
                   provider={read.provider}
                   unit={unit}
