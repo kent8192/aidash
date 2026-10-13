@@ -66,6 +66,17 @@ is rendered in their namespaces (`<release>-aidash-guard-metadata-egress`,
 [environment chart](../../../infra/gcp/helm/environment/README.md) renders its own
 policy for its Pods.
 
+Upgrading a running release from a chart version without the label needs care.
+Helm applies the NetworkPolicy before the Deployments, and the server and worker
+Pods already running lack the label until their replacements roll out, so they
+lose the metadata server (and with it Workload Identity token refresh) for the
+length of that rollout. The GCP controller is unaffected: every upgrade it runs
+(`deploy` and `reload` in `infra/gcp/control/kube.py`) renders server and worker
+at zero replicas and starts labelled replacements afterwards. A direct
+`helm upgrade` of a release with live writers must either scale server and worker
+to zero first, or upgrade once with `metadataServerEgress.enabled=false` and
+enable it in a second upgrade after the labelled Pods are Ready.
+
 NetworkPolicy egress is additive across policies, so no other policy that selects
 these Pods may grant egress. The chart's other policies are ingress-only, and
 `scripts/test_helm_execution.py` fails if one gains an egress rule. The policy
