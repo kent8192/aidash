@@ -463,7 +463,7 @@ impl Management {
 		input: BindingUpdate,
 	) -> Result<Binding> {
 		let service = self.service()?;
-		let provider = Provider::parse(&provider)?;
+		let provider = Provider::credential(&provider)?;
 		let authority = self
 			.authorize(
 				&actor,

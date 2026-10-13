@@ -1,0 +1,829 @@
+use super::*;
+use std::collections::BTreeMap;
+use std::sync::Mutex as StdMutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
+
+const TENANT: &str = "brave-otter-k3m9q2xa";
+const HOST: &str = "urn:uuid:0d5c0e5e-5d5a-4c4b-9a8e-1b2c3d4e5f60";
+
+#[derive(Clone, Default)]
+struct Data {
+	rows: BTreeMap<Uuid, PlanConnection>,
+	mapped: usize,
+	events: Vec<String>,
+}
+#[derive(Clone)]
+struct Repo(Arc<Mutex<Data>>);
+impl Repo {
+	fn new(mapped: usize) -> Self {
+		Self(Arc::new(Mutex::new(Data {
+			mapped,
+			..Data::default()
+		})))
+	}
+}
+struct Lease {
+	guard: OwnedMutexGuard<Data>,
+	data: Data,
+	owner: Owner,
+}
+#[async_trait]
+impl Repository for Repo {
+	async fn begin(&self, owner: &Owner) -> Result<Box<dyn Scope>> {
+		let guard = self.0.clone().lock_owned().await;
+		let data = guard.clone();
+		Ok(Box::new(Lease {
+			guard,
+			data,
+			owner: owner.clone(),
+		}))
+	}
+	async fn owner_of(&self, id: Uuid) -> Result<Option<Owner>> {
+		Ok(self.0.lock().await.rows.get(&id).map(|row| Owner {
+			tenant: row.tenant.clone(),
+			subject: row.subject.clone(),
+		}))
+	}
+}
+#[async_trait]
+impl Scope for Lease {
+	async fn owned(&mut self, provider: Provider) -> Result<Option<PlanConnection>> {
+		Ok(self
+			.data
+			.rows
+			.values()
+			.find(|row| {
+				row.tenant == self.owner.tenant
+					&& row.subject == self.owner.subject
+					&& row.provider == provider
+			})
+			.cloned())
+	}
+	async fn mapped_identities(&mut self) -> Result<usize> {
+		Ok(self.data.mapped)
+	}
+	async fn insert(&mut self, value: &PlanConnection, _: &str) -> Result<()> {
+		assert!(self.data.rows.insert(value.id, value.clone()).is_none());
+		self.data.events.push("plan_connection.connected".into());
+		Ok(())
+	}
+	async fn save(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
+		self.data.rows.insert(value.id, value.clone());
+		self.data.events.push(event.into());
+		Ok(())
+	}
+	async fn delete(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
+		self.data.rows.remove(&value.id);
+		self.data.events.push(event.into());
+		Ok(())
+	}
+	async fn commit(mut self: Box<Self>) -> Result<()> {
+		*self.guard = self.data.clone();
+		Ok(())
+	}
+}
+
+#[derive(Clone, Default)]
+struct FakeStore(Arc<StdMutex<BTreeMap<String, BTreeMap<u32, String>>>>);
+impl FakeStore {
+	fn plaintexts(&self) -> Vec<String> {
+		self.0
+			.lock()
+			.unwrap()
+			.values()
+			.flat_map(|versions| versions.values().cloned())
+			.collect()
+	}
+	fn resources(&self) -> usize {
+		self.0.lock().unwrap().len()
+	}
+}
+fn split(version: &str) -> (&str, u32) {
+	let (resource, n) = version.rsplit_once("/versions/").unwrap();
+	(resource, n.parse().unwrap())
+}
+#[async_trait]
+impl Store for FakeStore {
+	fn resource(&self, id: Uuid) -> String {
+		format!("fake/{id}")
+	}
+	async fn create(&self, _: &str, _: Uuid) -> Result<()> {
+		unreachable!("Plan Connections never create Provider Credential resources")
+	}
+	async fn create_plan(&self, _: &str, id: Uuid) -> Result<()> {
+		self.0
+			.lock()
+			.unwrap()
+			.insert(self.plan_resource(id), BTreeMap::new());
+		Ok(())
+	}
+	async fn add_version(&self, _: &str, resource: &str, key: &SecretString) -> Result<String> {
+		let mut state = self.0.lock().unwrap();
+		let versions = state.get_mut(resource).unwrap();
+		let n = versions.keys().max().copied().unwrap_or(0) + 1;
+		versions.insert(n, key.expose_secret().to_owned());
+		Ok(format!("{resource}/versions/{n}"))
+	}
+	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+		Ok(self
+			.0
+			.lock()
+			.unwrap()
+			.get(resource)
+			.map(|versions| {
+				versions
+					.keys()
+					.map(|n| format!("{resource}/versions/{n}"))
+					.collect()
+			})
+			.unwrap_or_default())
+	}
+	async fn disable(&self, _: &str) -> Result<()> {
+		Ok(())
+	}
+	async fn destroy(&self, version: &str) -> Result<()> {
+		let (resource, n) = split(version);
+		if let Some(versions) = self.0.lock().unwrap().get_mut(resource) {
+			versions.remove(&n);
+		}
+		Ok(())
+	}
+	async fn delete(&self, resource: &str) -> Result<()> {
+		self.0.lock().unwrap().remove(resource);
+		Ok(())
+	}
+}
+#[async_trait]
+impl KeyMaterialReader for FakeStore {
+	async fn read(&self, _: &str, resource: &str, version: &str) -> Result<SecretString> {
+		let (pinned, n) = split(version);
+		assert_eq!(pinned, resource);
+		self.0
+			.lock()
+			.unwrap()
+			.get(resource)
+			.and_then(|versions| versions.get(&n))
+			.map(|value| SecretString::from(value.clone()))
+			.ok_or_else(|| Error::Invalid("missing version".into()))
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefreshMode {
+	Ok,
+	Terminal,
+	Unavailable,
+	WithoutPlanScope,
+}
+struct Calls {
+	exchanges: usize,
+	refreshes: usize,
+	revoked: Vec<String>,
+}
+struct FakeAuthorization {
+	scope: Option<String>,
+	id_token_valid: bool,
+	refresh: RefreshMode,
+	revoke_fails: bool,
+	calls: StdMutex<Calls>,
+}
+impl Default for FakeAuthorization {
+	fn default() -> Self {
+		Self {
+			scope: Some(aidash_domain::plan_connections::SCOPES.into()),
+			id_token_valid: true,
+			refresh: RefreshMode::Ok,
+			revoke_fails: false,
+			calls: StdMutex::new(Calls {
+				exchanges: 0,
+				refreshes: 0,
+				revoked: Vec::new(),
+			}),
+		}
+	}
+}
+fn issued(access: &str, refresh: &str, scope: Option<&str>) -> Issued {
+	Issued {
+		access_token: access.to_owned().into(),
+		refresh_token: refresh.to_owned().into(),
+		id_token: Some("id-token-canary".to_owned().into()),
+		expires_in: 3600,
+		scope: scope.map(str::to_owned),
+	}
+}
+#[async_trait]
+impl Authorization for FakeAuthorization {
+	async fn exchange(&self, request: ExchangeRequest<'_>) -> Result<Issued> {
+		assert_eq!(request.code, "code-1");
+		assert_eq!(request.redirect_uri, "http://127.0.0.1:43123/auth/callback");
+		assert_ne!(
+			request.client_id,
+			aidash_domain::plan_connections::DYNAMIC_CLIENT
+		);
+		self.calls.lock().unwrap().exchanges += 1;
+		Ok(issued("access-1", "refresh-1", self.scope.as_deref()))
+	}
+	async fn verify_id_token(&self, _: &SecretString, client_id: &str, nonce: &str) -> Result<()> {
+		assert_eq!(nonce, "nonce-1");
+		assert!(client_id.starts_with("oaiapp_"));
+		if self.id_token_valid {
+			Ok(())
+		} else {
+			Err(Error::Unauthorized)
+		}
+	}
+	async fn refresh(
+		&self,
+		_: &str,
+		refresh_token: &SecretString,
+	) -> std::result::Result<Issued, RefreshFailure> {
+		let n = {
+			let mut calls = self.calls.lock().unwrap();
+			calls.refreshes += 1;
+			calls.refreshes
+		};
+		assert!(refresh_token.expose_secret().starts_with("refresh-"));
+		match self.refresh {
+			RefreshMode::Ok => Ok(issued(
+				&format!("access-r{n}"),
+				&format!("refresh-r{n}"),
+				None,
+			)),
+			RefreshMode::WithoutPlanScope => Ok(issued(
+				"access-x",
+				"refresh-x",
+				Some("openid offline_access"),
+			)),
+			RefreshMode::Terminal => Err(RefreshFailure::Terminal),
+			RefreshMode::Unavailable => Err(RefreshFailure::Unavailable(Error::ProviderRejected {
+				status: 503,
+				reason: "unavailable".into(),
+			})),
+		}
+	}
+	async fn revoke(&self, _: &str, refresh_token: &SecretString) -> Result<()> {
+		self.calls
+			.lock()
+			.unwrap()
+			.revoked
+			.push(refresh_token.expose_secret().to_owned());
+		if self.revoke_fails {
+			return Err(Error::External("revocation unavailable".into()));
+		}
+		Ok(())
+	}
+	async fn models(&self, access_token: &SecretString) -> Result<Vec<PlanModel>> {
+		assert!(access_token.expose_secret().starts_with("access-"));
+		Ok(vec![PlanModel {
+			slug: "gpt-fixture".into(),
+			display_name: "GPT Fixture".into(),
+			context_window: 128_000,
+			max_output_tokens: 16_384,
+			defaulted: true,
+		}])
+	}
+}
+
+struct Fixture {
+	repo: Repo,
+	store: FakeStore,
+	authorization: Arc<FakeAuthorization>,
+	service: Service,
+}
+fn fixture(mapped: usize, authorization: FakeAuthorization) -> Fixture {
+	let repo = Repo::new(mapped);
+	let store = FakeStore::default();
+	let authorization = Arc::new(authorization);
+	let service = Service {
+		repository: Arc::new(repo.clone()),
+		store: Arc::new(store.clone()),
+		reader: Arc::new(store.clone()),
+		authorization: authorization.clone(),
+	};
+	Fixture {
+		repo,
+		store,
+		authorization,
+		service,
+	}
+}
+fn owner() -> Owner {
+	Owner {
+		tenant: TENANT.into(),
+		subject: "alice".into(),
+	}
+}
+fn callback(client_id: Option<&str>) -> Callback {
+	Callback {
+		state: "state-1".into(),
+		result: CallbackResult::Code {
+			code: "code-1".into(),
+			client_id: client_id.map(str::to_owned),
+		},
+	}
+}
+async fn connect(
+	fixture: &Fixture,
+	saved: Option<&str>,
+	returned: Option<&str>,
+) -> Result<Outcome> {
+	let verifier = SecretString::from("verifier-1".to_owned());
+	fixture
+		.service
+		.complete(
+			&owner(),
+			Pending {
+				verifier: &verifier,
+				nonce: "nonce-1",
+				redirect_uri: "http://127.0.0.1:43123/auth/callback",
+				saved_client: saved,
+			},
+			&callback(returned),
+			"alice",
+		)
+		.await
+}
+async fn only_row(fixture: &Fixture) -> PlanConnection {
+	let data = fixture.repo.0.lock().await;
+	assert_eq!(data.rows.len(), 1);
+	data.rows.values().next().unwrap().clone()
+}
+async fn set_row(fixture: &Fixture, change: impl FnOnce(&mut PlanConnection)) {
+	let mut data = fixture.repo.0.lock().await;
+	change(data.rows.values_mut().next().unwrap());
+}
+
+#[test]
+fn first_authorizations_register_a_client_for_this_host() {
+	let request = begin(HOST, 43123, None).unwrap();
+	let url = url::Url::parse(&request.url).unwrap();
+	assert_eq!(url.host_str(), Some("auth.openai.com"));
+	assert_eq!(url.path(), "/api/accounts/authorize");
+	let query: BTreeMap<String, String> = url.query_pairs().into_owned().collect();
+	assert_eq!(query["response_type"], "code");
+	assert_eq!(query["client_id"], "dynamic_agent_client");
+	assert_eq!(query["agent_name_hint"], "Aidash");
+	assert_eq!(
+		query["redirect_uri"],
+		"http://127.0.0.1:43123/auth/callback"
+	);
+	assert_eq!(query["redirect_uri"], request.redirect_uri);
+	assert_eq!(
+		query["scope"],
+		"openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+	);
+	assert_eq!(query["resource"], "https://api.openai.com/v1");
+	assert_eq!(query["ext_agent_host_id"], HOST);
+	assert_eq!(query["state"], request.state.expose_secret());
+	assert_eq!(query["nonce"], request.nonce.expose_secret());
+	assert_eq!(query["code_challenge_method"], "S256");
+	assert_eq!(query["code_challenge"], challenge(&request.verifier));
+	// The verifier stays on the host.
+	assert!(!request.url.contains(request.verifier.expose_secret()));
+	assert_ne!(request.state.expose_secret(), request.nonce.expose_secret());
+}
+
+#[test]
+fn reauthorizations_reuse_the_issued_client() {
+	let request = begin(
+		HOST,
+		aidash_domain::plan_connections::PASTE_PORT,
+		Some("oaiapp_1"),
+	)
+	.unwrap();
+	let url = url::Url::parse(&request.url).unwrap();
+	let query: BTreeMap<String, String> = url.query_pairs().into_owned().collect();
+	assert_eq!(query["client_id"], "oaiapp_1");
+	assert!(!query.contains_key("agent_name_hint"));
+	assert_eq!(query["redirect_uri"], "http://127.0.0.1:1457/auth/callback");
+	assert!(begin(HOST, 0, None).is_err());
+}
+
+#[tokio::test]
+async fn connecting_stores_only_the_access_and_refresh_tokens() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	assert_eq!(
+		connect(&fixture, None, Some("oaiapp_1")).await.unwrap(),
+		Outcome::Connected
+	);
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::Active);
+	assert_eq!(row.client_id, "oaiapp_1");
+	assert_eq!(row.subject, "alice");
+	assert!(
+		row.secret_resource
+			.starts_with("aidash-store/plan-connections/")
+	);
+	let stored = fixture.store.plaintexts();
+	assert_eq!(stored.len(), 1);
+	assert!(stored[0].contains("access-1") && stored[0].contains("refresh-1"));
+	// The ID token is verified, never kept.
+	assert!(!stored[0].contains("id-token-canary"));
+	assert!(
+		fixture
+			.authorization
+			.calls
+			.lock()
+			.unwrap()
+			.revoked
+			.is_empty()
+	);
+	let status = fixture.service.status(&owner()).await.unwrap().unwrap();
+	assert_eq!(status.state, State::Active);
+	assert_eq!(status.revision, 1);
+}
+
+#[tokio::test]
+async fn declined_and_failed_consents_never_reach_the_exchange() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	let verifier = SecretString::from("verifier-1".to_owned());
+	for (result, outcome) in [
+		(CallbackResult::Denied, Outcome::Denied),
+		(CallbackResult::Failed, Outcome::Failed),
+	] {
+		let value = fixture
+			.service
+			.complete(
+				&owner(),
+				Pending {
+					verifier: &verifier,
+					nonce: "nonce-1",
+					redirect_uri: "http://127.0.0.1:43123/auth/callback",
+					saved_client: None,
+				},
+				&Callback {
+					state: "state-1".into(),
+					result,
+				},
+				"alice",
+			)
+			.await
+			.unwrap();
+		assert_eq!(value, outcome);
+	}
+	assert_eq!(fixture.authorization.calls.lock().unwrap().exchanges, 0);
+	assert_eq!(fixture.store.resources(), 0);
+}
+
+#[tokio::test]
+async fn grants_without_plan_usage_are_revoked_and_not_stored() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			scope: Some("openid profile email offline_access".into()),
+			..FakeAuthorization::default()
+		},
+	);
+	assert_eq!(
+		connect(&fixture, None, Some("oaiapp_1")).await.unwrap(),
+		Outcome::PlanUsageNotGranted
+	);
+	assert_eq!(fixture.store.resources(), 0);
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1"]
+	);
+}
+
+#[tokio::test]
+async fn unverified_id_tokens_are_revoked_and_not_stored() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			id_token_valid: false,
+			..FakeAuthorization::default()
+		},
+	);
+	assert!(connect(&fixture, None, Some("oaiapp_1")).await.is_err());
+	assert_eq!(fixture.store.resources(), 0);
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1"]
+	);
+}
+
+#[tokio::test]
+async fn shared_subjects_cannot_hold_a_plan_connection() {
+	let fixture = fixture(2, FakeAuthorization::default());
+	assert!(matches!(
+		fixture.service.check(&owner()).await,
+		Err(Error::Conflict(_))
+	));
+	assert!(matches!(
+		connect(&fixture, None, Some("oaiapp_1")).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(fixture.store.resources(), 0);
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1"]
+	);
+}
+
+#[tokio::test]
+async fn first_registrations_must_return_an_issued_client() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	assert!(connect(&fixture, None, None).await.is_err());
+	assert_eq!(fixture.authorization.calls.lock().unwrap().exchanges, 0);
+}
+
+#[tokio::test]
+async fn reconnecting_rotates_tokens_in_place_and_keeps_the_client() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let first = only_row(&fixture).await;
+	assert_eq!(
+		fixture.service.check(&owner()).await.unwrap().as_deref(),
+		Some("oaiapp_1")
+	);
+	assert_eq!(
+		connect(&fixture, Some("oaiapp_1"), None).await.unwrap(),
+		Outcome::Reconnected
+	);
+	let second = only_row(&fixture).await;
+	assert_eq!(second.id, first.id);
+	assert_eq!(second.revision, 2);
+	assert_ne!(second.pinned_version, first.pinned_version);
+	// The replaced version is destroyed; one version remains.
+	assert_eq!(fixture.store.plaintexts().len(), 1);
+	// A different client returned on reauthorization is refused.
+	assert!(
+		connect(&fixture, Some("oaiapp_1"), Some("oaiapp_2"))
+			.await
+			.is_err()
+	);
+}
+
+#[tokio::test]
+async fn fresh_tokens_serve_calls_without_a_refresh() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let row = only_row(&fixture).await;
+	let bearer = fixture.service.bearer(row.id).await.unwrap();
+	assert_eq!(bearer.expose_secret(), "access-1");
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
+}
+
+#[tokio::test]
+async fn expiring_tokens_are_refreshed_and_rotated() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let row = only_row(&fixture).await;
+	let bearer = fixture.service.bearer(row.id).await.unwrap();
+	assert_eq!(bearer.expose_secret(), "access-r1");
+	let refreshed = only_row(&fixture).await;
+	assert!(refreshed.refreshed_at.is_some());
+	assert!(refreshed.access_expires_at > Utc::now() + Duration::minutes(50));
+	let stored = fixture.store.plaintexts();
+	assert_eq!(stored.len(), 1);
+	assert!(stored[0].contains("refresh-r1"));
+	assert!(
+		fixture
+			.repo
+			.0
+			.lock()
+			.await
+			.events
+			.contains(&"plan_connection.refreshed".to_owned())
+	);
+	// The new token serves the next call without another refresh.
+	assert_eq!(
+		fixture
+			.service
+			.bearer(row.id)
+			.await
+			.unwrap()
+			.expose_secret(),
+		"access-r1"
+	);
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+}
+
+#[tokio::test]
+async fn rejected_refreshes_discard_tokens_and_ask_for_reconnection() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Terminal,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let id = only_row(&fixture).await.id;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NeedsReconnection))
+	));
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(row.pinned_version.is_none());
+	assert!(fixture.store.plaintexts().is_empty());
+	assert!(
+		fixture
+			.repo
+			.0
+			.lock()
+			.await
+			.events
+			.contains(&"plan_connection.needs_reconnection".to_owned())
+	);
+	// Reconnecting makes it usable again.
+	assert_eq!(
+		connect(&fixture, Some("oaiapp_1"), None).await.unwrap(),
+		Outcome::Reconnected
+	);
+	assert_eq!(only_row(&fixture).await.state, State::Active);
+}
+
+#[tokio::test]
+async fn refreshes_that_drop_plan_usage_end_the_connection() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::WithoutPlanScope,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let id = only_row(&fixture).await.id;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NeedsReconnection))
+	));
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-x"]
+	);
+}
+
+#[tokio::test]
+async fn unavailable_refreshes_keep_the_tokens() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Unavailable,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let before = only_row(&fixture).await;
+	assert!(matches!(
+		fixture.service.bearer(before.id).await,
+		Err(Error::ProviderRejected { status: 503, .. })
+	));
+	let after = only_row(&fixture).await;
+	assert_eq!(after.state, State::Active);
+	assert_eq!(after.pinned_version, before.pinned_version);
+	assert_eq!(fixture.store.plaintexts().len(), 1);
+}
+
+#[tokio::test]
+async fn unusable_connections_never_serve_calls() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	set_row(&fixture, |row| {
+		row.refresh_expires_at = Utc::now() - Duration::seconds(1)
+	})
+	.await;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NeedsReconnection))
+	));
+	set_row(&fixture, |row| {
+		row.refresh_expires_at = Utc::now() + Duration::days(1);
+		row.state = State::Ineligible;
+	})
+	.await;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::Ineligible))
+	));
+	assert!(matches!(
+		fixture.service.bearer(Uuid::now_v7()).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
+}
+
+#[tokio::test]
+async fn a_second_mapping_stops_the_connection_serving_calls() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	fixture.repo.0.lock().await.mapped = 2;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+}
+
+#[tokio::test]
+async fn rejected_access_tokens_force_one_refresh() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	assert!(fixture.service.refresh_rejected(id).await.unwrap());
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	assert_eq!(
+		fixture.service.bearer(id).await.unwrap().expose_secret(),
+		"access-r1"
+	);
+}
+
+#[tokio::test]
+async fn ineligible_plans_mark_the_connection_once() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	fixture.service.mark_ineligible(id).await.unwrap();
+	fixture.service.mark_ineligible(id).await.unwrap();
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::Ineligible);
+	assert_eq!(row.revision, 2);
+	let events = fixture.repo.0.lock().await.events.clone();
+	assert_eq!(
+		events
+			.iter()
+			.filter(|event| *event == "plan_connection.ineligible")
+			.count(),
+		1
+	);
+}
+
+#[tokio::test]
+async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	assert!(matches!(
+		fixture.service.disconnect(&owner(), 0, "alice").await,
+		Err(Error::Domain(aidash_domain::Error::Conflict(_)))
+	));
+	let result = fixture
+		.service
+		.disconnect(&owner(), 1, "alice")
+		.await
+		.unwrap();
+	assert!(result.revoked);
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1"]
+	);
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	assert!(fixture.service.status(&owner()).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn unconfirmed_revocations_still_delete_aidashs_copy() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			revoke_fails: true,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let result = fixture
+		.service
+		.disconnect(&owner(), 1, "alice")
+		.await
+		.unwrap();
+	assert!(!result.revoked);
+	assert_eq!(fixture.store.resources(), 0);
+}
+
+#[tokio::test]
+async fn owners_who_lose_access_lose_their_connection() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	fixture.service.retire(&owner(), "operator").await.unwrap();
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	fixture.service.retire(&owner(), "operator").await.unwrap();
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	assert!(
+		fixture
+			.repo
+			.0
+			.lock()
+			.await
+			.events
+			.contains(&"plan_connection.retired".to_owned())
+	);
+}
+
+#[tokio::test]
+async fn model_lists_use_the_owners_own_connection() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	assert!(matches!(
+		fixture.service.models(&owner()).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let models = fixture.service.models(&owner()).await.unwrap();
+	assert_eq!(models[0].slug, "gpt-fixture");
+}

@@ -28,6 +28,18 @@ pub trait Store: Send + Sync {
 	async fn disable(&self, version: &str) -> Result<()>;
 	async fn destroy(&self, version: &str) -> Result<()>;
 	async fn delete(&self, resource: &str) -> Result<()>;
+	/// The resource holding one Plan Connection's Plan Tokens. Plan Tokens
+	/// share the Store with Key Material under their own namespace (ADR 0008).
+	fn plan_resource(&self, id: Uuid) -> String {
+		format!("aidash-store/plan-connections/{id}")
+	}
+	/// Creates one Plan Connection's resource. A Store that cannot hold Plan
+	/// Tokens, such as Cloud's Secret Manager until #248, refuses.
+	async fn create_plan(&self, _tenant: &str, _id: Uuid) -> Result<()> {
+		Err(Error::Invalid(
+			"this Provider Credential Store does not hold Plan Tokens".into(),
+		))
+	}
 }
 /// Every mutating scope serializes one Tenant, including quota and binding races.
 #[async_trait]
@@ -92,7 +104,7 @@ impl From<ProviderCredential> for Metadata {
 			key_settings_url: v
 				.key_digest
 				.as_deref()
-				.map(|digest| v.provider.key_settings_url(digest)),
+				.and_then(|digest| v.provider.key_settings_url(digest)),
 			state: v.state,
 			created_at: v.created_at,
 			rotated_at: v.rotated_at,
@@ -201,6 +213,7 @@ impl Service {
 		verifier: &SecretString,
 		actor: &str,
 	) -> std::result::Result<Validated, AuthorizationFailure> {
+		Provider::credential(provider.id()).map_err(Error::from)?;
 		self.check_authorization(tenant, provider, target).await?;
 		let key = self.exchange.exchange(provider, code, verifier).await?;
 		let digest = crate::provider_authorization::key_digest(&key);
@@ -220,7 +233,7 @@ impl Service {
 		};
 		written.map_err(|error| AuthorizationFailure {
 			error,
-			key_settings_url: Some(key_settings_url),
+			key_settings_url,
 		})
 	}
 	/// Checks what the write will check before the provider issues a key, so a
@@ -356,7 +369,7 @@ impl Service {
 			.key_digest
 			.as_deref()
 			.filter(|previous| key_digest.as_deref() != Some(*previous))
-			.map(|previous| row.provider.key_settings_url(previous));
+			.and_then(|previous| row.provider.key_settings_url(previous));
 		row.pinned_version = Some(version.clone());
 		row.fingerprint = fingerprint;
 		row.last4 = last4;

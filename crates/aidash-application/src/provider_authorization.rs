@@ -37,7 +37,7 @@ pub struct Request {
 	pub url: String,
 }
 
-fn random_secret() -> String {
+pub(crate) fn random_secret() -> String {
 	// Two UUIDv4 values carry 244 random bits; hex is a PKCE-unreserved alphabet.
 	format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }

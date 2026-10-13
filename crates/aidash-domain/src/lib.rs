@@ -9,6 +9,7 @@ pub mod identity;
 pub mod media;
 pub mod memory;
 pub mod model;
+pub mod plan_connections;
 pub mod policy;
 pub mod projection;
 pub mod provider;
