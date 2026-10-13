@@ -326,4 +326,6 @@ fn a_runnable_run_that_needs_capabilities_is_waiting_for_a_capable_worker() {
 	run.lease_until = None;
 	run.control = crate::RunControl::Paused;
 	assert_eq!(run.lease_wait(&requires), None);
+	run.control = crate::RunControl::Cancelled;
+	assert_eq!(run.lease_wait(&requires), None);
 }

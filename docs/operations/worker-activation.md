@@ -110,8 +110,8 @@ which of them it needs, and `encode` stores that as a `requires` array in the
 nothing keep the legacy bytes and stay claimable by every worker.
 
 - Run leasing (`candidates`, hence notification claims, recovery scans and startup
-  recovery) excludes Runs whose `requires` is a list of names not covered by the
-  worker's capabilities, using the envelope only; the state is not decoded. Such a Run
+  recovery) excludes uncancelled Runs whose `requires` is a list of names not covered by
+  the worker's capabilities, using the envelope only; the state is not decoded. Such a Run
   is not stuck, repaired or failed, and burns no recovery attempt. Inspection reports
   `lease_wait: {"reason":"capable_worker","capabilities":[...]}` while no live lease holds
   it, `aidash_activation_capability_skips_total` counts skips (each recovery scan adds
@@ -126,6 +126,10 @@ nothing keep the legacy bytes and stay claimable by every worker.
   one this build writes, is reported as `UnsupportedState` (a capability mismatch),
   never as `Invalid`. Leasing leaves such a Run for a newer worker instead of repairing
   it into failure delivery, and a notification for it is deferred five seconds as above.
+- A cancelled Run is never gated, because cancellation needs no state. A worker that
+  cannot load the state takes a repair lease and replaces the state with cancellation
+  delivery, which finishes the Run and its Task from metadata alone. This records no
+  error and no `run.invalid_state` event, and inspection reports no `lease_wait`.
 
 To add a capability when a change adds persisted state that older workers reject:
 

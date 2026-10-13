@@ -258,6 +258,18 @@ impl SchedulingScope for Scope {
 		self.state.record("invalid_state");
 		Ok(())
 	}
+	async fn cancel_unloadable(
+		&mut self,
+		_: &RunMetadata,
+		_: Uuid,
+		state: &RunState,
+	) -> Result<()> {
+		assert!(
+			matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::FailureDelivery { target: FailureTarget::Cancelled, .. }))
+		);
+		self.state.record("cancel_unloadable");
+		Ok(())
+	}
 }
 #[async_trait]
 impl ClaimScope for Scope {

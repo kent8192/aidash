@@ -22,8 +22,12 @@ fn unmet_capabilities(raw: &RawRun, supported: &[PersistedCapability]) -> Vec<St
 		.unwrap_or_default()
 }
 /// Why this worker cannot load the Run: the stored requirement it does not meet, or,
-/// for state a newer build wrote without declaring one, the decoding mismatch.
+/// for state a newer build wrote without declaring one, the decoding mismatch. A cancelled
+/// Run is never gated, because `lease` finishes its cancellation without loading the state.
 fn capability_gap(raw: &RawRun, supported: &[PersistedCapability]) -> Vec<String> {
+	if raw.control == RunControl::Cancelled {
+		return Vec::new();
+	}
 	let unmet = unmet_capabilities(raw, supported);
 	if !unmet.is_empty() {
 		return unmet;
@@ -121,8 +125,10 @@ pub async fn lease(
 	for raw in rows {
 		let m = &raw.metadata;
 		*cursor = Some((m.updated_at, m.id));
+		// Cancellation needs no state, so a cancelled Run never waits for a capable worker.
+		let cancelled = m.control == RunControl::Cancelled;
 		let unmet = unmet_capabilities(&raw, scope.capabilities());
-		if !unmet.is_empty() {
+		if !unmet.is_empty() && !cancelled {
 			skipped_for_capability(m.id, &unmet);
 			continue;
 		}
@@ -134,11 +140,30 @@ pub async fn lease(
 		{
 			continue;
 		}
-		let mut run = match raw.decode() {
+		let decoded = if unmet.is_empty() {
+			raw.decode()
+		} else {
+			Err(aidash_domain::Error::UnsupportedState(unmet.join(", ")))
+		};
+		let mut run = match decoded {
 			Ok(run) => run,
 			// State written by a newer build is intact; a capable worker will load it.
-			Err(aidash_domain::Error::UnsupportedState(reason)) => {
+			Err(aidash_domain::Error::UnsupportedState(reason)) if !cancelled => {
 				skipped_for_capability(m.id, &[reason]);
+				continue;
+			}
+			// A cancelled Run no longer needs that state. Cancellation delivery reads only
+			// metadata, so this worker finishes the cancellation instead of stalling it.
+			Err(aidash_domain::Error::UnsupportedState(reason)) => {
+				let state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
+					target: FailureTarget::Cancelled,
+					wake_at: now,
+					last_delivery_error: None,
+				}));
+				if let Some(owned) = scope.repair_lease(m, token, seconds).await? {
+					scope.cancel_unloadable(&owned, token, &state).await?;
+					tracing::info!(run_id=%m.id, missing=%reason, "cancelled run handed to cancellation delivery without loading its state");
+				}
 				continue;
 			}
 			Err(error) => {

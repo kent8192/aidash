@@ -247,3 +247,85 @@ async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
 	assert_eq!(visible, ids[..3]);
 	assert_eq!(waiting, 1);
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
+	#[future] database: DatabaseFixture,
+	run: Record,
+) {
+	use crate::domain::FailureTarget;
+	// Arrange: the operator cancelled a Run whose state needs a capability no build has.
+	let database = database.await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		"aidash://capability-cancel-test".into(),
+	)
+	.await
+	.unwrap();
+	let mut db = database.lease.handle();
+	let mut pending = run_fixtures::pending(RunState::Ready(ReadyState {}), Default::default());
+	pending["requires"] = serde_json::json!(["future_capability"]);
+	let cancelled = Record {
+		control: RunControl::Cancelled,
+		error: Some("earlier step failure".into()),
+		pending: pending.into(),
+		..run
+	};
+	Record::objects()
+		.create_with_conn(&mut db, &cancelled)
+		.await
+		.unwrap();
+
+	// Act: a current worker scans the queue and then claims the Run.
+	let mut tx = store.database().begin().await.unwrap();
+	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
+	let waiting = scope.capability_waits().await.unwrap();
+	let visible: Vec<Uuid> =
+		aidash_application::ports::activation::SchedulingScope::candidates(&mut scope, None, None)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|raw| raw.id)
+			.collect();
+	let claimed = aidash_application::activation::lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		Some(cancelled.id),
+		&store.node_id,
+		&mut None,
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+
+	// Assert: the Run is not hidden or leased; its unloadable state is replaced by
+	// cancellation delivery, without an error, and the lease is released.
+	assert_eq!(visible, [cancelled.id]);
+	assert_eq!(waiting, 0);
+	assert!(claimed.is_none());
+	let stored = Record::objects()
+		.filter(Record::field_id().eq(cancelled.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(stored.phase, RunPhase::Waiting);
+	assert_eq!(stored.pending.0["data"]["reason"], "failure_delivery");
+	assert_eq!(stored.pending.0["data"]["target"], "CANCELLED");
+	assert!(stored.pending.0.get("requires").is_none());
+	assert_eq!(stored.error, None);
+	assert_eq!(stored.lease_owner, None);
+	assert_eq!(stored.revision, 2);
+
+	// Act: failure delivery, which reads only metadata, picks it up.
+	let delivery = store
+		.claim_failure_delivery(Uuid::new_v4(), 30)
+		.await
+		.unwrap()
+		.unwrap();
+
+	// Assert
+	assert_eq!(delivery.metadata.id, cancelled.id);
+	assert_eq!(delivery.target, FailureTarget::Cancelled);
+}

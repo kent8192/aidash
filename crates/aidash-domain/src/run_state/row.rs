@@ -178,12 +178,13 @@ impl RunMetadata {
 		self.phase
 	}
 	/// A runnable Run that needs capabilities is waiting for a capable worker
-	/// whenever no live lease holds it; this is not a stuck or damaged Run.
+	/// whenever no live lease holds it; this is not a stuck or damaged Run. A
+	/// cancelled Run is not waiting: any worker finishes its cancellation.
 	pub fn lease_wait(&self, requires: &StateRequirements) -> Option<LeaseWait> {
 		let held = self.lease_until.is_some_and(|until| until > Utc::now());
 		(!requires.is_empty()
 			&& !held && !self.phase.is_terminal()
-			&& self.control != RunControl::Paused)
+			&& self.control == RunControl::Active)
 			.then(|| LeaseWait::CapableWorker {
 				capabilities: requires.names().to_vec(),
 			})

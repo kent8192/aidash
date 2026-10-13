@@ -93,6 +93,15 @@ fn requirements_covered(capabilities: &[PersistedCapability]) -> Condition {
 		))
 }
 
+/// Runs this worker may select: a cancelled Run regardless of its requirement, because
+/// `activation::lease` finishes a cancellation without loading the state, and any other
+/// Run only when its requirement is covered.
+fn selectable_by(capabilities: &[PersistedCapability]) -> Condition {
+	Condition::any()
+		.add(Expr::col("control").eq(Expr::value("CANCELLED")))
+		.add(requirements_covered(capabilities))
+}
+
 /// Runs no live lease holds that are runnable now, before the capability filter.
 fn leasable() -> SelectStatement {
 	Query::select()
@@ -119,7 +128,7 @@ impl<E: Executor> Scope<E> {
 				Func::count(Expr::col(ColumnRef::Asterisk).into()),
 				Alias::new("waiting"),
 			)
-			.cond_where(requirements_covered(self.capabilities).not())
+			.cond_where(selectable_by(self.capabilities).not())
 			.build(PostgresQueryBuilder);
 		let waiting: i64 = self
 			.tx
@@ -129,6 +138,40 @@ impl<E: Executor> Scope<E> {
 			.get("waiting")
 			.map_err(FrameworkError::from)?;
 		Ok(waiting.unsigned_abs())
+	}
+	/// Hands a repair-leased Run to failure delivery and releases the lease.
+	async fn deliver_failure(
+		&mut self,
+		owned: &RunMetadata,
+		token: Uuid,
+		state: &RunState,
+		error: Option<&str>,
+	) -> Result<()> {
+		let (sql, values) = Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("phase"), "WAITING")
+			.value(
+				Alias::new("pending"),
+				aidash_domain::run_state::encode(state, &Default::default())?,
+			)
+			.value(Alias::new("error"), error)
+			.value_expr(
+				Alias::new("revision"),
+				Expr::col("revision").add(Expr::value(1_i64)),
+			)
+			.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
+			.value(Alias::new("lease_owner"), None::<Uuid>)
+			.value(Alias::new("lease_until"), None::<DateTime<Utc>>)
+			.and_where(Expr::col("id").eq(Expr::value(owned.id)))
+			.and_where(Expr::col("revision").eq(Expr::value(owned.revision)))
+			.and_where(Expr::col("lease_owner").eq(Expr::value(token)))
+			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
+			.build(PostgresQueryBuilder);
+		self.tx
+			.executor()
+			.execute(&sql, convert_values(values))
+			.await?;
+		Ok(())
 	}
 }
 
@@ -163,7 +206,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		let mut ready = leasable();
 		ready
 			.column(ColumnRef::Asterisk)
-			.cond_where(requirements_covered(self.capabilities))
+			.cond_where(selectable_by(self.capabilities))
 			.order_by(Alias::new("updated_at"), Order::Asc)
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(128)
@@ -374,31 +417,8 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		reason: &str,
 		node: &str,
 	) -> aidash_application::Result<()> {
-		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
-			.value(Alias::new("phase"), "WAITING")
-			.value(
-				Alias::new("pending"),
-				aidash_domain::run_state::encode(state, &Default::default())?,
-			)
-			.value(Alias::new("error"), reason)
-			.value_expr(
-				Alias::new("revision"),
-				Expr::col("revision").add(Expr::value(1_i64)),
-			)
-			.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
-			.value(Alias::new("lease_owner"), None::<Uuid>)
-			.value(Alias::new("lease_until"), None::<DateTime<Utc>>)
-			.and_where(Expr::col("id").eq(Expr::value(owned.id)))
-			.and_where(Expr::col("revision").eq(Expr::value(owned.revision)))
-			.and_where(Expr::col("lease_owner").eq(Expr::value(token)))
-			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
-			.build(PostgresQueryBuilder);
-		self.tx
-			.executor()
-			.execute(&sql, convert_values(values))
-			.await
-			.map_err(Error::from)?;
+		self.deliver_failure(owned, token, state, Some(reason))
+			.await?;
 		// Preserve the original trigger/event transaction; damaged Context is never read.
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("events"))
@@ -429,6 +449,16 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.await
 			.map_err(Error::from)?;
 		Ok(())
+	}
+	async fn cancel_unloadable(
+		&mut self,
+		owned: &RunMetadata,
+		token: Uuid,
+		state: &RunState,
+	) -> aidash_application::Result<()> {
+		self.deliver_failure(owned, token, state, None)
+			.await
+			.map_err(Into::into)
 	}
 }
 

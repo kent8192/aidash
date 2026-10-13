@@ -19,7 +19,8 @@ pub struct Approval {
 #[async_trait]
 pub trait SchedulingScope: Send {
 	/// The persisted-state capabilities this worker advertises when it leases.
-	/// Candidate queries and `lease` never hand it a Run that needs more.
+	/// Candidate queries never return a Run that needs more unless it is cancelled, and
+	/// `lease` never leases one: it hands a cancelled one to `cancel_unloadable`.
 	fn capabilities(&self) -> &[PersistedCapability] {
 		PersistedCapability::supported()
 	}
@@ -50,6 +51,15 @@ pub trait SchedulingScope: Send {
 		state: &RunState,
 		reason: &str,
 		node: &str,
+	) -> Result<()>;
+	/// Under a repair lease, replaces the state of a cancelled Run this worker cannot load
+	/// with its cancellation delivery (`state`) and releases the lease. The state is intact,
+	/// only no longer needed, so unlike `invalid_state` no error or event is recorded.
+	async fn cancel_unloadable(
+		&mut self,
+		owned: &RunMetadata,
+		token: Uuid,
+		state: &RunState,
 	) -> Result<()>;
 }
 
