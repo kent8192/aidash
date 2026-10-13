@@ -238,6 +238,8 @@ Every Agent retains `workspace_read` and `human_request`. The other Built-in too
 
 Independent reads in one model response can run concurrently when both the Agent's `tool_parallelism` and the process's `AIDASH_TOOL_PARALLELISM` exceed one. See [parallel read batches](docs/features/parallel-read-batches.md).
 
+An Agent can require Checks, such as a fixed test command, to pass on the exact files a Run produced before the Run may complete; the model's own success claims never count. See [Completion Gate](docs/features/completion-gate.md).
+
 Tools are immutable Registry descriptors with provider-owned behavior and a JSON Schema for arguments. For an HTTP integration, register this configuration on its exact Node:
 
 ```json
