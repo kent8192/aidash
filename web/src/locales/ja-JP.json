@@ -259,7 +259,7 @@
   "generationCompactionPerAgent": "Agentごとの圧縮呼び出し上限",
   "generationCompactionBudget": "圧縮呼び出しの総予算",
   "generationCompactionCalls": "圧縮呼び出し消費数 / 上限",
-  "compactorHelp": "System Oneの接続先とリクエスト上限を登録し、テナントのカタログで承認します。認証情報はサーバーで参照します。",
+  "compactorHelp": "Jevの正確なリリース（例: typesafe/jev-1.13）とリクエスト上限を登録し、テナントのカタログで承認します。JevはテナントのOpenRouter接続を使い、ゼロデータ保持でOpenRouter経由で呼び出されます。",
   "compactorRequestBytes": "最大リクエストバイト数",
   "compactorQuestions": "呼び出しごとの最大質問数",
   "compactorResponseBytes": "最大応答バイト数",

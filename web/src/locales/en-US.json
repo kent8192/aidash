@@ -259,7 +259,7 @@
   "generationCompactionPerAgent": "Compaction calls per agent",
   "generationCompactionBudget": "Total compaction call allowance",
   "generationCompactionCalls": "Compaction calls charged / limit",
-  "compactorHelp": "Register an explicit System One endpoint and request bounds, then approve it in the tenant catalog. Credentials are resolved on the server.",
+  "compactorHelp": "Register an exact Jev release such as typesafe/jev-1.13 and request bounds, then approve it in the tenant catalog. Jev runs through OpenRouter with the Tenant's OpenRouter connection and zero data retention.",
   "compactorRequestBytes": "Maximum request bytes",
   "compactorQuestions": "Maximum questions per call",
   "compactorResponseBytes": "Maximum response bytes",
