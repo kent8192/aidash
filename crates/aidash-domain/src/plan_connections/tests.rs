@@ -11,6 +11,7 @@ fn connection(state: State) -> PlanConnection {
 		subject: "alice".into(),
 		provider: Provider::Chatgpt,
 		client_id: "oaiapp_fixture".into(),
+		account: "user-fixture".into(),
 		secret_resource: "aidash-store/plan-connections/fixture".into(),
 		pinned_version: Some("aidash-store/plan-connections/fixture/versions/1".into()),
 		state,

@@ -111,13 +111,14 @@ pub enum RefreshFailure {
 pub trait Authorization: Send + Sync {
 	async fn exchange(&self, request: ExchangeRequest<'_>) -> Result<Issued>;
 	/// Verifies the signature, issuer, audience (the issued client), expiry
-	/// and `nonce` of the ID token from an exchange.
+	/// and `nonce` of the ID token from an exchange, and returns its verified
+	/// `sub`: the ChatGPT account the grant was issued for.
 	async fn verify_id_token(
 		&self,
 		id_token: &SecretString,
 		client_id: &str,
 		nonce: &str,
-	) -> Result<()>;
+	) -> Result<String>;
 	async fn refresh(
 		&self,
 		client_id: &str,
@@ -323,15 +324,20 @@ impl Service {
 			)),
 		};
 		// The ID token is only verified, never kept: Plan Tokens are the
-		// access and refresh tokens alone.
-		if let Err(error) = verified {
-			self.revoke_quietly(&client, &issued.refresh_token).await;
-			return Err(error);
-		}
+		// access and refresh tokens alone. Its subject identifies the account.
+		let account = match verified {
+			Ok(account) => account,
+			Err(error) => {
+				self.revoke_quietly(&client, &issued.refresh_token).await;
+				return Err(error);
+			}
+		};
+		// A response may omit `scope` when it equals the requested one
+		// (RFC 6749 §5.1), which includes plan usage; a reported scope must.
 		if !issued
 			.scope
 			.as_deref()
-			.is_some_and(domain::grants_plan_usage)
+			.is_none_or(domain::grants_plan_usage)
 		{
 			self.revoke_quietly(&client, &issued.refresh_token).await;
 			return Ok(Outcome::PlanUsageNotGranted);
@@ -344,7 +350,7 @@ impl Service {
 			}
 		};
 		match self
-			.write(owner, client.clone(), &issued, lifetime, actor)
+			.write(owner, client.clone(), account, &issued, lifetime, actor)
 			.await
 		{
 			Ok(outcome) => Ok(outcome),
@@ -360,6 +366,7 @@ impl Service {
 		&self,
 		owner: &Owner,
 		client: String,
+		account: String,
 		issued: &Issued,
 		lifetime: Duration,
 		actor: &str,
@@ -392,6 +399,7 @@ impl Service {
 					subject: owner.subject.clone(),
 					provider: Provider::Chatgpt,
 					client_id: client,
+					account,
 					secret_resource: resource.clone(),
 					pinned_version: Some(version),
 					state: State::Active,
@@ -412,10 +420,18 @@ impl Service {
 				Ok(Outcome::Connected)
 			}
 			Some(mut row) => {
-				// A reconnection keeps the connection and its issued client.
+				// A reconnection keeps the connection and its issued client, and
+				// must authenticate the same ChatGPT account it was issued for.
 				if row.client_id != client {
 					return Err(Error::Invalid(
 						"Sign in with ChatGPT returned a different client".into(),
+					));
+				}
+				if row.account != account {
+					return Err(Error::Conflict(
+						"Sign in with ChatGPT authenticated a different ChatGPT account; \
+						 disconnect this Plan Connection before connecting another account"
+							.into(),
 					));
 				}
 				let version = self
@@ -460,11 +476,13 @@ impl Service {
 			.ok_or_else(|| Error::NotFound("Plan Connection not found".into()))?;
 		row.check_revision(expected_revision)?;
 		let revoked = self.revoke_row(&row).await;
+		// The row is the only pointer to the tokens: delete them first, so a
+		// failed cleanup leaves the connection for a retried disconnect.
+		self.delete_tokens(&row).await?;
 		scope
 			.delete(&row, "plan_connection.disconnected", actor)
 			.await?;
 		scope.commit().await?;
-		self.delete_tokens(&row).await;
 		Ok(Disconnection { revoked })
 	}
 
@@ -476,10 +494,9 @@ impl Service {
 			return scope.commit().await;
 		};
 		self.revoke_row(&row).await;
+		self.delete_tokens(&row).await?;
 		scope.delete(&row, "plan_connection.retired", actor).await?;
-		scope.commit().await?;
-		self.delete_tokens(&row).await;
-		Ok(())
+		scope.commit().await
 	}
 
 	/// The access token for one call on the connection admission pinned.
@@ -554,26 +571,87 @@ impl Service {
 			self.discard(scope, row, State::NeedsReconnection).await?;
 			return Err(Error::Plan(Failure::NeedsReconnection));
 		}
-		let lifetime = issued_lifetime(&issued)?;
+		let lifetime = match issued_lifetime(&issued) {
+			Ok(lifetime) => lifetime,
+			Err(error) => {
+				drop(scope);
+				return Err(self.abandon_rotation(&row, &issued, error).await);
+			}
+		};
 		// Store the rotated pair before anything else: the old refresh token
 		// is already spent.
-		let version = self
+		let version = match self
 			.store
 			.add_version(&row.tenant, &row.secret_resource, &Tokens::seal(&issued))
-			.await?;
+			.await
+		{
+			Ok(version) => version,
+			Err(error) => {
+				drop(scope);
+				return Err(self.abandon_rotation(&row, &issued, error).await);
+			}
+		};
+		let spent = row.clone();
 		let previous = row.pinned_version.replace(version);
 		row.access_expires_at = now + lifetime;
 		row.refresh_expires_at = now + domain::refresh_lifetime();
 		row.refreshed_at = Some(now);
 		row.revision += 1;
-		scope
+		if let Err(error) = scope
 			.save(&row, "plan_connection.refreshed", SYSTEM_ACTOR)
-			.await?;
-		scope.commit().await?;
+			.await
+		{
+			drop(scope);
+			return Err(self.abandon_rotation(&spent, &issued, error).await);
+		}
+		if let Err(error) = scope.commit().await {
+			return Err(self.abandon_rotation(&spent, &issued, error).await);
+		}
 		if let Some(previous) = previous {
 			self.destroy_quietly(&previous).await;
 		}
 		Ok(issued.access_token)
+	}
+
+	/// A refresh whose rotated pair could not be kept. The old refresh token
+	/// is spent, so the connection cannot be used again: the new grant is
+	/// revoked rather than left live at OpenAI, and the connection asks for
+	/// reconnection. Every stored version, including any written for the new
+	/// pair, is destroyed. If that transition cannot be written either, the
+	/// next call's refresh with the spent token makes it.
+	async fn abandon_rotation(
+		&self,
+		spent: &PlanConnection,
+		issued: &Issued,
+		error: Error,
+	) -> Error {
+		self.revoke_quietly(&spent.client_id, &issued.refresh_token)
+			.await;
+		let owner = Owner {
+			tenant: spent.tenant.clone(),
+			subject: spent.subject.clone(),
+		};
+		let recovered = async {
+			let mut scope = self.repository.begin(&owner).await?;
+			match scope
+				.owned(Provider::Chatgpt)
+				.await?
+				.filter(|row| row.id == spent.id)
+			{
+				Some(row) => self.discard(scope, row, State::NeedsReconnection).await,
+				None => scope.commit().await,
+			}
+		}
+		.await;
+		match recovered {
+			Ok(()) => Error::Plan(Failure::NeedsReconnection),
+			Err(_) => {
+				tracing::warn!(
+					"a Plan Connection whose refresh could not be stored was not marked for reconnection"
+				);
+				error
+			}
+		}
 	}
 
 	/// Marks the connection [`State::Ineligible`] after OpenAI reported that
@@ -608,7 +686,16 @@ impl Service {
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		scope.commit().await?;
 		let access = self.bearer(id).await?;
-		self.authorization.models(&access).await
+		match self.authorization.models(&access).await {
+			// OpenAI can reject an access token before its recorded expiry.
+			// As for inference, one forced refresh decides whether the owner
+			// must reconnect.
+			Err(Error::Plan(Failure::NeedsReconnection)) => {
+				let access = self.access(id, true).await?;
+				self.authorization.models(&access).await
+			}
+			result => result,
+		}
 	}
 
 	/// Ends use after a rejected refresh: the tokens are destroyed, while the
@@ -656,13 +743,21 @@ impl Service {
 		}
 	}
 
-	async fn delete_tokens(&self, row: &PlanConnection) {
-		if let Ok(versions) = self.store.versions(&row.secret_resource).await {
-			for version in versions {
-				self.destroy_quietly(&version).await;
-			}
+	/// Deletes every Plan Token version and the resource. A resource that is
+	/// already gone counts as deleted, so a retried cleanup completes.
+	async fn delete_tokens(&self, row: &PlanConnection) -> Result<()> {
+		let gone = |result: Result<()>| match result {
+			Err(Error::NotFound(_)) => Ok(()),
+			result => result,
+		};
+		let versions = match self.store.versions(&row.secret_resource).await {
+			Err(Error::NotFound(_)) => Vec::new(),
+			versions => versions?,
+		};
+		for version in versions {
+			gone(self.store.destroy(&version).await)?;
 		}
-		self.delete_resource(&row.secret_resource).await;
+		gone(self.store.delete(&row.secret_resource).await)
 	}
 
 	async fn destroy_quietly(&self, version: &str) {

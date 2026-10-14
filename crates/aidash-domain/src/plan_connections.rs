@@ -63,6 +63,9 @@ pub struct PlanConnection {
 	/// OpenAI's issued client ID, bound to one ChatGPT account and workspace.
 	/// It is not secret, but it is reused only for this connection.
 	pub client_id: String,
+	/// The verified ChatGPT account (the ID token's `sub`) the grant was
+	/// issued for. A reconnection must authenticate the same account.
+	pub account: String,
 	/// Store references are adapter metadata, never included in API projections.
 	pub secret_resource: String,
 	pub pinned_version: Option<String>,

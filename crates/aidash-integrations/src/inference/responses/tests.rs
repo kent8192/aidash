@@ -96,9 +96,10 @@ fn requests_carry_the_projected_context_without_server_state() {
 			.unwrap()
 			.starts_with("data:image/png;base64,")
 	);
+	// Plan usage accepts function tools only inside a namespace.
 	assert_eq!(
 		body["tools"],
-		json!([{"type":"function","name":"search","description":"Search the workspace","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}])
+		json!([{"type":"namespace","name":"aidash","description":"Tools of this Aidash agent.","tools":[{"type":"function","name":"search","description":"Search the workspace","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}])
 	);
 	assert_eq!(body["text"]["format"]["type"], "json_schema");
 	assert_eq!(body["text"]["format"]["name"], "execution_summary");
@@ -203,6 +204,36 @@ fn usage_limits_after_the_stream_opened_fail_the_run() {
 	let error = result.unwrap_err();
 	assert!(matches!(error, Error::Plan(Failure::UsageLimit)));
 	assert!(!error.to_string().contains("canary"));
+}
+
+/// Calls into the Aidash namespace map back to the Aidash tool names.
+#[test]
+fn namespaced_tool_calls_keep_the_aidash_tool_name() {
+	let stream = sse(&[
+		json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","namespace":"aidash","name":"search","arguments":""}}),
+		completed_event(json!([
+			{"type":"function_call","call_id":"call_1","namespace":"aidash","name":"search","arguments":"{}"},
+			{"type":"function_call","call_id":"call_2","name":"aidash.search","arguments":"{}"}
+		])),
+	]);
+	let (result, _) = assemble(&stream);
+	let names = result
+		.unwrap()
+		.tool_calls
+		.into_iter()
+		.map(|call| call.name)
+		.collect::<Vec<_>>();
+	assert_eq!(names, ["search", "search"]);
+}
+
+/// An overflow reported after the stream opened enters compact-and-retry
+/// rather than a transient retry of the same request.
+#[rstest::rstest]
+#[case::failed_event(json!({"type":"response.failed","response":{"status":"failed","error":{"code":"context_length_exceeded","message":"too long"}}}))]
+#[case::error_event(json!({"type":"error","code":"invalid_request_error","message":"This model's maximum context length is 128000 tokens"}))]
+fn streamed_context_overflow_keeps_its_classification(#[case] event: Value) {
+	let (result, _) = assemble(&sse(&[event]));
+	assert!(matches!(result, Err(Error::ContextOverflow)), "{result:?}");
 }
 
 #[test]

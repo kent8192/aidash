@@ -206,7 +206,7 @@ impl Authorization for ChatgptAuthorization {
 		id_token: &SecretString,
 		client_id: &str,
 		nonce: &str,
-	) -> Result<()> {
+	) -> Result<String> {
 		let token = id_token.expose_secret();
 		if token.len() > 16_384 {
 			return Err(Error::Unauthorized);
@@ -229,7 +229,12 @@ impl Authorization for ChatgptAuthorization {
 			.await?
 			.key(&kid)
 			.await
-			.map_err(|_| Error::Unauthorized)?;
+			.map_err(|error| match error {
+				// The signing keys could not be read: retryable, never a verdict
+				// on the authorization itself.
+				Error::External(_) => unavailable(),
+				_ => Error::Unauthorized,
+			})?;
 		let mut validation = Validation::new(Algorithm::RS256);
 		validation.set_issuer(&[ISSUER]);
 		validation.set_audience(&[client_id]);
@@ -241,7 +246,7 @@ impl Authorization for ChatgptAuthorization {
 		if claims.sub.is_empty() || claims.nonce.as_deref() != Some(nonce) {
 			return Err(Error::Unauthorized);
 		}
-		Ok(())
+		Ok(claims.sub)
 	}
 
 	async fn refresh(

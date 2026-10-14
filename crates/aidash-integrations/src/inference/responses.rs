@@ -99,10 +99,15 @@ pub(crate) fn plan_rejection(status: u16, body: Option<&Value>) -> PlanRejection
 	}
 }
 
+/// The namespace every Aidash tool is declared in. Plan usage accepts function
+/// tools only inside a namespace (or as `additional_tools` input items), never
+/// as flat top-level tools.
+const TOOL_NAMESPACE: &str = "aidash";
+
 /// The Responses request equivalent to the Chat Completions body every other
 /// route receives, so context accounting stays the same: `system` becomes
 /// `instructions`, the user message becomes one `input` message, and tools
-/// become flat function tools.
+/// become function tools in one [`TOOL_NAMESPACE`] namespace.
 pub(crate) fn request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
@@ -149,15 +154,19 @@ pub(crate) fn request_body(
 		"stream": true,
 	});
 	if !request.tools.is_empty() {
-		body["tools"] = Value::Array(
-			request
-				.tools
-				.iter()
-				.map(|tool| {
-					json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters})
-				})
-				.collect(),
-		);
+		let tools = request
+			.tools
+			.iter()
+			.map(|tool| {
+				json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters})
+			})
+			.collect::<Vec<_>>();
+		body["tools"] = json!([{
+			"type": "namespace",
+			"name": TOOL_NAMESPACE,
+			"description": "Tools of this Aidash agent.",
+			"tools": tools,
+		}]);
 	}
 	if let Some(format) = &request.response_format {
 		body["text"] = json!({"format": text_format(format)?});
@@ -477,7 +486,7 @@ impl<'a> Assembler<'a> {
 				if item["type"] == "function_call" {
 					let index = event["output_index"].as_u64().unwrap_or(0);
 					let id = item["call_id"].as_str().map(str::to_owned);
-					let name = item["name"].as_str().map(str::to_owned);
+					let name = item["name"].as_str().map(str::to_owned).map(tool_name);
 					self.grow(
 						id.as_ref().map_or(0, String::len) + name.as_ref().map_or(0, String::len),
 					)?;
@@ -553,18 +562,34 @@ impl<'a> Assembler<'a> {
 	}
 }
 
+/// The Aidash tool name of a call into [`TOOL_NAMESPACE`]. Calls carry the
+/// namespace in its own field; a qualified name is accepted as well.
+fn tool_name(name: String) -> String {
+	match name
+		.strip_prefix(TOOL_NAMESPACE)
+		.and_then(|rest| rest.strip_prefix('.'))
+	{
+		Some(unqualified) => unqualified.to_owned(),
+		None => name,
+	}
+}
+
 /// A failure that arrived after the stream opened. It is classified like an
 /// HTTP rejection, but nothing is retried: progress was already shown.
 fn stream_failure(error: Option<&Value>) -> Error {
+	let body = error.map(|error| json!({"error": error}));
 	let status = match error
 		.and_then(|error| error.get("code"))
 		.and_then(Value::as_str)
 	{
+		// Classified like a rejected request, so the harness compacts and
+		// retries instead of retrying the same oversized request.
+		_ if body.as_ref().is_some_and(super::context_overflow) => 400,
 		Some("subscription_sharing_usage_limit_exceeded") => 429,
 		Some(code) if code.ends_with("_unavailable") => 503,
 		_ => 502,
 	};
-	let rejection = plan_rejection(status, error.map(|error| json!({"error": error})).as_ref());
+	let rejection = plan_rejection(status, body.as_ref());
 	match rejection.error {
 		Error::External(_) => Error::External(safe_upstream_reason(
 			error
@@ -641,7 +666,7 @@ pub(crate) fn completed(response: &Value) -> Result<ModelResponse> {
 				};
 				result.tool_calls.push(ToolCall {
 					id: field("call_id")?,
-					name: field("name")?,
+					name: tool_name(field("name")?),
 					arguments: serde_json::from_str(&field("arguments")?).map_err(|error| {
 						Error::External(format!("invalid provider tool arguments: {error}"))
 					})?,

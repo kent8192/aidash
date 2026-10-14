@@ -194,10 +194,14 @@ async fn id_tokens_must_name_this_client_and_nonce() {
 	)
 	.await;
 	let valid = id_token(claims("oaiapp_1", "nonce-1"), "fixture");
-	authorization
-		.verify_id_token(&valid, "oaiapp_1", "nonce-1")
-		.await
-		.unwrap();
+	// The verified subject identifies the ChatGPT account.
+	assert_eq!(
+		authorization
+			.verify_id_token(&valid, "oaiapp_1", "nonce-1")
+			.await
+			.unwrap(),
+		"user-1"
+	);
 	for (token, client, nonce) in [
 		(valid.clone(), "oaiapp_2", "nonce-1"),
 		(valid.clone(), "oaiapp_1", "nonce-2"),
@@ -231,6 +235,40 @@ async fn id_tokens_must_name_this_client_and_nonce() {
 				.is_err()
 		);
 	}
+}
+
+/// Unreadable signing keys are a retryable outage, not a rejected
+/// authorization.
+#[tokio::test]
+async fn unavailable_signing_keys_are_not_an_authentication_failure() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let url = format!("http://{}", listener.local_addr().unwrap());
+	let discovery = json!({
+		"issuer": ISSUER,
+		"token_endpoint": format!("{url}/oauth/token"),
+		"jwks_uri": format!("{url}/jwks"),
+		"revocation_endpoint": format!("{url}/oauth/revoke"),
+	});
+	let app = Router::new()
+		.route(
+			"/.well-known/openid-configuration",
+			get(move || async move { Json(discovery) }),
+		)
+		.route("/jwks", get(|| async { StatusCode::SERVICE_UNAVAILABLE }));
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let authorization = ChatgptAuthorization::at(
+		reqwest::Client::new(),
+		format!("{url}/.well-known/openid-configuration"),
+		format!("{url}/v1"),
+	);
+	let token = id_token(claims("oaiapp_1", "nonce-1"), "fixture");
+	let error = authorization
+		.verify_id_token(&token, "oaiapp_1", "nonce-1")
+		.await
+		.unwrap_err();
+	assert!(matches!(error, Error::External(_)), "{error:?}");
 }
 
 #[tokio::test]
