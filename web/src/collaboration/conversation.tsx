@@ -46,6 +46,7 @@ import {
   type MessageSubmission,
 } from "./conversation-model";
 import { Avatar } from "./avatar";
+import { CitedText } from "./citations";
 import { Textarea } from "../components/ui/textarea";
 import { Kbd } from "../components/ui/kbd";
 import {
@@ -72,8 +73,29 @@ function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
   return Math.max(0, end - scroll.clientHeight);
 }
 
-/** Only inline composer syntax is interpreted. React escapes all other content. */
-export function MessageText({ text }: { text: string }) {
+/**
+ * Only inline composer syntax is interpreted. React escapes all other content.
+ * In text a Run published (`run`), Source citations become numbered chips.
+ */
+export function MessageText({
+  text,
+  run,
+}: {
+  text: string;
+  run?: string | null;
+}) {
+  if (run)
+    return (
+      <CitedText
+        run={run}
+        text={text}
+        render={(part) => <InlineText text={part} />}
+      />
+    );
+  return <InlineText text={text} />;
+}
+
+function InlineText({ text }: { text: string }) {
   return (
     <>
       {text
@@ -569,7 +591,10 @@ function ConversationFeed({
                         </time>
                       </header>
                       <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
-                        <MessageText text={message.content} />
+                        <MessageText
+                          text={message.content}
+                          run={message.run_id}
+                        />
                       </p>
                       {entry.attachments.length > 0 && (
                         <ul className="mt-1.5 flex flex-wrap gap-1.5">
