@@ -256,8 +256,19 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
       exact: true,
     }),
   });
+  // The fixture model names no Provider Credential: a Keyless endpoint
+  // carries no data retention guarantee, before and after approval.
+  await expect(catalogPanel.locator(".keyless-notice")).toContainText(
+    "ゼロデータ保持は保証されません",
+  );
+  await expect(catalogPanel.locator(".keyless-notice")).toContainText(
+    "http://127.0.0.1:1",
+  );
   await catalogPanel.getByRole("button", { name: "承認", exact: true }).click();
   await expect(catalogPanel.locator(".auth-row")).toContainText("承認済み");
+  await expect(catalogPanel.locator(".auth-row .keyless-origin")).toHaveText(
+    "データ保持の保証なし · http://127.0.0.1:1",
+  );
   await catalogPanel
     .getByRole("button", { name: "承認を無効化", exact: true })
     .click();
