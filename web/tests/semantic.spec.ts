@@ -5,6 +5,7 @@ import {
 } from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { KeylessFixture, keylessPort } from "./keyless-ports";
 
 test("semantic dashboard configures, searches, migrates and deletes persistent sources in both languages", async ({
   page,
@@ -33,7 +34,9 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       }),
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) =>
+    server.listen(keylessPort(KeylessFixture.semantic), "127.0.0.1", resolve),
+  );
   const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   const workspace = await api("/api/workspaces", {
     title: "Semantic dashboard",

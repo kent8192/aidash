@@ -5,6 +5,7 @@ import {
 } from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { KeylessFixture, keylessPort } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
 test("generation dashboard manages policy, approval, completion and retained history in both languages", async ({
@@ -56,7 +57,11 @@ test("generation dashboard manages policy, approval, completion and retained his
     );
   });
   await new Promise<void>((resolve) =>
-    provider.listen(0, "127.0.0.1", resolve),
+    provider.listen(
+      keylessPort(KeylessFixture.generation),
+      "127.0.0.1",
+      resolve,
+    ),
   );
   try {
     const id = `generation-${randomUUID()}`;

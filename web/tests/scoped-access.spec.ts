@@ -5,6 +5,7 @@ import {
 } from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { KeylessFixture, keylessPort } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
 test("subject dashboard completes a conversation and clears revoked access", async ({
@@ -54,7 +55,11 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     );
   });
   await new Promise<void>((resolve) =>
-    provider.listen(0, "127.0.0.1", resolve),
+    provider.listen(
+      keylessPort(KeylessFixture.scopedAccess),
+      "127.0.0.1",
+      resolve,
+    ),
   );
   try {
     const api = async (path: string, body?: unknown) => {

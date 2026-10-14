@@ -349,7 +349,17 @@ def main():
     scoped_provider_socket = socket.socket()
     scoped_provider_socket.bind(("127.0.0.1", 0))
     scoped_provider_port = scoped_provider_socket.getsockname()[1]
-    keyless_origins = f"{fixture_url},http://127.0.0.1:{scoped_provider_port}"
+    # The dashboard specs serve their Keyless model and embedding fixtures on
+    # these ports, one per spec (web/tests/keyless-ports.ts). Node cannot adopt
+    # a socket, so each is held until just before the browser run starts.
+    browser_provider_sockets = []
+    for _ in range(3):
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        browser_provider_sockets.append(held)
+    browser_provider_ports = [held.getsockname()[1] for held in browser_provider_sockets]
+    keyless_origins = ",".join([fixture_url, f"http://127.0.0.1:{scoped_provider_port}",
+                                *(f"http://127.0.0.1:{port}" for port in browser_provider_ports)])
     stream_events = []
     nats_proxy = NatsProxy()
 
@@ -524,7 +534,9 @@ def main():
         local_approvals.set()
         if args.dashboard:
             browser_report = logs / "browser-report.json"
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})
+            for held in browser_provider_sockets:
+                held.close()
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports))})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
