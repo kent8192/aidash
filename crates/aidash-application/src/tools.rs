@@ -41,6 +41,24 @@ pub struct Plugin {
 	pub alias: String,
 	pub config: ToolConfig,
 }
+pub fn validate_native_http_url(raw: &str, allowed_hosts: &[String]) -> Result<url::Url> {
+	let url = url::Url::parse(raw).map_err(|_| Error::Invalid("invalid URL".into()))?;
+	let host = url
+		.host_str()
+		.ok_or_else(|| Error::Invalid("invalid URL host".into()))?;
+	if url.scheme() != "https"
+		|| url.port_or_known_default() != Some(443)
+		|| !matches!(url.host(), Some(url::Host::Domain(_)))
+		|| !allowed_hosts.iter().any(|allowed| allowed == host)
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+	{
+		return Err(Error::Invalid(
+			"URL is outside the tool's configured public HTTPS hosts".into(),
+		));
+	}
+	Ok(url)
+}
 impl Plugin {
 	pub fn specification(&self) -> ToolSpec {
 		plugin_specification(&self.entry, &self.alias)
@@ -72,19 +90,7 @@ impl Plugin {
 				operation,
 				allowed_hosts,
 			} if operation == "http_get" => {
-				let url = url::Url::parse(required(&input, "url")?)
-					.map_err(|_| Error::Invalid("invalid URL".into()))?;
-				if !matches!(url.scheme(), "https" | "http")
-					|| !allowed_hosts
-						.iter()
-						.any(|host| Some(host.as_str()) == url.host_str())
-					|| !url.username().is_empty()
-					|| url.password().is_some()
-				{
-					return Err(Error::Invalid(
-						"URL is outside the tool's configured hosts".into(),
-					));
-				}
+				validate_native_http_url(required(&input, "url")?, allowed_hosts)?;
 				transport.invoke(&self.config, input, key).await
 			}
 			ToolConfig::Native { .. } => Err(Error::Invalid("unknown native tool".into())),

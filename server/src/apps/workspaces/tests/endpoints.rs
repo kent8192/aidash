@@ -1,5 +1,6 @@
 use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
 use aidash_server::apps::workspaces::models::{Task, TaskDependency, Workspace};
+use http::Method;
 use reinhardt::db::orm::Model;
 use rstest::rstest;
 use serde_json::json;
@@ -65,38 +66,25 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 		200,
 	);
 	let dependent_input = json!({"title":"Dependent","description":"Wait for ancestor","dependencies":[ancestor["id"],ancestor["id"]]});
-	let body = dependent_input.to_string();
-	let headers = [("idempotency-key", "endpoint-task")];
 	// Act
 	let dependent = assert_json(
-		async {
-			let client = &(app.operator);
-			let mut request = client
-				.request(http::Method::POST, &path)
-				.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
-				.header(http::header::CONTENT_TYPE, "application/json");
-			for (name, value) in &headers {
-				request = request.header(*name, *value);
-			}
-			request.send().await
-		}
-		.await
-		.unwrap(),
+		app.operator
+			.request(Method::POST, &path)
+			.header("idempotency-key", "endpoint-task")
+			.json(&dependent_input)
+			.send()
+			.await
+			.unwrap(),
 		200,
 	);
-	let repeated = async {
-		let client = &(app.operator);
-		let mut request = client
-			.request(http::Method::POST, &path)
-			.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
-			.header(http::header::CONTENT_TYPE, "application/json");
-		for (name, value) in &headers {
-			request = request.header(*name, *value);
-		}
-		request.send().await
-	}
-	.await
-	.unwrap();
+	let repeated = app
+		.operator
+		.request(Method::POST, &path)
+		.header("idempotency-key", "endpoint-task")
+		.json(&dependent_input)
+		.send()
+		.await
+		.unwrap();
 	let cycle = app.operator.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();
 	// Assert
 	assert_eq!(assert_json(repeated, 200)["id"], dependent["id"]);

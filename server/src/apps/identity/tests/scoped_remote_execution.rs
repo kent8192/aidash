@@ -2282,10 +2282,10 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
+async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persistence(
 	#[future(awt)] scoped_pair: Pair,
 ) {
-	use aidash_server::transactions::{Manifest, coordinator, participant};
+	use aidash_server::transactions::{Manifest, coordinator};
 	let p = scoped_pair;
 	for (local, app, remote) in [(&p.a, &p.aa, &p.b), (&p.b, &p.ba, &p.a)] {
 		assert_eq!(
@@ -2330,52 +2330,13 @@ async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
 		json!(manifest),
 	)
 	.await;
-	assert_eq!(status, 202, "{body}");
-	for _ in 0..2 {
-		coordinator::advance(&p.a, manifest.id).await.unwrap();
-	}
-	let (status, body) = request(
-		&p.aa,
-		&p.token,
-		"GET",
-		&format!("/api/transactions/{}", manifest.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(
-		status, 200,
-		"current authorized controls remain available during reservation: {body}"
-	);
-	for _ in 0..20 {
-		if coordinator::advance(&p.a, manifest.id)
-			.await
-			.unwrap()
-			.complete
-		{
-			break;
-		}
-	}
-	let result = coordinator::status(&p.a, manifest.id).await.unwrap();
-	assert!(result.complete, "{result:?}");
-	assert_eq!(result.decision.as_deref(), Some("COMMIT"), "{result:?}");
-	for local in [&p.a, &p.b] {
-		participant::finish(local, &p.a.config.node_id, &manifest)
-			.await
-			.unwrap();
-	}
+	assert_eq!(status, 403, "{body}");
+	assert!(coordinator::status(&p.a, manifest.id).await.is_err());
 	assert_eq!(
 		p.a.store.task(task.id).await.unwrap().status.as_str(),
-		"COMPLETED"
+		"RUNNING"
 	);
-	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
-	let artifacts =
-		p.a.store
-			.snapshot(task.workspace_id)
-			.await
-			.unwrap()
-			.artifacts;
-	assert_eq!(artifacts.len(), 1);
-	assert_eq!(artifacts[0].created_by, task.owner.unwrap());
+	assert_eq!(p.run().await.phase().as_str(), "TOOL_CALL");
 	p.close().await;
 }
 

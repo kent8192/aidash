@@ -21,11 +21,30 @@ use reinhardt::query::{
 use uuid::Uuid;
 #[async_trait]
 impl ReadProvenanceScope for Reads<'_> {
-	async fn catalog_read(&mut self, reference: &EntityRef) -> Result<()> {
-		crate::apps::identity::services::catalog::entry(self.access, reference, "registry.read")
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()> {
+		match crate::apps::identity::services::catalog::entry(
+			self.access,
+			reference,
+			"registry.read",
+		)
+		.await
+		{
+			Ok(_) => Ok(()),
+			Err(error @ (crate::Error::Forbidden | crate::Error::NotFound(_))) => {
+				if crate::apps::identity::repositories::foreign_reads::retired_run_catalog_read(
+					self.access,
+					run,
+					reference,
+				)
+				.await?
+				{
+					Ok(())
+				} else {
+					Err(error.into())
+				}
+			}
+			Err(error) => Err(error.into()),
+		}
 	}
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access
@@ -57,7 +76,7 @@ impl ReadProvenanceScope for Reads<'_> {
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>> {
 		let result: NativeResult<Vec<EntityRef>> = async {
 			let this = &mut *self.access;
-			let entries: Vec<(String, String)> = {
+			let mut entries: Vec<(String, String)> = {
 				let query_bind_1 = run;
 				crate::database::native::query_as(
 					&Query::select()
@@ -79,6 +98,28 @@ impl ReadProvenanceScope for Reads<'_> {
 				.fetch_all(&mut **this.tx)
 				.await?
 			};
+			let snapshot: Option<serde_json::Value> = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(Expr::cust("context -> 'binding_snapshot'"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("id").eq(Expr::value(run)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **this.tx)
+			.await?;
+			if let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.is_null()) {
+				let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
+					serde_json::from_value(snapshot)?;
+				entries.extend(
+					snapshot
+						.definitions
+						.into_iter()
+						.filter(|definition| definition.identity.registry_node == this.node_id)
+						.map(|definition| (definition.identity.id, definition.identity.version)),
+				);
+			}
+			entries.sort();
+			entries.dedup();
 			Ok(entries
 				.into_iter()
 				.map(|(id, version)| EntityRef { id, version })
@@ -329,7 +370,7 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn catalog_read(&mut self, reference: &EntityRef) -> Result<()> {
+	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
 		self.access
 			.catalog_entry(reference)
 			.await

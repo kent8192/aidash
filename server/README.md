@@ -123,6 +123,10 @@ dependency registrations. Endpoint paths already include their public prefixes,
 so the root mounts at `/` and preserves the existing API, authentication,
 Federation, SSE, and frontend URLs.
 
+The native HTTP listener acquires the shared request permit before reading a
+body, applies route-specific body limits and a receive deadline, and retains
+admission through handler completion. See [HTTP protection and observability](../docs/operations/http-observability.md).
+
 The implementation follows the pinned framework's
 [unified router](https://github.com/kent8192/reinhardt-web/blob/6e12816090b3dd4db592bfc74d0d622de4cef3d7/crates/reinhardt-urls/src/routers/unified_router.rs)
 and [routing guide](https://github.com/kent8192/reinhardt-web/blob/6e12816090b3dd4db592bfc74d0d622de4cef3d7/crates/reinhardt-urls/README.md).
