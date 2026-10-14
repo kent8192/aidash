@@ -682,7 +682,7 @@ impl Home {
 					&self.owner(),
 					key,
 					artifact,
-					self.authority.as_ref().map(|_| self.run.id),
+					crate::store::Publication::by(self.run.id, self.authority.is_some()),
 					None,
 				)
 				.await
@@ -704,7 +704,7 @@ impl Home {
 					&self.owner(),
 					key,
 					artifact,
-					self.authority.as_ref().map(|_| self.run.id),
+					crate::store::Publication::by(self.run.id, self.authority.is_some()),
 				)
 				.await
 		} else {
