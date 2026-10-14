@@ -372,6 +372,7 @@ async fn connect(
 		.complete(
 			&owner(),
 			Pending {
+				state: "state-1",
 				verifier: &verifier,
 				nonce: "nonce-1",
 				redirect_uri: "http://127.0.0.1:43123/auth/callback",
@@ -485,6 +486,7 @@ async fn declined_and_failed_consents_never_reach_the_exchange() {
 			.complete(
 				&owner(),
 				Pending {
+					state: "state-1",
 					verifier: &verifier,
 					nonce: "nonce-1",
 					redirect_uri: "http://127.0.0.1:43123/auth/callback",
@@ -733,6 +735,20 @@ async fn unusable_connections_never_serve_calls() {
 		fixture.service.bearer(id).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
+	// An expired connection records that it needs reconnection.
+	let expired = only_row(&fixture).await;
+	assert_eq!(expired.state, State::NeedsReconnection);
+	assert!(expired.pinned_version.is_none());
+	assert!(fixture.store.plaintexts().is_empty());
+	assert!(
+		fixture
+			.repo
+			.0
+			.lock()
+			.await
+			.events
+			.contains(&"plan_connection.needs_reconnection".to_owned())
+	);
 	set_row(&fixture, |row| {
 		row.refresh_expires_at = Utc::now() + Duration::days(1);
 		row.state = State::Ineligible;
@@ -980,5 +996,42 @@ async fn failed_token_cleanup_keeps_the_connection_for_a_retry() {
 		.await
 		.unwrap();
 	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+}
+
+/// A callback is bound to the attempt whose `state` it returns; another
+/// attempt's callback, even a denial, is refused before any exchange.
+#[tokio::test]
+async fn callbacks_from_another_attempt_are_refused() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	let verifier = SecretString::from("verifier-1".to_owned());
+	for result in [
+		CallbackResult::Denied,
+		CallbackResult::Code {
+			code: "code-1".into(),
+			client_id: Some("oaiapp_1".into()),
+		},
+	] {
+		let outcome = fixture
+			.service
+			.complete(
+				&owner(),
+				Pending {
+					state: "state-2",
+					verifier: &verifier,
+					nonce: "nonce-1",
+					redirect_uri: "http://127.0.0.1:43123/auth/callback",
+					saved_client: None,
+				},
+				&Callback {
+					state: "state-1".into(),
+					result,
+				},
+				"alice",
+			)
+			.await;
+		assert!(matches!(outcome, Err(Error::Invalid(_))), "{outcome:?}");
+	}
+	assert_eq!(fixture.authorization.calls.lock().unwrap().exchanges, 0);
 	assert_eq!(fixture.store.resources(), 0);
 }

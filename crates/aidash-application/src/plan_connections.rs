@@ -151,6 +151,8 @@ pub trait Repository: Send + Sync {
 
 /// What a pending authorization contributes to its completion.
 pub struct Pending<'a> {
+	/// The `state` generated for this attempt; the callback must return it.
+	pub state: &'a str,
 	pub verifier: &'a SecretString,
 	pub nonce: &'a str,
 	pub redirect_uri: &'a str,
@@ -298,6 +300,13 @@ impl Service {
 		callback: &Callback,
 		actor: &str,
 	) -> Result<Outcome> {
+		// Bind the callback to the attempt that generated its state before
+		// trusting anything else in it, including a denial.
+		if callback.state != pending.state {
+			return Err(Error::Invalid(
+				"the callback does not belong to this Sign in with ChatGPT attempt".into(),
+			));
+		}
 		let (code, returned_client) = match &callback.result {
 			CallbackResult::Denied => return Ok(Outcome::Denied),
 			CallbackResult::Failed => return Ok(Outcome::Failed),
@@ -528,7 +537,16 @@ impl Service {
 			return Err(Error::Plan(Failure::NotConnected));
 		}
 		let now = Utc::now();
-		let version = row.require_usable(now).map_err(Error::Plan)?.to_owned();
+		let version = match row.require_usable(now) {
+			Ok(version) => version.to_owned(),
+			// Unused past its refresh lifetime: record that it needs
+			// reconnection and destroy its tokens, not only refuse the call.
+			Err(Failure::NeedsReconnection) if row.state == State::Active => {
+				self.discard(scope, row, State::NeedsReconnection).await?;
+				return Err(Error::Plan(Failure::NeedsReconnection));
+			}
+			Err(failure) => return Err(Error::Plan(failure)),
+		};
 		let tokens = self.tokens(&row, &version).await?;
 		if !force && !row.needs_refresh(now) {
 			scope.commit().await?;

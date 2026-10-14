@@ -282,11 +282,27 @@ impl ModelProvider for ResponsesProvider {
 				metrics::histogram!("aidash_model_response_headers_seconds")
 					.record(started.elapsed().as_secs_f64());
 				if response.status().is_success() {
-					let result = read_stream(response, progress, stall).await;
-					if matches!(result, Err(Error::Plan(Failure::Ineligible))) {
-						self.access
-							.plan_rejected(&context, Disposition::MarkIneligible)
-							.await?;
+					let result = within_output_cap(
+						read_stream(response, progress, stall).await,
+						request.max_output_tokens,
+					);
+					// A rejected bearer reported after the stream opened still
+					// needs its refresh or reconnection. Progress was shown, so
+					// this call is not replayed; a refreshed token serves the
+					// next attempt.
+					let disposition = match result {
+						Err(Error::Plan(Failure::Ineligible)) => Some(Disposition::MarkIneligible),
+						Err(Error::Plan(Failure::NeedsReconnection)) => {
+							Some(Disposition::RefreshThenReconnect)
+						}
+						_ => None,
+					};
+					if let Some(disposition) = disposition
+						&& self.access.plan_rejected(&context, disposition).await?
+					{
+						return Err(Error::External(
+							"ChatGPT plan usage is temporarily unavailable".into(),
+						));
 					}
 					return result;
 				}
@@ -316,6 +332,30 @@ impl ModelProvider for ResponsesProvider {
 		})
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
+	}
+}
+
+/// Plan usage ignores `max_output_tokens`, so the limit is enforced on the
+/// reported output: a longer response is never acted on, and only its usage
+/// settles the call.
+pub(crate) fn within_output_cap(result: Result<ModelResponse>, cap: u32) -> Result<ModelResponse> {
+	match result {
+		Ok(response)
+			if response
+				.reported
+				.output_tokens
+				.is_some_and(|n| n > u64::from(cap)) =>
+		{
+			Err(Error::TerminalResponse(
+				ContextFailure::OutputTruncated,
+				Box::new(ModelResponse {
+					text: String::new(),
+					tool_calls: Vec::new(),
+					..response
+				}),
+			))
+		}
+		result => result,
 	}
 }
 

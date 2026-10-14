@@ -236,6 +236,27 @@ fn streamed_context_overflow_keeps_its_classification(#[case] event: Value) {
 	assert!(matches!(result, Err(Error::ContextOverflow)), "{result:?}");
 }
 
+/// Plan usage ignores the request's output limit; a response that reports
+/// more output than requested is never acted on, but its usage still settles.
+#[test]
+fn responses_beyond_the_requested_output_are_not_acted_on() {
+	let stream = sse(&[completed_event(json!([
+		{"type":"message","content":[{"type":"output_text","text":"Looking."}]},
+		{"type":"function_call","call_id":"call_1","name":"search","arguments":"{}"}
+	]))]);
+	let (result, _) = assemble(&stream);
+	let output = result.as_ref().unwrap().reported.output_tokens.unwrap();
+	let capped = u32::try_from(output).unwrap();
+	assert!(within_output_cap(assemble(&stream).0, capped).is_ok());
+	match within_output_cap(result, capped - 1) {
+		Err(Error::TerminalResponse(ContextFailure::OutputTruncated, usage)) => {
+			assert!(usage.tool_calls.is_empty() && usage.text.is_empty());
+			assert_eq!(usage.reported.output_tokens, Some(output));
+		}
+		other => panic!("{other:?}"),
+	}
+}
+
 #[test]
 fn unavailable_plan_usage_after_the_stream_opened_is_transient() {
 	let stream = sse(&[
@@ -521,6 +542,45 @@ async fn provider_with_rejecting_server() -> ((ResponsesProvider, Arc<FakeAccess
 	);
 	let (url, server) = serve(app).await;
 	(provider(&url, false), server)
+}
+
+/// An invalid user reported after the stream opened still reaches the access
+/// layer, which refreshes or ends the connection; the stream is not replayed.
+#[rstest::rstest]
+#[case::refreshed(true)]
+#[case::terminal(false)]
+#[tokio::test]
+async fn streamed_invalid_users_report_a_refresh(#[case] refresh_succeeds: bool) {
+	let calls = Arc::new(Mutex::new(0));
+	let counted = calls.clone();
+	let app = Router::new().route(
+		"/responses",
+		post(move || {
+			*counted.lock().unwrap() += 1;
+			async {
+				stream_response(&[json!({"type":"response.failed","response":{"status":"failed","error":{"code":"subscription_sharing_invalid_user","message":"canary"}}})])
+			}
+		}),
+	);
+	let (url, _server) = serve(app).await;
+	let (plan, access) = provider(&url, refresh_succeeds);
+	let error = plan
+		.infer(request(), &Recorder::default())
+		.await
+		.unwrap_err();
+	assert_eq!(
+		access.reports.lock().unwrap().as_slice(),
+		[Disposition::RefreshThenReconnect]
+	);
+	assert_eq!(*calls.lock().unwrap(), 1);
+	if refresh_succeeds {
+		assert!(matches!(error, Error::External(_)), "{error:?}");
+	} else {
+		assert!(
+			matches!(error, Error::Plan(Failure::NeedsReconnection)),
+			"{error:?}"
+		);
+	}
 }
 
 #[tokio::test]

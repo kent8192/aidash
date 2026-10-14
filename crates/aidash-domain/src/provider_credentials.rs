@@ -68,7 +68,12 @@ impl Provider {
 	}
 	/// A Provider Catalog entry served by Provider Credentials.
 	pub fn credential(value: &str) -> Result<Self> {
-		Self::parse(value)?.require(Grant::ProviderCredential)
+		Self::parse(value)?.require_credential()
+	}
+	/// Refuses an entry that Provider Credentials do not serve, at each
+	/// boundary that receives an already-parsed [`Provider`].
+	pub fn require_credential(self) -> Result<Self> {
+		self.require(Grant::ProviderCredential)
 	}
 	/// A Provider Catalog entry served by Plan Connections.
 	pub fn plan(value: &str) -> Result<Self> {

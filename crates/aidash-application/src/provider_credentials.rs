@@ -468,6 +468,7 @@ impl Service {
 		expected: i64,
 		actor: &str,
 	) -> Result<Binding> {
+		provider.require_credential()?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let id = id.into();
 		if let Some(id) = id {

@@ -57,6 +57,8 @@ pub fn key_label(tenant: &str) -> String {
 /// Starts one authorization for `provider`, returning the consent URL to
 /// which the browser is sent. The callback must be the host's own URL.
 pub fn begin(provider: Provider, callback_url: &str, tenant: &str) -> Result<Request> {
+	// Plan Connections use Sign in with ChatGPT, never this flow.
+	provider.require_credential()?;
 	let callback = url::Url::parse(callback_url)
 		.map_err(|_| Error::Invalid("invalid Provider Authorization callback URL".into()))?;
 	if !matches!(callback.scheme(), "http" | "https")
