@@ -273,6 +273,9 @@ impl From<aidash_application::Error> for Error {
 				Self::Context(reason)
 			}
 			ApplicationError::ContextOverflow => Self::ContextOverflow,
+			error @ ApplicationError::UnsupportedProjection { .. } => {
+				Self::Invalid(error.to_string())
+			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
