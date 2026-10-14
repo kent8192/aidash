@@ -175,17 +175,17 @@ impl RunDetailsScope for Scope {
 		])
 	}
 	async fn finish(self: Box<Self>, result: Result<RunDetails>) -> Result<RunDetails> {
-		self.close(result)
+		(*self).close(result)
 	}
 	async fn finish_visible(
 		self: Box<Self>,
 		result: Result<aidash_domain::RunInspection>,
 	) -> Result<aidash_domain::RunInspection> {
-		self.close(result)
+		(*self).close(result)
 	}
 }
 impl Scope {
-	fn close<T>(mut self: Box<Self>, result: Result<T>) -> Result<T> {
+	fn close<T>(mut self, result: Result<T>) -> Result<T> {
 		match result {
 			Ok(value) => {
 				self.state.lock().unwrap().record("commit")?;
