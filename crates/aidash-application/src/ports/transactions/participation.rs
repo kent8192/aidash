@@ -5,10 +5,12 @@ use aidash_domain::transactions::{
 	coordination::{LocalStatus, ParticipantPhase},
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 #[async_trait]
 pub trait ParticipantScope: Send {
+	async fn now(&mut self) -> Result<DateTime<Utc>>;
 	async fn lock(&mut self, id: Uuid) -> Result<Option<LocalStatus>>;
 	async fn trusted(&mut self, node: &str) -> Result<bool>;
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>>;

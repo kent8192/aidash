@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 pub mod cache_salt;
 pub use cache_salt::{CacheSaltKey, CacheSaltKeys};
+pub mod responses;
 
 pub struct OpenRouterProvider {
 	pub client: reqwest::Client,
@@ -72,7 +73,7 @@ impl OpenRouterProvider {
 					false,
 				),
 				&self.config.endpoint,
-				&Source::configured(&self.config.provider_credential),
+				&Source::configured(&self.config.provider_credential, &None),
 			)
 			.await?;
 		let mut url = reqwest::Url::parse(&access.endpoint)
@@ -208,16 +209,30 @@ pub fn salted_provider(
 	context: Context,
 	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
-	aidash_domain::provider_credentials::validate_source(
+	aidash_domain::provider_credentials::validate_grants(
 		&config.endpoint,
 		&config.provider,
 		config.provider_credential.as_deref(),
+		config.plan_connection.as_deref(),
 	)?;
 	match config.provider.as_str() {
-		"openrouter" => {
+		"openrouter" if !config.uses_plan_connection() => {
 			config.request_timeout()?;
 			config.stream_stall_timeout()?;
 			Ok(Arc::new(OpenRouterProvider {
+				client,
+				config,
+				access,
+				context,
+				cache_salt,
+			}))
+		}
+		// ChatGPT plan usage reaches only the Responses API (ADR 0007).
+		"chatgpt" if config.uses_plan_connection() => {
+			config.request_timeout()?;
+			config.stream_stall_timeout()?;
+			config.validate_plan_usage()?;
+			Ok(Arc::new(responses::ResponsesProvider {
 				client,
 				config,
 				access,
@@ -315,7 +330,7 @@ impl ModelProvider for OpenRouterProvider {
 						request.cache_breakpoints,
 					),
 					&self.config.endpoint,
-					&Source::configured(&self.config.provider_credential),
+					&Source::configured(&self.config.provider_credential, &None),
 				)
 				.await?;
 			let mut call = self

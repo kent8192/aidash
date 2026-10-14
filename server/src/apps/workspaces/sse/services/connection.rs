@@ -53,7 +53,7 @@ struct Control<T = Event> {
 	pending: watch::Sender<Option<Instant>>,
 	buffer: Mutex<Option<Page<T>>>,
 	gate_wait: Mutex<Option<GateWait>>,
-	lease: Option<crate::http::SseLeaseHandle>,
+	_lease: Option<crate::http::SseLeaseHandle>,
 }
 impl<T> Control<T> {
 	fn new(lease: Option<crate::http::SseLeaseHandle>) -> Self {
@@ -62,7 +62,7 @@ impl<T> Control<T> {
 			pending: watch::channel(None).0,
 			buffer: Mutex::new(None),
 			gate_wait: Mutex::new(None),
-			lease,
+			_lease: lease,
 		}
 	}
 	fn close(&self, reason: Closed) {
@@ -82,9 +82,6 @@ impl<T> Control<T> {
 				metrics::gauge!("aidash_sse_pending_events").decrement(page.events.len() as f64);
 			}
 			metrics::counter!("aidash_sse_closed_total", "reason" => reason.label()).increment(1);
-			if let Some(lease) = &self.lease {
-				lease.release();
-			}
 		}
 	}
 	fn progress(&self, pending: bool) {

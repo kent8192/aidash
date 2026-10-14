@@ -7,6 +7,7 @@ pub mod execution;
 pub mod federation;
 pub mod lifecycle;
 pub mod memory;
+pub mod plan_connections;
 pub mod ports;
 pub mod provider_access;
 pub mod provider_authorization;
@@ -61,6 +62,10 @@ pub enum Error {
 		aidash_domain::context::recovery::Failure,
 		Box<aidash_domain::provider::ModelResponse>,
 	),
+	/// A Plan Connection could not serve a call (ADR 0007). Never retried as
+	/// transport and never answered by a Provider Credential.
+	#[error("{0}")]
+	Plan(aidash_domain::plan_connections::Failure),
 	/// Provider-proven Context Overflow. Only this enters compact-and-retry.
 	#[error("the provider reported that the request exceeded its context window")]
 	ContextOverflow,

@@ -18,7 +18,9 @@ Thirty-second not-ready/unreachable tolerations accelerate eviction; reattachmen
 is asynchronous and this single-primary profile has a recovery pause.
 
 Supply `postgres.existingSecret` with `POSTGRES_USER`, `POSTGRES_DB` and
-`POSTGRES_PASSWORD`. Provision/migrate the application and activation transport
+`POSTGRES_PASSWORD`. This superuser only provisions the `aidash_owner` and
+`aidash_server` logins and the extensions before migration; the migration Job
+logs in as `aidash_owner` and the servers as `aidash_server`. Provision/migrate the application and activation transport
 before opening edge admission. Set immutable image digests in deployment values.
 Build `edge.Dockerfile` from the trusted ref for Nginx/Lua, and use the same trusted
 ref for chart files, the observer, activity collector, Runner, guard and installer.

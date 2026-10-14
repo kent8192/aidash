@@ -4,6 +4,8 @@ Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selecte
 
 The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
 
+New multi-node scoped transactions are temporarily rejected to prevent manifest disclosure after grant revocation. Previously admitted transactions continue durable recovery; see the [transaction contract](docs/transactions.md).
+
 ## Cargo workspace
 
 All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;
@@ -90,6 +92,8 @@ provider keys added to the app Secret are retained.
 If a cluster created with the previous Python helper uses a different port or
 PostgreSQL password, recreate it with `cargo make k8s-down` followed by
 `cargo make k8s-up`. This deletes its local database and other persistent data.
+Recreate it the same way if its database predates the `aidash_owner` and
+`aidash_server` roles (see [Database roles](#database-roles)).
 
 ### Docker Compose development
 
@@ -221,7 +225,7 @@ defaults to `http://127.0.0.1:8080` outside Compose.
 Compose creates `aidash_a`, `aidash_b`, and `aidash_test`. Node B needs its own database, identity and port:
 
 ```sh
-DATABASE_URL=postgres://aidash:aidash-local@127.0.0.1:54370/aidash_b \
+DATABASE_URL=postgres://aidash_server:aidash-server-local@127.0.0.1:54370/aidash_b \
 AIDASH_NODE_ID=aidash://node-b \
 AIDASH_ENDPOINT=http://127.0.0.1:8081 \
 AIDASH_LISTEN=127.0.0.1:8081 \
@@ -350,6 +354,15 @@ Three contracts own different parts of this behavior: Run-context continuity and
 Reinhardt owns the app migration graph under `server/migrations/<app_label>/`. The native baseline supports empty PostgreSQL databases and replay of its own history; existing SeaORM or experimental migration databases are not adopted. Run `cargo run --locked -p aidash-server --bin manage -- migrate` through the native management CLI. See the [migration correspondence and maintenance cutover procedure](server/migrations/README.md) before switching deployments.
 
 The PostgreSQL image supplies the `pg_jsonschema` library. Native history creates and owns an absent extension. For a database-scoped, non-superuser application role, an administrator provisions the extension first; rollback preserves that borrowed extension. Use an empty database template. The Compose `local-dev-db` preparation command applies this same history and validates the extension version before the backend starts.
+
+### Database roles
+
+Aidash uses two PostgreSQL logins, so that row-level security can bind the server (#223):
+
+- `aidash_owner` runs migrations and owns every table. Only `aidash migrate` and other one-off maintenance commands use it.
+- `aidash_server` is the login of servers and workers. It is `NOSUPERUSER NOBYPASSRLS` and holds `SELECT`, `INSERT`, `UPDATE` and `DELETE` on the owner's tables and use of its sequences, through default privileges. It never receives `TRUNCATE`, which skips row-level security.
+
+Servers and workers (`serve`, `server`, `worker`, `runserver` and `runworker`) refuse to start when their login is a superuser, has `BYPASSRLS` or owns any database object, and they no longer apply migrations: they start only once `aidash migrate` has applied every migration. A PostgreSQL superuser provisions the roles once: it creates them, makes `aidash_owner` own the database, creates the `pg_jsonschema`, `vector` and `pgroonga` extensions, and grants the default privileges. The bundled PostgreSQL image does this on a new data directory when `AIDASH_OWNER_PASSWORD` and `AIDASH_SERVER_PASSWORD` are set, as Compose and the local Kubernetes manifests do; `deploy/postgres/init-roles.sh` lists the statements for other servers. A Compose volume created before these roles must be recreated with `docker compose down -v`.
 
 ## CI and coverage
 

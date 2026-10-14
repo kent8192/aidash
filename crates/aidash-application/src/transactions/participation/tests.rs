@@ -17,7 +17,7 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use rstest::{fixture, rstest};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Mutex};
@@ -78,6 +78,9 @@ struct State {
 	admitted: bool,
 	deny_admission: bool,
 	failure: Option<String>,
+	clock: DateTime<Utc>,
+	/// Time that passes while `gate_exclusive` waits for the visibility gate.
+	gate_wait: TimeDelta,
 }
 
 #[derive(Clone)]
@@ -100,6 +103,8 @@ impl Adapter {
 			admitted: false,
 			deny_admission: false,
 			failure: None,
+			clock: "2030-01-01T00:00:00Z".parse().unwrap(),
+			gate_wait: TimeDelta::zero(),
 		})))
 	}
 	fn participant(&self) -> Participant {
@@ -144,6 +149,9 @@ struct Scope {
 }
 #[async_trait]
 impl ParticipantScope for Scope {
+	async fn now(&mut self) -> Result<DateTime<Utc>> {
+		Ok(self.adapter.0.lock().unwrap().clock)
+	}
 	async fn lock(&mut self, _id: Uuid) -> Result<Option<LocalStatus>> {
 		self.adapter.event("lock")?;
 		Ok(self.working.row.clone())
@@ -154,6 +162,8 @@ impl ParticipantScope for Scope {
 	}
 	async fn gate_exclusive(&mut self) -> Result<Option<Uuid>> {
 		self.adapter.event("gate")?;
+		let state = &mut *self.adapter.0.lock().unwrap();
+		state.clock += state.gate_wait;
 		Ok(self.working.gate)
 	}
 	async fn reserve_gate(&mut self, id: Uuid) -> Result<()> {
@@ -392,6 +402,98 @@ async fn new_reservation_requires_live_admission_after_rolling_back_its_probe(ma
 		["begin", "lock", "rollback.probe", "admission"]
 	);
 	assert_eq!(adapter.0.lock().unwrap().persisted.row, None);
+}
+
+#[rstest]
+#[case("2029-12-31T23:59:59Z")]
+#[case("2030-01-01T01:00:02Z")]
+#[tokio::test]
+async fn new_reservation_rejects_expired_or_overlong_deadlines(
+	mut manifest: Manifest,
+	#[case] deadline: &str,
+) {
+	manifest.deadline = deadline.parse().unwrap();
+	let adapter = Adapter::new(&manifest);
+	assert!(matches!(
+		adapter
+			.participant()
+			.reserve(&manifest.coordinator, &manifest)
+			.await,
+		Err(Error::Invalid(_))
+	));
+	let state = adapter.0.lock().unwrap();
+	assert!(state.persisted.row.is_none());
+	assert!(state.persisted.gate.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn new_reservation_rechecks_its_deadline_after_waiting_for_the_gate(manifest: Manifest) {
+	let adapter = Adapter::new(&manifest);
+	adapter.0.lock().unwrap().gate_wait = TimeDelta::hours(2);
+	assert!(matches!(
+		adapter
+			.participant()
+			.reserve(&manifest.coordinator, &manifest)
+			.await,
+		Err(Error::Invalid(_))
+	));
+	let state = adapter.0.lock().unwrap();
+	assert!(state.log.contains(&"gate".into()));
+	assert!(!state.log.contains(&"insert:RESERVED".into()));
+	assert!(state.persisted.row.is_none());
+	assert!(state.persisted.gate.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn prepare_rechecks_its_deadline_after_waiting_for_the_gate(manifest: Manifest) {
+	let adapter = Adapter::new(&manifest);
+	adapter.existing(&manifest, "RESERVED");
+	adapter.0.lock().unwrap().gate_wait = TimeDelta::hours(2);
+	let result = adapter
+		.participant()
+		.prepare(&manifest.coordinator, &manifest)
+		.await
+		.unwrap();
+	assert_eq!(result.phase, "ABORTED");
+	let state = adapter.0.lock().unwrap();
+	assert!(!state.log.contains(&"validate_mutations".into()));
+	assert_eq!(state.persisted.gate, None);
+	assert_eq!(state.persisted.row.as_ref().unwrap().phase, "ABORTED");
+}
+
+#[rstest]
+#[tokio::test]
+async fn abandoned_reserved_participant_releases_gate_and_keeps_abort_tombstone(
+	mut manifest: Manifest,
+) {
+	manifest.deadline = "2029-12-31T23:59:59Z".parse().unwrap();
+	let adapter = Adapter::new(&manifest);
+	adapter.existing(&manifest, "RESERVED");
+	let participant = adapter.participant();
+	assert_eq!(participant.recover_once().await.unwrap(), 1);
+	assert_eq!(adapter.0.lock().unwrap().persisted.gate, None);
+	assert_eq!(
+		participant
+			.reserve(&manifest.coordinator, &manifest)
+			.await
+			.unwrap()
+			.phase,
+		"ABORTED"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn expired_prepared_participant_retains_its_durable_obligation(mut manifest: Manifest) {
+	manifest.deadline = "2029-12-31T23:59:59Z".parse().unwrap();
+	let adapter = Adapter::new(&manifest);
+	adapter.existing(&manifest, "PREPARED");
+	assert_eq!(adapter.participant().recover_once().await.unwrap(), 0);
+	let state = adapter.0.lock().unwrap();
+	assert_eq!(state.persisted.gate, Some(manifest.id));
+	assert_eq!(state.persisted.row.as_ref().unwrap().phase, "PREPARED");
 }
 
 #[rstest]

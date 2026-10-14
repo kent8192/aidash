@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 const STREAM_ENVELOPE_FACTOR: usize = 128;
 /// The assembled JSON of one tool call around its strings:
 /// `{"id":"","type":"function","function":{"name":"","arguments":""}},`.
-const TOOL_CALL_STRUCTURE_BYTES: usize = 64;
+pub(super) const TOOL_CALL_STRUCTURE_BYTES: usize = 64;
 
 #[derive(Default)]
 struct PartialCall {

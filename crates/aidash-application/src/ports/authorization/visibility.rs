@@ -22,6 +22,7 @@ pub trait LocalRunVisibilityScope: Send {
 	async fn task_visible(&mut self, task: &Task) -> Result<bool>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool>;
+	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool>;
 	async fn run_reads(&mut self, run: Uuid) -> Result<bool>;
 }
 

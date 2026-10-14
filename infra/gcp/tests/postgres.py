@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run observer integration checks against a fresh local-only PostgreSQL container."""
+"""Run controller SQL and observer checks against a fresh local-only PostgreSQL container."""
 
 import os
 from pathlib import Path
@@ -10,7 +10,31 @@ import time
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "infra/gcp/control"))
-from kube import OBSERVER_ROLE, observer_sql  # noqa: E402
+from kube import LEGACY_OWNERSHIP_SQL, OBSERVER_ROLE, OWNER_ROLE, observer_sql  # noqa: E402
+
+
+def check_legacy_ownership(container):
+    """The pre-role check must also refuse a database whose owner role does not exist yet."""
+    def psql(sql, database="aidash_legacy_test"):
+        return subprocess.check_output(
+            ["docker", "exec", container, "psql", "-U", "postgres", "-d", database,
+             "--tuples-only", "--no-align", "-v", "ON_ERROR_STOP=1", "-c", sql],
+            text=True,
+        ).strip()
+
+    psql("CREATE DATABASE aidash_legacy_test", "postgres")
+    expectations = [
+        (None, "f"),
+        ("CREATE TABLE legacy_probe (id integer)", "t"),
+        (f"CREATE ROLE {OWNER_ROLE}", "t"),
+        (f"ALTER TABLE legacy_probe OWNER TO {OWNER_ROLE}", "f"),
+    ]
+    for statement, expected in expectations:
+        if statement:
+            psql(statement)
+        actual = psql(LEGACY_OWNERSHIP_SQL)
+        if actual != expected:
+            raise AssertionError(f"legacy ownership after {statement!r}: {actual!r} != {expected!r}")
 
 
 def main():
@@ -63,6 +87,7 @@ def main():
             .strip()
             .rsplit(":", 1)[1]
         )
+        check_legacy_ownership(container)
         password = secrets.token_hex(32)
         environment = dict(
             os.environ,
