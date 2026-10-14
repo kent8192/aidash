@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 304,
+  "endpoint_count": 305,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -12467,6 +12467,40 @@
       "required_checks": [
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1146 run-evidence - Anonymous request is rejected",
+      "file": "contracts/1146-run-evidence.bru",
+      "endpoint": "GET /api/runs/{id}/evidence/{reference}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1147 run-evidence - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1147-run-evidence.bru",
+      "endpoint": "GET /api/runs/{id}/evidence/{reference}",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1148 run-evidence - Application read preserves the typed response contract",
+      "file": "contracts/1148-run-evidence.bru",
+      "endpoint": "GET /api/runs/{id}/evidence/{reference}",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Application read preserves the typed response contract contract"
       ]
     }
   ]

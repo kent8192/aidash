@@ -3,9 +3,10 @@ use crate::apps::execution::models::research::{
 	ResearchAttempt, ResearchFragment, ResearchSnapshot, ResearchSource, lock,
 };
 use crate::store::Store;
+use crate::{authorization::identity::Actor, federation::Federation};
 use aidash_application::{
-	Result,
-	ports::research::{EvidenceStore, Reservation, Reserved},
+	Error, Result,
+	ports::research::{EvidenceStore, Reservation, Reserved, RunReader},
 };
 use aidash_domain::research::{
 	Failure, Operation,
@@ -29,6 +30,44 @@ pub(crate) struct Evidence {
 
 fn native<T>(result: crate::Result<T>) -> Result<T> {
 	result.map_err(Into::into)
+}
+
+/// Run readability for one API reader, decided exactly as `GET /api/runs/{id}`
+/// decides it: a Subject through Run inspection's visibility decision, an
+/// Operator through the Workspace's operator visibility.
+pub(crate) struct Readers<'a> {
+	pub federation: &'a Federation,
+	pub actor: &'a Actor,
+}
+
+#[async_trait]
+impl RunReader for Readers<'_> {
+	async fn readable(&self, run: Uuid) -> Result<bool> {
+		let decision = match self.actor {
+			Actor::Subject(identity) => aidash_application::authorization::run_details::visible(
+				&crate::bootstrap::run_details_repository(self.federation, identity),
+				run,
+			)
+			.await
+			.map(|_| ()),
+			Actor::Operator => native(
+				async {
+					let inspected = self.federation.store.inspect_run(run).await?;
+					crate::authorization::remote::operator::require(
+						&mut crate::database::native::begin(&self.federation.store.pool).await?,
+						inspected.workspace_id,
+					)
+					.await
+				}
+				.await,
+			),
+		};
+		match decision {
+			Ok(()) => Ok(true),
+			Err(Error::Forbidden | Error::NotFound(_)) => Ok(false),
+			Err(error) => Err(error),
+		}
+	}
 }
 
 #[async_trait]

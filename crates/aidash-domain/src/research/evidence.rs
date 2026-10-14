@@ -85,6 +85,84 @@ impl EvidenceFragment {
 	}
 }
 
+/// Whole snapshot lines shown on each side of a cited Evidence fragment.
+pub const CONTEXT_LINES: usize = 20;
+/// UTF-8 bytes of snapshot text shown on each side of a cited Evidence fragment.
+pub const CONTEXT_BYTES: usize = 4 * 1024;
+
+/// Document snapshot lines around a cited Evidence fragment. They were not
+/// delivered to the Agent with the fragment; a reader sees them only to judge
+/// the passage in its place. Each side holds whole lines, nearest first, up to
+/// [`CONTEXT_LINES`] lines and [`CONTEXT_BYTES`] bytes, kept in document order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotContext {
+	pub before: Vec<Line>,
+	pub after: Vec<Line>,
+}
+
+impl SnapshotContext {
+	/// `line_start` and `line_end` are the fragment's 1-based, inclusive lines.
+	pub fn around(lines: &[Line], line_start: usize, line_end: usize) -> Self {
+		let before_end = line_start.saturating_sub(1).min(lines.len());
+		let mut before = bounded(lines[..before_end].iter().rev());
+		before.reverse();
+		let after_start = line_end.min(lines.len());
+		Self {
+			before,
+			after: bounded(lines[after_start..].iter()),
+		}
+	}
+}
+
+/// Whole lines from `nearest` until a side's line or byte bound; a line that
+/// would cross the byte bound ends the side rather than being cut.
+fn bounded<'a>(nearest: impl Iterator<Item = &'a Line>) -> Vec<Line> {
+	let mut bytes = 0;
+	nearest
+		.take(CONTEXT_LINES)
+		.take_while(|line| {
+			bytes += line.text.len();
+			bytes <= CONTEXT_BYTES
+		})
+		.cloned()
+		.collect()
+}
+
+/// One Source citation as a reader opens it: the Evidence fragment delivered
+/// to the Agent and the Document snapshot it was taken from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedEvidence {
+	pub fragment: EvidenceFragment,
+	/// The address the Run asked for; `url` is the one that answered.
+	pub requested_url: String,
+	pub url: String,
+	pub title: Option<String>,
+	pub media_type: String,
+	pub fetched_at: DateTime<Utc>,
+	pub completeness: Completeness,
+	/// `None` once the snapshot's text is no longer retained; the fragment
+	/// itself stays readable.
+	pub context: Option<SnapshotContext>,
+}
+
+impl CitedEvidence {
+	pub fn new(fragment: EvidenceFragment, document: &DocumentSnapshot) -> Self {
+		let context = (!document.lines.is_empty()).then(|| {
+			SnapshotContext::around(&document.lines, fragment.line_start, fragment.line_end)
+		});
+		Self {
+			fragment,
+			requested_url: document.requested_url.clone(),
+			url: document.url.clone(),
+			title: document.title.clone(),
+			media_type: document.media_type.clone(),
+			fetched_at: document.fetched_at,
+			completeness: document.completeness,
+			context,
+		}
+	}
+}
+
 /// How one research attempt ended. Every attempt the provider was called for
 /// is attributed, whether it answered, failed definitively or its outcome is
 /// uncertain; only an attempt stopped before the provider call is not.
@@ -166,3 +244,6 @@ impl Default for Limits {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests;
