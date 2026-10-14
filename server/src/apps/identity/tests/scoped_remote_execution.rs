@@ -143,6 +143,9 @@ impl Pair {
 	/// A backstop for a step that keeps serving peer work without finishing;
 	/// the slowest observed step is an order of magnitude shorter.
 	const STEP_CEILING: std::time::Duration = std::time::Duration::from_secs(600);
+	/// Longer than the longest peer-call transport timeout (120s for a
+	/// semantic query), so an in-flight call ends on its own.
+	const IN_FLIGHT_GRACE: std::time::Duration = std::time::Duration::from_secs(180);
 	async fn close(mut self) {
 		self.providers.clear();
 		for server in self.servers.drain(..) {
@@ -176,7 +179,10 @@ impl Pair {
 		let abandon = std::cell::Cell::new(false);
 		let progress = async {
 			loop {
-				if worker.worker_once().await.unwrap()
+				// Never start another call once the watchdog has fired; an
+				// in-flight call is still awaited below.
+				if abandon.get()
+					|| worker.worker_once().await.unwrap()
 					|| abandon.get()
 					|| self.run().await.phase().is_terminal()
 				{
@@ -204,10 +210,10 @@ impl Pair {
 		};
 		if let Some(reason) = stalled {
 			// Never cancel `worker_once` mid-call: let the in-flight call
-			// release its lease first. The worker abandons each peer call
-			// after 60s, so it settles within one more stall interval.
+			// release its lease first. Its longest peer call, a semantic
+			// query, gives up after 120s, so allow well beyond that.
 			abandon.set(true);
-			let _ = tokio::time::timeout(ScopedWorkerProcess::STALL, &mut progress).await;
+			let _ = tokio::time::timeout(Self::IN_FLIGHT_GRACE, &mut progress).await;
 			let run = self.run().await;
 			panic!(
 				"scoped step must progress within its bounded retry delay ({reason}): phase={}, control={}, state={:?}",
