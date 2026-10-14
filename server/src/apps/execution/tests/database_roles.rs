@@ -49,6 +49,40 @@ async fn server_refuses_a_login_that_owns_a_schema(#[future] database: DatabaseF
 	assert!(error.to_string().contains("owns a schema"), "{error}");
 }
 
+/// Membership in the owning role carries its ownership, through inheritance
+/// or `SET ROLE`, so a member of `aidash_owner` is refused like the owner.
+#[rstest]
+#[case::inherited("INHERIT")]
+#[case::set_role_only("NOINHERIT")]
+#[tokio::test]
+async fn server_refuses_a_member_of_the_owner_role(
+	#[future] database: DatabaseFixture,
+	#[case] inheritance: &str,
+) {
+	// Arrange: role DDL that Reinhardt Query cannot express.
+	let f = database.await;
+	let admin = sqlx::PgPool::connect(&with_login(&f.url, ADMIN))
+		.await
+		.unwrap();
+	for statement in [
+		format!(
+			"CREATE ROLE member_probe LOGIN {inheritance} NOSUPERUSER NOBYPASSRLS PASSWORD 'probe-password'"
+		),
+		format!("GRANT {} TO member_probe", OWNER.0),
+	] {
+		sqlx::query(&statement).execute(&admin).await.unwrap();
+	}
+	admin.close().await;
+	let url = with_login(&f.url, ("member_probe", "probe-password"));
+	// Act
+	let refused = runtime::connect(&url, 2).await;
+	// Assert
+	let error = refused
+		.err()
+		.expect("a member of the owner role is refused");
+	assert!(error.to_string().contains("owns the database"), "{error}");
+}
+
 #[rstest]
 #[tokio::test]
 async fn server_role_holds_only_data_privileges(#[future] database: DatabaseFixture) {

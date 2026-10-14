@@ -36,6 +36,22 @@ ServiceAccount token is used by the server's optional Kubernetes observer; the
 opt-in execution Runner has its own scoped account. Server and worker have
 separate ServiceAccounts for Workload Identity annotations.
 
+Servers and workers do not change the schema and refuse to start until every
+migration is applied. Before each install or upgrade, apply migrations as the
+owner role with the release's image. Keep the owner's `DATABASE_URL`, which names
+the `aidash_owner` login, in its own Secret, separate from the runtime Secret:
+
+```sh
+for node in node-a node-b; do
+  kubectl -n aidash run "$node-migrate" --rm -i --restart=Never \
+    --image=your-registry/aidash:0.1.0 --overrides "$(cat <<JSON
+{"spec":{"containers":[{"name":"$node-migrate","image":"your-registry/aidash:0.1.0",
+ "args":["migrate"],"envFrom":[{"secretRef":{"name":"$node-owner"}}]}]}}
+JSON
+)"
+done
+```
+
 ```sh
 helm upgrade --install node-a deploy/helm/aidash --namespace aidash \
   --set node.id=aidash://node-a --set existingSecret=node-a-secrets \
@@ -67,7 +83,8 @@ it must not be restored from a PostgreSQL backup. PostgreSQL
 retains workspaces, task/run IDs, journals, artifacts, leases, transaction
 decisions, policy and semantic source state. Use persistent volumes or a managed
 database with durable storage, tested backups, and a retention policy independent
-of the Aidash Helm release. Concurrent startup serializes migration execution.
+of the Aidash Helm release. Only `aidash migrate`, run as `aidash_owner` before
+the release starts, changes the schema; concurrent runs serialize.
 Back up the database before an upgrade; schema rollback requires the migration's
 documented preconditions, including resolving pending atomic transactions.
 

@@ -44,12 +44,20 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 	Ok(connection)
 }
 
+/// Whether the session's role is, or is a member of, the role in `owner`.
+/// `MEMBER` covers both inherited privileges and `SET ROLE`, so ownership
+/// held through an owning role counts like direct ownership. Reinhardt Query
+/// has no builder for this function call.
+fn member_of(owner: &str) -> SimpleExpr {
+	SimpleExpr::from(Expr::cust(format!("pg_has_role(r.oid, {owner}, 'MEMBER')")))
+}
+
 /// Refuse a superuser, a role with `BYPASSRLS`, the owner of the current
 /// database, or the owner of any schema or relation outside PostgreSQL's own
-/// schemas. The database owner implicitly owns `public` through
-/// `pg_database_owner`, and a schema owner can create and drop its objects.
-/// Role attributes are never inherited through membership, so the session's
-/// own role decides.
+/// schemas, directly or through membership in the owning role. The database
+/// owner implicitly owns `public` through `pg_database_owner`, and a schema
+/// owner can create and drop its objects. Superuser and `BYPASSRLS` are never
+/// inherited through membership, so the session's own role decides those.
 pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()> {
 	let role = Alias::new("r");
 	let class = Alias::new("c");
@@ -63,10 +71,7 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 			SimpleExpr::from(Expr::col((namespace.clone(), Alias::new("oid"))))
 				.eq(Expr::col((class.clone(), Alias::new("relnamespace")))),
 		)
-		.and_where(
-			SimpleExpr::from(Expr::col((class, Alias::new("relowner"))))
-				.eq(Expr::col((role.clone(), Alias::new("oid")))),
-		)
+		.and_where(member_of("c.relowner"))
 		// Names starting with `pg_` are reserved for PostgreSQL, including the
 		// TOAST and per-session temporary schemas.
 		.and_where(
@@ -82,10 +87,7 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 	let owned_schema = Query::select()
 		.expr(Expr::val(1))
 		.from_as(Alias::new("pg_namespace"), schema.clone())
-		.and_where(
-			SimpleExpr::from(Expr::col((schema.clone(), Alias::new("nspowner"))))
-				.eq(Expr::col((role.clone(), Alias::new("oid")))),
-		)
+		.and_where(member_of("s.nspowner"))
 		.and_where(
 			SimpleExpr::from(Expr::col((schema.clone(), Alias::new("nspname")))).not_like("pg\\_%"),
 		)
@@ -97,10 +99,7 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 	let owned_database = Query::select()
 		.expr(Expr::val(1))
 		.from_as(Alias::new("pg_database"), database.clone())
-		.and_where(
-			SimpleExpr::from(Expr::col((database.clone(), Alias::new("datdba"))))
-				.eq(Expr::col((role.clone(), Alias::new("oid")))),
-		)
+		.and_where(member_of("d.datdba"))
 		.and_where(
 			SimpleExpr::from(Expr::col((database, Alias::new("datname"))))
 				.eq(Expr::cust("current_database()")),
