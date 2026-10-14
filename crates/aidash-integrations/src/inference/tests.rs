@@ -1,5 +1,27 @@
 use super::*;
 use aidash_domain::projection::{ProjectionVersion, native::NativeContext};
+
+/// The adapter's clients with production-like deadlines.
+fn test_clients() -> crate::keyless::Clients {
+	crate::keyless::Clients::new(
+		reqwest::Client::new(),
+		std::time::Duration::from_secs(120),
+		std::time::Duration::from_secs(10),
+	)
+	.unwrap()
+}
+
+/// Keyless access that permits this fixture's loopback origin (ADR 0036).
+fn permitting(endpoint: &str) -> aidash_application::provider_access::KeylessAccess {
+	let origin = reqwest::Url::parse(endpoint)
+		.unwrap()
+		.origin()
+		.ascii_serialization();
+	aidash_application::provider_access::KeylessAccess::permitting(
+		aidash_domain::keyless::PermittedOrigins::parse([origin]).unwrap(),
+	)
+}
+
 #[rstest::rstest]
 #[case::legacy(ProjectionVersion::Legacy)]
 // Native envelopes text labels as data, so the label grows by its envelope
@@ -404,9 +426,9 @@ mod cache_salt {
 			}
 			let config: ModelConfig = serde_json::from_value(config).unwrap();
 			salted_provider(
-				reqwest::Client::new(),
+				test_clients(),
 				config,
-				Arc::new(aidash_application::provider_access::KeylessAccess),
+				Arc::new(permitting(&self.endpoint)),
 				Default::default(),
 				keys,
 			)
@@ -674,7 +696,7 @@ mod cache_salt {
 				.lock()
 				.unwrap()
 				.push((inference.operations[0], inference.cache_breakpoints));
-			aidash_application::provider_access::KeylessAccess
+			permitting(endpoint)
 				.resolve(context, endpoint, source)
 				.await
 		}
@@ -701,7 +723,7 @@ mod cache_salt {
 			"projection_versions": ["legacy", "ordered"]
 		});
 		let provider = salted_provider(
-			reqwest::Client::new(),
+			test_clients(),
 			serde_json::from_value(config).unwrap(),
 			access.clone(),
 			Default::default(),
