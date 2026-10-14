@@ -177,6 +177,7 @@ impl TokenIssuer for CapabilityIssuer {
 		Ok(Access {
 			endpoint: self.configuration.endpoint.clone(),
 			bearer,
+			keyless: None,
 		})
 	}
 }

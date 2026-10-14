@@ -743,8 +743,18 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	})
 	.await
 	.expect("notification must defer to a deadline or release event");
+	// A worker that starts after the publication lease expires sees each obligation once
+	// per publication. Measure only after every obligation of the Run has been judged.
+	tokio::time::timeout(Duration::from_secs(10), async {
+		while count(&f, &format!("run_id='{run}' AND state='pending'")).await > 0 {
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("every obligation of the blocked Run must be deferred or settled");
+	// Republishing any obligation advances its epoch, so the sum covers every row.
 	let epoch_query = Query::select()
-		.expr(Expr::cust("MAX(publication_epoch)"))
+		.expr(Expr::cust("SUM(publication_epoch)::BIGINT"))
 		.from(a("run_activations"))
 		.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 		.to_string(PostgresQueryBuilder);
@@ -759,7 +769,8 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 			.await
 			.unwrap(),
 		epoch,
-		"blocked work must not be republished immediately"
+		"blocked work must not be republished immediately: {}",
+		activations(&f, run).await
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 0);
 	assert!(

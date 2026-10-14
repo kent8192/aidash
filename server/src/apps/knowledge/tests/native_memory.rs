@@ -993,9 +993,11 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		memory::operate(&store, &Actor::Operator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
-	let reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	reopened.keyless = store.keyless.clone();
 	let reopened = recovery::initialize_if_missing(&reopened, directory.to_owned())
 		.await
 		.unwrap();

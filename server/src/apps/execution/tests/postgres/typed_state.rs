@@ -70,6 +70,8 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	let f = _federation.await.federation;
 
 	let endpoint = format!("{}/v1", server.url);
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store.keyless.permit_origin_of(&endpoint).unwrap();
 	f.registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	let agent = f
 		.registry

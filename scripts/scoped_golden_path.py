@@ -120,7 +120,7 @@ class PeerProxy:
 
 
 class Providers:
-    def __init__(self, forbidden_tokens):
+    def __init__(self, forbidden_tokens, listener=None):
         self.model_calls = collections.Counter()
         self.effect_calls = collections.Counter()
         self.effects = {}
@@ -175,7 +175,16 @@ class Providers:
                     fixture.errors.append(type(error).__name__ + ": " + str(error))
                     self.send_error(502)
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if listener is None:
+            self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        else:
+            # Take over a socket the caller bound earlier, keeping its port.
+            self.server = http.server.ThreadingHTTPServer(listener.getsockname(), Handler, bind_and_activate=False)
+            self.server.socket.close()
+            self.server.socket = listener
+            self.server.server_address = listener.getsockname()
+            self.server.server_name, self.server.server_port = self.server.server_address[:2]
+            self.server.server_activate()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -184,14 +193,18 @@ class Providers:
         self.server.server_close()
 
 
-def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
-    """Required Golden Path branch; any missing assertion fails the parent run."""
+def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worker, counts):
+    """Required Golden Path branch; any missing assertion fails the parent run.
+
+    The model provider listens on the already bound `provider_socket`, whose
+    origin the nodes permit for Keyless endpoints.
+    """
     source_tenant, receiver_tenant = "golden-source", "golden-receiver"
     agent = {"id": "scoped-researcher", "version": "1.0.0"}
     executor = f"{node_b}/agents/{agent['id']}@{agent['version']}"
     tokens = [PEER_TOKEN]
     subject_tokens = []
-    fixture = Providers(tokens)
+    fixture = Providers(tokens, provider_socket)
     home = PeerProxy(base_a, subject_tokens)
     receiver = PeerProxy(base_b, subject_tokens)
     initial_counts = counts()

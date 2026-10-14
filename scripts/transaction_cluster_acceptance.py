@@ -334,7 +334,9 @@ class Cluster:
                     {"name": "AIDASH_NODE_ID", "value": f"aidash://tx-{node:02}"},
                     {"name": "AIDASH_ENDPOINT", "value": f"http://tx-{node}:8080"},
                     {"name": "NATS_URL", "value": "nats://nats:4222"}, {"name": "RUST_LOG", "value": "aidash=warn"},
-                    {"name": "AIDASH_API_RATE_BURST", "value": "100000"}, {"name": "AIDASH_AUTH_RATE_BURST", "value": "100000"}],
+                    {"name": "AIDASH_API_RATE_BURST", "value": "100000"}, {"name": "AIDASH_AUTH_RATE_BURST", "value": "100000"},
+                    # The memory suites' Keyless model and embedding fixture is an in-cluster Service.
+                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": "http://provider:8080"}],
                     "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}},
                     **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})}]}}}})
             self.service(f"tx-{node}", 8080, {"app": f"tx-{node}", "role": "server"})

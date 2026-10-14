@@ -1391,6 +1391,12 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 
 	let endpoint = server.url.clone();
 	let federation = _federation.await.federation;
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+	federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
 	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
 		.registry
