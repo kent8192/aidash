@@ -24,6 +24,7 @@ import {
   marketplace,
 } from "./generated/aidash";
 import { subscribe } from "./event-stream";
+import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
   sessionFetch,
@@ -507,6 +508,7 @@ function Dashboard({
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
+    const refresher = coalescedRefresh(client);
     let timer: ReturnType<typeof setTimeout> | undefined;
     void subscribe(
       controller.signal,
@@ -525,7 +527,7 @@ function Dashboard({
             "provider-credentials",
             "provider-credential-bindings",
           ]) {
-            void client.invalidateQueries({ queryKey: [key] });
+            refresher.refresh(key);
           }
           timer = undefined;
         }, 250);
@@ -534,6 +536,7 @@ function Dashboard({
     );
     return () => {
       controller.abort();
+      refresher.close();
       clearTimeout(timer);
     };
   }, [connected, client, context]);

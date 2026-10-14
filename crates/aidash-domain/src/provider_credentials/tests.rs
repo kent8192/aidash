@@ -31,6 +31,7 @@ fn tenant_source_is_closed_to_the_catalog_entry(
 fn catalog_id_rejects_record_ids_and_unknown_providers() {
 	assert!(Provider::parse("credential:019a0000-0000-7000-8000-000000000001").is_err());
 	assert!(Provider::parse("openai").is_err());
+	assert_eq!(Provider::parse("chatgpt").unwrap(), Provider::Chatgpt);
 	// A keyless configuration may call any valid endpoint.
 	assert!(validate_source("http://localhost:8000/v1", "openrouter", None).is_ok());
 }
@@ -50,4 +51,66 @@ fn model_and_embedding_configurations_reject_environment_keys() {
 		"model":"fixture","model_version":"1","dimensions":3
 	});
 	assert!(serde_json::from_value::<crate::semantic::EmbeddingConfig>(embedding).is_err());
+}
+
+#[test]
+fn each_catalog_entry_has_one_kind_of_grant() {
+	// ADR 0007: no entry falls back from one kind of grant to the other.
+	assert_eq!(Provider::Openrouter.grant(), Grant::ProviderCredential);
+	assert_eq!(Provider::Chatgpt.grant(), Grant::PlanConnection);
+	assert_eq!(
+		Provider::credential("openrouter").unwrap(),
+		Provider::Openrouter
+	);
+	assert!(Provider::credential("chatgpt").is_err());
+	assert_eq!(Provider::plan("chatgpt").unwrap(), Provider::Chatgpt);
+	assert!(Provider::plan("openrouter").is_err());
+	assert_eq!(Provider::Chatgpt.base_url(), "https://api.openai.com/v1");
+	assert!(Provider::Chatgpt.key_settings_url("ab12").is_none());
+	assert_eq!(
+		Provider::Openrouter.key_settings_url("ab12").as_deref(),
+		Some("https://openrouter.ai/keys/ab12")
+	);
+}
+#[rstest]
+#[case("https://api.openai.com/v1", "chatgpt", None, Some("chatgpt"), true)]
+#[case(
+	"https://openrouter.ai/api/v1",
+	"openrouter",
+	Some("openrouter"),
+	None,
+	true
+)]
+#[case("http://localhost:8000/v1", "openrouter", None, None, true)]
+// A Provider Credential never serves the plan entry, nor the reverse.
+#[case("https://api.openai.com/v1", "chatgpt", Some("chatgpt"), None, false)]
+#[case(
+	"https://openrouter.ai/api/v1",
+	"openrouter",
+	None,
+	Some("openrouter"),
+	false
+)]
+#[case(
+	"https://api.openai.com/v1",
+	"chatgpt",
+	Some("openrouter"),
+	Some("chatgpt"),
+	false
+)]
+// The plan entry fixes its provider and base URL.
+#[case("https://api.openai.com/v1/", "chatgpt", None, Some("chatgpt"), false)]
+#[case("https://attacker.test/v1", "chatgpt", None, Some("chatgpt"), false)]
+#[case("https://api.openai.com/v1", "openai", None, Some("chatgpt"), false)]
+fn models_name_at_most_one_grant(
+	#[case] endpoint: &str,
+	#[case] provider: &str,
+	#[case] credential: Option<&str>,
+	#[case] plan: Option<&str>,
+	#[case] valid: bool,
+) {
+	assert_eq!(
+		validate_grants(endpoint, provider, credential, plan).is_ok(),
+		valid
+	);
 }

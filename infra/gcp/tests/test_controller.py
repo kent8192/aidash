@@ -301,7 +301,8 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(env["activity"]["collectorImage"], IMAGES["control"])
         runtime = self.kube.secret("aidash-test", "app-runtime")
         tokens = self.kube.secret("aidash-test", "aidash-identity")
-        self.assertEqual(runtime["DATABASE_URL"], f"postgres://aidash:{tokens['database']}@env-environment-postgres:5432/aidash_a")
+        # Servers log in as the role row-level security binds, never as the superuser.
+        self.assertEqual(runtime["DATABASE_URL"], f"postgres://aidash_server:{tokens['server']}@env-environment-postgres:5432/aidash_a")
         self.assertEqual(runtime["AIDASH_OIDC_PUBLIC_ORIGIN"], "https://test.aidash.run")
         self.assertNotIn(tokens["database"], json.dumps(list(self.kube.releases.values())))
         self.assertEqual(self.kube.secret("aidash-test", "env-postgres")["POSTGRES_PASSWORD"], tokens["database"])
