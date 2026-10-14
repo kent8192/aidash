@@ -444,6 +444,8 @@
   "authDismissToken": "I have saved the token",
   "authCatalog": "Approved components",
   "authCatalogHelp": "Approve an exact Registry version for this tenant. Approval and policy permission are both required to use a component.",
+  "authKeyless": "No retention guarantee",
+  "authKeylessNotice": "Keyless endpoint: no zero-data-retention guarantee applies. Requests go outside Aidash's control to",
   "authCatalogEntry": "Component version",
   "authSelectEntry": "Select a component",
   "authApprove": "Approve",
