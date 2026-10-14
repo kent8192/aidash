@@ -362,7 +362,22 @@ impl NativeContext {
 		}
 		let volatile =
 			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
-		let mut media = media.peekable();
+		// Text media parts label attachments with their filename or Working
+		// Area path, which anyone who names a file controls: data, enveloped.
+		let mut media = media
+			.map(|part| match part["text"].as_str() {
+				Some(text) if part["type"] == "text" => {
+					json!({"type": "text", "text": Envelope::data(
+					Source::Step,
+					json!({"scope": "media"}),
+					None,
+					Value::String(text.to_owned()),
+				)
+				.text()})
+				}
+				_ => part,
+			})
+			.peekable();
 		let content = if media.peek().is_none() {
 			Value::String(volatile)
 		} else {
