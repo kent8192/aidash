@@ -40,6 +40,10 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	let mut stopped = coordinator.subscribe();
 	ProcessLifecycle::register(&context, coordinator.clone());
 	let federation = initialize(&context, &settings, connection).await?;
+	let protection =
+		reinhardt::Depends::<crate::http::Protection>::resolve_from_registry(&context, true)
+			.await
+			.map_err(|error| Error::External(error.to_string()))?;
 	let event_streams =
 		(*reinhardt::Depends::<crate::sse::Service>::resolve_from_registry(&context, true)
 			.await
@@ -63,7 +67,9 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 		Some(event_streams),
 	)
 	.await?;
-	let server = HttpServer::new(crate::routes().into_server()).with_di_context(context);
+	let server = HttpServer::new(crate::routes().into_server())
+		.with_request_admission(Arc::new((*protection).clone()))
+		.with_di_context(context);
 	let serving = async {
 		server
 			.listen_on_with_shutdown(listener, coordinator.clone())

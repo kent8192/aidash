@@ -444,6 +444,8 @@
   "authDismissToken": "保存したので閉じる",
   "authCatalog": "承認済みコンポーネント",
   "authCatalogHelp": "このテナントで使用するRegistryのバージョンを承認します。利用には承認とポリシーによる許可の両方が必要です。",
+  "authKeyless": "データ保持の保証なし",
+  "authKeylessNotice": "キーなしのエンドポイントです。ゼロデータ保持は保証されません。リクエストは Aidash の管理外にある次の送信先へ送られます:",
   "authCatalogEntry": "コンポーネントのバージョン",
   "authSelectEntry": "コンポーネントを選択",
   "authApprove": "承認",

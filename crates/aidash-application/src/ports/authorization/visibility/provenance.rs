@@ -10,7 +10,7 @@ pub type RecordedRead = (Uuid, String, Uuid);
 #[async_trait]
 pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>>;
-	async fn catalog_read(&mut self, reference: &EntityRef) -> Result<()>;
+	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()>;
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool>;
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool>;
 	/// The native local reader has no received-semantic journal; its foreign reader owns that check.

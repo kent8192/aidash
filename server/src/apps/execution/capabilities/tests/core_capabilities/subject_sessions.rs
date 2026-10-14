@@ -86,17 +86,40 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let f = Box::pin(shared_thread).await;
 	assert_ne!(f.areas[0]["id"], f.areas[1]["id"]);
 	assert_ne!(f.runs[0], f.runs[1]);
+	let run_path = format!("/api/runs/{}", f.runs[0]);
 	assert_eq!(
-		request(
-			&f.c.app,
-			&f.bob,
-			"GET",
-			&format!("/api/runs/{}/working-area", f.runs[0]),
-			Value::Null
-		)
-		.await
-		.0,
-		404
+		request(&f.c.app, &f.c.token, "GET", &run_path, Value::Null)
+			.await
+			.0,
+		200
+	);
+	let (status, denied) = request(&f.c.app, &f.bob, "GET", &run_path, Value::Null).await;
+	assert!(
+		matches!(status, 403 | 404),
+		"run history must not disclose the other subject's private files: {denied}"
+	);
+	assert!(!denied.to_string().contains("alice-only"));
+	assert!(denied.get("run").is_none());
+	let hidden = request(
+		&f.c.app,
+		&f.bob,
+		"GET",
+		&format!("/api/runs/{}/working-area", f.runs[0]),
+		Value::Null,
+	)
+	.await;
+	let absent = request(
+		&f.c.app,
+		&f.bob,
+		"GET",
+		&format!("/api/runs/{}/working-area", Uuid::new_v4()),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(hidden.0, 403);
+	assert_eq!(
+		hidden, absent,
+		"private run existence must not be disclosed"
 	);
 	let (_, visible) = request(
 		&f.c.app,
