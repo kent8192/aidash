@@ -343,10 +343,12 @@ def main():
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
     fixture_url = f"http://127.0.0.1:{fixture_server.server_port}"
     # Keyless model endpoints on loopback reach only origins the Deployment
-    # permits, so reserve the scoped branch's provider port before launch.
-    with socket.socket() as reserved:
-        reserved.bind(("127.0.0.1", 0))
-        scoped_provider_port = reserved.getsockname()[1]
+    # permits, so bind the scoped branch's provider socket before launch and
+    # hold it until the provider takes it over; no other process can claim
+    # the permitted port in between.
+    scoped_provider_socket = socket.socket()
+    scoped_provider_socket.bind(("127.0.0.1", 0))
+    scoped_provider_port = scoped_provider_socket.getsockname()[1]
     keyless_origins = f"{fixture_url},http://127.0.0.1:{scoped_provider_port}"
     stream_events = []
     nats_proxy = NatsProxy()
@@ -513,7 +515,7 @@ def main():
         # Scoped scenarios own their exact Home approval poller; completed local
         # fixtures do not need a second full-state poller during fault injection.
         local_approvals.clear()
-        scoped = verify(base_a, base_b, node_a, node_b, remote_worker, scoped_provider_port,
+        scoped = verify(base_a, base_b, node_a, node_b, remote_worker, scoped_provider_socket,
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
