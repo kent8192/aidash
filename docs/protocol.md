@@ -297,8 +297,9 @@ Metrics: `aidash_context_compaction_total{stage,outcome}` counts prune and
 summary outcomes (`applied`, `insufficient`, `unavailable`, `invalid`,
 `unauthorized`, `revoked`), `aidash_context_compaction_tokens{stage,phase}`
 records estimated sizes before and after, and
-`aidash_context_overflow_total{outcome}` counts `retried` and `exhausted`
-overflow recoveries. Labels never contain Run identifiers or content.
+`aidash_context_overflow_total{outcome,estimator}` counts `retried` and
+`exhausted` overflow recoveries by the estimator (`bytes` or `calibrated`)
+whose request overflowed. Labels never contain Run identifiers or content.
 
 ## Marketplace and localization
 

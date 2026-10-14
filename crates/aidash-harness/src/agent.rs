@@ -376,7 +376,8 @@ impl<'a> Executor<'a> {
 	) -> Result<()> {
 		let estimator = run.context.estimate.current().id();
 		let mut recovery = run.context.recovery;
-		let measured = if run.context.estimate.demote() {
+		let demoted = run.context.estimate.demote();
+		let measured = if demoted {
 			request_bytes
 		} else {
 			request_tokens
@@ -388,6 +389,11 @@ impl<'a> Executor<'a> {
 		) {
 			metrics::counter!("aidash_context_overflow_total", "outcome" => "exhausted", "estimator" => estimator)
 				.increment(1);
+			// The pause saves no context. Save the demotion first, so a resumed
+			// step never retries the calibrated estimate that overflowed.
+			if demoted {
+				self.environment.store().pin_estimate(run, token).await?;
+			}
 			return Err(Error::Context(
 				context::recovery::Failure::OverflowRetriesExhausted,
 			));

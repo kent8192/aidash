@@ -161,6 +161,38 @@ async fn an_overflow_after_a_calibrated_estimate_demotes_the_run(mut fixture: Fi
 	assert!(fixture.run.context.estimate.demoted);
 }
 
+#[rstest]
+#[tokio::test]
+async fn a_paused_overflow_keeps_the_demotion_for_the_resumed_step(mut fixture: Fixture) {
+	// Arrange: without a Context Policy, an overflow pauses the Run at once.
+	calibrated(&mut fixture, warm(4));
+	*fixture.backend.0.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	let paused = advance_sources(&mut fixture).await;
+	// Assert: the demotion is durable before the pause, which saves no context.
+	assert!(matches!(
+		paused,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
+		))
+	));
+	let writes = fixture.backend.0.writes.lock().unwrap().clone();
+	let (event, saved) = writes.last().unwrap();
+	assert_eq!(event, "run.estimate_pinned");
+	assert!(saved.context.estimate.demoted);
+	// Act: a person resumes the same step from the saved Run.
+	fixture.run = saved.clone();
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(count(&fixture, "calibration.samples"), 1);
+	let estimators = dispatches(&fixture)
+		.into_iter()
+		.map(|dispatch| dispatch.estimate.estimator)
+		.collect::<Vec<_>>();
+	assert_eq!(estimators, ["calibrated", "bytes"]);
+}
+
 /// A large task under large fixed instructions: the Stable Prefix snapshot
 /// quota is bound by the headroom beside the fixed content.
 fn ordered_with_large_task(calibration: Option<Vec<CalibrationSample>>) -> Fixture {
