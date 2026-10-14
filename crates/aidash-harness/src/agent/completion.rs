@@ -104,7 +104,14 @@ impl Executor<'_> {
 					passed,
 					exit_code,
 					diagnostics,
-				} => progress.record(pending.finish(passed, exit_code, &diagnostics, now)),
+					runtime_seconds,
+				} => progress.record(pending.finish(
+					passed,
+					exit_code,
+					&diagnostics,
+					runtime_seconds,
+					now,
+				)),
 				CheckStatus::Unavailable(detail) => {
 					progress.record(pending.unavailable(&detail, now))
 				}

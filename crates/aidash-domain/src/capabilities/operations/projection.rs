@@ -34,4 +34,8 @@ pub struct OperationResult {
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<crate::capabilities::errors::CapabilityError>,
+	/// How long a Completion Gate Check's command ran, as the runner measured
+	/// it. Absent for every other operation.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub runtime_seconds: Option<u64>,
 }

@@ -63,7 +63,9 @@ the model's own shell calls are refused as busy until it finishes.
 `content_changed` compares the mounted content with the content the Run started
 from, so a conversational Run that changed no files completes without running
 anything. A node that cannot run Checks cannot read the content either, and
-pauses every candidate rather than assuming nothing changed.
+pauses every candidate rather than assuming nothing changed. Likewise, an Area
+left uncertain by an earlier operation cannot prove its files unchanged, so
+even `content_changed` Checks pause such a candidate for a review.
 
 ## Outcomes
 
@@ -71,9 +73,14 @@ pauses every candidate rather than assuming nothing changed.
 | ------------- | ----------------------------------------------- | --------------------------------------------------------------------- |
 | `passed`      | The command exited 0                            | The next Check runs; after the last one the Task completes            |
 | `failed`      | The command ran and exited non-zero             | The model gets the diagnostics and repairs; one unit of the allowance |
-| `timed_out`   | The command ran past its timeout                | As `failed`                                                           |
+| `timed_out`   | The command ran for its whole timeout           | As `failed`                                                           |
 | `unavailable` | The Check could not run, or its result was lost | Completion Review                                                     |
 | `denied`      | Authority refused the Check                     | Completion Review                                                     |
+
+A Check's time is its runtime as the runner measured it, which decides
+`timed_out` and is what the Run's `verification_seconds` spend. A Check whose
+result was lost leaves the Working Area usable, since it never changes the
+files, so `retry` can run it again.
 
 A repair is a `completion_repair_required` event in the Context Journal with the
 Check name, outcome, exit code and diagnostics. The Run goes back to the model,

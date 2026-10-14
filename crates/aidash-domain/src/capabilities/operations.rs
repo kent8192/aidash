@@ -124,6 +124,15 @@ pub const VERIFICATION: &str = "verification";
 pub fn capability_of(kind: &str) -> &str {
 	if kind == VERIFICATION { "shell" } else { kind }
 }
+/// The Area state once an operation's outcome is lost. A Check never exports
+/// `/work`, so losing it leaves the Area's files as they were and usable.
+pub fn lost_area_state(kind: &str) -> &'static str {
+	if kind == VERIFICATION {
+		"active"
+	} else {
+		"uncertain"
+	}
+}
 pub fn available(state: &str) -> Result<()> {
 	if state != "active" {
 		return Err(Error::Conflict(

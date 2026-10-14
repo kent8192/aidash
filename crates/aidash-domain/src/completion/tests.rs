@@ -387,26 +387,47 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		started_at: at(0),
 	};
 	assert_eq!(
-		pending.clone().finish(true, Some(0), "ok", at(5)).outcome,
+		pending
+			.clone()
+			.finish(true, Some(0), "ok", None, at(5))
+			.outcome,
 		CheckOutcome::Passed
 	);
 	assert_eq!(
 		pending
 			.clone()
-			.finish(false, Some(1), "failed", at(5))
+			.finish(false, Some(1), "failed", None, at(5))
 			.outcome,
 		CheckOutcome::Failed
 	);
 	assert_eq!(
-		pending.clone().finish(false, None, "", at(60)).outcome,
+		pending
+			.clone()
+			.finish(false, None, "", None, at(60))
+			.outcome,
 		CheckOutcome::TimedOut
 	);
 	assert!(!pending.overdue(at(180)));
 	assert!(pending.overdue(at(181)));
 	let long = "é".repeat(MAX_DIAGNOSTIC_BYTES);
-	let recorded = pending.finish(false, Some(1), &long, at(5)).diagnostics;
+	let recorded = pending
+		.clone()
+		.finish(false, Some(1), &long, None, at(5))
+		.diagnostics;
 	assert!(recorded.len() <= MAX_DIAGNOSTIC_BYTES);
 	assert!(long.ends_with(&recorded));
+	// The runner's runtime decides, not when the harness harvested the result.
+	let quick = PendingCheck {
+		timeout_seconds: 3,
+		..pending.clone()
+	}
+	.finish(false, Some(1), "failed", Some(1), at(5));
+	assert_eq!((quick.outcome, quick.seconds), (CheckOutcome::Failed, 1));
+	let killed = pending.finish(false, None, "", Some(60), at(900));
+	assert_eq!(
+		(killed.outcome, killed.seconds),
+		(CheckOutcome::TimedOut, 60)
+	);
 
 	let run = Uuid::now_v7();
 	assert_eq!(subject.key(run, 1), subject.key(run, 1));
@@ -486,6 +507,45 @@ fn an_unavailable_area_never_reuses_evidence() {
 		Decision::Review(ReviewReason::Unavailable {
 			check: "tests".into(),
 			detail: "an earlier operation's effect is uncertain".into(),
+		})
+	);
+}
+
+/// An unavailable Area's manifest cannot prove its files unchanged: an
+/// uncertain effect may not have been published. `content_changed` Checks do
+/// not skip it as `not_required`.
+#[test]
+fn an_unavailable_area_is_never_unchanged_content() {
+	// Arrange
+	let policy = tests_policy("content_changed");
+	let progress = CompletionProgress {
+		start_content: Some("sha256:start".into()),
+		..CompletionProgress::default()
+	};
+	let candidate = Candidate {
+		content: Some("sha256:start"),
+		capability: Some(CAPABILITY),
+		unavailable: None,
+	};
+	assert_eq!(
+		decide(&policy, &progress, &candidate),
+		Decision::Complete(CompletionBasis::NotRequired)
+	);
+	// Act
+	let decision = decide(
+		&policy,
+		&progress,
+		&Candidate {
+			unavailable: Some("the Working Area is uncertain"),
+			..candidate
+		},
+	);
+	// Assert
+	assert_eq!(
+		decision,
+		Decision::Review(ReviewReason::Unavailable {
+			check: "tests".into(),
+			detail: "the Working Area is uncertain".into(),
 		})
 	);
 }

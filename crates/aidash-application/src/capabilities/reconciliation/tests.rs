@@ -588,6 +588,7 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 		trace.operation.state = "running".into();
 		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":true,
 			"exit_code":101,"truncated":false,"error":null,"stdout":STANDARD.encode(&output),
+			"started_at":1000.25,"finished_at":1004.75,
 			"files":[{"path":"target/debug/app","object_id":"build","digest":"d","size":1}]});
 	}
 	run(&repository).await.unwrap();
@@ -603,10 +604,40 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	assert_eq!(saved.state, "failed");
 	assert_eq!(saved.revision, 7, "a Check never changes the Area revision");
 	assert_eq!(saved.result["exit_code"], 101);
+	assert_eq!(
+		saved.result["runtime_seconds"], 4,
+		"the runner's own runtime"
+	);
 	let preview = saved.result["preview"].as_str().unwrap();
 	assert_eq!(preview.len(), MAX_DIAGNOSTIC_BYTES);
 	assert!(preview.ends_with("test result: FAILED"));
 	assert!(trace.published.is_empty());
 	assert_eq!(trace.events.len(), 1);
 	assert!(trace.commit);
+}
+/// A Check never exports `/work`, so losing its journal leaves the Area's files
+/// as they were: the Check's result is unknown, but the Area stays usable for
+/// the next Check or tool call.
+#[rstest]
+#[case::identity_changed(json!({"instance":"replacement"}), json!({"status":"running","stdout":""}))]
+#[case::absent(json!({"instance":"runner"}), json!({"status":"absent"}))]
+#[case::runner_uncertain(json!({"instance":"runner"}), json!({"status":"uncertain","error":"sandbox lost"}))]
+#[tokio::test]
+async fn a_lost_completion_check_leaves_the_area_usable(
+	repository: Repository,
+	#[case] health: Value,
+	#[case] observed: Value,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = VERIFICATION.into();
+		trace.health = health;
+		trace.observed = observed;
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "uncertain");
+	assert!(trace.calls.contains(&"area:active".into()));
+	assert!(!trace.calls.contains(&"area:uncertain".into()));
+	assert!(trace.published.is_empty());
 }

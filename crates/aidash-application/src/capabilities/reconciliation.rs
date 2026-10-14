@@ -7,8 +7,8 @@ use crate::{
 };
 use aidash_domain::{
 	capabilities::operations::{
-		FileScope, MountedFile, VERIFICATION, capability_of, reconciliation::Snapshot,
-		request_validation_failure,
+		FileScope, MountedFile, VERIFICATION, capability_of, lost_area_state,
+		reconciliation::Snapshot, request_validation_failure,
 	},
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
@@ -86,7 +86,7 @@ async fn reconcile(
 	if identity_changed {
 		operation.state = "uncertain".into();
 		operation.result = json!({"error":"runner journal identity changed"});
-		scope.set_area("uncertain").await?;
+		scope.set_area(lost_area_state(&operation.kind)).await?;
 		return scope.persist(&operation).await;
 	}
 	if operation.state == "prepared" {
@@ -140,7 +140,7 @@ async fn reconcile(
 		Some("absent") => {
 			operation.state = "uncertain".into();
 			operation.result = json!({"error":"runner lost a previously accepted operation"});
-			scope.set_area("uncertain").await?;
+			scope.set_area(lost_area_state(&operation.kind)).await?;
 		}
 		Some("completed" | "cancelled" | "failed")
 			if observed["termination_confirmed"] == true
@@ -163,6 +163,15 @@ async fn reconcile(
 				operation.revision = area.revision;
 				operation.state = observed["status"].as_str().unwrap().into();
 				operation.result = json!({"preview":bounded_tail(&text, MAX_DIAGNOSTIC_BYTES),"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
+				// The runner's own measure of the command, unlike the time until
+				// the Completion Gate harvests this result.
+				if let (Some(started), Some(finished)) = (
+					observed["started_at"].as_f64(),
+					observed["finished_at"].as_f64(),
+				) && finished >= started
+				{
+					operation.result["runtime_seconds"] = json!((finished - started) as u64);
+				}
 				scope.persist(&operation).await?;
 				return scope
 					.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
@@ -271,7 +280,7 @@ async fn reconcile(
 		Some("uncertain") => {
 			operation.state = "uncertain".into();
 			operation.result = json!({"error":observed["error"],"termination_confirmed":observed["termination_confirmed"]});
-			scope.set_area("uncertain").await?;
+			scope.set_area(lost_area_state(&operation.kind)).await?;
 		}
 		Some("accepted" | "starting" | "running" | "finishing") => {
 			if operation.state != "cancelling" {

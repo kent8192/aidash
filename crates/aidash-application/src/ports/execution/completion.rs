@@ -60,28 +60,53 @@ pub enum CheckStatus {
 		exit_code: Option<i64>,
 		/// Tail of the Check's output.
 		diagnostics: String,
+		/// How long the command ran, as the runner measured it; `None` when
+		/// the runner did not report it.
+		runtime_seconds: Option<u64>,
 	},
 	/// The operation's outcome is unknown or was lost.
 	Unavailable(String),
 }
 
+/// Codes with which the runner or the dispatch reports that a Check could not
+/// run to its own end. Any other error belongs to the command's own failure,
+/// such as the execution log the runner attaches to a silent nonzero exit.
+const INFRASTRUCTURE_CODES: [&str; 4] = [
+	"SANDBOX_LOST",
+	"SESSION_LOST",
+	"INPUT_PATH_COLLISION",
+	"WORKING_QUOTA_EXCEEDED",
+];
+
 impl CheckStatus {
 	/// What a polled Check operation result means to the Completion Gate.
 	pub fn of(result: &serde_json::Value) -> Self {
+		let code = result["error"]["code"].as_str();
 		match result["status"].as_str().unwrap_or_default() {
-			// The runner lost the sandbox or session and reports an
-			// infrastructure code: the Check's own result is unknown, so this
-			// is not a failure to repair.
-			"failed" if result["error"]["code"].is_string() => Self::Unavailable(format!(
-				"the Check's result was lost: {}",
-				result["error"]["code"].as_str().unwrap_or_default()
-			)),
+			// The runner lost the sandbox or the dispatch refused the files:
+			// the Check's own result is unknown, so this is not a failure to
+			// repair.
+			"failed" if code.is_some_and(|code| INFRASTRUCTURE_CODES.contains(&code)) => {
+				Self::Unavailable(format!(
+					"the Check's result was lost: {}",
+					code.unwrap_or_default()
+				))
+			}
 			"completed" | "failed" if result["termination_confirmed"] == true => {
 				let exit_code = result["exit_code"].as_i64();
+				let output = result["output"].as_str().unwrap_or_default();
 				Self::Finished {
 					passed: result["status"] == "completed" && exit_code == Some(0),
 					exit_code,
-					diagnostics: result["output"].as_str().unwrap_or_default().to_owned(),
+					// A silent failure's diagnostics are the execution log the
+					// runner attached as its error.
+					diagnostics: if output.is_empty() {
+						result["error"]["message"].as_str().unwrap_or_default()
+					} else {
+						output
+					}
+					.to_owned(),
+					runtime_seconds: result["runtime_seconds"].as_u64(),
 				}
 			}
 			"cancelled" => Self::Unavailable("the Check was cancelled".into()),

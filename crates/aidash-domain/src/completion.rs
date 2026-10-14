@@ -280,15 +280,19 @@ pub struct PendingCheck {
 
 impl PendingCheck {
 	/// Record the finished operation. A Check that ran for its whole timeout
-	/// without passing timed out.
+	/// without passing timed out. The runner's measure of the command's
+	/// runtime decides that and is what the Run spends: the time until the
+	/// harness harvested the result also counts its polling and any worker
+	/// downtime, so it is only the fallback when the runner reported none.
 	pub fn finish(
 		self,
 		passed: bool,
 		exit_code: Option<i64>,
 		diagnostics: &str,
+		runtime_seconds: Option<u64>,
 		now: DateTime<Utc>,
 	) -> VerificationEvidence {
-		let seconds = elapsed(self.started_at, now);
+		let seconds = runtime_seconds.unwrap_or_else(|| elapsed(self.started_at, now));
 		let outcome = if passed {
 			CheckOutcome::Passed
 		} else if seconds >= self.timeout_seconds {
@@ -296,7 +300,10 @@ impl PendingCheck {
 		} else {
 			CheckOutcome::Failed
 		};
-		self.evidence(outcome, exit_code, diagnostics, now)
+		VerificationEvidence {
+			seconds,
+			..self.evidence(outcome, exit_code, diagnostics, now)
+		}
 	}
 	/// Record an operation whose result cannot be used.
 	pub fn unavailable(self, detail: &str, now: DateTime<Utc>) -> VerificationEvidence {
@@ -575,12 +582,17 @@ pub fn decide<'a>(
 	let current = candidate.content.unwrap_or(&empty);
 	let mut applied = false;
 	for check in policy.checks() {
+		// An unavailable Area's manifest cannot prove its files unchanged, so
+		// `content_changed` applies too and the candidate goes to a person.
 		let applies = match check.when {
 			CheckWhen::Always => true,
-			CheckWhen::ContentChanged => progress
-				.start_content
-				.as_deref()
-				.is_none_or(|start| start != current),
+			CheckWhen::ContentChanged => {
+				candidate.unavailable.is_some()
+					|| progress
+						.start_content
+						.as_deref()
+						.is_none_or(|start| start != current)
+			}
 		};
 		if !applies {
 			continue;
