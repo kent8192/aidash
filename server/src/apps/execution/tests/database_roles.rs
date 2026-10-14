@@ -84,18 +84,38 @@ async fn server_refuses_a_member_of_the_owner_role(
 }
 
 /// Privileges a login can gain without owning anything are refused too:
-/// SET-capable membership in a BYPASSRLS role, CREATE on the database or a
-/// schema, and a startup role that hides the authenticated login.
+/// REPLICATION, SET-capable membership in a BYPASSRLS or REPLICATION role,
+/// membership in a role that reaches the server's files or programs, CREATE or
+/// TRUNCATE held directly or through a role reachable only by SET ROLE, and a
+/// startup role that hides the authenticated login.
 #[rstest]
+#[case::replication(&["ALTER ROLE grant_probe REPLICATION"], "has REPLICATION")]
 #[case::bypassrls_member(
 	&["CREATE ROLE bypass_probe NOLOGIN BYPASSRLS", "GRANT bypass_probe TO grant_probe WITH INHERIT FALSE, SET TRUE"],
-	"SET ROLE to a superuser or BYPASSRLS role"
+	"can SET ROLE to a superuser, BYPASSRLS or REPLICATION role"
+)]
+#[case::replication_member(
+	&["CREATE ROLE replication_probe NOLOGIN REPLICATION", "GRANT replication_probe TO grant_probe WITH INHERIT FALSE, SET TRUE"],
+	"can SET ROLE to a superuser, BYPASSRLS or REPLICATION role"
+)]
+#[case::server_program(
+	&["CREATE ROLE program_probe NOLOGIN", "GRANT pg_execute_server_program TO program_probe", "GRANT program_probe TO grant_probe"],
+	"reaches the server's files or programs"
 )]
 #[case::database_create(
 	&["DO $$ BEGIN EXECUTE format('GRANT CREATE ON DATABASE %I TO grant_probe', current_database()); END $$"],
 	"can create"
 )]
 #[case::schema_create(&["GRANT CREATE ON SCHEMA public TO grant_probe"], "can create")]
+#[case::schema_create_by_set_role(
+	&["CREATE ROLE create_probe NOLOGIN", "GRANT CREATE ON SCHEMA public TO create_probe", "GRANT create_probe TO grant_probe WITH INHERIT FALSE, SET TRUE"],
+	"can create"
+)]
+#[case::truncate(&["GRANT TRUNCATE ON inbox TO grant_probe"], "can truncate tables")]
+#[case::truncate_by_set_role(
+	&["CREATE ROLE truncate_probe NOLOGIN", "GRANT TRUNCATE ON inbox TO truncate_probe", "GRANT truncate_probe TO grant_probe WITH INHERIT FALSE, SET TRUE"],
+	"can truncate tables"
+)]
 #[case::startup_role(
 	&["GRANT aidash_server TO grant_probe", "ALTER ROLE grant_probe SET role = 'aidash_server'"],
 	"starts as another role"
@@ -157,6 +177,51 @@ async fn server_role_holds_only_data_privileges(#[future] database: DatabaseFixt
 		);
 	}
 	select.unwrap();
+}
+
+/// The owner's default privileges grant the server role DML on the migration
+/// ledger as well, but startup trusts the ledger, so `aidash migrate` leaves
+/// it read-only to the server.
+#[rstest]
+#[tokio::test]
+async fn migrate_leaves_the_ledger_read_only_to_the_server(#[future] database: DatabaseFixture) {
+	// Arrange: the fixture applied migrations through the executor alone.
+	let f = database.await;
+	let pool = runtime::connect(&f.url, 2)
+		.await
+		.unwrap()
+		.into_postgres()
+		.unwrap();
+	let writable = "SELECT has_table_privilege('reinhardt_migrations', 'DELETE')";
+	let before: bool = sqlx::query_scalar(writable).fetch_one(&pool).await.unwrap();
+	assert!(before, "default privileges grant the ledger to the server");
+	let mut context = reinhardt::commands::CommandContext::default();
+	context.set_option("database".into(), with_login(&f.url, OWNER));
+	// Act: nothing is pending, so `migrate` only seals the ledger.
+	aidash_server::bootstrap::migrations::run(&context)
+		.await
+		.unwrap();
+	// Assert
+	for statement in [
+		"INSERT INTO reinhardt_migrations (app) VALUES ('probe')",
+		"UPDATE reinhardt_migrations SET app = app",
+		"DELETE FROM reinhardt_migrations",
+		"TRUNCATE reinhardt_migrations",
+	] {
+		let error = sqlx::query(statement).execute(&pool).await.unwrap_err();
+		assert_eq!(
+			error
+				.as_database_error()
+				.and_then(|error| error.code())
+				.as_deref(),
+			Some("42501"),
+			"{statement}: {error}"
+		);
+	}
+	sqlx::query("SELECT count(*) FROM reinhardt_migrations")
+		.execute(&pool)
+		.await
+		.unwrap();
 }
 
 #[rstest]

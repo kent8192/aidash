@@ -162,8 +162,11 @@ cargo run --locked -p aidash-server --bin manage -- migrationseeds --check
 
 Both migration entry points use the same graph and transaction-scoped advisory
 lock `71003203` for the complete run. Initialization cannot use `--fake` or
-`--fake-initial`. The compatibility `serve`, `server`, and `worker` commands apply
-the same graph before assembling HTTP or worker dependencies.
+`--fake-initial`. Run `migrate` as the `aidash_owner` login; it then leaves the
+`reinhardt_migrations` ledger read-only to every other role. The compatibility
+`serve`, `server`, and `worker` commands never apply the graph: logged in as
+`aidash_server`, they read the ledger and refuse to start while any migration is
+pending, so a new or upgraded database needs a separate `migrate` run first.
 
 The physical baseline is reversible. Reinhardt's native command expands applied
 dependents across app labels, orders them through the complete dependency graph,

@@ -30,6 +30,7 @@ SQL
 for database in "$POSTGRES_DB" aidash_b aidash_test; do
   run --dbname postgres -c "ALTER DATABASE \"$database\" OWNER TO aidash_owner"
   # Default privileges apply only to objects the owner creates afterwards.
+  # `aidash migrate` then revokes the server's writes on its ledger.
   run --dbname "$database" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS vector;

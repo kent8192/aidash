@@ -39,7 +39,24 @@ separate ServiceAccounts for Workload Identity annotations.
 Servers and workers do not change the schema and refuse to start until every
 migration is applied. Before each install or upgrade, apply migrations as the
 owner role with the release's image. Keep the owner's `DATABASE_URL`, which names
-the `aidash_owner` login, in its own Secret, separate from the runtime Secret:
+the `aidash_owner` login, in its own Secret, separate from the runtime Secret.
+
+On an upgrade, old servers and workers must not write while the schema changes.
+Scale both roles to zero and wait for their Pods to drain before migrating; the
+`helm upgrade` below restores the configured replica counts. A first install has
+nothing to drain:
+
+```sh
+for node in node-a node-b; do
+  kubectl -n aidash scale deployment "$node-aidash-server" "$node-aidash-worker" --replicas=0
+  while kubectl -n aidash get pods -o name \
+    -l "app.kubernetes.io/instance=$node,app.kubernetes.io/component in (server,worker)" | grep -q .; do
+    sleep 2
+  done
+done
+```
+
+Then migrate each node's database:
 
 ```sh
 for node in node-a node-b; do
@@ -162,8 +179,8 @@ not occur. Unsafe effects pause for reconciliation; idempotent effects reuse
 their durable key. SIGKILL bypasses draining and exercises the same recovery.
 
 Port 8081 provides `/live` for process liveness and `/ready` for database readiness
-and draining. A startup probe allows migrations and initial connections to finish
-before liveness checks begin. Unavailable PostgreSQL removes a Pod from service
+and draining. A startup probe allows the migration check and initial connections to
+finish before liveness checks begin. Unavailable PostgreSQL removes a Pod from service
 without putting it in a liveness-driven restart loop. A stopped background
 service terminates the process so the Deployment can replace it.
 

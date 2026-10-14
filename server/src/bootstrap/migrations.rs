@@ -11,6 +11,22 @@ use reinhardt::query::{
 };
 use std::{collections::HashSet, path::PathBuf};
 
+/// Leave the migration ledger read-only to every role but its owner.
+///
+/// The owner's default privileges grant the server role DML on every table it
+/// creates (#262), including the ledger, which `require_current` trusts before
+/// a server starts. A server login that could write the ledger could record a
+/// migration that never ran. Reinhardt Query cannot express REVOKE or iterate a
+/// table's grantees, so this is raw SQL; `SELECT` stays for the startup check.
+const SEAL_LEDGER: &str = "DO $$ DECLARE grantee text; BEGIN \
+	IF to_regclass('reinhardt_migrations') IS NULL THEN RETURN; END IF; \
+	FOR grantee IN SELECT DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END \
+	FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee \
+	WHERE c.oid = 'reinhardt_migrations'::regclass AND a.grantee <> c.relowner \
+	AND a.privilege_type <> 'SELECT' LOOP \
+	EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER \
+	ON reinhardt_migrations FROM %s', grantee); END LOOP; END $$";
+
 /// All entry points hold the same transaction-scoped lock for the complete run,
 /// including creation of the native ledger. Dropping the transaction on errors
 /// or cancellation releases it; no session lock can leak into the pool.
@@ -94,6 +110,9 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 		.execute(&native)
 		.await
 		.map_err(|error| Error::External(error.to_string()))?;
+	if !context.has_option("plan") {
+		schema_lock.execute(SEAL_LEDGER, Vec::new()).await?;
+	}
 	schema_lock.commit().await?;
 	Ok(())
 }

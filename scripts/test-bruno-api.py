@@ -287,37 +287,38 @@ def database(args, name):
         input=f'CREATE DATABASE "{name}" OWNER aidash_owner TEMPLATE template0;'.encode(),
         cwd=ROOT,
     )
-    in_database = [*command[:-4], "-d", name, "-v", "ON_ERROR_STOP=1"]
-    checked(
-        in_database,
-        input=(
-            "CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; "
-            "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner "
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server; "
-            "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner "
-            "GRANT USAGE, SELECT ON SEQUENCES TO aidash_server;"
-        ).encode(),
-        cwd=ROOT,
-    )
-    # PGroonga's crash-safe worker starts asynchronously; retry only its
-    # preparing state, each time on a fresh backend.
-    deadline = time.monotonic() + 30
-    for statement in (
-        "CREATE EXTENSION IF NOT EXISTS pgroonga;",
-        "SELECT pgroonga_command('io_flush');",
-    ):
-        while True:
-            try:
-                checked(in_database, input=statement.encode(), cwd=ROOT)
-                break
-            except subprocess.CalledProcessError as error:
-                if (
-                    b"pgroonga_crash_safer is preparing" not in error.stderr
-                    or time.monotonic() >= deadline
-                ):
-                    raise
-                time.sleep(0.1)
+    # Drop the database even when the setup below fails part-way.
     try:
+        in_database = [*command[:-4], "-d", name, "-v", "ON_ERROR_STOP=1"]
+        checked(
+            in_database,
+            input=(
+                "CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; "
+                "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner "
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server; "
+                "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner "
+                "GRANT USAGE, SELECT ON SEQUENCES TO aidash_server;"
+            ).encode(),
+            cwd=ROOT,
+        )
+        # PGroonga's crash-safe worker starts asynchronously; retry only its
+        # preparing state, each time on a fresh backend.
+        deadline = time.monotonic() + 30
+        for statement in (
+            "CREATE EXTENSION IF NOT EXISTS pgroonga;",
+            "SELECT pgroonga_command('io_flush');",
+        ):
+            while True:
+                try:
+                    checked(in_database, input=statement.encode(), cwd=ROOT)
+                    break
+                except subprocess.CalledProcessError as error:
+                    if (
+                        b"pgroonga_crash_safer is preparing" not in error.stderr
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    time.sleep(0.1)
         yield
     finally:
         checked(

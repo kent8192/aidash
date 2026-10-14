@@ -52,12 +52,15 @@ fn member_of(owner: &str) -> SimpleExpr {
 	SimpleExpr::from(Expr::cust(format!("pg_has_role(r.oid, {owner}, 'MEMBER')")))
 }
 
-/// Refuse a superuser, a role with `BYPASSRLS`, the owner of the current
-/// database, or the owner of any schema or relation outside PostgreSQL's own
-/// schemas, directly or through membership in the owning role. The database
-/// owner implicitly owns `public` through `pg_database_owner`, and a schema
-/// owner can create and drop its objects. Superuser and `BYPASSRLS` are never
+/// Refuse a superuser, a role with `BYPASSRLS` or `REPLICATION`, the owner of
+/// the current database, or the owner of any schema or relation outside
+/// PostgreSQL's own schemas, directly or through membership in the owning role.
+/// The database owner implicitly owns `public` through `pg_database_owner`, and
+/// a schema owner can create and drop its objects. Role attributes are never
 /// inherited through membership, so the session's own role decides those.
+/// Privileges such as `CREATE` and `TRUNCATE` are checked for every role the
+/// login is a member of, because `SET ROLE` reaches a role whose privileges
+/// are not inherited.
 pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()> {
 	let role = Alias::new("r");
 	let class = Alias::new("c");
@@ -114,6 +117,10 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 			Expr::col((role.clone(), Alias::new("rolbypassrls"))),
 			Alias::new("bypass"),
 		)
+		.expr_as(
+			Expr::col((role.clone(), Alias::new("rolreplication"))),
+			Alias::new("replication"),
+		)
 		.expr_as(Expr::exists(owned), Alias::new("owner"))
 		.expr_as(Expr::exists(owned_schema), Alias::new("schema_owner"))
 		.expr_as(Expr::exists(owned_database), Alias::new("database_owner"))
@@ -121,24 +128,53 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		// authenticated login keeps its own privileges: check that login, and
 		// refuse a session that already switched roles.
 		.expr_as(Expr::cust("session_user <> current_user"), Alias::new("switched"))
-		// Membership usable through SET ROLE carries a superuser's or a
-		// BYPASSRLS role's attributes, which inheritance never does.
+		// Membership usable through SET ROLE carries a superuser's, a
+		// BYPASSRLS role's or a REPLICATION role's attributes, which
+		// inheritance never does.
 		.expr_as(
 			Expr::cust(
 				"EXISTS (SELECT 1 FROM pg_roles b WHERE b.oid <> r.oid \
-				 AND (b.rolsuper OR b.rolbypassrls) AND pg_has_role(r.oid, b.oid, 'SET'))",
+				 AND (b.rolsuper OR b.rolbypassrls OR b.rolreplication) \
+				 AND pg_has_role(r.oid, b.oid, 'SET'))",
 			),
 			Alias::new("privileged_member"),
 		)
-		// CREATE on the database or an application schema lets the login
-		// change the schema without owning anything yet.
+		// These predefined roles read and write the server's files or run
+		// programs as its operating-system user, which bypasses every
+		// database permission. Their privileges are inherited, so any
+		// membership counts.
 		.expr_as(
 			Expr::cust(
-				"has_database_privilege(r.oid, current_database(), 'CREATE') \
+				"EXISTS (SELECT 1 FROM pg_roles b WHERE b.rolname IN \
+				 ('pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files') \
+				 AND pg_has_role(r.oid, b.oid, 'MEMBER'))",
+			),
+			Alias::new("server_access"),
+		)
+		// CREATE on the database or an application schema lets the login
+		// change the schema without owning anything yet. `MEMBER` covers the
+		// login itself and every role it inherits from or can SET ROLE to.
+		.expr_as(
+			Expr::cust(
+				"EXISTS (SELECT 1 FROM pg_roles m WHERE pg_has_role(r.oid, m.oid, 'MEMBER') \
+				 AND (has_database_privilege(m.oid, current_database(), 'CREATE') \
 				 OR EXISTS (SELECT 1 FROM pg_namespace p WHERE p.nspname NOT LIKE 'pg\\_%' \
-				 AND p.nspname <> 'information_schema' AND has_schema_privilege(r.oid, p.oid, 'CREATE'))",
+				 AND p.nspname <> 'information_schema' \
+				 AND has_schema_privilege(m.oid, p.oid, 'CREATE'))))",
 			),
 			Alias::new("creator"),
+		)
+		// TRUNCATE skips row-level security, so it empties every tenant's rows.
+		.expr_as(
+			Expr::cust(
+				"EXISTS (SELECT 1 FROM pg_roles m \
+				 JOIN pg_class t ON pg_has_role(r.oid, m.oid, 'MEMBER') \
+				 JOIN pg_namespace q ON q.oid = t.relnamespace \
+				 WHERE t.relkind IN ('r', 'p', 'f') AND q.nspname NOT LIKE 'pg\\_%' \
+				 AND q.nspname <> 'information_schema' \
+				 AND has_table_privilege(m.oid, t.oid, 'TRUNCATE'))",
+			),
+			Alias::new("truncator"),
 		)
 		.from_as(Alias::new("pg_roles"), role.clone())
 		.and_where(
@@ -157,8 +193,12 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		"is a superuser"
 	} else if flag("bypass")? {
 		"has BYPASSRLS"
+	} else if flag("replication")? {
+		"has REPLICATION"
 	} else if flag("privileged_member")? {
-		"can SET ROLE to a superuser or BYPASSRLS role"
+		"can SET ROLE to a superuser, BYPASSRLS or REPLICATION role"
+	} else if flag("server_access")? {
+		"is a member of a role that reaches the server's files or programs"
 	} else if flag("database_owner")? {
 		"owns the database"
 	} else if flag("schema_owner")? {
@@ -167,6 +207,8 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		"owns database objects"
 	} else if flag("creator")? {
 		"can create schemas or objects"
+	} else if flag("truncator")? {
+		"can truncate tables"
 	} else {
 		return Ok(());
 	};
