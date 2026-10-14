@@ -4,8 +4,7 @@ import {
   selectDashboardLanguage,
 } from "./auth-fixture";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
-import { KeylessFixture, keylessPort } from "./keyless-ports";
+import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
 test("generation dashboard manages policy, approval, completion and retained history in both languages", async ({
@@ -56,12 +55,9 @@ test("generation dashboard manages policy, approval, completion and retained his
       }),
     );
   });
-  await new Promise<void>((resolve) =>
-    provider.listen(
-      keylessPort(KeylessFixture.generation),
-      "127.0.0.1",
-      resolve,
-    ),
+  const providerOrigin = await serveKeyless(
+    provider,
+    KeylessFixture.generation,
   );
   try {
     const id = `generation-${randomUUID()}`;
@@ -104,7 +100,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       config: {
         provider: "openrouter",
         model_id: "fixture",
-        endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
+        endpoint: `${providerOrigin}/v1`,
         context_window: 128000,
         max_output_tokens: 4096,
         modalities: ["text"],
@@ -125,7 +121,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       description: { en: "Local System One fixture" },
       config: {
         provider: "typesafe-system-one",
-        endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/systemone`,
+        endpoint: `${providerOrigin}/systemone`,
         model: "fixture-jev",
         credential_env: "AIDASH_SECRET_COMPACTION_FIXTURE",
         max_request_bytes: 200000,
@@ -159,7 +155,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     });
     const embeddingConfig = {
       provider: "openai",
-      endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
+      endpoint: `${providerOrigin}/v1`,
       model: "fixture-embedding",
       model_version: "v1",
       dimensions: 3,

@@ -292,22 +292,70 @@ class NatsProxy(socketserver.ThreadingTCPServer):
         self.server_close()
 
 
+def forward(client, upstream_port):
+    with socket.create_connection(("127.0.0.1", upstream_port), timeout=10) as upstream:
+        upstream.settimeout(None)
+        sockets = (client, upstream)
+        try:
+            while True:
+                ready, _, _ = select.select(sockets, [], [], 30)
+                for source in ready:
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    destination = upstream if source is client else client
+                    destination.sendall(data)
+        except OSError:
+            pass
+
+
 class NatsForwarder(socketserver.BaseRequestHandler):
     def handle(self):
-        with socket.create_connection(("127.0.0.1", int(os.environ.get("AIDASH_NATS_PORT", "42270"))), timeout=10) as upstream:
-            upstream.settimeout(None)
-            sockets = (self.request, upstream)
-            try:
-                while True:
-                    ready, _, _ = select.select(sockets, [], [], 30)
-                    for source in ready:
-                        data = source.recv(65536)
-                        if not data:
-                            return
-                        destination = upstream if source is self.request else self.request
-                        destination.sendall(data)
-            except OSError:
-                pass
+        forward(self.request, int(os.environ.get("AIDASH_NATS_PORT", "42270")))
+
+
+class KeylessFixtureProxy(socketserver.ThreadingTCPServer):
+    """Own a reserved Keyless fixture port for the whole run.
+
+    The nodes permit only the origins fixed at launch, and a dashboard spec's
+    Node server cannot adopt a socket bound here. So this proxy takes over the
+    held `listener` and forwards each connection to the port the spec publishes
+    in `upstream_file` (web/tests/keyless-ports.ts); no other process can claim
+    the permitted port between launch and the spec's turn.
+    """
+
+    daemon_threads = True
+
+    def __init__(self, listener, upstream_file):
+        super().__init__(listener.getsockname(), KeylessFixtureForwarder, bind_and_activate=False)
+        self.socket.close()
+        self.socket = listener
+        self.server_address = listener.getsockname()
+        self.upstream_file = upstream_file
+        self.started = False
+
+    def start(self):
+        self.server_activate()
+        self.started = True
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        if self.started:
+            self.shutdown()
+        self.server_close()
+
+
+class KeylessFixtureForwarder(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            upstream_port = int(self.server.upstream_file.read_text())
+        except (OSError, ValueError):
+            # The spec is not serving yet; closing fails the call instead of hanging it.
+            return
+        try:
+            forward(self.request, upstream_port)
+        except OSError:
+            pass
 
 
 def main():
@@ -349,15 +397,16 @@ def main():
     scoped_provider_socket = socket.socket()
     scoped_provider_socket.bind(("127.0.0.1", 0))
     scoped_provider_port = scoped_provider_socket.getsockname()[1]
-    # The dashboard specs serve their Keyless model and embedding fixtures on
-    # these ports, one per spec (web/tests/keyless-ports.ts). Node cannot adopt
-    # a socket, so each is held until just before the browser run starts.
-    browser_provider_sockets = []
-    for _ in range(3):
+    # The dashboard specs reach their Keyless model and embedding fixtures
+    # through these ports, one per spec (web/tests/keyless-ports.ts). Each is
+    # held from now on and forwarded to the port its spec publishes.
+    keyless_upstreams = tempfile.TemporaryDirectory(prefix="aidash-keyless-upstreams-")
+    browser_provider_proxies = []
+    for index in range(3):
         held = socket.socket()
         held.bind(("127.0.0.1", 0))
-        browser_provider_sockets.append(held)
-    browser_provider_ports = [held.getsockname()[1] for held in browser_provider_sockets]
+        browser_provider_proxies.append(KeylessFixtureProxy(held, pathlib.Path(keyless_upstreams.name) / str(index)))
+    browser_provider_ports = [proxy.server_address[1] for proxy in browser_provider_proxies]
     keyless_origins = ",".join([fixture_url, f"http://127.0.0.1:{scoped_provider_port}",
                                 *(f"http://127.0.0.1:{port}" for port in browser_provider_ports)])
     stream_events = []
@@ -534,9 +583,9 @@ def main():
         local_approvals.set()
         if args.dashboard:
             browser_report = logs / "browser-report.json"
-            for held in browser_provider_sockets:
-                held.close()
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports))})
+            for proxy in browser_provider_proxies:
+                proxy.start()
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
@@ -558,6 +607,9 @@ def main():
             except subprocess.TimeoutExpired:
                 child.kill()
         nats_proxy.close()
+        for proxy in browser_provider_proxies:
+            proxy.close()
+        keyless_upstreams.cleanup()
         fixture_server.shutdown()
         for file in files:
             file.close()
