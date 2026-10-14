@@ -292,19 +292,26 @@ impl ModelRequest {
 		})
 	}
 
-	/// Space added to a media-free request by these parts, including text
-	/// labels, media part framing, and the conservative provider-side media
-	/// token allowance.
-	pub fn content_parts_reservation(parts: &[ContentPart]) -> usize {
+	/// Space added to a media-free request of `version` by these parts,
+	/// including text labels, media part framing, and the conservative
+	/// provider-side media token allowance.
+	pub fn content_parts_reservation(
+		parts: &[ContentPart],
+		version: crate::projection::ProjectionVersion,
+	) -> usize {
 		if parts.is_empty() {
 			return 0;
 		}
 		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
 		// Array/text framing replaces a plain context string; media parts keep
-		// their framing but not their encoded payload bytes.
+		// their framing but not their encoded payload bytes. Native sends text
+		// labels inside a data envelope, escaped once more.
 		for part in parts {
-			reserved =
-				reserved.saturating_add(part.estimate_frame().to_string().len().saturating_add(1));
+			let mut frame = part.estimate_frame();
+			if version == crate::projection::ProjectionVersion::Native {
+				frame = crate::projection::native::media_part(frame);
+			}
+			reserved = reserved.saturating_add(frame.to_string().len().saturating_add(1));
 		}
 		reserved
 	}

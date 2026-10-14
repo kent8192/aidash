@@ -1,9 +1,23 @@
 use super::*;
+use aidash_domain::projection::{ProjectionVersion, native::NativeContext};
 #[rstest::rstest]
-fn media_reservation_covers_complete_request_growth() {
+#[case::legacy(ProjectionVersion::Legacy)]
+// Native envelopes text labels as data, so the label grows by its envelope
+// and a second level of JSON escaping.
+#[case::native(ProjectionVersion::Native)]
+fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionVersion) {
+	let history = json!({"history":"quoted \\\"text\\\" and 日本語"});
+	let context = match version {
+		ProjectionVersion::Native => aidash_domain::provider::ModelContext::Native(NativeContext {
+			attachments: Vec::new(),
+			history: Vec::new(),
+			volatile: history.to_string(),
+		}),
+		_ => history.into(),
+	};
 	let mut request = ModelRequest {
 		instructions: "Inspect the media".into(),
-		context: json!({"history":"quoted \\\"text\\\" and 日本語"}).into(),
+		context,
 		tools: vec![],
 		max_output_tokens: 512,
 		response_format: None,
@@ -27,7 +41,8 @@ fn media_reservation_covers_complete_request_growth() {
 	assert!(
 		request.estimated_total_tokens()
 			<= without_media.saturating_add(ModelRequest::content_parts_reservation(
-				&request.content_parts
+				&request.content_parts,
+				version
 			))
 	);
 }
