@@ -16,6 +16,7 @@ fn connection(state: State) -> PlanConnection {
 		pinned_version: Some("aidash-store/plan-connections/fixture/versions/1".into()),
 		state,
 		access_expires_at: now + Duration::hours(1),
+		earliest_refresh_at: None,
 		refresh_expires_at: now + refresh_lifetime(),
 		connected_at: now,
 		refreshed_at: None,
@@ -271,6 +272,24 @@ fn calls_refresh_tokens_shortly_before_they_expire() {
 	value.access_expires_at = now + Duration::seconds(REFRESH_MARGIN_SECONDS);
 	assert!(value.needs_refresh(now));
 	value.access_expires_at = now - Duration::seconds(1);
+	assert!(value.needs_refresh(now));
+}
+
+/// OpenAI's `earliest_refresh_at` defers a refresh while the access token
+/// still works; an expired token is refreshed regardless.
+#[test]
+fn refreshes_wait_for_the_earliest_refresh_time() {
+	let now = Utc::now();
+	let mut value = connection(State::Active);
+	value.access_expires_at = now + Duration::seconds(REFRESH_MARGIN_SECONDS);
+	value.earliest_refresh_at = Some(now + Duration::seconds(30));
+	assert!(!value.may_refresh(now));
+	assert!(!value.needs_refresh(now));
+	value.earliest_refresh_at = Some(now);
+	assert!(value.may_refresh(now));
+	assert!(value.needs_refresh(now));
+	value.earliest_refresh_at = Some(now + Duration::seconds(30));
+	value.access_expires_at = now;
 	assert!(value.needs_refresh(now));
 }
 

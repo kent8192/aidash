@@ -278,18 +278,76 @@ def database(args, name):
         "-v",
         "ON_ERROR_STOP=1",
     ]
-    # The native history must own extension creation. Avoid inheriting extensions
-    # or application objects from a developer's customized template1 database.
+    # Avoid inheriting extensions or application objects from a developer's
+    # customized template1 database. As in a deployment (#262), the owner role
+    # owns the database, the superuser creates the superuser-only extensions,
+    # and the server role receives DML on the tables the owner creates.
     checked(
         command,
-        input=f'CREATE DATABASE "{name}" TEMPLATE template0;'.encode(),
+        input=f'CREATE DATABASE "{name}" OWNER aidash_owner TEMPLATE template0;'.encode(),
         cwd=ROOT,
     )
+    # Drop the database even when the setup below fails part-way.
     try:
+        in_database = [*command[:-4], "-d", name, "-v", "ON_ERROR_STOP=1"]
+        checked(
+            in_database,
+            input=(
+                "CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; "
+                "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner "
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server; "
+                "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner "
+                "GRANT USAGE, SELECT ON SEQUENCES TO aidash_server;"
+            ).encode(),
+            cwd=ROOT,
+        )
+        # PGroonga's crash-safe worker starts asynchronously; retry only its
+        # preparing state, each time on a fresh backend.
+        deadline = time.monotonic() + 30
+        for statement in (
+            "CREATE EXTENSION IF NOT EXISTS pgroonga;",
+            "SELECT pgroonga_command('io_flush');",
+        ):
+            while True:
+                try:
+                    checked(in_database, input=statement.encode(), cwd=ROOT)
+                    break
+                except subprocess.CalledProcessError as error:
+                    if (
+                        b"pgroonga_crash_safer is preparing" not in error.stderr
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    time.sleep(0.1)
         yield
     finally:
         checked(
             command, input=f'DROP DATABASE "{name}" WITH (FORCE);'.encode(), cwd=ROOT
+        )
+
+
+def login_url(role, database, args):
+    """The fixture database URL for one of the roles Compose's init script creates."""
+    password = os.environ.get(
+        f"AIDASH_BRUNO_{role.upper()}_PASSWORD", f"aidash-{role}-local"
+    )
+    return (
+        f"postgres://aidash_{role}:{urllib.parse.quote(password, safe='')}"
+        f"@127.0.0.1:{args.postgres_port}/{database}"
+    )
+
+
+def migrate(binary, environment, log):
+    """Apply the native history as the owner; servers cannot change the schema."""
+    with log.open("wb") as output:
+        subprocess.run(
+            [str(binary), "migrate"],
+            cwd=ROOT,
+            env=environment,
+            stdout=output,
+            stderr=output,
+            check=True,
+            timeout=600,
         )
 
 
@@ -537,6 +595,14 @@ def main():
         "--evidence-dir", type=pathlib.Path, default=ROOT / ".ignore/bruno"
     )
     args = parser.parse_args()
+    # Servers no longer log in as the bootstrap user (#262); a password set only
+    # for that user would otherwise be ignored and fail later as an auth error.
+    if "AIDASH_BRUNO_POSTGRES_PASSWORD" in os.environ:
+        raise SystemExit(
+            "AIDASH_BRUNO_POSTGRES_PASSWORD is no longer read; set "
+            "AIDASH_BRUNO_OWNER_PASSWORD and AIDASH_BRUNO_SERVER_PASSWORD for the "
+            "aidash_owner and aidash_server logins instead"
+        )
     binary = args.binary.resolve(strict=True)
     cli = shutil.which(args.cli)
     if cli is None:
@@ -605,7 +671,7 @@ def main():
                 {
                     "REINHARDT_ENV": "local",
                     "REINHARDT_SETTINGS_DIR": str(settings),
-                    "DATABASE_URL": f"postgres://{urllib.parse.quote(args.postgres_user, safe='')}:{urllib.parse.quote(os.environ.get('AIDASH_BRUNO_POSTGRES_PASSWORD', 'aidash-local'), safe='')}@127.0.0.1:{args.postgres_port}/{database_name}",
+                    "DATABASE_URL": login_url("server", database_name, args),
                     "NATS_URL": args.nats_url,
                     "AIDASH_NODE_ID": node_id,
                     "AIDASH_ENDPOINT": base,
@@ -625,6 +691,11 @@ def main():
                 }
             )
             environment["NO_PROXY"] = environment["no_proxy"] = "127.0.0.1,localhost"
+            migrate(
+                binary,
+                dict(environment, DATABASE_URL=login_url("owner", database_name, args)),
+                private / "migrate.log",
+            )
             child = resources.enter_context(
                 node(binary, environment, private / "server.log")
             )
@@ -644,14 +715,17 @@ def main():
                 if not key.startswith("AIDASH_OIDC_")
             }
             peer_environment.update(
-                DATABASE_URL=environment["DATABASE_URL"].rsplit("/", 1)[0]
-                + "/"
-                + peer_database,
+                DATABASE_URL=login_url("server", peer_database, args),
                 AIDASH_NODE_ID=peer_node,
                 AIDASH_ENDPOINT=peer_base,
                 AIDASH_LISTEN=f"127.0.0.1:{peer_port}",
                 AIDASH_API_TOKEN=peer_operator,
                 AIDASH_SECRET_BRUNO_MAIN=peer_token,
+            )
+            migrate(
+                binary,
+                dict(peer_environment, DATABASE_URL=login_url("owner", peer_database, args)),
+                private / "peer-migrate.log",
             )
             peer_child = resources.enter_context(
                 node(binary, peer_environment, private / "peer.log")

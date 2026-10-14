@@ -13,6 +13,8 @@ struct Data {
 	events: Vec<String>,
 	/// Commits that fail before applying anything, as a lost database would.
 	failing_commits: usize,
+	/// Commits that succeed before `failing_commits` take effect.
+	passing_commits: usize,
 }
 #[derive(Clone)]
 struct Repo(Arc<Mutex<Data>>);
@@ -64,9 +66,9 @@ impl Scope for Lease {
 	async fn mapped_identities(&mut self) -> Result<usize> {
 		Ok(self.data.mapped)
 	}
-	async fn insert(&mut self, value: &PlanConnection, _: &str) -> Result<()> {
+	async fn insert(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
 		assert!(self.data.rows.insert(value.id, value.clone()).is_none());
-		self.data.events.push("plan_connection.connected".into());
+		self.data.events.push(event.into());
 		Ok(())
 	}
 	async fn save(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
@@ -80,13 +82,17 @@ impl Scope for Lease {
 		Ok(())
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
-		if self.guard.failing_commits > 0 {
+		if self.guard.passing_commits > 0 {
+			self.guard.passing_commits -= 1;
+		} else if self.guard.failing_commits > 0 {
 			self.guard.failing_commits -= 1;
 			return Err(Error::External("database unavailable".into()));
 		}
 		let failing = self.guard.failing_commits;
+		let passing = self.guard.passing_commits;
 		*self.guard = Data {
 			failing_commits: failing,
+			passing_commits: passing,
 			..self.data.clone()
 		};
 		Ok(())
@@ -102,6 +108,7 @@ struct FakeStore(
 #[derive(Default)]
 struct Failing {
 	add_version: bool,
+	destroy: bool,
 	delete: bool,
 }
 impl FakeStore {
@@ -164,6 +171,9 @@ impl Store for FakeStore {
 		Ok(())
 	}
 	async fn destroy(&self, version: &str) -> Result<()> {
+		if self.1.lock().unwrap().destroy {
+			return Err(Error::External("store unavailable".into()));
+		}
 		let (resource, n) = split(version);
 		if let Some(versions) = self.0.lock().unwrap().get_mut(resource) {
 			versions.remove(&n);
@@ -210,8 +220,10 @@ struct FakeAuthorization {
 	id_token_valid: bool,
 	/// The verified ChatGPT account of each exchange.
 	account: StdMutex<String>,
-	/// `/models` rejects the next access token like an early expiry.
-	models_reject: StdMutex<bool>,
+	/// `/models` rejects this many access tokens like an early expiry.
+	models_reject: StdMutex<usize>,
+	/// `/models` reports that the owner's plan is not eligible.
+	models_ineligible: bool,
 	/// A reconnect that completes while the next revocation is in flight.
 	reconnect_during_revoke: StdMutex<Option<Repo>>,
 	refresh: RefreshMode,
@@ -224,7 +236,8 @@ impl Default for FakeAuthorization {
 			scope: Some(aidash_domain::plan_connections::SCOPES.into()),
 			id_token_valid: true,
 			account: StdMutex::new("user-1".into()),
-			models_reject: StdMutex::new(false),
+			models_reject: StdMutex::new(0),
+			models_ineligible: false,
 			reconnect_during_revoke: StdMutex::new(None),
 			refresh: RefreshMode::Ok,
 			revoke_fails: false,
@@ -243,6 +256,7 @@ fn issued(access: &str, refresh: &str, scope: Option<&str>) -> Issued {
 		id_token: Some("id-token-canary".to_owned().into()),
 		expires_in: 3600,
 		scope: scope.map(str::to_owned),
+		earliest_refresh_at: None,
 	}
 }
 #[async_trait]
@@ -320,8 +334,15 @@ impl Authorization for FakeAuthorization {
 	}
 	async fn models(&self, access_token: &SecretString) -> Result<Vec<PlanModel>> {
 		assert!(access_token.expose_secret().starts_with("access-"));
-		if std::mem::take(&mut *self.models_reject.lock().unwrap()) {
-			return Err(Error::Plan(Failure::NeedsReconnection));
+		if self.models_ineligible {
+			return Err(Error::Plan(Failure::Ineligible));
+		}
+		{
+			let mut rejections = self.models_reject.lock().unwrap();
+			if *rejections > 0 {
+				*rejections -= 1;
+				return Err(Error::Plan(Failure::NeedsReconnection));
+			}
 		}
 		Ok(vec![PlanModel {
 			slug: "gpt-fixture".into(),
@@ -480,7 +501,12 @@ async fn connecting_stores_only_the_access_and_refresh_tokens() {
 	);
 	let status = fixture.service.status(&owner()).await.unwrap().unwrap();
 	assert_eq!(status.state, State::Active);
-	assert_eq!(status.revision, 1);
+	// Registered first, then pinned to its tokens.
+	assert_eq!(status.revision, 2);
+	assert_eq!(
+		fixture.repo.0.lock().await.events,
+		vec!["plan_connection.registered", "plan_connection.connected"]
+	);
 }
 
 #[tokio::test]
@@ -516,8 +542,10 @@ async fn declined_and_failed_consents_never_reach_the_exchange() {
 	assert_eq!(fixture.store.resources(), 0);
 }
 
+/// OpenAI's recovery guidance keeps a sign-in without plan usage: its tokens
+/// are revoked, but the issued client is kept for the next authorization.
 #[tokio::test]
-async fn grants_without_plan_usage_are_revoked_and_not_stored() {
+async fn grants_without_plan_usage_keep_only_the_issued_client() {
 	let fixture = fixture(
 		1,
 		FakeAuthorization {
@@ -529,11 +557,24 @@ async fn grants_without_plan_usage_are_revoked_and_not_stored() {
 		connect(&fixture, None, Some("oaiapp_1")).await.unwrap(),
 		Outcome::PlanUsageNotGranted
 	);
-	assert_eq!(fixture.store.resources(), 0);
+	assert!(fixture.store.plaintexts().is_empty());
 	assert_eq!(
 		fixture.authorization.calls.lock().unwrap().revoked,
 		vec!["refresh-1"]
 	);
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(row.pinned_version.is_none());
+	assert_eq!(
+		fixture.service.check(&owner()).await.unwrap().as_deref(),
+		Some("oaiapp_1")
+	);
+	// Asking again reuses the same client and row.
+	assert_eq!(
+		connect(&fixture, Some("oaiapp_1"), None).await.unwrap(),
+		Outcome::PlanUsageNotGranted
+	);
+	assert_eq!(only_row(&fixture).await.id, row.id);
 }
 
 #[tokio::test]
@@ -593,7 +634,7 @@ async fn reconnecting_rotates_tokens_in_place_and_keeps_the_client() {
 	);
 	let second = only_row(&fixture).await;
 	assert_eq!(second.id, first.id);
-	assert_eq!(second.revision, 2);
+	assert_eq!(second.revision, 3);
 	assert_ne!(second.pinned_version, first.pinned_version);
 	// The replaced version is destroyed; one version remains.
 	assert_eq!(fixture.store.plaintexts().len(), 1);
@@ -809,7 +850,7 @@ async fn ineligible_plans_mark_the_connection_once() {
 	fixture.service.mark_ineligible(id).await.unwrap();
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::Ineligible);
-	assert_eq!(row.revision, 2);
+	assert_eq!(row.revision, 3);
 	let events = fixture.repo.0.lock().await.events.clone();
 	assert_eq!(
 		events
@@ -825,12 +866,12 @@ async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	assert!(matches!(
-		fixture.service.disconnect(&owner(), 0, "alice").await,
+		fixture.service.disconnect(&owner(), 1, "alice").await,
 		Err(Error::Domain(aidash_domain::Error::Conflict(_)))
 	));
 	let result = fixture
 		.service
-		.disconnect(&owner(), 1, "alice")
+		.disconnect(&owner(), 2, "alice")
 		.await
 		.unwrap();
 	assert!(result.revoked);
@@ -855,7 +896,7 @@ async fn unconfirmed_revocations_still_delete_aidashs_copy() {
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	let result = fixture
 		.service
-		.disconnect(&owner(), 1, "alice")
+		.disconnect(&owner(), 2, "alice")
 		.await
 		.unwrap();
 	assert!(!result.revoked);
@@ -978,7 +1019,7 @@ async fn rotated_tokens_that_cannot_be_kept_are_revoked(
 async fn model_lists_refresh_once_after_an_early_rejection() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	*fixture.authorization.models_reject.lock().unwrap() = true;
+	*fixture.authorization.models_reject.lock().unwrap() = 1;
 	let models = fixture.service.models(&owner()).await.unwrap();
 	assert_eq!(models[0].slug, "gpt-fixture");
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
@@ -994,15 +1035,15 @@ async fn failed_token_cleanup_keeps_the_connection_for_a_retry() {
 	assert!(
 		fixture
 			.service
-			.disconnect(&owner(), 1, "alice")
+			.disconnect(&owner(), 2, "alice")
 			.await
 			.is_err()
 	);
-	assert_eq!(only_row(&fixture).await.revision, 1);
+	assert_eq!(only_row(&fixture).await.revision, 2);
 	fixture.store.1.lock().unwrap().delete = false;
 	fixture
 		.service
-		.disconnect(&owner(), 1, "alice")
+		.disconnect(&owner(), 2, "alice")
 		.await
 		.unwrap();
 	assert!(fixture.repo.0.lock().await.rows.is_empty());
@@ -1063,6 +1104,128 @@ async fn abandoning_a_rotation_preserves_a_concurrent_reconnect() {
 	assert!(fixture.service.bearer(id).await.is_err());
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::Active);
-	assert_eq!(row.revision, 2);
+	assert_eq!(row.revision, 3);
 	assert!(row.pinned_version.unwrap().ends_with("/versions/99"));
+}
+
+/// The connection row is written before any token, so tokens a first
+/// connection could not pin stay reachable: a disconnect deletes them.
+#[rstest::rstest]
+#[case::store_write(true, 0)]
+#[case::metadata_commit(false, 1)]
+#[tokio::test]
+async fn failed_first_connections_leave_a_row_that_finds_their_tokens(
+	#[case] store_fails: bool,
+	#[case] failing_commits: usize,
+) {
+	let fixture = fixture(1, FakeAuthorization::default());
+	fixture.store.1.lock().unwrap().add_version = store_fails;
+	fixture.store.1.lock().unwrap().destroy = true;
+	{
+		// The registration commits; pinning the tokens does not.
+		let mut data = fixture.repo.0.lock().await;
+		data.passing_commits = 1;
+		data.failing_commits = failing_commits;
+	}
+	assert!(connect(&fixture, None, Some("oaiapp_1")).await.is_err());
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(row.pinned_version.is_none());
+	fixture.store.1.lock().unwrap().add_version = false;
+	fixture.store.1.lock().unwrap().destroy = false;
+	fixture
+		.service
+		.disconnect(&owner(), row.revision, "alice")
+		.await
+		.unwrap();
+	assert!(fixture.store.plaintexts().is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+}
+
+/// Discarded tokens that the Store could not destroy keep the connection as
+/// it was, so the next call retries the transition instead of losing them.
+#[tokio::test]
+async fn failed_discards_are_retried_by_the_next_call() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Terminal,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let id = only_row(&fixture).await.id;
+	fixture.store.1.lock().unwrap().destroy = true;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::External(_))
+	));
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::Active);
+	assert!(row.pinned_version.is_some());
+	assert_eq!(fixture.store.plaintexts().len(), 1);
+	fixture.store.1.lock().unwrap().destroy = false;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NeedsReconnection))
+	));
+	assert_eq!(only_row(&fixture).await.state, State::NeedsReconnection);
+	assert!(fixture.store.plaintexts().is_empty());
+}
+
+/// A model list that reports an ineligible plan marks the connection, as an
+/// inference rejection does.
+#[tokio::test]
+async fn ineligible_model_lists_mark_the_connection() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			models_ineligible: true,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	assert!(matches!(
+		fixture.service.models(&owner()).await,
+		Err(Error::Plan(Failure::Ineligible))
+	));
+	assert_eq!(only_row(&fixture).await.state, State::Ineligible);
+}
+
+/// OpenAI asks for a new sign-in only after a terminal refresh error or a
+/// confirmed revocation, so a freshly refreshed token that is rejected again
+/// is unavailability, not a reason to reconnect.
+#[tokio::test]
+async fn rejected_refreshed_tokens_are_unavailability() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	*fixture.authorization.models_reject.lock().unwrap() = 2;
+	assert!(matches!(
+		fixture.service.models(&owner()).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+	assert_eq!(only_row(&fixture).await.state, State::Active);
+}
+
+/// A forced refresh waits for OpenAI's `earliest_refresh_at` instead of
+/// risking a refused refresh that would end the grant.
+#[tokio::test]
+async fn forced_refreshes_wait_for_the_earliest_refresh_time() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| {
+		row.earliest_refresh_at = Some(Utc::now() + Duration::seconds(60));
+	})
+	.await;
+	let id = only_row(&fixture).await.id;
+	assert!(matches!(
+		fixture.service.refresh_rejected(id).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
+	set_row(&fixture, |row| row.earliest_refresh_at = Some(Utc::now())).await;
+	assert!(fixture.service.refresh_rejected(id).await.unwrap());
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
 }

@@ -270,6 +270,7 @@ fn unavailable_plan_usage_after_the_stream_opened_is_transient() {
 fn truncated_and_filtered_responses_keep_their_usage() {
 	for (reason, expected) in [
 		("max_output_tokens", ContextFailure::OutputTruncated),
+		("max_messages", ContextFailure::OutputTruncated),
 		("content_filter", ContextFailure::Refused),
 	] {
 		let stream = sse(&[json!({"type":"response.incomplete","response":{
@@ -338,6 +339,36 @@ fn oversized_streams_are_refused() {
 			.push(format!("data: {event}\n\n").as_bytes())
 			.is_err()
 	);
+}
+
+/// Function calls without an identity still cost their structure, so distinct
+/// output indices cannot grow the call table without reaching the cap.
+#[test]
+fn anonymous_function_calls_count_against_the_output_limit() {
+	let recorder = Recorder::default();
+	let mut assembler = Assembler::new(&recorder, 1024);
+	let refused = (0..64).any(|index| {
+		let event = json!({"type":"response.output_item.added","output_index":index,
+			"item":{"type":"function_call"}});
+		assembler
+			.push(format!("data: {event}\n\n").as_bytes())
+			.is_err()
+	});
+	assert!(refused);
+}
+
+/// Bytes of a data line still arriving keep the stream alive; comments and
+/// other fields do not.
+#[test]
+fn partial_data_lines_are_liveness() {
+	let recorder = Recorder::default();
+	let mut assembler = Assembler::new(&recorder, MAX_RESPONSE_BYTES);
+	assert!(!assembler.push(b": keep-alive\n").unwrap());
+	assert!(!assembler.push(b"event: response.completed\n").unwrap());
+	assert!(assembler.push(b"data: {\"type\":\"response.").unwrap());
+	assert!(assembler.push(b"completed\"").unwrap());
+	let mut empty = Assembler::new(&recorder, MAX_RESPONSE_BYTES);
+	assert!(!empty.push(b"data:\n").unwrap());
 }
 
 #[test]
@@ -410,6 +441,7 @@ impl ProviderAccess for FakeAccess {
 		Ok(Access {
 			endpoint: self.endpoint.clone(),
 			bearer: format!("access-{}", self.generation.lock().unwrap()).into(),
+			keyless: None,
 		})
 	}
 	async fn plan_rejected(&self, _: &Context, disposition: Disposition) -> Result<bool> {
@@ -446,7 +478,12 @@ fn provider(url: &str, refresh_succeeds: bool) -> (ResponsesProvider, Arc<FakeAc
 	});
 	(
 		ResponsesProvider {
-			client: reqwest::Client::new(),
+			clients: crate::keyless::Clients::new(
+				reqwest::Client::new(),
+				std::time::Duration::from_secs(30),
+				std::time::Duration::from_secs(5),
+			)
+			.unwrap(),
 			config: config(),
 			access: access.clone(),
 			context: Context {
@@ -529,19 +566,32 @@ async fn rejected_access_tokens_are_refreshed_once_and_retried() {
 		[Disposition::RefreshThenReconnect]
 	);
 	// A refresh that cannot help leaves the Run asking for reconnection.
-	let (rejecting, _server) = provider_with_rejecting_server().await;
+	let (rejecting, _server) = provider_with_rejecting_server(false).await;
 	assert!(matches!(
 		rejecting.0.infer(request(), &Recorder::default()).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
+	// A refreshed token that is rejected again is neither a terminal refresh
+	// error nor a confirmed revocation: it is retried as unavailability.
+	let (refreshed, _server) = provider_with_rejecting_server(true).await;
+	assert!(matches!(
+		refreshed.0.infer(request(), &Recorder::default()).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(
+		refreshed.1.reports.lock().unwrap().as_slice(),
+		[Disposition::RefreshThenReconnect]
+	);
 }
-async fn provider_with_rejecting_server() -> ((ResponsesProvider, Arc<FakeAccess>), Server) {
+async fn provider_with_rejecting_server(
+	refresh_succeeds: bool,
+) -> ((ResponsesProvider, Arc<FakeAccess>), Server) {
 	let app = Router::new().route(
 		"/responses",
 		post(|| async { (StatusCode::UNAUTHORIZED, Json(json!({"detail":"no"}))) }),
 	);
 	let (url, server) = serve(app).await;
-	(provider(&url, false), server)
+	(provider(&url, refresh_succeeds), server)
 }
 
 /// An invalid user reported after the stream opened still reaches the access

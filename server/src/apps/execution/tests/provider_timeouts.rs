@@ -1,7 +1,8 @@
+use crate::provider_fixtures::fixture_provider;
 use crate::provider_fixtures::{CompletionFixture, delayed_server};
 use aidash_server::{
 	Error, Result,
-	provider::{ModelRequest, ModelResponse, provider},
+	provider::{ModelRequest, ModelResponse},
 	registry::{Entry, ModelConfig, validate},
 };
 use rstest::fixture;
@@ -43,7 +44,7 @@ async fn infer_after(
 	if let Some(timeout) = timeout_secs {
 		config["request_timeout_secs"] = json!(timeout);
 	}
-	let model = provider(client, serde_json::from_value(config).unwrap()).unwrap();
+	let model = fixture_provider(client, serde_json::from_value(config).unwrap()).unwrap();
 	let result = server
 		.respond_after(
 			model.infer(
@@ -201,7 +202,7 @@ fn provider_rejects_zero_timeout_before_sending_a_request(shared_client: reqwest
 	value["request_timeout_secs"] = json!(0);
 	let config: ModelConfig = serde_json::from_value(value).unwrap();
 	assert!(matches!(
-		provider(shared_client, config),
+		fixture_provider(shared_client, config),
 		Err(Error::Invalid(_))
 	));
 }

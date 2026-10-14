@@ -7,6 +7,7 @@ pub mod deployment;
 pub mod entities;
 pub mod exposure;
 pub mod identity;
+pub mod keyless;
 pub mod media;
 pub mod memory;
 pub mod model;

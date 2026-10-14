@@ -36,6 +36,39 @@ ServiceAccount token is used by the server's optional Kubernetes observer; the
 opt-in execution Runner has its own scoped account. Server and worker have
 separate ServiceAccounts for Workload Identity annotations.
 
+Servers and workers do not change the schema and refuse to start until every
+migration is applied. Before each install or upgrade, apply migrations as the
+owner role with the release's image. Keep the owner's `DATABASE_URL`, which names
+the `aidash_owner` login, in its own Secret, separate from the runtime Secret.
+
+On an upgrade, old servers and workers must not write while the schema changes.
+Scale both roles to zero and wait for their Pods to drain before migrating; the
+`helm upgrade` below restores the configured replica counts. A first install has
+nothing to drain:
+
+```sh
+for node in node-a node-b; do
+  kubectl -n aidash scale deployment "$node-aidash-server" "$node-aidash-worker" --replicas=0
+  while kubectl -n aidash get pods -o name \
+    -l "app.kubernetes.io/instance=$node,app.kubernetes.io/component in (server,worker)" | grep -q .; do
+    sleep 2
+  done
+done
+```
+
+Then migrate each node's database:
+
+```sh
+for node in node-a node-b; do
+  kubectl -n aidash run "$node-migrate" --rm -i --restart=Never \
+    --image=your-registry/aidash:0.1.0 --overrides "$(cat <<JSON
+{"spec":{"containers":[{"name":"$node-migrate","image":"your-registry/aidash:0.1.0",
+ "args":["migrate"],"envFrom":[{"secretRef":{"name":"$node-owner"}}]}]}}
+JSON
+)"
+done
+```
+
 ```sh
 helm upgrade --install node-a deploy/helm/aidash --namespace aidash \
   --set node.id=aidash://node-a --set existingSecret=node-a-secrets \
@@ -67,7 +100,8 @@ it must not be restored from a PostgreSQL backup. PostgreSQL
 retains workspaces, task/run IDs, journals, artifacts, leases, transaction
 decisions, policy and semantic source state. Use persistent volumes or a managed
 database with durable storage, tested backups, and a retention policy independent
-of the Aidash Helm release. Concurrent startup serializes migration execution.
+of the Aidash Helm release. Only `aidash migrate`, run as `aidash_owner` before
+the release starts, changes the schema; concurrent runs serialize.
 Back up the database before an upgrade; schema rollback requires the migration's
 documented preconditions, including resolving pending atomic transactions.
 
@@ -83,14 +117,17 @@ CREATE EXTENSION pg_jsonschema WITH SCHEMA public;
 
 The migration calls `public.jsonschema_is_valid(json)` directly and fails if the
 extension is unavailable; it does not substitute partial JSON shape checks.
-Ensure the Aidash database role can execute that public function. The local
-PostgreSQL image installs the pinned extension package and initializes
-`template1` plus `aidash_a`; `aidash_b` and `aidash_test` inherit it from
-`template1`. The init script runs only for an empty data directory. For an
-existing local volume, a server administrator must create the extension in
-`template1` and every existing Aidash database before applying this migration.
-The Helm chart uses externally managed databases, so provision this prerequisite
-on those databases separately.
+Ensure the Aidash database roles can execute that public function. Migrations
+run as `aidash_owner`, which owns every table; servers and workers run as
+`aidash_server`, which holds only DML and refuses to start as a superuser, a
+`BYPASSRLS` role or an owner of database objects (see the README's database
+roles). The local PostgreSQL image installs the pinned extension package. On an
+empty data directory, when `AIDASH_OWNER_PASSWORD` and `AIDASH_SERVER_PASSWORD`
+are set, its init scripts create both roles and, in `aidash_a`, `aidash_b` and
+`aidash_test`, transfer ownership to `aidash_owner`, create the three extensions
+and grant the server's default privileges. An existing local volume created
+before these roles must be recreated. The Helm chart uses externally managed
+databases, so provision these prerequisites on those databases separately.
 
 The bundled PostgreSQL image applies `pgroonga_crash_safer` preloading and
 `pgroonga.enable_crash_safe=on` on every server start, including retained data
@@ -142,8 +179,8 @@ not occur. Unsafe effects pause for reconciliation; idempotent effects reuse
 their durable key. SIGKILL bypasses draining and exercises the same recovery.
 
 Port 8081 provides `/live` for process liveness and `/ready` for database readiness
-and draining. A startup probe allows migrations and initial connections to finish
-before liveness checks begin. Unavailable PostgreSQL removes a Pod from service
+and draining. A startup probe allows the migration check and initial connections to
+finish before liveness checks begin. Unavailable PostgreSQL removes a Pod from service
 without putting it in a liveness-driven restart loop. A stopped background
 service terminates the process so the Deployment can replace it.
 

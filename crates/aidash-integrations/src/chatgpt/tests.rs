@@ -403,3 +403,21 @@ async fn model_list_rejections_use_the_plan_error_table() {
 		.unwrap_err();
 	assert!(matches!(error, Error::Plan(domain::Failure::Ineligible)));
 }
+
+/// `earliest_refresh_at` has no documented format: epoch seconds and RFC 3339
+/// are read, and anything else is ignored rather than failing the tokens.
+#[test]
+fn earliest_refresh_times_are_read_leniently() {
+	let at = DateTime::from_timestamp(1_790_000_000, 0);
+	assert_eq!(instant(&json!(1_790_000_000)), at);
+	assert_eq!(instant(&json!("1790000000")), at);
+	assert_eq!(instant(&json!("2026-09-21T14:13:20Z")), at);
+	assert_eq!(instant(&json!("soon")), None);
+	assert_eq!(instant(&json!(null)), None);
+	let tokens: Tokens = serde_json::from_value(json!({
+		"access_token":"a","refresh_token":"r","expires_in":3600,
+		"earliest_refresh_at":1_790_000_000
+	}))
+	.unwrap();
+	assert_eq!(tokens.into_issued().unwrap().earliest_refresh_at, at);
+}

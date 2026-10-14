@@ -71,6 +71,9 @@ pub struct PlanConnection {
 	pub pinned_version: Option<String>,
 	pub state: State,
 	pub access_expires_at: DateTime<Utc>,
+	/// OpenAI's `earliest_refresh_at` from the last token response, never
+	/// later than `access_expires_at`. No refresh is attempted before it.
+	pub earliest_refresh_at: Option<DateTime<Utc>>,
 	pub refresh_expires_at: DateTime<Utc>,
 	pub connected_at: DateTime<Utc>,
 	pub refreshed_at: Option<DateTime<Utc>>,
@@ -96,8 +99,16 @@ impl PlanConnection {
 	}
 	/// Refreshes happen only when a call needs a token (ADR 0007): never in
 	/// the background, which would be maintenance touching the connection.
+	/// An access token that still works is used until OpenAI permits a
+	/// refresh; an expired one is refreshed regardless.
 	pub fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
-		self.access_expires_at - now <= Duration::seconds(REFRESH_MARGIN_SECONDS)
+		self.access_expires_at <= now
+			|| (self.access_expires_at - now <= Duration::seconds(REFRESH_MARGIN_SECONDS)
+				&& self.may_refresh(now))
+	}
+	/// Whether OpenAI's `earliest_refresh_at` permits a refresh now.
+	pub fn may_refresh(&self, now: DateTime<Utc>) -> bool {
+		self.earliest_refresh_at.is_none_or(|at| at <= now)
 	}
 }
 

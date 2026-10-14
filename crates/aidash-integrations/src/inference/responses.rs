@@ -29,7 +29,7 @@ use std::sync::Arc;
 const STREAM_ENVELOPE_FACTOR: usize = 128;
 
 pub struct ResponsesProvider {
-	pub client: reqwest::Client,
+	pub clients: crate::keyless::Clients,
 	pub config: ModelConfig,
 	pub access: Arc<dyn ProviderAccess>,
 	pub context: Context,
@@ -89,14 +89,16 @@ pub(crate) fn plan_rejection(status: u16, body: Option<&Value>) -> PlanRejection
 		Disposition::MarkIneligible => Error::Plan(Failure::Ineligible),
 		Disposition::RefreshThenReconnect => Error::Plan(Failure::NeedsReconnection),
 		// Retried as transport with the usual bounded backoff.
-		Disposition::Transient => {
-			Error::External("ChatGPT plan usage is temporarily unavailable".into())
-		}
+		Disposition::Transient => plan_unavailable(),
 	};
 	PlanRejection {
 		error,
 		disposition: Some(disposition),
 	}
+}
+
+fn plan_unavailable() -> Error {
+	Error::External("ChatGPT plan usage is temporarily unavailable".into())
 }
 
 /// The namespace every Aidash tool is declared in. Plan usage accepts function
@@ -263,10 +265,11 @@ impl ModelProvider for ResponsesProvider {
 					.access
 					.resolve(&context, &self.config.endpoint, &source)
 					.await?;
+				let client = self.clients.select(&access)?;
 				let started = std::time::Instant::now();
 				let response = tokio::time::timeout(
 					stall,
-					self.client
+					client
 						.post(format!(
 							"{}/responses",
 							access.endpoint.trim_end_matches('/')
@@ -278,7 +281,7 @@ impl ModelProvider for ResponsesProvider {
 				)
 				.await
 				.map_err(|_| Error::InferenceStalled)?
-				.map_err(crate::http_error)?;
+				.map_err(crate::keyless::send_error)?;
 				metrics::histogram!("aidash_model_response_headers_seconds")
 					.record(started.elapsed().as_secs_f64());
 				if response.status().is_success() {
@@ -300,9 +303,7 @@ impl ModelProvider for ResponsesProvider {
 					if let Some(disposition) = disposition
 						&& self.access.plan_rejected(&context, disposition).await?
 					{
-						return Err(Error::External(
-							"ChatGPT plan usage is temporarily unavailable".into(),
-						));
+						return Err(plan_unavailable());
 					}
 					return result;
 				}
@@ -319,6 +320,10 @@ impl ModelProvider for ResponsesProvider {
 							continue;
 						}
 					}
+					// OpenAI asks for a new sign-in only after a terminal refresh
+					// error or a confirmed revocation; a freshly refreshed token's
+					// rejection is neither, so it is retried as unavailability.
+					Some(Disposition::RefreshThenReconnect) => return Err(plan_unavailable()),
 					Some(Disposition::MarkIneligible) => {
 						self.access
 							.plan_rejected(&context, Disposition::MarkIneligible)
@@ -328,7 +333,7 @@ impl ModelProvider for ResponsesProvider {
 				}
 				return Err(rejection.error);
 			}
-			Err(Error::Plan(Failure::NeedsReconnection))
+			Err(plan_unavailable())
 		})
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
@@ -427,7 +432,8 @@ impl<'a> Assembler<'a> {
 		self.finished.is_some()
 	}
 
-	/// Consumes one network chunk; returns whether it dispatched a data event.
+	/// Consumes one network chunk; returns whether it carried event data.
+	/// Comments and empty `data:` fields never count as liveness.
 	pub(crate) fn push(&mut self, mut chunk: &[u8]) -> Result<bool> {
 		let stream_limit = self.limit.saturating_mul(STREAM_ENVELOPE_FACTOR);
 		if chunk.len() > stream_limit.saturating_sub(self.received) {
@@ -449,6 +455,10 @@ impl<'a> Assembler<'a> {
 			}
 			self.line.extend_from_slice(part);
 			let Some(end) = end else {
+				// A data line still arriving is liveness: the stream ends with
+				// one `response.completed` event carrying the whole response,
+				// which can take longer than the stall timeout to receive.
+				live |= !part.is_empty() && self.line.starts_with(b"data");
 				break;
 			};
 			self.pending_cr = chunk[end] == b'\r';
@@ -505,7 +515,7 @@ impl<'a> Assembler<'a> {
 			data.push(b'\n');
 		}
 		data.extend_from_slice(value);
-		Ok(false)
+		Ok(!value.is_empty())
 	}
 
 	fn event(&mut self, data: &[u8]) -> Result<()> {
@@ -527,8 +537,17 @@ impl<'a> Assembler<'a> {
 					let index = event["output_index"].as_u64().unwrap_or(0);
 					let id = item["call_id"].as_str().map(str::to_owned);
 					let name = item["name"].as_str().map(str::to_owned).map(tool_name);
+					// A new call also costs its structure, so calls without an
+					// identity under distinct indices still reach the cap.
+					let structure = if self.calls.contains_key(&index) {
+						0
+					} else {
+						super::stream::TOOL_CALL_STRUCTURE_BYTES
+					};
 					self.grow(
-						id.as_ref().map_or(0, String::len) + name.as_ref().map_or(0, String::len),
+						id.as_ref().map_or(0, String::len)
+							+ name.as_ref().map_or(0, String::len)
+							+ structure,
 					)?;
 					self.calls.insert(index, (id, name, 0));
 					self.offer_call(index);
@@ -553,7 +572,7 @@ impl<'a> Assembler<'a> {
 					.pointer("/incomplete_details/reason")
 					.and_then(Value::as_str)
 				{
-					Some("max_output_tokens") => ContextFailure::OutputTruncated,
+					Some("max_output_tokens" | "max_messages") => ContextFailure::OutputTruncated,
 					Some("content_filter") => ContextFailure::Refused,
 					_ => {
 						self.finished = Some(Err(Error::External(
