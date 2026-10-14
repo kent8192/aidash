@@ -27,6 +27,8 @@ OUTPUT = {
 }
 RUNTIME = {"AIDASH_OIDC_CLIENT_ID": "client", "AIDASH_OIDC_CLIENT_SECRET": "client-secret"}
 RANDOM_HOST = "0123456789abcdef" * 2 + ".preview.aidash.run"
+# PostgreSQL role passwords are 64 hex digits.
+PASSWORDS = {"observer": "0" * 64, "owner": "1" * 64, "server": "2" * 64}
 
 
 class ClusterCommandTests(unittest.TestCase):
@@ -42,8 +44,8 @@ class ClusterCommandTests(unittest.TestCase):
                 files["values"] = path.read_text()
             if args[:2] == ("kubectl", "--kubeconfig") and "get" in args and "secret" in args:
                 return json.dumps({"metadata": {"resourceVersion": "1"}, "data": {
-                    name: base64.b64encode((f"{name}-token" if name != "observer" else "0" * 64).encode()).decode()
-                    for name in ("database", "api", "runner", "observer")
+                    name: base64.b64encode(PASSWORDS.get(name, f"{name}-token").encode()).decode()
+                    for name in kube.IDENTITY_TOKENS
                 }}).encode()
             return b""
 
@@ -60,23 +62,29 @@ class ClusterCommandTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((Path(directory) / "kubeconfig").stat().st_mode), 0o600)
             settings = kube.materialize(cluster, "pr-2", PROJECT, OUTPUT, dict(RUNTIME, AIDASH_SECRET_OPENAI="sk-private"))
             cluster.upgrade("aidash-pr-2", "app", kube.APP_CHART, {"gcip": {"settings": settings["gcip"]}})
+            kube.database_roles(cluster, "pr-2")
             kube.observer_role(cluster, "pr-2")
             self.assertEqual(os.listdir(directory), ["kubeconfig"])
         stdin = b"".join(data or b"" for _, data, _ in commands)
         argv = json.dumps([[str(arg) for arg in args] for args, _, _ in commands])
-        for value in ("sk-private", "client-secret", "database-token", "runner-token", "0" * 64):
+        for value in ("sk-private", "client-secret", "database-token", "runner-token", *PASSWORDS.values()):
             self.assertNotIn(value, argv)
             self.assertNotIn(value, files["values"])
         self.assertIn(base64.b64encode(b"sk-private"), stdin)
         self.assertTrue(all(args[1:3] == ("--kubeconfig", Path(directory) / "kubeconfig") for args, _, _ in commands[1:]))
         applied = [json.loads(data) for args, data, _ in commands if "apply" in args]
         self.assertTrue(all("--server-side" in args for args, _, _ in commands if "apply" in args))
-        self.assertEqual({item["metadata"]["name"] for item in applied}, {"app-runtime", "app-runner", "env-postgres", "env-activity"})
-        # The observer's password reaches PostgreSQL only through exec stdin.
+        self.assertEqual(
+            {item["metadata"]["name"] for item in applied},
+            {"app-runtime", "app-migration", "app-runner", "env-postgres", "env-activity"},
+        )
+        # Role passwords reach PostgreSQL only through exec stdin: the legacy
+        # ownership check, the roles, PGroonga, then the observer.
         execs = [(args, data) for args, data, _ in commands if "exec" in args]
-        self.assertEqual(len(execs), 1)
-        self.assertIn("-i", execs[0][0])
-        self.assertIn(b"PASSWORD '" + b"0" * 64 + b"'", execs[0][1])
+        self.assertEqual(len(execs), 4)
+        self.assertTrue(all("-i" in args for args, _ in execs))
+        for password in PASSWORDS.values():
+            self.assertIn(b"PASSWORD '" + password.encode() + b"'", stdin)
 
 
 class RuntimeConfigurationTests(unittest.TestCase):
@@ -103,18 +111,27 @@ class RuntimeConfigurationTests(unittest.TestCase):
     def test_observer_never_receives_the_application_database_login(self):
         self.materialize(RUNTIME)
         tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
-        self.assertEqual(set(tokens), {"database", "api", "runner", "observer"})
-        self.assertNotEqual(tokens["observer"], tokens["database"])
+        self.assertEqual(set(tokens), {"database", "api", "runner", "observer", "owner", "server"})
+        self.assertEqual(len({tokens[name] for name in ("database", "observer", "owner", "server")}), 4)
         activity = self.cluster.secret("aidash-pr-2", "env-activity")
         self.assertEqual(
             activity["DATABASE_URL"],
             f"postgres://aidash_observer:{tokens['observer']}@env-environment-postgres:5432/aidash_a",
         )
         self.assertNotIn(tokens["database"], json.dumps(activity))
+        # Servers log in as the role row-level security binds; only the
+        # migration Job receives the owner's login, and nobody the superuser's.
+        runtime = self.cluster.secret("aidash-pr-2", "app-runtime")
         self.assertEqual(
-            self.cluster.secret("aidash-pr-2", "app-runtime")["DATABASE_URL"],
-            f"postgres://aidash:{tokens['database']}@env-environment-postgres:5432/aidash_a",
+            runtime["DATABASE_URL"],
+            f"postgres://aidash_server:{tokens['server']}@env-environment-postgres:5432/aidash_a",
         )
+        self.assertEqual(
+            self.cluster.secret("aidash-pr-2", "app-migration"),
+            {"DATABASE_URL": f"postgres://aidash_owner:{tokens['owner']}@env-environment-postgres:5432/aidash_a"},
+        )
+        for secret in ("database", "owner"):
+            self.assertNotIn(tokens[secret], json.dumps(runtime))
 
     def test_existing_identity_gains_the_observer_token_once_and_keeps_its_tokens(self):
         existing = {name: name[0] * 64 for name in ("database", "api", "runner")}
@@ -482,8 +499,61 @@ class SealAndMigrationTests(unittest.TestCase):
             {"name": "memory-recovery", "mountPath": "/var/lib/aidash/memory-recovery"},
             {"name": "capabilities", "mountPath": "/var/lib/aidash/capabilities"},
         ])
-        self.assertEqual(container["env"], [{"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]}])
+        # Unlike the server, the Job logs in as the owner of every table.
+        self.assertEqual(container["env"], [
+            {"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]},
+            {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "app-migration", "key": "DATABASE_URL"}}},
+        ])
         self.assertIn('--directory "$AIDASH_MEMORY_RECOVERY_DIR"', container["args"][0])
+
+
+class DatabaseRoleTests(unittest.TestCase):
+    """Migrations log in as the owner; servers as a role row-level security binds (#262)."""
+
+    def setUp(self):
+        self.calls = []
+        self.cluster = FakeCluster(self.calls)
+        self.cluster.workload("statefulset", "aidash-test", "env-environment-postgres", 1)
+
+    def test_roles_are_unprivileged_and_the_server_holds_only_dml(self):
+        sql = kube.database_roles_sql("1" * 64, "2" * 64)
+        for role in ("aidash_owner", "aidash_server"):
+            (attributes,) = [line for line in sql.splitlines() if line.startswith(f"ALTER ROLE {role} ")]
+            for attribute in ("NOSUPERUSER", "NOCREATEDB", "NOCREATEROLE", "NOBYPASSRLS"):
+                self.assertIn(attribute, attributes)
+        self.assertIn("ALTER DATABASE aidash_a OWNER TO aidash_owner;", sql)
+        grants = [line for line in sql.splitlines() if line.startswith("ALTER DEFAULT PRIVILEGES")]
+        self.assertEqual(grants, [
+            "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server;",
+            "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT USAGE, SELECT ON SEQUENCES TO aidash_server;",
+        ])
+        # TRUNCATE skips row-level security, so it is never granted.
+        self.assertNotIn("TRUNCATE", sql)
+        self.assertNotIn("GRANT ALL", sql)
+        with self.assertRaises(Refused):
+            kube.database_roles_sql("owner'; DROP ROLE aidash_owner; --", "2" * 64)
+
+    def test_a_database_that_predates_the_roles_is_refused_before_any_change(self):
+        self.cluster.legacy_tables.add("aidash-test")
+        with self.assertRaisesRegex(Refused, "recreate the Environment"):
+            kube.database_roles(self.cluster, "test")
+        self.assertEqual(self.calls, [("legacy_ownership", "test")])
+        self.assertNotIn("aidash-test", self.cluster.role_sql)
+
+    def test_pgroonga_start_is_retried_on_fresh_sessions(self):
+        attempts = []
+        exec_ = self.cluster.exec
+
+        def flaky(namespace, target, container, *command, data=None):
+            if b"pgroonga" in (data or b"") and len(attempts) < 2:
+                attempts.append(data)
+                raise RuntimeError("kubectl failed (exit 1); no private command output was logged")
+            return exec_(namespace, target, container, *command, data=data)
+
+        with patch.object(self.cluster, "exec", flaky), patch.object(kube.time, "sleep"):
+            kube.database_roles(self.cluster, "test")
+        self.assertEqual(len(attempts), 2)
+        self.assertIn(("pgroonga", "test"), self.calls)
 
 
 class AdmissionTests(unittest.TestCase):
@@ -569,8 +639,14 @@ class AdmissionTests(unittest.TestCase):
         kube.deploy(self.cluster, "test", output, release, "a" * 40, {"provider": None, "gcip": None})
         self.assertEqual(self.events, [("state", "closed")])
         self.assertEqual(self.state(), "closed")
-        # The observer's role is granted only after migration created its tables.
+        # Roles exist before the migration Job logs in as the owner; the observer's
+        # role is granted only after migration created its tables.
+        self.assertLess(self.calls.index(("legacy_ownership", "test")), self.calls.index(("database_roles", "test")))
+        self.assertLess(self.calls.index(("database_roles", "test")), self.calls.index(("pgroonga", "test")))
+        self.assertLess(self.calls.index(("pgroonga", "test")), self.calls.index(("migrate", "test")))
         self.assertLess(self.calls.index(("migrate", "test")), self.calls.index(("observer_role", "test")))
+        tokens = self.cluster.secret("aidash-test", "aidash-identity")
+        self.assertEqual(self.cluster.role_sql["aidash-test"], kube.database_roles_sql(tokens["owner"], tokens["server"]))
         sql = self.cluster.sql["aidash-test"]
         password = self.cluster.secret("aidash-test", "aidash-identity")["observer"]
         self.assertEqual(sql, kube.observer_sql(password))
