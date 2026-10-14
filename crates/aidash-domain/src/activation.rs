@@ -71,8 +71,11 @@ impl Obligation {
 		self.run_id == envelope.run_id && self.generation == envelope.generation
 	}
 
+	/// A delivery that finds its obligation claimed, settled or deferred was already judged.
+	/// Republication returns a deferred obligation to `pending` first, so a delivery that
+	/// still finds it deferred was published before that deferral and carries nothing new.
 	pub fn recorded(&self) -> bool {
-		matches!(self.state.as_str(), "settled" | "claimed")
+		matches!(self.state.as_str(), "settled" | "claimed" | "deferred")
 	}
 }
 
