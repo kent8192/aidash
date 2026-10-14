@@ -143,6 +143,10 @@ impl Pair {
 	/// A backstop for a step that keeps serving peer work without finishing;
 	/// the slowest observed step is an order of magnitude shorter.
 	const STEP_CEILING: std::time::Duration = std::time::Duration::from_secs(600);
+	/// No peer response for this long means a stall. Activity is recorded when
+	/// a response completes, so the bound exceeds the longest valid peer
+	/// request: a semantic query may run for its full 120s transport timeout.
+	const STEP_STALL: std::time::Duration = std::time::Duration::from_secs(150);
 	/// Longer than the longest peer-call transport timeout (120s for a
 	/// semantic query), so an in-flight call ends on its own.
 	const IN_FLIGHT_GRACE: std::time::Duration = std::time::Duration::from_secs(180);
@@ -199,7 +203,7 @@ impl Pair {
 				() = &mut progress => break None,
 				() = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
 					let idle = self.peers.idle(started);
-					if idle >= ScopedWorkerProcess::STALL {
+					if idle >= Self::STEP_STALL {
 						break Some(format!("no peer response for {idle:.1?}"));
 					}
 					if started.elapsed() >= Self::STEP_CEILING {
