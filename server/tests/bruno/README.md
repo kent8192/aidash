@@ -32,9 +32,12 @@ python3 scripts/test-bruno-api.py \
   --postgres-port 54370
 ```
 
-The existing container must have the project's `pg_jsonschema` extension. Set
-`AIDASH_BRUNO_POSTGRES_PASSWORD` when its test password differs from the Compose
-default. `--nats-url` selects the existing test NATS endpoint. The harness creates
+The existing container must have the project's `pg_jsonschema` extension and the
+`aidash_owner` and `aidash_server` logins that `deploy/postgres/init-roles.sh`
+creates. Migrations run as `aidash_owner` and the servers log in as
+`aidash_server`; set `AIDASH_BRUNO_OWNER_PASSWORD` and
+`AIDASH_BRUNO_SERVER_PASSWORD` when their passwords differ from the Compose
+defaults. `--nats-url` selects the existing test NATS endpoint. The harness creates
 and removes only its own uniquely named databases and child processes; it
 leaves the shared services running.
 

@@ -2155,8 +2155,13 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	if delivery == "commit_failure" {
 		// DDL exception: SeaQuery cannot express PostgreSQL deferred constraint
 		// triggers. Reject the enclosing task-snapshot commit after reads are
-		// staged, before inference, rather than failing the read insert.
-		let mut tx = aidash_server::database::native::begin(&store.pool)
+		// staged, before inference, rather than failing the read insert. Only
+		// the table owner can add a trigger; the server role holds DML.
+		let owner: aidash_server::database::native::Pool =
+			crate::native_database::owner_pool(store.pool.driver())
+				.await
+				.into();
+		let mut tx = aidash_server::database::native::begin(&owner)
 			.await
 			.unwrap();
 		let ddl = [

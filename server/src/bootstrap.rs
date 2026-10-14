@@ -381,7 +381,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 
 mod compatibility;
 mod listener;
-pub use compatibility::{migrate, serve};
+pub use compatibility::{migrate, require_migrated, serve};
 
 /// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
 /// rejected without being sent. Run inference uses `admitted_model_provider`,

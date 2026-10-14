@@ -145,7 +145,11 @@ async fn native_receipt_finalization_failure_rolls_back_all_grant_dependencies(
 			expr: Expr::col("state").ne("COMPLETED"),
 		})
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&statement).execute(pool).await.unwrap();
+	// Only the table owner can add a constraint; the server role holds DML.
+	sqlx::query(&statement)
+		.execute(&common::owner_pool(pool).await)
+		.await
+		.unwrap();
 	for _ in 0..4 {
 		p.step().await;
 	}
@@ -253,8 +257,10 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 	let pool = p.b.store.pool.driver();
 	// Fixture-only DDL: a foreign key injects a real PostgreSQL deletion
 	// failure. No production trigger, lease or authority check is disabled.
+	// Only the table owner changes the schema; the server role holds DML.
+	let owner = common::owner_pool(pool).await;
 	sqlx::query("CREATE TABLE fixture_receiver_cleanup_guard (operation_id UUID PRIMARY KEY REFERENCES semantic_remote_receipts(operation_id) ON DELETE RESTRICT)")
-		.execute(pool).await.unwrap();
+		.execute(&owner).await.unwrap();
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("fixture_receiver_cleanup_guard"))
@@ -320,7 +326,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 	assert_eq!(metadata["memory_cleanup"]["invalidated"], true);
 	assert!(metadata.get("context").is_none() && metadata.get("pending").is_none());
 	sqlx::query("DROP TABLE fixture_receiver_cleanup_guard")
-		.execute(pool)
+		.execute(&owner)
 		.await
 		.unwrap();
 	sqlx::query(
