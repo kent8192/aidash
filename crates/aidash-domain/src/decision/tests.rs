@@ -6,9 +6,8 @@ fn config() -> DeciderConfig {
 		answer_type: AnswerType::Noul,
 		description: "Retain required history".into(),
 		provider_contract: PROVIDER.into(),
-		endpoint: "https://api.typesafe.ai/v1/systemone".into(),
-		model: "jev-1.13.0".into(),
-		credential_env: "AIDASH_SECRET_JEV".into(),
+		provider_credential: "openrouter".into(),
+		model: "typesafe/jev-1.13".into(),
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
@@ -27,9 +26,16 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 		("option_source", "live/1"),
 		("rule", "unknown/2"),
 		("model", "jev-latest"),
-		("model", "jev-preview"),
-		("model", "jev-1.13.0+alias"),
-		("model", "jev-01.13.0"),
+		("model", "jev-1.13"),
+		("model", "~typesafe/jev-latest"),
+		("model", "typesafe/jev-latest"),
+		("model", "typesafe/jev-1"),
+		("model", "typesafe/jev-1.13.0"),
+		("model", "typesafe/jev-01.13"),
+		("model", "typesafe/jev-1.13-20260917"),
+		("model", "other/jev-1.13"),
+		("provider_credential", "typesafe"),
+		("provider_credential", ""),
 		("description", " "),
 	] {
 		let mut json = original.clone();
@@ -44,6 +50,9 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 		"max_questions",
 		"max_response_bytes",
 		"compactor",
+		// Transport and keys come only from the Provider Catalog and Tenant binding.
+		"endpoint",
+		"credential_env",
 	] {
 		let mut json = original.clone();
 		json[field] = 1.into();
@@ -51,24 +60,19 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 	}
 	config().validate().unwrap();
 }
-#[rstest::rstest]
-#[case("https://api.typesafe.ai/v1/systemone", true)]
-#[case("http://127.0.0.1:8080/v1/systemone", true)]
-#[case("http://127.0.0.2:8080/v1/systemone", true)]
-#[case("http://[::1]:8080/v1/systemone", true)]
-#[case("http://api.typesafe.ai/v1/systemone", false)]
-#[case("http://192.168.1.1/v1/systemone", false)]
-#[case("http://localhost:8080/v1/systemone", false)]
-#[case("http://127.0.0.1.example.com/v1/systemone", false)]
-#[case("http://0.0.0.0:8080/v1/systemone", false)]
-#[case("http://[::]:8080/v1/systemone", false)]
-fn decision_endpoints_require_https_or_a_literal_loopback_address(
-	#[case] endpoint: &str,
-	#[case] accepted: bool,
-) {
-	let mut declaration = config();
-	declaration.endpoint = endpoint.into();
-	assert_eq!(declaration.validate().is_ok(), accepted, "{endpoint}");
+#[test]
+fn served_models_match_their_pin_or_a_dated_snapshot_of_it() {
+	assert!(served_by("typesafe/jev-1.13", "typesafe/jev-1.13"));
+	assert!(served_by("typesafe/jev-1.13", "typesafe/jev-1.13-20260917"));
+	for served in [
+		"typesafe/jev-1.14",
+		"typesafe/jev-1.13-latest",
+		"typesafe/jev-1.13-2026091",
+		"typesafe/jev-1.130",
+		"typesafe/jev-1.13-20260917-x",
+	] {
+		assert!(!served_by("typesafe/jev-1.13", served), "{served}");
+	}
 }
 #[test]
 fn binary64_evidence_round_trips_subnormals_negative_zero_and_boundary_neighbors() {

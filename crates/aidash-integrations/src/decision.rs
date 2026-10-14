@@ -1,11 +1,14 @@
-//! Explicit Jev adapter; no environment-selected fallback or Aidash payload ceilings.
+//! Explicit Jev adapter through OpenRouter's System One API and the Tenant's
+//! Provider Credential (ADR 0041); no environment-selected fallback or Aidash
+//! payload ceilings.
 use crate::{Error, Result};
-use aidash_application::ports::{
-	Credentials,
-	decision::{DecisionProvider, DispatchError, PreparedDispatch, PreparedRequest},
+use aidash_application::{
+	ports::decision::{DecisionProvider, DispatchError, PreparedDispatch, PreparedRequest},
+	provider_access::{Context, Inference, Operation, ProviderAccess, Source},
 };
-use aidash_domain::decision::*;
+use aidash_domain::{decision::*, provider_credentials::Provider};
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -25,7 +28,9 @@ pub struct JevDecisionProvider {
 	config: DeciderConfig,
 	implementation: String,
 	client: reqwest::Client,
-	credentials: Arc<dyn Credentials>,
+	access: Arc<dyn ProviderAccess>,
+	/// The Run and its Tenant; each dispatch adds its own Decision Attempt scope.
+	context: Context,
 	capacity: Arc<dyn JevCapacity>,
 }
 impl JevDecisionProvider {
@@ -34,11 +39,20 @@ impl JevDecisionProvider {
 	pub fn new(
 		config: DeciderConfig,
 		implementation: String,
-		credentials: Arc<dyn Credentials>,
+		access: Arc<dyn ProviderAccess>,
+		context: Context,
 		capacity: Arc<dyn JevCapacity>,
 		timeout: Duration,
 	) -> Result<Self> {
 		config.validate()?;
+		if context.tenant.is_empty()
+			|| context.run.is_none_or(|run| run.is_nil())
+			|| context.maintenance.is_some()
+		{
+			return Err(Error::Invalid(
+				"Decider calls are provider calls of one Run in its Tenant".into(),
+			));
+		}
 		if implementation.trim().is_empty() {
 			return Err(Error::Invalid(
 				"decision adapter lacks a Node implementation identity".into(),
@@ -60,7 +74,8 @@ impl JevDecisionProvider {
 			config,
 			implementation,
 			client,
-			credentials,
+			access,
+			context,
 			capacity,
 		})
 	}
@@ -70,32 +85,13 @@ impl JevDecisionProvider {
 			.map(|(key, q)| (key, json!({"type":"noul", "instructions":q.description})))
 			.collect();
 		Ok(PreparedRequest {
-			body: serde_json::to_vec(
-				&json!({"model":self.config.model,"state":state,"questions":questions_json}),
-			)?,
+			// Zero data retention is required on every OpenRouter call.
+			body: serde_json::to_vec(&json!({
+				"model":self.config.model,"state":state,"questions":questions_json,
+				"provider":{"zdr":true}
+			}))?,
 			questions: questions.clone(),
 		})
-	}
-	fn key(&self) -> Result<reqwest::header::HeaderValue> {
-		let secret = self
-			.credentials
-			.resolve(&self.config.credential_env)
-			.map_err(|_| Error::Invalid("decision credential unavailable".into()))?;
-		if secret.trim().is_empty() {
-			return Err(Error::Invalid("decision credential is empty".into()));
-		}
-		let mut header = reqwest::header::HeaderValue::from_str(&format!("Bearer {secret}"))
-			.map_err(|_| Error::Invalid("invalid decision credential".into()))?;
-		header.set_sensitive(true);
-		Ok(header)
-	}
-	fn request(&self, prepared: &PreparedRequest) -> Result<reqwest::RequestBuilder> {
-		Ok(self
-			.client
-			.post(&self.config.endpoint)
-			.header(reqwest::header::AUTHORIZATION, self.key()?)
-			.header(reqwest::header::CONTENT_TYPE, "application/json")
-			.body(prepared.body.clone()))
 	}
 }
 impl DecisionProvider for JevDecisionProvider {
@@ -169,13 +165,23 @@ impl DecisionProvider for JevDecisionProvider {
 				"prepared decision payload changed its pinned model or questions".into(),
 			));
 		}
-		let transport = self
-			.request(request)?
-			.build()
-			.map_err(|_| Error::Invalid("invalid decision HTTP request".into()))?;
+		let mut scope = self.context.clone();
+		scope.provider_credential_id = None;
+		scope.inference = Some(Inference {
+			model: self.config.model.clone(),
+			operations: vec![Operation::Decision],
+			max_output_tokens: 0,
+			cache_breakpoints: false,
+			call: None,
+		});
 		Ok(Box::new(JevDispatch {
 			client: self.client.clone(),
-			request: transport,
+			access: self.access.clone(),
+			scope,
+			provider: Source::Tenant {
+				provider: self.config.provider_credential.clone(),
+			},
+			body: request.body.clone(),
 			model: self.config.model.clone(),
 			questions: request.questions.clone(),
 		}))
@@ -184,7 +190,10 @@ impl DecisionProvider for JevDecisionProvider {
 
 struct JevDispatch {
 	client: reqwest::Client,
-	request: reqwest::Request,
+	access: Arc<dyn ProviderAccess>,
+	scope: Context,
+	provider: Source,
+	body: Vec<u8>,
 	model: String,
 	questions: Questions,
 }
@@ -193,9 +202,23 @@ impl PreparedDispatch for JevDispatch {
 	async fn dispatch(
 		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
-		let response = self
+		let access = self
+			.access
+			.resolve(&self.scope, Provider::Openrouter.base_url(), &self.provider)
+			.await?;
+		let mut request = self
 			.client
-			.execute(self.request)
+			.post(format!(
+				"{}/systemone",
+				access.endpoint.trim_end_matches('/')
+			))
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.body(self.body);
+		if !access.bearer.expose_secret().is_empty() {
+			request = request.bearer_auth(access.bearer.expose_secret());
+		}
+		let response = request
+			.send()
 			.await
 			.map_err(|_| Error::External("decision provider transport failed".into()))?;
 		if !response.status().is_success() {
@@ -261,7 +284,11 @@ fn validate_response(
 	}
 	let response: Response = serde_json::from_slice(body)
 		.map_err(|_| Error::External("invalid decision response JSON".into()))?;
-	if response.model.as_deref() != Some(model) {
+	if !response
+		.model
+		.as_deref()
+		.is_some_and(|served| served_by(model, served))
+	{
 		return Err(Error::External(
 			"decision response model differs from the pinned version".into(),
 		));

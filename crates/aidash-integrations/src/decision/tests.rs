@@ -9,28 +9,66 @@ use std::sync::{
 	atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-struct CredentialsFixture;
-impl Credentials for CredentialsFixture {
-	fn resolve(&self, _: &str) -> Result<String> {
-		Ok("fixture-secret".into())
+/// The Tenant's OpenRouter credential: a fake base URL and a fixed bearer.
+struct AccessFixture {
+	endpoint: String,
+	available: AtomicBool,
+	resolutions: AtomicUsize,
+	scopes: Mutex<Vec<Context>>,
+}
+impl AccessFixture {
+	fn new(endpoint: &str) -> Arc<Self> {
+		Arc::new(Self {
+			endpoint: endpoint.into(),
+			available: AtomicBool::new(true),
+			resolutions: AtomicUsize::new(0),
+			scopes: Mutex::new(vec![]),
+		})
+	}
+}
+#[async_trait]
+impl ProviderAccess for AccessFixture {
+	async fn resolve(
+		&self,
+		context: &Context,
+		endpoint: &str,
+		source: &Source,
+	) -> Result<aidash_application::provider_access::Access> {
+		assert_eq!(endpoint, Provider::Openrouter.base_url());
+		assert!(matches!(source, Source::Tenant { provider } if provider == "openrouter"));
+		self.resolutions.fetch_add(1, Ordering::SeqCst);
+		self.scopes.lock().unwrap().push(context.clone());
+		if !self.available.load(Ordering::SeqCst) {
+			return Err(Error::Invalid("PRIVATE_CREDENTIAL_BACKEND_ERROR".into()));
+		}
+		Ok(aidash_application::provider_access::Access {
+			endpoint: self.endpoint.clone(),
+			bearer: "fixture-secret".to_owned().into(),
+		})
+	}
+}
+fn run_context() -> Context {
+	Context {
+		tenant: "tenant-a".into(),
+		run: Some(uuid::Uuid::now_v7()),
+		..Default::default()
 	}
 }
 struct CapacityFixture(Option<usize>);
 impl JevCapacity for CapacityFixture {
 	fn fits(&self, model: &str, _: &Value, questions: &Questions, _: &[u8]) -> Result<bool> {
-		assert_eq!(model, "jev-1.13.0");
+		assert_eq!(model, "typesafe/jev-1.13");
 		Ok(self.0.is_none_or(|max| questions.len() <= max))
 	}
 }
-fn config(endpoint: &str) -> DeciderConfig {
+fn config() -> DeciderConfig {
 	DeciderConfig {
 		hook: Hook::Compaction,
 		answer_type: AnswerType::Noul,
 		description: "Keep context".into(),
 		provider_contract: PROVIDER.into(),
-		endpoint: endpoint.into(),
-		model: "jev-1.13.0".into(),
-		credential_env: "AIDASH_SECRET_JEV".into(),
+		provider_credential: "openrouter".into(),
+		model: "typesafe/jev-1.13".into(),
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
@@ -40,9 +78,10 @@ fn config(endpoint: &str) -> DeciderConfig {
 }
 fn provider(endpoint: &str, cap: Option<usize>) -> JevDecisionProvider {
 	JevDecisionProvider::new(
-		config(endpoint),
+		config(),
 		"node-decision-adapter:23".into(),
-		Arc::new(CredentialsFixture),
+		AccessFixture::new(endpoint),
+		run_context(),
 		Arc::new(CapacityFixture(cap)),
 		Duration::from_secs(5),
 	)
@@ -63,7 +102,7 @@ fn questions(count: usize) -> Questions {
 }
 #[test]
 fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candidates() {
-	let client = provider("https://example.test/systemone", Some(2));
+	let client = provider("https://example.test", Some(2));
 	let state = json!({"goal":"complete"});
 	let questions = questions(7);
 	let plan = client.plan(&state, &questions).unwrap();
@@ -73,21 +112,21 @@ fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candid
 		client.prepare(batch).unwrap();
 		let payload: Value = serde_json::from_slice(&batch.body).unwrap();
 		assert_eq!(payload["state"], state);
-		assert_eq!(payload["model"], "jev-1.13.0");
+		assert_eq!(payload["model"], "typesafe/jev-1.13");
 		for (id, q) in &batch.questions {
 			assert!(coverage.insert(id.clone(), q.clone()).is_none());
 		}
 	}
 	assert_eq!(coverage, questions);
 	assert!(
-		provider("https://example.test/systemone", Some(0))
+		provider("https://example.test", Some(0))
 			.plan(&state, &questions)
 			.is_err()
 	);
 }
 #[test]
 fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
-	let client = provider("https://example.test/systemone", None);
+	let client = provider("https://example.test", None);
 	let state = json!({"goal":"x".repeat(1_100_000)});
 	let questions = questions(1100);
 	let plan = client.plan(&state, &questions).unwrap();
@@ -106,10 +145,10 @@ fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
 #[test]
 fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 	let questions = questions(1);
-	let good = json!({"model":"jev-1.13.0","answers":{"q0":{"type":"noul","noul":0.5}}});
+	let good = json!({"model":"typesafe/jev-1.13","answers":{"q0":{"type":"noul","noul":0.5}}});
 	assert_eq!(
 		validate_response(
-			"jev-1.13.0",
+			"typesafe/jev-1.13",
 			&questions,
 			&serde_json::to_vec(&good).unwrap()
 		)
@@ -118,17 +157,17 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 	);
 	for wrong in [
 		json!({"answers":good["answers"]}),
-		json!({"model":"jev-1.14.0","answers":good["answers"]}),
+		json!({"model":"typesafe/jev-1.14","answers":good["answers"]}),
 		json!({"model":"jev-latest","answers":good["answers"]}),
-		json!({"model":"jev-1.13.0","answers":{}}),
-		json!({"model":"jev-1.13.0","answers":{"q0":{"noul":0.5},"extra":{"noul":0.5}}}),
-		json!({"model":"jev-1.13.0","answers":{"q0":{"type":"choice","noul":0.5}}}),
-		json!({"model":"jev-1.13.0","answers":{"q0":{"noul":-0.1}}}),
-		json!({"model":"jev-1.13.0","answers":{"q0":{"noul":1.01}}}),
+		json!({"model":"typesafe/jev-1.13","answers":{}}),
+		json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":0.5},"extra":{"noul":0.5}}}),
+		json!({"model":"typesafe/jev-1.13","answers":{"q0":{"type":"choice","noul":0.5}}}),
+		json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":-0.1}}}),
+		json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":1.01}}}),
 	] {
 		assert!(
 			validate_response(
-				"jev-1.13.0",
+				"typesafe/jev-1.13",
 				&questions,
 				&serde_json::to_vec(&wrong).unwrap()
 			)
@@ -136,21 +175,23 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 		);
 	}
 	let exact = f64::from_bits(0x3fdfffffffffffff);
-	let wire =
-		format!("{{\"model\":\"jev-1.13.0\",\"answers\":{{\"q0\":{{\"noul\":{exact:?}}}}}}}");
+	let wire = format!(
+		"{{\"model\":\"typesafe/jev-1.13\",\"answers\":{{\"q0\":{{\"noul\":{exact:?}}}}}}}"
+	);
 
 	assert_eq!(
-		validate_response("jev-1.13.0", &questions, wire.as_bytes()).unwrap()["q0"]
+		validate_response("typesafe/jev-1.13", &questions, wire.as_bytes()).unwrap()["q0"]
 			.value()
 			.to_bits(),
 		exact.to_bits()
 	);
 	for malformed in [
-		br#"{"model":"jev-1.13.0","answers":{"q0":{"noul":0.0},"q0":{"noul":1.0}}}"#.as_slice(),
-		br#"{"model":"jev-1.13.0","answers":{"q0":{"noul":1e999}}}"#.as_slice(),
-		br#"{"model":"jev-1.13.0","answers":{"q0":{"noul":"0.5"}}}"#.as_slice(),
+		br#"{"model":"typesafe/jev-1.13","answers":{"q0":{"noul":0.0},"q0":{"noul":1.0}}}"#
+			.as_slice(),
+		br#"{"model":"typesafe/jev-1.13","answers":{"q0":{"noul":1e999}}}"#.as_slice(),
+		br#"{"model":"typesafe/jev-1.13","answers":{"q0":{"noul":"0.5"}}}"#.as_slice(),
 	] {
-		assert!(validate_response("jev-1.13.0", &questions, malformed).is_err());
+		assert!(validate_response("typesafe/jev-1.13", &questions, malformed).is_err());
 	}
 }
 struct Server(tokio::task::JoinHandle<()>);
@@ -161,30 +202,16 @@ impl Drop for Server {
 }
 async fn server(router: Router) -> (String, Server) {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/systemone", listener.local_addr().unwrap());
+	// The catalog or broker base URL; dispatch appends `/systemone`.
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let handle = tokio::spawn(async move {
 		axum::serve(listener, router).await.unwrap();
 	});
 	(endpoint, Server(handle))
 }
 
-struct RotatingCredentials {
-	available: AtomicBool,
-	resolutions: AtomicUsize,
-}
-impl Credentials for RotatingCredentials {
-	fn resolve(&self, _: &str) -> Result<String> {
-		self.resolutions.fetch_add(1, Ordering::SeqCst);
-		if self.available.load(Ordering::SeqCst) {
-			Ok("fixture-secret".into())
-		} else {
-			Err(Error::Invalid("PRIVATE_CREDENTIAL_BACKEND_ERROR".into()))
-		}
-	}
-}
-
 #[tokio::test]
-async fn prepared_batches_reuse_exact_transport_after_credentials_become_unavailable() {
+async fn each_dispatch_resolves_the_tenant_credential_and_fails_closed_after_revocation() {
 	let received = Arc::new(Mutex::new(Vec::new()));
 	let collected = received.clone();
 	let router = Router::new().route(
@@ -194,7 +221,8 @@ async fn prepared_batches_reuse_exact_transport_after_credentials_become_unavail
 			async move {
 				assert_eq!(headers["authorization"], "Bearer fixture-secret");
 				let body: Value = serde_json::from_slice(&bytes).unwrap();
-				assert_eq!(body["model"], "jev-1.13.0");
+				assert_eq!(body["model"], "typesafe/jev-1.13");
+				assert_eq!(body["provider"], json!({"zdr": true}));
 				received.lock().unwrap().push(bytes.to_vec());
 				let answers: BTreeMap<_, _> = body["questions"]
 					.as_object()
@@ -202,19 +230,18 @@ async fn prepared_batches_reuse_exact_transport_after_credentials_become_unavail
 					.keys()
 					.map(|id| (id.clone(), json!({"noul":0.5})))
 					.collect();
-				Json(json!({"model":"jev-1.13.0", "answers":answers}))
+				// OpenRouter names the dated snapshot that served the pinned release.
+				Json(json!({"model":"typesafe/jev-1.13-20260917", "answers":answers}))
 			}
 		}),
 	);
 	let (endpoint, _server) = server(router).await;
-	let credentials = Arc::new(RotatingCredentials {
-		available: AtomicBool::new(true),
-		resolutions: AtomicUsize::new(0),
-	});
+	let access = AccessFixture::new(&endpoint);
 	let client = JevDecisionProvider::new(
-		config(&endpoint),
+		config(),
 		"node-decision-adapter:23".into(),
-		credentials.clone(),
+		access.clone(),
+		run_context(),
 		Arc::new(CapacityFixture(Some(1))),
 		Duration::from_secs(5),
 	)
@@ -226,23 +253,35 @@ async fn prepared_batches_reuse_exact_transport_after_credentials_become_unavail
 		.iter()
 		.map(|r| client.prepare(r).unwrap())
 		.collect();
-	assert_eq!(credentials.resolutions.load(Ordering::SeqCst), 3);
-	assert!(received.lock().unwrap().is_empty());
-	// Credentials can rotate while durable owner reservations are awaited.
-	credentials.available.store(false, Ordering::SeqCst);
-	let error = client.prepare(&requests[0]).err().unwrap().to_string();
-	assert_eq!(error, "decision credential unavailable");
-	assert!(!error.contains("PRIVATE_CREDENTIAL_BACKEND_ERROR"));
-	assert!(received.lock().unwrap().is_empty());
-	for (transport, request) in transports.into_iter().zip(&requests) {
+	// Preparing never resolves a credential; each physical attempt does.
+	assert_eq!(access.resolutions.load(Ordering::SeqCst), 0);
+	let mut transports = transports.into_iter();
+	for (transport, request) in transports.by_ref().take(2).zip(&requests) {
 		let answers = transport.dispatch().await.unwrap();
 		assert_eq!(answers.len(), request.questions.len());
 		assert!(answers.values().all(|p| *p == Probability::half()));
 	}
-	assert_eq!(credentials.resolutions.load(Ordering::SeqCst), 4);
+	assert_eq!(access.resolutions.load(Ordering::SeqCst), 2);
+	for scope in access.scopes.lock().unwrap().iter() {
+		assert!(scope.is_decision());
+		assert_eq!(scope.inference.as_ref().unwrap().max_output_tokens, 0);
+	}
+	// A revoked or unbound credential stops the remaining attempt before any request.
+	access.available.store(false, Ordering::SeqCst);
+	let error = transports
+		.next()
+		.unwrap()
+		.dispatch()
+		.await
+		.unwrap_err()
+		.to_string();
+	assert!(!error.contains("fixture-secret"));
 	assert_eq!(
 		*received.lock().unwrap(),
-		requests.iter().map(|r| r.body.clone()).collect::<Vec<_>>()
+		requests[..2]
+			.iter()
+			.map(|r| r.body.clone())
+			.collect::<Vec<_>>()
 	);
 }
 
@@ -252,10 +291,10 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 		"/systemone",
 		post(|headers: HeaderMap, Json(body): Json<Value>| async move {
 			assert_eq!(headers["authorization"], "Bearer fixture-secret");
-			assert_eq!(body["model"], "jev-1.13.0");
+			assert_eq!(body["model"], "typesafe/jev-1.13");
 			assert_eq!(body["questions"]["q0"]["type"], "noul");
 			Json(
-				json!({"model":"jev-1.13.0","answers":{"q0":{"noul":0.5}},"debug":"x".repeat(1_100_000)}),
+				json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":0.5}},"debug":"x".repeat(1_100_000)}),
 			)
 		}),
 	);
@@ -325,8 +364,8 @@ async fn redirects_and_failures_do_not_create_unreserved_requests() {
 #[tokio::test]
 async fn successful_http_with_invalid_answers_is_a_contract_violation() {
 	for body in [
-		json!({"model":"jev-1.13.0","answers":{}}),
-		json!({"model":"jev-1.14.0","answers":{"q0":{"noul":0.5}}}),
+		json!({"model":"typesafe/jev-1.13","answers":{}}),
+		json!({"model":"typesafe/jev-1.14","answers":{"q0":{"noul":0.5}}}),
 	] {
 		let router = Router::new().route(
 			"/systemone",
@@ -346,7 +385,7 @@ async fn successful_http_with_invalid_answers_is_a_contract_violation() {
 }
 #[test]
 fn prepared_body_cannot_change_the_model_or_question_map() {
-	let client = provider("https://example.test/systemone", None);
+	let client = provider("https://example.test", None);
 	let mut request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
 	let mut body: Value = serde_json::from_slice(&request.body).unwrap();
 	body["model"] = "jev-latest".into();

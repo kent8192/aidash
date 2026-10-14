@@ -30,7 +30,9 @@ pub trait RemoteCompactionAuthority: Send {
 
 #[async_trait]
 pub trait RemoteCompactionTransport: Send + Sync {
-	fn check_credential(&self) -> Result<()>;
+	/// Fails before any allowance is reserved when the Tenant has no usable
+	/// binding; it neither mints a token nor reads Key Material.
+	async fn check_credential(&self) -> Result<()>;
 	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize>;
 	async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value>;
 }

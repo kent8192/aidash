@@ -49,7 +49,7 @@ pub async fn ask(
 	let transport = provider
 		.approved_remote(config)
 		.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
-	transport.check_credential()?;
+	transport.check_credential().await?;
 	transport
 		.check_request(state, questions)
 		.map_err(|_| Error::RemoteSemantic(Failure::ContextBudget))?;

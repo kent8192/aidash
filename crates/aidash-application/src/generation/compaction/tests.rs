@@ -65,7 +65,7 @@ fn world() -> World {
 		},
 		jobs,
 		document: Some(
-			json!({"id":"compactor","version":"1.0.0","kind":"compactor","name":{"en":"Compactor"},"description":{"en":""},"config":{"provider":"typesafe","endpoint":"https://compaction.example/v1","model":"fixture","credential_env":"FIXTURE_COMPACTION_KEY","max_request_bytes":1024,"max_questions":10,"max_response_bytes":1024}}),
+			json!({"id":"compactor","version":"1.0.0","kind":"compactor","name":{"en":"Compactor"},"description":{"en":""},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":10,"max_response_bytes":1024}}),
 		),
 		approved: true,
 		enabled: true,
@@ -189,8 +189,8 @@ struct Transport(World);
 impl GenerationCompactionProvider for Provider {
 	fn approved(&self, config: CompactorConfig) -> Result<Arc<dyn ApprovedCompactionTransport>> {
 		assert_eq!(
-			(&*config.endpoint, &*config.model),
-			("https://compaction.example/v1", "fixture")
+			(&*config.provider_credential, &*config.model),
+			("openrouter", "typesafe/jev-1.13")
 		);
 		self.0
 			.0

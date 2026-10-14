@@ -41,7 +41,8 @@ pub enum Mode {
 	Enforce,
 }
 
-/// Transport credentials are local references, never part of request/evidence payloads.
+/// A Decider reaches Jev only through OpenRouter's System One API, with the
+/// Tenant's Provider Credential for the named catalog entry (ADR 0006, ADR 0041).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeciderConfig {
@@ -49,9 +50,9 @@ pub struct DeciderConfig {
 	pub answer_type: AnswerType,
 	pub description: String,
 	pub provider_contract: String,
-	pub endpoint: String,
+	/// The Provider Catalog entry whose Tenant binding supplies the credential.
+	pub provider_credential: String,
 	pub model: String,
-	pub credential_env: String,
 	pub builder: String,
 	pub option_source: String,
 	pub rule: String,
@@ -60,20 +61,7 @@ pub struct DeciderConfig {
 }
 impl DeciderConfig {
 	pub fn validate(&self) -> Result<()> {
-		crate::configuration::validate_endpoint(&self.endpoint)?;
-		let url = url::Url::parse(&self.endpoint)
-			.map_err(|_| Error::Invalid("invalid decision endpoint URL".into()))?;
-		let loopback = match url.host() {
-			Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-			Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-			_ => false,
-		};
-		if url.scheme() != "https" && !loopback {
-			return Err(Error::Invalid(
-				"decision endpoints require HTTPS except on literal loopback addresses".into(),
-			));
-		}
-		crate::configuration::validate_secret_reference(&self.credential_env)?;
+		validate_provider_credential(&self.provider_credential)?;
 		if self.description.trim().is_empty()
 			|| self.provider_contract != PROVIDER
 			|| self.builder != BUILDER
@@ -111,17 +99,46 @@ fn model_configuration_digest(model: &str, parameters_digest: &str) -> String {
 	digest(&serde_json::json!({"model": model, "parameters_digest": parameters_digest}))
 }
 
-pub fn validate_model(model: &str) -> Result<()> {
-	let version = model
-		.strip_prefix("jev-")
-		.and_then(|v| semver::Version::parse(v).ok())
-		.filter(|v| v.pre.is_empty() && v.build.is_empty());
-	if version.as_ref().is_none_or(|v| model != format!("jev-{v}")) {
+/// Jev is reached only through OpenRouter (ADR 0041).
+pub fn validate_provider_credential(provider: &str) -> Result<()> {
+	if crate::provider_credentials::Provider::parse(provider)?
+		!= crate::provider_credentials::Provider::Openrouter
+	{
 		return Err(Error::Invalid(
-			"Decider requires a concrete Jev model version".into(),
+			"Jev is reached only through the OpenRouter Provider Credential".into(),
 		));
 	}
 	Ok(())
+}
+
+/// An exact OpenRouter Jev release such as `typesafe/jev-1.13`. Aliases such as
+/// `~typesafe/jev-latest` move under a pinned version, so they are refused.
+pub fn validate_model(model: &str) -> Result<()> {
+	let canonical = |part: &str| {
+		!part.is_empty()
+			&& part.bytes().all(|b| b.is_ascii_digit())
+			&& (part == "0" || !part.starts_with('0'))
+	};
+	let exact = model
+		.strip_prefix("typesafe/jev-")
+		.and_then(|version| version.split_once('.'))
+		.is_some_and(|(major, minor)| canonical(major) && canonical(minor));
+	if !exact {
+		return Err(Error::Invalid(
+			"Jev requires an exact OpenRouter model version such as typesafe/jev-1.13".into(),
+		));
+	}
+	Ok(())
+}
+
+/// OpenRouter reports the dated snapshot that served a pinned release, such as
+/// `typesafe/jev-1.13-20260917` for `typesafe/jev-1.13`.
+pub fn served_by(pinned: &str, served: &str) -> bool {
+	served == pinned
+		|| served
+			.strip_prefix(pinned)
+			.and_then(|rest| rest.strip_prefix('-'))
+			.is_some_and(|date| date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Lower keep thresholds and larger protected suffixes preserve more content.

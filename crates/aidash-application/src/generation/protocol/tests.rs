@@ -106,8 +106,7 @@ fn world() -> World {
 	let compactor = entry(
 		"compactor",
 		"compactor",
-		json!({"provider":"typesafe",
-        "endpoint":"https://compaction.example/v1","model":"fixture","credential_env":"FIXTURE_KEY",
+		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13",
         "max_request_bytes":2048,"max_questions":10,"max_response_bytes":1024}),
 	);
 	let provider = |node: &str, definition: &Entry| Provider {
