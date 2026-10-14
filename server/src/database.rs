@@ -1,6 +1,7 @@
 //! Database-boundary compatibility for the pinned Reinhardt revision.
 pub mod native;
 mod records;
+pub mod runtime;
 pub use records::Record;
 mod projections;
 pub use projections::query_as;

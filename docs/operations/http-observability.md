@@ -12,8 +12,8 @@ No cluster-wide quota or automatic request retry is introduced.
 
 | Variable                               | Default | Meaning                                                                                                                |
 | -------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AIDASH_HTTP_TIMEOUT_SECONDS`          | `30`    | Deadline until the response headers are returned (1–3600 seconds)                                                      |
-| `AIDASH_HTTP_CONCURRENCY`              | `128`   | Shared in-flight response futures (1–65536)                                                                            |
+| `AIDASH_HTTP_TIMEOUT_SECONDS`          | `30`    | Deadline for body reception and response headers (1–3600 seconds)                                                      |
+| `AIDASH_HTTP_CONCURRENCY`              | `128`   | Shared admitted requests, including body reception and responses (1–65536)                                             |
 | `AIDASH_SSE_CONNECTIONS`               | `128`   | Active SSE response bodies (1–65536)                                                                                   |
 | `AIDASH_AUTH_RATE_BURST`               | `30`    | `/auth/*` burst per socket peer IP, except discovery; refill one request every 2 seconds                               |
 | `AIDASH_AUTH_DISCOVERY_RATE_BURST`     | `10`    | `POST /auth/login` and `GET /auth/login?org=` burst per client IP, separate from `/auth/*`; refill one every 6 seconds |
@@ -30,20 +30,22 @@ Burst settings accept 1–100000; refill intervals accept 1–3600000 millisecon
 Invalid limits fail startup. Bootstrap injects the validated settings into the
 Reinhardt Gateway shared by the public router.
 
-The application rejects completed bodies above 1 MiB by default, or 6 MiB for
-core capability and scoped file-transfer routes carrying Base64-encoded chunks.
-The pinned native Reinhardt transport first collects the body under its fixed
-10 MiB limit, before invoking application middleware. Application limits and
-concurrency admission therefore do not yet apply during collection. Native
-precollection policy support is tracked in
-[reinhardt-web#6643](https://github.com/kent8192/reinhardt-web/issues/6643).
-Remove this limitation only after the native listener verifies route-specific
-limits for Content-Length and chunked bodies and admission cleanup on cancellation.
+The native listener acquires an application admission permit before collecting a
+request body. It rejects bodies above 1 MiB by default, or 6 MiB for core
+capability and scoped file-transfer routes carrying Base64-encoded chunks, and
+times out incomplete body reception. The permit remains held through handler
+completion or cancellation. The native transport hook is supplied by
+[reinhardt-web#6737](https://github.com/kent8192/reinhardt-web/pull/6737).
 
 Global overload and SSE capacity exhaustion return **503** with `Retry-After: 1`.
 Rate limiting returns **429** with `Retry-After`. An HTTP response-start timeout
-returns **504**. Body-size rejection returns **413**. Request IDs and HTTP metrics
-also cover these errors. Client disconnection or timeout cancels the HTTP future;
+returns **504**. Body-size rejection returns **413**. Request IDs, private-route
+headers and HTTP metrics also cover these errors, including overload rejected by
+the native admission hook before the body is read. The exception is a **413** or
+**408** that the native transport itself returns while collecting an admitted
+body: Reinhardt answers those before the Gateway runs and offers no hook to
+finalize them, so they carry no request ID and are absent from the HTTP series.
+Client disconnection or timeout cancels the HTTP future;
 it does not undo a committed task or stop an already scheduled agent. Clients
 must reconcile durable state before retrying a mutation.
 
@@ -120,6 +122,9 @@ Set `AIDASH_METRICS_LISTEN=127.0.0.1:9090`, then scrape
 router and has no authentication. Keep it on loopback or a private network with
 access limited to the collector. Configure a separate port per colocated process.
 Workers can expose their own listener using the same setting.
+The process also performs recorder upkeep every 30 seconds when no metrics
+listener or external scraper is configured, so request histogram state remains
+bounded.
 
 Reinhardt Gateway retains the existing series:
 
@@ -170,5 +175,5 @@ Integration tests use disposable Reinhardt Testcontainers fixtures. The `startup
 target runs the actual management binary and checks HTTP labels and sanitized
 logs through its native listener. The `http_protection` target checks overload,
 rate limits, authentication, SSE reconnection and body contracts; its in-process
-body checks do not establish precollection transport limits. Bruno additionally
+body checks complement native precollection transport tests. Bruno additionally
 exercises every registered endpoint against actual processes.

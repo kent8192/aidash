@@ -11,6 +11,22 @@ use reinhardt::query::{
 };
 use std::{collections::HashSet, path::PathBuf};
 
+/// Leave the migration ledger read-only to every role but its owner.
+///
+/// The owner's default privileges grant the server role DML on every table it
+/// creates (#262), including the ledger, which `require_current` trusts before
+/// a server starts. A server login that could write the ledger could record a
+/// migration that never ran. Reinhardt Query cannot express REVOKE or iterate a
+/// table's grantees, so this is raw SQL; `SELECT` stays for the startup check.
+const SEAL_LEDGER: &str = "DO $$ DECLARE grantee text; BEGIN \
+	IF to_regclass('reinhardt_migrations') IS NULL THEN RETURN; END IF; \
+	FOR grantee IN SELECT DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END \
+	FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee \
+	WHERE c.oid = 'reinhardt_migrations'::regclass AND a.grantee <> c.relowner \
+	AND a.privilege_type <> 'SELECT' LOOP \
+	EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER \
+	ON reinhardt_migrations FROM %s', grantee); END LOOP; END $$";
+
 /// All entry points hold the same transaction-scoped lock for the complete run,
 /// including creation of the native ledger. Dropping the transaction on errors
 /// or cancellation releases it; no session lock can leak into the pool.
@@ -90,11 +106,70 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 		"migrations-dir".into(),
 		directory.to_string_lossy().into_owned(),
 	);
-	MigrateCommand
+	let migrated = MigrateCommand
 		.execute(&native)
 		.await
+		.map_err(|error| Error::External(error.to_string()));
+	// Each migration commits on its own, so a failed run still leaves the
+	// ledger, and the records of the migrations it applied, behind: seal it
+	// either way. A run killed outright is sealed by the next `migrate`. The
+	// migration's own error takes precedence over the seal's and the commit's.
+	let sealed = if context.has_option("plan") {
+		Ok(())
+	} else {
+		schema_lock
+			.execute(SEAL_LEDGER, Vec::new())
+			.await
+			.map(|_| ())
+	};
+	let committed = schema_lock.commit().await;
+	migrated?;
+	sealed?;
+	committed?;
+	Ok(())
+}
+
+/// Confirm that every native migration is applied, without changing the schema.
+///
+/// Servers, workers and maintenance commands log in as a role that cannot
+/// change the schema (#262), so only `aidash migrate`, run as the owner of
+/// every table, applies migrations.
+pub async fn require_current(url: &str, directory: &std::path::Path) -> Result<()> {
+	let connection = DatabaseConnection::connect_postgres(url)
+		.await
+		.map_err(|_| Error::External("Failed to connect to PostgreSQL".into()))?;
+	let migrations = FilesystemSource::new(directory)
+		.all_migrations()
+		.await
 		.map_err(|error| Error::External(error.to_string()))?;
-	schema_lock.commit().await?;
+	let applied = DatabaseMigrationRecorder::new(connection.clone())
+		.get_applied_migrations_if_present()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?;
+	connection
+		.into_postgres()
+		.expect("a PostgreSQL connection")
+		.close()
+		.await;
+	let known: HashSet<_> = migrations
+		.iter()
+		.map(|migration| (migration.app_label.as_str(), migration.name.as_str()))
+		.collect();
+	let recorded: HashSet<_> = applied
+		.iter()
+		.map(|migration| (migration.app.as_str(), migration.name.as_str()))
+		.collect();
+	if migrations.is_empty() || !recorded.is_subset(&known) {
+		return Err(Error::Invalid(
+			"unknown migration history; restore a supported database before continuing".into(),
+		));
+	}
+	let pending = known.difference(&recorded).count();
+	if pending > 0 {
+		return Err(Error::Invalid(format!(
+			"{pending} migrations are not applied; run `aidash migrate` as the database owner first"
+		)));
+	}
 	Ok(())
 }
 

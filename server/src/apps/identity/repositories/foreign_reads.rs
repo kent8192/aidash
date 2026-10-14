@@ -8,7 +8,7 @@ use aidash_application::{
 	},
 };
 use aidash_domain::{
-	RunMetadata,
+	RunControl, RunMetadata,
 	federation::execution::Description,
 	policy::Resource,
 	registry::{EntityRef, Entry},
@@ -19,6 +19,81 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) struct NativeForeignReads<'a>(pub(crate) &'a mut Access);
+
+/// Only automatic retirement of this admitted executor can replace catalog availability.
+/// The full foreign read check still governs every dependency, and the viewer's
+/// current registry.read permission independently governs this historical definition.
+pub(crate) async fn retired_run_catalog_read(
+	access: &mut Access,
+	run: Uuid,
+	reference: &EntityRef,
+) -> Result<bool> {
+	if access.inherited_lease
+		&& !access
+			.approved_catalog
+			.contains(&(reference.id.clone(), reference.version.clone()))
+	{
+		return Ok(false);
+	}
+	let Some(row) =
+		crate::apps::execution::models::Run::read_in(&mut **access.tx, run, None).await?
+	else {
+		return Ok(false);
+	};
+	if row.home_node == access.node_id
+		|| row.agent_id != reference.id
+		|| row.agent_version != reference.version
+		|| row
+			.context
+			.binding_snapshot
+			.as_ref()
+			.is_none_or(|snapshot| {
+				!snapshot.remote
+					|| snapshot.agent.registry_node != access.node_id
+					|| snapshot.agent.id != reference.id
+					|| snapshot.agent.version != reference.version
+			}) {
+		return Ok(false);
+	}
+	let metadata = row.metadata();
+	let terminal_statuses: &[&str] = match metadata.phase.as_str() {
+		"COMPLETED" => &["COMPLETED"],
+		"FAILED" => &["FAILED"],
+		"CANCELLED" => &["STOPPED", "EXPIRED"],
+		_ if metadata.control == RunControl::Cancelled => &["STOPPED", "EXPIRED"],
+		_ => &[],
+	};
+	if terminal_statuses.is_empty() || !access.foreign_run_base_visible(&metadata).await? {
+		return Ok(false);
+	}
+	let historical = {
+		let mut scope = NativeForeignReads(access);
+		let Some(record) = scope.admission(&metadata).await? else {
+			return Ok(false);
+		};
+		if record.description.inspection.generation.is_none() {
+			return Ok(false);
+		}
+		// Reuse the exact lifecycle, admission, credential and catalog-revision fence.
+		scope
+			.retired_definition(
+				&metadata,
+				&record.description,
+				record.credential_id,
+				terminal_statuses,
+			)
+			.await?
+	};
+	let Some(entry) = historical else {
+		return Ok(false);
+	};
+	if entry.kind != "agent" || entry.id != reference.id || entry.version != reference.version {
+		return Ok(false);
+	}
+	Ok(access
+		.decide(&catalog::resource(access, &entry), "registry.read")
+		.await?)
+}
 
 #[async_trait]
 impl ForeignRunReadScope for NativeForeignReads<'_> {

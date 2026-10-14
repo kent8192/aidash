@@ -165,6 +165,9 @@ spec:
             - { name: AIDASH_CTR_BINARY, value: {{ $e.paths.ctr | quote }} }
             - { name: AIDASH_CGROUP_ROOT, value: {{ $e.paths.cgroupRoot | quote }} }
             - { name: AIDASH_GUARD_STATE, value: {{ $guardState | quote }} }
+            {{- if not $e.paths.guardState }}
+            - { name: AIDASH_GUARD_LEGACY_STATE, value: /var/lib/aidash-node-guard-legacy }
+            {{- end }}
             - { name: AIDASH_SENTRY_BINARIES, value: {{ toJson $sentries | quote }} }
           readinessProbe:
             exec:
@@ -182,6 +185,9 @@ spec:
             periodSeconds: 5
           volumeMounts:
             - { name: state, mountPath: {{ $guardState }} }
+            {{- if not $e.paths.guardState }}
+            - { name: legacy-state, mountPath: /var/lib/aidash-node-guard-legacy }
+            {{- end }}
             - { name: containerd-run, mountPath: /run/containerd }
             - { name: runsc-root, mountPath: {{ $e.paths.runscRoot }} }
             {{- if ne $e.paths.cgroupRoot "/sys/fs/cgroup" }}
@@ -193,6 +199,9 @@ spec:
             - { name: ctr, mountPath: {{ $e.paths.ctr }}, readOnly: true }
       volumes:
         - { name: state, hostPath: { path: {{ $guardState }}, type: DirectoryOrCreate } }
+        {{- if not $e.paths.guardState }}
+        - { name: legacy-state, hostPath: { path: /var/lib/aidash-node-guard, type: DirectoryOrCreate } }
+        {{- end }}
         - { name: containerd-run, hostPath: { path: /run/containerd, type: Directory } }
         - { name: runsc-root, hostPath: { path: {{ $e.paths.runscRoot }}, type: DirectoryOrCreate } }
         {{- if ne $e.paths.cgroupRoot "/sys/fs/cgroup" }}

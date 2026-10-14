@@ -48,3 +48,13 @@ async fn web_fetch_retries_transient_statuses_and_reports_terminal_source_reject
 	server.abort();
 	let _ = server.await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn native_http_dns_resolution_is_bounded_by_the_tool_deadline() {
+	let deadline = tokio::time::Instant::now() + NATIVE_HTTP_TIMEOUT;
+	let stalled =
+		std::future::pending::<std::io::Result<std::vec::IntoIter<std::net::SocketAddr>>>();
+	let error = resolve_within(deadline, stalled).await.unwrap_err();
+	assert!(matches!(error, Error::External(message) if message.contains("timed out")));
+	assert!(tokio::time::Instant::now() >= deadline);
+}

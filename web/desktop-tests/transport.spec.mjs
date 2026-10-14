@@ -205,6 +205,51 @@ test("SSE reconnect sends Last-Event-ID and a new authority starts without the o
   expect(result).toEqual(["-1", "41", "-1"]);
 });
 
+test("SSE skips an oversized frame without retaining its text and resumes after its id", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const { subscribe } = await import("/src/event-stream.ts");
+    const signal = new AbortController();
+    const calls = [];
+    const statuses = [];
+    window.fetch = async (_url, options) => {
+      calls.push(options.headers.get("Last-Event-ID"));
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            // The first connection streams a 300,000-character frame in
+            // delimiter-free chunks, then closes; the reconnect must resume
+            // after that frame's id instead of replaying it.
+            if (calls.length === 1) {
+              controller.enqueue(encoder.encode("id: 41\ndata: "));
+              for (let chunk = 0; chunk < 5; chunk++)
+                controller.enqueue(encoder.encode("x".repeat(60_000)));
+              controller.enqueue(encoder.encode("\n\n"));
+            }
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    };
+    await subscribe(
+      signal.signal,
+      () => {},
+      (status) => {
+        statuses.push(status);
+        if (calls.length === 2 && status === "reconnecting") signal.abort();
+      },
+    );
+    return { calls, statuses };
+  });
+  expect(result).toEqual({
+    calls: ["-1", "41"],
+    statuses: ["live", "reconnecting", "live", "reconnecting"],
+  });
+});
+
 test("a revoked access token refreshes once and mutations are never retried after network failure", async ({
   page,
 }) => {

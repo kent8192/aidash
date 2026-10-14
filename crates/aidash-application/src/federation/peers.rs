@@ -7,7 +7,7 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	configuration::{same_secret, validate_endpoint, validate_node_id},
+	configuration::{same_secret, validate_node_id, validate_peer_endpoint},
 	federation::{Peer, protocol::compatible},
 	registry::EntityRef,
 };
@@ -24,12 +24,14 @@ pub struct PeerAuthority {
 impl PeerAuthority {
 	pub async fn register(&self, peer: Peer) -> Result<Peer> {
 		validate_node_id(&peer.node_id)?;
-		validate_endpoint(&peer.endpoint)?;
 		if peer.node_id == self.node || !compatible(&self.protocol, &peer.protocol_version) {
 			return Err(Error::Invalid(format!(
 				"peer must be another node with protocol_version {}",
 				self.protocol
 			)));
+		}
+		if peer.enabled {
+			validate_peer_endpoint(&peer.endpoint)?;
 		}
 		let mut scope = self.configuration.write_scope().await?;
 		if !peer.enabled {
