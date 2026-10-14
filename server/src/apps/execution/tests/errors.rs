@@ -141,7 +141,7 @@ fn stalled_streams_retry_like_provider_transport_timeouts() {
 /// Home one; a rejected key or a contract violation keeps its own reason.
 #[rstest]
 #[case(
-	Error::SemanticUnavailable,
+	Error::RemoteSemantic(crate::semantic::remote::Failure::Unavailable),
 	crate::semantic::remote::Failure::Unavailable
 )]
 #[case(
@@ -163,6 +163,24 @@ fn semantic_failures_keep_a_typed_reason_for_local_and_home_runs(
 		matches!(
 			failure,
 			aidash_application::recovery::ExecutionFailure::Semantic(reason) if reason == expected
+		),
+		"{failure:?}"
+	);
+}
+
+/// `SemanticUnavailable` also reports invariant and allowance violations, such
+/// as usage beyond a reservation; retrying cannot fix those, so it is not
+/// classified as a transient semantic outage.
+#[test]
+fn semantic_invariant_failures_are_not_retried_as_outages() {
+	// Act
+	let failure =
+		crate::apps::execution::repositories::worker::classify_failure(&Error::SemanticUnavailable);
+	// Assert
+	assert!(
+		matches!(
+			failure,
+			aidash_application::recovery::ExecutionFailure::Other(_)
 		),
 		"{failure:?}"
 	);

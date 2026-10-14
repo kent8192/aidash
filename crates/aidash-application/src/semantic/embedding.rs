@@ -6,7 +6,10 @@ use crate::{
 		semantic::embedding::{EmbeddingAllowance, SemanticEmbeddingScope},
 	},
 };
-use aidash_domain::{generation::embedding::Origin, semantic::EmbeddingConfig};
+use aidash_domain::{
+	generation::embedding::Origin,
+	semantic::{EmbeddingConfig, Failure},
+};
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -40,7 +43,11 @@ pub async fn invoke(
 			{
 				error
 			}
-			// Transport failures, timeouts and 408/429/5xx are a transient outage.
+			// Transport failures, timeouts and 408/429/5xx are a transient outage,
+			// typed so a Run retries them; nothing else is (#233).
+			Error::RemoteSemantic(_) | Error::External(_) => {
+				Error::RemoteSemantic(Failure::Unavailable)
+			}
 			_ => Error::SemanticUnavailable,
 		})?;
 	if let Some(reservation) = reservation {

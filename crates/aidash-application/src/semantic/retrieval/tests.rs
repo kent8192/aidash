@@ -506,7 +506,7 @@ async fn physical_point_check_precedes_embedding_allowance(#[case] available: Op
 			None
 		)
 		.await,
-		Err(Error::SemanticUnavailable)
+		Err(Error::RemoteSemantic(Failure::Unavailable))
 	));
 	assert_eq!(scope.embedded, None);
 	assert_eq!(calls.lock().unwrap().last(), Some(&"present"));

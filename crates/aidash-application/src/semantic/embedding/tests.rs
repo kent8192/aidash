@@ -185,16 +185,22 @@ async fn provider_outage_keeps_conservative_charge_and_hides_provider_details(
 	)
 	.await
 	.unwrap_err();
-	assert!(matches!(error, Error::SemanticUnavailable));
+	assert!(
+		matches!(
+			error,
+			Error::RemoteSemantic(aidash_domain::semantic::Failure::Unavailable)
+		),
+		"{error:?}"
+	);
 	assert_eq!(
 		error.to_string(),
-		"semantic backend unavailable or invalid; inspect index status and retry"
+		"The semantic backend is temporarily unavailable"
 	);
 	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
 	assert!(scope.reported.lock().unwrap().is_empty());
 }
 /// A rejected key or a broken response contract is not an outage, so it must
-/// not become the transient `SemanticUnavailable` that a Run retries.
+/// not become the transient `Unavailable` failure that a Run retries.
 #[rstest]
 #[case::key_rejected(
 	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::Configuration),

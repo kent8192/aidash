@@ -49,6 +49,7 @@ import { Alert, Check, Hint } from "./components/patterns";
 const semanticMessages: Record<string, string> = {
   "semantic backend unavailable or invalid; inspect index status and retry":
     "semanticBackendFailure",
+  "The semantic backend is temporarily unavailable": "semanticBackendFailure",
   "semantic index is incomplete; inspect entries and retry after indexing":
     "semanticIncomplete",
   "semantic index is disabled": "semanticDisabled",
