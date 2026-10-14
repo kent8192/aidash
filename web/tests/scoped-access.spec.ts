@@ -4,7 +4,7 @@ import {
   selectDashboardLanguage,
 } from "./auth-fixture";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { KeylessFixture, serveKeyless } from "./keyless-ports";
 import { randomUUID } from "node:crypto";
 
 test("subject dashboard completes a conversation and clears revoked access", async ({
@@ -53,8 +53,9 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       }),
     );
   });
-  await new Promise<void>((resolve) =>
-    provider.listen(0, "127.0.0.1", resolve),
+  const providerOrigin = await serveKeyless(
+    provider,
+    KeylessFixture.scopedAccess,
   );
   try {
     const api = async (path: string, body?: unknown) => {
@@ -78,7 +79,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         {
           provider: "openrouter",
           model_id: "fixture",
-          endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
+          endpoint: `${providerOrigin}/v1`,
           context_window: 128000,
           max_output_tokens: 4096,
           modalities: ["text"],

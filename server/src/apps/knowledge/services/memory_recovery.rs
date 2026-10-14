@@ -785,7 +785,8 @@ impl reinhardt::commands::CapabilityCommand for Command {
 	) -> reinhardt::commands::CommandResult<()> {
 		let result: Result<()> = async {
 			let settings = crate::config::startup::load_settings()?;
-			crate::bootstrap::migrate(&settings).await?;
+			// Recovery never changes the schema; `migrate` runs first as its owner.
+			crate::bootstrap::require_migrated(&settings).await?;
 			let config = crate::config::Config::from_settings(&settings)?;
 			let database =
 				reinhardt::db::backends::DatabaseConnection::connect_postgres_with_pool_size(
@@ -801,7 +802,8 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					database.into_postgres().ok_or(Error::Forbidden)?,
 					config.node_id,
 				)
-				.await?,
+				.await?
+				.with_keyless_origins(settings.keyless_endpoints.origins()?),
 				directory.clone(),
 			)?;
 			match matches.get_one::<String>("action").map(String::as_str) {

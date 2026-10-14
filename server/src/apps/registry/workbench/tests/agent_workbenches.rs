@@ -49,6 +49,8 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 
 	let endpoint = server.url.clone();
 	let (f, url, schema) = application_fixture.runtime.parts();
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store.keyless.permit_origin_of(&endpoint).unwrap();
 	let app = application_fixture.application.clone();
 	let operator = f.config.api_token.clone();
 	for (id, kind, config) in [

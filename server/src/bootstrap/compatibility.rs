@@ -6,7 +6,6 @@ use crate::{
 	config::{Config, settings::ProjectSettings},
 };
 use reinhardt::commands::CommandContext;
-use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::server::{HttpServer, ShutdownCoordinator, server::shutdown::shutdown_signal};
 use reinhardt::{InjectionContext, SingletonScope};
 use std::{sync::Arc, time::Duration};
@@ -27,19 +26,34 @@ pub async fn migrate(settings: &ProjectSettings) -> Result<()> {
 	super::migrations::run(&context).await
 }
 
+/// Refuse to start against a database whose native history is not fully applied.
+pub async fn require_migrated(settings: &ProjectSettings) -> Result<()> {
+	let config = Config::from_settings(settings)?;
+	super::migrations::require_current(
+		&config.database_url,
+		&settings.core.base_dir.join("migrations"),
+	)
+	.await
+}
+
 pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
+	// The server's login cannot change the schema; `migrate` runs first as its owner.
+	require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
 	let address: std::net::SocketAddr = std::env::var("AIDASH_LISTEN")
 		.unwrap_or_else(|_| "127.0.0.1:8080".into())
 		.parse()
 		.map_err(|_| Error::Invalid("invalid AIDASH_LISTEN".into()))?;
-	let connection =
-		DatabaseConnection::connect_postgres_with_pool_size(&config.database_url, Some(16)).await?;
+	let connection = crate::database::runtime::connect(&config.database_url, 16).await?;
 	let context = Arc::new(InjectionContext::builder(SingletonScope::new()).build());
 	let coordinator = ShutdownCoordinator::new(Duration::from_secs(20));
 	let mut stopped = coordinator.subscribe();
 	ProcessLifecycle::register(&context, coordinator.clone());
 	let federation = initialize(&context, &settings, connection).await?;
+	let protection =
+		reinhardt::Depends::<crate::http::Protection>::resolve_from_registry(&context, true)
+			.await
+			.map_err(|error| Error::External(error.to_string()))?;
 	let event_streams =
 		(*reinhardt::Depends::<crate::sse::Service>::resolve_from_registry(&context, true)
 			.await
@@ -63,7 +77,9 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 		Some(event_streams),
 	)
 	.await?;
-	let server = HttpServer::new(crate::routes().into_server()).with_di_context(context);
+	let server = HttpServer::new(crate::routes().into_server())
+		.with_request_admission(Arc::new((*protection).clone()))
+		.with_di_context(context);
 	let serving = async {
 		server
 			.listen_on_with_shutdown(listener, coordinator.clone())

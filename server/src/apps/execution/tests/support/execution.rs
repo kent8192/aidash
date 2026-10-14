@@ -52,6 +52,12 @@ pub fn execution(
 			200,
 		);
 		let endpoint = &provider.server.url;
+		// The provider fixture is a Keyless endpoint on loopback (ADR 0036).
+		app.runtime
+			.store
+			.keyless
+			.permit_origin_of(endpoint)
+			.unwrap();
 		for (kind, id, config) in [
 			(
 				"model",

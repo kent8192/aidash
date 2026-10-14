@@ -1,4 +1,5 @@
 //! Read adapters preserve the original query trees and the caller's live authority.
+use crate::apps::execution::capabilities::services::sessions;
 use crate::apps::execution::generation::repositories::contracts::RequestAccess;
 use crate::{
 	Result as NativeResult,
@@ -71,6 +72,11 @@ impl LocalRunVisibilityScope for Reads<'_> {
 	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
 		self.access
 			.human_reads(workspace, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool> {
+		sessions::run_area_readable(self.access, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -229,6 +235,11 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool> {
+		sessions::run_area_readable(self.access, run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn run_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access.run_reads_visible(run).await.map_err(Into::into)
 	}
@@ -260,7 +271,7 @@ impl EventVisibilityScope for Reads<'_> {
 			else {
 				return Ok(Some(false));
 			};
-			if aidash_domain::provider_credentials::Provider::parse(provider).is_err()
+			if aidash_domain::provider_credentials::Provider::credential(provider).is_err()
 				|| (kind == "provider_credential" && Uuid::parse_str(id).is_err())
 				|| (kind == "provider_credential_binding" && id != provider)
 			{

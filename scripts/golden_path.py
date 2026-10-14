@@ -271,6 +271,37 @@ def psql(db, query):
     return subprocess.check_output(["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "aidash", "-d", db, "-tA", "-v", "ON_ERROR_STOP=1", "-c", query], cwd=ROOT, text=True).strip()
 
 
+# Compose's init script creates these logins (#262). Migrations run as the owner
+# of every table; servers and workers as the role row-level security binds.
+OWNER_LOGIN = "aidash_owner:aidash-owner-local"
+SERVER_LOGIN = "aidash_server:aidash-server-local"
+
+
+def database_url(login, database):
+    return f"postgres://{login}@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}"
+
+
+def provision(database):
+    """Create a database as a deployment does: owned by aidash_owner, with the
+    superuser-only extensions and the server role's default privileges."""
+    psql("aidash_a", f"CREATE DATABASE {database} OWNER aidash_owner TEMPLATE template0")
+    psql(database, "CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; "
+         "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server; "
+         "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT USAGE, SELECT ON SEQUENCES TO aidash_server")
+    # PGroonga's crash-safe worker starts asynchronously; each psql call is a
+    # fresh backend, and a failed start is remembered only by its own backend.
+    deadline = time.monotonic() + 30
+    for statement in ("CREATE EXTENSION IF NOT EXISTS pgroonga", "SELECT pgroonga_command('io_flush')"):
+        while True:
+            try:
+                psql(database, statement)
+                break
+            except subprocess.CalledProcessError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
+
+
 class NatsProxy(socketserver.ThreadingTCPServer):
     """Bind a private endpoint now; accept connections only after the outage test."""
 
@@ -292,22 +323,70 @@ class NatsProxy(socketserver.ThreadingTCPServer):
         self.server_close()
 
 
+def forward(client, upstream_port):
+    with socket.create_connection(("127.0.0.1", upstream_port), timeout=10) as upstream:
+        upstream.settimeout(None)
+        sockets = (client, upstream)
+        try:
+            while True:
+                ready, _, _ = select.select(sockets, [], [], 30)
+                for source in ready:
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    destination = upstream if source is client else client
+                    destination.sendall(data)
+        except OSError:
+            pass
+
+
 class NatsForwarder(socketserver.BaseRequestHandler):
     def handle(self):
-        with socket.create_connection(("127.0.0.1", int(os.environ.get("AIDASH_NATS_PORT", "42270"))), timeout=10) as upstream:
-            upstream.settimeout(None)
-            sockets = (self.request, upstream)
-            try:
-                while True:
-                    ready, _, _ = select.select(sockets, [], [], 30)
-                    for source in ready:
-                        data = source.recv(65536)
-                        if not data:
-                            return
-                        destination = upstream if source is self.request else self.request
-                        destination.sendall(data)
-            except OSError:
-                pass
+        forward(self.request, int(os.environ.get("AIDASH_NATS_PORT", "42270")))
+
+
+class KeylessFixtureProxy(socketserver.ThreadingTCPServer):
+    """Own a reserved Keyless fixture port for the whole run.
+
+    The nodes permit only the origins fixed at launch, and a dashboard spec's
+    Node server cannot adopt a socket bound here. So this proxy takes over the
+    held `listener` and forwards each connection to the port the spec publishes
+    in `upstream_file` (web/tests/keyless-ports.ts); no other process can claim
+    the permitted port between launch and the spec's turn.
+    """
+
+    daemon_threads = True
+
+    def __init__(self, listener, upstream_file):
+        super().__init__(listener.getsockname(), KeylessFixtureForwarder, bind_and_activate=False)
+        self.socket.close()
+        self.socket = listener
+        self.server_address = listener.getsockname()
+        self.upstream_file = upstream_file
+        self.started = False
+
+    def start(self):
+        self.server_activate()
+        self.started = True
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        if self.started:
+            self.shutdown()
+        self.server_close()
+
+
+class KeylessFixtureForwarder(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            upstream_port = int(self.server.upstream_file.read_text())
+        except (OSError, ValueError):
+            # The spec is not serving yet; closing fails the call instead of hanging it.
+            return
+        try:
+            forward(self.request, upstream_port)
+        except OSError:
+            pass
 
 
 def main():
@@ -342,6 +421,25 @@ def main():
     fixture_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.handler())
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
     fixture_url = f"http://127.0.0.1:{fixture_server.server_port}"
+    # Keyless model endpoints on loopback reach only origins the Deployment
+    # permits, so bind the scoped branch's provider socket before launch and
+    # hold it until the provider takes it over; no other process can claim
+    # the permitted port in between.
+    scoped_provider_socket = socket.socket()
+    scoped_provider_socket.bind(("127.0.0.1", 0))
+    scoped_provider_port = scoped_provider_socket.getsockname()[1]
+    # The dashboard specs reach their Keyless model and embedding fixtures
+    # through these ports, one per spec (web/tests/keyless-ports.ts). Each is
+    # held from now on and forwarded to the port its spec publishes.
+    keyless_upstreams = tempfile.TemporaryDirectory(prefix="aidash-keyless-upstreams-")
+    browser_provider_proxies = []
+    for index in range(3):
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        browser_provider_proxies.append(KeylessFixtureProxy(held, pathlib.Path(keyless_upstreams.name) / str(index)))
+    browser_provider_ports = [proxy.server_address[1] for proxy in browser_provider_proxies]
+    keyless_origins = ",".join([fixture_url, f"http://127.0.0.1:{scoped_provider_port}",
+                                *(f"http://127.0.0.1:{port}" for port in browser_provider_ports)])
     stream_events = []
     nats_proxy = NatsProxy()
 
@@ -363,8 +461,8 @@ def main():
                 except Exception as error:
                     approval_errors.append(str(error))
 
-    def launch(node, database, port, mode):
-        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
+    def node_env(node, database, port, login):
+        env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
         env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
@@ -372,6 +470,15 @@ def main():
         # When the outage proxy opens, recover real activation delivery as well
         # as event publication instead of retaining fallback for the whole run.
         env["AIDASH_ACTIVATION_BOOTSTRAP"] = "true"
+        return env
+
+    def migrate(node, database, port):
+        with open(logs / f"{database}-migrate.log", "w") as log:
+            subprocess.run([args.binary, "migrate"], cwd=ROOT, env=node_env(node, database, port, OWNER_LOGIN),
+                           stdout=log, stderr=log, check=True, timeout=600)
+
+    def launch(node, database, port, mode):
+        env = node_env(node, database, port, SERVER_LOGIN)
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")
         files.append(log)
         child = subprocess.Popen([args.binary, mode], cwd=ROOT, env=env, stdout=log, stderr=log)
@@ -389,10 +496,12 @@ def main():
             pass
 
     try:
-        # Create isolated databases; application schema belongs to the native history.
-        psql("aidash_a", f"CREATE DATABASE {db_a} TEMPLATE template0")
-        psql("aidash_a", f"CREATE DATABASE {db_b} TEMPLATE template0")
-        # Each server applies the native history, including its owned extension.
+        # Create isolated databases; application schema belongs to the native
+        # history, which only the owner applies before the servers start.
+        provision(db_a)
+        provision(db_b)
+        migrate(node_a, db_a, port_a)
+        migrate(node_b, db_b, port_b)
         launch(node_a, db_a, port_a, "server")
         launch(node_b, db_b, port_b, "server")
         wait_for(lambda: api_request(base_a, "/health"), label="Node A")
@@ -507,7 +616,7 @@ def main():
         # Scoped scenarios own their exact Home approval poller; completed local
         # fixtures do not need a second full-state poller during fault injection.
         local_approvals.clear()
-        scoped = verify(base_a, base_b, node_a, node_b, remote_worker,
+        scoped = verify(base_a, base_b, node_a, node_b, remote_worker, scoped_provider_socket,
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
@@ -516,7 +625,9 @@ def main():
         local_approvals.set()
         if args.dashboard:
             browser_report = logs / "browser-report.json"
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})
+            for proxy in browser_provider_proxies:
+                proxy.start()
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
@@ -538,6 +649,9 @@ def main():
             except subprocess.TimeoutExpired:
                 child.kill()
         nats_proxy.close()
+        for proxy in browser_provider_proxies:
+            proxy.close()
+        keyless_upstreams.cleanup()
         fixture_server.shutdown()
         for file in files:
             file.close()

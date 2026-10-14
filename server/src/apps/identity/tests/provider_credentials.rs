@@ -1205,6 +1205,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			Ok(aidash_application::provider_access::Access {
 				endpoint: "https://broker.test/api/v1".into(),
 				bearer: "fixture-token".into(),
+				keyless: None,
 			})
 		}
 	}
@@ -1313,7 +1314,8 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let f = endpoint.await;
-	let mut tx = f.database.connection.begin().await.unwrap();
+	// Constraint DDL needs the table owner; the server role holds only DML.
+	let mut tx = f.database.owner_connection.begin().await.unwrap();
 	async fn definition(
 		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 		name: &str,
@@ -1379,7 +1381,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	let agent = definition(tx.as_mut(), "registry_agent_config").await;
 	apply_asset(
 		tx.as_mut(),
-		&f.database.connection,
+		&f.database.owner_connection,
 		include_str!("../../../../migrations/registry/sql/backward/0016_provider_credentials.sql"),
 	)
 	.await;
@@ -1391,7 +1393,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	assert!(reversed.contains("future-forbidden"));
 	apply_asset(
 		tx.as_mut(),
-		&f.database.connection,
+		&f.database.owner_connection,
 		include_str!("../../../../migrations/registry/sql/forward/0016_provider_credentials.sql"),
 	)
 	.await;
@@ -1410,7 +1412,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	let semantic = definition(tx.as_mut(), "semantic_indexes_revision").await;
 	apply_asset(
 		tx.as_mut(),
-		&f.database.connection,
+		&f.database.owner_connection,
 		include_str!("../../../../migrations/knowledge/sql/backward/0028_provider_credentials.sql"),
 	)
 	.await;
@@ -1420,7 +1422,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	);
 	apply_asset(
 		tx.as_mut(),
-		&f.database.connection,
+		&f.database.owner_connection,
 		include_str!("../../../../migrations/knowledge/sql/forward/0028_provider_credentials.sql"),
 	)
 	.await;
@@ -1483,7 +1485,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	let resource = store.resource(row.id);
 	let old = format!("{resource}/versions/1");
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: service.repository.clone(),
 		reader: Some(store.clone()),
 		issuer: None,
@@ -2067,7 +2069,7 @@ master_key = { file = "/definitely-missing/aidash157-master-key" }
 		let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"));
 		command
 			.arg("migrate")
-			.env("DATABASE_URL", &f.url)
+			.env("DATABASE_URL", &f.owner_url)
 			.env("REINHARDT_SETTINGS_DIR", dir.path())
 			.env("REINHARDT_ENV", "local")
 			.env_remove("AIDASH_PROVIDER_MISSING_FINGERPRINT_157");
@@ -2835,7 +2837,8 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 			]),
 		})
 		.to_string(PostgresQueryBuilder);
-	let mut tx = f.database.connection.begin().await.unwrap();
+	// Only the table owner can add a constraint; the server role holds DML.
+	let mut tx = f.database.owner_connection.begin().await.unwrap();
 	tx.execute(&statement, vec![]).await.unwrap();
 	tx.commit().await.unwrap();
 	let created = management

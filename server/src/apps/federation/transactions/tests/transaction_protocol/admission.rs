@@ -3,7 +3,6 @@ use aidash_server::authorization::{
 	Authorization,
 	peer::{PeerMappingInput, write},
 };
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use std::time::Duration as StdDuration;
 
 struct ScopedPair {
@@ -83,7 +82,7 @@ async fn serve(node: &mut Node, app: reinhardt::ServerRouter) {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn invalid_deadline_does_not_bind_remote_preflight(
+async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	#[future(awt)] scoped_pair: ScopedPair,
 	#[values(-60, 7200)] seconds: i64,
 ) {
@@ -104,25 +103,19 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 		json!(manifest),
 	)
 	.await;
+	assert_eq!(status, 403, "{body}");
+	assert_no_transaction_state(&[&a, &b], manifest.id).await;
+	// The operator route still performs normal deadline validation.
+	let (status, body) = common::request(
+		&app_a,
+		&a.f.config.api_token,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	assert_eq!(status, 400, "{body}");
-	let bound: i64 = {
-		let query_bind_1 = manifest.id;
-		sqlx::query_scalar(
-			&Query::select()
-				.expr(reinhardt::query::Func::count(
-					Expr::col(Alias::new("id")).into(),
-				))
-				.from(Alias::new("atomic_preflights"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id=?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(b.f.store.control_pool.driver())
-		.await
-	}
-	.unwrap();
+	assert_no_transaction_state(&[&a, &b], manifest.id).await;
 	manifest.deadline = Utc::now() + Duration::minutes(5);
 	let (retry, body) = common::request(
 		&app_a,
@@ -132,21 +125,30 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 		json!(manifest),
 	)
 	.await;
-	a.cleanup().await;
-	b.cleanup().await;
 	assert_eq!(
-		bound, 0,
-		"invalid admission must not strand a remote binding"
+		retry, 403,
+		"correcting the deadline must not bypass suspension: {body}"
 	);
+	assert_no_transaction_state(&[&a, &b], manifest.id).await;
+	let (retry, body) = common::request(
+		&app_a,
+		&a.f.config.api_token,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	assert_eq!(
 		retry, 202,
-		"the same ID with a corrected deadline must work: {body}"
+		"the operator can reuse the corrected ID: {body}"
 	);
+	a.cleanup().await;
+	b.cleanup().await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
+async fn suspended_submission_keeps_expired_existing_transactions_recoverable(
 	#[future(awt)] scoped_pair: ScopedPair,
 ) {
 	let ScopedPair {
@@ -159,16 +161,22 @@ async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
 	} = scoped_pair;
 	manifest.deadline = Utc::now() + Duration::seconds(3);
 	let deadline = manifest.deadline;
+	let preflights = Arc::new(AtomicUsize::new(0));
+	let observed = preflights.clone();
 	let app = aidash_server::routes()
 		.into_server()
 		.with_di_context(b.application.context.clone())
 		.with_middleware(ClosureMiddleware(
-			move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| async move {
-				if request.uri.path() == "/federation/v0.1/transactions/preflight" {
-					let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
-					tokio::time::sleep(remaining + StdDuration::from_millis(50)).await;
+			move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
+				let observed = observed.clone();
+				async move {
+					if request.uri.path() == "/federation/v0.1/transactions/preflight" {
+						observed.fetch_add(1, Ordering::SeqCst);
+						let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
+						tokio::time::sleep(remaining + StdDuration::from_millis(50)).await;
+					}
+					next.handle(request).await.unwrap()
 				}
-				next.handle(request).await.unwrap()
 			},
 		));
 	serve(&mut b, app).await;
@@ -181,9 +189,15 @@ async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
 	)
 	.await;
 	assert_eq!(
-		status, 202,
-		"expiry during preflight must remain recoverable: {body}"
+		status, 403,
+		"fresh scoped submission must be suspended: {body}"
 	);
+	assert_eq!(preflights.load(Ordering::SeqCst), 0);
+	assert_no_transaction_state(&[&a, &b], manifest.id).await;
+	// Existing durable scoped work remains recoverable after its deadline.
+	seed_existing_scoped_transaction(&a, &manifest, &[&a, &b]).await;
+	let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
+	tokio::time::sleep(remaining + StdDuration::from_millis(50)).await;
 	assert!(Utc::now() > manifest.deadline);
 	let state = complete(&a, manifest.id).await;
 	assert_eq!(state.decision.as_deref(), Some("ABORT"));
@@ -214,6 +228,7 @@ async fn unavailable_peer_hides_only_its_rows(#[future(awt)] scoped_pair: Scoped
 		mut manifest,
 		..
 	} = scoped_pair;
+	seed_existing_scoped_transaction(&a, &manifest, &[&a, &b]).await;
 	let (status, body) = common::request(
 		&app_a,
 		&token_a,
@@ -260,7 +275,7 @@ async fn unavailable_peer_hides_only_its_rows(#[future(awt)] scoped_pair: Scoped
 
 #[rstest::rstest]
 #[tokio::test]
-async fn bidirectional_submissions_reserve_inbound_control_capacity(
+async fn bidirectional_new_scoped_submissions_are_rejected_before_preflight(
 	#[future(awt)] scoped_pair: ScopedPair,
 
 	fault_signals: FaultSignals,
@@ -297,6 +312,7 @@ async fn bidirectional_submissions_reserve_inbound_control_capacity(
 			));
 		serve(node, app).await;
 	}
+	let mut ids = Vec::new();
 	let mut requests = Vec::new();
 	for _ in 0..16 {
 		for (app, token, coordinator) in [
@@ -307,49 +323,38 @@ async fn bidirectional_submissions_reserve_inbound_control_capacity(
 			let token = token.clone();
 			let mut manifest = manifest.clone();
 			manifest.id = Uuid::new_v4();
+			ids.push(manifest.id);
 			manifest.coordinator = coordinator.clone();
 			requests.push(tokio::spawn(async move {
 				common::request(&app, &token, "POST", "/api/transactions", json!(manifest)).await
 			}));
 		}
 	}
-	tokio::time::timeout(StdDuration::from_secs(5), async {
-		while arrived.load(Ordering::SeqCst) < 16 {
-			tokio::time::sleep(StdDuration::from_millis(10)).await;
-		}
-	})
-	.await
-	.expect("both nodes must issue preflights concurrently");
-	tokio::time::sleep(StdDuration::from_millis(100)).await;
-	// A blocked outbound RPC may retain one connection, but not all sixteen.
-	let spare_a = a.f.store.control_pool.driver().size() as usize
-		- a.f.store.control_pool.driver().num_idle()
-		< 16;
-	let spare_b = b.f.store.control_pool.driver().size() as usize
-		- b.f.store.control_pool.driver().num_idle()
-		< 16;
-	gate.add_permits(32);
 	let results = tokio::time::timeout(
-		StdDuration::from_secs(15),
+		StdDuration::from_secs(5),
 		futures_util::future::join_all(requests),
 	)
 	.await
-	.expect("bidirectional admissions must finish without pool starvation");
-	a.cleanup().await;
-	b.cleanup().await;
-	assert!(
-		spare_a && spare_b,
-		"outbound admissions exhausted an inbound control pool"
+	.expect("both nodes must reject suspended submissions without peer I/O");
+	assert_eq!(
+		arrived.load(Ordering::SeqCst),
+		0,
+		"no remote preflight may be sent"
 	);
 	for result in results {
 		let (status, body) = result.unwrap();
-		assert_eq!(status, 202, "{body}");
+		assert_eq!(status, 403, "{body}");
 	}
+	for id in ids {
+		assert_no_transaction_state(&[&a, &b], id).await;
+	}
+	a.cleanup().await;
+	b.cleanup().await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn independent_preflights_run_concurrently(
+async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 	#[future(awt)] scoped_pair: ScopedPair,
 
 	#[future(awt)]
@@ -403,17 +408,21 @@ async fn independent_preflights_run_concurrently(
 		state: json!({}),
 	}];
 	manifest.participants.push(third);
+	let preflights = Arc::new(AtomicUsize::new(0));
 	let barrier = fault_signals.barrier;
 	for node in [&mut b, &mut c] {
 		let barrier = barrier.clone();
+		let preflights = preflights.clone();
 		let app = aidash_server::routes()
 			.into_server()
 			.with_di_context(node.application.context.clone())
 			.with_middleware(ClosureMiddleware(
 				move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
 					let barrier = barrier.clone();
+					let preflights = preflights.clone();
 					async move {
 						if request.uri.path() == "/federation/v0.1/transactions/preflight" {
+							preflights.fetch_add(1, Ordering::SeqCst);
 							barrier.wait().await;
 						}
 						next.handle(request).await.unwrap()
@@ -433,13 +442,11 @@ async fn independent_preflights_run_concurrently(
 		),
 	)
 	.await;
+	let (status, body) = response.expect("suspension must reject without any peer preflight");
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(preflights.load(Ordering::SeqCst), 0);
+	assert_no_transaction_state(&[&a, &b, &c], manifest.id).await;
 	a.cleanup().await;
 	b.cleanup().await;
 	c.cleanup().await;
-	let (status, body) = response.expect("independent participants must both reach preflight");
-	assert_eq!(status, 202, "{body}");
 }
-
-use reinhardt::query::QueryStatementBuilder as _;
-
-use reinhardt::query::SimpleExpr;

@@ -165,6 +165,47 @@ class ExtensionBootstrapTests(unittest.TestCase):
         self.cluster.kube.assert_called_once()
 
 
+class DatabaseRoleTests(unittest.TestCase):
+    """Nodes use the owner and server logins a deployment does (#262)."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.cluster = object.__new__(Cluster)
+        self.cluster.directory = pathlib.Path(self.directory.name)
+        self.cluster.args = Mock(image="aidash:test")
+        self.cluster.owner_password = "owner-password"
+        self.cluster.server_password = "server-password"
+        self.cluster.kube = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+
+    def test_node_database_is_owned_by_the_owner_with_server_default_privileges(self):
+        self.cluster.install_extensions = Mock()
+        self.cluster.provision_database(3)
+        created, privileges = (call.kwargs["value"] for call in self.cluster.kube.call_args_list)
+        self.assertEqual(created, "CREATE DATABASE tx_3 OWNER aidash_owner;\n")
+        self.cluster.install_extensions.assert_called_once_with("tx_3")
+        self.assertIn("tx_3", self.cluster.kube.call_args_list[1].args)
+        self.assertIn("FOR ROLE aidash_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server", privileges)
+        self.assertNotIn("TRUNCATE", privileges)
+
+    def test_migration_job_logs_in_as_the_owner_and_servers_as_the_server_role(self):
+        self.cluster.start_migration(3)
+        job = self.cluster.kube.call_args.kwargs["value"]
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual((job["kind"], container["args"], container["imagePullPolicy"]), ("Job", ["migrate"], "IfNotPresent"))
+        self.assertIn({"name": "DATABASE_URL", "value": "postgres://aidash_owner:owner-password@postgres:5432/tx_3"}, container["env"])
+        self.assertEqual(self.cluster.login_url("server", 3), "postgres://aidash_server:server-password@postgres:5432/tx_3")
+
+    def test_failed_migration_surfaces_its_log(self):
+        self.cluster.kube = Mock(side_effect=[
+            subprocess.CompletedProcess([], 1, "", "timed out"),
+            subprocess.CompletedProcess([], 0, "pending migration failed", ""),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "pending migration failed"):
+            self.cluster.await_migration(3)
+        self.assertIn("pending migration failed", (self.cluster.directory / "tx-3-migrate.log").read_text())
+
+
 class PortForwardTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

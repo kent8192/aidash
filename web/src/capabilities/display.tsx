@@ -44,6 +44,8 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
           type="button"
           onClick={async () => {
             try {
+              if (file.size > 16 * 1024 * 1024)
+                throw new Error("Image is too large to preview");
               const result = await download(path);
               if (result.file.digest !== file.digest)
                 throw new Error("Display file changed");
