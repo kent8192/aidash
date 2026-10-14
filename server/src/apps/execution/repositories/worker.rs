@@ -274,6 +274,13 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 			status: Some(*status),
 			message: error.to_string(),
 		},
+		// The owner must act (connect, reconnect or wait for their plan's
+		// limit); retrying the same Run would not help (ADR 0007).
+		NativeError::Plan(_) => ExecutionFailure::Inference {
+			transport: false,
+			status: None,
+			message: error.to_string(),
+		},
 		_ => ExecutionFailure::Other(error.to_string()),
 	}
 }

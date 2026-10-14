@@ -20,12 +20,14 @@ use std::sync::Arc;
 pub struct DefinitionValidation {
 	credentials: Arc<dyn Credentials>,
 	provider_credentials_enabled: bool,
+	plan_connections_enabled: bool,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
 	pub fn new(credentials: Arc<dyn Credentials>, core_tools: Arc<dyn CoreToolCatalog>) -> Self {
 		Self {
 			provider_credentials_enabled: false,
+			plan_connections_enabled: false,
 			credentials,
 			core_tools,
 		}
@@ -34,11 +36,31 @@ impl DefinitionValidation {
 		self.provider_credentials_enabled = configured;
 		self
 	}
+	/// Plan Connections are enabled only on Self-hosted Deployments whose
+	/// Operator turned them on (ADR 0007).
+	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
+		self.plan_connections_enabled = enabled;
+		self
+	}
 	fn provider_source(&self, endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
-		aidash_domain::provider_credentials::validate_source(endpoint, provider, catalog)?;
+		self.grant_source(endpoint, provider, catalog, None)
+	}
+	fn grant_source(
+		&self,
+		endpoint: &str,
+		provider: &str,
+		catalog: Option<&str>,
+		plan: Option<&str>,
+	) -> Result<()> {
+		aidash_domain::provider_credentials::validate_grants(endpoint, provider, catalog, plan)?;
 		if catalog.is_some() && !self.provider_credentials_enabled {
 			return Err(Error::Invalid(
 				"Provider Credential Store is not configured".into(),
+			));
+		}
+		if plan.is_some() && !self.plan_connections_enabled {
+			return Err(Error::Invalid(
+				"Plan Connections are not enabled on this Deployment".into(),
 			));
 		}
 		Ok(())
@@ -127,7 +149,13 @@ impl DefinitionValidation {
 			"model" => {
 				let m: ModelConfig = serde_json::from_value(e.config.clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?;
-				if m.provider != "openrouter"
+				// A plan model names `chatgpt`; every other model is an OpenRouter route.
+				let provider = if m.uses_plan_connection() {
+					"chatgpt"
+				} else {
+					"openrouter"
+				};
+				if m.provider != provider
 					|| m.model_id.trim().is_empty()
 					|| m.context_window < 2048
 					|| (local && m.max_output_tokens.is_none())
@@ -136,7 +164,7 @@ impl DefinitionValidation {
 					|| !m.modalities.iter().any(|m| m == "text")
 				{
 					return Err(Error::Invalid(
-					"model requires openrouter, model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
+					"model requires openrouter (or chatgpt with plan_connection), model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
 						.into(),
 				));
 				}
@@ -144,9 +172,10 @@ impl DefinitionValidation {
 				m.stream_stall_timeout()?;
 				m.validate_projection_versions()?;
 				m.validate_cache_mode()?;
-				if m.provider_credential.is_some() {
+				if m.provider_credential.is_some() || m.plan_connection.is_some() {
 					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
 				}
+				m.validate_plan_usage()?;
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
@@ -169,7 +198,12 @@ impl DefinitionValidation {
 						return Err(Error::Invalid("invalid media route evidence".into()));
 					}
 				}
-				self.provider_source(&m.endpoint, &m.provider, m.provider_credential.as_deref())?;
+				self.grant_source(
+					&m.endpoint,
+					&m.provider,
+					m.provider_credential.as_deref(),
+					m.plan_connection.as_deref(),
+				)?;
 			}
 			"agent" => {
 				let input: aidash_domain::registry::bindings::AgentBindings =
