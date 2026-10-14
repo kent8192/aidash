@@ -12,6 +12,12 @@ pub trait CatalogScope: Send {
 	fn inherited_lease(&self) -> bool;
 	fn approved(&self, reference: &EntityRef) -> bool;
 	fn remember(&mut self, reference: &EntityRef);
+	/// An exact admission this scope already proved under the same authority while
+	/// its locks still hold. Scopes without such a record re-prove every admission.
+	fn admitted(&self, _reference: &EntityRef, _action: &str) -> Option<Entry> {
+		None
+	}
+	fn admit(&mut self, _reference: &EntityRef, _action: &str, _entry: &Entry) {}
 	async fn distribution_lock(&mut self) -> Result<()>;
 	async fn document(&mut self, reference: &EntityRef) -> Result<Option<Value>>;
 	async fn documents(&mut self) -> Result<Vec<Value>>;
