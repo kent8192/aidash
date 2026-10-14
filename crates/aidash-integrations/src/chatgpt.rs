@@ -9,6 +9,7 @@ use aidash_domain::plan_connections::{
 	self as domain, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT_TOKENS, PlanModel,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -141,6 +142,9 @@ struct Tokens {
 	expires_in: i64,
 	#[serde(default)]
 	scope: Option<String>,
+	/// Listed in OpenAI's token reference without a documented format.
+	#[serde(default)]
+	earliest_refresh_at: Option<serde_json::Value>,
 }
 impl Tokens {
 	fn into_issued(self) -> Result<Issued> {
@@ -157,8 +161,23 @@ impl Tokens {
 			id_token: self.id_token.map(SecretString::from),
 			expires_in: self.expires_in,
 			scope: self.scope,
+			earliest_refresh_at: self.earliest_refresh_at.as_ref().and_then(instant),
 		})
 	}
+}
+
+/// Reads an instant given as epoch seconds or an RFC 3339 string. Anything
+/// else is ignored rather than failing an otherwise usable token response.
+fn instant(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+	let seconds = match value {
+		serde_json::Value::Number(number) => number.as_i64(),
+		serde_json::Value::String(text) => match DateTime::parse_from_rfc3339(text) {
+			Ok(at) => return Some(at.with_timezone(&Utc)),
+			Err(_) => text.parse().ok(),
+		},
+		_ => None,
+	}?;
+	DateTime::from_timestamp(seconds, 0)
 }
 
 fn unavailable() -> Error {
