@@ -771,7 +771,15 @@ impl Models {
 			.embed(&config, text),
 		)
 		.await
-		.map_err(|_| Error::SemanticUnavailable)??;
+		// A provider deadline or transport failure is the outage a Run retries
+		// (#233), the same as a semantic search embedding.
+		.map_err(|_| Error::RemoteSemantic(crate::semantic::remote::Failure::Unavailable))?
+		.map_err(|error| match error {
+			aidash_application::Error::External(_) => {
+				Error::RemoteSemantic(crate::semantic::remote::Failure::Unavailable)
+			}
+			error => error.into(),
+		})?;
 		if let Some(local) = local {
 			local.settle(output.tokens).await?;
 		}

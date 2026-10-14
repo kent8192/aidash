@@ -1958,6 +1958,117 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	drop(server);
 }
 
+/// Missing vector points and an unreachable embedding provider are outages a
+/// Run retries (#233), so native recall types them `Unavailable` instead of the
+/// non-retried `SemanticUnavailable`.
+#[rstest]
+#[case::missing_points(true)]
+#[case::provider_down(false)]
+#[tokio::test]
+async fn native_recall_types_vector_and_embedding_outages_as_transient(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[future(awt)]
+	#[from(four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider)]
+	fixture: FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider,
+	#[case] missing_points: bool,
+) {
+	// Arrange
+	let server = fixture.server;
+	let endpoint = format!("{}/v1", server.url);
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id,
+				content: content("Tokyo subway is useful."),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			aidash_server::semantic::worker::sweep(&store)
+				.await
+				.unwrap();
+			let state: String = aidash_server::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("state"))
+					.from(Alias::new("semantic_entries"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&store.pool)
+			.await
+			.unwrap();
+			if state == "READY" {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+	})
+	.await
+	.expect("the native vector projection must become ready");
+	if missing_points {
+		aidash_server::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("semantic_vectors"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	} else {
+		drop(server);
+	}
+	// Act
+	let result = memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank,
+			action: memory::Action::Recall {
+				query: RecallQuery {
+					text: "subway".into(),
+					time: None,
+					kinds: vec![],
+					max_tokens: 8192,
+				},
+			},
+		},
+	)
+	.await;
+	// Assert
+	assert!(
+		matches!(
+			result,
+			Err(aidash_server::Error::RemoteSemantic(
+				aidash_domain::semantic::Failure::Unavailable
+			))
+		),
+		"{result:?}"
+	);
+}
+
 #[rstest]
 #[case(false, false, "success")]
 #[case(true, false, "success")]
