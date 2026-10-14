@@ -191,6 +191,8 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 }
 #[rstest]
 #[case("http://other.invalid/path")]
+#[case("http://allowed.invalid/path")]
+#[case("https://allowed.invalid:8443/path")]
 #[case("ftp://allowed.invalid/path")]
 #[case("https://user:password@allowed.invalid/path")]
 #[tokio::test]
@@ -218,6 +220,16 @@ async fn denied_native_urls_never_reach_the_transport(fixture: Fixture, #[case] 
 	// Assert
 	assert!(matches!(result, Err(Error::Invalid(_))));
 	assert!(fixture.operations.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn native_http_rejects_literal_ip_hosts_even_when_explicitly_allowlisted() {
+	for (url, host) in [
+		("https://127.0.0.1/", "127.0.0.1"),
+		("https://[::1]/", "[::1]"),
+	] {
+		assert!(validate_native_http_url(url, &[host.to_owned()]).is_err());
+	}
 }
 #[rstest]
 #[tokio::test]
