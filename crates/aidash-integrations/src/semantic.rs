@@ -26,7 +26,7 @@ fn request(
 	endpoint: &str,
 	path: &str,
 ) -> Result<reqwest::RequestBuilder> {
-	crate::compaction::validate_endpoint(endpoint)?;
+	crate::validate_endpoint(endpoint)?;
 	Ok(client.request(method, format!("{}{path}", endpoint.trim_end_matches('/'))))
 }
 pub async fn embed(
@@ -59,6 +59,7 @@ pub async fn embed(
 		operations: vec![Operation::Embeddings],
 		max_output_tokens: 1,
 		cache_breakpoints: false,
+		call: None,
 	});
 	let access = access
 		.resolve(

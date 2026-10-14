@@ -242,6 +242,8 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 	let result = match (request.method().as_str(), path) {
 		("POST", "chat/completions") => (Operation::Chat, 1024 * 1024),
 		("POST", "embeddings") => (Operation::Embeddings, 1024 * 1024),
+		// System One answers carry only probabilities and usage (ADR 0041).
+		("POST", "systemone") => (Operation::Decision, 1024 * 1024),
 		("GET", "endpoints/zdr") => (Operation::Discovery, 8 * 1024 * 1024),
 		("GET", p) if p.starts_with("models/") && p.ends_with("/endpoints") => {
 			let model = p
@@ -336,6 +338,9 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	if op == Operation::Chat {
 		policy::chat_input(&value, claims.cache_breakpoints)?;
 	}
+	if op == Operation::Decision {
+		policy::decision_input(&value)?;
+	}
 	Ok(())
 }
 fn audit(
@@ -363,10 +368,25 @@ fn audit(
 fn usage(value: &Value) -> Option<Value> {
 	let v = value.get("usage")?;
 	let mut clean = serde_json::Map::new();
-	for field in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+	for field in [
+		"prompt_tokens",
+		"completion_tokens",
+		"total_tokens",
+		// System One reports input and output tokens instead.
+		"input_tokens",
+		"output_tokens",
+	] {
 		if let Some(count) = v.get(field).and_then(Value::as_u64) {
 			clean.insert(field.into(), json!(count));
 		}
+	}
+	// OpenRouter's reported USD cost; it is a number, never provider text.
+	if let Some(cost) = v
+		.get("cost")
+		.and_then(Value::as_f64)
+		.filter(|cost| cost.is_finite() && *cost >= 0.0)
+	{
+		clean.insert("cost".into(), json!(cost));
 	}
 	if clean.is_empty() {
 		None

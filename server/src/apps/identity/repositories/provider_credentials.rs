@@ -393,20 +393,15 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 				.resolve(context, endpoint, source)
 				.await;
 		};
+		// Runless maintenance and a Run's Decision Attempts use the Tenant's
+		// current binding, never the Run's admitted inference pin (ADR 0041).
+		if context.run.is_none() || context.is_decision() {
+			return self.tenant()?.resolve(context, endpoint, source).await;
+		}
 		let service =
 			self.store.provider_credentials.as_ref().ok_or_else(|| {
 				Error::Invalid("Provider Credential Store is not configured".into())
 			})?;
-		if context.run.is_none() {
-			return TenantAccess {
-				keyless: KeylessAccess,
-				repository: service.repository.clone(),
-				reader: self.store.provider_key_material_reader.clone(),
-				issuer: self.store.capability_issuer.clone(),
-			}
-			.resolve(context, endpoint, source)
-			.await;
-		}
 		let run = context.run.expect("Run was checked above");
 		let mut tx = self
 			.store
@@ -447,6 +442,32 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		}
 		.resolve(&context, endpoint, source)
 		.await
+	}
+	async fn check(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		endpoint: &str,
+		source: &aidash_application::provider_access::Source,
+	) -> Result<()> {
+		use aidash_application::provider_access::Source;
+		if !matches!(source, Source::Tenant { .. }) || !context.is_decision() {
+			return self.resolve(context, endpoint, source).await.map(|_| ());
+		}
+		self.tenant()?.check(context, endpoint, source).await
+	}
+}
+impl AdmittedAccess {
+	fn tenant(&self) -> Result<aidash_application::provider_access::TenantAccess> {
+		let service =
+			self.store.provider_credentials.as_ref().ok_or_else(|| {
+				Error::Invalid("Provider Credential Store is not configured".into())
+			})?;
+		Ok(aidash_application::provider_access::TenantAccess {
+			keyless: aidash_application::provider_access::KeylessAccess,
+			repository: service.repository.clone(),
+			reader: self.store.provider_key_material_reader.clone(),
+			issuer: self.store.capability_issuer.clone(),
+		})
 	}
 }
 

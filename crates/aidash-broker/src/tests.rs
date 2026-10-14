@@ -100,6 +100,7 @@ async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> 
 		"/api/v1/models/author/model/endpoints" => json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"vendor/route","context_length":131072}]}}),
 		"/api/v1/endpoints/zdr" => json!({"data":[{"model_id":"author/model","tag":"vendor/route"}]}),
 		"/api/v1/embeddings" => json!({"model":"author/model","data":[{"index":0,"embedding":[1.0,0.0]}],"usage":{"prompt_tokens":4,"total_tokens":4}}),
+		"/api/v1/systemone" => json!({"model":"typesafe/jev-1.13-20260917","answers":{"keep":{"type":"noul","noul":0.9}},"usage":{"input_tokens":12,"output_tokens":3,"cost":0.000002,"untrusted":CANARY}}),
 		_ => json!({"choices":[{"finish_reason":"stop","message":{"content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"untrusted":CANARY}})
 	}).into_response()
 }
@@ -1278,4 +1279,125 @@ fn configuration_rejects_bursts_that_cannot_admit_one_media_flow() {
 			.is_err()
 		);
 	}
+}
+
+fn decision_claims(f: &Fixture) -> Claims {
+	let mut claims = f.claims();
+	claims.ops = vec![Operation::Decision];
+	claims.model = "typesafe/jev-1.13".into();
+	claims.max_output_tokens = 0;
+	claims
+}
+fn decision() -> Value {
+	json!({"model":"typesafe/jev-1.13","state":{"events":[]},"questions":{"keep":{"type":"noul","instructions":"Keep it?"}},"provider":{"zdr":true}})
+}
+
+#[tokio::test]
+async fn system_one_relays_a_zero_retention_decision_and_audits_only_numeric_usage() {
+	let f = Fixture::new().await;
+	let response = f
+		.request(
+			&decision_claims(&f),
+			"POST",
+			"/api/v1/systemone",
+			decision(),
+		)
+		.await;
+	assert_eq!(response.status(), 200);
+	let body = json_body(response).await;
+	assert_eq!(body["answers"]["keep"]["noul"], 0.9);
+	assert_eq!(
+		f.provider.paths.lock().unwrap().last().map(String::as_str),
+		Some("/api/v1/systemone")
+	);
+	let logs = f.logs.0.lock().unwrap();
+	let audit: Value = serde_json::from_str(logs.last().unwrap()).unwrap();
+	assert_eq!(audit["operation"], "decision");
+	assert_eq!(
+		audit["usage"],
+		json!({"input_tokens":12,"output_tokens":3,"cost":0.000002})
+	);
+	assert!(!logs.last().unwrap().contains(CANARY));
+}
+
+#[tokio::test]
+async fn system_one_requires_a_decision_token_and_an_exact_body() {
+	let f = Fixture::new().await;
+	// An inference token never reaches System One, and a decision token never reaches chat.
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/systemone", decision())
+		.await;
+	assert_eq!(response.status(), 403);
+	assert_eq!(
+		json_body(response).await["error"]["code"],
+		"capability_operation"
+	);
+	let mut chat_body = chat();
+	chat_body["model"] = json!("typesafe/jev-1.13");
+	let response = f
+		.request(
+			&decision_claims(&f),
+			"POST",
+			"/api/v1/chat/completions",
+			chat_body,
+		)
+		.await;
+	assert_eq!(response.status(), 403);
+	assert_eq!(
+		json_body(response).await["error"]["code"],
+		"capability_operation"
+	);
+	for (field, value) in [
+		// Zero data retention is mandatory and no other routing preference is signed.
+		("provider", Value::Null),
+		("provider", json!({"zdr":false})),
+		("provider", json!({"zdr":true,"allow_fallbacks":true})),
+		("provider", json!({"zdr":true,"only":["typesafe"]})),
+		// Observability fields reach OpenRouter's broadcast destinations.
+		("trace", json!({"trace_id":"t"})),
+		("user", json!("someone")),
+		("session_id", json!("session")),
+		("questions", json!({})),
+		("questions", json!([])),
+	] {
+		let mut body = decision();
+		if value.is_null() {
+			body.as_object_mut().unwrap().remove(field);
+		} else {
+			body[field] = value;
+		}
+		let response = f
+			.request(&decision_claims(&f), "POST", "/api/v1/systemone", body)
+			.await;
+		assert_eq!(response.status(), 403, "{field}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation",
+			"{field}"
+		);
+	}
+	let mut body = decision();
+	body.as_object_mut().unwrap().remove("state");
+	let response = f
+		.request(&decision_claims(&f), "POST", "/api/v1/systemone", body)
+		.await;
+	assert_eq!(response.status(), 403);
+	// A capability authorizes one exact model; OpenRouter fallbacks and aliases are refused.
+	for (field, value) in [
+		("model", json!("~typesafe/jev-latest")),
+		("models", json!(["typesafe/jev-1.13"])),
+	] {
+		let mut body = decision();
+		body[field] = value;
+		let response = f
+			.request(&decision_claims(&f), "POST", "/api/v1/systemone", body)
+			.await;
+		assert_eq!(response.status(), 403, "{field}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_model"
+		);
+	}
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
 }

@@ -23,12 +23,27 @@ pub struct Inference {
 	pub max_output_tokens: u32,
 	/// Requests the signed authority to send explicit `cache_control` breakpoints.
 	pub cache_breakpoints: bool,
+	/// The caller's identifier for this provider call, such as a Decision
+	/// Attempt's; the token issuer generates one when it is unset.
+	pub call: Option<Uuid>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
 	Chat,
 	Discovery,
 	Embeddings,
+	/// One System One request: a Decision Attempt of a Run (ADR 0041).
+	Decision,
+}
+impl Context {
+	/// A Decision Attempt uses the Tenant's current binding rather than the Run's
+	/// admitted pin: Runs on a Plan Connection or a Keyless endpoint have no
+	/// OpenRouter pin, and compaction is not inference (ADR 0041).
+	pub fn is_decision(&self) -> bool {
+		self.inference
+			.as_ref()
+			.is_some_and(|inference| inference.operations == [Operation::Decision])
+	}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaintenancePurpose {
@@ -64,6 +79,12 @@ pub struct Access {
 #[async_trait]
 pub trait ProviderAccess: Send + Sync {
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
+	/// Whether `resolve` would find an active credential, without minting a
+	/// Capability Token or reading Key Material. Callers use it to fail before
+	/// they reserve allowances.
+	async fn check(&self, context: &Context, endpoint: &str, source: &Source) -> Result<()> {
+		self.resolve(context, endpoint, source).await.map(|_| ())
+	}
 }
 /// Access without a Provider Credential Store: keyless endpoints only.
 pub struct KeylessAccess;
@@ -107,16 +128,22 @@ pub struct TenantAccess {
 	pub reader: Option<Arc<dyn KeyMaterialReader>>,
 	pub issuer: Option<Arc<dyn TokenIssuer>>,
 }
-#[async_trait]
-impl ProviderAccess for TenantAccess {
-	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access> {
-		let Source::Tenant { provider } = source else {
-			return self.keyless.resolve(context, endpoint, source).await;
-		};
+impl TenantAccess {
+	/// Current metadata and pinned version of the credential a call may use.
+	async fn active(
+		&self,
+		context: &Context,
+		endpoint: &str,
+		provider: &str,
+	) -> Result<(
+		aidash_domain::provider_credentials::ProviderCredential,
+		String,
+	)> {
 		let provider = aidash_domain::provider_credentials::Provider::parse(provider)?;
 		if context.tenant.is_empty()
 			|| (context.run.is_none() && context.maintenance.is_none())
 			|| (context.run.is_some() && context.maintenance.is_some())
+			|| (context.is_decision() && context.run.is_none())
 			|| endpoint != provider.base_url()
 		{
 			return Err(Error::Invalid(
@@ -124,7 +151,7 @@ impl ProviderAccess for TenantAccess {
 			));
 		}
 		let mut scope = self.repository.begin(&context.tenant).await?;
-		let id = if context.run.is_some() {
+		let id = if context.run.is_some() && !context.is_decision() {
 			context.provider_credential_id.ok_or_else(|| {
 				Error::Invalid("Provider Credential access has no resolved ID".into())
 			})?
@@ -150,6 +177,16 @@ impl ProviderAccess for TenantAccess {
 		// a later binding change cannot alter the ID admitted for this Run.
 		let version = row.require_active()?.to_owned();
 		scope.commit().await?;
+		Ok((row, version))
+	}
+}
+#[async_trait]
+impl ProviderAccess for TenantAccess {
+	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access> {
+		let Source::Tenant { provider } = source else {
+			return self.keyless.resolve(context, endpoint, source).await;
+		};
+		let (row, version) = self.active(context, endpoint, provider).await?;
 		if let Some(issuer) = &self.issuer {
 			return issuer.mint(context, &row).await;
 		}
@@ -161,8 +198,17 @@ impl ProviderAccess for TenantAccess {
 			.read(&context.tenant, &row.secret_resource, &version)
 			.await?;
 		Ok(Access {
-			endpoint: provider.base_url().into(),
+			endpoint: row.provider.base_url().into(),
 			bearer,
 		})
+	}
+	async fn check(&self, context: &Context, endpoint: &str, source: &Source) -> Result<()> {
+		let Source::Tenant { provider } = source else {
+			return self.keyless.check(context, endpoint, source).await;
+		};
+		if self.issuer.is_none() && self.reader.is_none() {
+			return Err(Error::Invalid("credential broker not configured".into()));
+		}
+		self.active(context, endpoint, provider).await.map(|_| ())
 	}
 }
