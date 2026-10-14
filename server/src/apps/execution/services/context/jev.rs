@@ -1,5 +1,5 @@
-//! Process settings and error conversion around the compaction adapter.
-use crate::{Result, config};
+//! Process composition and error conversion around the compaction adapter.
+use crate::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 pub type Questions = aidash_application::ports::CompactionQuestions;
@@ -9,35 +9,38 @@ pub trait JevAsker: Send + Sync {
 	async fn ask(&self, state: &Value, questions: &Questions) -> Result<Value>;
 }
 
+/// Jev pruning needs an approved `compactor`, and later a Decider (#108). A Run
+/// without one is never pruned: removing the node's environment key also
+/// removed the implicit Jev pruning of ordinary Runs (ADR 0041).
+pub struct Unapproved;
+#[async_trait]
+impl JevAsker for Unapproved {
+	async fn ask(&self, _: &Value, _: &Questions) -> Result<Value> {
+		Err(aidash_application::Error::Context(
+			aidash_domain::context::recovery::Failure::PruneUnavailable,
+		)
+		.into())
+	}
+}
+
 pub struct JevClient(aidash_integrations::compaction::JevClient);
 impl JevClient {
-	pub fn from_env(client: reqwest::Client) -> Result<Self> {
-		Self::new(
-			client,
-			std::env::var("AIDASH_JEV_ENDPOINT")
-				.unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into()),
-			std::env::var("AIDASH_JEV_MODEL").unwrap_or_else(|_| "jev-latest".into()),
-			"AIDASH_SECRET_JEV".into(),
-		)
-	}
-	pub fn new(
-		client: reqwest::Client,
-		endpoint: String,
-		model: String,
-		credential_env: String,
+	/// One Run's transport for an approved compactor, using the Tenant's current
+	/// OpenRouter Provider Credential for each Decision Attempt.
+	pub fn approved(
+		config: crate::registry::CompactorConfig,
+		access: std::sync::Arc<dyn aidash_application::provider_access::ProviderAccess>,
+		context: aidash_application::provider_access::Context,
 	) -> Result<Self> {
-		config::validate_endpoint(&endpoint)?;
-		crate::bootstrap::compaction_transport(client, endpoint, model, credential_env).map(Self)
-	}
-	pub fn approved(config: crate::registry::CompactorConfig) -> Result<Self> {
 		config.validate()?;
 		let client = reqwest::Client::builder()
 			.redirect(reqwest::redirect::Policy::none())
 			.connect_timeout(std::time::Duration::from_secs(5))
 			.timeout(std::time::Duration::from_secs(30))
 			.build()?;
-		let transport = Self::new(client, config.endpoint, config.model, config.credential_env)?;
-		Ok(Self(transport.0.with_bounds(
+		let transport =
+			aidash_integrations::compaction::JevClient::new(client, config.model, access, context)?;
+		Ok(Self(transport.with_bounds(
 			config.max_request_bytes,
 			config.max_questions,
 			config.max_response_bytes,
@@ -76,8 +79,8 @@ use crate::registry::CompactorValidation;
 impl aidash_application::ports::generation::compaction::remote::RemoteCompactionTransport
 	for JevClient
 {
-	fn check_credential(&self) -> aidash_application::Result<()> {
-		self.0.check_remote_credential()
+	async fn check_credential(&self) -> aidash_application::Result<()> {
+		self.0.check_remote_credential().await
 	}
 	fn check_request(
 		&self,
