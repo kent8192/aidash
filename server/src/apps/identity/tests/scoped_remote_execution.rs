@@ -172,9 +172,14 @@ impl Pair {
 		// step by served work instead, as `ScopedWorkerProcess::until` does,
 		// without changing any production timeout, retry deadline or lease.
 		let started = std::time::Instant::now();
+		// Set by the watchdog; the loop stops after the in-flight call.
+		let abandon = std::cell::Cell::new(false);
 		let progress = async {
 			loop {
-				if worker.worker_once().await.unwrap() || self.run().await.phase().is_terminal() {
+				if worker.worker_once().await.unwrap()
+					|| abandon.get()
+					|| self.run().await.phase().is_terminal()
+				{
 					// Reconciliation can finish a generated run before another
 					// lease is available. Callers still assert its exact final state.
 					break;
@@ -198,6 +203,11 @@ impl Pair {
 			}
 		};
 		if let Some(reason) = stalled {
+			// Never cancel `worker_once` mid-call: let the in-flight call
+			// release its lease first. The worker abandons each peer call
+			// after 60s, so it settles within one more stall interval.
+			abandon.set(true);
+			let _ = tokio::time::timeout(ScopedWorkerProcess::STALL, &mut progress).await;
 			let run = self.run().await;
 			panic!(
 				"scoped step must progress within its bounded retry delay ({reason}): phase={}, control={}, state={:?}",
