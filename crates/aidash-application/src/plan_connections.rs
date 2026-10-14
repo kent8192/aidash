@@ -87,6 +87,8 @@ pub struct Issued {
 	pub expires_in: i64,
 	/// Granted scopes; a refresh may omit them, which keeps the grant.
 	pub scope: Option<String>,
+	/// OpenAI's `earliest_refresh_at`: no refresh before it.
+	pub earliest_refresh_at: Option<DateTime<Utc>>,
 }
 
 pub struct ExchangeRequest<'a> {
@@ -137,7 +139,7 @@ pub trait Scope: Send {
 	async fn owned(&mut self, provider: Provider) -> Result<Option<PlanConnection>>;
 	/// External Identities with an active Mapping to the owner.
 	async fn mapped_identities(&mut self) -> Result<usize>;
-	async fn insert(&mut self, value: &PlanConnection, actor: &str) -> Result<()>;
+	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn save(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn delete(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
@@ -167,7 +169,9 @@ pub enum Outcome {
 	Reconnected,
 	Denied,
 	Failed,
-	/// The grant lacked `chatgpt.tokens.use.direct`; nothing was stored.
+	/// The grant lacked `chatgpt.tokens.use.direct`. Its tokens were revoked;
+	/// only the issued client and account are kept, so enabling plan usage
+	/// later reauthorizes the same client (OpenAI's recovery guidance).
 	PlanUsageNotGranted,
 }
 
@@ -248,6 +252,28 @@ fn issued_lifetime(issued: &Issued) -> Result<Duration> {
 		));
 	}
 	Ok(Duration::seconds(issued.expires_in))
+}
+
+/// OpenAI's refresh gate for tokens that expire at `access_expires_at`. A gate
+/// past that expiry would block every refresh, so it is clamped there.
+fn earliest_refresh(issued: &Issued, access_expires_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+	issued
+		.earliest_refresh_at
+		.map(|at| at.min(access_expires_at))
+}
+
+/// A Store operation on something already gone counts as done, so a retried
+/// cleanup completes.
+fn gone(result: Result<()>) -> Result<()> {
+	match result {
+		Err(Error::NotFound(_)) => Ok(()),
+		result => result,
+	}
+}
+
+/// Retried with the usual bounded backoff, never a request to reconnect.
+fn plan_unavailable() -> Error {
+	Error::External("ChatGPT plan usage is temporarily unavailable".into())
 }
 
 pub struct Service {
@@ -349,6 +375,15 @@ impl Service {
 			.is_none_or(domain::grants_plan_usage)
 		{
 			self.revoke_quietly(&client, &issued.refresh_token).await;
+			// Keep the sign-in without plan usage: a later attempt reuses the
+			// issued client instead of registering another one.
+			if self
+				.register(owner, &client, &account, actor)
+				.await
+				.is_err()
+			{
+				tracing::warn!("the issued client of a grant without plan usage was not kept");
+			}
 			return Ok(Outcome::PlanUsageNotGranted);
 		}
 		let lifetime = match issued_lifetime(&issued) {
@@ -371,6 +406,62 @@ impl Service {
 		}
 	}
 
+	/// Records the issued client and the verified account before any Plan
+	/// Token is stored. The row is the only pointer to its Store resource, so
+	/// tokens are never written where a disconnect or reconnect cannot find
+	/// them. Until tokens are pinned, the connection needs reconnection.
+	/// Returns whether this call created it.
+	async fn register(
+		&self,
+		owner: &Owner,
+		client: &str,
+		account: &str,
+		actor: &str,
+	) -> Result<bool> {
+		let mut scope = self.repository.begin(owner).await?;
+		if scope.mapped_identities().await? != 1 {
+			return Err(shared_subject());
+		}
+		if scope.owned(Provider::Chatgpt).await?.is_some() {
+			scope.commit().await?;
+			return Ok(false);
+		}
+		let now = Utc::now();
+		let id = Uuid::now_v7();
+		let resource = self.store.plan_resource(id);
+		self.store.create_plan(&owner.tenant, id).await?;
+		let row = PlanConnection {
+			id,
+			tenant: owner.tenant.clone(),
+			subject: owner.subject.clone(),
+			provider: Provider::Chatgpt,
+			client_id: client.to_owned(),
+			account: account.to_owned(),
+			secret_resource: resource.clone(),
+			pinned_version: None,
+			state: State::NeedsReconnection,
+			access_expires_at: now,
+			earliest_refresh_at: None,
+			refresh_expires_at: now,
+			connected_at: now,
+			refreshed_at: None,
+			revision: 1,
+		};
+		let inserted = match scope
+			.insert(&row, "plan_connection.registered", actor)
+			.await
+		{
+			Ok(()) => scope.commit().await,
+			Err(error) => Err(error),
+		};
+		if let Err(error) = inserted {
+			// The resource holds no tokens yet.
+			self.delete_resource(&resource).await;
+			return Err(error);
+		}
+		Ok(true)
+	}
+
 	async fn write(
 		&self,
 		owner: &Owner,
@@ -380,94 +471,73 @@ impl Service {
 		lifetime: Duration,
 		actor: &str,
 	) -> Result<Outcome> {
+		let first = self.register(owner, &client, &account, actor).await?;
 		let mut scope = self.repository.begin(owner).await?;
 		if scope.mapped_identities().await? != 1 {
 			return Err(shared_subject());
 		}
-		let now = Utc::now();
-		let sealed = Tokens::seal(issued);
-		match scope.owned(Provider::Chatgpt).await? {
-			None => {
-				let id = Uuid::now_v7();
-				let resource = self.store.plan_resource(id);
-				self.store.create_plan(&owner.tenant, id).await?;
-				let version = match self
-					.store
-					.add_version(&owner.tenant, &resource, &sealed)
-					.await
-				{
-					Ok(version) => version,
-					Err(error) => {
-						self.delete_resource(&resource).await;
-						return Err(error);
-					}
-				};
-				let row = PlanConnection {
-					id,
-					tenant: owner.tenant.clone(),
-					subject: owner.subject.clone(),
-					provider: Provider::Chatgpt,
-					client_id: client,
-					account,
-					secret_resource: resource.clone(),
-					pinned_version: Some(version),
-					state: State::Active,
-					access_expires_at: now + lifetime,
-					refresh_expires_at: now + domain::refresh_lifetime(),
-					connected_at: now,
-					refreshed_at: None,
-					revision: 1,
-				};
-				let inserted = match scope.insert(&row, actor).await {
-					Ok(()) => scope.commit().await,
-					Err(error) => Err(error),
-				};
-				if let Err(error) = inserted {
-					self.delete_resource(&resource).await;
-					return Err(error);
-				}
-				Ok(Outcome::Connected)
-			}
-			Some(mut row) => {
-				// A reconnection keeps the connection and its issued client, and
-				// must authenticate the same ChatGPT account it was issued for.
-				if row.client_id != client {
-					return Err(Error::Invalid(
-						"Sign in with ChatGPT returned a different client".into(),
-					));
-				}
-				if row.account != account {
-					return Err(Error::Conflict(
-						"Sign in with ChatGPT authenticated a different ChatGPT account; \
-						 disconnect this Plan Connection before connecting another account"
-							.into(),
-					));
-				}
-				let version = self
-					.store
-					.add_version(&owner.tenant, &row.secret_resource, &sealed)
-					.await?;
-				let previous = row.pinned_version.replace(version.clone());
-				row.state = State::Active;
-				row.access_expires_at = now + lifetime;
-				row.refresh_expires_at = now + domain::refresh_lifetime();
-				row.connected_at = now;
-				row.refreshed_at = None;
-				row.revision += 1;
-				let saved = match scope.save(&row, "plan_connection.reconnected", actor).await {
-					Ok(()) => scope.commit().await,
-					Err(error) => Err(error),
-				};
-				if let Err(error) = saved {
-					self.destroy_quietly(&version).await;
-					return Err(error);
-				}
-				if let Some(previous) = previous {
-					self.destroy_quietly(&previous).await;
-				}
-				Ok(Outcome::Reconnected)
-			}
+		let mut row = scope.owned(Provider::Chatgpt).await?.ok_or_else(|| {
+			Error::Conflict("the Plan Connection was disconnected while connecting".into())
+		})?;
+		// A reconnection keeps the connection and its issued client, and must
+		// authenticate the same ChatGPT account it was issued for.
+		if row.client_id != client {
+			return Err(Error::Invalid(
+				"Sign in with ChatGPT returned a different client".into(),
+			));
 		}
+		if row.account != account {
+			return Err(Error::Conflict(
+				"Sign in with ChatGPT authenticated a different ChatGPT account; \
+				 disconnect this Plan Connection before connecting another account"
+					.into(),
+			));
+		}
+		let now = Utc::now();
+		let stale = self.stale_versions(&row).await;
+		let version = self
+			.store
+			.add_version(&owner.tenant, &row.secret_resource, &Tokens::seal(issued))
+			.await?;
+		row.pinned_version = Some(version.clone());
+		row.state = State::Active;
+		row.access_expires_at = now + lifetime;
+		row.earliest_refresh_at = earliest_refresh(issued, row.access_expires_at);
+		row.refresh_expires_at = now + domain::refresh_lifetime();
+		row.connected_at = now;
+		row.refreshed_at = None;
+		row.revision += 1;
+		let event = if first {
+			"plan_connection.connected"
+		} else {
+			"plan_connection.reconnected"
+		};
+		let saved = match scope.save(&row, event, actor).await {
+			Ok(()) => scope.commit().await,
+			Err(error) => Err(error),
+		};
+		if let Err(error) = saved {
+			self.destroy_quietly(&version).await;
+			return Err(error);
+		}
+		for version in stale {
+			self.destroy_quietly(&version).await;
+		}
+		Ok(if first {
+			Outcome::Connected
+		} else {
+			Outcome::Reconnected
+		})
+	}
+
+	/// The versions to destroy once a new one is pinned: everything the
+	/// resource holds now, including versions an earlier cleanup failed to
+	/// destroy. Read under the owner's scope, before the new version is added.
+	async fn stale_versions(&self, row: &PlanConnection) -> Vec<String> {
+		self.store
+			.versions(&row.secret_resource)
+			.await
+			.unwrap_or_else(|_| row.pinned_version.iter().cloned().collect())
 	}
 
 	/// Revokes the grant at OpenAI, then deletes Aidash's copy. A revocation
@@ -547,6 +617,12 @@ impl Service {
 			}
 			Err(failure) => return Err(Error::Plan(failure)),
 		};
+		// OpenAI may refuse a refresh before its `earliest_refresh_at`, and a
+		// refused refresh would end the grant: wait instead.
+		if force && !row.may_refresh(now) {
+			scope.commit().await?;
+			return Err(plan_unavailable());
+		}
 		let tokens = self.tokens(&row, &version).await?;
 		if !force && !row.needs_refresh(now) {
 			scope.commit().await?;
@@ -596,6 +672,7 @@ impl Service {
 				return Err(self.abandon_rotation(&row, &issued, error).await);
 			}
 		};
+		let stale = self.stale_versions(&row).await;
 		// Store the rotated pair before anything else: the old refresh token
 		// is already spent.
 		let version = match self
@@ -610,8 +687,9 @@ impl Service {
 			}
 		};
 		let spent = row.clone();
-		let previous = row.pinned_version.replace(version);
+		row.pinned_version = Some(version);
 		row.access_expires_at = now + lifetime;
+		row.earliest_refresh_at = earliest_refresh(&issued, row.access_expires_at);
 		row.refresh_expires_at = now + domain::refresh_lifetime();
 		row.refreshed_at = Some(now);
 		row.revision += 1;
@@ -625,8 +703,8 @@ impl Service {
 		if let Err(error) = scope.commit().await {
 			return Err(self.abandon_rotation(&spent, &issued, error).await);
 		}
-		if let Some(previous) = previous {
-			self.destroy_quietly(&previous).await;
+		for version in stale {
+			self.destroy_quietly(&version).await;
 		}
 		Ok(issued.access_token)
 	}
@@ -706,16 +784,26 @@ impl Service {
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		scope.commit().await?;
 		let access = self.bearer(id).await?;
-		match self.authorization.models(&access).await {
+		let result = match self.authorization.models(&access).await {
 			// OpenAI can reject an access token before its recorded expiry.
 			// As for inference, one forced refresh decides whether the owner
 			// must reconnect.
 			Err(Error::Plan(Failure::NeedsReconnection)) => {
 				let access = self.access(id, true).await?;
-				self.authorization.models(&access).await
+				match self.authorization.models(&access).await {
+					// OpenAI asks for a new sign-in only after a terminal refresh
+					// error or a confirmed revocation; a fresh token's rejection
+					// is neither.
+					Err(Error::Plan(Failure::NeedsReconnection)) => Err(plan_unavailable()),
+					result => result,
+				}
 			}
 			result => result,
+		};
+		if matches!(result, Err(Error::Plan(Failure::Ineligible))) {
+			self.mark_ineligible(id).await?;
 		}
+		result
 	}
 
 	/// Ends use after a rejected refresh: the tokens are destroyed, while the
@@ -731,20 +819,20 @@ impl Service {
 			State::Active | State::NeedsReconnection => "plan_connection.needs_reconnection",
 		};
 		row.state = state;
-		row.pinned_version = None;
+		let pinned = row.pinned_version.take();
 		row.revision += 1;
-		// Snapshot the discarded versions while the owner's scope still
-		// serializes writers: a reconnect waiting on it pins a new version
-		// in the same resource, which must survive this cleanup.
-		let discarded = self.store.versions(&row.secret_resource).await;
-		scope.save(&row, event, SYSTEM_ACTOR).await?;
-		scope.commit().await?;
-		if let Ok(versions) = discarded {
-			for version in versions {
-				self.destroy_quietly(&version).await;
-			}
+		// Destroy the tokens while the owner's scope still serializes writers:
+		// a reconnect waiting on it pins a new version in the same resource,
+		// which must survive this cleanup. A failed cleanup commits nothing,
+		// so the call that next finds the connection retries the transition;
+		// the pinned version goes last, so until then it stays readable.
+		let mut versions = self.store.versions(&row.secret_resource).await?;
+		versions.sort_by_key(|version| Some(version) == pinned.as_ref());
+		for version in versions {
+			gone(self.store.destroy(&version).await)?;
 		}
-		Ok(())
+		scope.save(&row, event, SYSTEM_ACTOR).await?;
+		scope.commit().await
 	}
 
 	async fn revoke_row(&self, row: &PlanConnection) -> bool {
@@ -770,10 +858,6 @@ impl Service {
 	/// Deletes every Plan Token version and the resource. A resource that is
 	/// already gone counts as deleted, so a retried cleanup completes.
 	async fn delete_tokens(&self, row: &PlanConnection) -> Result<()> {
-		let gone = |result: Result<()>| match result {
-			Err(Error::NotFound(_)) => Ok(()),
-			result => result,
-		};
 		let versions = match self.store.versions(&row.secret_resource).await {
 			Err(Error::NotFound(_)) => Vec::new(),
 			versions => versions?,
