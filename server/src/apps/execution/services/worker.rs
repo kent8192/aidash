@@ -85,6 +85,8 @@ impl BaseCommand for RunWorker {
 
 pub async fn run(address: Option<SocketAddr>) -> crate::Result<()> {
 	let settings = load_settings()?;
+	// The worker's login cannot change the schema; `migrate` runs first as its owner.
+	bootstrap::require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
 	let address = address.or(settings.node.probe_listen);
 	let connection = crate::database::runtime::connect(&config.database_url, 16).await?;

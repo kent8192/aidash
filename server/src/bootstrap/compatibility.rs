@@ -37,6 +37,8 @@ pub async fn require_migrated(settings: &ProjectSettings) -> Result<()> {
 }
 
 pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
+	// The server's login cannot change the schema; `migrate` runs first as its owner.
+	require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
 	let address: std::net::SocketAddr = std::env::var("AIDASH_LISTEN")
 		.unwrap_or_else(|_| "127.0.0.1:8080".into())

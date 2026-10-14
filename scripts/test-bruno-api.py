@@ -594,6 +594,14 @@ def main():
         "--evidence-dir", type=pathlib.Path, default=ROOT / ".ignore/bruno"
     )
     args = parser.parse_args()
+    # Servers no longer log in as the bootstrap user (#262); a password set only
+    # for that user would otherwise be ignored and fail later as an auth error.
+    if "AIDASH_BRUNO_POSTGRES_PASSWORD" in os.environ:
+        raise SystemExit(
+            "AIDASH_BRUNO_POSTGRES_PASSWORD is no longer read; set "
+            "AIDASH_BRUNO_OWNER_PASSWORD and AIDASH_BRUNO_SERVER_PASSWORD for the "
+            "aidash_owner and aidash_server logins instead"
+        )
     binary = args.binary.resolve(strict=True)
     cli = shutil.which(args.cli)
     if cli is None:

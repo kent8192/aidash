@@ -53,6 +53,8 @@ impl RunserverHook for AidashRuntime {
 		context: &RunserverContext,
 	) -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
 		let settings = load_settings()?;
+		// The server's login cannot change the schema; `migrate` runs first as its owner.
+		bootstrap::require_migrated(&settings).await?;
 		let config = crate::config::Config::from_settings(&settings)?;
 		// The application keeps admission/control capacity separate from native
 		// command connections; no migration runs implicitly during startup.

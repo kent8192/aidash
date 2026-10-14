@@ -6,7 +6,8 @@ use rstest::rstest;
 
 #[rstest]
 #[case::superuser(ADMIN, "is a superuser")]
-#[case::table_owner(OWNER, "owns database objects")]
+// The owner role owns the database as well as every table, as in a deployment.
+#[case::owner(OWNER, "owns the database")]
 #[tokio::test]
 async fn server_refuses_a_login_that_bypasses_row_level_security(
 	#[future] database: DatabaseFixture,
@@ -21,6 +22,31 @@ async fn server_refuses_a_login_that_bypasses_row_level_security(
 	// Assert
 	let error = refused.err().expect("a privileged login is refused");
 	assert!(error.to_string().contains(reason), "{error}");
+}
+
+/// A login that owns no table but owns a schema can still create and drop
+/// objects in it, so it is refused as well.
+#[rstest]
+#[tokio::test]
+async fn server_refuses_a_login_that_owns_a_schema(#[future] database: DatabaseFixture) {
+	// Arrange: role and schema DDL that Reinhardt Query cannot express.
+	let f = database.await;
+	let admin = sqlx::PgPool::connect(&with_login(&f.url, ADMIN))
+		.await
+		.unwrap();
+	for statement in [
+		"CREATE ROLE schema_probe LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'probe-password'",
+		"CREATE SCHEMA probe AUTHORIZATION schema_probe",
+	] {
+		sqlx::query(statement).execute(&admin).await.unwrap();
+	}
+	admin.close().await;
+	let url = with_login(&f.url, ("schema_probe", "probe-password"));
+	// Act
+	let refused = runtime::connect(&url, 2).await;
+	// Assert
+	let error = refused.err().expect("a schema owner is refused");
+	assert!(error.to_string().contains("owns a schema"), "{error}");
 }
 
 #[rstest]

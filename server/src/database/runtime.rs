@@ -30,7 +30,9 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 		.after_release(|connection, _| {
 			Box::pin(async move {
 				// RESET ALL, unlike DISCARD ALL, keeps SQLx's cached prepared
-				// statements valid. A failed reset closes the connection.
+				// statements valid. It skips the active role, so a borrower's
+				// SET ROLE is reset explicitly. A failed reset closes the connection.
+				connection.execute("RESET ROLE").await?;
 				connection.execute("RESET ALL").await?;
 				Ok(true)
 			})
@@ -42,9 +44,12 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 	Ok(connection)
 }
 
-/// Refuse a superuser, a role with `BYPASSRLS`, or the owner of any relation
-/// outside PostgreSQL's own schemas. Role attributes are never inherited
-/// through membership, so the session's own role decides.
+/// Refuse a superuser, a role with `BYPASSRLS`, the owner of the current
+/// database, or the owner of any schema or relation outside PostgreSQL's own
+/// schemas. The database owner implicitly owns `public` through
+/// `pg_database_owner`, and a schema owner can create and drop its objects.
+/// Role attributes are never inherited through membership, so the session's
+/// own role decides.
 pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()> {
 	let role = Alias::new("r");
 	let class = Alias::new("c");
@@ -73,6 +78,34 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 				.ne("information_schema"),
 		)
 		.to_owned();
+	let schema = Alias::new("s");
+	let owned_schema = Query::select()
+		.expr(Expr::val(1))
+		.from_as(Alias::new("pg_namespace"), schema.clone())
+		.and_where(
+			SimpleExpr::from(Expr::col((schema.clone(), Alias::new("nspowner"))))
+				.eq(Expr::col((role.clone(), Alias::new("oid")))),
+		)
+		.and_where(
+			SimpleExpr::from(Expr::col((schema.clone(), Alias::new("nspname")))).not_like("pg\\_%"),
+		)
+		.and_where(
+			SimpleExpr::from(Expr::col((schema, Alias::new("nspname")))).ne("information_schema"),
+		)
+		.to_owned();
+	let database = Alias::new("d");
+	let owned_database = Query::select()
+		.expr(Expr::val(1))
+		.from_as(Alias::new("pg_database"), database.clone())
+		.and_where(
+			SimpleExpr::from(Expr::col((database.clone(), Alias::new("datdba"))))
+				.eq(Expr::col((role.clone(), Alias::new("oid")))),
+		)
+		.and_where(
+			SimpleExpr::from(Expr::col((database, Alias::new("datname"))))
+				.eq(Expr::cust("current_database()")),
+		)
+		.to_owned();
 	let (sql, values) = Query::select()
 		.expr_as(
 			Expr::col((role.clone(), Alias::new("rolsuper"))),
@@ -83,6 +116,8 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 			Alias::new("bypass"),
 		)
 		.expr_as(Expr::exists(owned), Alias::new("owner"))
+		.expr_as(Expr::exists(owned_schema), Alias::new("schema_owner"))
+		.expr_as(Expr::exists(owned_database), Alias::new("database_owner"))
 		.from_as(Alias::new("pg_roles"), role.clone())
 		.and_where(
 			SimpleExpr::from(Expr::col((role, Alias::new("rolname"))))
@@ -94,12 +129,15 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		row.get::<bool>(name)
 			.map_err(|error| Error::External(format!("database login check: {error}")))
 	};
-	let (superuser, bypass, owner) = (flag("superuser")?, flag("bypass")?, flag("owner")?);
-	let reason = if superuser {
+	let reason = if flag("superuser")? {
 		"is a superuser"
-	} else if bypass {
+	} else if flag("bypass")? {
 		"has BYPASSRLS"
-	} else if owner {
+	} else if flag("database_owner")? {
+		"owns the database"
+	} else if flag("schema_owner")? {
+		"owns a schema"
+	} else if flag("owner")? {
 		"owns database objects"
 	} else {
 		return Ok(());

@@ -37,9 +37,8 @@ impl CapabilityCommand for RunNode {
 						.unwrap_or_else(|_| "aidash=info".into()),
 				)
 				.try_init();
+			// Each startup path confirms the migration state itself.
 			let settings = load_settings()?;
-			// The server's login cannot change the schema; `migrate` runs first as its owner.
-			bootstrap::require_migrated(&settings).await?;
 			match self.0 {
 				Role::Worker => super::worker::run(None).await,
 				Role::Serve => bootstrap::serve(settings, true).await,
