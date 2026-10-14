@@ -489,10 +489,6 @@ class FixtureTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             chat(self.fixture, "unknown-task")
 
-    def test_jev_fixture_drops_every_prunable_result(self):
-        status, payload = self.fixture.jev({"questions": {"q1": {}, "q2": {}}})
-        self.assertEqual(payload["answers"]["q2"], {"type": "noul", "noul": 0.0})
-
 
 class OfflineCalibrationTest(unittest.TestCase):
     """Drive each short task's scripted behavior to its final answer without a Node.

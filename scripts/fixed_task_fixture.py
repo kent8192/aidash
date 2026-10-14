@@ -1,12 +1,12 @@
 """Scripted provider for the deterministic fixed-task tier (#122).
 
-One local HTTP server plays three external parties:
+One local HTTP server plays the external parties:
 
 - an OpenAI-compatible model at /v1/chat/completions whose replies are the
   scripted fixture Agent behaviors named by corpus tasks;
-- the Jev compaction classifier at /jev, which marks every prunable tool
-  result as droppable (the most aggressive pruning policy);
 - the fixture HTTP tools at /tools/{task}/{alias}.
+
+There is no Jev classifier: ordinary Runs are not pruned (ADR 0041).
 
 The scripted Agent is a probe, not a model: it acts only on what the harness
 actually delivered in the request. A correction that compaction removed is
@@ -143,7 +143,6 @@ class Fixture:
         self.probes = {}
         self.requests = {}
         self.tool_calls = {}
-        self.jev_requests = {}
         self.cache = set()
         self.errors = []
 
@@ -163,8 +162,7 @@ class Fixture:
                 "tool_definition_bytes": [item["tool_bytes"] for item in records],
                 "cache_breakpoints": [item["breakpoints"] for item in records],
                 "salted": [item["salted"] for item in records],
-                "overflow_rejections": sum(item["overflow"] for item in records),
-                "jev_requests": self.jev_requests.get(task_uuid, 0)}
+                "overflow_rejections": sum(item["overflow"] for item in records)}
 
     # ------------------------------------------------------------- model
     def infer(self, body):
@@ -389,16 +387,6 @@ class Fixture:
         collect_strings(body, output)
         return output
 
-    # --------------------------------------------------------------- Jev
-    def jev(self, body):
-        view = "\n".join(text for text in self.strings(body))
-        with self.lock:
-            for task_uuid in self.probes:
-                if task_uuid in view:
-                    self.jev_requests[task_uuid] = self.jev_requests.get(task_uuid, 0) + 1
-        questions = body.get("questions") or {}
-        return 200, {"answers": {name: {"type": "noul", "noul": 0.0} for name in questions}}
-
     # ------------------------------------------------------------- tools
     def tool(self, task, alias, arguments):
         with self.lock:
@@ -444,8 +432,6 @@ class Fixture:
                         return self.reply(*fixture.infer(body))
                     if self.path == "/v1/embeddings":
                         return self.reply(*fixture.embed(body))
-                    if self.path == "/jev":
-                        return self.reply(*fixture.jev(body))
                     match = re.fullmatch(r"/tools/([a-z0-9-]+)/([a-z_]+)", self.path)
                     if match and match.group(1) in tasks_by_id:
                         return self.reply(*fixture.tool(tasks_by_id[match.group(1)], match.group(2), body))

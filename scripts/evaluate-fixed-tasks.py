@@ -57,7 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "The Jev compaction classifier is a fixture that drops every prunable tool result.",
+    "Ordinary Runs are not pruned until #108 binds the built-in compaction Decider (ADR 0041), so long-context "
+    "tasks stop at the window instead of measuring pruning.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -73,8 +74,9 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
     "(--network none, no host environment, no parent process visibility).",
-    "External Jev compaction is excluded by the operator's attestation that the Node has no Jev credential: the "
-    "Node does not report its compactor over HTTP. A Run that applied a compaction stops all further dispatch.",
+    "External Jev compaction is excluded by the operator's attestation that the evaluated Tenant approves no "
+    "compactor: the Node does not report its approvals over HTTP. A Run that applied a compaction stops all "
+    "further dispatch.",
 ]
 
 
@@ -560,7 +562,6 @@ def run_deterministic(args, binary_directory):
                 "AIDASH_HTTP_TIMEOUT_SECONDS": "120",
                 # This disposable Node ID owns its JetStream streams and consumers.
                 "AIDASH_ACTIVATION_BOOTSTRAP": "true",
-                "AIDASH_JEV_ENDPOINT": fixture_url + "/jev", "AIDASH_SECRET_JEV": "fixture-classifier-not-a-secret",
                 "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
             # Native memory needs its independent recovery ledger, initialized once after the
             # schema exists and before any bank is created (docs/memory-recovery.md).
@@ -647,8 +648,8 @@ def run_deterministic(args, binary_directory):
         error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
-    harness = {"compaction": "legacy prune-only Context Policy with fixture Jev classifier", "cache_salt": True,
-               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "fixture: drop all prunable"}
+    harness = {"compaction": "none: ordinary Runs are not pruned until #108 (ADR 0041)", "cache_salt": True,
+               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": max(1.0, time.monotonic() - started),
               "max_output_tokens": max(spec["max_output_tokens"] for spec in corpus["models"].values()),
               "spend_ceiling_nanocredits": None}
@@ -840,7 +841,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         harness = {"compaction": "server-configured", "cache_salt": True,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": "excluded: the approval attests the Node has no Jev credential"}
+                   "jev_classifier": "excluded: the approval attests the Tenant approves no compactor"}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
                   "spend_ceiling_nanocredits": args.max_spend_nanocredits}

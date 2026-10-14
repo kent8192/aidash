@@ -9,18 +9,21 @@ pinned snapshot and policy) and fit-or-unchanged result match this gate. The
 gate can replace that stage without changing the Summary Stage, which is a
 separately approved generation step and never a decider fallback.
 
-Decider declarations require an exact Jev model version and an HTTPS endpoint.
-HTTP is accepted only when the URL host is a literal loopback IPv4 or IPv6
-address. DNS names, including `localhost`, cannot authorize plaintext disclosure.
-The Jev adapter validates the declaration before resolving credentials or
-preparing authenticated requests.
+Decider declarations require an exact OpenRouter Jev release (such as
+`typesafe/jev-1.13`; aliases are refused) and name `provider_credential:
+"openrouter"`. They configure no endpoint or key: the Jev adapter calls
+OpenRouter's System One API with `provider.zdr = true`, resolving the Tenant's
+current OpenRouter Provider Credential for each dispatch rather than when a
+request is prepared, so a revoked or unbound credential stops later attempts
+(ADR 0041). A response must name the pinned release or a dated snapshot of it.
+The adapter validates the declaration before preparing requests.
 
 `DeciderConfig::digest()` commits to the canonical JSON object containing `model`
 and `parameters_digest`. The latter hashes the complete serialized configuration
 with `model` replaced by JSON `null`. Historical `Evidence` retains that hash as
 `configuration_parameters_digest`, allowing replay to reconstruct and check the
-configuration pin using its recorded model. Endpoint and credential references
-are not copied into evidence. No current definition, policy or provider call is
+configuration pin using its recorded model. Credentials are never copied into
+evidence. No current definition, policy or provider call is
 needed to verify the commitment.
 
 Replay checks dropped counts against the recorded branches and requires the
