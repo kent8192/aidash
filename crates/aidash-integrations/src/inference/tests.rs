@@ -888,9 +888,9 @@ mod cache_salt {
 			config["projection_versions"] = versions;
 		}
 		let provider = salted_provider(
-			reqwest::Client::new(),
+			test_clients(),
 			serde_json::from_value(config).unwrap(),
-			Arc::new(aidash_application::provider_access::KeylessAccess),
+			Arc::new(permitting(&upstream.endpoint)),
 			Default::default(),
 			Some(keys()),
 		)
