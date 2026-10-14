@@ -368,9 +368,11 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	reopened.keyless = store.keyless.clone();
 	let reopened = aidash_server::semantic::services::memory_recovery::attach(
 		reopened,
 		database.recovery_directory.path().to_owned(),

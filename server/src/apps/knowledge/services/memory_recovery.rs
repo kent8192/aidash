@@ -802,7 +802,8 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					database.into_postgres().ok_or(Error::Forbidden)?,
 					config.node_id,
 				)
-				.await?,
+				.await?
+				.with_keyless_origins(settings.keyless_endpoints.origins()?),
 				directory.clone(),
 			)?;
 			match matches.get_one::<String>("action").map(String::as_str) {

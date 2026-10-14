@@ -9,6 +9,9 @@ use uuid::Uuid;
 pub fn client() -> Result<reqwest::Client> {
 	aidash_integrations::semantic::client().map_err(Into::into)
 }
+pub fn clients() -> Result<aidash_integrations::keyless::Clients> {
+	aidash_integrations::semantic::clients().map_err(Into::into)
+}
 pub async fn embed(
 	store: &crate::store::Store,
 	config: &EmbeddingConfig,

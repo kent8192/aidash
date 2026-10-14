@@ -387,9 +387,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
-		use aidash_application::provider_access::{KeylessAccess, Source, TenantAccess};
+		use aidash_application::provider_access::{Source, TenantAccess};
 		let Source::Tenant { provider } = source else {
-			return crate::bootstrap::keyless_provider_access()
+			return crate::bootstrap::keyless_provider_access(&self.store)
 				.resolve(context, endpoint, source)
 				.await;
 		};
@@ -399,7 +399,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			})?;
 		if context.run.is_none() {
 			return TenantAccess {
-				keyless: KeylessAccess,
+				keyless: self.store.keyless.clone(),
 				repository: service.repository.clone(),
 				reader: self.store.provider_key_material_reader.clone(),
 				issuer: self.store.capability_issuer.clone(),
@@ -440,7 +440,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			inference: context.inference.clone(),
 		};
 		TenantAccess {
-			keyless: KeylessAccess,
+			keyless: self.store.keyless.clone(),
 			repository: service.repository.clone(),
 			reader: self.store.provider_key_material_reader.clone(),
 			issuer: self.store.capability_issuer.clone(),

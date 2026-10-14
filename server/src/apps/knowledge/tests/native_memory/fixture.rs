@@ -133,6 +133,8 @@ pub(super) async fn setup_endpoint_policy(
 	)
 	.await
 	.unwrap();
+	// The model and embedding fixture is a Keyless endpoint on loopback (ADR 0036).
+	store.keyless.permit_origin_of(endpoint).unwrap();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	registry.seed_system().await.unwrap();
 	for (kind, id, config) in [
