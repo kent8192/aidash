@@ -65,3 +65,4 @@ FROM extensions AS test
 
 FROM extensions AS runtime
 COPY scripts/init-db.sql /docker-entrypoint-initdb.d/01-databases.sql
+COPY --chmod=0755 deploy/postgres/init-roles.sh /docker-entrypoint-initdb.d/02-roles.sh

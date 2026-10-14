@@ -1775,8 +1775,10 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let mut invalid_terminal_run = run.clone();
 	invalid_terminal_run.id = Uuid::new_v4();
 	let invalid_terminal_key = format!("human:{}:{}", invalid_terminal_run.id, Uuid::new_v4());
+	// Only the table owner can toggle its trigger; the server role holds DML.
+	let owner = common::owner_pool(home.store.pool.driver()).await;
 	sqlx::query("ALTER TABLE tasks DISABLE TRIGGER gate_remote_task_terminal")
-		.execute(home.store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	{
@@ -1796,7 +1798,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	}
 	.unwrap();
 	sqlx::query("ALTER TABLE tasks ENABLE TRIGGER gate_remote_task_terminal")
-		.execute(home.store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	home.store
@@ -1810,7 +1812,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.await
 		.unwrap();
 	sqlx::query("ALTER TABLE tasks DISABLE TRIGGER gate_remote_task_terminal")
-		.execute(home.store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	{
@@ -1830,7 +1832,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	}
 	.unwrap();
 	sqlx::query("ALTER TABLE tasks ENABLE TRIGGER gate_remote_task_terminal")
-		.execute(home.store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	{

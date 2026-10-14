@@ -61,6 +61,8 @@ class FakeCluster:
         self.on_observe = None
         self.addresses = 0
         self.sql = {}
+        self.role_sql = {}
+        self.legacy_tables = set()
 
     # Fixture controls
     def fail(self, event, error):
@@ -222,11 +224,26 @@ class FakeCluster:
 
     def exec(self, namespace, target, container, *command, data=None):
         if container == "postgres":
-            self.record("observer_role", identity(namespace))
+            sql = (data or b"").decode()
+            # Database roles run as three psql sessions; the observer as one.
+            if "pg_depend" in sql:
+                step = "legacy_ownership"
+            elif "pgroonga" in sql:
+                step = "pgroonga"
+            elif "aidash_owner" in sql:
+                step = "database_roles"
+            else:
+                step = "observer_role"
+            self.record(step, identity(namespace))
             postgres = self.objects.get(self.key("statefulset", "env-environment-postgres", namespace))
             if not postgres or not postgres["spec"]["replicas"] or data is None:
                 raise RuntimeError("kubectl failed (exit 1); no private command output was logged")
-            self.sql[namespace] = data.decode()
+            if step == "legacy_ownership":
+                return b"t\n" if namespace in self.legacy_tables else b"f\n"
+            if step == "database_roles":
+                self.role_sql[namespace] = sql
+            elif step == "observer_role":
+                self.sql[namespace] = sql
             return b""
         self.record("admission", identity(namespace), command[-1].rsplit("/", 1)[1])
         edge = self.objects.get(self.key("deployment", "env-environment-edge", namespace))

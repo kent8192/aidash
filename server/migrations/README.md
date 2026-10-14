@@ -162,8 +162,11 @@ cargo run --locked -p aidash-server --bin manage -- migrationseeds --check
 
 Both migration entry points use the same graph and transaction-scoped advisory
 lock `71003203` for the complete run. Initialization cannot use `--fake` or
-`--fake-initial`. The compatibility `serve`, `server`, and `worker` commands apply
-the same graph before assembling HTTP or worker dependencies.
+`--fake-initial`. Run `migrate` as the `aidash_owner` login; it then leaves the
+`reinhardt_migrations` ledger read-only to every other role. The compatibility
+`serve`, `server`, and `worker` commands never apply the graph: logged in as
+`aidash_server`, they read the ledger and refuse to start while any migration is
+pending, so a new or upgraded database needs a separate `migrate` run first.
 
 The physical baseline is reversible. Reinhardt's native command expands applied
 dependents across app labels, orders them through the complete dependency graph,
@@ -191,11 +194,15 @@ image does not provide its required `pg_jsonschema` extension.
 1. Stop new writes and request graceful shutdown of every old server and worker.
    Wait for drain, then back up their database and retain the old binaries.
 2. Provision a separate empty PostgreSQL 17 database with the `pg_jsonschema` 0.3.4
-   library available. A superuser may let native history create the extension.
-   For a database-scoped application role, provision `pg_jsonschema` as the
-   administrator first; the application must not receive superuser privileges.
-   Configure all new replicas to use that database and the same pinned image.
-3. Run the native migration command once. Inspect `showmigrations` and verify
+   library available. As a superuser, create the `aidash_owner` and
+   `aidash_server` logins, make `aidash_owner` own the database, create the
+   `pg_jsonschema`, `vector` and `pgroonga` extensions, and grant `aidash_server`
+   default privileges on the owner's tables and sequences, as
+   `deploy/postgres/init-roles.sh` does. Neither login is a superuser or has
+   `BYPASSRLS`. Configure all new replicas to use that database, the
+   `aidash_server` login and the same pinned image; servers and workers refuse
+   to start as a superuser, a `BYPASSRLS` role or an owner of database objects.
+3. Run the native migration command once as `aidash_owner`. Inspect `showmigrations` and verify
    replay, schema constraints, and configured peer/identity settings before
    accepting writes.
 4. Start the new server and worker roles. Verify health, authentication, a scoped
