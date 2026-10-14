@@ -148,6 +148,9 @@ pub trait ExecutionStore: Send + Sync {
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
+	/// The commit fence before Task completion. Unless a newer input is
+	/// accepted, it also persists the Run's Completion Gate progress, so a Task
+	/// completed before the Run's own save keeps its Completion Basis.
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool>;
 	async fn human_request(
 		&self,
@@ -272,6 +275,14 @@ pub trait ExecutionHome: Send + Sync {
 	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		let _ = id;
+		Err(crate::Error::Invalid(
+			"Home human-request route is unavailable".into(),
+		))
+	}
+	/// Answer a request on the Run's own behalf, such as one a newer input
+	/// superseded. A request a person already answered is a conflict.
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		let _ = (id, response);
 		Err(crate::Error::Invalid(
 			"Home human-request route is unavailable".into(),
 		))

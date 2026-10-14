@@ -77,16 +77,20 @@ pauses every candidate rather than assuming nothing changed.
 
 A repair is a `completion_repair_required` event in the Context Journal with the
 Check name, outcome, exit code and diagnostics. The Run goes back to the model,
-which can fix the files and answer again. Each accepted human input renews the
-Repair Allowance; the Run's `verification_seconds` are never renewed.
+which can fix the files and answer again. The repair consumes the failure it
+delivered, so the next answer runs the Check again even if the files are
+unchanged, for example after a flaky failure. Each accepted human input renews
+the Repair Allowance; the Run's `verification_seconds` are never renewed.
 
 A **Completion Review** is a request for a person, raised when a Check is
-unavailable or refused, the Repair Allowance is spent, or the verification time
-is spent. Until a dedicated request kind exists it is an `INFORMATION_REQUEST`
+unavailable or refused, the Repair Allowance is spent, the Run has no inference
+step left for a repair, or the verification time is spent. A Check still
+running past its timeout and the runner's grace is unavailable. Until a dedicated request kind exists it is an `INFORMATION_REQUEST`
 whose prompt starts with `Completion Review:`. Answering `retry` (or
 `{"retry": true}`) runs the refused Checks again on the same content; any other answer raises a new
-review. Sending a new message also ends the review: the candidate is stale and
-the model continues with the correction. Cancelling the Run stops it.
+review. Sending a new message also ends the review: the candidate is stale, the
+review request is answered `{"superseded": true}` by `system`, and the model
+continues with the correction. Cancelling the Run stops it.
 
 ## Freshness and recovery
 
@@ -101,7 +105,8 @@ the model continues with the correction. Cancelling the Run stops it.
   the content and the attempt number. After a process cut, starting the same
   attempt again returns the operation that already exists.
 - Completed Runs record their **Completion Basis**: `verified` when Checks
-  passed, `not_required` when none applied.
+  passed, `not_required` when none applied. The final-completion fence persists
+  it before the Task completes, so a process cut after the completion keeps it.
 
 ## Not yet available
 

@@ -797,6 +797,65 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	cleanup(f, &url, &schema).await;
 }
 
+/// The commit fence persists the Completion Gate's progress, so a Task
+/// completed before the Run's own save still records its Completion Basis
+/// (#112).
+#[rstest::rstest]
+#[tokio::test]
+async fn the_commit_fence_persists_the_completion_basis(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Verified answer","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	assert_eq!(leased.id, run.id);
+	leased.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
+		"included_input_seq":0,
+		"response":{"text":"Done.","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0
+	}))));
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.context.completion.attempts = 1;
+	leased.context.completion.basis = Some(aidash_domain::completion::CompletionBasis::Verified);
+	assert!(
+		f.store
+			.begin_final_completion(&leased, worker)
+			.await
+			.unwrap()
+	);
+	let stored = f.store.run(run.id).await.unwrap();
+	assert_eq!(stored.context.completion, leased.context.completion);
+	assert_eq!(stored.context.history.len(), leased.context.history.len());
+	f.store.release_lease(run.id, worker).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(

@@ -324,6 +324,22 @@ impl Home {
 				.await
 		}
 	}
+	/// Answer a Home request on the Run's own behalf: `system` locally, this
+	/// node through the delegated route.
+	pub async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		if self.local() {
+			let mut tx = self.federation.store.database().begin().await?;
+			let request = self
+				.federation
+				.store
+				.answer_in(tx.as_mut(), id, response, "system")
+				.await?;
+			tx.commit().await?;
+			Ok(request)
+		} else {
+			self.answer_home_human(id, response).await
+		}
+	}
 	pub(crate) async fn answer_home_human(
 		&self,
 		id: Uuid,

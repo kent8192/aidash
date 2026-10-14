@@ -308,6 +308,12 @@ impl ExecutionHome for NativeHome {
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		self.0.human_request_by_id(id).await.map_err(Into::into)
 	}
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		self.0
+			.close_human_request(id, response)
+			.await
+			.map_err(Into::into)
+	}
 
 	async fn task(&self) -> Result<Task> {
 		Home::task(&self.0).await.map_err(Into::into)

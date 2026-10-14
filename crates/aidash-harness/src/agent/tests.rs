@@ -136,6 +136,8 @@ struct State {
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
 	/// Completion Gate Checks; `None` means the node cannot run them.
 	checks: Option<completion::FakeChecks>,
+	/// The Completion Basis each commit fence persisted.
+	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -339,9 +341,15 @@ impl ExecutionStore for Backend {
 		Ok(self.0.inputs.lock().unwrap().clone())
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
-		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("completion.fence");
+		if self.0.permit_completion {
+			self.0
+				.fenced
+				.lock()
+				.unwrap()
+				.push(run.context.completion.basis);
+		}
 		Ok(self.0.permit_completion)
 	}
 	async fn human_request(
@@ -600,6 +608,18 @@ impl ExecutionHome for Backend {
 		let request = self.0.human.lock().unwrap().clone().expect("Home request");
 		assert_eq!(request.id, id);
 		Ok(request)
+	}
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		self.record("home.human_close");
+		let mut human = self.0.human.lock().unwrap();
+		let request = human.as_mut().expect("Home request");
+		assert_eq!(request.id, id);
+		if request.response.is_some() {
+			return Err(Error::Conflict("human request already answered".into()));
+		}
+		request.response = Some(response);
+		request.answered_by = Some("system".into());
+		Ok(request.clone())
 	}
 	async fn task(&self) -> Result<Task> {
 		self.record("home.task");
@@ -1297,6 +1317,7 @@ fn fixture() -> Fixture {
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,
+		fenced: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }
 }

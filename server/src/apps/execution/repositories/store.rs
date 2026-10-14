@@ -2227,25 +2227,37 @@ impl Store {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
 			let query_bind_3 = current.stored_pending()?;
+			let mut update = reinhardt::query::Query::update();
+			update
+				.table(reinhardt::query::Alias::new("runs"))
+				.value_expr(
+					reinhardt::query::Alias::new("pending"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_3.to_owned()).into()],
+					),
+				);
+			// The Completion Gate's progress, with its Completion Basis, becomes
+			// durable before the Task completes: recovery from a cut after the
+			// completion keeps the Run's saved context (#112).
+			if !run.context.completion.is_empty() {
+				update.value_expr(
+					reinhardt::query::Alias::new("context"),
+					SimpleExpr::CustomWithExpr(
+						"(jsonb_set(context, '{completion}', ?::jsonb))".to_owned(),
+						vec![Expr::value(serde_json::to_value(&run.context.completion)?).into()],
+					),
+				);
+			}
+			update.and_where(SimpleExpr::CustomWithExpr(
+				"(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)".to_owned(),
+				vec![
+					Expr::value(query_bind_1.to_owned()).into(),
+					Expr::value(query_bind_2.to_owned()).into(),
+				],
+			));
 			crate::database::native::query(
-				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
-					.value_expr(
-						reinhardt::query::Alias::new("pending"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_3.to_owned()).into()],
-						),
-					)
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)"
-							.to_owned(),
-						vec![
-							Expr::value(query_bind_1.to_owned()).into(),
-							Expr::value(query_bind_2.to_owned()).into(),
-						],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
+				&update.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.execute(&mut *tx)
 			.await?

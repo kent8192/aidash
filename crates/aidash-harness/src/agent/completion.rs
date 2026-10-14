@@ -6,14 +6,15 @@ use aidash_application::ports::execution::completion::{
 	CheckRequest, CheckStart, CheckStatus, ContentState, MountedContent,
 };
 use aidash_domain::completion::{
-	Candidate, CheckOutcome, CompletionBasis, Decision, PendingCheck, REPAIR_INSTRUCTION,
-	RepairNote, ReviewReason, SHELL, decide, empty_content,
+	Candidate, CheckOutcome, Decision, PendingCheck, REPAIR_INSTRUCTION, RepairNote, ReviewReason,
+	SHELL, decide, empty_content,
 };
 
 /// What the step does after the Completion Gate.
 pub(super) enum Gate {
-	/// Complete the Task with this basis.
-	Proceed(CompletionBasis),
+	/// Complete the Task. A gated Run carries its Completion Basis in its
+	/// context, which the commit fence persists before the Task completes.
+	Proceed,
 	/// The gate saved the Run in another state; the step ends.
 	Saved,
 }
@@ -61,10 +62,13 @@ impl Executor<'_> {
 		guard: Option<&dyn ExecutionAuthority>,
 	) -> Result<Gate> {
 		let Some(policy) = agent.completion.as_ref() else {
-			return Ok(Gate::Proceed(CompletionBasis::NotRequired));
+			return Ok(Gate::Proceed);
 		};
 		let now = chrono::Utc::now();
 		let mut progress = run.context.completion.clone();
+		// A basis recorded at an earlier commit fence that did not complete
+		// the Task belongs to that candidate, not to this one.
+		progress.basis = None;
 		progress.renew(run.state.tool()?.included_input_seq);
 		// Without Checks the node cannot read the mounted content, so not even
 		// `content_changed` can be decided: every candidate waits for a person.
@@ -86,8 +90,16 @@ impl Executor<'_> {
 						.wait(run, token, progress, "run.completion_check_running")
 						.await;
 				}
-				CheckStatus::Running => progress
-					.record(pending.unavailable("the Check did not stop within its timeout", now)),
+				// The hung operation keeps the Area busy, so waiting for the
+				// content to settle would never end: a person decides now.
+				CheckStatus::Running => {
+					let reason = ReviewReason::Unavailable {
+						check: pending.subject.check.clone(),
+						detail: OVERDUE.into(),
+					};
+					progress.record(pending.unavailable(OVERDUE, now));
+					return self.review(run, token, home, guard, progress, reason).await;
+				}
 				CheckStatus::Finished {
 					passed,
 					exit_code,
@@ -125,8 +137,10 @@ impl Executor<'_> {
 			};
 			match decide(policy, &progress, &candidate) {
 				Decision::Complete(basis) => {
+					// The commit fence persists it with the Task's completion.
+					progress.basis = Some(basis);
 					run.context.completion = progress;
-					return Ok(Gate::Proceed(basis));
+					return Ok(Gate::Proceed);
 				}
 				Decision::Start { check, subject } => {
 					progress.attempts += 1;
@@ -197,7 +211,7 @@ impl Executor<'_> {
 				// Repair needs another inference step; at the step limit the
 				// candidate goes to a person instead of failing the Run.
 				Decision::Repair(evidence) if run.step.saturating_add(1) < agent.max_steps => {
-					progress.repairs += 1;
+					progress.repair(&evidence.subject);
 					let through_seq = run.state.tool()?.included_input_seq;
 					let mut context = run.context.clone();
 					context.completion = progress;
@@ -216,7 +230,7 @@ impl Executor<'_> {
 					return Ok(Gate::Saved);
 				}
 				Decision::Repair(evidence) => {
-					let reason = ReviewReason::RepairExhausted {
+					let reason = ReviewReason::StepsExhausted {
 						check: evidence.subject.check,
 					};
 					return self.review(run, token, home, guard, progress, reason).await;
@@ -300,6 +314,24 @@ pub(super) async fn review_superseded(
 		.is_some_and(|input| input.seq > included))
 }
 
+/// End a superseded Completion Review. Its request is answered on the Run's
+/// behalf, so it never stays open for a later answer the Run would ignore.
+pub(super) async fn supersede_review(
+	run: &mut Run,
+	home: &dyn ExecutionHome,
+	request: Uuid,
+) -> Result<()> {
+	run.context.completion.review = None;
+	match home
+		.close_human_request(request, json!({"superseded": true}))
+		.await
+	{
+		// A person answered first; the newer input still wins.
+		Ok(_) | Err(Error::Conflict(_)) => Ok(()),
+		Err(error) => Err(error),
+	}
+}
+
 /// Apply a Completion Review answer: `retry`, as text or `{"retry": true}`,
 /// runs the refused Checks again.
 pub(super) fn answer_review(run: &mut Run, request: Uuid, response: Option<&Value>) {
@@ -319,3 +351,4 @@ pub(super) fn answer_review(run: &mut Run, request: Uuid, response: Option<&Valu
 }
 
 const UNAVAILABLE: &str = "Completion Checks cannot run on this node";
+const OVERDUE: &str = "the Check did not stop within its timeout";

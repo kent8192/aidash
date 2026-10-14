@@ -428,6 +428,14 @@ impl CompletionProgress {
 			.rev()
 			.find(|evidence| &evidence.subject == subject)
 	}
+	/// The model was sent back to repair this failure. The delivered evidence
+	/// is consumed, so the next candidate runs the Check again even when the
+	/// model left the files unchanged, as [`REPAIR_INSTRUCTION`] promises.
+	pub fn repair(&mut self, subject: &CheckSubject) {
+		self.repairs += 1;
+		self.evidence
+			.retain(|evidence| &evidence.subject != subject);
+	}
 	/// A person asked for the Checks to run again: only passing evidence stays.
 	/// The Repair Allowance and the Run's verification time are unchanged.
 	pub fn retry(&mut self) {
@@ -466,9 +474,22 @@ impl CompletionBasis {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewReason {
-	Unavailable { check: String, detail: String },
-	Denied { check: String, detail: String },
-	RepairExhausted { check: String },
+	Unavailable {
+		check: String,
+		detail: String,
+	},
+	Denied {
+		check: String,
+		detail: String,
+	},
+	RepairExhausted {
+		check: String,
+	},
+	/// The Check failed while repairable, but the Run has no inference step
+	/// left for a repair. The Repair Allowance is not what stopped it.
+	StepsExhausted {
+		check: String,
+	},
 	TimeExhausted,
 }
 
@@ -480,6 +501,12 @@ impl ReviewReason {
 			Self::Denied { check, .. } => format!("Check {check} was refused"),
 			Self::RepairExhausted { check } => {
 				format!("Check {check} still fails and the Repair Allowance is spent")
+			}
+			// New input renews the Repair Allowance, never the Run's steps.
+			Self::StepsExhausted { check } => {
+				return format!(
+					"Completion Review: Check {check} still fails and the Run has no step left to repair it. Answer retry to run the Checks again, or cancel the Run."
+				);
 			}
 			// Retrying cannot help: the verification time stays spent.
 			Self::TimeExhausted => {

@@ -261,6 +261,25 @@ fn failures_are_repaired_until_the_allowance_is_spent() {
 	assert_eq!(progress.repairs, 1);
 }
 
+/// A repair consumes the failure it delivered: the next candidate runs the
+/// Check again, even when the model left the files unchanged.
+#[rstest]
+fn a_repair_consumes_the_failure_it_delivered() {
+	let policy = tests_policy("always");
+	let candidate = Candidate {
+		content: Some("sha256:content"),
+		capability: Some(CAPABILITY),
+		unavailable: None,
+	};
+	let subject = start(decide(&policy, &CompletionProgress::default(), &candidate));
+	let mut progress = CompletionProgress::default();
+	progress.record(evidence(&subject, CheckOutcome::Failed));
+	progress.repair(&subject);
+	assert_eq!(progress.repairs, 1);
+	assert!(progress.evidence.is_empty());
+	assert_eq!(start(decide(&policy, &progress, &candidate)), subject);
+}
+
 #[rstest]
 fn refusals_that_need_a_person_pause_for_review() {
 	let policy = tests_policy("always");
@@ -476,6 +495,13 @@ fn an_unavailable_area_never_reuses_evidence() {
 #[test]
 fn a_time_exhausted_review_does_not_offer_retry() {
 	assert!(!ReviewReason::TimeExhausted.prompt().contains("retry"));
+	// New input renews the Repair Allowance, not the Run's steps.
+	let steps = ReviewReason::StepsExhausted {
+		check: "tests".into(),
+	}
+	.prompt();
+	assert!(steps.contains("no step left") && !steps.contains("Repair Allowance"));
+	assert!(!steps.contains("new message"));
 	assert!(
 		ReviewReason::RepairExhausted {
 			check: "tests".into()

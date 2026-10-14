@@ -1977,13 +1977,12 @@ impl<'a> Executor<'a> {
 						}
 						// The Completion Gate: current Verification Evidence for the
 						// exact mounted content, or no applicable Check (#112).
-						let basis = match self
+						if let completion::Gate::Saved = self
 							.completion_gate(run, token, &agent, home.as_ref(), guard)
 							.await?
 						{
-							completion::Gate::Proceed(basis) => basis,
-							completion::Gate::Saved => return Ok(()),
-						};
+							return Ok(());
+						}
 						let artifact = ArtifactInput {
 							kind: "text".into(),
 							name: result_artifact_name(&home.task().await?.title),
@@ -1996,6 +1995,7 @@ impl<'a> Executor<'a> {
 							guard.action("task.complete", "task", run.task_id).await?;
 						}
 						if !store.begin_final_completion(run, token).await? {
+							run.context.completion.basis = None;
 							run.state = RunState::Thinking(ThinkingState::default());
 
 							store.save_run(run, token, "run.message_received").await?;
@@ -2011,6 +2011,7 @@ impl<'a> Executor<'a> {
 								&& home.child_summary(run.task_id).await?.has_pending
 							{
 								run.step += 1;
+								run.context.completion.basis = None;
 
 								run.state = RunState::Waiting(Box::new(WaitingState::Children {
 									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
@@ -2020,9 +2021,6 @@ impl<'a> Executor<'a> {
 								return Ok(());
 							}
 							return Err(error);
-						}
-						if agent.completion.is_some() {
-							run.context.completion.basis = Some(basis);
 						}
 						run.state = RunState::Completed(TerminalState {});
 
@@ -2391,12 +2389,12 @@ impl<'a> Executor<'a> {
 				// A newer input ends a Completion Review without an answer: the
 				// candidate under review is stale.
 				let superseded = match waiting.request_id() {
-					Some(id) => completion::review_superseded(store, run, id).await?,
-					None => false,
+					Some(id) if completion::review_superseded(store, run, id).await? => {
+						completion::supersede_review(run, home.as_ref(), id).await?;
+						true
+					}
+					_ => false,
 				};
-				if superseded {
-					run.context.completion.review = None;
-				}
 				if let Some(id) = waiting.request_id().filter(|_| !superseded) {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;

@@ -274,10 +274,129 @@ async fn a_failing_check_sends_the_answer_back_and_only_passing_evidence_complet
 			.iter()
 			.all(|(_, command, revision)| command == "cargo test" && *revision == 7)
 	);
+	// The repair consumed the delivered failure; only the pass remains.
 	let evidence = &fixture.run.context.completion.evidence;
-	assert_eq!(evidence.len(), 2);
-	assert_eq!(evidence[1].subject.content_digest, "sha256:repaired");
-	assert_eq!(evidence[1].outcome, CheckOutcome::Passed);
+	assert_eq!(evidence.len(), 1);
+	assert_eq!(evidence[0].subject.content_digest, "sha256:repaired");
+	assert_eq!(evidence[0].outcome, CheckOutcome::Passed);
+	// The basis was durable at the commit fence, before the Task completed.
+	assert_eq!(
+		*fixture.backend.0.fenced.lock().unwrap(),
+		[Some(CompletionBasis::Verified)]
+	);
+}
+
+/// A repair turn that leaves the files unchanged, such as a retry of a flaky
+/// Check, runs the Check again instead of reusing the delivered failure.
+#[rstest]
+#[tokio::test]
+async fn a_repair_without_edits_runs_the_check_again(mut fixture: Fixture) {
+	gated(
+		&mut fixture,
+		tests_policy(
+			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
+		),
+		Some(FakeChecks::with(
+			"sha256:edited",
+			[Outcome::Fail("flaky timeout"), Outcome::Pass],
+		)),
+	);
+	answer(&mut fixture, "Done.");
+	settle(&mut fixture).await;
+	assert_eq!(repair_notes(&fixture.run).len(), 1);
+	answer(&mut fixture, "Done; the failure was flaky.");
+	settle(&mut fixture).await;
+	assert!(completed(&fixture));
+	assert_eq!(checks(&fixture).started(), 2);
+	assert_eq!(fixture.run.context.completion.repairs, 1);
+}
+
+/// A Check still running past its timeout and grace keeps the Area busy; the
+/// gate asks a person instead of waiting for the Area forever.
+#[rstest]
+#[tokio::test]
+async fn an_overdue_check_pauses_for_review_while_it_keeps_the_area_busy(mut fixture: Fixture) {
+	let mut fake = FakeChecks::with("sha256:edited", [Outcome::Pass]);
+	fake.polls = u32::MAX;
+	gated(
+		&mut fixture,
+		tests_policy(
+			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
+		),
+		Some(fake),
+	);
+	answer(&mut fixture, "Done.");
+	advance_sources(&mut fixture).await.unwrap();
+	let pending = fixture.run.context.completion.pending.as_mut().unwrap();
+	pending.started_at -= chrono::Duration::seconds(3600);
+	checks(&fixture).busy.store(true, Ordering::SeqCst);
+	settle(&mut fixture).await;
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(**wait, WaitingState::Human { .. }))
+	);
+	assert!(review_prompt(&fixture).contains("Check tests could not run"));
+	let progress = &fixture.run.context.completion;
+	assert_eq!(progress.pending, None);
+	assert_eq!(progress.evidence[0].outcome, CheckOutcome::Unavailable);
+	assert!(!completed(&fixture));
+}
+
+/// A repairable failure at the step limit names the step limit, not a spent
+/// Repair Allowance that new input could renew.
+#[rstest]
+#[tokio::test]
+async fn a_failure_at_the_step_limit_is_not_reported_as_a_spent_allowance(mut fixture: Fixture) {
+	gated(
+		&mut fixture,
+		tests_policy(
+			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
+		),
+		Some(FakeChecks::with(
+			"sha256:edited",
+			[Outcome::Fail("assertion failed")],
+		)),
+	);
+	fixture.run.step = 63;
+	answer(&mut fixture, "Done.");
+	settle(&mut fixture).await;
+	let prompt = review_prompt(&fixture);
+	assert!(prompt.contains("no step left"), "{prompt}");
+	assert!(!prompt.contains("Repair Allowance"));
+	assert_eq!(fixture.run.context.completion.repairs, 0);
+	assert!(repair_notes(&fixture.run).is_empty());
+}
+
+/// Newer input ends a Completion Review without an answer; its request is
+/// closed for the Run so it never waits for an answer the Run would ignore.
+#[rstest]
+#[tokio::test]
+async fn new_input_closes_the_superseded_review_request(mut fixture: Fixture) {
+	let fake = FakeChecks::with("sha256:edited", []);
+	*fake.unavailable.lock().unwrap() = Some("runner is not healthy".into());
+	gated(
+		&mut fixture,
+		tests_policy(
+			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
+		),
+		Some(fake),
+	);
+	answer(&mut fixture, "Done.");
+	settle(&mut fixture).await;
+	assert!(fixture.run.context.completion.review.is_some());
+	fixture.backend.0.inputs.lock().unwrap().push(RunInput {
+		seq: 1,
+		sender: "human".into(),
+		content: "Skip the runner; just explain the change.".into(),
+		idempotency_key: "correction".into(),
+		message_id: None,
+		reference_only: false,
+	});
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.context.completion.review, None);
+	let request = fixture.backend.0.human.lock().unwrap().clone().unwrap();
+	assert_eq!(request.response, Some(json!({"superseded": true})));
+	assert_eq!(request.answered_by.as_deref(), Some("system"));
+	assert!(!completed(&fixture));
 }
 
 #[rstest]
