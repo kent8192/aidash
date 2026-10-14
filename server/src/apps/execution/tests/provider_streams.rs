@@ -187,6 +187,7 @@ fn request(with_tools: bool) -> ModelRequest {
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	}
 }
 

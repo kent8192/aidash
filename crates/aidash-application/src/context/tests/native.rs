@@ -76,6 +76,7 @@ fn budget(window: usize) -> RequestBudget<'static> {
 		tools: &[],
 		max_output_tokens: 256,
 		projection: &NATIVE,
+		estimate: Default::default(),
 	}
 }
 

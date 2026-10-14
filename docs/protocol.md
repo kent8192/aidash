@@ -82,16 +82,44 @@ Decider pins and historical replay contracts for #108. Native execution still
 uses the compaction path described below until its separate integration lands.
 
 The compaction trigger, post-compaction fit check and final preflight use the
-same complete-request estimate: UTF-8 bytes of the serialized model-visible
-messages and tool definitions, plus `max_output_tokens`, plus 1,024 framing
-tokens. This deliberately conservative estimate is not the provider's actual
-token count. It includes the JSON escaping of context inside message text.
+same complete-request estimate, the Request Estimate (ADR 0017). Its upper
+bound is the byte estimate: the UTF-8 bytes of the serialized model-visible
+messages and tool definitions (the byte basis, including the JSON escaping of
+context inside message text and the cache-salt reserve), plus the media
+allowance, `max_output_tokens` and 1,024 framing tokens. It is not the
+provider's actual token count.
 Output fits inside the registered context window; it is not extra input space.
 Failure to fit leaves saved context unchanged, prevents inference I/O and pauses
 the Run with the typed reason `context_unreducible`.
 New model registrations capture OpenRouter's advertised maximum completion
 tokens as `max_output_tokens`; model versions created before this field existed
 retain their previous output allowance until re-registered.
+
+A model definition that sets `request_estimator: calibrated` scales only the
+byte basis. The ratio is the nearest-rank 99th percentile of reported
+`prompt_tokens` per byte of basis over the newest 200 samples of the same
+upstream model slug and Projection Version, plus a 10% margin. The media
+allowance, output reservation and framing are added unscaled, and the result
+never exceeds the byte estimate. With fewer than 20 samples the estimate stays
+the byte estimate. Omitting the field means `bytes`; new registrations write
+`calibrated`. Samples come only from complete, media-free Inference Attempts
+of Run steps. They are kept Deployment-wide in `estimate_calibration_samples`,
+which holds no Run, Tenant or attempt identifier, and are written in the same
+transaction that completes the Usage Record. Operators read per-key aggregates
+with `manage diagnostics calibration`.
+
+Each Run step pins an Estimate Snapshot (estimator, version, ratio and margin)
+in the Run's context before the step relies on it. A resumed step reuses it,
+so it makes the same fitting and compaction decisions even after calibration
+data changed. Run inspection shows the pinned snapshot without its sample
+count. Snapshot quotas are byte budgets that convert through the snapshot's
+ratio, while the Ordered Stable Prefix quota and the semantic budget always use
+the byte estimate, so calibration never changes the Stable Prefix or the
+Retrieval Key. Summary Stage requests, Jev, Registry workbench requests, the
+run-message limit and the media headroom keep the byte estimate.
+Every Usage Record keeps its Request Estimate with the byte basis, the output
+reservation and the snapshot ratio, so the estimation error of an attempt is
+`estimated_tokens - output_reservation - input_tokens`.
 
 Under a `deferred@1` [Exposure policy](operations/registry-capabilities.md#deferred-capability-exposure),
 the model-visible tool definitions are only the request's Exposure set, and the
@@ -248,7 +276,12 @@ without that proof, such as a media payload limit, is not.
 Only a Context Overflow enters compact-and-retry. Each retry shrinks the
 effective window for the rest of the Run, re-runs the pipeline, and must send a
 smaller request than the previous overflowing one; otherwise, or once the retry
-allowance is spent, the Run pauses with `overflow_retries_exhausted`. Output
+allowance is spent, the Run pauses with `overflow_retries_exhausted`. An
+overflow that follows a calibrated Request Estimate is an estimator defect: the
+Run is demoted to the byte estimate for its remaining steps, in the same save,
+and the overflowing request is recorded by its byte estimate so the next
+comparison uses the same unit. `aidash_context_overflow_total` carries the
+estimator as its `estimator` label. Output
 truncation (`output_truncated`) and refusals (`refused`) pause immediately and
 never dispatch the response's tool calls; their reported usage still settles
 the call's token reservation. A paused Run's typed reason is reported as

@@ -32,6 +32,7 @@ fn request(projection: RequestProjection, events: u32) -> ModelRequest {
 		tools: &tools(),
 		max_output_tokens: 64,
 		projection: &projection,
+		estimate: Default::default(),
 	}
 	.request(&context, &pinned)
 }

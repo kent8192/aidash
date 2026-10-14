@@ -54,6 +54,11 @@ pub struct ModelConfig {
 	/// Only `explicit` lets an opted-in Agent send cache breakpoints.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_mode: Option<CacheMode>,
+	/// How Run steps estimate request size (ADR 0017). Omitted means `bytes`
+	/// and is not serialized, so existing model definitions keep their bytes
+	/// and their compaction timing.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub request_estimator: Option<crate::provider::estimate::RequestEstimator>,
 }
 
 /// A model route's declared prompt-caching behavior.
@@ -97,6 +102,11 @@ pub struct MediaRouteEvidence {
 }
 
 impl ModelConfig {
+	/// The estimator this model version opted into; `bytes` when omitted.
+	pub fn request_estimator(&self) -> crate::provider::estimate::RequestEstimator {
+		self.request_estimator.unwrap_or_default()
+	}
+
 	/// Projection Versions this model accepts; Legacy when none are declared.
 	pub fn supports_projection(&self, version: crate::projection::ProjectionVersion) -> bool {
 		if self.projection_versions.is_empty() {

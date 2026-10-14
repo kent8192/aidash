@@ -11,6 +11,7 @@ fn media_reservation_covers_complete_request_growth() {
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	};
 	let without_media = request.estimated_total_tokens();
 	request.content_parts = vec![
@@ -306,6 +307,7 @@ fn only_context_policy_requests_disable_openrouter_transforms(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: opted_in,
+		estimate: Default::default(),
 	};
 	let body = request_body(&config, &request, routes, None);
 	// A prune-only Agent keeps OpenRouter's default transforms unchanged.
@@ -443,6 +445,7 @@ mod cache_salt {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			estimate: Default::default(),
 		}
 	}
 

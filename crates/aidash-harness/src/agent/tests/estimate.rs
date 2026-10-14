@@ -1,0 +1,202 @@
+//! Request Estimates pinned per Run step (ADR 0017, #179).
+use super::*;
+use aidash_domain::provider::estimate::{CalibrationSample, EstimateSnapshot, EstimateState};
+
+/// Twenty samples at a quarter token per byte: enough to calibrate.
+fn warm(ratio_denominator: u64) -> Vec<CalibrationSample> {
+	vec![
+		CalibrationSample {
+			byte_basis: ratio_denominator,
+			prompt_tokens: 1,
+		};
+		20
+	]
+}
+
+fn calibrated(fixture: &mut Fixture, samples: Vec<CalibrationSample>) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.calibrated_model = true;
+	*state.calibration.lock().unwrap() = samples;
+}
+
+fn dispatches(fixture: &Fixture) -> Vec<UsageDispatch> {
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	usage.iter().map(|(dispatch, _)| dispatch.clone()).collect()
+}
+
+#[rstest]
+#[tokio::test]
+async fn models_without_the_opt_in_keep_the_byte_estimate(mut fixture: Fixture) {
+	// Arrange
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: nothing is queried or saved, so the Run keeps its context bytes.
+	assert_eq!(count(&fixture, "calibration.samples"), 0);
+	assert!(!events(&fixture).contains(&"run.estimate_pinned".to_owned()));
+	assert!(fixture.run.context.estimate.is_initial());
+	let [dispatch] = dispatches(&fixture).try_into().unwrap();
+	let request = fixture.backend.0.requests.lock().unwrap()[0].clone();
+	assert_eq!(dispatch.upstream_model, "fixture");
+	assert_eq!(dispatch.estimate, request.request_estimate());
+	assert_eq!(dispatch.estimate.estimator, "bytes");
+	assert_eq!(dispatch.estimate.ratio_ppm, None);
+	assert_eq!(
+		dispatch.estimate.tokens,
+		request.byte_estimate().total() as u64
+	);
+	assert_eq!(dispatch.estimate.output_reservation, 4096);
+	assert!(dispatch.calibration_sample);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_calibrated_model_pins_its_snapshot_before_the_step_relies_on_it(mut fixture: Fixture) {
+	// Arrange
+	calibrated(&mut fixture, warm(4));
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the snapshot is durable before the attempt is dispatched.
+	let calls = calls(&fixture);
+	assert!(position(&calls, "calibration.samples") < position(&calls, "save"));
+	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	assert!(position(&calls, "save") < position(&calls, "usage.dispatch"));
+	let snapshot = EstimateSnapshot::calibrated(0, 250_000, 20);
+	assert_eq!(fixture.run.context.estimate.snapshot, Some(snapshot));
+	let request = fixture.backend.0.requests.lock().unwrap()[0].clone();
+	assert_eq!(request.estimate, snapshot);
+	let [dispatch] = dispatches(&fixture).try_into().unwrap();
+	assert_eq!(dispatch.estimate.estimator, "calibrated");
+	assert_eq!(dispatch.estimate.confidence, EstimateConfidence::Calibrated);
+	assert_eq!(dispatch.estimate.ratio_ppm, Some(250_000));
+	let bytes = request.byte_estimate();
+	assert_eq!(dispatch.estimate.byte_basis, bytes.basis as u64);
+	assert!(dispatch.estimate.tokens < bytes.total() as u64);
+	let RunState::ToolCall(state) = &fixture.run.state else {
+		panic!("inference must produce a tool-call state")
+	};
+	assert_eq!(state.request_tokens as u64, dispatch.estimate.tokens);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_resumed_step_reuses_its_snapshot_after_calibration_changed(mut fixture: Fixture) {
+	// Arrange: the step pinned a snapshot, then other attempts moved the key.
+	calibrated(&mut fixture, warm(2));
+	let pinned = EstimateSnapshot::calibrated(0, 300_000, 20);
+	fixture.run.context.estimate.snapshot = Some(pinned);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(count(&fixture, "calibration.samples"), 0);
+	assert!(!events(&fixture).contains(&"run.estimate_pinned".to_owned()));
+	assert_eq!(
+		fixture.backend.0.requests.lock().unwrap()[0].estimate,
+		pinned
+	);
+	let [dispatch] = dispatches(&fixture).try_into().unwrap();
+	assert_eq!(dispatch.estimate.ratio_ppm, Some(300_000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_cold_key_pins_the_conservative_snapshot(mut fixture: Fixture) {
+	// Arrange: too few samples to calibrate.
+	calibrated(&mut fixture, warm(4)[..5].to_vec());
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the conservative choice is pinned too, so a resume after the key
+	// warms up still makes this step's decisions.
+	assert_eq!(
+		fixture.run.context.estimate.snapshot,
+		Some(EstimateSnapshot::conservative(0))
+	);
+	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	let [dispatch] = dispatches(&fixture).try_into().unwrap();
+	assert_eq!(dispatch.estimate.estimator, "bytes");
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_overflow_after_a_calibrated_estimate_demotes_the_run(mut fixture: Fixture) {
+	// Arrange
+	calibrated(&mut fixture, warm(4));
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(false));
+	*state.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act: the calibrated request overflows.
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the step is demoted in the same save as the recovery state, and
+	// the overflow is measured in bytes so a later one compares like with like.
+	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	assert_eq!(
+		fixture.run.context.estimate,
+		EstimateState {
+			snapshot: Some(EstimateSnapshot::conservative(0)),
+			demoted: true,
+		}
+	);
+	let overflowed = fixture.backend.0.requests.lock().unwrap()[0].clone();
+	assert!(overflowed.estimate.is_calibrated());
+	assert_eq!(
+		fixture.run.context.recovery.overflow_request_tokens,
+		Some(overflowed.byte_estimate().total() as u64)
+	);
+	// Act: the retry and a later step use bytes without consulting calibration.
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.step += 1;
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(count(&fixture, "calibration.samples"), 1);
+	let estimators = dispatches(&fixture)
+		.into_iter()
+		.map(|dispatch| dispatch.estimate.estimator)
+		.collect::<Vec<_>>();
+	assert_eq!(estimators, ["calibrated", "bytes", "bytes"]);
+	assert!(fixture.run.context.estimate.demoted);
+}
+
+/// A large task under large fixed instructions: the Stable Prefix snapshot
+/// quota is bound by the headroom beside the fixed content.
+fn ordered_with_large_task(calibration: Option<Vec<CalibrationSample>>) -> Fixture {
+	let mut fixture = canonical(fixture());
+	ordered(&mut fixture);
+	if let Some(samples) = calibration {
+		calibrated(&mut fixture, samples);
+	}
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.fill_semantic_budget = true;
+	state.instructions = "x".repeat(80_000);
+	fixture.backend.0.task.lock().unwrap().description = "d".repeat(40_000);
+	fixture
+}
+
+#[rstest]
+#[tokio::test]
+async fn calibration_never_moves_the_stable_prefix_or_the_semantic_budget() {
+	// Arrange
+	let mut bytes = ordered_with_large_task(None);
+	let mut calibrated = ordered_with_large_task(Some(warm(4)));
+	// Act
+	for fixture in [&mut bytes, &mut calibrated] {
+		assert!(matches!(
+			advance_sources(fixture).await,
+			Err(Error::ProviderRejected { .. })
+		));
+	}
+	// Assert
+	let conservative = bytes.backend.0.requests.lock().unwrap()[0].clone();
+	let scaled = calibrated.backend.0.requests.lock().unwrap()[0].clone();
+	assert!(!conservative.estimate.is_calibrated());
+	assert!(scaled.estimate.is_calibrated());
+	let (stable, _) = ordered_parts(&scaled);
+	assert_eq!(stable, ordered_parts(&conservative).0);
+	assert!(stable.len() < 40_000, "the snapshot quota must bind");
+	assert_eq!(semantic_memory(&scaled), semantic_memory(&conservative));
+	assert_eq!(scaled.cache_identity(), conservative.cache_identity());
+}
