@@ -20,22 +20,42 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 	{
 		return Ok(false);
 	}
+	// The admission's trusted source attributes, as every later check of the
+	// same resources carries them; a policy conditioned on them must match here.
+	let source = json!({
+		"source_workspace_id": d.task.workspace_id,
+		"source_task_id": d.task.id,
+		"source_task_revision": d.task.revision,
+	});
+	let with_source = |mut attributes: serde_json::Value| {
+		if let (Some(attributes), Some(source)) = (attributes.as_object_mut(), source.as_object()) {
+			attributes.extend(source.clone());
+		}
+		attributes
+	};
 	let workspace = scope.resource(
 		"workspace",
 		&format!("{}/workspaces/{}", run.home_node, run.workspace_id),
-		json!({}),
+		with_source(json!({})),
 	);
 	let task = scope.resource(
 		"task",
 		&format!("{}/tasks/{}", run.home_node, run.task_id),
-		json!({"created_by":d.task.created_by,"requirements":d.task.requirements}),
+		with_source(json!({"created_by":d.task.created_by,"requirements":d.task.requirements})),
 	);
-	let memory=scope.resource("memory",&run.agent_id,json!({"created_by":qualified_agent(scope.node(),&run.agent_id,&run.agent_version),"version":run.agent_version}));
+	let memory = scope.resource(
+		"memory",
+		&run.agent_id,
+		with_source(json!({
+			"created_by":qualified_agent(scope.node(),&run.agent_id,&run.agent_version),
+			"version":run.agent_version,
+		})),
+	);
 	if !scope.decide(&workspace, "workspace.read").await?
 		|| !scope.decide(&task, "task.read").await?
 		|| !scope
 			.decide(
-				&scope.resource("run", &run.id.to_string(), json!({})),
+				&scope.resource("run", &run.id.to_string(), with_source(json!({}))),
 				"run.read",
 			)
 			.await?

@@ -282,6 +282,7 @@ use tokio::sync::Semaphore;
 pub const BODY_LIMIT: usize = 1024 * 1024;
 const MAX_RATE_BUCKETS: usize = 16_384;
 const PRUNE_INTERVAL: usize = 1024;
+const FULL_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedPeer(pub String);
 #[derive(Clone)]
@@ -300,6 +301,7 @@ struct RateBucket {
 struct RateBuckets {
 	entries: HashMap<String, RateBucket>,
 	admissions: usize,
+	pruned_at: Option<Instant>,
 }
 impl Protection {
 	pub fn new(settings: Settings) -> Self {
@@ -314,10 +316,19 @@ impl Protection {
 		let now = Instant::now();
 		let mut buckets = self.buckets.lock().expect("HTTP admission");
 		buckets.admissions = buckets.admissions.wrapping_add(1);
-		if buckets.admissions.is_multiple_of(PRUNE_INTERVAL) {
+		let full = !buckets.entries.contains_key(&key) && buckets.entries.len() >= MAX_RATE_BUCKETS;
+		// Prune periodically, and before refusing a new key for lack of room,
+		// so expired buckets never lock new callers out. A flood of new keys
+		// against a full map scans it at most once per `FULL_PRUNE_INTERVAL`.
+		let due_while_full = full
+			&& buckets
+				.pruned_at
+				.is_none_or(|at| now.duration_since(at) >= FULL_PRUNE_INTERVAL);
+		if due_while_full || buckets.admissions.is_multiple_of(PRUNE_INTERVAL) {
 			buckets
 				.entries
 				.retain(|_, bucket| now.duration_since(bucket.updated) < bucket.expires_after);
+			buckets.pruned_at = Some(now);
 		}
 		if !buckets.entries.contains_key(&key) && buckets.entries.len() >= MAX_RATE_BUCKETS {
 			return false;

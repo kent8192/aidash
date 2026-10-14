@@ -22,6 +22,10 @@ import uuid
 ROOT = Path(os.environ.get('AIDASH_GUARD_STATE', '/var/lib/aidash-node-guard'))
 LEGACY_ROOT = Path(os.environ['AIDASH_GUARD_LEGACY_STATE']) if os.environ.get('AIDASH_GUARD_LEGACY_STATE') else None
 MIGRATION_WARNED = set()
+# Terminal tombstones this guard already adopted, by path and file identity.
+# The shared legacy copy stays for other releases; an unchanged one is skipped
+# so watch() does not reread and relock every historical tombstone each scan.
+ADOPTED_TOMBSTONES = {}
 RUNTIME = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc/k8s.io')
 RUNSC_BINARY = os.environ.get('AIDASH_RUNSC_BINARY', '/usr/local/bin/runsc')
 CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY', '/usr/bin/ctr')
@@ -341,6 +345,10 @@ def migrate_legacy():
         fcntl.flock(lock, fcntl.LOCK_EX)
         for path in LEGACY_ROOT.glob('*.json'):
             try:
+                stat = path.stat()
+                identity = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+                if ADOPTED_TOMBSTONES.get(path) == identity:
+                    continue
                 # Hold the same per-area lock as handle() so a live command cannot
                 # write a newer record between the target check and adoption.
                 with (ROOT / (path.stem + '.lock')).open('a') as area_lock:
@@ -357,6 +365,7 @@ def migrate_legacy():
                         # namespace owned it, and each release keeps its own proof.
                         if not target.exists():
                             save(target, dict(record, terminated=True, deadline=None, frozen=False))
+                        ADOPTED_TOMBSTONES[path] = identity
                     elif target.exists():
                         # A live command of this release already owns the area and
                         # its record is authoritative. Retire the legacy file without

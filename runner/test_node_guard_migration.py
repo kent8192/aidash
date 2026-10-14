@@ -115,6 +115,33 @@ class GuardMigrationTest(unittest.TestCase):
             self.assertEqual(json.loads((current / 'same.json').read_text()), record)
             self.assertEqual(json.loads((current / 'newer.json').read_text()), newer)
 
+    def test_adopted_terminal_tombstones_are_not_rescanned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / 'release'
+            legacy = root / 'legacy'
+            legacy.mkdir()
+            stopped = {'pod_uid': 'live', 'deadline': None, 'terminated': True}
+            (legacy / 'done.json').write_text(json.dumps(stopped))
+            reads = []
+            original = Path.read_bytes
+
+            def read_bytes(path):
+                if path.parent == legacy:
+                    reads.append(path.name)
+                return original(path)
+
+            with patch.object(node_guard, 'ROOT', current), patch.object(node_guard, 'LEGACY_ROOT', legacy), \
+                    patch.object(node_guard, 'ADOPTED_TOMBSTONES', {}), \
+                    patch.object(Path, 'read_bytes', read_bytes):
+                node_guard.migrate_legacy()
+                node_guard.migrate_legacy()
+
+            # Adopted once; the shared proof stays for other releases.
+            self.assertEqual(reads, ['done.json'])
+            self.assertTrue((legacy / 'done.json').exists())
+            self.assertTrue((current / 'done.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -28,6 +28,26 @@ fn rate_buckets_remain_bounded_without_scanning_on_every_admission() {
 	assert_eq!(protection.buckets.lock().unwrap().entries.len(), 1);
 }
 
+/// A full map of expired buckets is pruned before a new key is refused,
+/// even between periodic prunes.
+#[test]
+fn expired_buckets_never_lock_new_callers_out() {
+	let protection = Protection::new(Settings::default());
+	for id in 0..MAX_RATE_BUCKETS {
+		assert!(protection.admit(format!("auth:{id}"), 2, Duration::from_secs(60)));
+	}
+	{
+		let mut buckets = protection.buckets.lock().unwrap();
+		for bucket in buckets.entries.values_mut() {
+			bucket.updated = Instant::now() - Duration::from_secs(121);
+		}
+		buckets.admissions = 1;
+		buckets.pruned_at = None;
+	}
+	assert!(protection.admit("auth:new".into(), 2, Duration::from_secs(60)));
+	assert_eq!(protection.buckets.lock().unwrap().entries.len(), 1);
+}
+
 #[tokio::test]
 async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
 	let protection = Protection::new(Settings {
