@@ -1973,6 +1973,355 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
 }
 
+/// Seeds a Google External Identity with Display Attributes and a live
+/// session whose cookie is `session` and whose CSRF token is `{session}-csrf`.
+async fn google_identity(
+	federation: &aidash_server::federation::Federation,
+	subject: &str,
+	session: &str,
+) -> Uuid {
+	let identity = Uuid::new_v4();
+	let identity_query = Query::insert()
+		.into_table(Alias::new("dashboard_identities"))
+		.columns(
+			[
+				"id",
+				"issuer",
+				"subject",
+				"verified_email",
+				"display_name",
+				"last_valid_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::value("https://accounts.google.com"))
+				.expr(Expr::value(subject))
+				.expr(Expr::value(format!("{subject}@example.test")))
+				.expr(Expr::value(format!("Display {subject}")))
+				.expr(Expr::cust("clock_timestamp()"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&identity_query)
+		.bind(identity)
+		.execute(federation.store.pool.driver())
+		.await
+		.unwrap();
+	let session_query = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"token_hash",
+				"csrf_hash",
+				"identity_id",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&session_query)
+		.bind(Uuid::new_v4())
+		.bind(Sha256::digest(session.as_bytes()).to_vec())
+		.bind(Sha256::digest(format!("{session}-csrf").as_bytes()).to_vec())
+		.bind(identity)
+		.execute(federation.store.pool.driver())
+		.await
+		.unwrap();
+	identity
+}
+
+/// A browser request through the session `session`, optionally acting in
+/// `context`; `None` as the session sends the operator bearer token instead.
+async fn browser_call(
+	app: &common::TestApplication,
+	method: &str,
+	path: &str,
+	session: Option<&str>,
+	context: Option<&str>,
+	body: Value,
+) -> (u16, Value) {
+	let mut request = app
+		.api_http
+		.request(
+			Method::from_bytes(method.as_bytes()).unwrap(),
+			&app.url(path),
+		)
+		.header("content-type", "application/json");
+	request = match session {
+		Some(session) => request
+			.header("cookie", format!("aidash-session={session}"))
+			.header("origin", "http://127.0.0.1:8080")
+			.header("x-aidash-csrf", format!("{session}-csrf")),
+		None => request.header("authorization", "Bearer operator-execution-fixture"),
+	};
+	if let Some(context) = context {
+		request = request.header("x-aidash-context", context);
+	}
+	let response = request.json(&body).send().await.unwrap();
+	let status = response.status().as_u16();
+	(
+		status,
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+	)
+}
+
+/// Registers `session`'s External Identity and lets an Operator approve it
+/// into `subject` of `tenant`, returning the approved Mapping.
+async fn operator_mapped(
+	app: &common::TestApplication,
+	session: &str,
+	tenant: &str,
+	subject: &str,
+) -> Value {
+	let (status, registration) = browser_call(
+		app,
+		"POST",
+		"/auth/registration",
+		Some(session),
+		None,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{registration}");
+	let (status, mapping) = browser_call(
+		app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		),
+		None,
+		None,
+		json!({"tenant": tenant, "subject": subject}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+	mapping
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn tenant_administration_works_without_a_tenant_binding(
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: an Operator seeds an unbound Tenant with an administrator and a
+	// member. Google sign-in has no Tenant Bindings at all.
+	let actions = aidash_domain::identity::tenant_administration::ACTIONS;
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant": "acme",
+		"roles": {"admin": {}, "member": {}},
+		"groups": {
+			"administrators": {"roles": ["admin"]},
+			"members": {"roles": ["member"], "assignable": true}
+		},
+		"subjects": {
+			"root": {"kind": "user", "groups": ["administrators"]},
+			"bob": {"kind": "user"}
+		},
+		"policies": [{
+			"id": "tenant-administrators",
+			"effect": "allow",
+			"subjects": {"groups": ["administrators"]},
+			"actions": actions,
+			"resources": {"kinds": ["registration", "mapping", "subject"]},
+			"condition": null
+		}]
+	}))
+	.unwrap();
+	Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "operator")
+	.await
+	.unwrap();
+	let app = &fixture.app;
+	google_identity(&fixture.federation, "alice", "alice-session").await;
+	google_identity(&fixture.federation, "bob", "bob-session").await;
+	google_identity(&fixture.federation, "carol", "carol-session").await;
+	let alice = operator_mapped(app, "alice-session", "acme", "root").await;
+	let bob = operator_mapped(app, "bob-session", "acme", "bob").await;
+	let alice_context = format!("mapping:{}", alice["id"].as_str().unwrap());
+	let bob_context = format!("mapping:{}", bob["id"].as_str().unwrap());
+	// Carol's request is generic: it is addressed to no Tenant.
+	let (status, carol) = browser_call(
+		app,
+		"POST",
+		"/auth/registration",
+		Some("carol-session"),
+		None,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{carol}");
+	let call = |session: &'static str, context: &str, method: &'static str, path: &str| {
+		let context = context.to_owned();
+		let path = path.to_owned();
+		async move {
+			browser_call(
+				app,
+				method,
+				&path,
+				Some(session),
+				Some(&context),
+				Value::Null,
+			)
+			.await
+		}
+	};
+
+	// Act and assert: the administrator holds every administration action.
+	let (status, overview) = call(
+		"alice-session",
+		&alice_context,
+		"GET",
+		"/api/tenants/acme/administration",
+	)
+	.await;
+	assert_eq!(status, 200, "{overview}");
+	assert_eq!(overview["actions"], json!(actions));
+	assert_eq!(overview["assignable_groups"], json!(["members"]));
+	// No Registration Request is addressed to an unbound Tenant.
+	let (status, registrations) = call(
+		"alice-session",
+		&alice_context,
+		"GET",
+		"/api/tenants/acme/registrations",
+	)
+	.await;
+	assert_eq!(status, 200, "{registrations}");
+	assert_eq!(registrations, json!([]));
+	let (status, _) = browser_call(
+		app,
+		"POST",
+		&format!(
+			"/api/tenants/acme/registrations/{}/approve",
+			carol["id"].as_str().unwrap()
+		),
+		Some("alice-session"),
+		Some(&alice_context),
+		json!({"subject": "carol", "groups": ["members"]}),
+	)
+	.await;
+	assert_eq!(status, 404);
+	// Mapped identities are listed without their Display Attributes.
+	let (status, mappings) = call(
+		"alice-session",
+		&alice_context,
+		"GET",
+		"/api/tenants/acme/mappings",
+	)
+	.await;
+	assert_eq!(status, 200, "{mappings}");
+	let listed = mappings.as_array().unwrap();
+	assert_eq!(listed.len(), 2, "{mappings}");
+	let member = listed
+		.iter()
+		.find(|mapping| mapping["subject"] == "bob")
+		.unwrap();
+	assert_eq!(member["id"], bob["id"]);
+	assert_eq!(member["identity"]["verified_email"], Value::Null);
+	assert_eq!(member["identity"]["display_name"], Value::Null);
+	assert!(
+		listed
+			.iter()
+			.any(|mapping| mapping["subject"] == "root" && mapping["own_identity"] == true)
+	);
+	// An ordinary member holds no action and is refused with an audited 403.
+	let (status, member_overview) = call(
+		"bob-session",
+		&bob_context,
+		"GET",
+		"/api/tenants/acme/administration",
+	)
+	.await;
+	assert_eq!(status, 200, "{member_overview}");
+	assert_eq!(member_overview["actions"], json!([]));
+	let denial = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("authorization_decisions"))
+		.and_where(Expr::cust(
+			"tenant = 'acme' AND subject = 'bob' AND action = 'mapping.read' \
+			 AND (decision ->> 'allowed')::boolean IS FALSE",
+		))
+		.to_string(PostgresQueryBuilder);
+	let denials = || async {
+		sqlx::query_scalar::<_, i64>(&denial)
+			.fetch_one(fixture.federation.store.pool.driver())
+			.await
+			.unwrap()
+	};
+	let before = denials().await;
+	let (status, _) = call(
+		"bob-session",
+		&bob_context,
+		"GET",
+		"/api/tenants/acme/mappings",
+	)
+	.await;
+	assert_eq!(status, 403);
+	assert_eq!(denials().await, before + 1);
+	// The administrator confers an Assignable Group and disables the member.
+	let (status, membership) = browser_call(
+		app,
+		"PUT",
+		"/api/tenants/acme/subjects/bob/groups",
+		Some("alice-session"),
+		Some(&alice_context),
+		json!({
+			"groups": ["members"],
+			"expected_policy_revision": overview["policy_revision"]
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{membership}");
+	assert_eq!(membership["groups"], json!(["members"]));
+	let (status, disabled) = browser_call(
+		app,
+		"POST",
+		&format!(
+			"/api/tenants/acme/mappings/{}/disable",
+			bob["id"].as_str().unwrap()
+		),
+		Some("alice-session"),
+		Some(&alice_context),
+		json!({"expected_revision": member["revision"]}),
+	)
+	.await;
+	assert!(matches!(status, 200 | 204), "{status} {disabled}");
+	let history = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_administration_history"))
+		.and_where(Expr::cust(
+			"tenant = 'acme' AND actor_kind = 'tenant_administrator'",
+		))
+		.to_string(PostgresQueryBuilder);
+	let recorded: i64 = sqlx::query_scalar(&history)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	assert!(recorded >= 1, "{recorded}");
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
 // Redirect responses are the contract under test; following them contacts the issuer.
 #[rstest::fixture]
 fn browser_client() -> reinhardt::test::APIClientBuilder {
