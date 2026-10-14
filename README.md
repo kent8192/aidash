@@ -4,6 +4,8 @@ Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selecte
 
 The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
 
+New multi-node scoped transactions are temporarily rejected to prevent manifest disclosure after grant revocation. Previously admitted transactions continue durable recovery; see the [transaction contract](docs/transactions.md).
+
 ## Cargo workspace
 
 All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;

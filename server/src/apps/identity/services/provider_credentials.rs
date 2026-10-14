@@ -420,7 +420,7 @@ impl Management {
 	) -> Result<Vec<Binding>> {
 		let service = self.service()?;
 		self.tenant(&actor, &tenant)?;
-		let provider = provider.as_deref().map(Provider::parse).transpose()?;
+		let provider = provider.as_deref().map(Provider::credential).transpose()?;
 		let mut scope = service.repository.begin(&tenant).await?;
 		let rows = scope.bindings().await?;
 		scope.commit().await?;
@@ -463,7 +463,7 @@ impl Management {
 		input: BindingUpdate,
 	) -> Result<Binding> {
 		let service = self.service()?;
-		let provider = Provider::parse(&provider)?;
+		let provider = Provider::credential(&provider)?;
 		let authority = self
 			.authorize(
 				&actor,

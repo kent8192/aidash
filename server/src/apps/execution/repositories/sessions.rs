@@ -36,6 +36,34 @@ pub(crate) fn select(table: &str) -> reinhardt::query::SelectStatement {
 		.from(Alias::new(table))
 		.to_owned()
 }
+/// Working area bound to a core run: `None` when the run is not a core run, `Some(None)`
+/// when its area is absent from the caller's tenant.
+pub(crate) async fn run_area(
+	access: &mut Access,
+	run: Uuid,
+) -> NativeResult<Option<Option<NativeArea>>> {
+	let area_id: Option<Uuid> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("area_id"))
+			.from(Alias::new("core_runs"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut **access.tx)
+	.await?;
+	let Some(area_id) = area_id else {
+		return Ok(None);
+	};
+	let area = crate::database::native::query_as(
+		&select("core_areas")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area_id)))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **access.tx)
+	.await?;
+	Ok(Some(area))
+}
 #[async_trait]
 impl SessionScope for Scope<'_> {
 	fn tenant(&self) -> &str {

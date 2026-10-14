@@ -20,6 +20,12 @@ import time
 import uuid
 
 ROOT = Path(os.environ.get('AIDASH_GUARD_STATE', '/var/lib/aidash-node-guard'))
+LEGACY_ROOT = Path(os.environ['AIDASH_GUARD_LEGACY_STATE']) if os.environ.get('AIDASH_GUARD_LEGACY_STATE') else None
+MIGRATION_WARNED = set()
+# Terminal tombstones this guard already adopted, by path and file identity.
+# The shared legacy copy stays for other releases; an unchanged one is skipped
+# so watch() does not reread and relock every historical tombstone each scan.
+ADOPTED_TOMBSTONES = {}
 RUNTIME = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc/k8s.io')
 RUNSC_BINARY = os.environ.get('AIDASH_RUNSC_BINARY', '/usr/local/bin/runsc')
 CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY', '/usr/bin/ctr')
@@ -331,11 +337,65 @@ def handle(request):
         return {'files': files}
 
 
+def migrate_legacy():
+    if LEGACY_ROOT is None or LEGACY_ROOT == ROOT or not LEGACY_ROOT.is_dir():
+        return
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (LEGACY_ROOT / 'migration.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for path in LEGACY_ROOT.glob('*.json'):
+            try:
+                stat = path.stat()
+                identity = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+                if ADOPTED_TOMBSTONES.get(path) == identity:
+                    continue
+                # Hold the same per-area lock as handle() so a live command cannot
+                # write a newer record between the target check and adoption.
+                with (ROOT / (path.stem + '.lock')).open('a') as area_lock:
+                    fcntl.flock(area_lock, fcntl.LOCK_EX)
+                    record = json.loads(path.read_bytes())
+                    target = ROOT / path.name
+                    if record.get('terminated') or gone(record):
+                        # A terminal tombstone needs no live container: its removal is
+                        # expected, and handle() relies on the tombstone to confirm
+                        # termination and permit status/export/log recovery. It only
+                        # matches an exact execution binding and never resurrects a
+                        # sandbox, so it is copied rather than moved: without the
+                        # container this shared directory cannot tell which release's
+                        # namespace owned it, and each release keeps its own proof.
+                        if not target.exists():
+                            save(target, dict(record, terminated=True, deadline=None, frozen=False))
+                        ADOPTED_TOMBSTONES[path] = identity
+                    elif target.exists():
+                        # A live command of this release already owns the area and
+                        # its record is authoritative. Retire the legacy file without
+                        # revalidating it, or every watch() scan would rerun the
+                        # container checks. An exact copy was already migrated; a
+                        # differing one is kept aside, outside the scanned *.json set.
+                        if json.loads(target.read_bytes()) == record:
+                            path.unlink()
+                        else:
+                            path.rename(path.with_suffix('.superseded'))
+                            print('legacy guard state superseded by a live record', file=sys.stderr, flush=True)
+                    else:
+                        # validate checks the live container, Pod UID, image and this
+                        # release's sandbox namespace before adopting an old deadline.
+                        validate(record)
+                        save(target, record)
+                        path.unlink()
+                MIGRATION_WARNED.discard(path)
+            except Exception as error:
+                if path not in MIGRATION_WARNED:
+                    print(type(error).__name__ + ': legacy guard state not yet migrated', file=sys.stderr, flush=True)
+                    MIGRATION_WARNED.add(path)
+
+
 def watch():
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (ROOT / 'watch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         while True:
+            migrate_legacy()
             for path in ROOT.glob('*.json'):
                 try:
                     record = json.loads(path.read_bytes())

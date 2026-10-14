@@ -292,6 +292,7 @@ pub(crate) async fn operate_staged(
 	};
 	match &input.action {
 		Action::Pin { id } | Action::Unpin { id } | Action::Reactivate { id } => {
+			scope(store, lease, &input.bank, "memory.read").await?;
 			let pinned = match input.action {
 				Action::Pin { .. } => Some(true),
 				Action::Unpin { .. } => Some(false),

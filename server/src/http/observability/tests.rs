@@ -1,6 +1,7 @@
 use super::*;
 use bytes::Bytes;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use reinhardt::Request;
 use rstest::rstest;
 use std::{
 	io::Write,
@@ -14,6 +15,10 @@ fn request(method: &str, uri: &str) -> Request {
 		.body(Bytes::new())
 		.build()
 		.unwrap()
+}
+fn observe(method: &str, uri: &str) -> Observation {
+	let request = request(method, uri);
+	Observation::start(&request.method, &request.uri)
 }
 fn pending(handle: &PrometheusHandle, expected: u8) {
 	let rendered = handle.render();
@@ -48,7 +53,7 @@ fn request_labels_only_contain_registered_templates_and_bounded_methods(
 	let request = request(method, uri);
 	// Assert
 	assert_eq!(method_label(&request.method), expected_method);
-	assert_eq!(route_label(&request), expected_route);
+	assert_eq!(route_label(&request.method, &request.uri), expected_route);
 }
 
 #[rstest]
@@ -58,7 +63,7 @@ async fn pending_owns_unpolled_and_completed_stream_lifetimes() {
 	let recorder = PrometheusBuilder::new().build_recorder();
 	let handle = recorder.handle();
 	let _recorder = metrics::set_default_local_recorder(&recorder);
-	let observation = Observation::start(&request("GET", "/api/events/stream?token=private"));
+	let observation = observe("GET", "/api/events/stream?token=private");
 	let stream = futures_util::stream::iter([Ok(Bytes::from_static(b"data: event\n\n"))]);
 	// Act
 	let mut response = observation.finish(Response::ok().with_stream(stream), "request-fixture");
@@ -85,7 +90,7 @@ async fn pending_owns_unpolled_and_completed_stream_lifetimes() {
 	}));
 	assert!(!metrics.contains("private"));
 
-	let response = Observation::start(&request("GET", "/api/events/stream")).finish(
+	let response = observe("GET", "/api/events/stream").finish(
 		Response::ok().with_stream(futures_util::stream::pending()),
 		"unpolled-fixture",
 	);
@@ -102,14 +107,14 @@ async fn cancellations_and_body_errors_release_pending() {
 	let handle = recorder.handle();
 	let _recorder = metrics::set_default_local_recorder(&recorder);
 	// Act / Assert: cancelled handler futures drop their observation.
-	let observation = Observation::start(&request("GET", "/api/events/stream"));
+	let observation = observe("GET", "/api/events/stream");
 	pending(&handle, 1);
 	drop(observation);
 	pending(&handle, 0);
 	let failed =
 		futures_util::stream::iter([Err(Box::new(std::io::Error::other("fixture failure"))
 			as Box<dyn std::error::Error + Send + Sync>)]);
-	let mut response = Observation::start(&request("GET", "/api/events/stream"))
+	let mut response = observe("GET", "/api/events/stream")
 		.finish(Response::ok().with_stream(failed), "failed-fixture");
 	let mut body = response.take_stream_body().unwrap();
 	assert!(body.next().await.unwrap().is_err());
@@ -126,15 +131,14 @@ async fn pending_preserves_buffered_and_file_range_bytes_and_framing() {
 	let response =
 		Response::new(reinhardt::StatusCode::SERVICE_UNAVAILABLE).with_body("overloaded");
 	// Act
-	let mut response =
-		Observation::start(&request("GET", "/api/events/stream")).finish(response, "error-fixture");
+	let mut response = observe("GET", "/api/events/stream").finish(response, "error-fixture");
 	assert_eq!(response.headers["content-length"], "10");
 	let mut body = response.take_stream_body().unwrap();
 	assert_eq!(body.next().await.unwrap().unwrap(), "overloaded");
 	assert!(body.next().await.is_none());
 	pending(&handle, 0);
-	let response = Observation::start(&request("GET", "/api/events/stream"))
-		.finish(Response::no_content(), "bodyless-fixture");
+	let response =
+		observe("GET", "/api/events/stream").finish(Response::no_content(), "bodyless-fixture");
 	assert!(!response.headers.contains_key("content-length"));
 	drop(response);
 	pending(&handle, 0);
@@ -146,8 +150,7 @@ async fn pending_preserves_buffered_and_file_range_bytes_and_framing() {
 		.with_file_body(file, 123, 131_072)
 		.unwrap()
 		.with_header("Content-Range", "bytes 123-131194/150000");
-	let mut response =
-		Observation::start(&request("GET", "/api/events/stream")).finish(response, "file-fixture");
+	let mut response = observe("GET", "/api/events/stream").finish(response, "file-fixture");
 	// Assert: the file remains an owned range streamed in bounded chunks.
 	assert_eq!(response.headers["content-length"], "131072");
 	assert_eq!(response.headers["content-range"], "bytes 123-131194/150000");
@@ -185,10 +188,10 @@ fn response_log_has_method_and_route_without_raw_request_values() {
 		.finish();
 	let _subscriber = tracing::subscriber::set_default(subscriber);
 	// Act
-	let response = Observation::start(&request(
+	let response = observe(
 		"GET",
 		"/api/workspaces/7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb?token=private",
-	))
+	)
 	.finish(Response::not_found(), "request-fixture");
 	drop(response);
 	// Assert

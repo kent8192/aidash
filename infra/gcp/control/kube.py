@@ -24,6 +24,7 @@ APP_CHART = ROOT / "deploy/helm/aidash"
 ENV_CHART = ROOT / "infra/gcp/helm/environment"
 
 STORAGE_CLASS = "aidash-retain"
+JOURNAL_CLAIM = "app-execution-journal"
 PREVIEW_VOLUME = "aidash-preview-tls"
 PREVIEW_CLAIM = "preview-tls"
 PREVIEW_SIZE = "10Gi"
@@ -538,6 +539,12 @@ def app_values(cluster, identity, output, release, sha, settings):
     selector, tolerations = scheduling(identity)
     repository, digest = image(release, "app").split("@", 1)
     control = image(release, "control")
+    # A journal PVC from an earlier release may have the cluster's former
+    # default StorageClass. Render its current immutable value on upgrade.
+    # Only a fresh claim should select the retention class.
+    journal_claim = cluster.get("persistentvolumeclaim", JOURNAL_CLAIM, namespace)
+    journal_class = (journal_claim.get("spec", {}).get("storageClassName", "")
+                     if journal_claim else STORAGE_CLASS)
 
     def role(account):
         # Writers start only through start_writers, after migration and checks.
@@ -579,7 +586,7 @@ def app_values(cluster, identity, output, release, sha, settings):
             # application may connect to the Runner.
             "runner": {"enabled": True, "image": control, "existingSecret": "app-runner",
                        "ingress": {"podSelectors": [{"aidash.run/activity": "env"}]},
-                       "journal": {"storageClassName": STORAGE_CLASS}},
+                       "journal": {"storageClassName": journal_class}},
         },
     }
 

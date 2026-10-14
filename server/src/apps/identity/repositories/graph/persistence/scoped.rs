@@ -63,12 +63,25 @@ pub(super) async fn candidates(
 	Ok(rows.into_iter().map(Candidate::Run).collect())
 }
 
-fn workspace_resource(access: &Access, source: &str, workspace: Uuid) -> Resource {
+fn source_attributes(description: &Description) -> Value {
+	json!({
+		"source_workspace_id": description.task.workspace_id,
+		"source_task_id": description.task.id,
+		"source_task_revision": description.task.revision,
+	})
+}
+
+fn workspace_resource(
+	access: &Access,
+	source: &str,
+	workspace: Uuid,
+	description: &Description,
+) -> Resource {
 	// Match the receiving admission's qualified foreign resource namespace.
 	access.resource(
 		"workspace",
 		format!("{source}/workspaces/{workspace}"),
-		json!({}),
+		source_attributes(description),
 	)
 }
 
@@ -122,19 +135,24 @@ pub(crate) async fn visible(
 	let GraphAuthority::Subject(access) = authority else {
 		return Ok(description.semantic.disabled());
 	};
-	let workspace = workspace_resource(access, &run.home_node, run.workspace_id);
+	let workspace = workspace_resource(access, &run.home_node, run.workspace_id, &description);
 	let task = access.resource(
 		"task",
 		format!("{}/tasks/{}", run.home_node, run.task_id),
-		json!({"created_by":description.task.created_by,"requirements":description.task.requirements}),
+		json!({"created_by":description.task.created_by,"requirements":description.task.requirements,
+			"source_workspace_id":description.task.workspace_id,"source_task_id":description.task.id,
+			"source_task_revision":description.task.revision}),
 	);
-	let resource = access.resource("run", run.id, json!({}));
+	let resource = access.resource("run", run.id, source_attributes(&description));
 	let memory = access.resource(
 		"memory",
 		&run.agent_id,
 		json!({
 			"created_by":crate::domain::qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
 			"version":run.agent_version,
+			"source_workspace_id":description.task.workspace_id,
+			"source_task_id":description.task.id,
+			"source_task_revision":description.task.revision,
 		}),
 	);
 	// Admission identifies the data; only the current mapped viewer authorizes it.
@@ -201,20 +219,59 @@ pub(super) async fn activity(
 	source_node: &str,
 	workspace: Uuid,
 ) -> Result<Vec<GraphActivity>> {
-	let ids: Vec<String> = nodes
-		.iter()
-		.filter(|node| node.kind == "run")
-		.filter_map(|node| node.resource_id.clone())
-		.collect();
-	if ids.is_empty() {
+	let mut visible_nodes: Vec<&GraphNode> =
+		nodes.iter().filter(|node| node.kind == "run").collect();
+	if visible_nodes.is_empty() {
 		return Ok(vec![]);
 	}
-	if let GraphAuthority::Subject(access) = authority {
-		let resource = workspace_resource(access, source_node, workspace);
-		if !access.decide(&resource, "workspace.events").await? {
+	if matches!(authority, GraphAuthority::Subject(_)) {
+		let tenant = authority.tenant().to_owned();
+		let mut allowed = Vec::new();
+		for node in visible_nodes {
+			let Some(id) = node
+				.resource_id
+				.as_deref()
+				.and_then(|id| Uuid::parse_str(id).ok())
+			else {
+				continue;
+			};
+			let description: Option<Value> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("description"))
+					.from(Alias::new("authorization_remote_admissions"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+					.and_where(Expr::col(Alias::new("source_node")).eq(Expr::value(source_node)))
+					.lock(LockType::Share)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(authority.connection())
+			.await?;
+			let Some(description) = description else {
+				continue;
+			};
+			let description: Description = serde_json::from_value(description)?;
+			if description.source_node != source_node || description.task.workspace_id != workspace
+			{
+				continue;
+			}
+			let GraphAuthority::Subject(access) = authority else {
+				unreachable!()
+			};
+			let resource = workspace_resource(access, source_node, workspace, &description);
+			if access.decide(&resource, "workspace.events").await? {
+				allowed.push(node);
+			}
+		}
+		visible_nodes = allowed;
+		if visible_nodes.is_empty() {
 			return Ok(vec![]);
 		}
 	}
+	let ids: Vec<&str> = visible_nodes
+		.iter()
+		.filter_map(|node| node.resource_id.as_deref())
+		.collect();
 	let mut query = Query::select();
 	query
 		.expr(Expr::cust("e.*"))
@@ -247,7 +304,7 @@ pub(super) async fn activity(
 		.into_iter()
 		.filter_map(|event| {
 			let reference = event_reference(&event, &f.config.node_id)?;
-			nodes
+			visible_nodes
 				.iter()
 				.any(|node| node.id == reference)
 				.then_some(GraphActivity {

@@ -446,6 +446,30 @@ class SealAndMigrationTests(unittest.TestCase):
         (created,) = [key for key in jobs() if key != previous]
         self.assertEqual(self.cluster.objects[created]["metadata"]["labels"]["app.kubernetes.io/component"], "migration")
 
+    def test_existing_journal_claim_keeps_its_bound_storage_class(self):
+        output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in ("app", "control", "sandbox")}}
+        settings = {"provider": None, "gcip": None}
+        fresh = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)
+        self.assertEqual(fresh["execution"]["runner"]["journal"], {"storageClassName": kube.STORAGE_CLASS})
+        self.cluster.put({
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": kube.JOURNAL_CLAIM, "namespace": "aidash-test"},
+            "spec": {"storageClassName": "former-default", "accessModes": ["ReadWriteOnce"]},
+            "status": {"phase": "Bound"},
+        })
+        upgraded = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)
+        self.assertEqual(upgraded["execution"]["runner"]["journal"], {"storageClassName": "former-default"})
+        self.assertEqual(self.cluster.get("persistentvolumeclaim", kube.JOURNAL_CLAIM, "aidash-test")["spec"]["storageClassName"], "former-default")
+        self.cluster.put({
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": kube.JOURNAL_CLAIM, "namespace": "aidash-test"},
+            "spec": {"accessModes": ["ReadWriteOnce"]},
+            "status": {"phase": "Bound"},
+        })
+        static = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)
+        self.assertEqual(static["execution"]["runner"]["journal"], {"storageClassName": ""})
+
     def test_home_ledger_is_initialized_as_a_child_of_its_claim_root(self):
         # A fresh disk's root belongs to root; ledger initialization chmods its
         # directory, so the Home must be a child the application UID creates.
