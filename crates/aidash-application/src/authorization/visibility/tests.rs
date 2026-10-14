@@ -28,6 +28,7 @@ fn run() -> RunMetadata {
 
 struct Scope {
 	cache: Option<bool>,
+	core_area_visible: bool,
 	frontier: bool,
 	missing_task: bool,
 	task_visible: bool,
@@ -46,6 +47,7 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		cache: None,
+		core_area_visible: true,
 		frontier: false,
 		missing_task: false,
 		task_visible: true,
@@ -75,6 +77,9 @@ impl Scope {
 
 #[async_trait]
 impl LocalRunVisibilityScope for Scope {
+	async fn core_area_visible(&mut self, _: Uuid) -> Result<bool> {
+		Ok(self.core_area_visible)
+	}
 	fn cached(&self, _: &RunMetadata) -> Option<bool> {
 		if self.frontier { None } else { self.cache }
 	}
@@ -250,6 +255,18 @@ async fn cached_base_decisions_never_cache_live_human_membership(
 
 #[rstest]
 #[tokio::test]
+async fn cached_run_is_hidden_after_core_file_authority_is_revoked(
+	run: RunMetadata,
+	mut scope: Scope,
+) {
+	scope.cache = Some(true);
+	scope.core_area_visible = false;
+	assert!(!run_visible(&mut scope, &run).await.unwrap());
+	assert!(scope.calls.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn dependency_frontier_prevents_reusing_or_publishing_partial_base_decisions(
 	run: RunMetadata,
 	mut scope: Scope,
@@ -280,6 +297,19 @@ async fn scoped_foreign_admission_cannot_fall_back_to_legacy_when_its_visibility
 	assert!(!scope.calls.contains(&"legacy"));
 	assert!(!scope.calls.contains(&"task"));
 	assert!(!scope.calls.contains(&"reads"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn scoped_foreign_run_is_hidden_after_core_file_authority_is_revoked(
+	mut run: RunMetadata,
+	mut scope: Scope,
+) {
+	run.home_node = "aidash://peer".into();
+	scope.admission = true;
+	scope.core_area_visible = false;
+	assert!(!run_visible(&mut scope, &run).await.unwrap());
+	assert_eq!(scope.calls, ["admission"]);
 }
 
 #[rstest]

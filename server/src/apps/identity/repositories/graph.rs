@@ -116,10 +116,10 @@ impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
 		access.decide(&resource, action).await.map_err(Into::into)
 	}
 	async fn workspace(&mut self, id: Uuid, action: &str) -> Result<bool> {
-		let GraphAuthority::Subject(access) = &mut self.0 else {
-			return Err(aidash_application::Error::Forbidden);
-		};
-		access.allowed(id, action).await.map_err(Into::into)
+		self.0
+			.workspace_allowed(id, action)
+			.await
+			.map_err(Into::into)
 	}
 	async fn record(&mut self, candidate: &Candidate) -> Result<bool> {
 		let GraphAuthority::Subject(access) = &mut self.0 else {

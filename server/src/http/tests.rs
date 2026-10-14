@@ -1,7 +1,146 @@
-use super::{Protection, ProxyNetwork, Settings, mark_sensitive_headers, private_response};
+use super::{
+	MAX_RATE_BUCKETS, PRUNE_INTERVAL, Protection, ProxyNetwork, Settings, mark_sensitive_headers,
+	private_response,
+};
 use http::{HeaderValue, header};
+use reinhardt::server::{RequestAdmission, RequestHead};
 use reinhardt::{Request, Response};
 use rstest::rstest;
+use std::time::{Duration, Instant};
+
+#[test]
+fn rate_buckets_remain_bounded_without_scanning_on_every_admission() {
+	let protection = Protection::new(Settings::default());
+	for id in 0..MAX_RATE_BUCKETS {
+		assert!(protection.admit(format!("auth:{id}"), 2, Duration::from_secs(60)));
+	}
+	assert!(!protection.admit("auth:overflow".into(), 2, Duration::from_secs(60)));
+	assert!(protection.admit("auth:0".into(), 2, Duration::from_secs(60)));
+	{
+		let mut buckets = protection.buckets.lock().unwrap();
+		assert_eq!(buckets.entries.len(), MAX_RATE_BUCKETS);
+		for bucket in buckets.entries.values_mut() {
+			bucket.updated = Instant::now() - Duration::from_secs(121);
+		}
+		buckets.admissions = PRUNE_INTERVAL - 1;
+	}
+	assert!(protection.admit("auth:new".into(), 2, Duration::from_secs(60)));
+	assert_eq!(protection.buckets.lock().unwrap().entries.len(), 1);
+}
+
+/// A full map of expired buckets is pruned before a new key is refused,
+/// even between periodic prunes.
+#[test]
+fn expired_buckets_never_lock_new_callers_out() {
+	let protection = Protection::new(Settings::default());
+	for id in 0..MAX_RATE_BUCKETS {
+		assert!(protection.admit(format!("auth:{id}"), 2, Duration::from_secs(60)));
+	}
+	{
+		let mut buckets = protection.buckets.lock().unwrap();
+		for bucket in buckets.entries.values_mut() {
+			bucket.updated = Instant::now() - Duration::from_secs(121);
+		}
+		buckets.admissions = 1;
+		buckets.pruned_at = None;
+	}
+	assert!(protection.admit("auth:new".into(), 2, Duration::from_secs(60)));
+	assert_eq!(protection.buckets.lock().unwrap().entries.len(), 1);
+}
+
+#[tokio::test]
+async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
+	let protection = Protection::new(Settings {
+		concurrency: 1,
+		..Default::default()
+	});
+	let method = http::Method::POST;
+	let headers = http::HeaderMap::new();
+	let uri = "/api/workspaces/scoped/files/file/chunks".parse().unwrap();
+	let admitted = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &uri,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.max_body_size, 6 * 1024 * 1024);
+	let denied = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &uri,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await;
+	assert_eq!(
+		denied.err().unwrap().status,
+		http::StatusCode::SERVICE_UNAVAILABLE
+	);
+	drop(admitted);
+	let ordinary = "/api/tasks".parse().unwrap();
+	let admitted = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &ordinary,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.max_body_size, super::BODY_LIMIT as u64);
+}
+
+#[tokio::test]
+async fn pre_body_overload_rejection_is_correlated_private_and_measured() {
+	// Arrange: a thread-local recorder avoids modifying process-global telemetry.
+	let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+	let handle = recorder.handle();
+	let _recorder = metrics::set_default_local_recorder(&recorder);
+	let protection = Protection::new(Settings {
+		concurrency: 1,
+		..Default::default()
+	});
+	let method = http::Method::POST;
+	let mut headers = http::HeaderMap::new();
+	let id = "7bb1b620-7b40-4bf5-b5b0-0a59f0c29ffb";
+	headers.insert("x-request-id", HeaderValue::from_static(id));
+	let uri = "/api/workspaces".parse().unwrap();
+	let head = || RequestHead {
+		method: &method,
+		uri: &uri,
+		headers: &headers,
+		remote_addr: None,
+	};
+	let _held = RequestAdmission::admit(&protection, head()).await.unwrap();
+
+	// Act
+	let denied = RequestAdmission::admit(&protection, head())
+		.await
+		.err()
+		.unwrap();
+
+	// Assert
+	assert_eq!(denied.status, http::StatusCode::SERVICE_UNAVAILABLE);
+	assert_eq!(denied.headers["x-request-id"], id);
+	assert_eq!(denied.headers[header::CACHE_CONTROL], "no-store");
+	assert_eq!(denied.headers["retry-after"], "1");
+	let metrics = handle.render();
+	assert!(metrics.lines().any(|line| {
+		line.starts_with("aidash_http_requests_total{")
+			&& line.contains("route=\"/api/workspaces\"")
+			&& line.contains("status=\"503\"")
+			&& line.ends_with(" 1")
+	}));
+}
 
 #[rstest]
 #[case(true)]

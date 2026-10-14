@@ -102,7 +102,7 @@ impl ReadProvenanceScope for Scope {
 		self.calls.push(format!("visited:{run}"));
 		Ok(self.entries.clone())
 	}
-	async fn catalog_read(&mut self, reference: &EntityRef) -> Result<()> {
+	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
 		self.touch("catalog")?;
 		self.calls
 			.push(format!("catalog:{}:{}", reference.id, reference.version));

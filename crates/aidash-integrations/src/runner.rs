@@ -11,6 +11,7 @@ pub struct RunnerHttp {
 	pub credential_env: String,
 	pub credentials: Arc<dyn Credentials>,
 }
+const MAX_RUNNER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 #[async_trait]
 impl RunnerTransport for RunnerHttp {
 	async fn request(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -47,7 +48,7 @@ impl RunnerTransport for RunnerHttp {
 		}
 		let response = request.send().await.map_err(crate::http_error)?;
 		let status = response.status();
-		let value: Value = response.json().await.map_err(crate::http_error)?;
+		let value: Value = crate::response::json(response, MAX_RUNNER_RESPONSE_BYTES).await?;
 		if status == reqwest::StatusCode::NOT_FOUND && path.starts_with("/v1/operations/") {
 			return Ok(json!({"status":"absent"}));
 		}
