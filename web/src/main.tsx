@@ -578,11 +578,18 @@ function Dashboard({
     setError("");
     try {
       const result = await request();
-      await client.invalidateQueries();
       if (selection?.kind === "workspace" || selection?.kind === "goal") {
+        // A channel renders only once the dashboard state lists it, so the
+        // new one is opened after the refresh.
+        await client.invalidateQueries();
         const value = result as { id?: string; workspace?: { id?: string } };
         const id = value?.workspace?.id ?? value?.id;
         if (id) go("collaboration", { channel: id });
+      } else {
+        // The request has succeeded, so the dialog closes now and the
+        // dashboard refreshes behind it. A full refresh can take seconds,
+        // longest right after an answer resumes a Run.
+        void client.invalidateQueries();
       }
       setSelection(null);
       return true;
