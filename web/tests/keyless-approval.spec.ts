@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 
 const entry = (id: string, kind: string, config: Record<string, unknown>) => ({
@@ -34,6 +34,41 @@ const registry = [
     provider_credential: "openrouter",
   }),
 ];
+const snapshot = {
+  revision: 1,
+  bundle: {
+    tenant: "acme",
+    subjects: { alice: { kind: "user" } },
+    policies: [],
+  },
+};
+const state = () => ({
+  access: { kind: "operator" },
+  node: {
+    id: "aidash://node",
+    endpoint: "http://localhost",
+    protocol_version: "0.1",
+    capabilities: [],
+    clusters: [],
+  },
+  registry,
+  workspaces: [],
+  tasks: [],
+  artifacts: [],
+  events: [],
+  runs: [],
+  conversations: [],
+  human_requests: [],
+  installations: [],
+  peers: [],
+});
+const catalogPanel = (page: Page) =>
+  page.locator(".panel").filter({
+    has: page.getByRole("heading", {
+      name: "Approved components",
+      exact: true,
+    }),
+  });
 
 test("Catalog Approval says that a Keyless definition carries no data retention guarantee", async ({
   page,
@@ -132,4 +167,115 @@ test("Catalog Approval says that a Keyless definition carries no data retention 
     JSON.stringify(["pending-catalog-model", "1.0.0"]),
   );
   await expect(catalog.locator(".keyless-notice")).toHaveCount(0);
+
+  // The pre-approval warning is announced, not only drawn.
+  await version.selectOption(
+    JSON.stringify(["pending-keyless-embedding", "1.0.0"]),
+  );
+  await expect(catalog.getByRole("status")).toContainText(
+    "no zero-data-retention guarantee",
+  );
+});
+
+test("approving a Keyless definition resets the choice instead of showing another one", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const approved: { entry_id: string; revision: number }[] = [];
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({
+        json: { access: { kind: "operator" }, node_id: "aidash://node" },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/state") return route.fulfill({ json: state() });
+    if (path === "/api/authorization/acme")
+      return route.fulfill({ json: snapshot });
+    if (path === "/api/authorization/acme/catalog") {
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON() as {
+          entry: { id: string };
+        };
+        approved.push({ entry_id: body.entry.id, revision: 1 });
+      }
+      return route.fulfill({
+        json: approved.map((binding) => ({
+          tenant: "acme",
+          entry_version: "1.0.0",
+          enabled: true,
+          ...binding,
+        })),
+      });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+  await page.getByLabel("Tenant", { exact: true }).fill("acme");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const catalog = catalogPanel(page);
+  const version = page.getByLabel("Component version", { exact: true });
+  await version.selectOption(
+    JSON.stringify(["pending-keyless-embedding", "1.0.0"]),
+  );
+  await expect(catalog.locator(".keyless-notice")).toHaveCount(1);
+
+  await catalog.getByRole("button", { name: "Approve", exact: true }).click();
+
+  // The approved option leaves the list; nothing else is silently chosen.
+  await expect(catalog.locator(".auth-row .keyless-origin")).toContainText(
+    "https://embeddings.example",
+  );
+  await expect(version).toHaveValue("");
+  await expect(catalog.locator(".keyless-notice")).toHaveCount(0);
+});
+
+test("an approved Keyless row keeps its warning when the Registry state is unavailable", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({
+        json: { access: { kind: "operator" }, node_id: "aidash://node" },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/state")
+      return route.fulfill({ status: 503, json: { error: "unavailable" } });
+    if (path === "/api/registry/approved-keyless-model/1.0.0")
+      return route.fulfill({ json: registry[0] });
+    if (path === "/api/authorization/acme")
+      return route.fulfill({ json: snapshot });
+    if (path === "/api/authorization/acme/catalog")
+      return route.fulfill({
+        json: [
+          {
+            tenant: "acme",
+            entry_id: "approved-keyless-model",
+            entry_version: "1.0.0",
+            enabled: true,
+            revision: 1,
+          },
+        ],
+      });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+  await page.getByLabel("Tenant", { exact: true }).fill("acme");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+
+  await expect(
+    catalogPanel(page).locator(".auth-row .keyless-origin"),
+  ).toHaveText("No retention guarantee · http://ollama.lan:11434");
 });

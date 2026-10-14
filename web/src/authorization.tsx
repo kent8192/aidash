@@ -20,6 +20,7 @@ import {
   transactionRevocations,
   authorizationCatalog,
   authorizationSetCatalog,
+  registryGet,
 } from "./generated/aidash";
 import type {
   Binding,
@@ -402,7 +403,9 @@ function TenantAuthorization({
                             </span>
                           </span>
                           <KeylessOrigin
-                            entry={entries.find(
+                            id={binding.entry_id}
+                            version={binding.entry_version}
+                            known={entries.find(
                               (entry) =>
                                 entry.id === binding.entry_id &&
                                 entry.version === binding.entry_version,
@@ -957,15 +960,18 @@ function CatalogForm({
           binding.enabled,
       ),
   );
+  // A refetch can remove the selected option; the controlled select then
+  // returns to the placeholder instead of silently showing another entry
+  // whose Keyless notice was never rendered.
+  const choice = available.find(
+    (entry) => JSON.stringify([entry.id, entry.version]) === selected,
+  );
   return (
     <form
       className="flex flex-wrap items-end gap-2"
       onSubmit={(event) => {
         event.preventDefault();
-        const selected = String(new FormData(event.currentTarget).get("entry"));
-        const entry = available.find(
-          (entry) => JSON.stringify([entry.id, entry.version]) === selected,
-        );
+        const entry = choice;
         if (!entry) return;
         const binding = bindings.find(
           (binding) =>
@@ -984,7 +990,7 @@ function CatalogForm({
           <NativeSelect
             name="entry"
             required
-            defaultValue=""
+            value={choice ? selected : ""}
             onChange={(event) => setSelected(event.currentTarget.value)}
           >
             <option value="" disabled>
@@ -1004,11 +1010,7 @@ function CatalogForm({
       <Button variant="outline" disabled={busy || !available.length}>
         {t("authApprove")}
       </Button>
-      <KeylessNotice
-        entry={available.find(
-          (entry) => JSON.stringify([entry.id, entry.version]) === selected,
-        )}
-      />
+      <KeylessNotice entry={choice} />
     </form>
   );
 }
@@ -1019,15 +1021,36 @@ function KeylessNotice({ entry }: { entry?: Entry }) {
   const origin = entry && keylessOrigin(entry);
   if (!origin) return null;
   return (
-    <Notice tone="warning" className="keyless-notice w-full">
+    <Notice tone="warning" role="status" className="keyless-notice w-full">
       {t("authKeylessNotice")} <span className="font-mono">{origin}</span>
     </Notice>
   );
 }
 
-/** On an approved row: where the Keyless definition sends requests. */
-function KeylessOrigin({ entry }: { entry?: Entry }) {
+/**
+ * On an approved row: where the Keyless definition sends requests. The
+ * definition is read on its own when the Registry state is unavailable, so a
+ * degraded dashboard still shows the warning.
+ */
+function KeylessOrigin({
+  id,
+  version,
+  known,
+}: {
+  id: string;
+  version: string;
+  known?: Entry;
+}) {
   const { t } = useI18n();
+  const fetched = useQuery({
+    queryKey: ["registry", id, version],
+    queryFn: () =>
+      registryGet(encodeURIComponent(id), encodeURIComponent(version)),
+    enabled: !known,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const entry = known ?? (!fetched.isError ? fetched.data : undefined);
   const origin = entry && keylessOrigin(entry);
   if (!origin) return null;
   return (
