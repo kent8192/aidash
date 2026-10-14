@@ -35,6 +35,11 @@ spec:
           envFrom:
             - secretRef: { name: aidash-local-app }
           env:
+            # Migrations log in as the owner of every table, unlike the server.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  { name: aidash-local-migration, key: DATABASE_URL }
             - { name: AIDASH_NODE_ID, value: "aidash://node-a" }
             - { name: AIDASH_MEMORY_RECOVERY_DIR, value: /recovery/home }
           securityContext:

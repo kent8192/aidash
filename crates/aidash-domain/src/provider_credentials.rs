@@ -4,33 +4,93 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.
+/// The one kind of grant that serves a Provider Catalog entry. A Catalog entry
+/// never falls back from one kind to the other (ADR 0007).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+	/// A Tenant's Provider Credential, chosen by its Provider Credential Binding.
+	ProviderCredential,
+	/// The Plan Connection of the subject at the root of the Run's delegation chain.
+	PlanConnection,
+}
+
+/// Catalog IDs are portable; Provider Credential and Plan Connection IDs never
+/// enter Registry configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
 	Openrouter,
+	/// OpenAI's Responses API billed to a subject's ChatGPT plan (#159).
+	Chatgpt,
 }
 impl Provider {
 	pub fn id(self) -> &'static str {
-		"openrouter"
+		match self {
+			Self::Openrouter => "openrouter",
+			Self::Chatgpt => "chatgpt",
+		}
 	}
 	pub fn base_url(self) -> &'static str {
-		"https://openrouter.ai/api/v1"
+		match self {
+			Self::Openrouter => "https://openrouter.ai/api/v1",
+			Self::Chatgpt => "https://api.openai.com/v1",
+		}
 	}
-	/// The provider-hosted consent page of Provider Authorization (OAuth PKCE).
+	pub fn grant(self) -> Grant {
+		match self {
+			Self::Openrouter => Grant::ProviderCredential,
+			Self::Chatgpt => Grant::PlanConnection,
+		}
+	}
+	/// The provider-hosted consent page: Provider Authorization (OAuth PKCE)
+	/// for Provider Credentials, Sign in with ChatGPT for Plan Connections.
 	pub fn authorization_url(self) -> &'static str {
-		"https://openrouter.ai/auth"
+		match self {
+			Self::Openrouter => "https://openrouter.ai/auth",
+			Self::Chatgpt => "https://auth.openai.com/api/accounts/authorize",
+		}
 	}
 	/// The owner-only key-settings page for one issued key, addressed by
-	/// [`ProviderCredential::key_digest`].
-	pub fn key_settings_url(self, key_digest: &str) -> String {
-		format!("https://openrouter.ai/keys/{key_digest}")
+	/// [`ProviderCredential::key_digest`]. Plan Connections hold no key.
+	pub fn key_settings_url(self, key_digest: &str) -> Option<String> {
+		match self {
+			Self::Openrouter => Some(format!("https://openrouter.ai/keys/{key_digest}")),
+			Self::Chatgpt => None,
+		}
 	}
+	/// Any Provider Catalog entry.
 	pub fn parse(value: &str) -> Result<Self> {
 		match value {
 			"openrouter" => Ok(Self::Openrouter),
+			"chatgpt" => Ok(Self::Chatgpt),
 			_ => Err(Error::Invalid("unknown Provider Catalog entry".into())),
 		}
+	}
+	/// A Provider Catalog entry served by Provider Credentials.
+	pub fn credential(value: &str) -> Result<Self> {
+		Self::parse(value)?.require_credential()
+	}
+	/// Refuses an entry that Provider Credentials do not serve, at each
+	/// boundary that receives an already-parsed [`Provider`].
+	pub fn require_credential(self) -> Result<Self> {
+		self.require(Grant::ProviderCredential)
+	}
+	/// A Provider Catalog entry served by Plan Connections.
+	pub fn plan(value: &str) -> Result<Self> {
+		Self::parse(value)?.require(Grant::PlanConnection)
+	}
+	fn require(self, grant: Grant) -> Result<Self> {
+		if self.grant() != grant {
+			return Err(Error::Invalid(match grant {
+				Grant::ProviderCredential => {
+					"Provider Catalog entry is not served by Provider Credentials".into()
+				}
+				Grant::PlanConnection => {
+					"Provider Catalog entry is not served by Plan Connections".into()
+				}
+			}));
+		}
+		Ok(self)
 	}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -109,17 +169,45 @@ pub fn validate_model_id(model: &str) -> Result<()> {
 }
 
 /// Structural validation applies at every configuration write and on consumption.
-/// A configuration either names a Provider Catalog entry, whose exact provider
-/// and base URL it must use, or calls its endpoint without a key.
+/// A configuration either names a Provider Catalog entry served by Provider
+/// Credentials, whose exact provider and base URL it must use, or calls its
+/// endpoint without a key.
 pub fn validate_source(endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
 	crate::configuration::validate_endpoint(endpoint)?;
 	if let Some(id) = catalog {
-		let entry = Provider::parse(id)?;
+		let entry = Provider::credential(id)?;
 		if provider != entry.id() || endpoint != entry.base_url() {
 			return Err(Error::Invalid(
 				"provider_credential requires its exact catalog provider and base URL".into(),
 			));
 		}
+	}
+	Ok(())
+}
+
+/// Model configurations name at most one grant: a Provider Credential entry, a
+/// Plan Connection entry, or neither for a keyless endpoint. A Plan Connection
+/// entry fixes the provider and base URL exactly like a Provider Credential one.
+pub fn validate_grants(
+	endpoint: &str,
+	provider: &str,
+	provider_credential: Option<&str>,
+	plan_connection: Option<&str>,
+) -> Result<()> {
+	let Some(id) = plan_connection else {
+		return validate_source(endpoint, provider, provider_credential);
+	};
+	if provider_credential.is_some() {
+		return Err(Error::Invalid(
+			"a model names either provider_credential or plan_connection, never both".into(),
+		));
+	}
+	crate::configuration::validate_endpoint(endpoint)?;
+	let entry = Provider::plan(id)?;
+	if provider != entry.id() || endpoint != entry.base_url() {
+		return Err(Error::Invalid(
+			"plan_connection requires its exact catalog provider and base URL".into(),
+		));
 	}
 	Ok(())
 }

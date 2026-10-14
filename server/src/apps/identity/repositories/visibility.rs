@@ -271,7 +271,7 @@ impl EventVisibilityScope for Reads<'_> {
 			else {
 				return Ok(Some(false));
 			};
-			if aidash_domain::provider_credentials::Provider::parse(provider).is_err()
+			if aidash_domain::provider_credentials::Provider::credential(provider).is_err()
 				|| (kind == "provider_credential" && Uuid::parse_str(id).is_err())
 				|| (kind == "provider_credential_binding" && id != provider)
 			{

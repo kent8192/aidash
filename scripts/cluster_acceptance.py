@@ -15,6 +15,10 @@ import uuid
 
 from golden_path import tool_descriptor, tool_binding, ROOT, TOKEN, PEER_TOKEN, api_request, entity, approve_fixture_external_requests, reconcile_uncertain_http, wait_for
 
+# The PostgreSQL image's init script creates both logins from these passwords.
+OWNER_PASSWORD = "acceptance-owner-password"
+SERVER_PASSWORD = "acceptance-server-password"
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -39,6 +43,17 @@ def main():
 
     def apply(value):
         kube("apply", "-f", "-", value=value)
+
+    def migrate(node):
+        """Apply the native history as the owner before the node's release starts;
+        its servers and workers log in as aidash_server and never migrate (#262)."""
+        name = f"aidash-{node}-migrate"
+        apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name}, "spec": {"backoffLimit": 0, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "migrate", "image": args.image, "imagePullPolicy": "IfNotPresent", "args": ["migrate"], "envFrom": [{"secretRef": {"name": f"aidash-{node}"}}], "env": [{"name": "DATABASE_URL", "value": f"postgres://aidash_owner:{OWNER_PASSWORD}@postgres:5432/aidash_{node}"}, {"name": "AIDASH_NODE_ID", "value": f"aidash://ops-{node}"}]}]}}}})
+        try:
+            kube("wait", "--for=condition=complete", f"job/{name}", "--timeout=600s")
+        finally:
+            result = subprocess.run(["kubectl", "--namespace", namespace, "logs", f"job/{name}"], text=True, capture_output=True, env=env)
+            (report_dir / f"{name}.log").write_text(result.stdout + result.stderr)
 
     def service(name, port):
         return {"apiVersion": "v1", "kind": "Service", "metadata": {"name": name}, "spec": {"selector": {"app": name}, "ports": [{"port": port, "targetPort": port}]}}
@@ -66,13 +81,14 @@ def main():
         created = True
         print(f"Created {args.distribution} acceptance namespace {namespace}", flush=True)
         apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "cluster_fixture.py"]}})
-        database = stateful("postgres", args.postgres_image, 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
+        database = stateful("postgres", args.postgres_image, 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}, {"name": "AIDASH_OWNER_PASSWORD", "value": OWNER_PASSWORD}, {"name": "AIDASH_SERVER_PASSWORD", "value": SERVER_PASSWORD}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
         nats = stateful("nats", "nats:2.12-alpine", 4222, {"args": ["-js", "-sd", "/data"], "readinessProbe": {"tcpSocket": {"port": 4222}, "periodSeconds": 2}}, "/data")
         fixture = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "fixture"}, "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "fixture"}}, "template": {"metadata": {"labels": {"app": "fixture"}}, "spec": {"automountServiceAccountToken": False, "containers": [{"name": "fixture", "image": "python:3.13-alpine", "command": ["python3", "/scripts/cluster_fixture.py"], "ports": [{"containerPort": 8000}], "volumeMounts": [{"name": "code", "mountPath": "/scripts", "readOnly": True}], "readinessProbe": {"httpGet": {"path": "/status", "port": 8000}}, "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "1", "memory": "256Mi"}}}], "volumes": [{"name": "code", "configMap": {"name": "fixture-code"}}]}}}}
         apply({"apiVersion": "v1", "kind": "List", "items": [database, nats, fixture, service("postgres", 5432), service("nats", 4222), service("fixture", 8000)]})
         kube("rollout", "status", "statefulset/postgres", "--timeout=180s")
         for node in ["a", "b"]:
-            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash:acceptance-local-password@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN}})
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash_server:{SERVER_PASSWORD}@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN}})
+            migrate(node)
             repo, tag = args.image.rsplit(":", 1)
             frontend_repo, frontend_tag = args.frontend_image.rsplit(":", 1)
             subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)

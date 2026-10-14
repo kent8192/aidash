@@ -1,6 +1,8 @@
 //! Native management-process lifecycle coverage with disposable Reinhardt fixtures.
 #[path = "../../identity/tests/deployment.rs"]
 mod dashboard;
+#[path = "database_roles.rs"]
+mod database_roles;
 #[path = "support/deployment.rs"]
 mod deployment;
 #[path = "startup.rs"]

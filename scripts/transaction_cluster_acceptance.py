@@ -83,6 +83,10 @@ class Cluster:
         self.directory.mkdir(parents=True)
         self.env = {**os.environ, "KUBECONFIG": str(pathlib.Path(args.kubeconfig).resolve())}
         self.token = uuid.uuid4().hex
+        # The PostgreSQL image's init script creates both logins (#262):
+        # migrations run as the owner, servers and workers as the server role.
+        self.owner_password = uuid.uuid4().hex
+        self.server_password = uuid.uuid4().hex
         self.peer_tokens = [uuid.uuid4().hex for _ in range(16)]
         self.forwards = {}
         self.forward_lock = threading.RLock()
@@ -117,6 +121,42 @@ class Cluster:
 
     def apply(self, value):
         self.kube("apply", "-f", "-", value=value)
+
+    def login_url(self, role, node):
+        password = self.owner_password if role == "owner" else self.server_password
+        return f"postgres://aidash_{role}:{password}@postgres:5432/tx_{node}"
+
+    def provision_database(self, node):
+        """Create a node's database as a deployment does: owned by aidash_owner,
+        with the superuser-only extensions and the server's default privileges."""
+        # CREATE DATABASE and ALTER DEFAULT PRIVILEGES are administrative
+        # fixture DDL not supported by SeaQuery's application-schema builders.
+        self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", "postgres",
+            "-v", "ON_ERROR_STOP=1", "-f", "-", value=f"CREATE DATABASE tx_{node} OWNER aidash_owner;\n")
+        self.install_extensions(f"tx_{node}")
+        self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
+            "-v", "ON_ERROR_STOP=1", "-f", "-", value=(
+            "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aidash_server;\n"
+            "ALTER DEFAULT PRIVILEGES FOR ROLE aidash_owner GRANT USAGE, SELECT ON SEQUENCES TO aidash_server;\n"))
+
+    def start_migration(self, node):
+        """Apply the native history as the owner; servers refuse pending migrations."""
+        name = f"tx-{node}-migrate"
+        self.apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name},
+            "spec": {"backoffLimit": 0, "template": {"spec": {"restartPolicy": "Never",
+            "automountServiceAccountToken": False, "containers": [{"name": "migrate", "image": self.args.image,
+            "imagePullPolicy": "IfNotPresent", "args": ["migrate"],
+            "envFrom": [{"secretRef": {"name": f"tx-{node}"}}],
+            "env": [{"name": "DATABASE_URL", "value": self.login_url("owner", node)},
+                    {"name": "AIDASH_NODE_ID", "value": f"aidash://tx-{node:02}"}]}]}}}})
+
+    def await_migration(self, node):
+        name = f"tx-{node}-migrate"
+        result = self.kube("wait", "--for=condition=complete", f"job/{name}", "--timeout=600s", check=False)
+        log = self.kube("logs", f"job/{name}", check=False)
+        (self.directory / f"{name}.log").write_text(log.stdout + log.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"migration failed for tx_{node}: {result.stderr}{log.stdout}{log.stderr}")
 
     def pods(self, selector):
         return json.loads(self.kube("get", "pods", "-l", selector, "-o", "json").stdout)["items"]
@@ -253,7 +293,9 @@ class Cluster:
             "mixed_version": "not tested; requires a distinct compatible runtime pair"}, indent=2))
         postgres = {"name": "postgres", "image": self.args.postgres_image, "imagePullPolicy": "IfNotPresent",
             "args": ["-c", "max_connections=600"], "env": [{"name": "POSTGRES_USER", "value": "aidash"},
-            {"name": "POSTGRES_PASSWORD", "value": self.token}, {"name": "POSTGRES_DB", "value": "aidash_a"}],
+            {"name": "POSTGRES_PASSWORD", "value": self.token}, {"name": "POSTGRES_DB", "value": "aidash_a"},
+            {"name": "AIDASH_OWNER_PASSWORD", "value": self.owner_password},
+            {"name": "AIDASH_SERVER_PASSWORD", "value": self.server_password}],
             "ports": [{"containerPort": 5432}], "volumeMounts": [{"name": "data", "mountPath": "/var/lib/postgresql/data"}],
             "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}
         self.apply({"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": "postgres"},
@@ -270,17 +312,16 @@ class Cluster:
         self.rollout("postgres", "statefulset")
         self.rollout("nats")
         for node in range(count):
-            password = uuid.uuid4().hex
-            # CREATE ROLE/DATABASE are administrative fixture DDL not supported
-            # by SeaQuery's application-schema builders. No runtime cross-DB reads.
-            self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", "postgres",
-                "-v", "ON_ERROR_STOP=1", "-f", "-", value=f"CREATE ROLE tx_{node} LOGIN PASSWORD '{password}';\nCREATE DATABASE tx_{node} OWNER tx_{node};\n")
-            # The extension requires administrator privileges; application
-            # migrations and runtime access keep the database-scoped role.
-            self.install_extensions(f"tx_{node}")
+            # Each node has its own database; there are no runtime cross-DB reads.
+            self.provision_database(node)
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
-                "stringData": {"DATABASE_URL": f"postgres://tx_{node}:{password}@postgres:5432/tx_{node}",
+                "stringData": {"DATABASE_URL": self.login_url("server", node),
                 "AIDASH_API_TOKEN": self.token, **{f"AIDASH_SECRET_TRANSACTION_{peer:02}": self.peer_tokens[peer] for peer in (range(1, count) if node == 0 else [node])}}})
+            self.start_migration(node)
+        # Servers and workers start only once every migration is applied.
+        for node in range(count):
+            self.await_migration(node)
+        for node in range(count):
             for role, replicas in [("server", 1), ("worker", 0)]:
                 name = f"tx-{node}-{role}"
                 labels = {"app": f"tx-{node}", "role": role}
