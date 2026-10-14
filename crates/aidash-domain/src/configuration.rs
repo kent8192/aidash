@@ -33,6 +33,22 @@ pub fn validate_endpoint(endpoint: &str) -> Result<()> {
 	Ok(())
 }
 
+/// Federation bearer credentials must not cross a plaintext network hop.
+pub fn validate_peer_endpoint(endpoint: &str) -> Result<()> {
+	validate_endpoint(endpoint)?;
+	let url = url::Url::parse(endpoint)
+		.map_err(|_| Error::Invalid("invalid peer endpoint URL".into()))?;
+	if url.scheme() == "https"
+		|| matches!(url.host(), Some(url::Host::Ipv4(address)) if address.is_loopback())
+		|| matches!(url.host(), Some(url::Host::Ipv6(address)) if address.is_loopback())
+	{
+		return Ok(());
+	}
+	Err(Error::Invalid(
+		"peer endpoint requires HTTPS or a literal loopback HTTP address".into(),
+	))
+}
+
 pub fn validate_secret_reference(name: &str) -> Result<()> {
 	if !name.starts_with("AIDASH_SECRET_")
 		|| !name
@@ -64,4 +80,28 @@ pub fn validate_peer_credential(value: &str) -> Result<()> {
 		return Err(Error::Invalid("peer credentials require at least 32 ASCII characters and 8 distinct characters; use a randomly generated token".into()));
 	}
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::validate_peer_endpoint;
+
+	#[test]
+	fn peer_credentials_require_encrypted_or_literal_loopback_transport() {
+		for endpoint in [
+			"https://peer.example.test:8443",
+			"http://127.0.0.1:8000",
+			"http://[::1]:8000",
+		] {
+			assert!(validate_peer_endpoint(endpoint).is_ok(), "{endpoint}");
+		}
+		for endpoint in [
+			"http://peer.example.test",
+			"http://localhost:8000",
+			"http://192.168.1.10:8000",
+			"http://[::ffff:127.0.0.1]:8000",
+		] {
+			assert!(validate_peer_endpoint(endpoint).is_err(), "{endpoint}");
+		}
+	}
 }

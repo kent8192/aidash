@@ -73,6 +73,18 @@ impl ForeignRunReadScope for Scope {
 		assert_eq!(self.snapshot.revision, 1);
 		assert_eq!(self.subjects, ["viewer"]);
 		assert_eq!(resource.tenant, "acme");
+		// Viewer policies may be conditioned on the admission's trusted source
+		// attributes, so every viewer check carries them.
+		for attribute in [
+			"source_workspace_id",
+			"source_task_id",
+			"source_task_revision",
+		] {
+			assert!(
+				resource.attributes.get(attribute).is_some(),
+				"{action} lacks {attribute}"
+			);
+		}
 		self.calls.push(format!("viewer:{action}"));
 		Ok(self.view_denied != Some(action))
 	}

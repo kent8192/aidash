@@ -28,6 +28,7 @@ export default defineConfig({
     "workbench.spec.ts",
     "provider-credentials.spec.ts",
     "tenant-administration.spec.ts",
+    "keyless-approval.spec.ts",
   ],
   workers: 1,
   retries: 0,
