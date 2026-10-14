@@ -1999,6 +1999,7 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 	WorkbenchSandboxModels {
 		clients: aidash_integrations::keyless::Clients {
 			direct: runtime.client.clone(),
+			permitted: runtime.store.provider_clients.permitted.clone(),
 			public: runtime.store.provider_clients.public.clone(),
 		},
 		keyless: keyless_provider_access(&runtime.store),

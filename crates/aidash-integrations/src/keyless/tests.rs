@@ -30,7 +30,7 @@ fn each_destination_selects_its_client() {
 		clients
 			.select(&access(Some(Destination::Permitted)))
 			.unwrap(),
-		&clients.direct
+		&clients.permitted
 	));
 	assert!(std::ptr::eq(
 		clients
@@ -74,4 +74,23 @@ async fn ordinary_transport_failures_stay_external() {
 		.await
 		.unwrap_err();
 	assert!(matches!(send_error(error), Error::External(_)));
+}
+
+/// A permitted origin cannot redirect a request to another origin.
+#[tokio::test]
+async fn permitted_origins_follow_no_redirects() {
+	use axum::{Router, http::StatusCode, response::Redirect, routing::get};
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let url = format!("http://{}", listener.local_addr().unwrap());
+	let app = Router::new()
+		.route("/v1", get(|| async { Redirect::temporary("/elsewhere") }))
+		.route("/elsewhere", get(|| async { StatusCode::OK }));
+	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	let clients = clients();
+	let client = clients
+		.select(&access(Some(Destination::Permitted)))
+		.unwrap();
+	let response = client.get(format!("{url}/v1")).send().await.unwrap();
+	assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+	server.abort();
 }

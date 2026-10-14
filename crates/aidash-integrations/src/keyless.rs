@@ -11,8 +11,12 @@ use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 /// The HTTP clients of model and embedding calls.
 #[derive(Clone)]
 pub struct Clients {
-	/// Provider Catalog endpoints and permitted private origins.
+	/// Provider Catalog endpoints.
 	pub direct: reqwest::Client,
+	/// Keyless endpoints at an origin the Deployment permits. It follows no
+	/// redirects, so the permitted origin cannot hand a request on to another
+	/// private origin, port or scheme.
+	pub permitted: reqwest::Client,
 	/// Every other Keyless endpoint: public addresses only.
 	pub public: reqwest::Client,
 }
@@ -26,6 +30,12 @@ impl Clients {
 	) -> Result<Self> {
 		Ok(Self {
 			direct,
+			permitted: reqwest::Client::builder()
+				.timeout(timeout)
+				.connect_timeout(connect_timeout)
+				.redirect(reqwest::redirect::Policy::none())
+				.build()
+				.map_err(crate::http_error)?,
 			public: public_client(timeout, connect_timeout)?,
 		})
 	}
@@ -33,7 +43,8 @@ impl Clients {
 	/// The client an access may use; a refused destination never reaches I/O.
 	pub(crate) fn select(&self, access: &Access) -> Result<&reqwest::Client> {
 		match access.keyless {
-			None | Some(Destination::Permitted) => Ok(&self.direct),
+			None => Ok(&self.direct),
+			Some(Destination::Permitted) => Ok(&self.permitted),
 			Some(Destination::PublicOnly) => Ok(&self.public),
 			Some(Destination::Forbidden) => Err(Error::Forbidden),
 		}
