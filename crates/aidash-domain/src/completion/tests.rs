@@ -134,6 +134,7 @@ fn unchanged_content_needs_no_verification() {
 	let candidate = Candidate {
 		content: Some("sha256:start"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	assert_eq!(
 		decide(&policy, &progress, &candidate),
@@ -147,6 +148,7 @@ fn unchanged_content_needs_no_verification() {
 	let candidate = Candidate {
 		content: None,
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	assert_eq!(
 		decide(&policy, &progress, &candidate),
@@ -164,6 +166,7 @@ fn changed_content_completes_only_with_passing_evidence_for_it() {
 	let candidate = Candidate {
 		content: Some("sha256:edited"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	let subject = start(decide(&policy, &progress, &candidate));
 	assert_eq!(subject.content_digest, "sha256:edited");
@@ -177,6 +180,7 @@ fn changed_content_completes_only_with_passing_evidence_for_it() {
 	let edited_again = Candidate {
 		content: Some("sha256:edited-again"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	assert_eq!(
 		start(decide(&policy, &progress, &edited_again)).content_digest,
@@ -191,6 +195,7 @@ fn evidence_of_another_subject_never_counts() {
 	let candidate = Candidate {
 		content: Some("sha256:content"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	let subject = start(decide(&policy, &progress, &candidate));
 	for foreign in [
@@ -224,6 +229,7 @@ fn failures_are_repaired_until_the_allowance_is_spent() {
 	let candidate = Candidate {
 		content: Some("sha256:content"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	let subject = start(decide(&policy, &progress, &candidate));
 	for outcome in [CheckOutcome::Failed, CheckOutcome::TimedOut] {
@@ -261,6 +267,7 @@ fn refusals_that_need_a_person_pause_for_review() {
 	let candidate = Candidate {
 		content: Some("sha256:content"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	let subject = start(decide(&policy, &CompletionProgress::default(), &candidate));
 	for (outcome, expected) in [
@@ -292,6 +299,7 @@ fn refusals_that_need_a_person_pause_for_review() {
 	let no_area = Candidate {
 		content: None,
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	assert!(matches!(
 		decide(&policy, &CompletionProgress::default(), &no_area),
@@ -300,6 +308,7 @@ fn refusals_that_need_a_person_pause_for_review() {
 	let unbound = Candidate {
 		content: Some("sha256:content"),
 		capability: None,
+		unavailable: None,
 	};
 	assert!(matches!(
 		decide(&policy, &CompletionProgress::default(), &unbound),
@@ -328,6 +337,7 @@ fn checks_apply_in_order_and_all_must_pass() {
 	let candidate = Candidate {
 		content: Some("sha256:content"),
 		capability: Some(CAPABILITY),
+		unavailable: None,
 	};
 	let mut progress = CompletionProgress::default();
 	let build = start(decide(&policy, &progress, &candidate));
@@ -422,4 +432,55 @@ fn completion_basis_round_trips() {
 		assert_eq!(serde_json::to_value(basis).unwrap(), json!(basis.as_str()));
 	}
 	assert!(CompletionBasis::parse("passed").is_err());
+}
+
+/// An unavailable Working Area goes to a Completion Review, even when passing
+/// evidence for its last manifest exists.
+#[test]
+fn an_unavailable_area_never_reuses_evidence() {
+	// Arrange
+	let policy = tests_policy("always");
+	let mut progress = CompletionProgress::default();
+	let candidate = Candidate {
+		content: Some("sha256:edited"),
+		capability: Some(CAPABILITY),
+		unavailable: None,
+	};
+	let subject = start(decide(&policy, &progress, &candidate));
+	progress.record(evidence(&subject, CheckOutcome::Passed));
+	assert_eq!(
+		decide(&policy, &progress, &candidate),
+		Decision::Complete(CompletionBasis::Verified)
+	);
+	// Act
+	let decision = decide(
+		&policy,
+		&progress,
+		&Candidate {
+			unavailable: Some("an earlier operation's effect is uncertain"),
+			..candidate
+		},
+	);
+	// Assert
+	assert_eq!(
+		decision,
+		Decision::Review(ReviewReason::Unavailable {
+			check: "tests".into(),
+			detail: "an earlier operation's effect is uncertain".into(),
+		})
+	);
+}
+
+/// Retrying cannot restore spent verification time, so that review does not
+/// offer it.
+#[test]
+fn a_time_exhausted_review_does_not_offer_retry() {
+	assert!(!ReviewReason::TimeExhausted.prompt().contains("retry"));
+	assert!(
+		ReviewReason::RepairExhausted {
+			check: "tests".into()
+		}
+		.prompt()
+		.contains("retry")
+	);
 }

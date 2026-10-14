@@ -28,6 +28,8 @@ pub(super) struct FakeChecks {
 	operations: Mutex<BTreeMap<Uuid, (Uuid, u32, Outcome)>>,
 	/// Every start request: key, command and the revision it ran at.
 	started: Mutex<Vec<(Uuid, String, i64)>>,
+	/// Each start request's own timeout and remaining verification time.
+	timeouts: Mutex<Vec<(Option<u64>, u64)>>,
 	/// Status polls answered `Running` before an operation finishes.
 	polls: u32,
 }
@@ -76,6 +78,10 @@ impl CompletionChecks for FakeChecks {
 			.lock()
 			.unwrap()
 			.push((request.key, request.command.into(), request.revision));
+		self.timeouts
+			.lock()
+			.unwrap()
+			.push((request.timeout_seconds, request.remaining_seconds));
 		let mut operations = self.operations.lock().unwrap();
 		let (operation_id, ..) = operations
 			.entry(request.key)
@@ -501,4 +507,21 @@ async fn an_agent_without_a_policy_completes_as_before(mut fixture: Fixture) {
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(completed(&fixture));
 	assert!(fixture.run.context.completion.is_empty());
+}
+
+/// No Check outlasts the Run's remaining verification time, even when its
+/// own timeout, or the node default it would otherwise use, is longer.
+#[rstest]
+#[tokio::test]
+async fn checks_never_outlast_the_remaining_verification_time(mut fixture: Fixture) {
+	gated(
+		&mut fixture,
+		tests_policy(json!({"verification_seconds": 45})),
+		Some(FakeChecks::with("sha256:edited", [Outcome::Pass])),
+	);
+	fixture.run.context.completion.start_content = Some("sha256:start".into());
+	fixture.run.context.completion.seconds = 30;
+	answer(&mut fixture, "Done.");
+	settle(&mut fixture).await;
+	assert_eq!(*checks(&fixture).timeouts.lock().unwrap(), [(None, 15)]);
 }

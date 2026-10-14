@@ -565,13 +565,19 @@ impl completion::CompletionChecks for Environment<'_> {
 		request: &completion::CheckRequest<'_>,
 	) -> Result<completion::CheckStart> {
 		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		let store = &self.federation.store;
+		// The Check's own timeout or the node default, never longer than the
+		// Run's remaining verification time.
+		let timeout_seconds = request
+			.timeout_seconds
+			.unwrap_or(store.capabilities.0.operation_seconds)
+			.min(request.remaining_seconds);
 		let input = serde_json::json!({
 			"idempotency_key": request.key,
 			"command": request.command,
-			"timeout_seconds": request.timeout_seconds,
+			"timeout_seconds": timeout_seconds,
 			"expected_revision": request.revision,
 		});
-		let store = &self.federation.store;
 		match worker
 			.check(store, run, input, &request.key.to_string())
 			.await
@@ -585,9 +591,7 @@ impl completion::CompletionChecks for Environment<'_> {
 					})?;
 				Ok(completion::CheckStart::Started {
 					operation_id,
-					timeout_seconds: request
-						.timeout_seconds
-						.unwrap_or(store.capabilities.0.operation_seconds),
+					timeout_seconds,
 				})
 			}
 			// The content moved after it was read. An idempotency conflict means the

@@ -36,6 +36,7 @@ fn unconfirmed_checks_are_still_running(#[case] result: serde_json::Value) {
 #[case::cancelled(json!({"status":"cancelled","termination_confirmed":true}))]
 #[case::uncertain(json!({"status":"uncertain","error":"runner lost a previously accepted operation"}))]
 #[case::withdrawn(json!({"status":"withdrawn"}))]
+#[case::sandbox_lost(json!({"status":"failed","termination_confirmed":true,"exit_code":137,"error":{"code":"SANDBOX_LOST","message":"Sandbox stopped"}}))]
 fn unknown_outcomes_are_unavailable_never_failed(#[case] result: serde_json::Value) {
 	assert!(matches!(
 		CheckStatus::of(&result),

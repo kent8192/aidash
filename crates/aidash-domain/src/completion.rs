@@ -481,7 +481,10 @@ impl ReviewReason {
 			Self::RepairExhausted { check } => {
 				format!("Check {check} still fails and the Repair Allowance is spent")
 			}
-			Self::TimeExhausted => "the Run's verification time is spent".into(),
+			// Retrying cannot help: the verification time stays spent.
+			Self::TimeExhausted => {
+				return "Completion Review: the Run's verification time is spent. Send a new message to correct the task, or cancel the Run.".into();
+			}
 		};
 		format!(
 			"Completion Review: {reason}. Answer retry to run the Checks again, send a new message to correct the task, or cancel the Run."
@@ -517,6 +520,10 @@ pub struct Candidate<'a> {
 	pub content: Option<&'a str>,
 	/// Digest of the bound capability Checks invoke; `None` when it is unbound.
 	pub capability: Option<&'a str>,
+	/// Why the Working Area cannot run anything now, such as after an
+	/// uncertain effect. Its manifest may no longer describe the outcome, so
+	/// no evidence for it is reused.
+	pub unavailable: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -552,6 +559,12 @@ pub fn decide<'a>(
 			continue;
 		}
 		applied = true;
+		if let Some(detail) = candidate.unavailable {
+			return Decision::Review(ReviewReason::Unavailable {
+				check: check.name.clone(),
+				detail: detail.into(),
+			});
+		}
 		let (Some(content), Some(capability)) = (candidate.content, candidate.capability) else {
 			return Decision::Review(ReviewReason::Unavailable {
 				check: check.name.clone(),

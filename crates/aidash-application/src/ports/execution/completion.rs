@@ -29,7 +29,11 @@ pub struct CheckRequest<'a> {
 	/// a process cut returns the operation the first start created.
 	pub key: Uuid,
 	pub command: &'a str,
+	/// The Check's own timeout; `None` uses the node's default.
 	pub timeout_seconds: Option<u64>,
+	/// The Run's remaining verification time. Whichever timeout applies, the
+	/// Check never runs longer than this.
+	pub remaining_seconds: u64,
 	/// The revision [`MountedContent`] was read at.
 	pub revision: i64,
 }
@@ -65,6 +69,13 @@ impl CheckStatus {
 	/// What a polled Check operation result means to the Completion Gate.
 	pub fn of(result: &serde_json::Value) -> Self {
 		match result["status"].as_str().unwrap_or_default() {
+			// The runner lost the sandbox or session and reports an
+			// infrastructure code: the Check's own result is unknown, so this
+			// is not a failure to repair.
+			"failed" if result["error"]["code"].is_string() => Self::Unavailable(format!(
+				"the Check's result was lost: {}",
+				result["error"]["code"].as_str().unwrap_or_default()
+			)),
 			"completed" | "failed" if result["termination_confirmed"] == true => {
 				let exit_code = result["exit_code"].as_i64();
 				Self::Finished {

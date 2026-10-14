@@ -118,6 +118,10 @@ impl Executor<'_> {
 			let candidate = Candidate {
 				content: content.as_ref().map(|content| content.digest.as_str()),
 				capability: capability.as_deref(),
+				unavailable: content.as_ref().and_then(|content| match &content.state {
+					ContentState::Unavailable(detail) => Some(detail.as_str()),
+					ContentState::Ready | ContentState::Busy => None,
+				}),
 			};
 			match decide(policy, &progress, &candidate) {
 				Decision::Complete(basis) => {
@@ -138,6 +142,13 @@ impl Executor<'_> {
 								key: subject.key(run.id, attempt),
 								command: &check.command,
 								timeout_seconds: check.timeout_seconds,
+								// No Check may outlast the Run's remaining
+								// verification time; `decide` starts one only
+								// while time is left.
+								remaining_seconds: policy
+									.verification_seconds()
+									.saturating_sub(progress.seconds)
+									.max(1),
 								revision: *revision,
 							};
 							checks.start(run, &request).await?
