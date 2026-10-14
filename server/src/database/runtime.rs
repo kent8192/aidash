@@ -117,10 +117,33 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		.expr_as(Expr::exists(owned), Alias::new("owner"))
 		.expr_as(Expr::exists(owned_schema), Alias::new("schema_owner"))
 		.expr_as(Expr::exists(owned_database), Alias::new("database_owner"))
+		// A startup `role` setting can make `current_user` look safe while the
+		// authenticated login keeps its own privileges: check that login, and
+		// refuse a session that already switched roles.
+		.expr_as(Expr::cust("session_user <> current_user"), Alias::new("switched"))
+		// Membership usable through SET ROLE carries a superuser's or a
+		// BYPASSRLS role's attributes, which inheritance never does.
+		.expr_as(
+			Expr::cust(
+				"EXISTS (SELECT 1 FROM pg_roles b WHERE b.oid <> r.oid \
+				 AND (b.rolsuper OR b.rolbypassrls) AND pg_has_role(r.oid, b.oid, 'SET'))",
+			),
+			Alias::new("privileged_member"),
+		)
+		// CREATE on the database or an application schema lets the login
+		// change the schema without owning anything yet.
+		.expr_as(
+			Expr::cust(
+				"has_database_privilege(r.oid, current_database(), 'CREATE') \
+				 OR EXISTS (SELECT 1 FROM pg_namespace p WHERE p.nspname NOT LIKE 'pg\\_%' \
+				 AND p.nspname <> 'information_schema' AND has_schema_privilege(r.oid, p.oid, 'CREATE'))",
+			),
+			Alias::new("creator"),
+		)
 		.from_as(Alias::new("pg_roles"), role.clone())
 		.and_where(
 			SimpleExpr::from(Expr::col((role, Alias::new("rolname"))))
-				.eq(Expr::cust("current_user")),
+				.eq(Expr::cust("session_user")),
 		)
 		.build(PostgresQueryBuilder);
 	let row = connection.fetch_one(&sql, convert_values(values)).await?;
@@ -128,16 +151,22 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		row.get::<bool>(name)
 			.map_err(|error| Error::External(format!("database login check: {error}")))
 	};
-	let reason = if flag("superuser")? {
+	let reason = if flag("switched")? {
+		"starts as another role"
+	} else if flag("superuser")? {
 		"is a superuser"
 	} else if flag("bypass")? {
 		"has BYPASSRLS"
+	} else if flag("privileged_member")? {
+		"can SET ROLE to a superuser or BYPASSRLS role"
 	} else if flag("database_owner")? {
 		"owns the database"
 	} else if flag("schema_owner")? {
 		"owns a schema"
 	} else if flag("owner")? {
 		"owns database objects"
+	} else if flag("creator")? {
+		"can create schemas or objects"
 	} else {
 		return Ok(());
 	};

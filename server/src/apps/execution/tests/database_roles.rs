@@ -83,6 +83,49 @@ async fn server_refuses_a_member_of_the_owner_role(
 	assert!(error.to_string().contains("owns the database"), "{error}");
 }
 
+/// Privileges a login can gain without owning anything are refused too:
+/// SET-capable membership in a BYPASSRLS role, CREATE on the database or a
+/// schema, and a startup role that hides the authenticated login.
+#[rstest]
+#[case::bypassrls_member(
+	&["CREATE ROLE bypass_probe NOLOGIN BYPASSRLS", "GRANT bypass_probe TO grant_probe WITH INHERIT FALSE, SET TRUE"],
+	"SET ROLE to a superuser or BYPASSRLS role"
+)]
+#[case::database_create(
+	&["DO $$ BEGIN EXECUTE format('GRANT CREATE ON DATABASE %I TO grant_probe', current_database()); END $$"],
+	"can create"
+)]
+#[case::schema_create(&["GRANT CREATE ON SCHEMA public TO grant_probe"], "can create")]
+#[case::startup_role(
+	&["GRANT aidash_server TO grant_probe", "ALTER ROLE grant_probe SET role = 'aidash_server'"],
+	"starts as another role"
+)]
+#[tokio::test]
+async fn server_refuses_a_login_with_indirect_privileges(
+	#[future] database: DatabaseFixture,
+	#[case] grants: &[&str],
+	#[case] reason: &str,
+) {
+	// Arrange: role DDL that Reinhardt Query cannot express.
+	let f = database.await;
+	let admin = sqlx::PgPool::connect(&with_login(&f.url, ADMIN))
+		.await
+		.unwrap();
+	let create = "CREATE ROLE grant_probe LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'probe-password'";
+	for statement in std::iter::once(create).chain(grants.iter().copied()) {
+		sqlx::query(statement).execute(&admin).await.unwrap();
+	}
+	admin.close().await;
+	let url = with_login(&f.url, ("grant_probe", "probe-password"));
+	// Act
+	let refused = runtime::connect(&url, 2).await;
+	// Assert
+	let error = refused
+		.err()
+		.expect("a login with indirect privileges is refused");
+	assert!(error.to_string().contains(reason), "{error}");
+}
+
 #[rstest]
 #[tokio::test]
 async fn server_role_holds_only_data_privileges(#[future] database: DatabaseFixture) {
