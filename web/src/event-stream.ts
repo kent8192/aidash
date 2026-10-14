@@ -7,6 +7,8 @@ import {
   type SseFrame,
 } from "./inference-progress";
 
+const TEXT_CHUNK_BYTES = 16 * 1024;
+
 type StreamStatus = "live" | "reconnecting";
 
 /**
@@ -54,11 +56,22 @@ async function readEventStream({
             return;
           }
           if (done) throw new Error("stream closed");
-          for (const frame of parser.push(
-            decoder.decode(value, { stream: true }),
-          )) {
-            if (frame.id) cursor = frame.id;
-            onFrame(frame);
+          for (
+            let offset = 0;
+            offset < value.length;
+            offset += TEXT_CHUNK_BYTES
+          ) {
+            for (const frame of parser.push(
+              decoder.decode(
+                value.subarray(offset, offset + TEXT_CHUNK_BYTES),
+                {
+                  stream: true,
+                },
+              ),
+            )) {
+              if (frame.id) cursor = frame.id;
+              onFrame(frame);
+            }
           }
         }
       } finally {

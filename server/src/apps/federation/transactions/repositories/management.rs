@@ -7,6 +7,7 @@ use crate::apps::federation::transactions::{
 use crate::{Error, federation::Federation};
 use aidash_application::{
 	Result,
+	ports::transactions::authority::AuthorityRepository,
 	ports::transactions::management::{ManagementRepository, TrustScope},
 	transactions::{admission, authority::control},
 };
@@ -63,12 +64,22 @@ impl ManagementRepository for Repository {
 		identity: &ExecutionPrincipal,
 		manifest: &Manifest,
 	) -> Result<Status> {
-		control::submit(
-			&crate::bootstrap::transaction_authority_repository(&self.runtime),
-			identity,
-			manifest,
-		)
-		.await
+		let repository = crate::bootstrap::transaction_authority_repository(&self.runtime);
+		// A preflight releases its disclosure locks before the complete manifest
+		// can be sent. Suspend new cross-node scoped submissions until the
+		// disclosure protocol binds revocation to delivery. Existing durable
+		// transactions remain available to the recovery coordinator.
+		if manifest
+			.participants
+			.iter()
+			.any(|participant| participant.node_id != self.runtime.config.node_id)
+			&& AuthorityRepository::origin(&repository, manifest.id)
+				.await?
+				.is_none()
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+		control::submit(&repository, identity, manifest).await
 	}
 	async fn candidates(
 		&self,

@@ -2015,8 +2015,11 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
+	// Migrations run as the table owner, as a deployment's migration Job does.
 	let connection = reinhardt::db::backends::DatabaseConnection::new(Arc::new(
-		reinhardt::db::backends::dialect::PostgresBackend::new(f.store.pool.driver().clone()),
+		reinhardt::db::backends::dialect::PostgresBackend::new(
+			common::owner_pool(f.store.pool.driver()).await,
+		),
 	));
 	let migrations = reinhardt::db::migrations::FilesystemSource::new(
 		std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
@@ -2201,8 +2204,10 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	);
 	// Fault injection only: SeaQuery has no ALTER TRIGGER API. A corrupted
 	// backing store must still fail digest verification before sending bytes.
+	// Only the table owner can disable its trigger.
+	let owner = common::owner_pool(f.store.pool.driver()).await;
 	sqlx::query("ALTER TABLE marketplace_versions DISABLE TRIGGER marketplace_immutable")
-		.execute(f.store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	sqlx::query(&update)
@@ -2211,7 +2216,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 		.await
 		.unwrap();
 	sqlx::query("ALTER TABLE marketplace_versions ENABLE TRIGGER marketplace_immutable")
-		.execute(f.store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	assert_eq!(

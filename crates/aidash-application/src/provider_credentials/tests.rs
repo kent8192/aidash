@@ -401,7 +401,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 	let a = create(&s, "alpha").await;
 	let b = create(&s, "beta").await;
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: Arc::new(repo),
 		reader: None,
 		issuer: None,
@@ -505,6 +505,17 @@ async fn unbind_preserves_revision_and_allows_deleting_the_last_credential() {
 		State::Deleted
 	);
 }
+/// A plan-only Provider Catalog entry has no Provider Credential to bind.
+#[tokio::test]
+async fn bindings_refuse_plan_only_providers() {
+	let (s, repo, _) = service();
+	assert!(
+		s.bind("alpha", Provider::Chatgpt, None, 0, "actor")
+			.await
+			.is_err()
+	);
+	assert!(repo.0.lock().await.bindings.is_empty());
+}
 #[tokio::test]
 async fn reconciler_disables_unpinned_versions_left_by_a_rotation_crash() {
 	let (s, repo, store) = service();
@@ -544,7 +555,7 @@ async fn reader_resolves_current_pin_after_metadata_checks() {
 	let (s, repo, store) = service();
 	let row = create(&s, "alpha").await.provider_credential;
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: Arc::new(repo),
 		reader: Some(Arc::new(store)),
 		issuer: None,
@@ -745,7 +756,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			.contains("cleanup-error-canary")
 	);
 	let access = TenantAccess {
-		keyless: KeylessAccess,
+		keyless: KeylessAccess::default(),
 		repository: Arc::new(repo.clone()),
 		reader: Some(Arc::new(store.clone())),
 		issuer: None,

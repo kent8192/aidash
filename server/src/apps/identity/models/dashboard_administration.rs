@@ -21,7 +21,7 @@ use reinhardt::db::orm::query::FieldAssignment;
 use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
-	QueryStatementBuilder,
+	QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -64,6 +64,16 @@ impl DashboardRegistrationRequest {
 			.await?
 			.pop()
 			.map(Self::contract))
+	}
+
+	/// The External Identity a Registration Request belongs to; it never changes.
+	pub(crate) async fn identity_of<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Option<Uuid>> {
+		Ok(Self::objects()
+			.filter(Self::field_id().eq(id))
+			.all_with_db(db)
+			.await?
+			.pop()
+			.map(|registration| registration.identity_id()))
 	}
 
 	pub(crate) async fn submit(db: DatabaseConnection, identity: Uuid) -> Result<Registration> {
@@ -245,6 +255,15 @@ impl DashboardRegistrationRequest {
 				&input.tenant,
 			)?;
 			if let Some(administrator) = administrator {
+				if !snapshot.bundle.subjects.contains_key(&input.subject)
+					&& DashboardMapping::objects()
+						.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+						.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+						.exists_with_db(tx)
+						.await?
+				{
+					return Err(Error::Conflict("subject was previously assigned".into()));
+				}
 				let previously_mapped = DashboardMapping::objects()
 					.filter(DashboardMapping::field_identity_id().eq(identity.id))
 					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
@@ -535,18 +554,32 @@ impl DashboardIdentity {
 		{
 			return Ok(true);
 		}
-		Ok(DashboardSession::objects()
-			.filter(DashboardSession::field_identity_id().eq(row.id))
-			.filter(DashboardSession::field_revoked_at().is_null())
-			.filter(DashboardSession::field_expires_at().gt(now))
-			.all_with_db(db)
-			.await?
-			.into_iter()
-			.any(|session| {
-				let idle = session.desktop_idle_seconds.unwrap_or(idle_seconds);
-				after_request(session.created_at)
-					&& session.last_activity_at > now - Duration::seconds(idle)
-			}))
+		// Evaluate the complete retention predicate in PostgreSQL. An identity can
+		// have arbitrarily many expired or idle sessions, so loading them all here
+		// would let a sign-in consume unbounded memory before finding a live one.
+		let mut sessions = Query::select();
+		sessions
+			.expr(Expr::value(1_i32))
+			.from(Alias::new(DashboardSession::table_name()))
+			.and_where(Expr::col(Alias::new("identity_id")).eq(Expr::value(row.id)))
+			.and_where(Expr::col(Alias::new("revoked_at")).is_null())
+			.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(now)))
+			.and_where(Expr::col(Alias::new("last_activity_at")).gt(
+				SimpleExpr::CustomWithExpr(
+					"?::timestamptz - make_interval(secs => coalesce(desktop_idle_seconds::double precision, ?))".into(),
+					vec![Expr::value(now).into(), Expr::value(idle_seconds as f64).into()],
+				),
+			))
+			.limit(1);
+		if let Some(ended) = ended {
+			sessions.and_where(Expr::col(Alias::new("created_at")).gte(Expr::value(ended)));
+		}
+		let (sql, values) = sessions.build(PostgresQueryBuilder);
+		Ok(
+			TransactionExecutor::fetch_optional(db, &sql, convert_values(values))
+				.await?
+				.is_some(),
+		)
 	}
 
 	/// Expires overdue Registration Requests and enforces display retention.

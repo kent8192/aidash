@@ -82,7 +82,8 @@ pub async fn initialize(
 	let mut store = Store::from_pool(pool, config.node_id.clone())
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
-		.with_cache_salt(cache_salt);
+		.with_cache_salt(cache_salt)
+		.with_keyless_origins(settings.keyless_endpoints.origins()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some());
@@ -380,27 +381,34 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 
 mod compatibility;
 mod listener;
-pub use compatibility::{migrate, serve};
+pub use compatibility::{migrate, require_migrated, serve};
 
-/// Legacy-only inference over environment credentials: no Cache Salt Keys, so
-/// any salted request is rejected without being sent. Run inference uses
-/// `admitted_model_provider`, which carries this node's keys.
+/// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
+/// rejected without being sent. Run inference uses `admitted_model_provider`,
+/// which carries this node's keys.
 pub fn model_provider(
 	client: reqwest::Client,
 	config: aidash_domain::model::ModelConfig,
+	keyless: aidash_application::provider_access::KeylessAccess,
 ) -> Result<Arc<dyn aidash_application::ports::ModelProvider>> {
 	aidash_integrations::inference::provider(
-		client,
+		aidash_integrations::keyless::Clients::new(
+			client,
+			Duration::from_secs(120),
+			Duration::from_secs(10),
+		)?,
 		config,
-		keyless_provider_access(),
+		Arc::new(keyless),
 		Default::default(),
 	)
 	.map_err(Into::into)
 }
 
-pub(crate) fn keyless_provider_access()
--> Arc<dyn aidash_application::provider_access::ProviderAccess> {
-	Arc::new(aidash_application::provider_access::KeylessAccess)
+/// Keyless provider access limited to this Deployment's permitted private origins.
+pub(crate) fn keyless_provider_access(
+	store: &Store,
+) -> Arc<dyn aidash_application::provider_access::ProviderAccess> {
+	Arc::new(store.keyless.clone())
 }
 
 struct EnvironmentCredentials;
@@ -458,8 +466,8 @@ pub fn semantic_transport(
 	crate::apps::knowledge::repositories::postgres_vector::Transport {
 		pool: store.pool.clone(),
 		embedding: aidash_integrations::semantic::SemanticClient {
-			client: store.semantic_client.clone(),
-			access: keyless_provider_access(),
+			clients: store.provider_clients.clone(),
+			access: keyless_provider_access(store),
 			context: Default::default(),
 		},
 	}
@@ -1960,9 +1968,10 @@ pub(crate) fn workbench_sandbox_execution(
 	}
 }
 
-/// Sandbox models retain environment access until they have Tenant admission authority.
+/// Sandbox models retain Keyless access until they have Tenant admission authority.
 pub(crate) struct WorkbenchSandboxModels {
-	client: reqwest::Client,
+	clients: aidash_integrations::keyless::Clients,
+	keyless: Arc<dyn aidash_application::provider_access::ProviderAccess>,
 }
 impl aidash_application::ports::registry::workbench::sandbox::admission::SandboxModels
 	for WorkbenchSandboxModels
@@ -1978,16 +1987,21 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 			));
 		}
 		aidash_integrations::inference::provider(
-			self.client.clone(),
+			self.clients.clone(),
 			model,
-			keyless_provider_access(),
+			self.keyless.clone(),
 			Default::default(),
 		)
 	}
 }
 pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandboxModels {
 	WorkbenchSandboxModels {
-		client: runtime.client.clone(),
+		clients: aidash_integrations::keyless::Clients {
+			direct: runtime.client.clone(),
+			permitted: runtime.store.provider_clients.permitted.clone(),
+			public: runtime.store.provider_clients.public.clone(),
+		},
+		keyless: keyless_provider_access(&runtime.store),
 	}
 }
 
@@ -2281,7 +2295,7 @@ pub(crate) fn admitted_model_provider(
 	maintenance: Option<aidash_application::provider_access::MaintenancePurpose>,
 ) -> Result<Arc<dyn aidash_application::ports::ModelProvider>> {
 	aidash_integrations::inference::salted_provider(
-		store.semantic_client.clone(),
+		store.provider_clients.clone(),
 		config,
 		Arc::new(
 			crate::apps::identity::repositories::provider_credentials::AdmittedAccess {

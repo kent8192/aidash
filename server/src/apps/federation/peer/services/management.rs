@@ -806,6 +806,9 @@ impl PeerManagement {
 		if run.home_node != node {
 			return Err(Error::Unauthorized);
 		}
+		f.store
+			.require_legacy_remote_task(&run.home_node, run.task_id)
+			.await?;
 		match input.action.as_str() {
 			"answer" => {
 				let id = input

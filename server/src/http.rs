@@ -269,6 +269,7 @@ use async_trait::async_trait;
 use http::{HeaderMap, HeaderName, HeaderValue, header};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::http::{ExceptionHandler, Handler, Middleware};
+use reinhardt::server::{AdmittedRequest, PreBodyAdmitted, RequestAdmission, RequestHead};
 use reinhardt::{InjectionContext, Request, injectable};
 use std::{
 	collections::HashMap,
@@ -279,6 +280,9 @@ use std::{
 use tokio::sync::Semaphore;
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
+const MAX_RATE_BUCKETS: usize = 16_384;
+const PRUNE_INTERVAL: usize = 1024;
+const FULL_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedPeer(pub String);
 #[derive(Clone)]
@@ -286,7 +290,18 @@ pub struct Protection {
 	settings: Settings,
 	permits: Arc<Semaphore>,
 	sse: SseSlots,
-	buckets: Arc<Mutex<HashMap<String, (f64, Instant)>>>,
+	buckets: Arc<Mutex<RateBuckets>>,
+}
+struct RateBucket {
+	tokens: f64,
+	updated: Instant,
+	expires_after: Duration,
+}
+#[derive(Default)]
+struct RateBuckets {
+	entries: HashMap<String, RateBucket>,
+	admissions: usize,
+	pruned_at: Option<Instant>,
 }
 impl Protection {
 	pub fn new(settings: Settings) -> Self {
@@ -294,25 +309,44 @@ impl Protection {
 			permits: Arc::new(Semaphore::new(settings.concurrency)),
 			sse: SseSlots(Arc::new(Semaphore::new(settings.sse_connections))),
 			settings,
-			buckets: Arc::new(Mutex::new(HashMap::new())),
+			buckets: Arc::new(Mutex::new(RateBuckets::default())),
 		}
 	}
 	fn admit(&self, key: String, burst: u32, period: Duration) -> bool {
 		let now = Instant::now();
 		let mut buckets = self.buckets.lock().expect("HTTP admission");
-		if buckets.len() >= 1024 {
-			buckets.retain(|_, (_, updated)| {
-				now.duration_since(*updated) < period.saturating_mul(burst)
-			});
+		buckets.admissions = buckets.admissions.wrapping_add(1);
+		let full = !buckets.entries.contains_key(&key) && buckets.entries.len() >= MAX_RATE_BUCKETS;
+		// Prune periodically, and before refusing a new key for lack of room,
+		// so expired buckets never lock new callers out. A flood of new keys
+		// against a full map scans it at most once per `FULL_PRUNE_INTERVAL`.
+		let due_while_full = full
+			&& buckets
+				.pruned_at
+				.is_none_or(|at| now.duration_since(at) >= FULL_PRUNE_INTERVAL);
+		if due_while_full || buckets.admissions.is_multiple_of(PRUNE_INTERVAL) {
+			buckets
+				.entries
+				.retain(|_, bucket| now.duration_since(bucket.updated) < bucket.expires_after);
+			buckets.pruned_at = Some(now);
 		}
-		let entry = buckets.entry(key).or_insert((f64::from(burst), now));
-		entry.0 = (entry.0 + now.duration_since(entry.1).as_secs_f64() / period.as_secs_f64())
-			.min(f64::from(burst));
-		entry.1 = now;
-		if entry.0 < 1.0 {
+		if !buckets.entries.contains_key(&key) && buckets.entries.len() >= MAX_RATE_BUCKETS {
 			return false;
 		}
-		entry.0 -= 1.0;
+		let entry = buckets.entries.entry(key).or_insert(RateBucket {
+			tokens: f64::from(burst),
+			updated: now,
+			expires_after: period.saturating_mul(burst),
+		});
+		entry.tokens = (entry.tokens
+			+ now.duration_since(entry.updated).as_secs_f64() / period.as_secs_f64())
+		.min(f64::from(burst));
+		entry.updated = now;
+		entry.expires_after = period.saturating_mul(burst);
+		if entry.tokens < 1.0 {
+			return false;
+		}
+		entry.tokens -= 1.0;
 		true
 	}
 	pub(crate) fn authenticated(
@@ -356,6 +390,36 @@ impl Protection {
 		Some(peer)
 	}
 }
+#[async_trait]
+impl RequestAdmission for Protection {
+	async fn admit(&self, head: RequestHead<'_>) -> std::result::Result<AdmittedRequest, Response> {
+		let path = head.uri.path();
+		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
+			6 * 1024 * 1024
+		} else {
+			BODY_LIMIT
+		};
+		let Ok(permit) = self.permits.clone().try_acquire_owned() else {
+			// Overload is answered before `Gateway` runs, so finalize it here
+			// with the same request ID, private headers and HTTP metrics.
+			let id = request_id(head.headers);
+			let observation = observability::Observation::start(head.method, head.uri);
+			return Err(observation.finish(
+				private_response(
+					rejection(StatusCode::SERVICE_UNAVAILABLE, "server overloaded"),
+					&id,
+					private_route(path),
+				),
+				&id,
+			));
+		};
+		Ok(AdmittedRequest::new(
+			limit as u64,
+			self.settings.timeout,
+			permit,
+		))
+	}
+}
 #[injectable(scope = "singleton")]
 pub async fn provide_protection() -> DiResult<Protection> {
 	Settings::from_env()
@@ -393,7 +457,7 @@ impl ExceptionHandler for ApiErrors {
 #[async_trait]
 impl Middleware for Gateway {
 	async fn process(&self, mut request: Request, next: Arc<dyn Handler>) -> ViewResult<Response> {
-		let observation = observability::Observation::start(&request);
+		let observation = observability::Observation::start(&request.method, &request.uri);
 		let context = request
 			.get_di_context::<Arc<InjectionContext>>()
 			.ok_or_else(|| {
@@ -404,14 +468,7 @@ impl Middleware for Gateway {
 		let protection = reinhardt::Depends::<Protection>::resolve_from_registry(&context, true)
 			.await
 			.map_err(|e| reinhardt::core::exception::Error::Internal(e.to_string()))?;
-		let id = request
-			.headers
-			.get("x-request-id")
-			.and_then(|v| v.to_str().ok())
-			.filter(|v| v.len() == 36)
-			.and_then(|v| uuid::Uuid::parse_str(v).ok())
-			.unwrap_or_else(uuid::Uuid::new_v4)
-			.to_string();
+		let id = request_id(&request.headers);
 		request.headers.insert(
 			HeaderName::from_static("x-request-id"),
 			HeaderValue::from_str(&id).expect("UUID header"),
@@ -421,9 +478,7 @@ impl Middleware for Gateway {
 			&["authorization", "cookie", "x-aidash-csrf"],
 		);
 		let path = request.uri.path().to_owned();
-		let private = (path.starts_with("/api") && path != "/api/openapi.json")
-			|| path.starts_with("/federation")
-			|| path.starts_with("/auth/");
+		let private = private_route(&path);
 		let sse = path == "/api/events/stream"
 			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
 		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
@@ -460,7 +515,12 @@ impl Middleware for Gateway {
 			}) {
 			rejection(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded")
 		} else {
-			match protection.permits.clone().try_acquire_owned() {
+			let permit = if request.extensions.get::<PreBodyAdmitted>().is_some() {
+				Ok(None)
+			} else {
+				protection.permits.clone().try_acquire_owned().map(Some)
+			};
+			match permit {
 				Err(_) => rejection(StatusCode::SERVICE_UNAVAILABLE, "server overloaded"),
 				Ok(permit) => {
 					let lease = if sse {
@@ -533,6 +593,22 @@ fn discovery(request: &Request) -> bool {
 				reqwest::Url::parse(&format!("http://localhost/?{query}"))
 					.is_ok_and(|url| url.query_pairs().any(|(key, _)| key == "org"))
 			}))
+}
+/// The caller's UUID `x-request-id`, or a fresh one when missing or invalid.
+fn request_id(headers: &HeaderMap) -> String {
+	headers
+		.get("x-request-id")
+		.and_then(|v| v.to_str().ok())
+		.filter(|v| v.len() == 36)
+		.and_then(|v| uuid::Uuid::parse_str(v).ok())
+		.unwrap_or_else(uuid::Uuid::new_v4)
+		.to_string()
+}
+/// API, federation and auth responses must not be cached or leak a referrer.
+fn private_route(path: &str) -> bool {
+	(path.starts_with("/api") && path != "/api/openapi.json")
+		|| path.starts_with("/federation")
+		|| path.starts_with("/auth/")
 }
 fn private_response(mut response: Response, id: &str, private: bool) -> Response {
 	response.headers.insert(

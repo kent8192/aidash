@@ -689,3 +689,55 @@ async fn byok_model_scope_is_validated_before_registration_and_model_import(
 		.remove("provider_credential");
 	validator.validate_in(&entry, true).unwrap();
 }
+
+#[tokio::test]
+async fn plan_models_need_enabled_plan_connections_and_plan_usage_limits() {
+	let entry = definition(
+		"chatgpt-model",
+		"model",
+		json!({"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":16384,"modalities":["text","image"],"cost":{},"projection_versions":["legacy","ordered"]}),
+	);
+	for local in [false, true] {
+		assert!(
+			validation()
+				.with_provider_credentials(true)
+				.validate_in(&entry, local)
+				.unwrap_err()
+				.to_string()
+				.contains("Plan Connections are not enabled")
+		);
+		let enabled = validation().with_plan_connections(true);
+		enabled.validate_in(&entry, local).unwrap();
+		for (field, value) in [
+			// ADR 0007: no Provider Credential serves the plan entry.
+			("provider_credential", json!("openrouter")),
+			("provider_credential", json!("chatgpt")),
+			("plan_connection", json!("openrouter")),
+			("provider", json!("openrouter")),
+			("endpoint", json!("https://api.openai.com/v1/")),
+			("endpoint", json!("https://attacker.test/v1")),
+			("streaming", json!(false)),
+			("modalities", json!(["text", "audio"])),
+			("cache_mode", json!("explicit")),
+			("projection_versions", json!(["native"])),
+			("model_id", json!("gpt/../fixture")),
+		] {
+			let mut changed = entry.clone();
+			changed.config[field] = value;
+			assert!(enabled.validate_in(&changed, local).is_err(), "{field}");
+		}
+	}
+	// An OpenRouter route cannot name the plan entry either.
+	let openrouter = definition(
+		"openrouter-plan",
+		"model",
+		json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1","plan_connection":"chatgpt","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+	);
+	assert!(
+		validation()
+			.with_plan_connections(true)
+			.with_provider_credentials(true)
+			.validate_in(&openrouter, true)
+			.is_err()
+	);
+}

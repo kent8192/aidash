@@ -23,6 +23,9 @@ pub async fn local_base_visible(
 	scope: &mut dyn LocalRunVisibilityScope,
 	run: &RunMetadata,
 ) -> Result<bool> {
+	if !scope.core_area_visible(run.id).await? {
+		return Ok(false);
+	}
 	if let Some(allowed) = scope.cached(run) {
 		return if allowed {
 			scope.human_reads(run.workspace_id, run.id).await
@@ -54,7 +57,8 @@ pub async fn local_run_visible(
 pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
 	if run.home_node != scope.node_id() {
 		if scope.scoped_admission(run.id).await? {
-			return Ok(scope.foreign_base_visible(run).await?
+			return Ok(scope.core_area_visible(run.id).await?
+				&& scope.foreign_base_visible(run).await?
 				&& scope.human_reads(run.workspace_id, run.id).await?);
 		}
 		// Missing scoped admission is not a legacy grant; only an exact local record qualifies.

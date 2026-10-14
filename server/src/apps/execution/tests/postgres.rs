@@ -1363,6 +1363,12 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 
 	let endpoint = server.url.clone();
 	let federation = _federation.await.federation;
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+	federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
 	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
 		.registry
@@ -2321,10 +2327,12 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	let app = _application.application.clone();
 	// Simulate an event insertion failure after the primary mutation.
 	// SeaQuery cannot add a CHECK constraint to an existing table.
+	// Only the table owner can add a constraint; the server role holds DML.
+	let owner = common::owner_pool(store.pool.driver()).await;
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_registration CHECK(kind <> 'registry.registered')",
 	)
-	.execute(store.pool.driver())
+	.execute(&owner)
 	.await
 	.unwrap();
 	let response = http_client
@@ -2354,7 +2362,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_conversation CHECK(kind <> 'conversation.created')",
 	)
-	.execute(store.pool.driver())
+	.execute(&owner)
 	.await
 	.unwrap();
 	let response=http_client.request(Method::POST, app.url("/api/conversations"))

@@ -830,10 +830,12 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	// barrier pauses the real worker while reporting its storage failure, so
 	// status polling deterministically overlaps the failure transaction.
 	let barrier_key = Uuid::new_v4().as_u128() as i64;
+	// Only the table owner can add a trigger; the server role holds DML.
+	let owner = common::owner_pool(c.f.store.pool.driver()).await;
 	sqlx::query(&format!("CREATE FUNCTION pause_cleanup_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({barrier_key}); RETURN NEW; END; $$"))
-		.execute(c.f.store.pool.driver()).await.unwrap();
+		.execute(&owner).await.unwrap();
 	sqlx::query("CREATE TRIGGER pause_cleanup_failure BEFORE UPDATE OF state ON core_records FOR EACH ROW WHEN (NEW.state = 'cleanup_failed') EXECUTE FUNCTION pause_cleanup_failure()")
-		.execute(c.f.store.pool.driver()).await.unwrap();
+		.execute(&owner).await.unwrap();
 	let mut barrier = c.f.store.pool.driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()

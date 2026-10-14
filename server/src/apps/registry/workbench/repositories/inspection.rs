@@ -87,13 +87,20 @@ impl InspectionScope for Scope {
 		.await
 	}
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry> {
-		crate::apps::registry::services::admission::definition(
+		let entry = crate::apps::registry::services::admission::definition(
 			self.tx(),
 			&reference.id,
 			&reference.version,
 		)
 		.await
-		.map_err(Into::into)
+		.map_err(aidash_application::Error::from)?;
+		if entry.installation.is_some()
+			&& let Lease::Subject(access) = &mut self.lease
+		{
+			crate::apps::identity::services::catalog::entry(access, reference, "registry.read")
+				.await?;
+		}
+		Ok(entry)
 	}
 	async fn agent_runs(
 		&mut self,

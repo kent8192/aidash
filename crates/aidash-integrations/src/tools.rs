@@ -18,6 +18,23 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 mod mcp;
 
+/// Total budget for a native `http_get`, covering DNS resolution and the request.
+const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn resolve_within<I>(
+	deadline: tokio::time::Instant,
+	lookup: impl Future<Output = std::io::Result<I>>,
+) -> Result<Vec<std::net::SocketAddr>>
+where
+	I: Iterator<Item = std::net::SocketAddr>,
+{
+	tokio::time::timeout_at(deadline, lookup)
+		.await
+		.map_err(|_| Error::External("HTTP tool DNS resolution timed out".into()))?
+		.map(Iterator::collect)
+		.map_err(|error| Error::Port(Box::new(error)))
+}
+
 pub struct HttpTools {
 	pub client: reqwest::Client,
 	pub credentials: Arc<dyn Credentials>,
@@ -26,11 +43,34 @@ pub struct HttpTools {
 impl ToolTransport for HttpTools {
 	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value> {
 		match configuration {
-			ToolConfig::Native { operation, .. } if operation == "http_get" => {
-				let url = reqwest::Url::parse(required(&input, "url")?)
-					.map_err(|_| Error::Invalid("invalid URL".into()))?;
-				let response = self
-					.client
+			ToolConfig::Native {
+				operation,
+				allowed_hosts,
+			} if operation == "http_get" => {
+				let url = aidash_application::tools::validate_native_http_url(
+					required(&input, "url")?,
+					allowed_hosts,
+				)?;
+				let host = url.host_str().ok_or(Error::Forbidden)?;
+				// One deadline bounds resolution and the pinned request together.
+				let deadline = tokio::time::Instant::now() + NATIVE_HTTP_TIMEOUT;
+				let addresses =
+					resolve_within(deadline, tokio::net::lookup_host((host, 443))).await?;
+				if addresses.is_empty()
+					|| addresses.len() > 32
+					|| addresses.iter().any(|address| {
+						!aidash_domain::capabilities::outbound::public_ip(address.ip())
+					}) {
+					return Err(Error::Forbidden);
+				}
+				let client = reqwest::Client::builder()
+					.no_proxy()
+					.redirect(reqwest::redirect::Policy::none())
+					.timeout(deadline.saturating_duration_since(tokio::time::Instant::now()))
+					.resolve_to_addrs(host, &addresses)
+					.build()
+					.map_err(crate::http_error)?;
+				let response = client
 					.get(url.clone())
 					.send()
 					.await

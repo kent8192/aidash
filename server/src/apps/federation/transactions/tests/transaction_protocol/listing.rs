@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[rstest::rstest]
 #[tokio::test]
@@ -58,6 +58,7 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 	let mut expected = Vec::new();
 	for _ in 0..12 {
 		manifest.id = Uuid::new_v4();
+		seed_existing_scoped_transaction(&a, &manifest, &[&a, &b]).await;
 		let (status, body) =
 			common::request(&app_a, &token, "POST", "/api/transactions", json!(manifest)).await;
 		assert_eq!(status, 202, "{body}");

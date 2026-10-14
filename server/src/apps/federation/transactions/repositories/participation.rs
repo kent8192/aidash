@@ -26,7 +26,11 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::{backends::TransactionExecutor, orm::DatabaseConnectionLease};
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
 
 enum Transaction {
@@ -66,6 +70,23 @@ fn status(row: AtomicParticipant) -> LocalStatus {
 
 #[async_trait]
 impl ParticipantScope for Scope {
+	async fn now(&mut self) -> Result<DateTime<Utc>> {
+		// Deadline checks run after participant and gate locks may have waited, so they
+		// read the wall clock rather than the transaction's fixed start time.
+		let (sql, values) = Query::select()
+			.expr_as(Expr::cust("CLOCK_TIMESTAMP()"), Alias::new("now"))
+			.build(PostgresQueryBuilder);
+		let row = self
+			.transaction
+			.executor()
+			.fetch_one(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?;
+		row.get("now")
+			.map_err(FrameworkError::from)
+			.map_err(Error::from)
+			.map_err(Into::into)
+	}
 	async fn lock(&mut self, id: Uuid) -> Result<Option<LocalStatus>> {
 		AtomicParticipant::lock(self.transaction.executor(), id)
 			.await

@@ -144,6 +144,8 @@ fn workbench(
 		let effect_reply_invalid = provider.state.effect_reply_invalid;
 		let server = provider.server;
 		let endpoint = server.url.clone();
+		// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+		f.store.keyless.permit_origin_of(&endpoint).unwrap();
 		for (id, kind, config) in [
 			(
 				"fixture-model",

@@ -658,7 +658,8 @@ async fn files_preserve_unicode_revision_and_source_authority(
 		json!({"file_id":file,"representation":"metadata"}),
 	)
 	.await;
-	assert_eq!(status, 404, "{result}");
+	// Another subject's Run answers like a missing Run: authority precedes existence.
+	assert_eq!(status, 403, "{result}");
 	assert_eq!(
 		request(
 			&c.app,
@@ -974,6 +975,8 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"tool",
 		"installation",
 		"registry_entry",
+		"bundle",
+		"source",
 		"message",
 		"agent",
 		"model",
