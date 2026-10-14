@@ -41,6 +41,14 @@ spec:
               valueFrom:
                 secretKeyRef:
                   { name: aidash-local-infra, key: POSTGRES_PASSWORD }
+            - name: AIDASH_OWNER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  { name: aidash-local-infra, key: AIDASH_OWNER_PASSWORD }
+            - name: AIDASH_SERVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  { name: aidash-local-infra, key: AIDASH_SERVER_PASSWORD }
           ports:
             - { containerPort: 5432 }
           readinessProbe:
