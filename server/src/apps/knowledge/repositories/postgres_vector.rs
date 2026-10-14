@@ -51,6 +51,16 @@ fn vector(values: &[f32]) -> Result<SimpleExpr> {
 		vec![Expr::value(value).into()],
 	))
 }
+/// A transient database failure is the vector outage a Run retries (#233). The
+/// use case cannot inspect an untyped port error, so type it here; a permanent
+/// one, such as an undefined table, stays a non-retried failure.
+fn lookup_failure(error: Error) -> aidash_application::Error {
+	if error.is_transient_database() {
+		aidash_application::Error::RemoteSemantic(aidash_domain::semantic::Failure::Unavailable)
+	} else {
+		error.into()
+	}
+}
 #[async_trait]
 impl EmbeddingProvider for Transport {
 	async fn embed(
@@ -295,7 +305,10 @@ impl VectorIndex for Transport {
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(limit as u64)
 			.to_string(PostgresQueryBuilder);
-		let rows = native::query(&sql).fetch_all(&self.pool).await?;
+		let rows = native::query(&sql)
+			.fetch_all(&self.pool)
+			.await
+			.map_err(lookup_failure)?;
 		rows.iter()
 			.map(|row| {
 				Ok(Point {
@@ -326,7 +339,8 @@ impl VectorIndex for Transport {
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&self.pool)
-		.await?;
+		.await
+		.map_err(lookup_failure)?;
 		Ok(count as usize == ids.iter().collect::<std::collections::BTreeSet<_>>().len())
 	}
 }
