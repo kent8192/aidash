@@ -86,6 +86,35 @@ class GuardMigrationTest(unittest.TestCase):
             # Each release adopts its own copy of the proof.
             self.assertTrue((legacy / (area + '.json')).exists())
 
+    def test_existing_target_retires_the_legacy_record_without_revalidation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / 'release'
+            legacy = root / 'legacy'
+            current.mkdir()
+            legacy.mkdir()
+            record = {'pod_uid': 'live', 'deadline': 1, 'terminated': False}
+            newer = dict(record, deadline=2)
+            # A live command won the area lock first and wrote these targets.
+            (legacy / 'same.json').write_text(json.dumps(record))
+            (current / 'same.json').write_text(json.dumps(record))
+            (legacy / 'newer.json').write_text(json.dumps(record))
+            (current / 'newer.json').write_text(json.dumps(newer))
+
+            with patch.object(node_guard, 'ROOT', current), patch.object(node_guard, 'LEGACY_ROOT', legacy), \
+                    patch.object(node_guard, 'gone', return_value=False), \
+                    patch.object(node_guard, 'validate') as validate:
+                node_guard.migrate_legacy()
+                node_guard.migrate_legacy()
+
+            validate.assert_not_called()
+            # An exact copy was already migrated; a differing one is kept aside
+            # and leaves the scanned set, and the live records are untouched.
+            self.assertEqual(sorted(path.name for path in legacy.glob('*.json')), [])
+            self.assertTrue((legacy / 'newer.superseded').exists())
+            self.assertEqual(json.loads((current / 'same.json').read_text()), record)
+            self.assertEqual(json.loads((current / 'newer.json').read_text()), newer)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -357,12 +357,21 @@ def migrate_legacy():
                         # namespace owned it, and each release keeps its own proof.
                         if not target.exists():
                             save(target, dict(record, terminated=True, deadline=None, frozen=False))
+                    elif target.exists():
+                        # A live command of this release already owns the area and
+                        # its record is authoritative. Retire the legacy file without
+                        # revalidating it, or every watch() scan would rerun the
+                        # container checks. An exact copy was already migrated; a
+                        # differing one is kept aside, outside the scanned *.json set.
+                        if json.loads(target.read_bytes()) == record:
+                            path.unlink()
+                        else:
+                            path.rename(path.with_suffix('.superseded'))
+                            print('legacy guard state superseded by a live record', file=sys.stderr, flush=True)
                     else:
                         # validate checks the live container, Pod UID, image and this
                         # release's sandbox namespace before adopting an old deadline.
                         validate(record)
-                        if target.exists():
-                            continue
                         save(target, record)
                         path.unlink()
                 MIGRATION_WARNED.discard(path)
