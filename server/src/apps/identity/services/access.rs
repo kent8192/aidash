@@ -16,13 +16,17 @@ use uuid::Uuid;
 mod visibility;
 
 /// Every input of one catalog admission decision: who decides, under which policy
-/// revision and inherited fence, with which evaluation context, for which definition.
+/// revision and inherited fence, with which evaluation context and audit mode, for
+/// which definition. A decision first made unaudited or with deferred audit is never
+/// reused where it must be recorded durably.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CatalogAdmission {
 	tenant: String,
 	subject: String,
 	revision: i64,
 	inherited_lease: bool,
+	audit: bool,
+	durable_audit: bool,
 	authority: String,
 	id: String,
 	version: String,
@@ -201,6 +205,8 @@ impl Access {
 			subject: self.identity.subject.clone(),
 			revision: self.snapshot.revision,
 			inherited_lease: self.inherited_lease,
+			audit: self.audit,
+			durable_audit: self.durable_audit,
 			authority: self.authority_context(),
 			id: reference.id.clone(),
 			version: reference.version.clone(),

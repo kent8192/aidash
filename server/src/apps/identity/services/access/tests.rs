@@ -102,6 +102,8 @@ async fn catalog_admissions_end_with_their_transaction_or_a_savepoint_rollback()
 		subject: "alice".into(),
 		revision: 1,
 		inherited_lease: false,
+		audit: true,
+		durable_audit: true,
 		authority: "authority".into(),
 		id: "first".into(),
 		version: "1.0.0".into(),
