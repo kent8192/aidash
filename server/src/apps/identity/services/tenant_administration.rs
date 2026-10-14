@@ -1,5 +1,5 @@
 //! Tenant Administrator use cases. Only an External Identity acting through a
-//! Mapping, on a deployment with Tenant Bindings, can be a Tenant Administrator.
+//! Mapping can be a Tenant Administrator; it needs no Tenant Binding.
 use crate::apps::identity::models::{
 	AdministrationActor, DashboardMapping, DashboardRegistrationRequest, TenantAdministrator,
 };
