@@ -75,3 +75,39 @@ test("close stops pending trailing refreshes", async () => {
   await settle();
   assert.equal(client.fetches.length, 1);
 });
+
+test("a fetch it cannot wait on earns at most one trailing refresh", async () => {
+  // A disabled query can be active and fetching while `invalidateQueries`
+  // skips it and settles at once; overlap stays true until the fetch lands.
+  const calls = [];
+  const client = {
+    isFetching: (filters) => (filters.type === "active" ? 1 : 0),
+    invalidateQueries() {
+      calls.push(null);
+      if (calls.length > 10) throw new Error("refresh loop");
+      return Promise.resolve();
+    },
+  };
+  const { refresh } = coalescedRefresh(client);
+  refresh("state");
+  await settle();
+  assert.equal(calls.length, 2);
+});
+
+test("only active fetches count as overlap", async () => {
+  // `invalidateQueries` refetches only active queries, so an inactive fetch
+  // is never waited on and needs no trailing refresh.
+  const calls = [];
+  const client = {
+    isFetching: (filters) => (filters.type === "active" ? 0 : 1),
+    invalidateQueries() {
+      calls.push(null);
+      if (calls.length > 10) throw new Error("refresh loop");
+      return Promise.resolve();
+    },
+  };
+  const { refresh } = coalescedRefresh(client);
+  refresh("state");
+  await settle();
+  assert.equal(calls.length, 1);
+});
