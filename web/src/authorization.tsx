@@ -1047,8 +1047,10 @@ function KeylessOrigin({
     queryFn: () =>
       registryGet(encodeURIComponent(id), encodeURIComponent(version)),
     enabled: !known,
-    retry: false,
+    // A definition never changes, but a failed read during the same outage
+    // must not leave the warning missing: poll like the catalog until it loads.
     staleTime: Infinity,
+    refetchInterval: (query) => (query.state.data ? false : 5000),
   });
   const entry = known ?? (!fetched.isError ? fetched.data : undefined);
   const origin = entry && keylessOrigin(entry);

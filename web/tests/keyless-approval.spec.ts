@@ -238,6 +238,7 @@ test("approving a Keyless definition resets the choice instead of showing anothe
 test("an approved Keyless row keeps its warning when the Registry state is unavailable", async ({
   page,
 }) => {
+  let registryReads = 0;
   await installBearerDashboard(page, "fixture");
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
@@ -253,8 +254,11 @@ test("an approved Keyless row keeps its warning when the Registry state is unava
       return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/state")
       return route.fulfill({ status: 503, json: { error: "unavailable" } });
+    // The definition read fails once during the same outage, then recovers.
     if (path === "/api/registry/approved-keyless-model/1.0.0")
-      return route.fulfill({ json: registry[0] });
+      return (registryReads += 1) === 1
+        ? route.fulfill({ status: 503, json: { error: "unavailable" } })
+        : route.fulfill({ json: registry[0] });
     if (path === "/api/authorization/acme")
       return route.fulfill({ json: snapshot });
     if (path === "/api/authorization/acme/catalog")
@@ -277,5 +281,8 @@ test("an approved Keyless row keeps its warning when the Registry state is unava
 
   await expect(
     catalogPanel(page).locator(".auth-row .keyless-origin"),
-  ).toHaveText("No retention guarantee · http://ollama.lan:11434");
+  ).toHaveText("No retention guarantee · http://ollama.lan:11434", {
+    timeout: 15000,
+  });
+  expect(registryReads).toBeGreaterThan(1);
 });
