@@ -1,3 +1,4 @@
+use super::testing::{KeyMaterialWritePort as _, NoExchange};
 use super::*;
 use std::collections::BTreeMap;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -217,6 +218,7 @@ fn service() -> (Service, Repo, FakeStore) {
 			repository: Arc::new(repo.clone()),
 			store: Arc::new(store.clone()),
 			validator: Arc::new(Validator),
+			exchange: Arc::new(NoExchange),
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
 		},
@@ -394,22 +396,12 @@ async fn pending_reconciliation_uses_rows_and_cleans_only_expired_pending_resour
 
 #[tokio::test]
 async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment() {
-	use crate::provider_access::{
-		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
-	};
-	struct Env;
-	impl crate::ports::Credentials for Env {
-		fn resolve(&self, _: &str) -> Result<String> {
-			panic!("Tenant access must never resolve environment Key Material")
-		}
-	}
+	use crate::provider_access::{Context, KeylessAccess, ProviderAccess, Source, TenantAccess};
 	let (s, repo, _) = service();
 	let a = create(&s, "alpha").await;
 	let b = create(&s, "beta").await;
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(Env),
-		},
+		keyless: KeylessAccess,
 		repository: Arc::new(repo),
 		reader: None,
 		issuer: None,
@@ -548,21 +540,11 @@ impl crate::provider_access::KeyMaterialReader for FakeStore {
 }
 #[tokio::test]
 async fn reader_resolves_current_pin_after_metadata_checks() {
-	use crate::provider_access::{
-		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
-	};
-	struct Env;
-	impl crate::ports::Credentials for Env {
-		fn resolve(&self, _: &str) -> Result<String> {
-			panic!("no environment fallback")
-		}
-	}
+	use crate::provider_access::{Context, KeylessAccess, ProviderAccess, Source, TenantAccess};
 	let (s, repo, store) = service();
 	let row = create(&s, "alpha").await.provider_credential;
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(Env),
-		},
+		keyless: KeylessAccess,
 		repository: Arc::new(repo),
 		reader: Some(Arc::new(store)),
 		issuer: None,
@@ -643,6 +625,11 @@ async fn committed_rotation_returns_metadata_and_reconciles_failed_old_version_c
 			"Provider Credential rotation committed; previous version cleanup is pending",
 		]
 	);
+	// Only the provider's own finding concerns the key the user must review.
+	assert_eq!(
+		rotated.key_warnings().collect::<Vec<_>>(),
+		["No spending limit is configured"]
+	);
 	let serialized = serde_json::to_string(&rotated).unwrap();
 	assert!(!serialized.contains("rotation-cleanup-error-canary"));
 	assert!(!serialized.contains("replacement-key"));
@@ -713,15 +700,7 @@ async fn reconciliation_pages_bound_work_and_reach_later_tenants_after_failures(
 
 #[tokio::test]
 async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_is_recoverable() {
-	use crate::provider_access::{
-		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
-	};
-	struct Env;
-	impl crate::ports::Credentials for Env {
-		fn resolve(&self, _: &str) -> Result<String> {
-			panic!("revoked Tenant access cannot fall back to environment")
-		}
-	}
+	use crate::provider_access::{Context, KeylessAccess, ProviderAccess, Source, TenantAccess};
 	let (s, repo, store) = service();
 	let first = create(&s, "alpha").await.provider_credential;
 	let original = repo.0.lock().await.rows[&first.id].clone();
@@ -766,9 +745,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			.contains("cleanup-error-canary")
 	);
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(Env),
-		},
+		keyless: KeylessAccess,
 		repository: Arc::new(repo.clone()),
 		reader: Some(Arc::new(store.clone())),
 		issuer: None,
@@ -916,6 +893,7 @@ async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_c
 			repository: Arc::new(repo.clone()),
 			store: Arc::new(store.clone()),
 			validator: Arc::new(Validator),
+			exchange: Arc::new(NoExchange),
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
 		};
@@ -956,4 +934,208 @@ async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_c
 		);
 		assert_eq!(restarted.reconcile_page(None).await.unwrap().cleaned, 0);
 	}
+}
+
+/// A fake exchange that issues one key per code and rejects everything else.
+struct CodeExchange {
+	keys: std::sync::Mutex<BTreeMap<String, String>>,
+	verifier: String,
+	calls: std::sync::atomic::AtomicUsize,
+}
+impl CodeExchange {
+	fn new(codes: &[(&str, &str)]) -> Self {
+		Self {
+			keys: std::sync::Mutex::new(
+				codes
+					.iter()
+					.map(|(code, key)| (code.to_string(), key.to_string()))
+					.collect(),
+			),
+			verifier: "fixture-verifier".into(),
+			calls: Default::default(),
+		}
+	}
+}
+#[async_trait]
+impl crate::provider_authorization::Exchange for CodeExchange {
+	async fn exchange(
+		&self,
+		_: Provider,
+		code: &str,
+		verifier: &SecretString,
+	) -> Result<SecretString> {
+		self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		if verifier.expose_secret() != self.verifier {
+			return Err(Error::Invalid("Provider Authorization was rejected".into()));
+		}
+		// Codes are single-use, as at the provider.
+		self.keys
+			.lock()
+			.unwrap()
+			.remove(code)
+			.map(SecretString::from)
+			.ok_or_else(|| Error::Invalid("Provider Authorization was rejected".into()))
+	}
+}
+fn authorizing(codes: &[(&str, &str)]) -> (Service, Repo, FakeStore, Arc<CodeExchange>) {
+	let (mut s, repo, store) = service();
+	let exchange = Arc::new(CodeExchange::new(codes));
+	s.exchange = exchange.clone();
+	(s, repo, store, exchange)
+}
+#[tokio::test]
+async fn authorization_connects_and_reconnects_with_a_deep_link_digest() {
+	let (s, repo, store, _) = authorizing(&[
+		("first-code", "sk-or-v1-first-issued-key"),
+		("second-code", "sk-or-v1-second-issued-key"),
+	]);
+	let verifier = SecretString::from("fixture-verifier");
+	let id = Uuid::now_v7();
+	let connected = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id },
+			"first-code",
+			&verifier,
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	assert_eq!(connected.id, id);
+	assert_eq!(connected.state, State::Active);
+	let digest = crate::provider_authorization::key_digest(&"sk-or-v1-first-issued-key".into());
+	assert_eq!(
+		connected.key_settings_url.as_deref(),
+		Some(format!("https://openrouter.ai/keys/{digest}").as_str())
+	);
+	let reconnected = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Reconnect {
+				id,
+				expected_revision: connected.revision,
+			},
+			"second-code",
+			&verifier,
+			"actor",
+		)
+		.await
+		.unwrap();
+	// The replaced key stays live at the provider; its settings page is reported
+	// once, because the row now records only the new digest.
+	assert_eq!(
+		reconnected.previous_key_settings_url,
+		connected.key_settings_url
+	);
+	let reconnected = reconnected.provider_credential;
+	assert_eq!(reconnected.id, id);
+	assert!(reconnected.rotated_at.is_some());
+	assert_ne!(reconnected.key_settings_url, connected.key_settings_url);
+	assert_eq!(store.state.lock().await[&store.resource(id)].len(), 2);
+	assert_eq!(
+		repo.0.lock().await.rows[&id].key_digest.as_deref(),
+		Some(
+			crate::provider_authorization::key_digest(&"sk-or-v1-second-issued-key".into())
+				.as_str()
+		)
+	);
+}
+#[tokio::test]
+async fn rejected_or_replayed_codes_and_wrong_verifiers_store_nothing() {
+	let (s, repo, store, _) = authorizing(&[("only-code", "sk-or-v1-issued-key")]);
+	let wrong = SecretString::from("wrong-verifier");
+	let failure = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"only-code",
+			&wrong,
+			"actor",
+		)
+		.await
+		.unwrap_err();
+	// No key was issued, so there is nothing to clean up at the provider.
+	assert!(failure.key_settings_url.is_none());
+	let failure = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"expired-code",
+			&"fixture-verifier".into(),
+			"actor",
+		)
+		.await
+		.unwrap_err();
+	assert!(failure.key_settings_url.is_none());
+	assert!(repo.0.lock().await.rows.is_empty());
+	assert!(store.state.lock().await.is_empty());
+}
+#[tokio::test]
+async fn failures_after_the_exchange_report_the_issued_key_settings_page() {
+	// The provider issues a key that the write path then refuses.
+	let (s, repo, store, _) = authorizing(&[("code", "bad")]);
+	let failure = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"code",
+			&"fixture-verifier".into(),
+			"actor",
+		)
+		.await
+		.unwrap_err();
+	assert!(matches!(failure.error, Error::Invalid(_)));
+	let digest = crate::provider_authorization::key_digest(&"bad".into());
+	assert_eq!(
+		failure.key_settings_url.as_deref(),
+		Some(format!("https://openrouter.ai/keys/{digest}").as_str())
+	);
+	assert!(repo.0.lock().await.rows.is_empty());
+	assert!(store.state.lock().await.is_empty());
+}
+#[tokio::test]
+async fn refusals_that_the_write_would_make_happen_before_a_key_is_issued() {
+	let (s, _, _, exchange) = authorizing(&[]);
+	create(&s, "alpha").await;
+	let existing = create(&s, "alpha").await.provider_credential;
+	let verifier = SecretString::from("fixture-verifier");
+	// Quota reached (max_per_tenant = 2).
+	assert!(matches!(
+		s.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"code",
+			&verifier,
+			"actor",
+		)
+		.await,
+		Err(AuthorizationFailure {
+			error: Error::Conflict(_),
+			key_settings_url: None,
+		})
+	));
+	// Stale reconnect revision.
+	assert!(
+		s.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Reconnect {
+				id: existing.id,
+				expected_revision: existing.revision - 1,
+			},
+			"code",
+			&verifier,
+			"actor",
+		)
+		.await
+		.is_err()
+	);
+	assert_eq!(exchange.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

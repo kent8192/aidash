@@ -4,6 +4,7 @@ use crate::{Error, Result, database::native};
 use aidash_domain::{
 	RunMetadata,
 	memory::{Evidence, Unit},
+	semantic::Failure,
 };
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait, LockType, OnConflict, Order,
@@ -165,6 +166,25 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 }
 
 pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool> {
+	Ok(invalidity(lease, run_id).await?.is_none())
+}
+
+/// Why a Run's memory read journal no longer holds, or `None` while it does.
+/// A changed, withdrawn, deleted or expired source is `Invalidated`; a changed
+/// participant or provider is `Configuration`; lost access is `Authority`.
+pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Option<Failure>> {
+	// Error kinds of the shared helpers: `Conflict` reports a changed or removed
+	// source, `Forbidden` lost authority.
+	let source = |error: Error| match error {
+		Error::Conflict(_) => Ok(Some(Failure::Invalidated)),
+		Error::Forbidden => Ok(Some(Failure::Authority)),
+		error => Err(error),
+	};
+	let binding_change = |error: Error| match error {
+		Error::Conflict(_) => Ok(Some(Failure::Configuration)),
+		Error::Forbidden => Ok(Some(Failure::Authority)),
+		error => Err(error),
+	};
 	let Some(run) = crate::database::query_as::<RunMetadata>(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -175,11 +195,11 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 	.fetch_optional(&mut **lease.tx())
 	.await?
 	else {
-		return Ok(false);
+		return Ok(Some(Failure::Authority));
 	};
 	let binding = match bindings::load(&mut **lease.tx(), &run).await {
-		Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
-		result => result?,
+		Ok(binding) => binding,
+		Err(error) => return binding_change(error),
 	};
 	let Some(binding) = binding else {
 		let read = native::query(
@@ -192,18 +212,17 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 		)
 		.fetch_optional(&mut **lease.tx())
 		.await?;
-		return Ok(read.is_none());
+		return Ok(read.map(|_| Failure::Authority));
 	};
-	match units::authorize(lease, &binding.bank, "memory.read").await {
-		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(false),
-		result => result?,
+	if let Err(error) = units::authorize(lease, &binding.bank, "memory.read").await {
+		return binding_change(error);
 	}
 	let policy =
 		match crate::apps::knowledge::services::native_memory::policy(lease, &binding.provider)
 			.await
 		{
-			Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
-			result => result?,
+			Ok(policy) => policy,
+			Err(error) => return binding_change(error),
 		};
 	// The journal spans the whole Run. Each bounded page still validates every
 	// delivered revision; accumulated dependencies must never be sampled away.
@@ -233,26 +252,26 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 			.fetch_all(&mut **lease.tx())
 			.await?;
 		if reads.is_empty() {
-			return Ok(true);
+			return Ok(None);
 		}
 		for read in reads {
 			let id: Uuid = read.try_get("unit_id")?;
 			let revision: i64 = read.try_get("revision")?;
 			cursor = Some((id, revision));
 			let Some(unit) = units::load(lease, id, false).await? else {
-				return Ok(false);
+				return Ok(Some(Failure::Invalidated));
 			};
-			if !unit.visible()
-				|| unit.revision != revision
-				|| unit.bank.workspace != run.workspace_id
-			{
-				return Ok(false);
+			if unit.bank.workspace != run.workspace_id {
+				return Ok(Some(Failure::Authority));
+			}
+			if !unit.visible() || unit.revision != revision {
+				return Ok(Some(Failure::Invalidated));
 			}
 			let policy = match units::unexpired(lease, &unit).await {
-				Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
-				result => result?,
+				Ok(policy) => policy,
+				Err(error) => return source(error),
 			};
-			match units::current(
+			if let Err(error) = units::current(
 				lease,
 				run.workspace_id,
 				&[Evidence::Unit {
@@ -264,9 +283,12 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 			)
 			.await
 			{
-				Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
-				result => result?,
+				return source(error);
 			}
 		}
 	}
 }
+
+#[cfg(test)]
+#[path = "memory_reads/tests.rs"]
+mod tests;

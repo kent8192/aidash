@@ -83,13 +83,17 @@ async fn recover(execute: bool) -> Result<Counts> {
 		key_registry_rows: inventory.keys.len(),
 	};
 	if execute {
+		let client = aidash_integrations::semantic::client()?;
 		let service = Service {
 			repository,
 			store: store.clone(),
 			validator: Arc::new(
 				aidash_integrations::provider_credentials::OpenRouterKeyValidator {
-					client: aidash_integrations::semantic::client()?,
+					client: client.clone(),
 				},
+			),
+			exchange: Arc::new(
+				aidash_integrations::provider_authorization::OpenRouterAuthorization::new(client),
 			),
 			fingerprint_key,
 			max_per_tenant: settings.provider_credentials.max_per_tenant,

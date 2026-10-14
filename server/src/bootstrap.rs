@@ -392,21 +392,15 @@ pub fn model_provider(
 	aidash_integrations::inference::provider(
 		client,
 		config,
-		environment_provider_access(),
+		keyless_provider_access(),
 		Default::default(),
 	)
 	.map_err(Into::into)
 }
 
-pub(crate) fn environment_provider_access()
+pub(crate) fn keyless_provider_access()
 -> Arc<dyn aidash_application::provider_access::ProviderAccess> {
-	Arc::new(aidash_application::provider_access::EnvironmentAccess {
-		credentials: Arc::new(EnvironmentCredentials),
-	})
-}
-
-pub(crate) fn environment_credentials() -> Arc<dyn aidash_application::ports::Credentials> {
-	Arc::new(EnvironmentCredentials)
+	Arc::new(aidash_application::provider_access::KeylessAccess)
 }
 
 struct EnvironmentCredentials;
@@ -465,7 +459,7 @@ pub fn semantic_transport(
 		pool: store.pool.clone(),
 		embedding: aidash_integrations::semantic::SemanticClient {
 			client: store.semantic_client.clone(),
-			access: environment_provider_access(),
+			access: keyless_provider_access(),
 			context: Default::default(),
 		},
 	}
@@ -531,7 +525,6 @@ pub(crate) fn peer_transport(f: &Federation) -> aidash_integrations::federation:
 	aidash_integrations::federation::PeerHttp {
 		client: f.client.clone(),
 		node_id: f.config.node_id.clone(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -568,6 +561,9 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
 	) -> aidash_application::Result<()> {
 		use aidash_domain::tool::providers::{ToolTier, requires_runner};
+		if descriptor.provider.starts_with("research.") {
+			return crate::apps::execution::services::research::providers().available(descriptor);
+		}
 		if descriptor.tier != ToolTier::Host || descriptor.operation == "task_assign" {
 			return Ok(());
 		}
@@ -726,7 +722,6 @@ pub(crate) fn dependency_transport(
 	aidash_integrations::federation::PeerHttp {
 		client: access.peer_client.clone(),
 		node_id: access.node_id.clone(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -1160,7 +1155,6 @@ pub(crate) fn native_registry_transport(
 	aidash_integrations::federation::PeerHttp {
 		client: client.clone(),
 		node_id: node.into(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -1987,7 +1981,7 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 		aidash_integrations::inference::provider(
 			self.client.clone(),
 			model,
-			environment_provider_access(),
+			keyless_provider_access(),
 			Default::default(),
 		)
 	}
@@ -2004,7 +1998,10 @@ pub(crate) fn activation_scheduling_scope(
 ) -> crate::apps::execution::activation::repositories::scheduling::Scope<
 	&mut dyn reinhardt::db::backends::TransactionExecutor,
 > {
-	crate::apps::execution::activation::repositories::scheduling::Scope { tx }
+	crate::apps::execution::activation::repositories::scheduling::Scope {
+		tx,
+		capabilities: aidash_domain::run_state::PersistedCapability::supported(),
+	}
 }
 
 pub(crate) fn activation_repository(
@@ -2259,7 +2256,12 @@ pub async fn configure_provider_credentials(
 			),
 			store: adapter,
 			validator: Arc::new(
-				aidash_integrations::provider_credentials::OpenRouterKeyValidator { client },
+				aidash_integrations::provider_credentials::OpenRouterKeyValidator {
+					client: client.clone(),
+				},
+			),
+			exchange: Arc::new(
+				aidash_integrations::provider_authorization::OpenRouterAuthorization::new(client),
 			),
 			fingerprint_key,
 			max_per_tenant: settings.max_per_tenant,

@@ -211,7 +211,6 @@ async fn call(
 
 #[rstest::rstest]
 #[case::keycloak("http://127.0.0.1:18099/realms/test")]
-#[case::google("https://accounts.google.com")]
 #[tokio::test]
 async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	#[case] issuer: &str,
@@ -328,6 +327,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.await;
 	assert_eq!(status, 200);
 	assert_eq!(session["mappings"], json!([]));
+	assert_eq!(session["personal_account"], false);
 	assert_eq!(
 		call(
 			&app,
@@ -771,7 +771,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		(
 			"model",
 			"fixture-model",
-			json!({"provider":"openrouter","model_id":"browser-fixture","endpoint":"http://127.0.0.1:1/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"browser-fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",
@@ -1392,6 +1392,585 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 	assert!(disabled_at.is_none() && revoked_at.is_none());
 	drop(server);
 	common::cleanup(federation, &url, &schema).await;
+}
+
+struct GoogleBrowser {
+	federation: aidash_server::federation::Federation,
+	app: common::TestApplication,
+	url: String,
+	database: String,
+	identity: Uuid,
+	// Retains the disposable database and its environment for the test.
+	_runtime: common::RuntimeFixture,
+}
+
+#[rstest::fixture]
+async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
+	let runtime = runtime.await;
+	let (mut federation, url, database) = runtime.parts();
+	federation.config.oidc = Some(OidcConfig {
+		issuer: "https://accounts.google.com".into(),
+		client_id: "aidash".into(),
+		client_secret: "test-secret".into(),
+		public_origin: "http://127.0.0.1:8080".into(),
+		keycloak_admin_url: String::new(),
+		status_client_id: String::new(),
+		status_client_secret: String::new(),
+		session_absolute_seconds: 43_200,
+		session_idle_seconds: 1_800,
+	});
+	// A session established before personal onboarding was deployed. The HTTP
+	// request must create all personal authority; the fixture supplies none.
+	let identity = Uuid::new_v4();
+	let identity_query = Query::insert()
+		.into_table(Alias::new("dashboard_identities"))
+		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::value("https://accounts.google.com"))
+				.expr(Expr::value("google-browser-user"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&identity_query)
+		.bind(identity)
+		.execute(federation.store.pool.driver())
+		.await
+		.unwrap();
+	let session_query = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"token_hash",
+				"csrf_hash",
+				"identity_id",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&session_query)
+		.bind(Uuid::new_v4())
+		.bind(Sha256::digest(b"fixture-session").to_vec())
+		.bind(Sha256::digest(b"fixture-csrf").to_vec())
+		.bind(identity)
+		.execute(federation.store.pool.driver())
+		.await
+		.unwrap();
+	let app = common::application(federation.clone()).await;
+	GoogleBrowser {
+		federation,
+		app,
+		url,
+		database,
+		identity,
+		_runtime: runtime,
+	}
+}
+
+#[rstest::rstest]
+#[case::without_registration(false)]
+#[case::pending_shared_registration(true)]
+#[tokio::test]
+async fn google_session_provisions_private_access_without_registration(
+	#[case] with_pending: bool,
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: an existing Google browser session has no local authority.
+	let shared_policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":"acme","subjects":{"alice":{"kind":"user"}},
+		"policies":[{"id":"shared-user","effect":"allow","subjects":{"ids":["alice"]},
+		"actions":["*"],"resources":{"kinds":["*"]}}]
+	}))
+	.unwrap();
+	Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	}
+	.replace("acme", 0, shared_policy, "operator")
+	.await
+	.unwrap();
+	let mut pending = None;
+	if with_pending {
+		let (status, registration) = call(
+			&fixture.app,
+			"POST",
+			"/auth/registration",
+			true,
+			true,
+			None,
+			false,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{registration}");
+		assert_eq!(registration["status"], "pending");
+		pending = Some(registration);
+	}
+	// Act: simultaneous requests resume that session and provision personal access.
+	let sessions = join_all((0..8).map(|_| {
+		call(
+			&fixture.app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+	}))
+	.await;
+	let (status, session) = &sessions[0];
+	// Assert: personal access is available without granting Operator authority.
+	assert_eq!(*status, 200, "{session}");
+	assert_eq!(session["operator"], false);
+	assert_eq!(session["personal_account"], true);
+	assert_eq!(session["mappings"].as_array().unwrap().len(), 1);
+	assert_eq!(session["mappings"][0]["personal"], true);
+	assert_eq!(session["mappings"][0]["credential_active"], true);
+	for (status, concurrent) in &sessions {
+		assert_eq!(*status, 200, "{concurrent}");
+		assert_eq!(concurrent["mappings"], session["mappings"]);
+	}
+	let pending = match pending {
+		Some(pending) => pending,
+		None => {
+			let (status, registration) = call(
+				&fixture.app,
+				"GET",
+				"/auth/registration",
+				true,
+				false,
+				None,
+				false,
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{registration}");
+			assert_eq!(registration, Value::Null);
+			let (status, pending) = call(
+				&fixture.app,
+				"POST",
+				"/auth/registration",
+				true,
+				true,
+				None,
+				false,
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "{pending}");
+			assert_eq!(pending["status"], "pending");
+			pending
+		}
+	};
+	let personal = &session["mappings"][0];
+	let context = format!("mapping:{}", personal["id"].as_str().unwrap());
+	let (status, selected) = call(
+		&fixture.app,
+		"GET",
+		"/api/session",
+		true,
+		false,
+		Some(&context),
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{selected}");
+	assert_eq!(selected["access"]["tenant"], personal["tenant"]);
+	assert_eq!(selected["access"]["subject"], "owner");
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			"/api/dashboard/registrations",
+			true,
+			false,
+			Some("operator"),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, still_pending) = call(
+		&fixture.app,
+		"GET",
+		"/auth/registration",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{still_pending}");
+	assert_eq!(still_pending["id"], pending["id"]);
+	assert_eq!(still_pending["status"], "pending");
+	let (status, own_workspace) = call(
+		&fixture.app,
+		"POST",
+		"/api/workspaces",
+		true,
+		true,
+		Some(&context),
+		false,
+		json!({"title":"Personal work","goal":"Use the private tenant"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{own_workspace}");
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			&format!("/api/workspaces/{}", own_workspace["id"].as_str().unwrap()),
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		200
+	);
+	// Shared access still needs an explicit approval and coexists with personal access.
+	let (status, shared) = call(
+		&fixture.app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			pending["id"].as_str().unwrap()
+		),
+		false,
+		false,
+		None,
+		true,
+		json!({"tenant":"acme","subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{shared}");
+	let shared_context = format!("mapping:{}", shared["id"].as_str().unwrap());
+	let (status, shared_workspace) = call(
+		&fixture.app,
+		"POST",
+		"/api/workspaces",
+		true,
+		true,
+		Some(&shared_context),
+		false,
+		json!({"title":"Shared work","goal":"Keep shared data separate"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{shared_workspace}");
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			&format!(
+				"/api/workspaces/{}",
+				shared_workspace["id"].as_str().unwrap()
+			),
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	let (status, both) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{both}");
+	let mappings = both["mappings"].as_array().unwrap();
+	assert_eq!(mappings.len(), 2);
+	assert!(mappings.iter().any(|mapping| mapping == personal));
+	assert!(
+		mappings
+			.iter()
+			.any(|mapping| { mapping["id"] == shared["id"] && mapping["personal"] == false })
+	);
+	let (status, next_request) = call(
+		&fixture.app,
+		"POST",
+		"/auth/registration",
+		true,
+		true,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{next_request}");
+	assert_eq!(next_request["status"], "pending");
+	assert_ne!(next_request["id"], pending["id"]);
+	let mappings_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("identity_id").eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let mapping_count: i64 = sqlx::query_scalar(&mappings_query)
+		.bind(fixture.identity)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(mapping_count, 2);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn google_session_never_adopts_an_existing_personal_tenant(
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: an Operator already created data in the reserved tenant namespace.
+	let tenant = format!("personal-{}", fixture.identity.simple());
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
+	}))
+	.unwrap();
+	let authorization = Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	};
+	let before = authorization
+		.replace(&tenant, 0, policy, "operator")
+		.await
+		.unwrap();
+	// Act: resumable Google authentication must not claim existing tenant data.
+	let (status, response) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	// Assert: fail closed, without introducing authority or rewriting the policy.
+	assert_eq!(status, 409, "{response}");
+	for table in ["dashboard_mappings", "authorization_credentials"] {
+		let count = Query::select()
+			.expr(Expr::cust("count(*)"))
+			.from(Alias::new(table))
+			.and_where(Expr::col("tenant").eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder);
+		let rows: i64 = sqlx::query_scalar(&count)
+			.bind(&tenant)
+			.fetch_one(fixture.federation.store.pool.driver())
+			.await
+			.unwrap();
+		assert_eq!(rows, 0, "{table}");
+	}
+	let after = authorization.snapshot(&tenant).await.unwrap();
+	assert_eq!(after.revision, before.revision);
+	assert_eq!(
+		serde_json::to_value(after.bundle).unwrap(),
+		serde_json::to_value(before.bundle).unwrap()
+	);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
+}
+
+#[rstest::rstest]
+#[case::disabled_mapping("mapping", 200, 403)]
+#[case::revoked_credential("credential", 200, 401)]
+#[case::disabled_subject("subject", 200, 403)]
+#[case::disabled_identity("identity", 403, 403)]
+#[tokio::test]
+async fn google_session_does_not_restore_revoked_personal_authority(
+	#[case] revoked: &str,
+	#[case] session_status: u16,
+	#[case] access_status: u16,
+	#[future(awt)]
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
+) {
+	// Arrange: provision real authority, then independently revoke one of its fences.
+	let (status, session) = call(
+		&fixture.app,
+		"GET",
+		"/auth/session",
+		true,
+		false,
+		None,
+		false,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{session}");
+	let mapping = &session["mappings"][0];
+	let mapping_id = mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+	let tenant = mapping["tenant"].as_str().unwrap();
+	let context = format!("mapping:{mapping_id}");
+	let credential_query = Query::select()
+		.column(Alias::new("credential_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col("id").eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let credential: Uuid = sqlx::query_scalar(&credential_query)
+		.bind(mapping_id)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	let authorization = Authorization {
+		pool: fixture.federation.store.pool.clone(),
+	};
+	match revoked {
+		"mapping" => {
+			assert_eq!(
+				call(
+					&fixture.app,
+					"POST",
+					&format!("/api/dashboard/mappings/{mapping_id}/disable"),
+					false,
+					false,
+					None,
+					true,
+					json!({"expected_revision":1}),
+				)
+				.await
+				.0,
+				204
+			);
+		}
+		"subject" => {
+			let mut policy = authorization.snapshot(tenant).await.unwrap();
+			policy.bundle.subjects.get_mut("owner").unwrap().enabled = false;
+			authorization
+				.replace(tenant, policy.revision, policy.bundle, "operator")
+				.await
+				.unwrap();
+		}
+		"credential" | "identity" => {
+			// These persisted fences can be changed independently of onboarding.
+			// Internal dashboard credentials deliberately have no bearer revoke API.
+			let (table, column, id) = if revoked == "credential" {
+				("authorization_credentials", "revoked_at", credential)
+			} else {
+				("dashboard_identities", "disabled_at", fixture.identity)
+			};
+			let update = Query::update()
+				.table(Alias::new(table))
+				.value_expr(Alias::new(column), Expr::cust("clock_timestamp()"))
+				.and_where(Expr::col("id").eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder);
+			sqlx::query(&update)
+				.bind(id)
+				.execute(fixture.federation.store.pool.driver())
+				.await
+				.unwrap();
+		}
+		_ => unreachable!(),
+	}
+	let policy_before = authorization.snapshot(tenant).await.unwrap();
+	// Act: repeated session requests must not create fresh authority around revocation.
+	for _ in 0..2 {
+		let (status, resumed) = call(
+			&fixture.app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, session_status, "{revoked}: {resumed}");
+		match revoked {
+			// A disabled personal Mapping is omitted, but the direct Google
+			// identity can still request shared Tenant access.
+			"mapping" => {
+				assert_eq!(resumed["mappings"], json!([]));
+				assert_eq!(resumed["personal_account"], true);
+			}
+			// The dashboard must not auto-select authority that can only fail
+			// authentication and end the browser session.
+			"credential" => {
+				assert_eq!(resumed["mappings"][0]["personal"], true);
+				assert_eq!(resumed["mappings"][0]["credential_active"], false);
+			}
+			"subject" => assert_eq!(resumed["mappings"][0]["credential_active"], true),
+			_ => {}
+		}
+	}
+	// Assert: the original authority remains fenced and is never replaced or reset.
+	assert_eq!(
+		call(
+			&fixture.app,
+			"GET",
+			"/api/session",
+			true,
+			false,
+			Some(&context),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		access_status,
+		"{revoked}"
+	);
+	let current_credential: Uuid = sqlx::query_scalar(&credential_query)
+		.bind(mapping_id)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(current_credential, credential);
+	for table in ["dashboard_mappings", "authorization_credentials"] {
+		let count = Query::select()
+			.expr(Expr::cust("count(*)"))
+			.from(Alias::new(table))
+			.and_where(Expr::col("tenant").eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder);
+		let rows: i64 = sqlx::query_scalar(&count)
+			.bind(tenant)
+			.fetch_one(fixture.federation.store.pool.driver())
+			.await
+			.unwrap();
+		assert_eq!(rows, 1, "{table}");
+	}
+	let policy_after = authorization.snapshot(tenant).await.unwrap();
+	assert_eq!(policy_after.revision, policy_before.revision);
+	assert_eq!(
+		serde_json::to_value(policy_after.bundle).unwrap(),
+		serde_json::to_value(policy_before.bundle).unwrap()
+	);
+	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
 }
 
 // Redirect responses are the contract under test; following them contacts the issuer.

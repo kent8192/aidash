@@ -65,8 +65,16 @@ impl SemanticSearchRepository for Repository<'_> {
 	fn settlement(&self) -> &dyn GenerationDispatchSettlement {
 		&self.settlement
 	}
-	fn embedding(&self) -> &dyn EmbeddingProvider {
-		&self.transport
+	fn embedding(&self, tenant: &str) -> Box<dyn EmbeddingProvider + '_> {
+		// The Home embeds the query. A Provider Credential source resolves the
+		// Home Tenant's current binding as memory-retrieval maintenance; keyless
+		// sources fall through the same access unchanged.
+		Box::new(crate::bootstrap::admitted_semantic_transport(
+			&self.runtime.store,
+			None,
+			tenant.into(),
+			Some(aidash_application::provider_access::MaintenancePurpose::MemoryRetrieval),
+		))
 	}
 	fn vector(&self) -> &dyn VectorIndex {
 		&self.transport
@@ -131,6 +139,14 @@ impl SemanticSearchScope for Scope {
 	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec> {
 		let index = service::index(self.lease.tx(), workspace, false).await?;
 		index.configuration().map(Into::into).map_err(Into::into)
+	}
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String> {
+		crate::semantic::services::memory_context::remote_corpus_digest(
+			self.lease.tx(),
+			description,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn prepare_search(
 		&mut self,

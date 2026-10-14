@@ -14,7 +14,9 @@ pub struct ModelConfig {
 	pub provider: String,
 	pub model_id: String,
 	pub endpoint: String,
-	pub credential_env: Option<String>,
+	/// The Provider Catalog entry whose Tenant Provider Credential authenticates
+	/// calls (ADR 0006). Without it the endpoint is called without a key; model
+	/// configurations never name an environment key.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider_credential: Option<String>,
 	/// Total inference request timeout in seconds, including the response body.

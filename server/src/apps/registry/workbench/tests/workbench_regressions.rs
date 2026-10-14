@@ -150,7 +150,7 @@ fn workbench(
 			(
 				"fixture-model",
 				"model",
-				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 			),
 			(
 				"fixture-tool",

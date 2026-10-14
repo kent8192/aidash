@@ -136,6 +136,8 @@ pub mod remote_grants;
 
 pub(crate) mod dashboard;
 
+pub(crate) mod personal_tenant;
+
 pub(crate) mod home_execution;
 
 pub(crate) mod desktop;

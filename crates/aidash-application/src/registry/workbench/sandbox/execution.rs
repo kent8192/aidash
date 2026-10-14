@@ -42,7 +42,6 @@ pub struct Job {
 	pub request: ModelRequest,
 	pub initial_conversation: Vec<Value>,
 	pub pinned_draft: Draft,
-	pub model_credential: Option<(String, Vec<u8>)>,
 	/// `deferred@1`: the session's Exposure set and the request text around
 	/// its per-turn Skill blocks and capability index. `None` under `legacy@1`.
 	pub exposure: Option<SessionExposure>,
@@ -81,14 +80,6 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		if !still_running {
 			status = "stopped";
 			break;
-		}
-		if let Some((name, fingerprint)) = &job.model_credential
-			&& dispatch::credential_fingerprint(execution.credentials.as_ref(), name)?
-				!= *fingerprint
-		{
-			return Err(Error::Conflict(
-				"model credential changed during test".into(),
-			));
 		}
 		let mut authority = execution.repository.begin_execution().await?;
 		authority.lock_identity().await?;

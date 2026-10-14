@@ -12,9 +12,13 @@ use aidash_domain::{
 	run_state::{RecoveryState, RunState, StateVersion, ThinkingState},
 	semantic::remote::{Boundary, Provider},
 };
+
+/// The semantic operation a reuse step cites in these tests.
+const CITED: Uuid = Uuid::from_u128(107);
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rstest::{fixture, rstest};
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -29,6 +33,11 @@ struct State {
 	peer_verified: bool,
 	worker_available: bool,
 	bad_receipts: bool,
+	/// This node's journal record of `CITED`, if any.
+	cited: Option<CitedOperation>,
+	/// `revoked` or `changed` when the grant's consumed sources are not current.
+	sources: Option<&'static str>,
+	corpus: String,
 	failure: Option<&'static str>,
 	pause: Option<&'static str>,
 	events: Vec<String>,
@@ -91,7 +100,7 @@ fn world() -> World {
 		"model",
 		"model",
 		json!({"provider":"openrouter","model_id":"fixture",
-        "endpoint":"https://provider.example/v1","credential_env":null,"context_window":4096,
+        "endpoint":"https://provider.example/v1","context_window":4096,
         "max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 	);
 	let compactor = entry(
@@ -203,6 +212,15 @@ fn world() -> World {
 		peer_verified: true,
 		worker_available: true,
 		bad_receipts: false,
+		cited: Some(CitedOperation {
+			admission_id: Uuid::from_u128(101),
+			grant_id: Uuid::from_u128(104),
+			ready: true,
+			step: 5,
+			corpus_digest: Some("corpus-1".into()),
+		}),
+		sources: None,
+		corpus: "corpus-1".into(),
 		failure: None,
 		pause: None,
 		events: vec![],
@@ -317,6 +335,24 @@ impl GenerationProtocolLease for Lease {
 	async fn binding_admission(&mut self, _: Uuid) -> Result<Option<Uuid>> {
 		self.world.point("binding").await?;
 		Ok(self.world.0.lock().unwrap().binding)
+	}
+	async fn semantic_sources_current(&mut self, grant: Uuid) -> Result<()> {
+		assert_eq!(grant, self.description.grant_id);
+		self.world.point("semantic.sources").await?;
+		match self.world.0.lock().unwrap().sources {
+			Some("revoked") => Err(Error::Forbidden),
+			Some("changed") => Err(Error::RemoteSemantic(Failure::Invalidated)),
+			_ => Ok(()),
+		}
+	}
+	async fn semantic_operation(&mut self, id: Uuid) -> Result<Option<CitedOperation>> {
+		self.world.point("semantic.operation").await?;
+		let state = self.world.0.lock().unwrap();
+		Ok(state.cited.clone().filter(|_| id == CITED))
+	}
+	async fn corpus_digest(&mut self) -> Result<String> {
+		self.world.point("corpus").await?;
+		Ok(self.world.0.lock().unwrap().corpus.clone())
 	}
 	async fn finish_verification(mut self: Box<Self>, result: Result<bool>) -> Result<bool> {
 		self.finish(result).await
@@ -857,6 +893,7 @@ async fn admission_reacquires_authority_only_after_exact_home_receipts(world: Wo
 		world.events(),
 		[
 			"description",
+			"semantic.ready",
 			"prepare.begin",
 			"prepare.insert",
 			"prepare.commit",
@@ -1004,4 +1041,159 @@ fn shared_memory_role_uses_the_smallest_bank_allowance(
 	usage.dispatcher_node = description.source_node.clone();
 	usage.reserved_tokens = amount;
 	assert_eq!(exact_provider(&description, &usage).is_ok(), accepted);
+}
+
+/// A reuse step's admission input: the fixture's input citing `CITED`.
+fn reuse_input(world: &World) -> Input {
+	let mut input = world.input();
+	input.boundary = json!({"step":7,"reuses":CITED});
+	world.0.lock().unwrap().record.as_mut().unwrap().boundary = input.boundary.clone();
+	input
+}
+#[rstest]
+#[tokio::test]
+async fn a_reuse_step_cites_the_operation_its_source_observation_reuses(world: World) {
+	{
+		let mut state = world.0.lock().unwrap();
+		state.ready = false;
+		state.run.context.source_observation = Some(
+			aidash_domain::context::sources::SourceObservation::new(
+				"retrieval-key".into(),
+				"bindings".into(),
+				json!({"memory":null,"semantic_memory":{"operation_id":CITED}}),
+			)
+			.unwrap(),
+		);
+	}
+	let input = admit_fixture(&world).await.unwrap();
+	assert_eq!(input.boundary, json!({"step":7,"reuses":CITED}));
+	assert_eq!(
+		world.0.lock().unwrap().record.as_ref().unwrap().boundary,
+		input.boundary,
+		"the cited operation is bound durably before the Home is asked"
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_step_with_its_own_ready_retrieval_cites_nothing(world: World) {
+	world.0.lock().unwrap().run.context.source_observation = Some(
+		aidash_domain::context::sources::SourceObservation::new(
+			"retrieval-key".into(),
+			"bindings".into(),
+			json!({"memory":null,"semantic_memory":{"operation_id":CITED}}),
+		)
+		.unwrap(),
+	);
+	let input = admit_fixture(&world).await.unwrap();
+	assert_eq!(input.boundary, json!({"step":7}));
+}
+#[rstest]
+#[tokio::test]
+async fn the_home_admits_a_current_citation_before_verifying_the_peer(world: World) {
+	let input = reuse_input(&world);
+	reserve(&world, "aidash://executor", input).await.unwrap();
+	assert_eq!(
+		world.events(),
+		[
+			"grant",
+			"binding",
+			"semantic.operation",
+			"semantic.sources",
+			"corpus",
+			"peer.verify",
+			"local.reserve",
+			"lease.finish"
+		]
+	);
+	assert_eq!(world.0.lock().unwrap().charges, 1);
+}
+#[rstest]
+#[case::unknown_operation(|s: &mut State| s.cited = None)]
+#[case::another_run(|s: &mut State| s.cited.as_mut().unwrap().admission_id = Uuid::from_u128(999))]
+#[case::another_grant(|s: &mut State| s.cited.as_mut().unwrap().grant_id = Uuid::from_u128(999))]
+#[case::not_ready(|s: &mut State| s.cited.as_mut().unwrap().ready = false)]
+#[case::future_step(|s: &mut State| s.cited.as_mut().unwrap().step = 8)]
+#[case::revoked_grant(|s: &mut State| s.sources = Some("revoked"))]
+#[tokio::test]
+async fn the_home_refuses_a_foreign_citation_or_revoked_grant(
+	world: World,
+	#[case] change: fn(&mut State),
+) {
+	change(&mut world.0.lock().unwrap());
+	let input = reuse_input(&world);
+	assert!(matches!(
+		reserve(&world, "aidash://executor", input).await,
+		Err(Error::Forbidden)
+	));
+	assert_refused_before_the_peer(&world);
+}
+#[rstest]
+#[case::consumed_source_changed(
+	|s: &mut State| { s.sources = Some("changed"); s.corpus = "corpus-2".into(); },
+	Failure::Invalidated
+)]
+#[case::corpus_changed(|s: &mut State| s.corpus = "corpus-2".into(), Failure::Stale)]
+#[case::corpus_never_recorded(
+	|s: &mut State| s.cited.as_mut().unwrap().corpus_digest = None,
+	Failure::Stale
+)]
+#[tokio::test]
+async fn the_home_sends_changed_sources_to_invalidation_and_a_changed_corpus_to_retrieval(
+	world: World,
+	#[case] change: fn(&mut State),
+	#[case] expected: Failure,
+) {
+	change(&mut world.0.lock().unwrap());
+	let input = reuse_input(&world);
+	assert!(matches!(
+		reserve(&world, "aidash://executor", input).await,
+		Err(Error::RemoteSemantic(reason)) if reason == expected
+	));
+	assert_refused_before_the_peer(&world);
+}
+fn assert_refused_before_the_peer(world: &World) {
+	let state = world.0.lock().unwrap();
+	assert!(!state.events.iter().any(|event| event == "peer.verify"));
+	assert_eq!((state.active, state.charges, state.rollbacks), (0, 0, 1));
+}
+#[rstest]
+#[tokio::test]
+async fn the_executing_peer_verifies_its_own_citation_instead_of_the_exact_step(world: World) {
+	world.0.lock().unwrap().ready = false;
+	let input = reuse_input(&world);
+	assert!(
+		verify(&world, &world, &world, "aidash://home", input)
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		world.events(),
+		[
+			"leaf",
+			"dispatch.record",
+			"run",
+			"semantic.operation",
+			"lease.finish"
+		]
+	);
+}
+#[rstest]
+#[case::unknown_operation(|s: &mut State| s.cited = None)]
+#[case::another_run(|s: &mut State| s.cited.as_mut().unwrap().admission_id = Uuid::from_u128(999))]
+#[case::another_grant(|s: &mut State| s.cited.as_mut().unwrap().grant_id = Uuid::from_u128(999))]
+#[case::not_ready(|s: &mut State| s.cited.as_mut().unwrap().ready = false)]
+#[case::future_step(|s: &mut State| s.cited.as_mut().unwrap().step = 8)]
+#[tokio::test]
+async fn the_executing_peer_refuses_a_foreign_citation(
+	world: World,
+	#[case] change: fn(&mut State),
+) {
+	change(&mut world.0.lock().unwrap());
+	let input = reuse_input(&world);
+	assert!(matches!(
+		verify(&world, &world, &world, "aidash://home", input).await,
+		Err(Error::Forbidden)
+	));
+	let state = world.0.lock().unwrap();
+	assert_eq!((state.active, state.denials), (0, 1));
 }

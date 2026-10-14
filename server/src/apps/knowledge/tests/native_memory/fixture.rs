@@ -101,6 +101,26 @@ pub(super) async fn setup_endpoint_decay(
 	unit_max_age_days: Option<u32>,
 	decay: Option<Decay>,
 ) -> (Store, Registry, Uuid) {
+	setup_endpoint_policy(
+		database,
+		bounds,
+		endpoint,
+		flags,
+		unit_max_age_days,
+		decay,
+		None,
+	)
+	.await
+}
+pub(super) async fn setup_endpoint_policy(
+	database: &DatabaseFixture,
+	bounds: Bounds,
+	endpoint: &str,
+	flags: (bool, bool, bool),
+	unit_max_age_days: Option<u32>,
+	decay: Option<Decay>,
+	diversity_lambda_millionths: Option<u32>,
+) -> (Store, Registry, Uuid) {
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
 		"aidash://native-memory".into(),
@@ -119,13 +139,12 @@ pub(super) async fn setup_endpoint_decay(
 		(
 			"model",
 			"m",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"credential_env":null,
-			"context_window":32768,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":32768,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"embedding",
 			"e",
-			json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"fixture","model_version":"1.0.0","dimensions":3}),
+			json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3}),
 		),
 		("reranker", "r", json!({"provider":"rrf"})),
 		("tokenizer", "t", json!({"provider":"utf8_upper_bound"})),
@@ -143,6 +162,7 @@ pub(super) async fn setup_endpoint_decay(
 					tokenizer: reference("t"),
 					semantic_link_min_similarity_millionths: 700_000,
 					decay,
+					diversity_lambda_millionths,
 					retention: Retention {
 						unit_max_age_days,
 						candidate_days: 7,
@@ -228,7 +248,7 @@ pub(super) async fn setup_endpoint_decay(
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
 			spec: aidash_server::semantic::IndexSpec {
-				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
+				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
 				vector: aidash_domain::semantic::VectorConfig { provider: "postgres".into(), endpoint: "local".into(), credential_env: None },
 				enabled: true, auto_context: false, max_sources: 64, max_results: 4,
 				max_result_tokens: 8192, max_input_bytes: 16384,

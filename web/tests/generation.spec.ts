@@ -155,7 +155,6 @@ test("generation dashboard manages policy, approval, completion and retained his
     const embeddingConfig = {
       provider: "openai",
       endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
-      credential_env: null,
       model: "fixture-embedding",
       model_version: "v1",
       dimensions: 3,
@@ -195,7 +194,6 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .locator('[name="embedding_provider"]')
       .selectOption("openai");
-    await registryDialog.locator('[name="embedding_credentials"]').uncheck();
     await expect(registryDialog.getByLabel("エンティティID")).toHaveCount(0);
     await registryDialog.getByLabel("名前").fill("Approved embedding");
     await registryDialog.getByLabel("説明").fill("Local semantic provider");

@@ -226,6 +226,7 @@ export async function setup(
   options: {
     failFirstMessage?: boolean;
     subject?: boolean;
+    dashboardContext?: string | null;
     olderMessages?: number;
     remoteParticipant?: boolean;
     unpairedRemoteRequest?: boolean;
@@ -481,7 +482,12 @@ export async function setup(
     };
   };
   page.on("pageerror", (error) => errors.push(error.message));
-  await installBearerDashboard(page, "fixture");
+  await installBearerDashboard(
+    page,
+    "fixture",
+    undefined,
+    options.dashboardContext,
+  );
   await page.addInitScript((locale) => {
     localStorage.setItem("aidash-locale", locale);
   }, options.locale ?? "en-US");

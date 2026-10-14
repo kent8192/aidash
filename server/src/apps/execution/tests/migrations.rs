@@ -61,7 +61,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0028_provider_credentials");
+	assert_eq!(knowledge[0].name, "0031_embedding_provider_keys");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		23
+		24
 	);
 	let tables = migrations
 		.iter()
@@ -288,14 +288,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0020_policy_probe")
+		.get_migration("execution", "0022_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0019_summary_allowance_state".to_owned()
+			"0021_research_evidence_model_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -556,7 +556,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		23
+		24
 	);
 }
 
@@ -1218,8 +1218,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 		let metadata = json!({"id":id,"version":"1.0.0","kind":"model",
 			"name":{"en":"Prompt cache fixture"},"description":{"en":"Migration test"},
 			"config":{"provider":"openrouter","model_id":"anthropic/model",
-				"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-				"context_window":32768,"max_output_tokens":4096,
+				"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
 				"modalities":["text"],"cost":{},
 				"projection_versions":["legacy","ordered"],"cache_mode":cache_mode}});
 		Definition::build()
@@ -1425,8 +1424,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 	let model = json!({"id":"model","version":"1.0.0","kind":"model",
 		"name":{"en":"Parallel fixture"},"description":{"en":"Migration test"},
 		"config":{"provider":"openrouter","model_id":"anthropic/model",
-			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-			"context_window":32768,"max_output_tokens":4096,
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
 			"modalities":["text"],"cost":{}}});
 	Definition::objects()
 		.create_with_conn(
@@ -1648,8 +1646,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 	let model = json!({"id":"model","version":"1.0.0","kind":"model",
 		"name":{"en":"Context fixture"},"description":{"en":"Migration test"},
 		"config":{"provider":"openrouter","model_id":"anthropic/model",
-			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-			"context_window":32768,"max_output_tokens":4096,
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
 			"modalities":["text"],"cost":{}}});
 	Definition::objects()
 		.create_with_conn(
@@ -1740,8 +1737,7 @@ async fn model_streaming_migration_refuses_rollback_with_installation_overrides(
 	let metadata = json!({"id":"stream-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Streaming fixture"},"description":{"en":"Migration test"},
 		"config":{"provider":"openrouter","model_id":"openai/model",
-			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-			"context_window":32768,"modalities":["text"],"cost":{}}});
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"modalities":["text"],"cost":{}}});
 	Definition::objects()
 		.create_with_conn(
 			&mut connection,
@@ -1835,6 +1831,99 @@ async fn model_streaming_migration_composes_with_deferred_exposure_guard(
 	let restored: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
 	assert!(restored.contains(exposure), "{restored}");
 	assert!(!restored.contains("stream"), "{restored}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn model_provider_keys_migration_refuses_installation_overrides_with_credential_env(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{
+		models::{Definition, Installation},
+		services::states::DefinitionKind,
+	};
+	// Arrange: before 0024 a model installation override could name an
+	// environment key that its base entry omits.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0024_model_provider_keys")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let metadata = json!({"id":"keyed-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Keyed override fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"openai/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("keyed-model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(metadata.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let keyed = || {
+		Installation::build()
+			.id("keyed-model")
+			.version("1.0.0")
+			.digest("keyed-fixture")
+			.config(json!({"credential_env":"AIDASH_SECRET_OPENROUTER"}).into())
+			.finish()
+	};
+	Installation::objects()
+		.create_with_conn(&mut connection, &keyed())
+		.await
+		.unwrap();
+	// Act
+	let error = executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	// Assert: the upgrade is refused instead of breaking admissions later.
+	assert!(
+		error.to_string().contains(
+			"registry 0024_model_provider_keys cannot be applied: 1 installation overrides set credential_env"
+		),
+		"{error}"
+	);
+	// Without the override the upgrade applies, and the installation guard
+	// rejects the key from then on.
+	sqlx::query(
+		&Query::delete()
+			.from_table(Alias::new("installations"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&pool)
+	.await
+	.unwrap();
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		Installation::objects()
+			.create_with_conn(&mut connection, &keyed())
+			.await
+			.is_err(),
+		"the installation guard must reject credential_env"
+	);
 }
 
 #[rstest]
@@ -1935,9 +2024,25 @@ async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_desc
 }
 
 #[rstest]
+#[case::retention(
+	"0027_memory_retention_lookup",
+	"memory_unit_retention",
+	"idx_memory_unit_retention_bank_id_dormant_policy_pinned",
+	"USING btree (bank_id, dormant_policy, pinned)"
+)]
+#[case::run_reads_by_unit(
+	"0029_memory_run_read_lookup",
+	"memory_run_reads",
+	"idx_memory_run_reads_unit_id_run_id_revision",
+	"USING btree (unit_id, run_id, revision)"
+)]
 #[tokio::test]
-async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_tables(
+async fn memory_lookup_index_upgrades_and_reverses_without_rewriting_tables(
 	#[future] fresh_database: MigrationFixture,
+	#[case] name: &str,
+	#[case] table: &str,
+	#[case] index: &str,
+	#[case] definition: &str,
 ) {
 	let fixture = fresh_database.await;
 	let migrations =
@@ -1947,9 +2052,7 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 			.unwrap();
 	let lookup = migrations
 		.iter()
-		.find(|migration| {
-			migration.app_label == "knowledge" && migration.name == "0027_memory_retention_lookup"
-		})
+		.find(|migration| migration.app_label == "knowledge" && migration.name == name)
 		.unwrap()
 		.clone();
 	// The baseline omits the lookup and every migration that depends on it, so
@@ -1987,10 +2090,8 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 		.column(Alias::new("indexdef"))
 		.from((Alias::new("pg_catalog"), Alias::new("pg_indexes")))
 		.and_where(Expr::col("schemaname").eq("public"))
-		.and_where(Expr::col("tablename").eq("memory_unit_retention"))
-		.and_where(
-			Expr::col("indexname").eq("idx_memory_unit_retention_bank_id_dormant_policy_pinned"),
-		)
+		.and_where(Expr::col("tablename").eq(table))
+		.and_where(Expr::col("indexname").eq(index))
 		.to_string(PostgresQueryBuilder);
 	assert!(
 		sqlx::query_scalar::<_, String>(&query)
@@ -2005,11 +2106,7 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 		.unwrap();
 	let created: Vec<String> = sqlx::query_scalar(&query).fetch_all(&pool).await.unwrap();
 	assert_eq!(created.len(), 1);
-	assert!(
-		created[0].contains("USING btree (bank_id, dormant_policy, pinned)"),
-		"{}",
-		created[0]
-	);
+	assert!(created[0].contains(definition), "{}", created[0]);
 	executor
 		.rollback_migrations(std::slice::from_ref(&lookup))
 		.await
@@ -2152,8 +2249,7 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 	let model = json!({"id":"exposure-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Exposure fixture"},"description":{"en":"Migration test"},
 		"config":{"provider":"openrouter","model_id":"anthropic/model",
-			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-			"context_window":32768,"max_output_tokens":4096,
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
 			"modalities":["text"],"cost":{},
 			"projection_versions":["legacy","ordered"],"cache_mode":"none"}});
 	let agent = json!({"id":"exposure-agent","version":"1.0.0","kind":"agent",

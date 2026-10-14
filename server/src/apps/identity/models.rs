@@ -77,4 +77,7 @@ pub use desktop_refresh_credentials::DesktopRefreshCredential;
 
 pub mod provider_credentials;
 
+mod provider_authorizations;
+pub use provider_authorizations::ProviderAuthorization;
+
 pub mod credential_store;

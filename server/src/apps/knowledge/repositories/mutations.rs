@@ -39,7 +39,7 @@ pub(crate) struct Entries<'a, 'scope> {
 impl SemanticConfigurationRepository for NativeConfiguration {
 	fn validate(&self, spec: &IndexingSpec) -> Result<()> {
 		native::IndexSpec::from(spec.clone())
-			.validate()
+			.validate_with(&crate::bootstrap::registry_validation_for(&self.store))
 			.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {

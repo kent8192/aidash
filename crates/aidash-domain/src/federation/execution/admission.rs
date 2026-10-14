@@ -147,6 +147,19 @@ pub struct Activation {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
 }
+impl Activation {
+	/// Whether the remote Run can still continue: neither cancelled nor finished.
+	/// A semantic cause stays reportable afterwards, but no recovery applies.
+	pub fn recoverable(&self) -> bool {
+		!matches!(self.control, RemoteExecutionControlState::Cancelled)
+			&& !matches!(
+				self.phase,
+				RemoteExecutionPhase::Completed
+					| RemoteExecutionPhase::Failed
+					| RemoteExecutionPhase::Cancelled
+			)
+	}
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Message {

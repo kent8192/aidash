@@ -1,0 +1,7 @@
+# actionlint 1.7.12 does not yet know GitHub's documented `concurrency.queue`
+# key (docs.github.com: "Control the concurrency of workflows and jobs").
+# Release PR runs rely on `queue: max`; ignore only that diagnostic there.
+paths:
+  .github/workflows/release-pr.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'

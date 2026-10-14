@@ -363,3 +363,5 @@ pub mod journal;
 pub mod status;
 
 pub mod disclosure;
+
+pub mod reuse;

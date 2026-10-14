@@ -159,8 +159,7 @@ fn model_config(
 ) -> ModelConfig {
 	let mut config = json!({
 		"provider":"openrouter", "model_id":"vendor/fixture-model",
-		"endpoint":endpoint, "credential_env":null,
-		"context_window":32768, "max_output_tokens":4096,
+		"endpoint":endpoint, "context_window":32768, "max_output_tokens":4096,
 		"modalities":["text"], "cost":{}
 	});
 	if let Some(streaming) = streaming {

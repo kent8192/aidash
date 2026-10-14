@@ -8,8 +8,65 @@ from cloud import run, bounded_timeout
 
 # Contains firebaseauth.users.get. Tenant-scope enforcement is a sandbox assumption.
 READ_ROLE = "roles/identityplatform.viewer"
-# Declared MFA Requirement -> the complete tenant mfaConfig GCIP must hold.
-MFA_CONFIGS = {"disabled": {"state": "DISABLED", "enabledProviders": [], "providerConfigs": []}}
+MFA_STATES = ("disabled", "enabled", "mandatory")
+# GCIP accepts 0-10 adjacent 30-second steps around the current TOTP code.
+TOTP_ADJACENT_INTERVALS = range(11)
+PREVIEW_HOST = re.compile(r"[a-f0-9]{32}\.preview\.aidash\.run")
+
+
+def declared_mfa_config(declared):
+    """The complete tenant mfaConfig GCIP must hold for a declared MFA Requirement.
+
+    `declared` is the module output {"state": ..., "totp_adjacent_intervals": ...}.
+    TOTP is the only second factor; `enabledProviders` lists SMS factors only, so
+    it stays empty and TOTP is enabled through its provider config.
+    """
+    state = declared.get("state") if isinstance(declared, dict) else None
+    if state not in MFA_STATES:
+        raise ValueError("Unsupported MFA Requirement")
+    if state == "disabled":
+        return {"state": "DISABLED", "enabledProviders": [], "providerConfigs": []}
+    intervals = declared.get("totp_adjacent_intervals")
+    if isinstance(intervals, bool) or intervals not in TOTP_ADJACENT_INTERVALS:
+        raise ValueError("Unsupported MFA Requirement")
+    return {
+        "state": state.upper(),
+        "enabledProviders": [],
+        "providerConfigs": [{"state": "ENABLED", "totpProviderConfig": {"adjacentIntervals": intervals}}],
+    }
+
+
+def ensure_authorized_domain(output, enabled=True, api=None):
+    """Manage one exact preview origin while holding the controller lifecycle lock.
+
+    Identity Platform's Config has no etag. The shared controller lock serializes
+    our read/modify/write operations; unrelated domains are read on each call and
+    only authorizedDomains is patched. Operators must use that same lock when
+    changing this field. Fixed environments remain Terraform-managed.
+    """
+    hostname = (output or {}).get("hostname", "")
+    if not hostname.endswith(".preview.aidash.run"):
+        return
+    if not PREVIEW_HOST.fullmatch(hostname):
+        raise ValueError("Preview authentication requires one exact random hostname")
+    config = output.get("gcip") or {}
+    project = config.get("project_id", "")
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project)
+        or not config.get("tenant_ids")
+        or config.get("auth_helper", "firebase") != "firebase"
+    ):
+        raise ValueError("Random preview authentication requires managed GCIP with the fixed Firebase helper")
+    request = api or admin_request
+    resource = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project}/config"
+    actual = request(resource, "GET")
+    domains = actual.get("authorizedDomains", [])
+    if not isinstance(domains, list) or any(not isinstance(domain, str) for domain in domains):
+        raise ValueError("Identity Platform returned invalid authorized domains")
+    if (hostname in domains) == enabled:
+        return
+    desired = domains + [hostname] if enabled else [domain for domain in domains if domain != hostname]
+    request(resource + "?updateMask=authorizedDomains", "PATCH", {"authorizedDomains": desired})
 
 
 def admin_request(url, method, body=None):
@@ -103,9 +160,7 @@ class TenantMFA:
     def reconcile(self, project, tenant, requirement):
         """Enforce the declared requirement and return the corrected (drifted) fields."""
         resource = tenant_resource(project, tenant)
-        if requirement not in MFA_CONFIGS:
-            raise ValueError("Unsupported MFA Requirement")
-        desired = MFA_CONFIGS[requirement]
+        desired = declared_mfa_config(requirement)
         actual = normalize_mfa(self.call("GET", resource).get("mfaConfig"))
         drifted = sorted(field for field in desired if actual[field] != desired[field])
         if drifted:

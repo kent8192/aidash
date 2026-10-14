@@ -107,8 +107,11 @@ pub fn reject_owner_definition(entry: &Entry) -> Result<()> {
 			&& serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
 				entry.config.clone(),
 			)
-			.is_ok_and(|descriptor| descriptor.provider.starts_with("core."))
-	{
+			.is_ok_and(|descriptor| {
+				// Node providers are declared only by the operator's packages.
+				descriptor.provider.starts_with("core.")
+					|| descriptor.provider.starts_with("research.")
+			}) {
 		return Err(crate::Error::Forbidden);
 	}
 	Ok(())
