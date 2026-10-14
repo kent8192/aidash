@@ -59,6 +59,12 @@ fn begin_rejects_callbacks_that_could_smuggle_parameters() {
 	}
 }
 
+/// Plan Connections use Sign in with ChatGPT; this flow never starts for them.
+#[test]
+fn begin_refuses_plan_only_providers() {
+	assert!(begin(Provider::Chatgpt, "https://aidash.example/callback", "acme").is_err());
+}
+
 #[test]
 fn key_labels_are_bounded_and_digests_are_unkeyed_sha256() {
 	assert_eq!(key_label(&"t".repeat(300)).chars().count(), 64);

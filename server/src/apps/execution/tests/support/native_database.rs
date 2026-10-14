@@ -10,6 +10,8 @@ use futures_util::{
 };
 use postgres::PostgresFuture;
 pub(super) use postgres::postgres_container;
+#[allow(unused_imports)] // Only fault-injection suites change the schema.
+pub use postgres::{ADMIN, OWNER, admin_pool, owner_pool, with_login};
 pub type DatabaseFuture = Shared<BoxFuture<'static, DatabaseFixture>>;
 use reinhardt::test::fixtures::temp_dir;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
@@ -72,8 +74,14 @@ pub(super) async fn wait_for_pgroonga(pool: &PgPool, timeout: Duration) -> Resul
 #[derive(Clone)]
 pub struct DatabaseFixture {
 	pub lease: DatabaseConnectionLease,
+	/// The server role's connection, which row-level security binds.
 	pub connection: BackendConnection,
+	/// The owner's connection, for migrations and fixture-only DDL.
+	pub owner_connection: BackendConnection,
+	/// The server role's URL.
 	pub url: String,
+	/// The owner's URL, as a deployment's migration Job receives it.
+	pub owner_url: String,
 	pub recovery_directory: Arc<tempfile::TempDir>,
 	_container: Arc<ContainerAsync<GenericImage>>,
 }
@@ -101,8 +109,9 @@ impl DatabaseFixture {
 		store.pool.close().await;
 		store.control_pool.close().await;
 		let port = self._container.get_host_port_ipv4(5432).await.unwrap();
-		let url =
-			format!("postgres://aidash:fixture-password@127.0.0.1:{port}/aidash?sslmode=disable");
+		let mut url = reqwest::Url::parse(&self.url).unwrap();
+		url.set_port(Some(port)).unwrap();
+		let url = url.to_string();
 		let pool = tokio::time::timeout(std::time::Duration::from_secs(30), async {
 			loop {
 				if let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
@@ -121,9 +130,11 @@ impl DatabaseFixture {
 		wait_for_pgroonga(&pool, Duration::from_secs(30))
 			.await
 			.unwrap_or_else(|error| panic!("{error}"));
-		let restarted = aidash_server::store::Store::from_pool(pool, store.node_id.clone())
+		let mut restarted = aidash_server::store::Store::from_pool(pool, store.node_id.clone())
 			.await
 			.unwrap();
+		// Deployment configuration survives a crash; only process state is lost.
+		restarted.keyless = store.keyless.clone();
 		aidash_server::semantic::services::memory_recovery::attach(
 			restarted,
 			self.recovery_directory.path().to_owned(),
@@ -137,9 +148,10 @@ pub fn database(postgres_container: PostgresFuture, temp_dir: TempDir) -> Databa
 	async move {
 		let (container, pool, _port, url) = postgres_container.await;
 		pool.close().await;
-		let owner = BackendConnection::connect_postgres_with_pool_size(&url, Some(12))
+		let logins = postgres::prepare_database(&url, "native").await;
+		let owner = BackendConnection::connect_postgres_with_pool_size(&logins.owner_url, Some(4))
 			.await
-			.expect("connect Reinhardt to the isolated test database");
+			.expect("connect Reinhardt to the isolated test database as its owner");
 		let migrations =
 			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 				.all_migrations()
@@ -152,10 +164,16 @@ pub fn database(postgres_container: PostgresFuture, temp_dir: TempDir) -> Databa
 				.await
 				.expect("migrations are idempotent");
 		assert!(repeated.applied.is_empty());
+		let connection =
+			BackendConnection::connect_postgres_with_pool_size(&logins.server_url, Some(12))
+				.await
+				.expect("connect Reinhardt to the isolated test database as the server");
 		DatabaseFixture {
-			lease: DatabaseConnectionLease::register(owner.clone()).unwrap(),
-			connection: owner,
-			url,
+			lease: DatabaseConnectionLease::register(connection.clone()).unwrap(),
+			connection,
+			owner_connection: owner,
+			url: logins.server_url,
+			owner_url: logins.owner_url,
 			recovery_directory: Arc::new(temp_dir),
 			_container: Arc::new(container),
 		}

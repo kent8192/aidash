@@ -71,6 +71,8 @@ struct Provider {
 	calls: Calls,
 	reported: Option<u64>,
 	fails: bool,
+	/// Provider access refused the endpoint's destination (ADR 0036).
+	refused: bool,
 }
 #[async_trait]
 impl EmbeddingProvider for Provider {
@@ -78,6 +80,9 @@ impl EmbeddingProvider for Provider {
 		self.calls.lock().unwrap().push("provider");
 		assert_eq!(*config, configuration());
 		assert_eq!(text, "query");
+		if self.refused {
+			return Err(Error::Forbidden);
+		}
 		if self.fails {
 			Err(Error::External("sensitive provider diagnostic".into()))
 		} else {
@@ -103,6 +108,7 @@ fn fixture() -> (Calls, Scope, Provider) {
 			calls,
 			reported: Some(1),
 			fails: false,
+			refused: false,
 		},
 	)
 }
@@ -188,6 +194,25 @@ async fn provider_failure_keeps_conservative_charge_and_hides_provider_details()
 	);
 	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
 	assert!(scope.reported.lock().unwrap().is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_keyless_destination_is_not_an_outage() {
+	let (calls, mut scope, mut provider) = fixture();
+	provider.refused = true;
+	assert!(configuration().provider_credential.is_none());
+	let error = invoke(
+		&mut scope,
+		&provider,
+		Uuid::from_u128(1),
+		&configuration(),
+		"query",
+		Origin::Query(Some(Uuid::from_u128(2))),
+	)
+	.await
+	.unwrap_err();
+	assert!(matches!(error, Error::Forbidden));
+	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
 }
 #[rstest]
 #[tokio::test]

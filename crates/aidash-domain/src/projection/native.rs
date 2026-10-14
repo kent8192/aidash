@@ -126,66 +126,56 @@ pub struct NativeContext {
 /// answer given during the turn (an approval) follows them. Calls that never
 /// ran have no `Tool` event and are left out of the assistant message, as
 /// Legacy leaves them out of history, so no request carries a partial Model
-/// Turn. Continuation markers recorded since the last Model Turn move to the
-/// volatile part; older ones are no longer current and are not rendered.
+/// Turn. A turn without text or an executed call renders nothing.
+///
+/// Continuation markers move to the volatile part until a rendered Model
+/// Turn answers them. A citation correction asks for a corrected answer, so
+/// only a turn without calls answers it; tool-call turns that gather the
+/// missing evidence keep it current.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
 	let entries = &context.history;
 	let mut index = 0;
 	while index < entries.len() {
-		let ContextEvent::Assistant { text, calls, .. } = &entries[index].event else {
+		let Some(turn) = Turn::at(entries, index) else {
 			single(&entries[index], &mut history, &mut markers);
 			index += 1;
 			continue;
 		};
-		let end = entries[index + 1..]
-			.iter()
-			.position(|entry| matches!(entry.event, ContextEvent::Assistant { .. }))
-			.map_or(entries.len(), |offset| index + 1 + offset);
-		let mut results = BTreeMap::new();
-		let mut after = Vec::new();
-		for entry in &entries[index + 1..end] {
-			match &entry.event {
-				ContextEvent::Tool { call, .. }
-					if calls.contains(&call.id) && !results.contains_key(call.id.as_str()) =>
-				{
-					results.insert(call.id.as_str(), entry);
-				}
-				_ => after.push(entry),
-			}
-		}
-		let executed = calls
-			.iter()
-			.filter_map(|id| results.get(id.as_str()).copied())
-			.collect::<Vec<_>>();
-		let text = (!text.trim().is_empty()).then(|| text.clone());
-		if text.is_some() || !executed.is_empty() {
+		if turn.rendered() {
+			let results = turn
+				.executed
+				.iter()
+				.filter_map(|&index| match &entries[index].event {
+					ContextEvent::Tool { call, result } => Some((entries[index].seq, call, result)),
+					_ => None,
+				})
+				.collect::<Vec<_>>();
 			history.push(NativeMessage::Assistant {
-				text,
-				tool_calls: executed
-					.iter()
-					.filter_map(|entry| match &entry.event {
-						ContextEvent::Tool { call, .. } => Some(call.clone()),
-						_ => None,
-					})
-					.collect(),
+				text: turn.text.map(str::to_owned),
+				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
 			});
-			for entry in executed {
-				if let ContextEvent::Tool { call, result } = &entry.event {
-					history.push(NativeMessage::Tool {
-						tool_call_id: call.id.clone(),
-						envelope: tool_envelope(entry.seq, call, result.clone()),
-					});
-				}
+			for (seq, call, result) in results {
+				history.push(NativeMessage::Tool {
+					tool_call_id: call.id.clone(),
+					envelope: tool_envelope(seq, call, result.clone()),
+				});
 			}
+			markers.retain(|marker| {
+				!turn.calls.is_empty()
+					&& matches!(marker, ContextEvent::CitationCorrectionRequired { .. })
+			});
 		}
-		markers.clear();
-		for entry in after {
-			single(entry, &mut history, &mut markers);
+		for &index in &turn.after {
+			single(&entries[index], &mut history, &mut markers);
 		}
-		index = end;
+		index = turn.end;
 	}
+	let markers = markers
+		.into_iter()
+		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
+		.collect();
 	let markers = Value::Array(markers);
 	NativeContext {
 		attachments: attachments(context, pinned),
@@ -202,32 +192,83 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 
 /// The Model Turn each history entry belongs to, by ordinal from the oldest:
 /// an `Assistant` event and the `Tool` events of its calls up to the next
-/// one, grouped exactly as `native_context` renders them. Other entries
-/// belong to none. Compaction prunes, retains and summarizes by these units.
+/// one, grouped exactly as `native_context` renders them. An `Assistant`
+/// event that renders nothing is no turn, so it never takes a protected
+/// slot. Other entries belong to none. Compaction prunes, retains and
+/// summarizes by these units.
 pub fn model_turns(history: &[HistoryEntry]) -> Vec<Option<usize>> {
-	let mut turns = Vec::with_capacity(history.len());
-	let mut current: Option<(usize, &[String], Vec<&str>)> = None;
+	let mut turns = vec![None; history.len()];
 	let mut next = 0;
-	for entry in history {
-		match &entry.event {
-			ContextEvent::Assistant { calls, .. } => {
-				current = Some((next, calls, Vec::new()));
-				turns.push(Some(next));
-				next += 1;
+	let mut index = 0;
+	while index < history.len() {
+		let Some(turn) = Turn::at(history, index) else {
+			index += 1;
+			continue;
+		};
+		if turn.rendered() {
+			for &entry in std::iter::once(&turn.start).chain(&turn.executed) {
+				turns[entry] = Some(next);
 			}
-			ContextEvent::Tool { call, .. } => match &mut current {
-				Some((turn, calls, seen))
-					if calls.contains(&call.id) && !seen.contains(&call.id.as_str()) =>
-				{
-					seen.push(call.id.as_str());
-					turns.push(Some(*turn));
-				}
-				_ => turns.push(None),
-			},
-			_ => turns.push(None),
+			next += 1;
 		}
+		index = turn.end;
 	}
 	turns
+}
+
+/// One recorded Model Turn: the `Assistant` entry at `start` and every entry
+/// up to `end`, the next `Assistant` entry or the end of history.
+struct Turn<'a> {
+	start: usize,
+	end: usize,
+	/// The response text, absent when blank.
+	text: Option<&'a str>,
+	/// Every call the response made, run or not.
+	calls: &'a [String],
+	/// The first `Tool` entry of each call that ran, in call order.
+	executed: Vec<usize>,
+	/// Every other entry of the turn, in journal order.
+	after: Vec<usize>,
+}
+
+impl<'a> Turn<'a> {
+	fn at(entries: &'a [HistoryEntry], start: usize) -> Option<Self> {
+		let ContextEvent::Assistant { text, calls, .. } = &entries[start].event else {
+			return None;
+		};
+		let end = entries[start + 1..]
+			.iter()
+			.position(|entry| matches!(entry.event, ContextEvent::Assistant { .. }))
+			.map_or(entries.len(), |offset| start + 1 + offset);
+		let mut results = BTreeMap::new();
+		let mut after = Vec::new();
+		for (index, entry) in entries.iter().enumerate().take(end).skip(start + 1) {
+			match &entry.event {
+				ContextEvent::Tool { call, .. }
+					if calls.contains(&call.id) && !results.contains_key(call.id.as_str()) =>
+				{
+					results.insert(call.id.as_str(), index);
+				}
+				_ => after.push(index),
+			}
+		}
+		Some(Self {
+			start,
+			end,
+			text: Some(text.as_str()).filter(|text| !text.trim().is_empty()),
+			calls,
+			executed: calls
+				.iter()
+				.filter_map(|id| results.get(id.as_str()).copied())
+				.collect(),
+			after,
+		})
+	}
+
+	/// Whether the turn renders at all: it has text or an executed call.
+	fn rendered(&self) -> bool {
+		self.text.is_some() || !self.executed.is_empty()
+	}
 }
 
 fn tool_envelope(seq: u64, call: &ToolCall, content: Value) -> Envelope {
@@ -240,7 +281,11 @@ fn tool_envelope(seq: u64, call: &ToolCall, content: Value) -> Envelope {
 }
 
 /// Render one event outside a Model Turn's calls.
-fn single(entry: &HistoryEntry, history: &mut Vec<NativeMessage>, markers: &mut Vec<Value>) {
+fn single<'a>(
+	entry: &'a HistoryEntry,
+	history: &mut Vec<NativeMessage>,
+	markers: &mut Vec<&'a ContextEvent>,
+) {
 	match &entry.event {
 		ContextEvent::Human {
 			request,
@@ -274,9 +319,7 @@ fn single(entry: &HistoryEntry, history: &mut Vec<NativeMessage>, markers: &mut 
 		}),
 		ContextEvent::RunMessageReadRequired { .. }
 		| ContextEvent::RunMessageSummaryRequired { .. }
-		| ContextEvent::CitationCorrectionRequired { .. } => {
-			markers.push(serde_json::to_value(&entry.event).expect("serializable marker"));
-		}
+		| ContextEvent::CitationCorrectionRequired { .. } => markers.push(&entry.event),
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}
 	}
@@ -362,22 +405,7 @@ impl NativeContext {
 		}
 		let volatile =
 			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
-		// Text media parts label attachments with their filename or Working
-		// Area path, which anyone who names a file controls: data, enveloped.
-		let mut media = media
-			.map(|part| match part["text"].as_str() {
-				Some(text) if part["type"] == "text" => {
-					json!({"type": "text", "text": Envelope::data(
-					Source::Step,
-					json!({"scope": "media"}),
-					None,
-					Value::String(text.to_owned()),
-				)
-				.text()})
-				}
-				_ => part,
-			})
-			.peekable();
+		let mut media = media.map(media_part).peekable();
 		let content = if media.peek().is_none() {
 			Value::String(volatile)
 		} else {
@@ -389,6 +417,22 @@ impl NativeContext {
 		};
 		messages.push(json!({"role": "user", "content": content}));
 		messages
+	}
+}
+
+/// One media part as a Native request sends it. Text parts label attachments
+/// with their filename or Working Area path, which anyone who names a file
+/// controls: data, enveloped. Request budgeting reserves this same framing.
+pub(crate) fn media_part(part: Value) -> Value {
+	match part["text"].as_str() {
+		Some(text) if part["type"] == "text" => json!({"type": "text", "text": Envelope::data(
+			Source::Step,
+			json!({"scope": "media"}),
+			None,
+			Value::String(text.to_owned()),
+		)
+		.text()}),
+		_ => part,
 	}
 }
 

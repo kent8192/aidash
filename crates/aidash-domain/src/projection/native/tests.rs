@@ -214,6 +214,61 @@ fn a_citation_correction_is_a_marker_until_the_corrected_answer() {
 }
 
 #[test]
+fn a_citation_correction_survives_turns_that_gather_evidence() {
+	// Arrange: the model reads more evidence before it answers again.
+	let correction = ContextEvent::CitationCorrectionRequired {
+		invalid: vec!["ev_unknown".into()],
+		instruction: "Correct the answer once.".into(),
+		through_seq: 3,
+	};
+	let read = ContextEvent::RunMessageReadRequired {
+		message_ids: vec![uuid::Uuid::from_u128(1)],
+	};
+	let gathering = context(vec![
+		correction.clone(),
+		read,
+		assistant(1, "Checking the sources.", &["a"]),
+		tool("a"),
+	]);
+	let mut answered = gathering.clone();
+	answered.push(assistant(2, "Corrected answer", &[]));
+	let pinned = json!({"agent_state": {"step": 4}});
+	// Act
+	let gathering = native_context(&gathering, &pinned);
+	let answered = native_context(&answered, &pinned);
+	// Assert: the tool-call turn answers the read marker but not the
+	// correction; the answer without calls answers both.
+	let volatile: Value = serde_json::from_str(&gathering.volatile).unwrap();
+	assert_eq!(
+		volatile,
+		json!({"agent_state": {"step": 4}, "markers": [correction]})
+	);
+	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
+	assert_eq!(volatile, pinned);
+}
+
+#[test]
+fn a_turn_that_renders_nothing_answers_no_marker() {
+	// Arrange: the response's only call was deferred before it ran.
+	let marker = ContextEvent::RunMessageSummaryRequired {
+		through_seq: 2,
+		max_bytes: None,
+		reason: None,
+	};
+	let context = context(vec![marker.clone(), assistant(1, "", &["a"])]);
+	let pinned = json!({"agent_state": {"step": 2}});
+	// Act
+	let native = native_context(&context, &pinned);
+	// Assert
+	assert!(native.history.is_empty());
+	let volatile: Value = serde_json::from_str(&native.volatile).unwrap();
+	assert_eq!(
+		volatile,
+		json!({"agent_state": {"step": 2}, "markers": [marker]})
+	);
+}
+
+#[test]
 fn untrusted_tool_output_stays_enveloped_data() {
 	// Arrange
 	let mut context = context(vec![assistant(1, "", &["a"])]);
@@ -416,6 +471,27 @@ fn model_turns_group_each_assistant_event_with_its_own_results() {
 	assert_eq!(
 		model_turns(&context.history),
 		[None, Some(0), Some(0), None, Some(0), None, Some(1)]
+	);
+}
+
+#[test]
+fn a_turn_that_renders_nothing_is_not_counted() {
+	// Arrange: the second response's only call was deferred before it ran.
+	let context = context(vec![
+		assistant(1, "", &["a"]),
+		tool("a"),
+		assistant(2, " ", &["b"]),
+		human("later"),
+		assistant(3, "", &["c"]),
+		tool("c"),
+	]);
+	// Act
+	let turns = model_turns(&context.history);
+	// Assert
+	assert_eq!(turns, [Some(0), Some(0), None, None, Some(1), Some(1)]);
+	assert_eq!(
+		shape(&native_context(&context, &json!({})).history),
+		["assistant[a]", "tool:a", "human", "assistant[c]", "tool:c"]
 	);
 }
 

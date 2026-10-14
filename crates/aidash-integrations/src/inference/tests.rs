@@ -1,9 +1,45 @@
 use super::*;
+use aidash_domain::projection::{ProjectionVersion, native::NativeContext};
+
+/// The adapter's clients with production-like deadlines.
+fn test_clients() -> crate::keyless::Clients {
+	crate::keyless::Clients::new(
+		reqwest::Client::new(),
+		std::time::Duration::from_secs(120),
+		std::time::Duration::from_secs(10),
+	)
+	.unwrap()
+}
+
+/// Keyless access that permits this fixture's loopback origin (ADR 0036).
+fn permitting(endpoint: &str) -> aidash_application::provider_access::KeylessAccess {
+	let origin = reqwest::Url::parse(endpoint)
+		.unwrap()
+		.origin()
+		.ascii_serialization();
+	aidash_application::provider_access::KeylessAccess::permitting(
+		aidash_domain::keyless::PermittedOrigins::parse([origin]).unwrap(),
+	)
+}
+
 #[rstest::rstest]
-fn media_reservation_covers_complete_request_growth() {
+#[case::legacy(ProjectionVersion::Legacy)]
+// Native envelopes text labels as data, so the label grows by its envelope
+// and a second level of JSON escaping.
+#[case::native(ProjectionVersion::Native)]
+fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionVersion) {
+	let history = json!({"history":"quoted \\\"text\\\" and 日本語"});
+	let context = match version {
+		ProjectionVersion::Native => aidash_domain::provider::ModelContext::Native(NativeContext {
+			attachments: Vec::new(),
+			history: Vec::new(),
+			volatile: history.to_string(),
+		}),
+		_ => history.into(),
+	};
 	let mut request = ModelRequest {
 		instructions: "Inspect the media".into(),
-		context: json!({"history":"quoted \\\"text\\\" and 日本語"}).into(),
+		context,
 		tools: vec![],
 		max_output_tokens: 512,
 		response_format: None,
@@ -28,7 +64,8 @@ fn media_reservation_covers_complete_request_growth() {
 	assert!(
 		request.estimated_total_tokens()
 			<= without_media.saturating_add(ModelRequest::content_parts_reservation(
-				&request.content_parts
+				&request.content_parts,
+				version
 			))
 	);
 }
@@ -391,9 +428,9 @@ mod cache_salt {
 			}
 			let config: ModelConfig = serde_json::from_value(config).unwrap();
 			salted_provider(
-				reqwest::Client::new(),
+				test_clients(),
 				config,
-				Arc::new(aidash_application::provider_access::KeylessAccess),
+				Arc::new(permitting(&self.endpoint)),
 				Default::default(),
 				keys,
 			)
@@ -662,7 +699,7 @@ mod cache_salt {
 				.lock()
 				.unwrap()
 				.push((inference.operations[0], inference.cache_breakpoints));
-			aidash_application::provider_access::KeylessAccess
+			permitting(endpoint)
 				.resolve(context, endpoint, source)
 				.await
 		}
@@ -689,7 +726,7 @@ mod cache_salt {
 			"projection_versions": ["legacy", "ordered"]
 		});
 		let provider = salted_provider(
-			reqwest::Client::new(),
+			test_clients(),
 			serde_json::from_value(config).unwrap(),
 			access.clone(),
 			Default::default(),
@@ -854,9 +891,9 @@ mod cache_salt {
 			config["projection_versions"] = versions;
 		}
 		let provider = salted_provider(
-			reqwest::Client::new(),
+			test_clients(),
 			serde_json::from_value(config).unwrap(),
-			Arc::new(aidash_application::provider_access::KeylessAccess),
+			Arc::new(permitting(&upstream.endpoint)),
 			Default::default(),
 			Some(keys()),
 		)

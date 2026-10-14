@@ -117,6 +117,11 @@ async fn controlled_context(
 	);
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let embedding_endpoint = embeddings.url.clone();
+	// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store
+		.keyless
+		.permit_origin_of(&embedding_endpoint)
+		.unwrap();
 	let embedding_server = embeddings;
 	configure(
 		&app,
@@ -301,9 +306,12 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 			while tokio::net::TcpStream::connect(&address).await.is_ok() {
 				tokio::task::yield_now().await;
 			}
-			// Indexing left keep-alive sockets in the shared client pool; a fresh
-			// client can only open new connections, so the step observes the refusal.
-			fixture.worker.federation.store.semantic_client = semantic::backend::client().unwrap();
+			// Indexing left keep-alive sockets in the shared client pools; fresh
+			// clients can only open new connections, so the step observes the
+			// refusal. Embeddings use the Keyless-aware provider client pair.
+			let store = &mut fixture.worker.federation.store;
+			store.semantic_client = semantic::backend::client().unwrap();
+			store.provider_clients = semantic::backend::clients().unwrap();
 			0
 		}
 		Unavailable::VectorBackend => {
@@ -886,6 +894,11 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let embedding_endpoint = embeddings.url.clone();
+	// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
+	f.store
+		.keyless
+		.permit_origin_of(&embedding_endpoint)
+		.unwrap();
 	let embedding_server = embeddings;
 
 	let endpoint = server.url.clone();

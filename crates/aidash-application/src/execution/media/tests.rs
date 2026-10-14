@@ -47,6 +47,7 @@ fn model() -> ModelConfig {
 		model_id: "saved-model".into(),
 		endpoint: "https://provider.example/api".into(),
 		provider_credential: None,
+		plan_connection: None,
 		request_timeout_secs: None,
 		streaming: None,
 		stream_stall_timeout_secs: None,

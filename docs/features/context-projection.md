@@ -68,15 +68,17 @@ A `native` request has this shape:
    become user messages.
 4. One trailing user message with this step's volatile content (agent state,
    workspace observation, run messages, `semantic_memory`, deferred reads and
-   continuation markers recorded since the last Model Turn, including a
-   citation correction) and this step's media parts. It is never stored in
-   history.
+   the continuation markers no rendered Model Turn has answered yet) and this
+   step's media parts. It is never stored in history. A citation correction
+   asks for a corrected answer, so it stays through tool-call turns that
+   gather evidence until a turn without calls answers it.
 
 Everything derived from data is wrapped in a provenance envelope,
 `{"source", "provenance", "revision", "trust": "data", "content"}`: attachments,
-tool results, media observations, the question a Human answer replies to, and
-the step's volatile content. Only the Human answer itself is unwrapped. Data
-never enters `system`.
+tool results, media observations, the question a Human answer replies to, the
+step's volatile content and the text labels of its media parts. Only the Human
+answer itself is unwrapped. Data never enters `system`. Request budgeting
+reserves the enveloped size of media labels before it bounds the snapshot.
 
 Only `native` Runs record Model Turns: once per accepted response, the Context
 Journal gains an `assistant` event with the response text and the IDs of its
@@ -84,8 +86,10 @@ tool calls, before the first result. A final answer is a Model Turn without
 calls. Reasoning output is never recorded. A call that never ran, because an
 earlier call of the same response waited for a human or deferred its result, is
 left out of the rendered assistant message, as `legacy` leaves it out of
-history. A request never carries part of a Model Turn; validation rejects one
-before sending.
+history. A response without text whose calls never ran renders nothing and is
+no Model Turn. Text beside calls that the citation gate withholds is neither
+published nor recorded; its turn keeps only the calls. A request never carries
+part of a Model Turn; validation rejects one before sending.
 
 Context recovery works by Model Turn. Jev protects the first and the latest
 `preserve_recent` Model Turns. A result Jev drops is replaced by

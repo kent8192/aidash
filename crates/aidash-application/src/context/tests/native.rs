@@ -162,6 +162,25 @@ fn native_summary_candidates_are_whole_turns_outside_the_protected_tail() {
 }
 
 #[rstest::rstest]
+fn a_turn_that_renders_nothing_takes_no_protected_slot() {
+	// Arrange: the latest response's only call was deferred before it ran.
+	let mut context = turns(10);
+	context.push(ContextEvent::Assistant {
+		epoch: 10,
+		text: String::new(),
+		calls: vec!["deferred".into()],
+	});
+	context.journal.inferred_through = context.journal.head;
+	// Act
+	let candidates = native_summary_candidates(&context, 6);
+	// Assert: the six latest rendered turns stay protected, as without it.
+	assert_eq!(
+		candidates.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
+		(2..=13).collect::<Vec<_>>()
+	);
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn native_compaction_neither_prunes_nor_absorbs_a_marker() {
 	// Arrange: a citation correction between old, unprotected text-less turns.

@@ -1247,7 +1247,10 @@ impl<'a> Executor<'a> {
 					selection.restrict_tools(&specifications)?;
 				}
 				let context_window = window.saturating_sub(
-					aidash_domain::provider::ModelRequest::content_parts_reservation(&media.parts),
+					aidash_domain::provider::ModelRequest::content_parts_reservation(
+						&media.parts,
+						agent.projection_version,
+					),
 				);
 				let private_context = if agent.knowledge_digest.is_some() {
 					json!({"reference_documents":documents.clone()})
@@ -1556,6 +1559,10 @@ impl<'a> Executor<'a> {
 								class: "provider_rejected".into(),
 							}
 						}
+						// A plan call OpenAI refused, or one no Plan Connection could serve.
+						None if matches!(error, Error::Plan(_)) => UsageOutcome::Rejected {
+							class: "plan_rejected".into(),
+						},
 						None => UsageOutcome::Unknown,
 					},
 					Inference::Superseded => UsageOutcome::Unknown,
@@ -1955,10 +1962,15 @@ impl<'a> Executor<'a> {
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
+				// Text beside calls that cites evidence the Run never received is
+				// not published, and its Model Turn records no text, so Context
+				// inspection never shows what the gate withheld.
+				let withheld = !result.tool_calls.is_empty()
+					&& self.cites_invalid_evidence(run, &tools, &result.text).await?;
 				if !run_message_catchup
 					&& !result.tool_calls.is_empty()
 					&& informed_response
-					&& !self.cites_invalid_evidence(run, &tools, &result.text).await?
+					&& !withheld
 				{
 					self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 						.await?;
@@ -1987,8 +1999,16 @@ impl<'a> Executor<'a> {
 						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
-							record_model_turn(run, agent.projection_version, &result)?;
-							if !self.cites_invalid_evidence(run, &tools, &result.text).await? {
+							// Not the final answer: gated like text beside calls.
+							let withheld =
+								self.cites_invalid_evidence(run, &tools, &result.text).await?;
+							record_model_turn(
+								run,
+								agent.projection_version,
+								if withheld { "" } else { &result.text },
+								&result.tool_calls,
+							)?;
+							if !withheld {
 								self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 									.await?;
 							}
@@ -2068,8 +2088,14 @@ impl<'a> Executor<'a> {
 							store.save_run(run, token, "run.message_received").await?;
 							return Ok(());
 						}
-						// The final answer is a Model Turn without calls.
-						record_model_turn(run, agent.projection_version, &result)?;
+						// The final answer is a Model Turn without calls. The citation
+						// gate above already replaced a withheld answer.
+						record_model_turn(
+							run,
+							agent.projection_version,
+							&result.text,
+							&result.tool_calls,
+						)?;
 						self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 							.await?;
 						if let Err(error) = home
@@ -2104,7 +2130,12 @@ impl<'a> Executor<'a> {
 				}
 				// The response is acted on from here: open its Model Turn before
 				// the first of its Tool events.
-				record_model_turn(run, agent.projection_version, &result)?;
+				record_model_turn(
+					run,
+					agent.projection_version,
+					if withheld { "" } else { &result.text },
+					&result.tool_calls,
+				)?;
 				// Tool Batches run only in ordinary mode: no message catch-up, no
 				// pending media selection and a response informed by required reads.
 				let batch_end = match run.state.tool()?.batch_end {
@@ -2541,13 +2572,15 @@ impl<'a> Executor<'a> {
 	}
 }
 
-/// Open the Model Turn of `response` in a Native Run's Context Journal, once
-/// per response epoch however often this boundary is re-entered. Legacy and
-/// Ordered Runs never record one, so their requests keep their bytes.
+/// Open the Model Turn of a response, with the text it may keep and its
+/// calls, in a Native Run's Context Journal, once per response epoch however
+/// often this boundary is re-entered. Legacy and Ordered Runs never record
+/// one, so their requests keep their bytes.
 fn record_model_turn(
 	run: &mut Run,
 	version: ProjectionVersion,
-	response: &aidash_domain::provider::ModelResponse,
+	text: &str,
+	calls: &[aidash_domain::provider::ToolCall],
 ) -> Result<()> {
 	if version != ProjectionVersion::Native {
 		return Ok(());
@@ -2561,12 +2594,8 @@ fn record_model_turn(
 	}
 	let event = ContextEvent::Assistant {
 		epoch,
-		text: response.text.clone(),
-		calls: response
-			.tool_calls
-			.iter()
-			.map(|call| call.id.clone())
-			.collect(),
+		text: text.to_owned(),
+		calls: calls.iter().map(|call| call.id.clone()).collect(),
 	};
 	let growth = context::tool_event_growth(&run.context, &event);
 	run.context.push(event);
