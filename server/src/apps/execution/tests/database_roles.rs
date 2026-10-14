@@ -83,11 +83,12 @@ async fn server_refuses_a_member_of_the_owner_role(
 	assert!(error.to_string().contains("owns the database"), "{error}");
 }
 
-/// Privileges a login can gain without owning anything are refused too:
-/// REPLICATION, SET-capable membership in a BYPASSRLS or REPLICATION role,
-/// membership in a role that reaches the server's files or programs, CREATE or
-/// TRUNCATE held directly or through a role reachable only by SET ROLE, and a
-/// startup role that hides the authenticated login.
+/// Privileges a login can gain without owning a schema or relation are refused
+/// too: REPLICATION, SET-capable membership in a BYPASSRLS or REPLICATION role,
+/// membership in a role that reaches the server's files or programs, CREATE,
+/// TRUNCATE or TRIGGER held directly or through a role reachable only by SET
+/// ROLE, ownership of a function, and a startup role that hides the
+/// authenticated login.
 #[rstest]
 #[case::replication(&["ALTER ROLE grant_probe REPLICATION"], "has REPLICATION")]
 #[case::bypassrls_member(
@@ -112,9 +113,14 @@ async fn server_refuses_a_member_of_the_owner_role(
 	"can create"
 )]
 #[case::truncate(&["GRANT TRUNCATE ON inbox TO grant_probe"], "can truncate tables")]
+#[case::trigger(&["GRANT TRIGGER ON inbox TO grant_probe"], "create triggers")]
 #[case::truncate_by_set_role(
 	&["CREATE ROLE truncate_probe NOLOGIN", "GRANT TRUNCATE ON inbox TO truncate_probe", "GRANT truncate_probe TO grant_probe WITH INHERIT FALSE, SET TRUE"],
 	"can truncate tables"
+)]
+#[case::function_owner(
+	&["CREATE FUNCTION function_probe() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "ALTER FUNCTION function_probe() OWNER TO grant_probe"],
+	"owns database functions"
 )]
 #[case::startup_role(
 	&["GRANT aidash_server TO grant_probe", "ALTER ROLE grant_probe SET role = 'aidash_server'"],
@@ -222,6 +228,79 @@ async fn migrate_leaves_the_ledger_read_only_to_the_server(#[future] database: D
 		.execute(&pool)
 		.await
 		.unwrap();
+}
+
+/// Migrations commit one by one, so a run that fails part-way leaves ledger
+/// records behind; `migrate` seals the ledger on that path as well.
+#[rstest]
+#[tokio::test]
+async fn a_failed_migrate_still_leaves_the_ledger_read_only(#[future] database: DatabaseFixture) {
+	// Arrange: the native history plus one migration that fails.
+	let f = database.await;
+	let directory = tempfile::TempDir::new().unwrap();
+	copy_tree(
+		&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+		directory.path(),
+	);
+	std::fs::write(
+		directory.path().join("marketplace/0008_failing_probe.rs"),
+		r#"// reinhardt-migration-source: 1
+use reinhardt::db::migrations::prelude::*;
+pub(super) fn migration() -> Migration {
+	Migration::new("0008_failing_probe", "marketplace")
+		.add_dependency("marketplace", "0007_model_state")
+		.add_operation(Operation::RunSQL {
+			sql: "SELECT 1 FROM failing_probe_missing_table".to_string(),
+			reverse_sql: None,
+		})
+}
+"#,
+	)
+	.unwrap();
+	let mut context = reinhardt::commands::CommandContext::default();
+	context.set_option("database".into(), with_login(&f.url, OWNER));
+	context.set_option(
+		"migrations-dir".into(),
+		directory.path().to_string_lossy().into_owned(),
+	);
+	// Act
+	let failed = aidash_server::bootstrap::migrations::run(&context).await;
+	// Assert: the migration's own error surfaces, and the ledger is sealed.
+	let error = failed.expect_err("the probe migration fails");
+	assert!(
+		error.to_string().contains("failing_probe_missing_table"),
+		"{error}"
+	);
+	let pool = runtime::connect(&f.url, 2)
+		.await
+		.unwrap()
+		.into_postgres()
+		.unwrap();
+	let deleted = sqlx::query("DELETE FROM reinhardt_migrations")
+		.execute(&pool)
+		.await
+		.unwrap_err();
+	assert_eq!(
+		deleted
+			.as_database_error()
+			.and_then(|error| error.code())
+			.as_deref(),
+		Some("42501"),
+		"{deleted}"
+	);
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+	std::fs::create_dir_all(to).unwrap();
+	for entry in std::fs::read_dir(from).unwrap() {
+		let entry = entry.unwrap();
+		let target = to.join(entry.file_name());
+		if entry.file_type().unwrap().is_dir() {
+			copy_tree(&entry.path(), &target);
+		} else {
+			std::fs::copy(entry.path(), target).unwrap();
+		}
+	}
 }
 
 #[rstest]

@@ -58,9 +58,9 @@ fn member_of(owner: &str) -> SimpleExpr {
 /// The database owner implicitly owns `public` through `pg_database_owner`, and
 /// a schema owner can create and drop its objects. Role attributes are never
 /// inherited through membership, so the session's own role decides those.
-/// Privileges such as `CREATE` and `TRUNCATE` are checked for every role the
-/// login is a member of, because `SET ROLE` reaches a role whose privileges
-/// are not inherited.
+/// Functions count as owned objects. Privileges such as `CREATE`, `TRUNCATE`
+/// and `TRIGGER` are checked for every role the login is a member of, because
+/// `SET ROLE` reaches a role whose privileges are not inherited.
 pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()> {
 	let role = Alias::new("r");
 	let class = Alias::new("c");
@@ -83,6 +83,31 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		)
 		.and_where(
 			SimpleExpr::from(Expr::col((namespace, Alias::new("nspname"))))
+				.ne("information_schema"),
+		)
+		.to_owned();
+	let function = Alias::new("f");
+	let function_namespace = Alias::new("fns");
+	// A function owner can replace its definition, such as a trigger guard's.
+	let owned_function = Query::select()
+		.expr(Expr::val(1))
+		.from_as(Alias::new("pg_proc"), function.clone())
+		.join(
+			JoinType::InnerJoin,
+			TableRef::table_alias(Alias::new("pg_namespace"), function_namespace.clone()),
+			SimpleExpr::from(Expr::col((function_namespace.clone(), Alias::new("oid"))))
+				.eq(Expr::col((function, Alias::new("pronamespace")))),
+		)
+		.and_where(member_of("f.proowner"))
+		.and_where(
+			SimpleExpr::from(Expr::col((
+				function_namespace.clone(),
+				Alias::new("nspname"),
+			)))
+			.not_like("pg\\_%"),
+		)
+		.and_where(
+			SimpleExpr::from(Expr::col((function_namespace, Alias::new("nspname"))))
 				.ne("information_schema"),
 		)
 		.to_owned();
@@ -122,6 +147,7 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 			Alias::new("replication"),
 		)
 		.expr_as(Expr::exists(owned), Alias::new("owner"))
+		.expr_as(Expr::exists(owned_function), Alias::new("function_owner"))
 		.expr_as(Expr::exists(owned_schema), Alias::new("schema_owner"))
 		.expr_as(Expr::exists(owned_database), Alias::new("database_owner"))
 		// A startup `role` setting can make `current_user` look safe while the
@@ -165,6 +191,8 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 			Alias::new("creator"),
 		)
 		// TRUNCATE skips row-level security, so it empties every tenant's rows.
+		// TRIGGER lets the login replace a table's triggers, including the
+		// guards migrations install, with any function it may execute.
 		.expr_as(
 			Expr::cust(
 				"EXISTS (SELECT 1 FROM pg_roles m \
@@ -172,9 +200,9 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 				 JOIN pg_namespace q ON q.oid = t.relnamespace \
 				 WHERE t.relkind IN ('r', 'p', 'f') AND q.nspname NOT LIKE 'pg\\_%' \
 				 AND q.nspname <> 'information_schema' \
-				 AND has_table_privilege(m.oid, t.oid, 'TRUNCATE'))",
+				 AND has_table_privilege(m.oid, t.oid, 'TRUNCATE, TRIGGER'))",
 			),
-			Alias::new("truncator"),
+			Alias::new("table_privileged"),
 		)
 		.from_as(Alias::new("pg_roles"), role.clone())
 		.and_where(
@@ -205,10 +233,12 @@ pub async fn require_unprivileged(connection: &DatabaseConnection) -> Result<()>
 		"owns a schema"
 	} else if flag("owner")? {
 		"owns database objects"
+	} else if flag("function_owner")? {
+		"owns database functions"
 	} else if flag("creator")? {
 		"can create schemas or objects"
-	} else if flag("truncator")? {
-		"can truncate tables"
+	} else if flag("table_privileged")? {
+		"can truncate tables or create triggers on them"
 	} else {
 		return Ok(());
 	};

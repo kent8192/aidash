@@ -106,14 +106,26 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 		"migrations-dir".into(),
 		directory.to_string_lossy().into_owned(),
 	);
-	MigrateCommand
+	let migrated = MigrateCommand
 		.execute(&native)
 		.await
-		.map_err(|error| Error::External(error.to_string()))?;
-	if !context.has_option("plan") {
-		schema_lock.execute(SEAL_LEDGER, Vec::new()).await?;
-	}
-	schema_lock.commit().await?;
+		.map_err(|error| Error::External(error.to_string()));
+	// Each migration commits on its own, so a failed run still leaves the
+	// ledger, and the records of the migrations it applied, behind: seal it
+	// either way. A run killed outright is sealed by the next `migrate`. The
+	// migration's own error takes precedence over the seal's and the commit's.
+	let sealed = if context.has_option("plan") {
+		Ok(())
+	} else {
+		schema_lock
+			.execute(SEAL_LEDGER, Vec::new())
+			.await
+			.map(|_| ())
+	};
+	let committed = schema_lock.commit().await;
+	migrated?;
+	sealed?;
+	committed?;
 	Ok(())
 }
 
