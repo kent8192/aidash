@@ -124,3 +124,57 @@ async fn openrouter_withholds_output_that_violates_the_approved_contract(#[case]
 		))
 	));
 }
+
+/// A reply whose body breaks off mid-transfer is a transport outage that a Run
+/// retries, not the non-retried contract violation of a malformed body.
+#[rstest]
+#[case::interrupted_body(true)]
+#[case::malformed_body(false)]
+#[tokio::test]
+async fn interrupted_response_body_is_an_outage_and_malformed_json_a_contract_violation(
+	#[case] interrupted: bool,
+) {
+	// Arrange
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/api/v1/embeddings",
+		post(move || async move {
+			let chunks: Vec<std::result::Result<&'static str, std::io::Error>> = if interrupted {
+				vec![
+					Ok(r#"{"model":"#),
+					Err(std::io::Error::other("connection reset")),
+				]
+			} else {
+				vec![Ok(r#"{"model":"#)]
+			};
+			axum::body::Body::from_stream(futures_util::stream::iter(chunks))
+		}),
+	);
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	// Act
+	let result = embed(
+		&aidash_application::provider_access::KeylessAccess,
+		&Context::default(),
+		&client().unwrap(),
+		&configuration(endpoint),
+		"query",
+	)
+	.await;
+	// Assert
+	if interrupted {
+		assert!(matches!(result, Err(Error::External(_))), "{result:?}");
+	} else {
+		assert!(
+			matches!(
+				result,
+				Err(Error::RemoteSemantic(
+					aidash_domain::semantic::Failure::ProviderContract
+				))
+			),
+			"{result:?}"
+		);
+	}
+}
