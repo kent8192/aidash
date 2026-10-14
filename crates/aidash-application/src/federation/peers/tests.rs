@@ -121,6 +121,21 @@ async fn registration_checks_remote_identity_before_atomic_commit(scope: Scope, 
 
 #[rstest]
 #[tokio::test]
+async fn plaintext_network_peer_is_rejected_before_credentials_are_read(
+	scope: Scope,
+	mut peer: Peer,
+) {
+	peer.endpoint = "http://peer.example.test".into();
+	let scope = Arc::new(scope);
+	assert!(matches!(
+		authority(scope.clone()).register(peer).await,
+		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
+	));
+	assert!(scope.trace.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn disabling_a_peer_uses_its_stored_definition_without_external_credentials(
 	scope: Scope,
 	mut peer: Peer,

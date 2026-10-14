@@ -670,7 +670,7 @@ pub(crate) async fn project(
 				"memory search projection identity is already in use".into(),
 			));
 		}
-	} else if unit.visible() {
+	} else if !unit.deleted {
 		let count: i64 = native::query_scalar(
 			&Query::select()
 				.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))

@@ -86,6 +86,14 @@ impl GraphAuthority<'_> {
 		.map_err(Into::into)
 	}
 
+	pub(crate) async fn workspace_allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
+		let Self::Subject(access) = self else {
+			return Err(Error::Forbidden);
+		};
+		let resource = access.workspace(id).await?;
+		access.decide(&resource, action).await
+	}
+
 	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
 		let Self::Subject(access) = self else {
 			return crate::authorization::remote::operator::event_visible(self.connection(), event)
@@ -461,10 +469,13 @@ pub(crate) async fn project_activity(
 		.collect::<BTreeSet<_>>()
 		.into_iter()
 		.collect();
-	let workspaces = if let GraphAuthority::Subject(access) = authority {
+	let workspaces = if matches!(authority, GraphAuthority::Subject(_)) {
 		let mut allowed = Vec::new();
 		for workspace in workspaces {
-			if access.allowed(workspace, "workspace.events").await? {
+			if authority
+				.workspace_allowed(workspace, "workspace.events")
+				.await?
+			{
 				allowed.push(workspace);
 			}
 		}

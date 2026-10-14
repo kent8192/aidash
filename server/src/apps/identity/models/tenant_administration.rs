@@ -95,14 +95,16 @@ impl AdministrationActor {
 	}
 }
 
-/// An External Identity acting through one of its Mappings. It exists only on
-/// deployments whose Tenant Binding ties Registration Requests to its Tenant.
+/// An External Identity acting through one of its Mappings. It needs no Tenant
+/// Binding (ADR 0024); a Binding only addresses Registration Requests to its
+/// Tenant and discloses their Display Attributes.
 pub(crate) struct TenantAdministrator {
 	pub identity: SubjectIdentity,
 	pub identity_id: Uuid,
 	pub mapping_id: Uuid,
 	node_id: String,
-	pool: String,
+	/// The GCIP Tenant bound to this Tenant, if any.
+	pool: Option<String>,
 	policy: AccountPolicy,
 	denial: Mutex<Option<(Evaluation, Decision)>>,
 }
@@ -116,10 +118,7 @@ impl TenantAdministrator {
 		policy: Option<AccountPolicy>,
 	) -> Result<Self> {
 		let policy = policy.ok_or(Error::Forbidden)?;
-		let pool = policy
-			.bound_pool(&identity.tenant)
-			.ok_or(Error::Forbidden)?
-			.to_owned();
+		let pool = policy.bound_pool(&identity.tenant).map(str::to_owned);
 		Ok(Self {
 			identity,
 			identity_id,
@@ -135,18 +134,39 @@ impl TenantAdministrator {
 		&self.identity.tenant
 	}
 
-	/// Whether `identity` belongs to the configured issuer's GCIP Tenant bound
-	/// to this Tenant, the only External Identities it may see or approve.
-	/// Identities left by a previous issuer or Tenant Binding stay hidden.
+	/// Whether a Registration Request from `identity` is addressed to this
+	/// Tenant: the identity belongs to the configured issuer's GCIP Tenant bound
+	/// to it. Without a Tenant Binding no request is, so only Operators decide
+	/// them. Identities left by a previous issuer or Tenant Binding stay hidden.
 	pub(crate) fn sees(&self, identity: &DashboardIdentity) -> bool {
-		identity.issuer == self.policy.issuer && identity.gcip_tenant == self.pool
+		self.pool.as_deref().is_some_and(|pool| {
+			identity.issuer == self.policy.issuer && identity.gcip_tenant == pool
+		})
 	}
 
-	/// Narrows `identities` to the ones this administrator `sees`, in SQL.
+	/// Narrows `identities` to the configured issuer's and, under a Tenant
+	/// Binding, to its bound GCIP Tenant, in SQL. Without a Binding, callers
+	/// pass only identities already mapped into this Tenant.
 	fn visible(&self, identities: QuerySet<DashboardIdentity>) -> QuerySet<DashboardIdentity> {
-		identities
-			.filter(DashboardIdentity::field_issuer().eq(self.policy.issuer.clone()))
-			.filter(DashboardIdentity::field_gcip_tenant().eq(self.pool.clone()))
+		let identities =
+			identities.filter(DashboardIdentity::field_issuer().eq(self.policy.issuer.clone()));
+		match &self.pool {
+			Some(pool) => {
+				identities.filter(DashboardIdentity::field_gcip_tenant().eq(pool.clone()))
+			}
+			None => identities,
+		}
+	}
+
+	/// Display Attributes are disclosed only for identities of a bound GCIP
+	/// Tenant, whose people chose this Tenant by signing in to its pool.
+	fn view(&self, identity: &DashboardIdentity) -> TenantIdentity {
+		let bound = self.pool.is_some();
+		TenantIdentity {
+			id: identity.id,
+			verified_email: bound.then(|| identity.verified_email.clone()).flatten(),
+			display_name: bound.then(|| identity.display_name.clone()).flatten(),
+		}
 	}
 
 	pub(crate) fn policy(&self) -> &AccountPolicy {
@@ -289,6 +309,7 @@ impl TenantAdministrator {
 	/// Pending Registration Requests from the configured issuer's bound GCIP
 	/// Tenant only, other than this administrator's own. Requests from other
 	/// GCIP Tenants are excluded in SQL, so other Tenants' queues are not read.
+	/// Without a Tenant Binding no request is addressed to this Tenant.
 	pub(crate) async fn registrations(
 		&self,
 		db: DatabaseConnection,
@@ -303,6 +324,9 @@ impl TenantAdministrator {
 				json!({}),
 			)
 			.await?;
+			if self.pool.is_none() {
+				return Ok(Vec::new());
+			}
 			let now = super::dashboard_administration::database_time(tx).await?;
 			let pending = DashboardRegistrationRequest::objects()
 				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
@@ -323,7 +347,7 @@ impl TenantAdministrator {
 					let identity = identities.get(&row.identity_id())?;
 					Some(TenantRegistration {
 						id: row.id,
-						identity: view(identity),
+						identity: self.view(identity),
 						created_at: row.created_at,
 						expires_at: row.expires_at,
 					})
@@ -370,7 +394,7 @@ impl TenantAdministrator {
 					let identity = identities.get(&row.identity_id())?;
 					Some(TenantMapping {
 						id: row.id,
-						identity: view(identity),
+						identity: self.view(identity),
 						groups: rules::memberships(&snapshot.bundle, &row.subject),
 						own_identity: identity.id == self.identity_id,
 						own_subject: own_subjects.contains(&row.subject),
@@ -453,13 +477,5 @@ impl TenantAdministrator {
 			})
 		})
 		.await
-	}
-}
-
-fn view(identity: &DashboardIdentity) -> TenantIdentity {
-	TenantIdentity {
-		id: identity.id,
-		verified_email: identity.verified_email.clone(),
-		display_name: identity.display_name.clone(),
 	}
 }

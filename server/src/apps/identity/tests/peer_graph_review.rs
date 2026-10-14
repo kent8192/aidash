@@ -477,6 +477,8 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-remote-run","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["run.read"],"resources":{"kinds":["run"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/source_workspace_id"},
+			"right":{"source":"literal","value":workspace}},
 	}));
 	let (status, written) = request(
 		&app,

@@ -1493,6 +1493,10 @@ impl<'a> Executor<'a> {
 								class: "provider_rejected".into(),
 							}
 						}
+						// A plan call OpenAI refused, or one no Plan Connection could serve.
+						None if matches!(error, Error::Plan(_)) => UsageOutcome::Rejected {
+							class: "plan_rejected".into(),
+						},
 						None => UsageOutcome::Unknown,
 					},
 					Inference::Superseded => UsageOutcome::Unknown,

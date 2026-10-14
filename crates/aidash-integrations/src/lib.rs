@@ -34,6 +34,7 @@ pub mod oidc;
 
 pub mod gcip;
 
+pub mod chatgpt;
 pub mod provider_authorization;
 
 pub mod provider_credentials;

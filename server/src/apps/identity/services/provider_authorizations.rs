@@ -101,7 +101,7 @@ impl ProviderAuthorizations {
 	) -> Result<Response> {
 		let f = &self.runtime;
 		let config = oidc::required_config(f)?;
-		let provider = Provider::parse(&provider)?;
+		let provider = Provider::credential(&provider)?;
 		let origin = origin.ok_or(Error::Forbidden)?;
 		let session = oidc::browser_session_from_headers(f, &headers).await?;
 		if session.id != origin.session.id {
@@ -191,7 +191,7 @@ impl ProviderAuthorizations {
 		// Unbound callbacks fail before any other input is interpreted.
 		let browser = oidc::cookie_value(&headers, &oidc::cookie_name(COOKIE, config))
 			.ok_or(Error::Unauthorized)?;
-		let provider = Provider::parse(&provider)?;
+		let provider = Provider::credential(&provider)?;
 		let lease = f.store.orm_connection()?;
 		let pending = match (query.state.as_deref(), query.code.as_deref()) {
 			(Some(state), _) => {

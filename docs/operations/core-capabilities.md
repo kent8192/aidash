@@ -195,6 +195,9 @@ page budget return an explicit error instead of a non-advancing cursor.
 The original remains downloadable by its authorized owner when the upload was
 accepted; committing it ends the upload staging expiry. OCR, formula recalculation and universal format preservation are not
 provided. Text-only legacy references remain text-only until re-uploaded.
+The desktop browser download flow accepts files up to 128 MiB and verifies their
+digest incrementally. Inline image preview is limited to 16 MiB; these browser
+limits do not remove an authorized original from storage.
 Extraction requires the current deployment resource profile to match its
 admission probe. A mismatch reports `runtime_unavailable` and waits for repair
 without dispatch. Extracted text is additionally bounded by the configured
