@@ -48,18 +48,18 @@ The tenant-scoped effect of `firebaseauth.users.get`, applicability of the confi
 
 A Tenant Administrator approves Registration Requests and manages Mappings for its own Tenant, without an Operator. It is not a separate account or grant record. It is an External Identity acting through one of its Mappings, whose subject the Tenant's policy permits to perform these actions:
 
-| Action                 | Resource kind  | Allows                                                                                 |
-| ---------------------- | -------------- | -------------------------------------------------------------------------------------- |
-| `registration.read`    | `registration` | List pending Registration Requests from the bound GCIP Tenant, with Display Attributes |
-| `registration.approve` | `registration` | Approve a request into a new user subject                                              |
-| `registration.reject`  | `registration` | Reject a request                                                                       |
-| `mapping.read`         | `mapping`      | List the Tenant's Mappings, with Display Attributes and Assignable Group memberships   |
-| `mapping.disable`      | `mapping`      | Disable another External Identity's Mapping                                            |
-| `subject.group.update` | `subject`      | Replace a user subject's Assignable Group memberships                                  |
+| Action                 | Resource kind  | Allows                                                                                                         |
+| ---------------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
+| `registration.read`    | `registration` | List pending Registration Requests from the bound GCIP Tenant, with Display Attributes                         |
+| `registration.approve` | `registration` | Approve a request into a new user subject                                                                      |
+| `registration.reject`  | `registration` | Reject a request                                                                                               |
+| `mapping.read`         | `mapping`      | List the Tenant's Mappings with Assignable Group memberships (and, under a Tenant Binding, Display Attributes) |
+| `mapping.disable`      | `mapping`      | Disable another External Identity's Mapping                                                                    |
+| `subject.group.update` | `subject`      | Replace a user subject's Assignable Group memberships                                                          |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 
-Tenant Administrators exist only where a Tenant Binding ties Registration Requests to a Tenant (GCIP). A generic OIDC Registration Request carries no Tenant, so only Operators approve it. Every Tenant Administrator route requires a browser session in a `mapping:<id>` context whose Tenant equals the path Tenant; the Operator bearer token, an Operator context and Subject Credential bearer tokens are rejected with 403. A Tenant Administrator sees only External Identities of the configured issuer's bound GCIP Tenant. It never sees or decides a Registration Request from another GCIP Tenant or a previously configured issuer (404), its Mapping list omits Mappings of such External Identities, and it never reads or changes another Tenant (403).
+A Tenant Administrator exists in any Tenant whose policy permits these actions; it needs no Tenant Binding. A Registration Request reaches a Tenant Administrator only when it is addressed to that Tenant, which today means through a Tenant Binding (GCIP). A generic OIDC Registration Request carries no Tenant, so only Operators approve it, and in a Tenant without a Binding the request list is always empty. Every Tenant Administrator route requires a browser session in a `mapping:<id>` context whose Tenant equals the path Tenant; the Operator bearer token, an Operator context and Subject Credential bearer tokens are rejected with 403. Under a Tenant Binding, a Tenant Administrator sees only External Identities of the configured issuer's bound GCIP Tenant, with their Display Attributes. It never sees or decides a Registration Request from another GCIP Tenant or a previously configured issuer (404), its Mapping list omits Mappings of such External Identities, and it never reads or changes another Tenant (403). Without a Binding it sees only the configured issuer's External Identities already mapped into its Tenant, and never their Display Attributes.
 
 An Operator marks the groups a Tenant Administrator may confer by setting `"assignable": true` on a group in the Tenant's policy bundle. These Assignable Groups are the only authority a Tenant Administrator can grant:
 

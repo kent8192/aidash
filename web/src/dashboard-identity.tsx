@@ -505,8 +505,8 @@ export function TenantIdentityAdministration({
     >
       <Hint>
         {english
-          ? "Approve people from this Tenant's sign-in pool into new user subjects. You can assign only the groups an Operator marked as assignable."
-          : "このテナントのサインインプールから来た人を、新しい user subject として承認します。付与できるのは、Operator が割り当て可能にした group だけです。"}
+          ? "Manage the people mapped into this Tenant. Where the Tenant has its own sign-in pool, approve requests from it into new user subjects. You can assign only groups marked as assignable."
+          : "このテナントに mapping された人を管理します。テナント専用のサインインプールがある場合は、そこからのリクエストを新しい user subject として承認します。付与できるのは、割り当て可能な group だけです。"}
       </Hint>
       {error && <Alert>{error}</Alert>}
       {can("registration.read") && (

@@ -1,4 +1,5 @@
 //! Read adapters preserve the original query trees and the caller's live authority.
+use crate::apps::execution::capabilities::services::sessions;
 use crate::apps::execution::generation::repositories::contracts::RequestAccess;
 use crate::{
 	Result as NativeResult,
@@ -71,6 +72,11 @@ impl LocalRunVisibilityScope for Reads<'_> {
 	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
 		self.access
 			.human_reads(workspace, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool> {
+		sessions::run_area_readable(self.access, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -226,6 +232,11 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 	async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
 		self.access
 			.human_reads(workspace, run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool> {
+		sessions::run_area_readable(self.access, run)
 			.await
 			.map_err(Into::into)
 	}

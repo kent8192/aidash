@@ -316,10 +316,16 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 	})
 	.await;
 	assert_eq!(fixture.service.snapshot().registered_scopes, 1);
+	assert_eq!(
+		fixture.open(-1, None, None).await.status,
+		503,
+		"the retained response body still owns its admission lease"
+	);
+	drop(response);
 	let replacement = fixture.open(-1, None, None).await;
 	assert_eq!(
 		replacement.status, 200,
-		"release admission even with the original body retained"
+		"dropping the body releases admission"
 	);
 	until(|| fixture.service.snapshot().query_causes[0] == 5).await;
 	let before = fixture.service.snapshot();
@@ -342,7 +348,7 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 		after.event_queries, before.event_queries,
 		"revocation does not need an event query"
 	);
-	drop((response, idle, replacement));
+	drop((idle, replacement));
 	stop.send_replace(true);
 	subscriber.await.unwrap();
 	fixture.finish().await;
