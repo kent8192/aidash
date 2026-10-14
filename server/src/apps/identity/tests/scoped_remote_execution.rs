@@ -140,6 +140,9 @@ struct SemanticFixture {
 	reservations: Arc<Mutex<Option<ReservationCheck>>>,
 }
 impl Pair {
+	/// A backstop for a step that keeps serving peer work without finishing;
+	/// the slowest observed step is an order of magnitude shorter.
+	const STEP_CEILING: std::time::Duration = std::time::Duration::from_secs(600);
 	async fn close(mut self) {
 		self.providers.clear();
 		for server in self.servers.drain(..) {
@@ -162,10 +165,14 @@ impl Pair {
 		let worker = Harness {
 			federation: self.b.clone(),
 		};
-		// One step can include several separately bounded peer/provider calls.
-		// Allow their combined duration on loaded CI runners without changing
-		// any production timeout, retry deadline or lease.
-		let progress = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+		// One step can include many separately bounded peer/provider calls: a
+		// single Remote Ordered `worker_once` served 20-59 peer responses in
+		// 8-36s on a loaded host, and coverage instrumentation on hosted
+		// runners stretches that past any fixed wall-clock bound. Bound the
+		// step by served work instead, as `ScopedWorkerProcess::until` does,
+		// without changing any production timeout, retry deadline or lease.
+		let started = std::time::Instant::now();
+		let progress = async {
 			loop {
 				if worker.worker_once().await.unwrap() || self.run().await.phase().is_terminal() {
 					// Reconciliation can finish a generated run before another
@@ -174,12 +181,26 @@ impl Pair {
 				}
 				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 			}
-		})
-		.await;
-		if progress.is_err() {
+		};
+		tokio::pin!(progress);
+		let stalled = loop {
+			tokio::select! {
+				() = &mut progress => break None,
+				() = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+					let idle = self.peers.idle(started);
+					if idle >= ScopedWorkerProcess::STALL {
+						break Some(format!("no peer response for {idle:.1?}"));
+					}
+					if started.elapsed() >= Self::STEP_CEILING {
+						break Some(format!("still running after {:.1?}", started.elapsed()));
+					}
+				}
+			}
+		};
+		if let Some(reason) = stalled {
 			let run = self.run().await;
 			panic!(
-				"scoped step must progress within its bounded retry delay: phase={}, control={}, state={:?}",
+				"scoped step must progress within its bounded retry delay ({reason}): phase={}, control={}, state={:?}",
 				run.phase().as_str(),
 				run.control.as_str(),
 				run.state,
