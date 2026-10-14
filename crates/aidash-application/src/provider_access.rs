@@ -39,21 +39,32 @@ pub enum MaintenancePurpose {
 	MemoryRetrieval,
 }
 /// Where a model-provider call gets its bearer. There is no environment source:
-/// model-provider keys come only from Tenant Provider Credentials (ADR 0006).
+/// model-provider keys come only from Tenant Provider Credentials (ADR 0006),
+/// and plan usage only from the Run owner's Plan Connection (ADR 0007).
 #[derive(Debug, Clone)]
 pub enum Source {
 	/// The configured endpoint is called without a key.
 	Keyless,
 	/// The Tenant's Provider Credential for this Provider Catalog entry.
 	Tenant { provider: String },
+	/// The Plan Connection admission pinned for the Run, owned by the subject
+	/// at the root of its delegation chain. Never a Provider Credential.
+	Plan { provider: String },
 }
 impl Source {
-	pub fn configured(provider: &Option<String>) -> Self {
-		match provider {
-			Some(provider) => Self::Tenant {
+	/// A configuration names at most one grant; validation rejects both.
+	pub fn configured(
+		provider_credential: &Option<String>,
+		plan_connection: &Option<String>,
+	) -> Self {
+		match (provider_credential, plan_connection) {
+			(_, Some(provider)) => Self::Plan {
 				provider: provider.clone(),
 			},
-			None => Self::Keyless,
+			(Some(provider), None) => Self::Tenant {
+				provider: provider.clone(),
+			},
+			(None, None) => Self::Keyless,
 		}
 	}
 }
@@ -68,6 +79,16 @@ pub struct Access {
 #[async_trait]
 pub trait ProviderAccess: Send + Sync {
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
+	/// Reports a rejected plan call so the Run's Plan Connection can be
+	/// refreshed or marked ineligible. Returns `true` when a forced refresh
+	/// produced a new token that the caller may retry with once.
+	async fn plan_rejected(
+		&self,
+		_context: &Context,
+		_disposition: aidash_domain::plan_connections::Disposition,
+	) -> Result<bool> {
+		Ok(false)
+	}
 }
 /// Access without a Provider Credential Store: Keyless endpoints only, limited
 /// to public addresses except the Deployment's permitted private origins.
@@ -107,11 +128,19 @@ impl KeylessAccess {
 #[async_trait]
 impl ProviderAccess for KeylessAccess {
 	async fn resolve(&self, _: &Context, endpoint: &str, source: &Source) -> Result<Access> {
-		let Source::Keyless = source else {
-			return Err(Error::Invalid(
-				"Provider Credential Store is not configured".into(),
-			));
-		};
+		match source {
+			Source::Keyless => {}
+			Source::Tenant { .. } => {
+				return Err(Error::Invalid(
+					"Provider Credential Store is not configured".into(),
+				));
+			}
+			Source::Plan { .. } => {
+				return Err(Error::Plan(
+					aidash_domain::plan_connections::Failure::NotConnected,
+				));
+			}
+		}
 		let destination = {
 			let origins = self.origins.read().expect("Keyless origins lock");
 			aidash_domain::keyless::destination(endpoint, &origins)?
@@ -160,7 +189,7 @@ impl ProviderAccess for TenantAccess {
 		let Source::Tenant { provider } = source else {
 			return self.keyless.resolve(context, endpoint, source).await;
 		};
-		let provider = aidash_domain::provider_credentials::Provider::parse(provider)?;
+		let provider = aidash_domain::provider_credentials::Provider::credential(provider)?;
 		if context.tenant.is_empty()
 			|| (context.run.is_none() && context.maintenance.is_none())
 			|| (context.run.is_some() && context.maintenance.is_some())

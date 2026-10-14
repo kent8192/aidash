@@ -505,6 +505,17 @@ async fn unbind_preserves_revision_and_allows_deleting_the_last_credential() {
 		State::Deleted
 	);
 }
+/// A plan-only Provider Catalog entry has no Provider Credential to bind.
+#[tokio::test]
+async fn bindings_refuse_plan_only_providers() {
+	let (s, repo, _) = service();
+	assert!(
+		s.bind("alpha", Provider::Chatgpt, None, 0, "actor")
+			.await
+			.is_err()
+	);
+	assert!(repo.0.lock().await.bindings.is_empty());
+}
 #[tokio::test]
 async fn reconciler_disables_unpinned_versions_left_by_a_rotation_crash() {
 	let (s, repo, store) = service();

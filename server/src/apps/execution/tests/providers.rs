@@ -27,6 +27,7 @@ fn config(
 		model_id: "vendor/fixture-model".into(),
 		endpoint,
 		provider_credential: None,
+		plan_connection: None,
 		request_timeout_secs: None,
 		streaming: None,
 		stream_stall_timeout_secs: None,
