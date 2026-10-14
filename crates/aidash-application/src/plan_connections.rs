@@ -651,11 +651,13 @@ impl Service {
 		};
 		let recovered = async {
 			let mut scope = self.repository.begin(&owner).await?;
-			match scope
-				.owned(Provider::Chatgpt)
-				.await?
-				.filter(|row| row.id == spent.id)
-			{
+			// Only the state whose token was spent: a reconnect that completed
+			// meanwhile has a newer revision and keeps its fresh grant.
+			match scope.owned(Provider::Chatgpt).await?.filter(|row| {
+				row.id == spent.id
+					&& row.revision == spent.revision
+					&& row.pinned_version == spent.pinned_version
+			}) {
 				Some(row) => self.discard(scope, row, State::NeedsReconnection).await,
 				None => scope.commit().await,
 			}
@@ -731,9 +733,13 @@ impl Service {
 		row.state = state;
 		row.pinned_version = None;
 		row.revision += 1;
+		// Snapshot the discarded versions while the owner's scope still
+		// serializes writers: a reconnect waiting on it pins a new version
+		// in the same resource, which must survive this cleanup.
+		let discarded = self.store.versions(&row.secret_resource).await;
 		scope.save(&row, event, SYSTEM_ACTOR).await?;
 		scope.commit().await?;
-		if let Ok(versions) = self.store.versions(&row.secret_resource).await {
+		if let Ok(versions) = discarded {
 			for version in versions {
 				self.destroy_quietly(&version).await;
 			}

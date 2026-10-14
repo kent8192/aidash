@@ -212,6 +212,8 @@ struct FakeAuthorization {
 	account: StdMutex<String>,
 	/// `/models` rejects the next access token like an early expiry.
 	models_reject: StdMutex<bool>,
+	/// A reconnect that completes while the next revocation is in flight.
+	reconnect_during_revoke: StdMutex<Option<Repo>>,
 	refresh: RefreshMode,
 	revoke_fails: bool,
 	calls: StdMutex<Calls>,
@@ -223,6 +225,7 @@ impl Default for FakeAuthorization {
 			id_token_valid: true,
 			account: StdMutex::new("user-1".into()),
 			models_reject: StdMutex::new(false),
+			reconnect_during_revoke: StdMutex::new(None),
 			refresh: RefreshMode::Ok,
 			revoke_fails: false,
 			calls: StdMutex::new(Calls {
@@ -298,6 +301,13 @@ impl Authorization for FakeAuthorization {
 		}
 	}
 	async fn revoke(&self, _: &str, refresh_token: &SecretString) -> Result<()> {
+		let reconnect = self.reconnect_during_revoke.lock().unwrap().take();
+		if let Some(repo) = reconnect {
+			let mut data = repo.0.lock().await;
+			let row = data.rows.values_mut().next().unwrap();
+			row.revision += 1;
+			row.pinned_version = Some(format!("{}/versions/99", row.secret_resource));
+		}
 		self.calls
 			.lock()
 			.unwrap()
@@ -1034,4 +1044,25 @@ async fn callbacks_from_another_attempt_are_refused() {
 	}
 	assert_eq!(fixture.authorization.calls.lock().unwrap().exchanges, 0);
 	assert_eq!(fixture.store.resources(), 0);
+}
+
+/// A reconnect that completes while an unusable rotation is abandoned keeps
+/// its fresh grant: only the state whose token was spent is discarded.
+#[tokio::test]
+async fn abandoning_a_rotation_preserves_a_concurrent_reconnect() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let id = only_row(&fixture).await.id;
+	fixture.repo.0.lock().await.failing_commits = 1;
+	*fixture
+		.authorization
+		.reconnect_during_revoke
+		.lock()
+		.unwrap() = Some(fixture.repo.clone());
+	assert!(fixture.service.bearer(id).await.is_err());
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::Active);
+	assert_eq!(row.revision, 2);
+	assert!(row.pinned_version.unwrap().ends_with("/versions/99"));
 }

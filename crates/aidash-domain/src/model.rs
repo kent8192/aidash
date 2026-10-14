@@ -321,6 +321,21 @@ impl ModelConfig {
 			"audio/flac",
 			"audio/x-flac",
 		];
+		// Plan usage has no OpenRouter routes; its declared image modality
+		// is the one route, and it never accepts audio.
+		if self.uses_plan_connection() {
+			return if self.modalities.iter().any(|modality| modality == "image") {
+				vec![
+					MEDIA_TYPES
+						.into_iter()
+						.filter(|media_type| media_type.starts_with("image/"))
+						.map(str::to_owned)
+						.collect(),
+				]
+			} else {
+				Vec::new()
+			};
+		}
 		self.current_media_routes()
 			.map(|route| {
 				MEDIA_TYPES
@@ -385,3 +400,6 @@ impl ModelConfig {
 			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
 	}
 }
+
+#[cfg(test)]
+mod tests;
