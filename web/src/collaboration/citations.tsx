@@ -56,19 +56,11 @@ function Citation({
 }) {
   const { locale } = useI18n();
   const copy = citationCopy[locale];
-  const [open, setOpen] = useState(false);
-  const evidence = useQuery({
-    queryKey: ["run-evidence", run, reference],
-    queryFn: () => runEvidence(run, reference),
-    enabled: open,
-    retry: false,
-    staleTime: 60_000,
-  });
-  // Every 404 is the same absence: no permission, no such evidence, or gone.
-  const unavailable =
-    evidence.error instanceof ApiError && evidence.error.status === 404;
+  // Each opening is a separate read, so access lost since the last one is
+  // enforced and evidence from an earlier opening is never shown again.
+  const [opening, setOpening] = useState(0);
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover onOpenChange={(open) => open && setOpening((count) => count + 1)}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -83,18 +75,47 @@ function Citation({
         className="grid max-h-[70vh] w-[min(28rem,calc(100vw-2rem))] gap-2 overflow-auto"
         aria-label={copy.citation(ordinal)}
       >
-        {evidence.isPending && <Loading>{copy.loading}</Loading>}
-        {unavailable && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {copy.unavailable}
-          </p>
-        )}
-        {evidence.isError && !unavailable && (
-          <Alert retry={() => void evidence.refetch()}>{copy.failed}</Alert>
-        )}
-        {evidence.data && <Evidence evidence={evidence.data} />}
+        <CitationRead run={run} reference={reference} opening={opening} />
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** Mounted only while the citation is open; nothing it read outlives it. */
+function CitationRead({
+  run,
+  reference,
+  opening,
+}: {
+  run: string;
+  reference: string;
+  opening: number;
+}) {
+  const { locale } = useI18n();
+  const copy = citationCopy[locale];
+  const evidence = useQuery({
+    queryKey: ["run-evidence", run, reference, opening],
+    queryFn: () => runEvidence(run, reference),
+    retry: false,
+    gcTime: 0,
+  });
+  // Every 404 is the same absence: no permission, no such evidence, or gone.
+  const unavailable =
+    evidence.error instanceof ApiError && evidence.error.status === 404;
+  return (
+    <>
+      {evidence.isPending && <Loading>{copy.loading}</Loading>}
+      {unavailable && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {copy.unavailable}
+        </p>
+      )}
+      {evidence.isError && !unavailable && (
+        <Alert retry={() => void evidence.refetch()}>{copy.failed}</Alert>
+      )}
+      {/* A failed refetch keeps the previous data; never show it then. */}
+      {evidence.isSuccess && <Evidence evidence={evidence.data} />}
+    </>
   );
 }
 

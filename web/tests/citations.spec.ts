@@ -50,10 +50,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     const copy = COPY[locale];
     const { errors } = await setup(page, { citations: true, locale });
     const reads: string[] = [];
+    let revoked = false;
     await page.route("**/api/runs/*/evidence/*", (route) => {
       const path = new URL(route.request().url()).pathname;
       reads.push(path);
-      return path === `/api/runs/run-0/evidence/${CITED}`
+      return !revoked && path === `/api/runs/run-0/evidence/${CITED}`
         ? route.fulfill({ json: EVIDENCE })
         : route.fulfill({
             status: 404,
@@ -102,6 +103,23 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     if (locale === "en-US")
       await page.screenshot({ path: "test-results/citations-popover.png" });
     await page.keyboard.press("Escape");
+
+    // Reopening reads again: access lost since the last opening withholds
+    // the evidence instead of showing the earlier read.
+    revoked = true;
+    await published
+      .getByRole("button", { name: copy.source(1), exact: true })
+      .first()
+      .click();
+    const reopened = page.getByRole("dialog", { name: copy.source(1) });
+    await expect(reopened.getByRole("status")).toHaveText(copy.unavailable);
+    await expect(reopened).not.toContainText(EVIDENCE.text);
+    expect(reads).toEqual([
+      `/api/runs/run-0/evidence/${CITED}`,
+      `/api/runs/run-0/evidence/${CITED}`,
+    ]);
+    await page.keyboard.press("Escape");
+    revoked = false;
 
     // An unavailable source is a quiet state, never an error.
     await published
