@@ -289,16 +289,25 @@ async fn reconcile(
 			}
 		}
 		Some("uncertain") => {
-			operation.state = "uncertain".into();
-			operation.result = json!({"error":observed["error"],"termination_confirmed":observed["termination_confirmed"]});
 			// The runner refuses a successor while this writer is not confirmed
 			// stopped, so a Check must not reopen the Area to one.
 			let held = observed["termination_confirmed"] != true;
+			// A Check exported nothing, so once its writer is proven stopped the
+			// Area is usable again. Cancelling keeps it polled: the runner then
+			// retries the stop proof instead of fencing the Area for good.
+			operation.state = if held && operation.kind == VERIFICATION {
+				"cancelling"
+			} else {
+				"uncertain"
+			}
+			.into();
+			operation.result = json!({"error":observed["error"],"termination_confirmed":observed["termination_confirmed"]});
 			scope
 				.set_area(lost_area_state(&operation.kind, held))
 				.await?;
 		}
-		Some("accepted" | "starting" | "running" | "finishing") => {
+		// `cancelling` is the runner retrying a held writer's stop proof.
+		Some("accepted" | "starting" | "running" | "finishing" | "cancelling") => {
 			if operation.state != "cancelling" {
 				operation.state =
 					if matches!(observed["status"].as_str(), Some("accepted" | "starting")) {

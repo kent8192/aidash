@@ -80,7 +80,11 @@ even `content_changed` Checks pause such a candidate for a review.
 A Check's time is its runtime as the runner measured it, which decides
 `timed_out` and is what the Run's `verification_seconds` spend. A Check whose
 result was lost leaves the Working Area usable, since it never changes the
-files, so `retry` can run it again.
+files, so `retry` can run it again. If the runner cannot yet confirm that the
+lost Check's command stopped, the Area stays unavailable and the Check keeps
+being reconciled as cancelling: the runner retries the stop proof, and once it
+succeeds the Area is usable again. Until then the gate treats the Check as
+still running.
 
 A repair is a `completion_repair_required` event in the Context Journal with the
 Check name, outcome, exit code and diagnostics. The Run goes back to the model,

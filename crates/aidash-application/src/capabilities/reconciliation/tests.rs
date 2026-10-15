@@ -657,7 +657,9 @@ async fn a_lost_completion_check_leaves_the_area_usable(
 }
 /// A lost Check whose writer the runner has not confirmed stopped keeps the
 /// Area fenced: the runner would refuse the next Check while it holds that
-/// writer, so a retry must not be offered an Area it can never run in.
+/// writer, so a retry must not be offered an Area it can never run in. The
+/// Check stays cancelling, so reconciliation keeps asking the runner to prove
+/// the writer stopped instead of leaving the Area fenced for good.
 #[rstest]
 #[case::unconfirmed(json!({"status":"uncertain","error":"sandbox lost","termination_confirmed":false}))]
 #[case::unreported(json!({"status":"uncertain","error":"sandbox lost"}))]
@@ -674,8 +676,65 @@ async fn a_lost_completion_check_with_a_live_writer_keeps_the_area_fenced(
 	}
 	run(&repository).await.unwrap();
 	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "uncertain");
+	assert_eq!(trace.saved[0].state, "cancelling");
+	assert!(trace.saved[0].active(), "the held Check must stay polled");
 	assert!(trace.calls.contains(&"area:uncertain".into()));
 	assert!(!trace.calls.contains(&"area:active".into()));
 	assert!(trace.published.is_empty());
+}
+/// The passes after a held Check: the runner retries the stop proof while it
+/// reports `cancelling`, and once it proves the writer stopped the Area opens
+/// again without publishing anything.
+#[rstest]
+#[tokio::test]
+async fn a_held_completion_check_reopens_the_area_once_its_writer_is_proven_stopped(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = VERIFICATION.into();
+		trace.operation.state = "cancelling".into();
+		trace.health = json!({"instance":"runner"});
+		trace.observed = json!({"status":"cancelling","stdout":"","termination_confirmed":false});
+	}
+	run(&repository).await.unwrap();
+	{
+		let mut trace = repository.0.lock().unwrap();
+		assert!(
+			trace
+				.calls
+				.iter()
+				.any(|call| call.starts_with("request:POST:") && call.ends_with("/cancel"))
+		);
+		assert_eq!(trace.saved[0].state, "cancelling");
+		assert!(!trace.calls.contains(&"area:active".into()));
+		trace.operation = trace.saved[0].clone();
+		trace.saved.clear();
+		trace.calls.clear();
+		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":true,
+			"exit_code":137,"truncated":true,"stdout":"",
+			"error":{"code":"SANDBOX_LOST","message":"Sandbox stopped"}});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "failed");
+	assert_eq!(trace.saved[0].result["error"]["code"], "SANDBOX_LOST");
+	assert!(trace.calls.contains(&"area:active".into()));
+	assert!(trace.published.is_empty());
+}
+/// Only a Check is kept polling: a shell writer may have changed `/work`, so
+/// its lost outcome still fences the Area until a person resolves it.
+#[rstest]
+#[tokio::test]
+async fn a_lost_shell_operation_with_a_live_writer_stays_uncertain(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.health = json!({"instance":"runner"});
+		trace.observed =
+			json!({"status":"uncertain","error":"sandbox lost","termination_confirmed":false});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "uncertain");
+	assert!(trace.calls.contains(&"area:uncertain".into()));
 }
