@@ -15,7 +15,6 @@ use aidash_server::{
 };
 use chrono::{Duration, Utc};
 use common::{TestEnvironment, test_environment};
-use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
 use reinhardt::db::orm::DatabaseConnectionLease;
 use reinhardt::test::fixtures::http_client;
 use serde_json::{Value, json};
@@ -596,13 +595,9 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		Some("COMMIT")
 	);
 	assert!(coordinator::abort(&a.f, manifest.id).await.is_err());
-	let connection = DatabaseConnectionLease::register(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(a.f.store.control_pool.driver().clone()),
-	)))
-	.unwrap();
 	assert!(
 		!coordinator_records::transition(
-			connection.handle(),
+			&a.f.store.control_pool,
 			manifest.id,
 			CoordinatorTransition::Decide(AtomicCoordinatorDecision::Abort),
 			"late conflicting decision",

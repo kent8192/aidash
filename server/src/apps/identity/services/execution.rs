@@ -1062,9 +1062,10 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		request_bytes: i64,
 	) -> aidash_application::Result<()> {
 		let mut access = self.guard.access.write().await;
+		let tenancy = access.tenancy()?;
 		aidash_application::generation::summary::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&crate::bootstrap::generation_summary_repository(&self.f.store),
+			&crate::bootstrap::generation_summary_repository(&self.f.store, tenancy),
 			&self.generation_context(),
 			summarizer,
 			request_bytes,

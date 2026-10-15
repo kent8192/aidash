@@ -1,6 +1,7 @@
 //! Current policy/catalog locks and owned budget transactions implement usage ports.
 use super::settlement::{NativeSettlementScope, counter};
 use crate::store::Store;
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::{
@@ -113,6 +114,8 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 
 pub(crate) struct NativeReservation {
 	pub store: Store,
+	/// The Tenant scope of the requests this repository settles.
+	pub scope: TenancyScope,
 }
 struct Session {
 	transaction: crate::database::native::Transaction,
@@ -124,7 +127,7 @@ impl GenerationReservationRepository for NativeReservation {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationReservationSession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin_unscoped(&self.store.pool).await?,
+			transaction: self.store.pool.begin(&self.scope).await?,
 		}))
 	}
 }

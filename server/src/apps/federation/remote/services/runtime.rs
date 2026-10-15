@@ -168,14 +168,12 @@ impl Federation {
 	}
 
 	pub async fn peers(&self) -> Result<Vec<Peer>> {
-		let lease = self.store.orm_connection()?;
-		PeerRecords::new(lease.handle(), &self.config.node_id)
+		PeerRecords::new(&self.store.pool, &self.config.node_id)
 			.list()
 			.await
 	}
 	pub async fn peer(&self, node: &str) -> Result<Peer> {
-		let lease = self.store.orm_connection()?;
-		PeerRecords::new(lease.handle(), &self.config.node_id)
+		PeerRecords::new(&self.store.pool, &self.config.node_id)
 			.enabled(node)
 			.await
 	}

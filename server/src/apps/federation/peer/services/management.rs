@@ -147,43 +147,46 @@ impl PeerManagement {
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
 		let f = &self.runtime;
 		f.store.require_legacy_agent(&id, &version).await?;
-		let lease = f.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
-				let entry =
-					crate::apps::registry::services::admission::definition(tx, &id, &version)
-						.await?;
-				let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
-					tx,
-					&f.config.node_id,
-					&entry,
-					f.store.provider_credentials.is_some(),
-				)
-				.await?;
-				let snapshot =
-					aidash_domain::registry::bindings::ForeignAgentSnapshot::from_snapshot(
-						snapshot,
-					)?;
-				for definition in &snapshot.definitions {
-					if definition.definition.kind == "agent" {
-						f.store
-							.require_legacy_agent(
-								&definition.identity.id,
-								&definition.identity.version,
+		// A peer previews a legacy agent; it names no Tenant until #241.
+		f.store
+			.pool
+			.atomic(
+				&TenancyScope::Deployment(DeploymentScopeReason::FederationInbound),
+				async |tx| {
+					let entry =
+						crate::apps::registry::services::admission::definition(tx, &id, &version)
+							.await?;
+					let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
+						tx,
+						&f.config.node_id,
+						&entry,
+						f.store.provider_credentials.is_some(),
+					)
+					.await?;
+					let snapshot =
+						aidash_domain::registry::bindings::ForeignAgentSnapshot::from_snapshot(
+							snapshot,
+						)?;
+					for definition in &snapshot.definitions {
+						if definition.definition.kind == "agent" {
+							f.store
+								.require_legacy_agent(
+									&definition.identity.id,
+									&definition.identity.version,
+								)
+								.await?;
+							crate::apps::registry::repositories::bindings::preview_remote(
+								tx,
+								&f.config.node_id,
+								&definition.definition,
+								f.store.provider_credentials.is_some(),
 							)
 							.await?;
-						crate::apps::registry::repositories::bindings::preview_remote(
-							tx,
-							&f.config.node_id,
-							&definition.definition,
-							f.store.provider_credentials.is_some(),
-						)
-						.await?;
+						}
 					}
-				}
-				Ok(snapshot)
-			})
+					Ok(snapshot)
+				},
+			)
 			.await
 	}
 	pub(crate) async fn peer_workspace(
@@ -282,7 +285,7 @@ impl PeerManagement {
 				use crate::apps::identity::repositories::remote_commands::humans::{self, Journal};
 				use reinhardt::db::orm::execution::convert_values;
 				let run_id: Uuid = serde_json::from_value(d["run_id"].clone())?;
-				let mut tx = f.store.database().begin().await?;
+				let mut tx = f.store.pool.begin(&scope).await?.into_executor()?;
 				// Fence ownership and liveness with the same Home task lock as transitions.
 				let (sql, values) = Query::select()
 					.column(Alias::new("id"))
@@ -762,7 +765,7 @@ impl PeerManagement {
 			"event" => {
 				let event_id =
 					crate::registry::digest(&json!({"node":node,"task":task.id,"key":key()?}));
-				let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
+				let mut tx = f.store.pool.begin(&scope).await?;
 				// A deterministic UUID-sized identifier is enough for the inbox key;
 				// the full source namespace is included in the hash.
 				use sha2::{Digest, Sha256};
@@ -853,7 +856,7 @@ impl PeerManagement {
 					crate::database::native::query_scalar(&Query::select()
 						.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM human_requests WHERE id = ? AND run_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 						.to_string(PostgresQueryBuilder))
-				.scalar_one(&f.store.pool)
+				.scalar_one(f.store.pool.in_scope(&scope))
 				.await?
 				};
 				if !valid {

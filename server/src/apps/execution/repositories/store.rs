@@ -303,6 +303,45 @@ impl Store {
 		}
 	}
 
+	/// The scope of a cross-node generation or semantic operation, found from
+	/// the local record it names: this node's execution grant or admission of
+	/// the Run, or the remote grant this node issued.
+	pub(crate) async fn remote_tenancy(
+		&self,
+		admission: Uuid,
+		grant: Uuid,
+	) -> Result<TenancyScope> {
+		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
+		let tenant: Option<String> = self
+			.pool
+			.scoped(&lookup, async |tx| {
+				for (table, column, id) in [
+					("authorization_execution", "run_id", admission),
+					("authorization_remote_admissions", "id", admission),
+					("authorization_remote_grants", "id", grant),
+				] {
+					let tenant = crate::database::native::query_scalar::<String>(
+						&Query::select()
+							.column(Alias::new("tenant"))
+							.from(Alias::new(table))
+							.and_where(Expr::col(Alias::new(column)).eq(Expr::value(id)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_optional(&mut **tx)
+					.await?;
+					if tenant.is_some() {
+						return Ok(tenant);
+					}
+				}
+				Ok(None)
+			})
+			.await?;
+		match tenant {
+			Some(tenant) => Ok(TenancyScope::tenant(&tenant)?),
+			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
+		}
+	}
+
 	/// The scope of a task that a caller names only by id: its Workspace's.
 	pub(crate) async fn task_tenancy(&self, task: Uuid) -> Result<TenancyScope> {
 		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);

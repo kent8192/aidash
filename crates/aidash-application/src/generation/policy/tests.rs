@@ -1,5 +1,6 @@
 use super::*;
 use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::tenancy::TenancyScope;
 use aidash_domain::{capabilities::CoreCapabilities, provider::ToolSpec, registry::EntityRef};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -174,7 +175,8 @@ impl GenerationPolicies for Repository {
 		state.calls.push(format!("ids:{tenant}"));
 		Ok(state.persisted.keys().cloned().collect())
 	}
-	async fn begin(&self, tenant: &str, exclusive: bool) -> Result<Box<dyn PolicySession>> {
+	async fn begin(&self, scope: &TenancyScope, exclusive: bool) -> Result<Box<dyn PolicySession>> {
+		let tenant = scope.tenant_name().expect("a Tenant scope").as_str();
 		let mut state = self.state.lock().unwrap();
 		state.calls.push(format!("begin:{tenant}:{exclusive}"));
 		state.active_scopes += 1;

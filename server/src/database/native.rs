@@ -91,6 +91,21 @@ impl Pool {
 			Some(Box::new(scope.clone())),
 		))
 	}
+	/// Like [`Self::begin`], at the serializable isolation level.
+	pub async fn begin_serializable(&self, scope: &TenancyScope) -> Result<Transaction> {
+		let mut executor = self
+			.connection
+			.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable)
+			.await?;
+		super::scope::enter(executor.as_mut(), scope).await?;
+		Ok(Transaction(
+			Some(executor),
+			self.clone(),
+			Default::default(),
+			0,
+			Some(Box::new(scope.clone())),
+		))
+	}
 	/// Run `work` in a transaction opened in `scope`, committing when it
 	/// succeeds. An error rolls the transaction back.
 	pub async fn scoped<T>(

@@ -13,9 +13,12 @@ pub(crate) async fn reserve(
 	text: &str,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
+	let tenancy = access.tenancy()?;
 	aidash_application::generation::embedding::reserve(
 		&mut crate::bootstrap::generation_embedding_authority_scope(access),
-		Arc::new(crate::bootstrap::generation_embedding_repository(store)),
+		Arc::new(crate::bootstrap::generation_embedding_repository(
+			store, tenancy,
+		)),
 		workspace,
 		config,
 		text,
@@ -34,6 +37,8 @@ pub(crate) async fn reserve_many(
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
 	let mut approved = vec![];
+	// Every lease of one Run belongs to the Run's Tenant.
+	let tenancy = accesses.first().ok_or(crate::Error::Forbidden)?.tenancy()?;
 	for access in accesses {
 		access.resume_inherited().await?;
 		let current = aidash_application::generation::embedding::authorize(
@@ -49,7 +54,9 @@ pub(crate) async fn reserve_many(
 	}
 	aidash_application::generation::embedding::reserve_approved(
 		approved,
-		Arc::new(crate::bootstrap::generation_embedding_repository(store)),
+		Arc::new(crate::bootstrap::generation_embedding_repository(
+			store, tenancy,
+		)),
 		workspace,
 		text,
 		origin,

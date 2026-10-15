@@ -104,8 +104,14 @@ pub(crate) struct Repository {
 #[async_trait]
 impl AdmissionRepository for Repository {
 	async fn begin(&self) -> Result<Box<dyn OwnedAdmissionScope>> {
-		let db = self.runtime.store.control_pool.connection();
-		let tx = db.begin().await.map_err(Error::from)?;
+		// Cross-node transaction admission records are Deployment-wide.
+		let tx = self
+			.runtime
+			.store
+			.control_pool
+			.begin(&aidash_application::tenancy::TenancyScope::NoTenant)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		Ok(Box::new(Owned {
 			runtime: self.runtime.clone(),
 			tx,

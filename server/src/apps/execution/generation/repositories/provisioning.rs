@@ -5,6 +5,7 @@ use crate::{
 	authorization::{Authorization, access::Access, catalog, execution, identity::SubjectIdentity},
 	federation::Federation,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	authorization::Snapshot,
 	ports::generation::{
@@ -86,8 +87,12 @@ impl GenerationProvisioning for NativeProvisioning {
 		&self,
 		job: &Request,
 	) -> aidash_application::Result<Box<dyn GenerationTerminalSession>> {
-		let mut transaction =
-			crate::database::native::begin_unscoped(&self.runtime.store.pool).await?;
+		let mut transaction = self
+			.runtime
+			.store
+			.pool
+			.begin(&TenancyScope::tenant(&job.tenant)?)
+			.await?;
 		Authorization::load_with_mode(&mut transaction, &job.tenant, true).await?;
 		Ok(Box::new(Terminal {
 			runtime: self.runtime.clone(),
@@ -109,7 +114,7 @@ impl GenerationProvisionRead for Read {
 	async fn jobs(&mut self) -> aidash_application::Result<Vec<Request>> {
 		let f = &self.runtime;
 		let jobs:Vec<Request>=crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::table_asterisk("g")))).from_as(reinhardt::query::Alias::new("generation_requests"), reinhardt::query::Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r")), reinhardt::query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(reinhardt::query::Expr::cust("g.home_node='' AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("created_at")))), reinhardt::query::Order::Asc).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col((reinhardt::query::Alias::new("g"), reinhardt::query::Alias::new("id")))), reinhardt::query::Order::Asc).limit(32).to_string(reinhardt::query::PostgresQueryBuilder))
-        .fetch_all(&f.store.pool).await?;
+        .fetch_all(f.store.pool.in_scope(&TenancyScope::Deployment(DeploymentScopeReason::GenerationReconcile))).await?;
 		Ok(jobs)
 	}
 	fn notify(&self) {

@@ -221,7 +221,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	assert!(coordinator::abort(&a.f, manifest.id).await.is_err());
 	assert!(
 		!coordinator_records::transition(
-			a.database.lease.handle(),
+			&a.f.store.control_pool,
 			manifest.id,
 			CoordinatorTransition::Decide(AtomicCoordinatorDecision::Abort),
 			"late conflicting decision"

@@ -1,4 +1,5 @@
 //! Lifecycle decisions and retirement are shared by HTTP and recovery callers.
+use crate::tenancy::TenancyScope;
 use crate::{
 	Error, Result,
 	ports::generation::lifecycle::{GenerationControls, GenerationLifecycleScope},
@@ -27,7 +28,7 @@ pub async fn control(
 		Principal::Operator => "operator",
 		Principal::Subject { subject, .. } => subject,
 	};
-	let mut scope = repository.begin(tenant).await?;
+	let mut scope = repository.begin(&TenancyScope::tenant(tenant)?).await?;
 	let result = async {
 		if matches!(principal, Principal::Operator) {
 			scope.authority(tenant).await?;

@@ -1,5 +1,6 @@
 //! Stable ancestor lookup and atomic compaction updates retain their original Query trees.
 use crate::{apps::identity::repositories::catalog::NativeCatalog, store::Store};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::{
@@ -99,6 +100,8 @@ impl GenerationLive for NativeCompactionAuthority<'_> {
 }
 pub(crate) struct NativeCompactionRepository {
 	pub store: Store,
+	/// The Tenant scope of the requests this repository settles.
+	pub scope: TenancyScope,
 }
 struct Session {
 	transaction: crate::database::native::Transaction,
@@ -110,7 +113,7 @@ impl GenerationCompactionRepository for NativeCompactionRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationCompactionSession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin_unscoped(&self.store.pool).await?,
+			transaction: self.store.pool.begin(&self.scope).await?,
 		}))
 	}
 }

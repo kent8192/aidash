@@ -89,9 +89,10 @@ struct Lease {
 #[async_trait]
 impl GenerationProtocolReservation for ReservationLease {
 	async fn reserve(&mut self, usage: &Usage) -> Result<Vec<Reserved>> {
+		let tenancy = self.access.tenancy()?;
 		aidash_application::generation::reservation::reserve(
 			&mut crate::bootstrap::generation_usage_authority_scope(&mut self.access),
-			&crate::bootstrap::generation_reservation_repository(&self.store),
+			&crate::bootstrap::generation_reservation_repository(&self.store, tenancy),
 			usage,
 		)
 		.await

@@ -1,4 +1,5 @@
 //! Policy admission and atomic history share the current caller authority.
+use crate::tenancy::TenancyScope;
 use crate::{
 	Error, Result,
 	ports::generation::policy::{GenerationPolicies, PolicySession},
@@ -38,7 +39,9 @@ pub async fn set(
 ) -> Result<Policy> {
 	same_tenant(repository.principal(), tenant)?;
 	let actor = actor(repository.principal()).to_owned();
-	let mut scope = repository.begin(tenant, true).await?;
+	let mut scope = repository
+		.begin(&TenancyScope::tenant(tenant)?, true)
+		.await?;
 	let result = async {
 		if matches!(repository.principal(), Principal::Subject { .. })
 			&& !scope.decide(id, "generation.manage").await?
@@ -64,7 +67,9 @@ pub async fn list(repository: &dyn GenerationPolicies, tenant: &str) -> Result<V
 	// Preserve the original ID discovery before establishing the read lease.
 	let ids = repository.ids(tenant).await?;
 	same_tenant(repository.principal(), tenant)?;
-	let mut scope = repository.begin(tenant, false).await?;
+	let mut scope = repository
+		.begin(&TenancyScope::tenant(tenant)?, false)
+		.await?;
 	let result = async {
 		let mut result = vec![];
 		for id in ids {
