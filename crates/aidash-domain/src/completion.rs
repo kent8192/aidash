@@ -281,27 +281,28 @@ pub struct PendingCheck {
 impl PendingCheck {
 	/// Record the finished operation. A Check that ran for its whole timeout
 	/// without passing timed out. The runner's measure of the command's
-	/// runtime decides that and is what the Run spends: the time until the
-	/// harness harvested the result also counts its polling and any worker
-	/// downtime, so it is only the fallback when the runner reported none.
+	/// runtime decides that, in milliseconds, and the Run spends it with every
+	/// started second charged whole: the time until the harness harvested the
+	/// result also counts its polling and any worker downtime, so it is only
+	/// the fallback when the runner reported none.
 	pub fn finish(
 		self,
 		passed: bool,
 		exit_code: Option<i64>,
 		diagnostics: &str,
-		runtime_seconds: Option<u64>,
+		runtime_millis: Option<u64>,
 		now: DateTime<Utc>,
 	) -> VerificationEvidence {
-		let seconds = runtime_seconds.unwrap_or_else(|| self.unmeasured(now));
+		let millis = runtime_millis.unwrap_or_else(|| self.unmeasured_millis(now));
 		let outcome = if passed {
 			CheckOutcome::Passed
-		} else if seconds >= self.timeout_seconds {
+		} else if millis >= self.timeout_seconds.saturating_mul(1000) {
 			CheckOutcome::TimedOut
 		} else {
 			CheckOutcome::Failed
 		};
 		VerificationEvidence {
-			seconds,
+			seconds: millis.div_ceil(1000),
 			..self.evidence(outcome, exit_code, diagnostics, now)
 		}
 	}
@@ -314,7 +315,12 @@ impl PendingCheck {
 	/// effective timeout, so polling and worker downtime after that are not
 	/// charged as Check time.
 	fn unmeasured(&self, now: DateTime<Utc>) -> u64 {
-		charged(self.started_at, now).min(self.timeout_seconds)
+		self.unmeasured_millis(now).div_ceil(1000)
+	}
+	fn unmeasured_millis(&self, now: DateTime<Utc>) -> u64 {
+		u64::try_from((now - self.started_at).num_milliseconds())
+			.unwrap_or(0)
+			.min(self.timeout_seconds.saturating_mul(1000))
 	}
 	fn evidence(
 		self,
@@ -369,10 +375,12 @@ fn elapsed(from: DateTime<Utc>, to: DateTime<Utc>) -> u64 {
 	u64::try_from((to - from).num_seconds()).unwrap_or(0)
 }
 
-/// Whole seconds from `from` to `to`, rounded up so a sub-second span still
-/// spends verification time.
-fn charged(from: DateTime<Utc>, to: DateTime<Utc>) -> u64 {
-	u64::try_from((to - from).num_milliseconds()).map_or(0, |millis| millis.div_ceil(1000))
+/// The timeout of a Check that sets none: what an omitted shell argument
+/// gets, the shell Binding's `timeout_seconds` ceiling or else the node
+/// default. A Check's own timeout above that ceiling is left for the
+/// Binding's narrowing to refuse, like the model's shell calls.
+pub fn check_timeout(own: Option<u64>, binding_ceiling: Option<u64>, node_default: u64) -> u64 {
+	own.or(binding_ceiling).unwrap_or(node_default)
 }
 
 /// The end of `text`, at most `limit` bytes, cut at a character boundary.
@@ -640,6 +648,13 @@ pub fn decide<'a>(
 			None => return Decision::Start { check, subject },
 			Some(evidence) => match evidence.outcome {
 				CheckOutcome::Passed => {}
+				// A repaired candidate needs this Check again, and no
+				// verification time is left to run it.
+				CheckOutcome::Failed | CheckOutcome::TimedOut
+					if progress.seconds >= policy.verification_seconds() =>
+				{
+					return Decision::Review(ReviewReason::TimeExhausted);
+				}
 				CheckOutcome::Failed | CheckOutcome::TimedOut
 					if progress.repairs < policy.repair_allowance() =>
 				{

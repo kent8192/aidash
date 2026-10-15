@@ -63,7 +63,7 @@ pub async fn result(
 		error: aidash_domain::capabilities::errors::CapabilityError::stored(
 			&operation.result["error"],
 		),
-		runtime_seconds: operation.result["runtime_seconds"].as_u64(),
+		runtime_millis: operation.result["runtime_millis"].as_u64(),
 	})
 }
 #[cfg(test)]

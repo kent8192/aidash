@@ -585,12 +585,21 @@ impl completion::CompletionChecks for Environment<'_> {
 	) -> Result<completion::CheckStart> {
 		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
 		let store = &self.federation.store;
-		// The Check's own timeout or the node default, never longer than the
-		// Run's remaining verification time.
-		let timeout_seconds = request
-			.timeout_seconds
-			.unwrap_or(store.capabilities.0.operation_seconds)
-			.min(request.remaining_seconds);
+		// The Check's own timeout, or what an omitted shell argument gets:
+		// the shell Binding's ceiling, else the node default. Never longer
+		// than the Run's remaining verification time.
+		let ceiling = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.and_then(|snapshot| snapshot.operation(aidash_domain::completion::SHELL).ok())
+			.and_then(|binding| binding.narrow.limits.get("timeout_seconds").copied());
+		let timeout_seconds = aidash_domain::completion::check_timeout(
+			request.timeout_seconds,
+			ceiling,
+			store.capabilities.0.operation_seconds,
+		)
+		.min(request.remaining_seconds);
 		let input = serde_json::json!({
 			"idempotency_key": request.key,
 			"command": request.command,

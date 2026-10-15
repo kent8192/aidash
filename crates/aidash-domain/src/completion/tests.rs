@@ -341,6 +341,26 @@ fn refusals_that_need_a_person_pause_for_review() {
 		decide(&policy, &spent, &candidate),
 		Decision::Review(ReviewReason::TimeExhausted)
 	);
+	// A failure that spent the last of the time is not sent for repair: the
+	// repaired candidate could never run its Check.
+	let mut last = spent;
+	last.record(evidence(&subject, CheckOutcome::Failed));
+	assert_eq!(
+		decide(&policy, &last, &candidate),
+		Decision::Review(ReviewReason::TimeExhausted)
+	);
+}
+
+#[rstest]
+#[case::own(Some(45), Some(30), 45)]
+#[case::binding_ceiling(None, Some(30), 30)]
+#[case::node_default(None, None, 120)]
+fn an_omitted_check_timeout_is_what_an_omitted_shell_argument_gets(
+	#[case] own: Option<u64>,
+	#[case] ceiling: Option<u64>,
+	#[case] expected: u64,
+) {
+	assert_eq!(check_timeout(own, ceiling, 120), expected);
 }
 
 #[rstest]
@@ -421,9 +441,25 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		timeout_seconds: 3,
 		..pending.clone()
 	}
-	.finish(false, Some(1), "failed", Some(1), at(5));
+	.finish(false, Some(1), "failed", Some(1000), at(5));
 	assert_eq!((quick.outcome, quick.seconds), (CheckOutcome::Failed, 1));
-	let killed = pending.clone().finish(false, None, "", Some(60), at(900));
+	// Classification uses the exact runtime; only the charge is rounded up.
+	let short = PendingCheck {
+		timeout_seconds: 1,
+		..pending.clone()
+	};
+	let early = short
+		.clone()
+		.finish(false, Some(1), "failed", Some(200), at(5));
+	assert_eq!((early.outcome, early.seconds), (CheckOutcome::Failed, 1));
+	let expired = short.finish(false, None, "", Some(1000), at(5));
+	assert_eq!(
+		(expired.outcome, expired.seconds),
+		(CheckOutcome::TimedOut, 1)
+	);
+	let killed = pending
+		.clone()
+		.finish(false, None, "", Some(60_000), at(900));
 	assert_eq!(
 		(killed.outcome, killed.seconds),
 		(CheckOutcome::TimedOut, 60)

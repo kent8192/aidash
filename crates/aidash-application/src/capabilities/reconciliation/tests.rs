@@ -576,21 +576,21 @@ async fn a_completion_check_dispatches_the_verify_kind_under_shell_authority(
 	assert_eq!(trace.bodies[0]["code"], "echo fixture");
 	assert!(trace.commit);
 }
-/// The runner's runtime is charged in whole seconds, rounded up, so a Check
-/// that fails in under a second still spends verification time. It ends when
-/// the runner saw the command stop; harvesting its output is not charged.
+/// The runner's runtime is kept in milliseconds, so a Check that fails in
+/// under a second still spends verification time. It ends when the runner saw
+/// the command stop; harvesting its output is not charged.
 #[rstest]
-#[case::fractional(1000.25, None, 1004.75, 5)]
-#[case::sub_second(1000.0, None, 1000.4, 1)]
+#[case::fractional(1000.25, None, 1004.75, 4500)]
+#[case::sub_second(1000.0, None, 1000.4, 400)]
 #[case::instant(1000.0, None, 1000.0, 0)]
-#[case::slow_harvest(1000.0, Some(1000.4), 1045.0, 1)]
+#[case::slow_harvest(1000.0, Some(1000.4), 1045.0, 400)]
 #[tokio::test]
 async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	repository: Repository,
 	#[case] started_at: f64,
 	#[case] terminated_at: Option<f64>,
 	#[case] finished_at: f64,
-	#[case] runtime_seconds: u64,
+	#[case] runtime_millis: u64,
 ) {
 	let output = format!("{}test result: FAILED", "x".repeat(MAX_DIAGNOSTIC_BYTES));
 	{
@@ -619,7 +619,7 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	assert_eq!(saved.revision, 7, "a Check never changes the Area revision");
 	assert_eq!(saved.result["exit_code"], 101);
 	assert_eq!(
-		saved.result["runtime_seconds"], runtime_seconds,
+		saved.result["runtime_millis"], runtime_millis,
 		"the runner's own runtime"
 	);
 	let preview = saved.result["preview"].as_str().unwrap();

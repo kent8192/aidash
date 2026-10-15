@@ -116,13 +116,13 @@ impl CompletionChecks for FakeChecks {
 				passed: true,
 				exit_code: Some(0),
 				diagnostics: "test result: ok".into(),
-				runtime_seconds: Some(1),
+				runtime_millis: Some(1000),
 			},
 			Outcome::Fail(output) => CheckStatus::Finished {
 				passed: false,
 				exit_code: Some(101),
 				diagnostics: (*output).into(),
-				runtime_seconds: Some(1),
+				runtime_millis: Some(1000),
 			},
 			Outcome::Lost => CheckStatus::Unavailable("runner lost the operation".into()),
 		})

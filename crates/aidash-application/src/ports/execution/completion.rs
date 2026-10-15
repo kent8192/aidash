@@ -60,9 +60,9 @@ pub enum CheckStatus {
 		exit_code: Option<i64>,
 		/// Tail of the Check's output.
 		diagnostics: String,
-		/// How long the command ran, as the runner measured it; `None` when
-		/// the runner did not report it.
-		runtime_seconds: Option<u64>,
+		/// How long the command ran, in milliseconds, as the runner measured
+		/// it; `None` when the runner did not report it.
+		runtime_millis: Option<u64>,
 	},
 	/// The operation's outcome is unknown or was lost.
 	Unavailable(String),
@@ -106,7 +106,7 @@ impl CheckStatus {
 						output
 					}
 					.to_owned(),
-					runtime_seconds: result["runtime_seconds"].as_u64(),
+					runtime_millis: result["runtime_millis"].as_u64(),
 				}
 			}
 			"cancelled" => Self::Unavailable("the Check was cancelled".into()),

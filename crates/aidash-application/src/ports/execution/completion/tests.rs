@@ -15,14 +15,14 @@ fn finished_checks_pass_only_on_a_confirmed_zero_exit(
 		passed,
 		exit_code,
 		diagnostics,
-		runtime_seconds,
+		runtime_millis,
 	} = CheckStatus::of(&result)
 	else {
 		panic!("expected a finished Check");
 	};
 	assert_eq!(Some((passed, exit_code)), expected);
 	assert_eq!(diagnostics, result["output"].as_str().unwrap());
-	assert_eq!(runtime_seconds, None);
+	assert_eq!(runtime_millis, None);
 }
 
 /// A silent nonzero exit stores the runner's execution log as its error, which
@@ -33,19 +33,19 @@ fn finished_checks_pass_only_on_a_confirmed_zero_exit(
 #[case::log_word(json!({"code":"FAILED","message":"FAILED: 2 tests","retryable":false}))]
 fn a_silent_failure_is_finished_with_its_log(#[case] error: serde_json::Value) {
 	let result = json!({"status":"failed","termination_confirmed":true,"exit_code":1,
-		"output":"","error":error,"runtime_seconds":1});
+		"output":"","error":error,"runtime_millis":1500});
 	let CheckStatus::Finished {
 		passed,
 		exit_code,
 		diagnostics,
-		runtime_seconds,
+		runtime_millis,
 	} = CheckStatus::of(&result)
 	else {
 		panic!("expected a finished Check");
 	};
 	assert_eq!((passed, exit_code), (false, Some(1)));
 	assert_eq!(diagnostics, error["message"].as_str().unwrap());
-	assert_eq!(runtime_seconds, Some(1));
+	assert_eq!(runtime_millis, Some(1500));
 }
 
 #[rstest]

@@ -171,8 +171,8 @@ async fn reconcile(
 				// The runner's own measure of the command, unlike the time until
 				// the Completion Gate harvests this result: it ends when the
 				// runner saw the command stop, before it collected the output.
-				// A started second is charged whole, so sub-second Checks still
-				// spend the Run's verification time.
+				// Milliseconds keep a sub-second Check's runtime, so the gate can
+				// both charge it and tell a quick failure from a timeout.
 				if let (Some(started), Some(finished)) = (
 					observed["started_at"].as_f64(),
 					observed["terminated_at"]
@@ -180,7 +180,8 @@ async fn reconcile(
 						.or_else(|| observed["finished_at"].as_f64()),
 				) && finished >= started
 				{
-					operation.result["runtime_seconds"] = json!((finished - started).ceil() as u64);
+					operation.result["runtime_millis"] =
+						json!(((finished - started) * 1000.0).ceil() as u64);
 				}
 				scope.persist(&operation).await?;
 				return scope
