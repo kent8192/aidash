@@ -11,6 +11,7 @@ use crate::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// The longest reason a revocation records, in characters.
@@ -83,12 +84,15 @@ pub fn carries_research(event: &ContextEvent) -> bool {
 }
 
 /// Replace every research result in `history` with the revoked placeholder,
-/// keeping each call so its `tool_call_id` still pairs. Returns whether
-/// anything was replaced.
-pub fn redact(history: &mut [HistoryEntry]) -> bool {
+/// keeping each call so its `tool_call_id` still pairs. `originals` names the
+/// entries whose original, as journaled, is a research result although the
+/// projection no longer shows its envelope, such as a result compaction cut
+/// to a string. Returns whether anything was replaced.
+pub fn redact(history: &mut [HistoryEntry], originals: &BTreeSet<u64>) -> bool {
 	let mut redacted = false;
 	for entry in history {
-		if carries_research(&entry.event)
+		if (carries_research(&entry.event) || originals.contains(&entry.seq))
+			&& !matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_revoked_result(result))
 			&& let ContextEvent::Tool { call, result } = &mut entry.event
 		{
 			*result = ContextEvent::revoked_result(&call.id);

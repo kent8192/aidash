@@ -1,7 +1,7 @@
 //! A Tenant's Retention Rules (ADR 0045). The Deployment's periods are also
 //! the longest a Tenant may keep; a Tenant may store shorter ones.
 use crate::{Error, Result, ports::retention::RetentionRepository};
-use aidash_domain::retention::{self, Decider, RetentionRules};
+use aidash_domain::retention::{self, Decider, RetentionChange, RetentionRules};
 use serde::Serialize;
 
 /// The periods that apply to one Tenant and where they come from.
@@ -44,7 +44,28 @@ pub async fn rules(repository: &dyn RetentionRepository, tenant: &str) -> Result
 		Ok(TenantRetention::of(tenant, scope.deployment(), stored))
 	}
 	.await;
-	scope.finish(false).await?;
+	scope.finish(result.is_ok()).await?;
+	result
+}
+
+/// The history of `tenant`'s periods, newest first, for those who may change
+/// them: a subject permitted `retention.update`, or a Deployment Administrator.
+pub async fn history(
+	repository: &dyn RetentionRepository,
+	tenant: &str,
+	offset: u64,
+	limit: u32,
+) -> Result<Vec<RetentionChange>> {
+	let mut scope = repository.begin().await?;
+	let result = async {
+		own_tenant(&scope.decider(), tenant)?;
+		scope.require(tenant, retention::UPDATE).await?;
+		scope
+			.history(tenant, offset, limit.clamp(1, retention::MAX_PAGE))
+			.await
+	}
+	.await;
+	scope.finish(result.is_ok()).await?;
 	result
 }
 

@@ -394,3 +394,47 @@ async fn a_summary_that_absorbed_revoked_research_is_discarded_without_pausing(
 			|| matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_revoked_result(result))
 	}));
 }
+
+fn cut(head: &str) -> Value {
+	json!(format!(
+		"{head}\n[fast-jev-compaction truncated 2000 chars of this tool result; full result remains in the execution journal]"
+	))
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_research_result_compaction_cut_to_a_string_is_redacted_from_its_journaled_original(
+	fixture: Fixture,
+) {
+	let mut fixture = thinking(fixture);
+	revoke(&mut fixture);
+	let originals = [
+		("call-page", research_result("a revoked passage")),
+		("call-note", json!("a workspace note")),
+	];
+	for (id, original) in originals {
+		let head = format!("{{\"data\":{original}");
+		fixture.run.context.push(ContextEvent::tool(
+			call(id, "renamed", json!({})),
+			cut(&head),
+		));
+		let seq = fixture.run.context.history.last().unwrap().seq;
+		fixture.backend.0.journal.lock().unwrap().push((
+			fixture.run.id,
+			aidash_domain::context::HistoryEntry {
+				seq,
+				event: ContextEvent::tool(call(id, "renamed", json!({})), original),
+			},
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	let _ = advance_sources(&mut fixture).await;
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked passage"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	// A cut result whose original was no research result is kept.
+	assert!(request.contains("a workspace note"), "{request}");
+}

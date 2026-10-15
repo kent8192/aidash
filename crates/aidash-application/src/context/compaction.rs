@@ -367,6 +367,18 @@ fn batches<'a>(
 	Ok(batches)
 }
 
+/// How fast compaction marks a tool result it cut to its head.
+const TRUNCATION_MARK: &str = "[fast-jev-compaction truncated ";
+
+/// Whether fast compaction cut `result` to its head. Such a result is a string
+/// whatever its original shape; the Context Journal keeps the original.
+pub fn truncated_result(result: &Value) -> bool {
+	result.as_str().is_some_and(|text| {
+		text.contains(TRUNCATION_MARK)
+			&& text.ends_with("full result remains in the execution journal]")
+	})
+}
+
 pub(super) async fn prune(
 	history: &[HistoryEntry],
 	current: &Value,
@@ -480,7 +492,7 @@ pub(super) async fn prune(
 					return Err(Error::Invalid("invalid compaction target".into()));
 				};
 				*result = json!(format!(
-					"{}[fast-jev-compaction truncated {} chars of this tool result; full result remains in the execution journal]",
+					"{}{TRUNCATION_MARK}{} chars of this tool result; full result remains in the execution journal]",
 					if head.is_empty() {
 						head
 					} else {

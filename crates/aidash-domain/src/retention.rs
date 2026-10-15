@@ -141,5 +141,19 @@ impl RetentionRules {
 	}
 }
 
+/// One change of a Tenant's periods, as kept in its history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RetentionChange {
+	/// The periods stored from then on; none when they were cleared and the
+	/// Deployment's periods applied again.
+	pub rules: Option<RetentionRules>,
+	pub changed_at: DateTime<Utc>,
+	/// The recorded [`Decider`].
+	pub changed_by: String,
+}
+
+/// The most history entries or records one page returns.
+pub const MAX_PAGE: u32 = 200;
+
 #[cfg(test)]
 mod tests;

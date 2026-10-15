@@ -1,5 +1,6 @@
 use super::*;
 use rstest::rstest;
+use std::collections::BTreeSet;
 
 #[rstest]
 #[case(
@@ -60,13 +61,18 @@ fn redaction_replaces_every_research_result_whatever_its_tool_alias() {
 	let page = super::super::envelope(Operation::Fetch, "ok", json!({"text": "secret"}), false);
 	let failed = super::super::failure(Operation::Search, Failure::SnapshotLimit);
 	let other = json!({"status": "ok", "data": {"text": "workspace note"}});
+	let cut = json!("{\"data\":{\"text\":\"sec[fast-jev-compaction truncated 9 chars]");
 	let mut history = vec![
 		tool(1, "read", page),
 		tool(2, "search", failed),
 		tool(3, "note", other.clone()),
+		tool(4, "cut", cut),
 	];
-	assert!(redact(&mut history));
-	for (entry, id) in history.iter().zip(["read", "search"]) {
+	assert!(redact(&mut history, &BTreeSet::from([4])));
+	for (entry, id) in history.iter().zip(["read", "search", "note", "cut"]) {
+		if id == "note" {
+			continue;
+		}
 		let ContextEvent::Tool { result, .. } = &entry.event else {
 			unreachable!()
 		};
@@ -77,5 +83,8 @@ fn redaction_replaces_every_research_result_whatever_its_tool_alias() {
 		unreachable!()
 	};
 	assert_eq!(result, &other);
-	assert!(!redact(&mut history), "a second pass changes nothing");
+	assert!(
+		!redact(&mut history, &BTreeSet::from([4])),
+		"a second pass changes nothing"
+	);
 }

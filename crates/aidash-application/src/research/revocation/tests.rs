@@ -63,10 +63,52 @@ impl RevocationScope for Scope<'_> {
 	}
 }
 
+struct Records<'a>(&'a Runs);
+
+#[async_trait]
+impl crate::ports::research::RevocationRecordScope for Records<'_> {
+	fn decider(&self) -> Decider {
+		self.0.decider.clone()
+	}
+	async fn require(&mut self, _: &str, action: &str) -> Result<()> {
+		assert_eq!(action, "research.revoke");
+		match (&self.0.decider, self.0.permitted) {
+			(Decider::DeploymentAdministrator { .. }, _) | (_, true) => Ok(()),
+			_ => Err(Error::Forbidden),
+		}
+	}
+	async fn records(
+		&mut self,
+		tenant: &str,
+		offset: u64,
+		limit: u32,
+	) -> Result<Vec<EvidenceRevocation>> {
+		Ok(self
+			.0
+			.recorded
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|record| record.tenant.as_deref() == Some(tenant))
+			.skip(offset as usize)
+			.take(limit as usize)
+			.cloned()
+			.collect())
+	}
+	async fn finish(self: Box<Self>, _: bool) -> Result<()> {
+		Ok(())
+	}
+}
+
 #[async_trait]
 impl RevocationRepository for Runs {
 	async fn begin(&self) -> Result<Box<dyn crate::ports::research::RevocationScope + '_>> {
 		Ok(Box::new(Scope(self)))
+	}
+	async fn begin_records(
+		&self,
+	) -> Result<Box<dyn crate::ports::research::RevocationRecordScope + '_>> {
+		Ok(Box::new(Records(self)))
 	}
 	fn notify(&self) {
 		self.notified.store(true, Ordering::SeqCst);
@@ -141,4 +183,30 @@ async fn a_reason_is_required_before_anything_is_opened() {
 		Err(Error::Domain(_))
 	));
 	assert!(!runs.notified.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn revocation_records_are_read_by_revokers_and_deployment_administrators() {
+	let runs = Runs::new(subject(), true);
+	revoke(&runs, runs.run, "removal request", Utc::now())
+		.await
+		.unwrap();
+	assert_eq!(records(&runs, "acme", 0, 50).await.unwrap().len(), 1);
+	assert!(matches!(
+		records(&runs, "other", 0, 50).await,
+		Err(Error::Forbidden)
+	));
+
+	let reader = Runs::new(subject(), false);
+	assert!(matches!(
+		records(&reader, "acme", 0, 50).await,
+		Err(Error::Forbidden)
+	));
+	let administrator = Runs::new(Decider::DeploymentAdministrator { identity: None }, false);
+	assert!(
+		records(&administrator, "other", 0, 50)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 }

@@ -2,7 +2,7 @@
 use crate::{Error, Result, ports::research::RevocationRepository};
 use aidash_domain::{
 	research::revocation::{self, EvidenceRevocation, REVOKE, Removed},
-	retention::Decider,
+	retention::{self, Decider},
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -45,6 +45,31 @@ pub async fn revoke(
 	let revoked = scope.finish(result).await?;
 	repository.notify();
 	Ok(revoked)
+}
+
+/// The revocation records of `tenant`, newest first, for a subject of that
+/// Tenant permitted `research.revoke` or a Deployment Administrator.
+pub async fn records(
+	repository: &dyn RevocationRepository,
+	tenant: &str,
+	offset: u64,
+	limit: u32,
+) -> Result<Vec<EvidenceRevocation>> {
+	let mut scope = repository.begin_records().await?;
+	let result = async {
+		if let Decider::Subject { tenant: own, .. } = scope.decider()
+			&& own != tenant
+		{
+			return Err(Error::Forbidden);
+		}
+		scope.require(tenant, REVOKE).await?;
+		scope
+			.records(tenant, offset, limit.clamp(1, retention::MAX_PAGE))
+			.await
+	}
+	.await;
+	scope.finish(result.is_ok()).await?;
+	result
 }
 
 #[cfg(test)]

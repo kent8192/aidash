@@ -57,6 +57,29 @@ impl RetentionScope for Scope<'_> {
 			.push((tenant.into(), rules.copied(), decider.recorded()));
 		Ok(())
 	}
+	async fn history(
+		&mut self,
+		tenant: &str,
+		offset: u64,
+		limit: u32,
+	) -> Result<Vec<RetentionChange>> {
+		Ok(self
+			.tenants
+			.history
+			.lock()
+			.unwrap()
+			.iter()
+			.rev()
+			.filter(|(owner, ..)| owner == tenant)
+			.skip(offset as usize)
+			.take(limit as usize)
+			.map(|(_, rules, decider)| RetentionChange {
+				rules: *rules,
+				changed_at: chrono::DateTime::UNIX_EPOCH,
+				changed_by: decider.clone(),
+			})
+			.collect())
+	}
 	async fn finish(self: Box<Self>, committed: bool) -> Result<()> {
 		if committed {
 			for (tenant, rules, decider) in self.pending {
@@ -163,4 +186,37 @@ async fn a_subject_changes_only_its_own_tenant_and_only_when_permitted() {
 		rules(&unpermitted, "acme").await.unwrap().effective,
 		RetentionRules::DEFAULT
 	);
+}
+
+#[tokio::test]
+async fn history_is_newest_first_and_only_for_those_who_may_change_the_periods() {
+	let tenants = Tenants::new(subject("acme"), true);
+	let shorter = RetentionRules {
+		document_snapshots: SnapshotPeriods {
+			after_run_seconds: 3_600,
+			max_age_seconds: 86_400,
+		},
+	};
+	update(&tenants, "acme", Some(shorter)).await.unwrap();
+	update(&tenants, "acme", None).await.unwrap();
+	let changes = history(&tenants, "acme", 0, 10).await.unwrap();
+	assert_eq!(
+		changes
+			.iter()
+			.map(|change| change.rules)
+			.collect::<Vec<_>>(),
+		[None, Some(shorter)]
+	);
+	assert_eq!(changes[0].changed_by, "subject:acme/user:ada");
+	assert_eq!(history(&tenants, "acme", 1, 10).await.unwrap().len(), 1);
+
+	let reader = Tenants::new(subject("acme"), false);
+	assert!(matches!(
+		history(&reader, "acme", 0, 10).await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		history(&tenants, "other", 0, 10).await,
+		Err(Error::Forbidden)
+	));
 }

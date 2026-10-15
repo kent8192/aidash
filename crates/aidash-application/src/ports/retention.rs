@@ -1,6 +1,6 @@
 //! A Tenant's Retention Rules, read and changed in one transaction (ADR 0045).
 use crate::Result;
-use aidash_domain::retention::{Decider, RetentionRules};
+use aidash_domain::retention::{Decider, RetentionChange, RetentionRules};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -21,6 +21,13 @@ pub trait RetentionScope: Send {
 		rules: Option<&RetentionRules>,
 		decider: &Decider,
 	) -> Result<()>;
+	/// The Tenant's changes, newest first.
+	async fn history(
+		&mut self,
+		tenant: &str,
+		offset: u64,
+		limit: u32,
+	) -> Result<Vec<RetentionChange>>;
 	async fn finish(self: Box<Self>, committed: bool) -> Result<()>;
 }
 

@@ -245,9 +245,29 @@ pub trait RevocationScope: Send {
 	) -> Result<EvidenceRevocation>;
 }
 
+/// Reading one Tenant's revocation records, which are part of its audit
+/// history (ADR 0046).
+#[async_trait]
+pub trait RevocationRecordScope: Send {
+	/// Who is reading.
+	fn decider(&self) -> Decider;
+	/// A subject must be permitted `action` on its Tenant's revocation records;
+	/// a Deployment Administrator needs no Tenant policy.
+	async fn require(&mut self, tenant: &str, action: &str) -> Result<()>;
+	/// The Tenant's records, newest first.
+	async fn records(
+		&mut self,
+		tenant: &str,
+		offset: u64,
+		limit: u32,
+	) -> Result<Vec<EvidenceRevocation>>;
+	async fn finish(self: Box<Self>, committed: bool) -> Result<()>;
+}
+
 #[async_trait]
 pub trait RevocationRepository: Send + Sync {
 	async fn begin(&self) -> Result<Box<dyn RevocationScope + '_>>;
+	async fn begin_records(&self) -> Result<Box<dyn RevocationRecordScope + '_>>;
 	/// Wake workers so Runs waiting on a closed approval continue.
 	fn notify(&self);
 }

@@ -759,8 +759,22 @@ impl<'a> Executor<'a> {
 	/// Context Journal keeps what the model already read.
 	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
 		use aidash_domain::research::revocation;
+		let mut originals = std::collections::BTreeSet::new();
 		if !run.context.research_revoked {
+			// Compaction may have cut a research result to a string; only the
+			// Context Journal still shows what it was.
+			let cut = run
+				.context
+				.history
+				.iter()
+				.filter(|entry| {
+					matches!(&entry.event, ContextEvent::Tool { result, .. }
+						if aidash_application::context::truncated_result(result))
+				})
+				.map(|entry| entry.seq)
+				.collect::<Vec<_>>();
 			let may_carry = run.context.execution_summary.is_some()
+				|| !cut.is_empty()
 				|| run
 					.context
 					.history
@@ -769,6 +783,17 @@ impl<'a> Executor<'a> {
 			let store = self.environment.store();
 			if !may_carry || !store.research_revoked(run).await? {
 				return Ok(());
+			}
+			if let (Some(&from), Some(&through)) = (cut.first(), cut.last()) {
+				originals = store
+					.context_journal(run.id, from, through)
+					.await?
+					.into_iter()
+					.filter(|entry| {
+						cut.contains(&entry.seq) && revocation::carries_research(&entry.event)
+					})
+					.map(|entry| entry.seq)
+					.collect();
 			}
 			if let Some(summary) = run.context.execution_summary.as_deref() {
 				let source = summary.source.clone();
@@ -784,7 +809,7 @@ impl<'a> Executor<'a> {
 			}
 			run.context.research_revoked = true;
 		}
-		revocation::redact(&mut run.context.history);
+		revocation::redact(&mut run.context.history, &originals);
 		Ok(())
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
