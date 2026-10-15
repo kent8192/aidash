@@ -1766,6 +1766,8 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		check(json!({"name":"Tests"})),
 		check(json!({"name":"-tests"})),
 		check(json!({"command":"  "})),
+		// Blank to Rust's `trim`, not just to one-argument `btrim`.
+		check(json!({"command":"\t\n\u{3000}"})),
 		check(json!({"command":"x".repeat(65_537)})),
 		check(json!({"timeout_seconds":0})),
 		check(json!({"timeout_seconds":601})),

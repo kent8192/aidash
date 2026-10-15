@@ -313,8 +313,49 @@ async fn a_repair_without_edits_runs_the_check_again(mut fixture: Fixture) {
 	assert_eq!(fixture.run.context.completion.repairs, 1);
 }
 
+/// Only the latest repair request keeps its diagnostics in the projection: the
+/// Check that ran after an earlier one superseded it, so repeated repairs
+/// cannot fill a window that neither Jev nor the Summary Stage compacts.
+#[rstest]
+#[tokio::test]
+async fn a_later_repair_supersedes_earlier_repair_diagnostics(mut fixture: Fixture) {
+	let diagnostics: &'static str = "error[E0308]: mismatched types\n".repeat(128).leak();
+	gated(
+		&mut fixture,
+		tests_policy(
+			json!({"checks":[{"name":"tests","capability":"shell","command":"cargo test","when":"always"}]}),
+		),
+		Some(FakeChecks::with(
+			"sha256:edited",
+			[
+				Outcome::Fail(diagnostics),
+				Outcome::Fail(diagnostics),
+				Outcome::Pass,
+			],
+		)),
+	);
+	answer(&mut fixture, "Done.");
+	settle(&mut fixture).await;
+	answer(&mut fixture, "Fixed the types.");
+	settle(&mut fixture).await;
+	let notes = repair_notes(&fixture.run);
+	assert_eq!(notes.len(), 2);
+	assert!(notes[0].diagnostics.starts_with("[superseded"));
+	assert_eq!(
+		(notes[0].outcome, notes[0].exit_code),
+		(CheckOutcome::Failed, Some(101))
+	);
+	assert!(notes[1].diagnostics.len() > 3000);
+	assert_eq!(fixture.run.context.completion.repairs, 2);
+
+	answer(&mut fixture, "Fixed the types again.");
+	settle(&mut fixture).await;
+	assert!(completed(&fixture));
+}
+
 /// A Check still running past its timeout and grace keeps the Area busy; the
-/// gate asks a person instead of waiting for the Area forever.
+/// gate asks a person instead of waiting for the Area forever, and a retry
+/// looks at the same operation again rather than at the busy Area.
 #[rstest]
 #[tokio::test]
 async fn an_overdue_check_pauses_for_review_while_it_keeps_the_area_busy(mut fixture: Fixture) {
@@ -338,8 +379,28 @@ async fn an_overdue_check_pauses_for_review_while_it_keeps_the_area_busy(mut fix
 	);
 	assert!(review_prompt(&fixture).contains("Check tests could not run"));
 	let progress = &fixture.run.context.completion;
-	assert_eq!(progress.pending, None);
-	assert_eq!(progress.evidence[0].outcome, CheckOutcome::Unavailable);
+	let operation = progress.pending.as_ref().unwrap().operation_id;
+	assert!(progress.evidence.is_empty());
+	assert!(!completed(&fixture));
+
+	// A retry while the operation still hangs asks again; it neither waits on
+	// the busy Area nor starts another Check.
+	answer_review(&fixture, json!({"retry": true}));
+	advance_sources(&mut fixture).await.unwrap();
+	settle(&mut fixture).await;
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(**wait, WaitingState::Human { .. }))
+	);
+	let progress = &fixture.run.context.completion;
+	assert_eq!(progress.reviews, 2);
+	assert_eq!(
+		progress
+			.pending
+			.as_ref()
+			.map(|pending| pending.operation_id),
+		Some(operation)
+	);
+	assert_eq!(checks(&fixture).started(), 1);
 	assert!(!completed(&fixture));
 }
 

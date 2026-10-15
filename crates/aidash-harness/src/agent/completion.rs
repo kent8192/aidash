@@ -91,13 +91,15 @@ impl Executor<'_> {
 						.await;
 				}
 				// The hung operation keeps the Area busy, so waiting for the
-				// content to settle would never end: a person decides now.
+				// content to settle would never end: a person decides now. The
+				// operation stays pending, so after the review, even a retry,
+				// the gate looks at it again instead of waiting on the Area.
 				CheckStatus::Running => {
 					let reason = ReviewReason::Unavailable {
 						check: pending.subject.check.clone(),
 						detail: OVERDUE.into(),
 					};
-					progress.record(pending.unavailable(OVERDUE, now));
+					progress.pending = Some(pending);
 					return self.review(run, token, home, guard, progress, reason).await;
 				}
 				CheckStatus::Finished {
@@ -222,11 +224,11 @@ impl Executor<'_> {
 					let through_seq = run.state.tool()?.included_input_seq;
 					let mut context = run.context.clone();
 					context.completion = progress;
-					context.push(ContextEvent::CompletionRepairRequired {
-						checks: vec![RepairNote::from(&evidence)],
-						instruction: REPAIR_INSTRUCTION.into(),
+					context.push_repair(
+						vec![RepairNote::from(&evidence)],
+						REPAIR_INSTRUCTION.into(),
 						through_seq,
-					});
+					);
 					run.context = context;
 					run.step += 1;
 					run.state = RunState::Thinking(ThinkingState::default());

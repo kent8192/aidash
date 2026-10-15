@@ -73,7 +73,7 @@ BEGIN
    OR NOT COALESCE(check_item->>'name' ~ '^[a-z0-9][a-z0-9_-]{0,63}$',false)
    OR check_item->'capability' IS DISTINCT FROM '"shell"'::jsonb
    OR jsonb_typeof(check_item->'command') IS DISTINCT FROM 'string'
-   OR length(btrim(check_item->>'command')) = 0
+   OR length(btrim(check_item->>'command', U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) = 0
    OR octet_length(check_item->>'command') > 65536
    OR NOT COALESCE(check_item->'when','"content_changed"'::jsonb) IN ('"always"'::jsonb,'"content_changed"'::jsonb) THEN RETURN false; END IF;
    IF COALESCE(check_item->'timeout_seconds','null'::jsonb) <> 'null'::jsonb THEN

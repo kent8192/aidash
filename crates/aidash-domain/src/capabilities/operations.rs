@@ -125,9 +125,12 @@ pub fn capability_of(kind: &str) -> &str {
 	if kind == VERIFICATION { "shell" } else { kind }
 }
 /// The Area state once an operation's outcome is lost. A Check never exports
-/// `/work`, so losing it leaves the Area's files as they were and usable.
-pub fn lost_area_state(kind: &str) -> &'static str {
-	if kind == VERIFICATION {
+/// `/work`, so losing it leaves the Area's files as they were and usable,
+/// unless the runner still holds its writer without confirming it stopped
+/// (`writer_held`): the runner then admits no other operation in the Area, so
+/// the Area stays fenced until that writer is reconciled.
+pub fn lost_area_state(kind: &str, writer_held: bool) -> &'static str {
+	if kind == VERIFICATION && !writer_held {
 		"active"
 	} else {
 		"uncertain"

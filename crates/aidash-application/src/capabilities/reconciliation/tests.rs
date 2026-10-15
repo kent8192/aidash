@@ -621,7 +621,7 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 #[rstest]
 #[case::identity_changed(json!({"instance":"replacement"}), json!({"status":"running","stdout":""}))]
 #[case::absent(json!({"instance":"runner"}), json!({"status":"absent"}))]
-#[case::runner_uncertain(json!({"instance":"runner"}), json!({"status":"uncertain","error":"sandbox lost"}))]
+#[case::runner_uncertain(json!({"instance":"runner"}), json!({"status":"uncertain","error":"sandbox lost","termination_confirmed":true}))]
 #[tokio::test]
 async fn a_lost_completion_check_leaves_the_area_usable(
 	repository: Repository,
@@ -639,5 +639,29 @@ async fn a_lost_completion_check_leaves_the_area_usable(
 	assert_eq!(trace.saved[0].state, "uncertain");
 	assert!(trace.calls.contains(&"area:active".into()));
 	assert!(!trace.calls.contains(&"area:uncertain".into()));
+	assert!(trace.published.is_empty());
+}
+/// A lost Check whose writer the runner has not confirmed stopped keeps the
+/// Area fenced: the runner would refuse the next Check while it holds that
+/// writer, so a retry must not be offered an Area it can never run in.
+#[rstest]
+#[case::unconfirmed(json!({"status":"uncertain","error":"sandbox lost","termination_confirmed":false}))]
+#[case::unreported(json!({"status":"uncertain","error":"sandbox lost"}))]
+#[tokio::test]
+async fn a_lost_completion_check_with_a_live_writer_keeps_the_area_fenced(
+	repository: Repository,
+	#[case] observed: Value,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = VERIFICATION.into();
+		trace.health = json!({"instance":"runner"});
+		trace.observed = observed;
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "uncertain");
+	assert!(trace.calls.contains(&"area:uncertain".into()));
+	assert!(!trace.calls.contains(&"area:active".into()));
 	assert!(trace.published.is_empty());
 }

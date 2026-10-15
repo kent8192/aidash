@@ -86,7 +86,10 @@ async fn reconcile(
 	if identity_changed {
 		operation.state = "uncertain".into();
 		operation.result = json!({"error":"runner journal identity changed"});
-		scope.set_area(lost_area_state(&operation.kind)).await?;
+		// The new runner journal holds no writer of this operation.
+		scope
+			.set_area(lost_area_state(&operation.kind, false))
+			.await?;
 		return scope.persist(&operation).await;
 	}
 	if operation.state == "prepared" {
@@ -140,7 +143,9 @@ async fn reconcile(
 		Some("absent") => {
 			operation.state = "uncertain".into();
 			operation.result = json!({"error":"runner lost a previously accepted operation"});
-			scope.set_area(lost_area_state(&operation.kind)).await?;
+			scope
+				.set_area(lost_area_state(&operation.kind, false))
+				.await?;
 		}
 		Some("completed" | "cancelled" | "failed")
 			if observed["termination_confirmed"] == true
@@ -280,7 +285,12 @@ async fn reconcile(
 		Some("uncertain") => {
 			operation.state = "uncertain".into();
 			operation.result = json!({"error":observed["error"],"termination_confirmed":observed["termination_confirmed"]});
-			scope.set_area(lost_area_state(&operation.kind)).await?;
+			// The runner refuses a successor while this writer is not confirmed
+			// stopped, so a Check must not reopen the Area to one.
+			let held = observed["termination_confirmed"] != true;
+			scope
+				.set_area(lost_area_state(&operation.kind, held))
+				.await?;
 		}
 		Some("accepted" | "starting" | "running" | "finishing") => {
 			if operation.state != "cancelling" {

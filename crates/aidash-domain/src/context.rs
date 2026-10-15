@@ -210,6 +210,11 @@ impl<'de> Deserialize<'de> for Context {
 	}
 }
 
+/// What an earlier repair request's diagnostics become once a later repair
+/// supersedes it.
+const SUPERSEDED_DIAGNOSTICS: &str =
+	"[superseded by a later Check run; the full diagnostics remain in the execution journal]";
+
 impl Context {
 	/// Append an event to the projection with the next Context Journal sequence.
 	pub fn push(&mut self, event: ContextEvent) {
@@ -217,6 +222,33 @@ impl Context {
 		self.history.push(HistoryEntry {
 			seq: self.journal.head,
 			event,
+		});
+	}
+
+	/// Append a Completion Gate repair request. Each repair reruns its Check,
+	/// so earlier requests' diagnostics are obsolete: the projection keeps only
+	/// that they happened (the journal keeps the originals), and repeated
+	/// repairs cannot fill a window that neither Jev nor the Summary Stage
+	/// compacts.
+	pub fn push_repair(
+		&mut self,
+		checks: Vec<crate::completion::RepairNote>,
+		instruction: String,
+		through_seq: i64,
+	) {
+		for entry in &mut self.history {
+			if let ContextEvent::CompletionRepairRequired { checks, .. } = &mut entry.event {
+				for note in checks {
+					if note.diagnostics.len() > SUPERSEDED_DIAGNOSTICS.len() {
+						note.diagnostics = SUPERSEDED_DIAGNOSTICS.into();
+					}
+				}
+			}
+		}
+		self.push(ContextEvent::CompletionRepairRequired {
+			checks,
+			instruction,
+			through_seq,
 		});
 	}
 

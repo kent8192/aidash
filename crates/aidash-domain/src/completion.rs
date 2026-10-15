@@ -292,7 +292,7 @@ impl PendingCheck {
 		runtime_seconds: Option<u64>,
 		now: DateTime<Utc>,
 	) -> VerificationEvidence {
-		let seconds = runtime_seconds.unwrap_or_else(|| elapsed(self.started_at, now));
+		let seconds = runtime_seconds.unwrap_or_else(|| self.unmeasured(now));
 		let outcome = if passed {
 			CheckOutcome::Passed
 		} else if seconds >= self.timeout_seconds {
@@ -309,6 +309,12 @@ impl PendingCheck {
 	pub fn unavailable(self, detail: &str, now: DateTime<Utc>) -> VerificationEvidence {
 		self.evidence(CheckOutcome::Unavailable, None, detail, now)
 	}
+	/// What an attempt the runner did not measure spends: the time since it
+	/// started, but never more than its effective timeout, so polling and
+	/// worker downtime after that are not charged as Check time.
+	fn unmeasured(&self, now: DateTime<Utc>) -> u64 {
+		elapsed(self.started_at, now).min(self.timeout_seconds)
+	}
 	fn evidence(
 		self,
 		outcome: CheckOutcome,
@@ -320,7 +326,7 @@ impl PendingCheck {
 			outcome,
 			exit_code,
 			diagnostics: bounded_tail(diagnostics, MAX_DIAGNOSTIC_BYTES),
-			seconds: elapsed(self.started_at, now),
+			seconds: self.unmeasured(now),
 			finished_at: now,
 			operation_id: Some(self.operation_id),
 			attempt: self.attempt,

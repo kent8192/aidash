@@ -423,9 +423,21 @@ fn pending_checks_time_out_and_keys_are_stable() {
 	}
 	.finish(false, Some(1), "failed", Some(1), at(5));
 	assert_eq!((quick.outcome, quick.seconds), (CheckOutcome::Failed, 1));
-	let killed = pending.finish(false, None, "", Some(60), at(900));
+	let killed = pending.clone().finish(false, None, "", Some(60), at(900));
 	assert_eq!(
 		(killed.outcome, killed.seconds),
+		(CheckOutcome::TimedOut, 60)
+	);
+	// An unmeasured attempt never spends more than its timeout: a worker that
+	// was down for an hour does not charge the hour as Check time.
+	let lost = pending.clone().unavailable("runner lost it", at(3600));
+	assert_eq!(
+		(lost.outcome, lost.seconds),
+		(CheckOutcome::Unavailable, 60)
+	);
+	let unreported = pending.finish(false, None, "", None, at(3600));
+	assert_eq!(
+		(unreported.outcome, unreported.seconds),
 		(CheckOutcome::TimedOut, 60)
 	);
 
