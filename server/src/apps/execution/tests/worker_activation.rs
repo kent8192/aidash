@@ -535,7 +535,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	tokio::time::sleep(Duration::from_millis(150)).await;
 	let run = admit(&f, &token, task).await;
 	let original = count(&f, "TRUE").await;
-	let mut tx = f.store.pool.begin_unscoped().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	aidash_server::database::native::query(
 		&Query::update()
 			.table(a("runs"))

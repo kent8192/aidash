@@ -70,9 +70,14 @@ async fn corpus_digest(store: &Store, description: &Description) -> Result<Optio
 	if description.semantic.disabled() {
 		return Ok(None);
 	}
-	crate::semantic::services::memory_context::remote_corpus_digest(&store.pool, description)
-		.await
-		.map(Some)
+	// Home reads its own Workspace, in the Tenant that issued the grant.
+	let scope = crate::database::scope::recorded(&description.source_tenant)?;
+	crate::semantic::services::memory_context::remote_corpus_digest(
+		store.pool.in_scope(&scope),
+		description,
+	)
+	.await
+	.map(Some)
 }
 
 #[cfg(test)]

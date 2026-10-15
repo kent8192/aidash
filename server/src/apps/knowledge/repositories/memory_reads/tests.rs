@@ -66,7 +66,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",
@@ -236,7 +236,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 					.and_where(Expr::col("id").eq(Expr::value(bank.participant.unwrap())))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap();
 		}

@@ -446,6 +446,7 @@ impl PeerManagement {
 					json!(
 						f.store
 							.transition_remote_run_message_terminal_through(
+								&scope,
 								task.id,
 								revision,
 								&owner,
@@ -467,7 +468,7 @@ impl PeerManagement {
 					json!(
 						f.store
 							.transition_remote_run_message_terminal(
-								task.id, revision, &owner, status, run_id, &keys,
+								&scope, task.id, revision, &owner, status, run_id, &keys,
 							)
 							.await?
 					)

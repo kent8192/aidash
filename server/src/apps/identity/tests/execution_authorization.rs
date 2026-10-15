@@ -1575,7 +1575,7 @@ async fn decision_cursor_follows_transaction_commit_order(
 		pool: f.store.pool.clone(),
 	};
 	let evaluation:Evaluation=serde_json::from_value(json!({"subject":"alice","action":"workspace.read","resource":{"tenant":"acme","kind":"workspace","id":"cursor-test","attributes":{}},"environment":{}})).unwrap();
-	let mut tx = f.store.pool.begin_unscoped().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	Authorization::evaluate_in_transaction(&mut tx, "acme", &evaluation)
 		.await
 		.unwrap();

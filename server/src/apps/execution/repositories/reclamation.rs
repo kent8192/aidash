@@ -6,6 +6,7 @@ use crate::apps::execution::capabilities::services::{
 	sessions,
 };
 use crate::{Result as NativeResult, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::capabilities::reclamation::{ReclamationRepository, ReclamationScope},
@@ -18,6 +19,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// The capability worker reaches every Tenant's operations and work areas.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Repository<'a> {
 	store: &'a Store,
 	orphan_cursor: tokio::sync::Mutex<Option<tokio::fs::ReadDir>>,
@@ -39,7 +44,7 @@ impl ReclamationRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn ReclamationScope + '_>> {
 		Ok(Box::new(Scope {
 			store: self.store,
-			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
+			tx: self.store.pool.begin(&MAINTENANCE).await?,
 		}))
 	}
 	async fn retained(&self, after: Uuid) -> Result<Vec<Uuid>> {
@@ -55,7 +60,7 @@ let ids: Vec<Uuid> = {
                 .add(Expr::cust("kind = 'reference' AND (state = 'revoked' OR expires_at <= CURRENT_TIMESTAMP OR (state IN ('ready','extracting') AND jsonb_array_length(data->'chunks') > 0))")))
             .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())))
             .order_by(Alias::new("id"), reinhardt::query::Order::Asc)
-            .limit(8).to_string(PostgresQueryBuilder)).scalar_all(&self.store.pool).await?
+            .limit(8).to_string(PostgresQueryBuilder)).scalar_all(self.store.pool.in_scope(&MAINTENANCE)).await?
 		};
         Ok(ids)
     }.await;
@@ -80,7 +85,7 @@ let ids: Vec<Uuid> = {
 						.limit(16)
 						.to_string(PostgresQueryBuilder),
 				)
-				.scalar_all(&self.store.pool)
+				.scalar_all(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(ids)

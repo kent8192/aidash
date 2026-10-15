@@ -22,6 +22,8 @@ use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
+	/// The Tenant of the operation being withdrawn.
+	pub(crate) scope: aidash_application::tenancy::TenancyScope,
 }
 struct Scope {
 	tx: crate::database::native::Transaction,
@@ -37,7 +39,7 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		}
 		let operation = Seed { area_id: area, id };
 		let store = self.store;
-		let mut tx = crate::database::native::begin_unscoped(&store.pool).await?;
+		let mut tx = store.pool.begin(&self.scope).await?;
 		// Keep the normal area-before-operation lock order and recheck committed
 		// state: a stale worker snapshot cannot declare a dispatched writer safe.
 		let area: Area = {

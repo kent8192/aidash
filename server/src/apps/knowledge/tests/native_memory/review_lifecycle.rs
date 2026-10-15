@@ -14,7 +14,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 ) {
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for table in ["semantic_collections", "semantic_indexes"] {
 		native::query(
 			&Query::delete()
@@ -75,7 +75,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 				.from(Alias::new(table))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&store.pool)
+		.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(count, 0, "rejected admission must roll back {table}");
@@ -184,7 +184,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	.await
 	.unwrap();
 	if let Some(exhausted) = exhausted_repair {
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_engine_jobs"))
@@ -216,7 +216,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 			.and_where(Expr::col("id").eq(Expr::value(derived[0].id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(
@@ -308,7 +308,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 			.and_where(Expr::col("id").eq(Expr::value(units[0].id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let mut last_publication = Uuid::nil();
@@ -332,7 +332,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 			.unwrap();
 		last_publication = Uuid::now_v7();
 		last_run = Uuid::now_v7();
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		for query in [
 			Query::insert()
 				.into_table(Alias::new("runs"))
@@ -415,7 +415,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		.await
 		.unwrap()
 		.remove(0);
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_history"))
@@ -437,7 +437,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	}
 	// Independently corrected current bodies no longer quote the source. Their
 	// historical evidence lies past two journal pages and still must be erased.
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (unit, proof) in [
 		(
 			&units[1],
@@ -480,7 +480,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	)
 	.await
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))
@@ -504,7 +504,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 			.and_where(Expr::col("unit_id").eq(Expr::value(units[0].id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -519,7 +519,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 			.from(Alias::new("memory_history"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(

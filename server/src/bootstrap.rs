@@ -10,7 +10,6 @@ use crate::{
 };
 use reinhardt::InjectionContext;
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
-use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::server::ShutdownCoordinator;
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -110,9 +109,6 @@ pub async fn initialize(
 	// Persist removed GCIP Bindings even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
 	dashboard_authority(&federation).reconcile_policy().await?;
-	let lease = DatabaseConnectionLease::register(connection)?;
-	context.set_singleton(lease.handle());
-	context.set_singleton(lease);
 	context.set_singleton(settings.clone());
 	context.set_singleton(federation.clone());
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
@@ -489,7 +485,7 @@ pub(crate) fn event_inbox(
 	store: &Store,
 ) -> Result<crate::apps::execution::repositories::events::NativeInbox> {
 	Ok(crate::apps::execution::repositories::events::NativeInbox {
-		database: store.orm_connection()?,
+		pool: store.pool.clone(),
 	})
 }
 
@@ -1238,8 +1234,9 @@ pub(crate) fn scoped_media(
 }
 pub(crate) fn operator_media_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::workspaces::repositories::media::OperatorMedia<'_> {
-	crate::apps::workspaces::repositories::media::OperatorMedia { store }
+	crate::apps::workspaces::repositories::media::OperatorMedia { store, scope }
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
@@ -1507,8 +1504,9 @@ pub(crate) async fn transaction_recovery_coordinators(
 
 pub(crate) fn operation_withdrawal_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::repositories::withdrawal::Repository<'_> {
-	crate::apps::execution::repositories::withdrawal::Repository { store }
+	crate::apps::execution::repositories::withdrawal::Repository { store, scope }
 }
 
 pub(crate) fn remote_command_scope<'a>(

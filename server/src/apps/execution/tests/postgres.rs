@@ -934,7 +934,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -1136,7 +1136,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -1291,7 +1291,7 @@ async fn write_approval(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -1464,7 +1464,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(store.pool.driver())
+			.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 		}
 		.unwrap();
@@ -2337,7 +2337,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -2945,7 +2945,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();

@@ -268,7 +268,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(c.f.store.pool.driver())
+		.fetch_one(c.f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();

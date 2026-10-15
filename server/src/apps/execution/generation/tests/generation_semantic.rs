@@ -1509,7 +1509,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&fixture.f.store.pool)
+	.scalar_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let bank = Bank {
@@ -1601,7 +1601,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&fixture.f.store.pool)
+			.fetch_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap();
 			assert_eq!(
@@ -1650,7 +1650,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 			.and_where(Expr::col("id").eq(Expr::value(entry)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&fixture.f.store.pool)
+	.scalar_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let (code, response) = request(
@@ -1672,7 +1672,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 				.and_where(Expr::col("id").eq(Expr::value(entry)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&fixture.f.store.pool)
+		.scalar_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	};
 	assert_eq!(indexed().await.unwrap(), "ERROR");
@@ -1683,12 +1683,12 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 			.and_where(Expr::col("id").eq(Expr::value(entry)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&fixture.f.store.pool)
+	.scalar_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	// Pin an already-completed learning disposition so the test isolates the
 	// admitted-unit index retry rather than another model learning invocation.
-	let mut tx = native::begin_unscoped(&fixture.f.store.pool).await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_engine_jobs"))
@@ -1745,7 +1745,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 				.and_where(Expr::col("id").eq(Expr::value(request_id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&fixture.f.store.pool)
+		.scalar_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	};
 	assert_eq!(
@@ -1754,7 +1754,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 		"a transient index failure must retain the origin until retry"
 	);
 	fixture.response_mode.store(0, Ordering::SeqCst);
-	let mut tx = native::begin_unscoped(&fixture.f.store.pool).await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	// Advance the failed model attempt beyond its durable single-call window;
 	// it remains charged while the semantic retry receives a fresh reservation.
 	native::query(
@@ -1827,7 +1827,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	.await
 	.unwrap()
 	.remove(0);
-	let mut tx = native::begin_unscoped(&fixture.f.store.pool).await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("semantic_entries"))
@@ -2183,7 +2183,7 @@ mod semantic_fixture_composition {
 				.from(reinhardt::query::Alias::new("semantic_entries"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		let projections: Vec<_> = projections

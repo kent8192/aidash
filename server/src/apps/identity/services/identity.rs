@@ -128,6 +128,19 @@ impl Authorization {
 	}
 }
 
+impl Actor {
+	/// The scope of work the actor does without naming a Workspace: a
+	/// Subject's own Tenant, or the Operator's rows without a Tenant.
+	pub(crate) fn tenancy(&self) -> Result<TenancyScope> {
+		match self {
+			Self::Subject(identity) => identity.tenancy(),
+			Self::Operator => Ok(TenancyScope::Deployment(
+				aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministration,
+			)),
+		}
+	}
+}
+
 impl SubjectIdentity {
 	/// The scope of every transaction that acts for this subject.
 	pub(crate) fn tenancy(&self) -> Result<TenancyScope> {

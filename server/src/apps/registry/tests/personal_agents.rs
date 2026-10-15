@@ -129,8 +129,8 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	cloned.binding_normalization = None;
 	let cloned = f.registry.register(cloned).await.unwrap();
 	assert_eq!(
-		knowledge::load(&f.registry.db, &cloned).await.unwrap(),
-		knowledge::load(&f.registry.db, &entry).await.unwrap()
+		knowledge::load(&f.registry, &cloned).await.unwrap(),
+		knowledge::load(&f.registry, &entry).await.unwrap()
 	);
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");

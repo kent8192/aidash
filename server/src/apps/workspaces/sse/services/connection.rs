@@ -268,10 +268,17 @@ impl Watch<Event> for Context {
 							.map_err(|_| Closed::Authority)?
 							.then(|| event.cloud_event().to_string()),
 						None => {
-							let mut connection =
-								crate::database::native::begin_unscoped(&self.f.store.pool)
-									.await
-									.map_err(|_| Closed::Database)?;
+							// The Operator's stream observes every Tenant's events.
+							let scope = aidash_application::tenancy::TenancyScope::Deployment(
+								aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+							);
+							let mut connection = self
+								.f
+								.store
+								.pool
+								.begin(&scope)
+								.await
+								.map_err(|_| Closed::Database)?;
 							crate::authorization::remote::operator::event_visible(
 								&mut connection,
 								event,
@@ -325,6 +332,14 @@ impl Service {
 		} = request;
 		// Register before validation/high-water lookup/initial read.
 		let observation = self.register(workspace);
+		// The initial cursor reads the actor's events: the Operator's stream
+		// observes every Tenant's.
+		let tenancy = match &actor {
+			Actor::Operator => aidash_application::tenancy::TenancyScope::Deployment(
+				aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+			),
+			Actor::Subject(identity) => identity.tenancy()?,
+		};
 		let scope = match actor {
 			Actor::Operator => None,
 			Actor::Subject(identity) => Some(Workspaces {
@@ -350,7 +365,7 @@ impl Service {
 					.from(reinhardt::query::Alias::new("events"))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.scalar_one(&context.f.store.pool)
+			.scalar_one(context.f.store.pool.in_scope(&tenancy))
 			.await?;
 		}
 		let control = Arc::new(Control::new(lease));

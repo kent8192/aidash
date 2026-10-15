@@ -472,7 +472,7 @@ pub(crate) async fn operator_human_message_media(
 	model: &crate::registry::ModelConfig,
 ) -> Result<HumanMediaBatch> {
 	aidash_application::execution::media::operator(
-		&crate::bootstrap::operator_media_repository(store),
+		&crate::bootstrap::operator_media_repository(store, store.run_tenancy(run.id).await?),
 		&run.metadata(),
 		messages,
 		model,

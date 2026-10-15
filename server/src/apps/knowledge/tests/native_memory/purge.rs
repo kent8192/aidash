@@ -97,7 +97,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		.unwrap();
 	// Advance only disposable history and job clocks. Canonical bodies and the
 	// independent recovery ledger still come from the real mutation path.
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for query in [
 		Query::update()
 			.table(Alias::new("memory_history"))
@@ -126,7 +126,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 			.from(Alias::new("memory_units"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	for unit in &chain {
@@ -158,7 +158,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 			.from(Alias::new("memory_history"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -172,7 +172,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 			.and_where(Expr::col("unit_id").eq(Expr::value(chain[0].id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(state, "purged");
@@ -182,7 +182,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 			.from(Alias::new("memory_unit_retention"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -239,7 +239,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	let owner = crate::native_database::owner_pool(store.pool.driver()).await;
 	sqlx::query("CREATE TABLE fixture_memory_history_hold (unit_id UUID, revision BIGINT, FOREIGN KEY (unit_id, revision) REFERENCES memory_history(unit_id, revision))")
 		.execute(&owner).await.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for held in [protected, permanent] {
 		native::query(
 			&Query::insert()
@@ -274,7 +274,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		.unwrap();
 	}
 	async fn due(store: &Store) {
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_purge_jobs"))
@@ -316,7 +316,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 			.from(Alias::new("memory_purge_jobs"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let failed = states
@@ -358,7 +358,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		.unwrap()
 		.is_empty()
 	);
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::delete()
 			.from_table(Alias::new("fixture_memory_history_hold"))
@@ -390,7 +390,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 			.and_where(Expr::col("unit_id").eq(Expr::value(protected)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&reopened.pool)
+	.fetch_one(reopened.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -417,7 +417,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 			.and_where(Expr::col("unit_id").eq(Expr::value(permanent)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&reopened.pool)
+	.fetch_one(reopened.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(exhausted.try_get::<String>("state").unwrap(), "failed");
@@ -439,7 +439,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 			.from(Alias::new("memory_units"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&reopened.pool)
+	.scalar_all(reopened.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(bodies.iter().all(String::is_empty));
@@ -510,7 +510,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 		),
 	};
 	let candidate = review_delivery::candidate(&store, &private).await;
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_candidates"))
@@ -567,7 +567,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	memory::mutate(&store, &Actor::Operator, deletion)
 		.await
 		.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))
@@ -591,7 +591,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 			.and_where(Expr::col("id").eq(Expr::value(candidate)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(
@@ -607,7 +607,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 			.and_where(Expr::col("unit_id").eq(Expr::value(ids[2])))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(row.try_get::<String>("state").unwrap(), "purged");

@@ -29,7 +29,9 @@ async fn browser_workbench(
 		session_absolute_seconds: 43_200,
 		session_idle_seconds: 1_800,
 	});
-	let mut db = wb.f.registry.db;
+	let lease = reinhardt::db::orm::DatabaseConnectionLease::register(wb.f.store.pool.connection())
+		.unwrap();
+	let mut db = lease.handle();
 	let now = Utc::now();
 	let identity = DashboardIdentity::build()
 		.id(Uuid::new_v4())
@@ -127,7 +129,9 @@ async fn native_draft_mutations_recheck_browser_authority(
 			.unwrap();
 	// Act: capture the actor after applying this scenario authority configuration.
 	let app = captured_actor_application(&wb.f, actor).await;
-	let mut db = wb.f.registry.db;
+	let lease = reinhardt::db::orm::DatabaseConnectionLease::register(wb.f.store.pool.connection())
+		.unwrap();
+	let mut db = lease.handle();
 	let now = Utc::now();
 	match change {
 		"logout" => {

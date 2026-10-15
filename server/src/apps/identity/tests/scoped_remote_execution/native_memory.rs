@@ -28,7 +28,7 @@ async fn first_native_context(p: &Pair) -> Value {
 			.and_where(reinhardt::query::Expr::col("deliveries").gt(0_i64))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.scalar_one(&p.a.store.pool)
+	.scalar_one(p.a.store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -779,9 +779,7 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 	.collect();
 	assert_eq!(selected.len(), 1025);
 	// Model a grant's previous Runs through the same durable dependency schema.
-	let mut tx = aidash_server::database::native::begin_unscoped(&p.a.store.pool)
-		.await
-		.unwrap();
+	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut insert = Query::insert();
 	insert
 		.into_table(Alias::new("memory_remote_reads"))

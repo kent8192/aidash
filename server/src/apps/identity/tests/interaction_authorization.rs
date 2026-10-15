@@ -38,7 +38,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -165,7 +165,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();

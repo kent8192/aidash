@@ -589,7 +589,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -2074,7 +2074,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
-	let mut tx = f.store.pool.begin_unscoped().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	f.store
 		.event(
 			&mut tx,

@@ -21,8 +21,8 @@ use crate::{
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{DatabaseConnection as BackendConnection, TransactionExecutor};
-use reinhardt::db::orm::{Model, connection::DatabaseConnectionLease};
+use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::Model;
 use reinhardt::query::ColumnRef;
 use reinhardt::query::OnConflict;
 use reinhardt::query::SimpleExpr;
@@ -378,16 +378,6 @@ impl Store {
 			store: self.clone(),
 			scope,
 		}
-	}
-
-	/// Share this store's existing data pool with native persistence operations.
-	pub(crate) fn database(&self) -> BackendConnection {
-		self.pool.connection()
-	}
-
-	/// Borrow this store's existing pool through an owned native ORM scope.
-	pub(crate) fn orm_connection(&self) -> Result<DatabaseConnectionLease> {
-		Ok(DatabaseConnectionLease::register(self.database())?)
 	}
 
 	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
@@ -1291,8 +1281,10 @@ impl Store {
 	}
 	/// Consume this remote run's admitted-message fences and perform an explicit
 	/// cancellation or failure while holding the same authoritative task lock.
+	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	pub async fn transition_remote_run_message_terminal(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -1301,6 +1293,7 @@ impl Store {
 		keys: &[String],
 	) -> Result<Task> {
 		self.transition_remote_run_message_terminal_in(
+			scope,
 			id,
 			revision,
 			owner,
@@ -1310,8 +1303,10 @@ impl Store {
 		)
 		.await
 	}
+	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	pub(crate) async fn transition_remote_run_message_terminal_through(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -1323,6 +1318,7 @@ impl Store {
 			return Err(Error::Invalid("invalid terminal input sequence".into()));
 		}
 		self.transition_remote_run_message_terminal_in(
+			scope,
 			id,
 			revision,
 			owner,
@@ -1332,8 +1328,10 @@ impl Store {
 		)
 		.await
 	}
+	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	async fn transition_remote_run_message_terminal_in(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -1341,7 +1339,7 @@ impl Store {
 		run_id: Uuid,
 		inputs: TerminalRunMessageInputs<'_>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let result = self
 			.transition_remote_terminal_in(&mut tx, id, revision, owner, next, run_id, inputs)
 			.await?;
@@ -4912,7 +4910,13 @@ impl Store {
 		recovery_reason: Option<(&'static str, Value)>,
 	) -> Result<()> {
 		let run = run.into();
-		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
+		// Pausing a claimed Run is the worker's lease bookkeeping.
+		let mut tx = self
+			.pool
+			.begin(&TenancyScope::Deployment(
+				DeploymentScopeReason::ActivationClaim,
+			))
+			.await?;
 		let (query_bind_4, query_bind_5, query_bind_6) = match recovery_reason {
 			Some((field, value)) => (true, format!("{{recovery,{field}}}"), value),
 			None => (false, "{recovery}".to_owned(), Value::Null),

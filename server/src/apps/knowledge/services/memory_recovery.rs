@@ -792,12 +792,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			// Recovery never changes the schema; `migrate` runs first as its owner.
 			crate::bootstrap::require_migrated(&settings).await?;
 			let config = crate::config::Config::from_settings(&settings)?;
-			let database =
-				reinhardt::db::backends::DatabaseConnection::connect_postgres_with_pool_size(
-					&config.database_url,
-					Some(8),
-				)
-				.await?;
+			let database = crate::database::runtime::connect(&config.database_url, 8).await?;
 			let directory = matches
 				.get_one::<PathBuf>("directory")
 				.ok_or(Error::Forbidden)?;

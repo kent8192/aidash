@@ -28,17 +28,18 @@ pub(crate) async fn reserve(
 	.map_err(Into::into)
 }
 
+/// `tenancy` is the scope of the reservation: the Tenant whose bank or Run
+/// asks for the embedding, which holds even when no origin lease applies.
 pub(crate) async fn reserve_many(
 	accesses: &mut [&mut Access],
 	store: &Store,
+	tenancy: aidash_application::tenancy::TenancyScope,
 	workspace: Uuid,
 	config: &EmbeddingConfig,
 	text: &str,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
 	let mut approved = vec![];
-	// Every lease of one Run belongs to the Run's Tenant.
-	let tenancy = accesses.first().ok_or(crate::Error::Forbidden)?.tenancy()?;
 	for access in accesses {
 		access.resume_inherited().await?;
 		let current = aidash_application::generation::embedding::authorize(

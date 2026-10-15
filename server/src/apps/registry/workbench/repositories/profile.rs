@@ -1,6 +1,7 @@
 //! Profile ORM operations retain their original transactions and revision fence.
 use crate::apps::registry::workbench::models::{AgentDraft, AgentTestProfile};
 use crate::{authorization::identity::Actor, federation::Federation};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::registry::workbench::profile::{
@@ -45,15 +46,22 @@ impl ProfileRepository for Repository<'_> {
 		Ok(Box::new(Scope {
 			configured: self.runtime.store.provider_credentials.is_some(),
 			node: self.runtime.config.node_id.clone(),
-			tx: crate::database::native::begin_unscoped(&self.runtime.store.pool).await?,
+			tx: self
+				.runtime
+				.store
+				.pool
+				.begin(&self.actor.tenancy()?)
+				.await?,
 			actor: self.actor.clone(),
 		}))
 	}
 	async fn page(&self, tenant: &str) -> Result<Vec<TestProfile>> {
-		let lease = self.runtime.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| AgentTestProfile::page(tx, tenant).await)
+		self.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AgentTestProfile::page(tx, tenant).await
+			})
 			.await
 			.map_err(Into::into)
 	}
@@ -65,10 +73,12 @@ impl ProfileRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 	async fn save(&self, tenant: &str, id: &str, input: &ProfileInput) -> Result<TestProfile> {
-		let lease = self.runtime.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| AgentTestProfile::save(tx, tenant, id, input).await)
+		self.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AgentTestProfile::save(tx, tenant, id, input).await
+			})
 			.await
 			.map_err(Into::into)
 	}

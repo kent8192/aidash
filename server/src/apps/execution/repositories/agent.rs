@@ -683,8 +683,7 @@ impl ExecutionEnvironment for Environment<'_> {
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
 				let value =
-					crate::knowledge::load(&self.federation.registry.db, &binding.definition)
-						.await?;
+					crate::knowledge::load(&self.federation.registry, &binding.definition).await?;
 				documents.extend(
 					value
 						.as_array()
@@ -941,6 +940,7 @@ impl ExecutionEnvironment for Environment<'_> {
 	) -> Result<InferenceInterruption> {
 		super::super::services::runtime::wait_for_inference_interruption(
 			&self.federation.store,
+			&self.run_store.scope,
 			run,
 			included_input_seq,
 		)

@@ -36,6 +36,8 @@ pub(crate) struct ScopedMedia<'a> {
 }
 pub(crate) struct OperatorMedia<'a> {
 	pub(crate) store: &'a Store,
+	/// The Tenant of the Run whose human messages are read.
+	pub(crate) scope: aidash_application::tenancy::TenancyScope,
 }
 struct Transaction {
 	tx: crate::database::native::Transaction,
@@ -115,7 +117,7 @@ impl OperatorMediaRepository for OperatorMedia<'_> {
 		&self.store.node_id
 	}
 	async fn begin(&self) -> Result<Box<dyn MediaTransaction>> {
-		let tx = crate::database::native::begin_unscoped(&self.store.pool).await?;
+		let tx = self.store.pool.begin(&self.scope).await?;
 		Ok(Box::new(Transaction { tx }))
 	}
 }

@@ -66,14 +66,19 @@ impl DraftRepository for Repository {
 			.map_err(Into::into)
 	}
 	async fn original_documents(&self, entry: &Entry) -> Result<Value> {
-		crate::knowledge::load(&self.runtime.registry.db, entry)
+		crate::knowledge::load(&self.runtime.registry, entry)
 			.await
 			.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {
 			Ok(Scope {
-				tx: crate::database::native::begin_unscoped(&self.runtime.store.pool).await?,
+				tx: self
+					.runtime
+					.store
+					.pool
+					.begin(&self.actor.tenancy()?)
+					.await?,
 				actor: self.actor.clone(),
 				node: self.runtime.config.node_id.clone(),
 			})

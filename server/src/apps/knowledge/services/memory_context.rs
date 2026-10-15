@@ -297,6 +297,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 		participant: binding.map(|(_, revision)| revision),
 		corpus: corpus_digest(
 			store,
+			&scope,
 			run.workspace_id,
 			binding.map(|(participant, _)| participant),
 		)
@@ -310,7 +311,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 pub(crate) trait CorpusReads: Send {
 	fn executor(&mut self) -> impl crate::database::native::Executor + '_;
 }
-impl CorpusReads for &crate::database::native::Pool {
+impl CorpusReads for crate::database::native::InScope<'_> {
 	fn executor(&mut self) -> impl crate::database::native::Executor + '_ {
 		*self
 	}
@@ -344,10 +345,11 @@ pub(crate) async fn remote_corpus_digest(
 /// memory unit mutations (which bump their bank's revision) change this.
 pub async fn corpus_digest(
 	store: &Store,
+	scope: &aidash_application::tenancy::TenancyScope,
 	workspace: uuid::Uuid,
 	participant: Option<uuid::Uuid>,
 ) -> Result<String> {
-	corpus_reads(&store.pool, workspace, participant).await
+	corpus_reads(store.pool.in_scope(scope), workspace, participant).await
 }
 
 async fn corpus_reads(

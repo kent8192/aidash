@@ -214,6 +214,7 @@ impl Models {
 		crate::generation::embedding::reserve_many(
 			&mut accesses,
 			&self.store,
+			crate::database::scope::recorded(&self.bank.tenant)?,
 			self.bank.workspace,
 			config,
 			text,

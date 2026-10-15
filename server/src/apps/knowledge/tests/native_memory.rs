@@ -134,7 +134,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 	// Fixture clock injection cannot use production's same-revision guard.
 	record.fence.digest = aidash_domain::memory::recovery::digest(&aged).unwrap();
 	write_fixture_archive(&fence_path, &record);
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_units"))
@@ -202,7 +202,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 			.and_where(Expr::col("id").is_in([source, derived].map(Expr::value)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(text.len(), 2);
@@ -243,7 +243,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	.unwrap();
 	let message = Uuid::now_v7();
 	let body = "撤回する元メッセージ / Primary message to withdraw";
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("messages"))
@@ -298,7 +298,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	let archive = recovery::backup(&store, directory, participant.bank.clone())
 		.await
 		.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::delete()
 			.from_table(Alias::new("messages"))
@@ -320,7 +320,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(
@@ -497,7 +497,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 		"shipped restore must reach the recovery file boundary after startup migrations: {}",
 		std::fs::read_to_string(&log_path).unwrap()
 	);
-	let mut held = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut held = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::select()
 			.column(Alias::new("id"))
@@ -729,7 +729,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	recovery::prepare_restore(&store, directory).unwrap();
 	// Rewind only memory bodies. Current origin/control/authority/primary
 	// evidence tables and the independently retained ledger remain live.
-	let mut tx = store.pool.begin_unscoped().await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (id, text) in [
 		(a, "東京の削除対象"),
 		(b, "Before correction"),
@@ -767,7 +767,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 			.and_where(Expr::col("id").eq(Expr::value(published)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -781,7 +781,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 			.and_where(Expr::col("unit_id").eq(Expr::value(a)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let unit_revision: i64 = native::query_scalar(
@@ -791,7 +791,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 			.and_where(Expr::col("id").eq(Expr::value(a)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -808,7 +808,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 			.and_where(Expr::col("id").is_in([a, b, d].map(Expr::value)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(rows.len(), 3);
@@ -882,7 +882,7 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	let archive = recovery::backup(&store, directory, bank.clone())
 		.await
 		.unwrap();
-	let mut tx = store.pool.begin_unscoped().await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_units"))
@@ -1186,7 +1186,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(settings, "on");
@@ -1202,7 +1202,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 			.and_where(Expr::col("deleted").eq(false))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(hits.contains(&id) && hits.contains(&published_id));
@@ -1230,7 +1230,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 		shared_units.is_empty(),
 		"selected copies are excluded before physical purge"
 	);
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))
@@ -1252,7 +1252,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 			.and_where(Expr::col("id").eq(Expr::value(published_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(copied_body.is_empty());
@@ -1263,7 +1263,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 			.and_where(Expr::col("unit_id").is_in([Expr::value(id), Expr::value(published_id)]))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(remaining, 0);
@@ -1576,9 +1576,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 		!entries.iter().any(|entry| entry.id == observation),
 		"stale bodies must be withheld from delivery"
 	);
-	let mut projection_tx = aidash_server::database::native::begin_unscoped(&store.pool)
-		.await
-		.unwrap();
+	let mut projection_tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let stale: String = aidash_server::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("state"))
@@ -1624,9 +1622,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	.unwrap();
 	assert!(removed[0].deleted);
 	assert!(removed[0].content.text.is_empty());
-	let mut tx = aidash_server::database::native::begin_unscoped(&store.pool)
-		.await
-		.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let rows = aidash_server::database::native::query(
 		&Query::select()
 			.columns(["deleted", "state"].map(Alias::new))
@@ -1817,7 +1813,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_one(&store.pool)
+			.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap();
 			assert_ne!(state, "ERROR", "native vector indexing failed");
@@ -1890,7 +1886,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 		.to_string(PostgresQueryBuilder);
 	assert!(
 		aidash_server::database::native::query(&delete)
-			.execute(&store.pool)
+			.execute(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.is_err()
 	);
@@ -1958,7 +1954,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 		.to_string(PostgresQueryBuilder);
 	assert!(
 		aidash_server::database::native::query(&tables)
-			.fetch_all(&store.pool)
+			.fetch_all(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap()
 			.is_empty()
@@ -2128,7 +2124,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.from(Alias::new("semantic_entries"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	for row in projections {
@@ -2167,9 +2163,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			crate::native_database::owner_pool(store.pool.driver())
 				.await
 				.into();
-		let mut tx = aidash_server::database::native::begin_unscoped(&owner)
-			.await
-			.unwrap();
+		let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();
 		let ddl = [
 			"CREATE FUNCTION reject_context_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture context commit failure'; END $$",
 			"CREATE CONSTRAINT TRIGGER reject_context_commit AFTER INSERT ON run_task_snapshots DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_context_commit()",
@@ -2283,7 +2277,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&f.store.pool)
+		.scalar_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(
@@ -2322,7 +2316,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert!(
@@ -2380,7 +2374,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(
@@ -2712,10 +2706,10 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 			.and_where(Expr::col("kind").eq("mental_model"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))
@@ -2750,7 +2744,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 			.and_where(Expr::col("id").eq(Expr::value(job)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(queued.try_get::<String>("state").unwrap(), "pending");
@@ -2958,7 +2952,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("runs"))
@@ -3158,7 +3152,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		captured.lock().unwrap().is_empty(),
 		"uncertain effects must be rejected before extraction"
 	);
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("invocations"))
@@ -3284,7 +3278,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			.and_where(Expr::col("unit_id").eq(Expr::value(reviewed_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -3313,7 +3307,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			.and_where(Expr::col("unit_id").eq(Expr::value(reviewed_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -3332,7 +3326,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 				.and_where(Expr::col("id").eq(Expr::value(reviewed_id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&store.pool)
+		.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(
@@ -3343,7 +3337,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		let archive = memory_recovery::backup(&store, directory, participant.bank.clone())
 			.await
 			.unwrap();
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new("authorization_execution"))
@@ -3375,7 +3369,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 				.and_where(Expr::col("id").eq(Expr::value(reviewed_id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&store.pool)
+		.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert!(

@@ -220,7 +220,11 @@ impl OperatorConversations for NativeOperatorConversations {
 			.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Box<dyn OperatorConversationTransaction>> {
-		let tx = crate::database::native::begin_unscoped(&self.0.store.pool).await?;
+		// An Operator's conversation creates a Workspace without a Tenant.
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::LegacyRun,
+		);
+		let tx = self.0.store.pool.begin(&scope).await?;
 		Ok(Box::new(NativeOperatorTransaction {
 			federation: self.0.clone(),
 			phase: OperatorPhase::Admission(tx),

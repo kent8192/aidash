@@ -43,7 +43,12 @@ impl AuditRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn AuditScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin_unscoped(&self.runtime.store.pool).await?,
+			tx: self
+				.runtime
+				.store
+				.pool
+				.begin(&self.actor.tenancy()?)
+				.await?,
 			actor: self.actor.clone(),
 		}))
 	}

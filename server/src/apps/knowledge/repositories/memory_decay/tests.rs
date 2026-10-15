@@ -34,7 +34,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",
@@ -105,7 +105,7 @@ async fn deliveries(store: &Store, id: Uuid) -> Option<i64> {
 			.and_where(Expr::col("unit_id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_optional(&store.pool)
+	.scalar_optional(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap()
 }
@@ -246,7 +246,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	};
 	let before: Option<(bool, Option<DateTime<Utc>>)> = native::query_as(&retention())
 		.columns(&["pinned", "reactivated_at"])
-		.fetch_optional(&store.pool)
+		.fetch_optional(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	assert!(before.is_none());
@@ -259,7 +259,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	};
 	let projected_before: (i64, Uuid) = native::query_as(&projection())
 		.columns(&["revision", "point_id"])
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	let mut baseline = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
@@ -318,7 +318,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 						.and_where(Expr::col("pid").eq(pid))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&store.pool)
+				.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 				.await
 				.unwrap();
 				if row
@@ -349,12 +349,12 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	let (result, ()) = tokio::join!(contender, release);
 	let after: Option<(bool, Option<DateTime<Utc>>)> = native::query_as(&retention())
 		.columns(&["pinned", "reactivated_at"])
-		.fetch_optional(&store.pool)
+		.fetch_optional(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	let projected_after: (i64, Uuid) = native::query_as(&projection())
 		.columns(&["revision", "point_id"])
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
@@ -1108,7 +1108,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 			.and_where(Expr::col("unit_id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	for (as_of, expected_dormant) in [
@@ -1521,7 +1521,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	setup.finish(Ok(())).await.unwrap();
 
 	// Hold canonical hydration after the membership statement has completed.
-	let mut writer = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut writer = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for id in ids {
 		native::query(
 			&Query::select()
@@ -1566,7 +1566,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 						.and_where(Expr::col("pid").eq(pid))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&store.pool)
+				.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 				.await
 				.unwrap();
 				if row

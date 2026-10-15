@@ -6,7 +6,6 @@ use crate::{
 use aidash_application::{Result, ports::events::*};
 use aidash_domain::Event;
 use async_trait::async_trait;
-use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use uuid::Uuid;
 
 pub(crate) struct Outbox {
@@ -14,7 +13,7 @@ pub(crate) struct Outbox {
 }
 struct Batch {
 	records: Vec<Record>,
-	database: DatabaseConnectionLease,
+	pool: crate::database::native::Pool,
 	// TransactionExecutor is Send; the mutex only makes the owned RAII guard
 	// shareable while independent publication acknowledgements run concurrently.
 	_visibility: tokio::sync::Mutex<crate::transactions::gate::ReadLease>,
@@ -23,11 +22,10 @@ struct Batch {
 impl EventOutbox for Outbox {
 	async fn claim(&self) -> Result<Box<dyn EventOutboxBatch>> {
 		let visibility = crate::transactions::gate::ReadLease::begin(&self.store).await?;
-		let database = self.store.orm_connection()?;
-		let records = Record::claim_outbox(database.handle()).await?;
+		let records = Record::claim_outbox(&self.store.pool).await?;
 		Ok(Box::new(Batch {
 			records,
-			database,
+			pool: self.store.pool.clone(),
 			_visibility: tokio::sync::Mutex::new(visibility),
 		}))
 	}
@@ -46,20 +44,18 @@ impl EventOutboxBatch for Batch {
 				aidash_application::Error::Conflict("event is not in the claimed batch".into())
 			})?;
 		record
-			.finish_publication(self.database.handle(), error)
+			.finish_publication(&self.pool, error)
 			.await
 			.map_err(Into::into)
 	}
 }
 pub(crate) struct NativeInbox {
-	pub database: DatabaseConnectionLease,
+	pub pool: crate::database::native::Pool,
 }
 #[async_trait]
 impl EventInbox for NativeInbox {
 	async fn receive(&self, id: Uuid) -> Result<bool> {
-		Inbox::receive(self.database.handle(), id)
-			.await
-			.map_err(Into::into)
+		Inbox::receive(&self.pool, id).await.map_err(Into::into)
 	}
 }
 impl EventWakeup for crate::federation::Federation {

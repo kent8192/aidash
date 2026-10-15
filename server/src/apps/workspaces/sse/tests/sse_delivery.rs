@@ -162,7 +162,7 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 		.unwrap();
 	// Unknown UUIDs, incorrect Workspace hints and supplied data never become frames.
 	hint(&nats, &fixture.f, json!({"specversion":"1.0","id":Uuid::new_v4(),"source":fixture.f.config.node_id,"subject":ws,"sequence":i64::MAX,"data":{"secret":"forged"},"dataref":"http://127.0.0.1:1/must-not-fetch"})).await;
-	let mut tx = fixture.f.store.pool.begin_unscoped().await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let rolled_back = fixture
 		.f
 		.store
@@ -227,7 +227,7 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 ) {
 	let fixture = root;
 	let ws = fixture.workspaces[0];
-	let mut tx = fixture.f.store.pool.begin_unscoped().await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut expected = Vec::new();
 	for n in 0..550 {
 		let kind = if n < 325 {

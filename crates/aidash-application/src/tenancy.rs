@@ -78,8 +78,15 @@ pub enum DeploymentScopeReason {
 	Retention,
 	/// Listing atomic transactions that need recovery.
 	TransactionRecovery,
+	/// Processing and reconciling capability operations, transferring
+	/// capability records to peers, erasing and reclaiming capability work
+	/// areas, and reaping Python heaps.
+	CapabilityMaintenance,
 	/// Seeding built-in definitions into every Tenant's Registry.
 	BuiltInSeeding,
+	/// Reading and registering definitions in the Deployment's single
+	/// Registry, which every Tenant shares until #265 gives each its own.
+	SharedRegistry,
 	/// The `memory-recovery` command.
 	MemoryRecovery,
 	/// Recovering the credential store across Tenants.
@@ -127,7 +134,9 @@ impl DeploymentScopeReason {
 			Self::SemanticMaintenance => "semantic-maintenance",
 			Self::Retention => "retention",
 			Self::TransactionRecovery => "transaction-recovery",
+			Self::CapabilityMaintenance => "capability-maintenance",
 			Self::BuiltInSeeding => "built-in-seeding",
+			Self::SharedRegistry => "shared-registry",
 			Self::MemoryRecovery => "memory-recovery",
 			Self::CredentialStoreRecovery => "credential-store-recovery",
 			Self::CredentialReconcile => "credential-reconcile",
@@ -154,7 +163,9 @@ impl DeploymentScopeReason {
 			| Self::SemanticMaintenance
 			| Self::GenerationReconcile
 			| Self::Retention
+			| Self::CapabilityMaintenance
 			| Self::BuiltInSeeding
+			| Self::SharedRegistry
 			| Self::MemoryRecovery
 			| Self::CredentialStoreRecovery
 			| Self::DeploymentAdministration
@@ -200,7 +211,9 @@ mod tests {
 			DeploymentScopeReason::SemanticMaintenance,
 			DeploymentScopeReason::Retention,
 			DeploymentScopeReason::TransactionRecovery,
+			DeploymentScopeReason::CapabilityMaintenance,
 			DeploymentScopeReason::BuiltInSeeding,
+			DeploymentScopeReason::SharedRegistry,
 			DeploymentScopeReason::MemoryRecovery,
 			DeploymentScopeReason::CredentialStoreRecovery,
 			DeploymentScopeReason::CredentialReconcile,

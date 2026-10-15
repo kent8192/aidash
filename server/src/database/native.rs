@@ -153,16 +153,6 @@ impl Pool {
 	pub fn in_scope<'a>(&'a self, scope: &'a TenancyScope) -> InScope<'a> {
 		InScope { pool: self, scope }
 	}
-	/// An unscoped transaction. Every caller moves to [`Self::begin`] (#263).
-	pub async fn begin_unscoped(&self) -> Result<Transaction> {
-		Ok(Transaction(
-			Some(self.connection.begin().await?),
-			self.clone(),
-			Default::default(),
-			0,
-			None,
-		))
-	}
 	pub async fn close(&self) {
 		self.driver.close().await;
 	}
@@ -327,10 +317,6 @@ impl AsMut<dyn TransactionExecutor> for Transaction {
 			.as_mut()
 	}
 }
-/// An unscoped transaction. Every caller moves to [`Pool::begin`] (#263).
-pub async fn begin_unscoped(pool: &Pool) -> Result<Transaction> {
-	pool.begin_unscoped().await
-}
 
 pub struct Row(reinhardt::db::backends::Row);
 impl Row {
@@ -483,38 +469,6 @@ pub trait Executor: Send {
 	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution>;
 }
 #[async_trait]
-impl Executor for &Pool {
-	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
-		Ok(self
-			.connection
-			.fetch_all(sql, params)
-			.await?
-			.into_iter()
-			.map(Row)
-			.collect())
-	}
-	async fn optional(self, sql: &str, params: Vec<QueryValue>) -> Result<Option<Row>> {
-		Ok(self.connection.fetch_optional(sql, params).await?.map(Row))
-	}
-	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution> {
-		Ok(Execution(
-			self.connection.execute(sql, params).await?.rows_affected,
-		))
-	}
-}
-#[async_trait]
-impl Executor for &sqlx::PgPool {
-	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
-		Executor::rows(&Pool::from(self.clone()), sql, params).await
-	}
-	async fn optional(self, sql: &str, params: Vec<QueryValue>) -> Result<Option<Row>> {
-		Executor::optional(&Pool::from(self.clone()), sql, params).await
-	}
-	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution> {
-		Executor::execute(&Pool::from(self.clone()), sql, params).await
-	}
-}
-#[async_trait]
 impl<T: TransactionExecutor + ?Sized> Executor for &mut T {
 	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
 		Ok(TransactionExecutor::fetch_all(self, sql, params)
@@ -538,6 +492,7 @@ impl<T: TransactionExecutor + ?Sized> Executor for &mut T {
 }
 
 /// One statement in its own transaction opened in a tenancy scope.
+#[derive(Clone, Copy)]
 pub struct InScope<'a> {
 	pool: &'a Pool,
 	scope: &'a TenancyScope,

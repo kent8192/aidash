@@ -50,11 +50,11 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	// Persist pending learning results to isolate replacement from model transport.
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for name in ["First pending candidate", "Second pending candidate"] {
 		native::query(
 			&Query::insert()
@@ -333,7 +333,7 @@ async fn history_revisions(store: &Store, unit: Uuid) -> Vec<i64> {
 			.order_by(Alias::new("revision"), reinhardt::query::Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap()
 }
@@ -616,7 +616,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 			.from(Alias::new(table))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -770,7 +770,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 		);
 	}
 	// Inject the fixture clock into both canonical bodies and independent fences.
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for unit in &mut units {
 		unit.learned_at = chrono::DateTime::from_timestamp_micros(
 			(chrono::Utc::now() - chrono::Duration::days(2)).timestamp_micros(),
@@ -798,7 +798,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 	}
 	tx.commit().await.unwrap();
 	for expected in [2, 4, 5] {
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_bank_settings"))
@@ -824,7 +824,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 				.and_where(Expr::col("deleted").eq(true))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&store.pool)
+		.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(count, expected);
@@ -970,7 +970,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	.unwrap();
 	// Simulate a missing projection after valid bank admission. New banks now
 	// require an enabled matching index, while deletion must still repair gaps.
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::delete()
 			.from_table(Alias::new("semantic_points"))
@@ -1041,7 +1041,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 			.and_where(Expr::col("unit_id").eq(Expr::value(old)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(jobs, 1);
@@ -1119,7 +1119,7 @@ pub(super) async fn recorded_run(
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",

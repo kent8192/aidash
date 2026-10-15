@@ -1,5 +1,6 @@
 //! Temporary candidate pressure preserves durable learning and its model receipt.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence) -> Vec<Candidate> {
@@ -14,10 +15,10 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_candidates"))
@@ -76,7 +77,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 				.and_where(Expr::col("id").eq(Expr::value(*run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(row.try_get::<String>("state").unwrap(), "pending");
@@ -111,7 +112,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 			.and_where(Expr::col("id").eq(Expr::value(*run)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -137,7 +138,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 }
 
 async fn due(store: &Store, run: Uuid) {
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))

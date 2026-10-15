@@ -117,7 +117,12 @@ pub(crate) async fn binding<T: serde::de::DeserializeOwned>(
 	table: &str,
 	id: Uuid,
 ) -> Result<Option<T>> {
-	binding_with(&f.store.control_pool, table, id).await
+	binding_with(
+		f.store.control_pool.in_scope(&TenancyScope::NoTenant),
+		table,
+		id,
+	)
+	.await
 }
 
 pub(crate) async fn binding_with<T: serde::de::DeserializeOwned>(

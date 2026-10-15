@@ -75,7 +75,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	.bank;
 	let later = review_delivery::candidate(&store, &later_bank).await;
 	let old = chrono::Utc::now() - chrono::Duration::days(8);
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for query in [
 		Query::update()
 			.table(Alias::new("memory_candidates"))
@@ -105,7 +105,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		native::query(&query).execute(&mut *tx).await.unwrap();
 	}
 	tx.commit().await.unwrap();
-	let mut reader = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut reader = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut locked = Query::select();
 	if busy == "workspace" {
 		locked
@@ -146,7 +146,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		(row.try_get("text").unwrap(), row.try_get("state").unwrap())
@@ -394,7 +394,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	.await
 	.unwrap()
 	.bank;
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for table in ["semantic_collections", "semantic_indexes"] {
 		native::query(
 			&Query::delete()
@@ -492,7 +492,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	.bank;
 	let message = Uuid::now_v7();
 	let body = "Primary authority to withdraw";
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("messages"))
@@ -588,7 +588,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 			.and_where(Expr::col("text").ne(""))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(remaining, 0);
@@ -636,12 +636,12 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let candidate = Uuid::now_v7();
 	let old = chrono::Utc::now() - chrono::Duration::days(8);
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_candidates"))
@@ -705,7 +705,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	.unwrap();
 	tx.commit().await.unwrap();
 	for _ in 0..2 {
-		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_bank_settings"))
@@ -739,7 +739,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 				.and_where(Expr::col("id").eq(Expr::value(candidate)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(row.try_get::<String>("text").unwrap(), "");
@@ -850,12 +850,12 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 			.and_where(Expr::col("id").eq(Expr::value(dependent.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert!(row.try_get::<bool>("deleted").unwrap());
 	assert_eq!(row.try_get::<String>("text").unwrap(), "");
-	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))
@@ -880,7 +880,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 			.and_where(Expr::col("unit_id").eq(Expr::value(dependent.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(state, "purged");

@@ -328,7 +328,7 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 				.federation
 				.store
 				.pool
-				.begin_unscoped()
+				.begin(&TEST_FIXTURE)
 				.await
 				.unwrap();
 			aidash_server::database::native::query(

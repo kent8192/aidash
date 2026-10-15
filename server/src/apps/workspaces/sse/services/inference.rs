@@ -68,8 +68,11 @@ impl RunContext {
 		match &self.base.scope {
 			Some(scope) => scope.can_emit(&probe).await,
 			None => {
-				let mut connection =
-					crate::database::native::begin_unscoped(&self.base.f.store.pool).await?;
+				// The Operator's stream observes every Tenant's inference.
+				let scope = aidash_application::tenancy::TenancyScope::Deployment(
+					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+				);
+				let mut connection = self.base.f.store.pool.begin(&scope).await?;
 				crate::authorization::remote::operator::event_visible(&mut connection, &probe).await
 			}
 		}

@@ -16,7 +16,7 @@ use serde_json::Value;
 impl AdmissionRepository for Repository {
 	async fn begin_admission(&self) -> Result<Box<dyn AdmissionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
+			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

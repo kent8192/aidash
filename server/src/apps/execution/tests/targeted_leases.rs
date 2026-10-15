@@ -7,6 +7,7 @@ use crate::apps::execution::models::{
 };
 use crate::apps::execution::tests::native_database::{DatabaseFixture, database};
 use crate::domain::{ReadyState, RunState, TerminalState};
+use aidash_application::tenancy::TEST_FIXTURE;
 use chrono::{Duration, Utc};
 use reinhardt::db::orm::Model;
 use rstest::rstest;
@@ -59,7 +60,13 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 		.await
 		.unwrap();
 	let worker = Uuid::new_v4();
-	let mut tx = store.database().begin().await.unwrap();
+	let mut tx = store
+		.pool
+		.begin(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_executor()
+		.unwrap();
 	// Act: notification claims are scoped to exactly one committed Run.
 	let claimed = Store::lease_run_in(
 		tx.as_mut(),
@@ -133,7 +140,13 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	let old_worker: &'static [PersistedCapability] = &[];
 
 	// Act: an old worker scans the queue and then tries to claim the reserved Run.
-	let mut tx = store.database().begin().await.unwrap();
+	let mut tx = store
+		.pool
+		.begin(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_executor()
+		.unwrap();
 	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
 	scope.capabilities = old_worker;
 	let visible: Vec<Uuid> =
@@ -168,7 +181,13 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	assert_eq!(untouched.phase, RunPhase::Ready);
 
 	// Act: a current worker (production capabilities) claims it right away.
-	let mut tx = store.database().begin().await.unwrap();
+	let mut tx = store
+		.pool
+		.begin(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_executor()
+		.unwrap();
 	let resumed = Store::lease_run_in(
 		tx.as_mut(),
 		Uuid::new_v4(),
@@ -229,7 +248,13 @@ async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
 	let current: &'static [PersistedCapability] = PersistedCapability::supported();
 
 	// Act
-	let mut tx = store.database().begin().await.unwrap();
+	let mut tx = store
+		.pool
+		.begin(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_executor()
+		.unwrap();
 	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
 	scope.capabilities = current;
 	let waiting = scope.capability_waits().await.unwrap();
@@ -278,7 +303,13 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 		.unwrap();
 
 	// Act: a current worker scans the queue and then claims the Run.
-	let mut tx = store.database().begin().await.unwrap();
+	let mut tx = store
+		.pool
+		.begin(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_executor()
+		.unwrap();
 	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
 	let waiting = scope.capability_waits().await.unwrap();
 	let visible: Vec<Uuid> =

@@ -259,6 +259,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	let cancelled = f
 		.store
 		.transition_remote_run_message_terminal(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
