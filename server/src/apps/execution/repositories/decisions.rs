@@ -130,13 +130,45 @@ fn recovered(row: &native::Row) -> Result<RecoveredAttempt> {
 	})
 }
 
-/// Fields fixed when an attempt is first charged. A later worker recovers it
-/// under its own lease, so only the worker and Run revision may differ.
+/// A later worker recovers or continues a decision under its own lease, so
+/// only the worker and Run revision of its boundary may differ.
+fn same_input(saved: &Boundary, current: &Boundary) -> bool {
+	&Boundary {
+		worker: current.worker,
+		run_revision: current.run_revision,
+		..saved.clone()
+	} == current
+}
+
+/// Fields fixed when an attempt is first charged.
 fn same_charge(saved: &DispatchRecord, requested: &DispatchRecord) -> bool {
-	let mut saved = saved.clone();
-	saved.boundary.worker = requested.boundary.worker;
-	saved.boundary.run_revision = requested.boundary.run_revision;
-	&saved == requested
+	same_input(&saved.boundary, &requested.boundary)
+		&& &DispatchRecord {
+			boundary: requested.boundary.clone(),
+			..saved.clone()
+		} == requested
+}
+
+/// Fields every attempt of one decision shares, so a single evidence snapshot
+/// can name them all. Only the attempt, its request and its questions differ.
+fn same_decision(saved: &DispatchRecord, requested: &DispatchRecord) -> bool {
+	same_charge(
+		&DispatchRecord {
+			attempt: requested.attempt,
+			request_digest: requested.request_digest.clone(),
+			questions: requested.questions.clone(),
+			..saved.clone()
+		},
+		requested,
+	)
+}
+
+/// `committed` preserves at least the history `binding` required; authority
+/// may only tighten the restrictions an attempt was charged with.
+fn at_least_as_strict(committed: &Restrictions, binding: &Restrictions) -> bool {
+	committed.keep_threshold.value() <= binding.keep_threshold.value()
+		&& committed.preserve_recent >= binding.preserve_recent
+		&& (committed.forbid_apply || !binding.forbid_apply)
 }
 
 /// Lock the Run while `boundary.worker` holds its lease and its revisions match.
@@ -329,6 +361,13 @@ impl<'a> RunDecisionJournal<'a> {
 				tx.commit().await?;
 				return Ok(Reservation::Recovered(prior));
 			}
+			// Another batch of the same decision must share its inputs, or no single
+			// evidence snapshot could name both charges.
+			if !same_decision(&prior.permit.record, record) {
+				return Err(Error::Conflict(
+					"Decision Attempt differs from its decision's charged inputs".into(),
+				));
+			}
 			if prior
 				.permit
 				.record
@@ -472,7 +511,8 @@ impl<'a> RunDecisionJournal<'a> {
 	}
 
 	/// The evidence must name exactly the attempts this Run charged for the
-	/// decision, each with its durable status and the answers it durably recorded.
+	/// decision, each with its durable status and charged inputs, and carry
+	/// exactly the answers those attempts durably recorded.
 	async fn check_attempts(
 		&self,
 		tx: &mut native::Transaction,
@@ -489,6 +529,7 @@ impl<'a> RunDecisionJournal<'a> {
 				"decision evidence differs from its charged attempts".into(),
 			));
 		}
+		let mut answered = BTreeMap::new();
 		for attempt in &evidence.attempts {
 			let saved = charged.get(&attempt.id).ok_or_else(|| {
 				Error::Invalid("decision evidence names an uncharged attempt".into())
@@ -497,18 +538,25 @@ impl<'a> RunDecisionJournal<'a> {
 			if record.request_digest != attempt.request_digest
 				|| record.questions != attempt.questions
 				|| saved.permit.owner_receipts != attempt.owner_receipts
+				|| !same_input(&record.boundary, &evidence.boundary)
 				|| record.decider != evidence.decider
 				|| record.state_digest != evidence.state_digest
+				|| record.mode != evidence.mode
+				|| !at_least_as_strict(&evidence.restrictions, &record.binding_restrictions)
 				|| attempt.status != saved.status
-				|| saved.answers.as_ref().is_some_and(|answers| {
-					answers
-						.iter()
-						.any(|(question, answer)| evidence.answers.get(question) != Some(answer))
-				}) {
+			{
 				return Err(Error::Invalid(
 					"decision evidence differs from its charged attempts".into(),
 				));
 			}
+			answered.extend(saved.answers.iter().flatten().map(|(q, a)| (q.clone(), *a)));
+		}
+		// Charged plans never overlap, so the union is exact; an answer no
+		// answered attempt recorded is never evidence of a provider call.
+		if evidence.answers != answered {
+			return Err(Error::Invalid(
+				"decision evidence differs from its charged attempts".into(),
+			));
 		}
 		Ok(())
 	}
@@ -533,6 +581,14 @@ impl<'a> RunDecisionJournal<'a> {
 		if evidence.outcome != Outcome::Rejected {
 			evidence.replay()?;
 		}
+		// A rejection skips replay, yet later recovery and outcomes still link
+		// to its stable decision identity and state commitment.
+		if evidence.id.is_nil() {
+			return Err(Error::Invalid(
+				"decision evidence lacks its decision identity".into(),
+			));
+		}
+		validate_digest(&evidence.state_digest)?;
 		match (state, &evidence.state, &evidence.state_retention) {
 			(
 				Some(state),

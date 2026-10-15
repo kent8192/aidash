@@ -93,14 +93,18 @@ must also match the Run snapshot the journal was created with. A Decision Attemp
 per-Run call limit (`ExecutionAllowance::max_calls_per_run`). Every reservation reads
 the Run's current policy again through `CurrentAllowance` inside its transaction and
 charges against the stricter of the admitted and current limits. Reserving the same
-attempt again returns it as recovered, a changed charge or an overlapping question
-plan is a conflict, a current policy that pins another Decider is invalid, and a spent
+attempt again returns it as recovered. A changed charge, an overlapping question plan
+or another batch of the decision with different inputs (input commitment, state digest,
+mode or binding restrictions) is a conflict, a current policy that pins another Decider is invalid, and a spent
 limit or a Decider the current policy no longer allows stops with `PruneUnavailable`
 before anything is charged. Recovery reports a `pending` row as uncertain and keeps
 its original worker fence. Only the exact permit an attempt was charged with records
 its result, and a late result is still recorded after the lease moved. Committed
 evidence must name exactly the attempts charged for its decision, locked for the commit,
-each with its durable status, and carry the answers each answered attempt recorded.
+each with its durable status. It must keep their input commitment and mode, keep
+restrictions at least as strict as their binding restrictions, and carry exactly the
+answers its answered attempts recorded. A rejected snapshot, which skips replay, must
+still carry its decision identity.
 
 An applied decision saves the Run's context through the same lease-fenced save as an
 adopted Summary Stage (`context.compacted`), which ends the step, and writes its
@@ -117,4 +121,4 @@ the public API.
 
 The gate is still not composed into native execution. Wiring it into context recovery,
 the server Decision Provider and Decision Authority, the `decider` Registry kind and
-generated-chain owners follow once #178 and #158 Phase 3 have merged.
+generated-chain owners remain pending.

@@ -54,9 +54,8 @@ fn config(mode: Mode) -> DeciderConfig {
 		answer_type: AnswerType::Noul,
 		description: "Keep needed history".into(),
 		provider_contract: PROVIDER.into(),
-		endpoint: "https://example.test/systemone".into(),
-		model: "jev-1.13.0".into(),
-		credential_env: "AIDASH_SECRET_JEV".into(),
+		provider_credential: "openrouter".into(),
+		model: "typesafe/jev-1.13".into(),
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
@@ -135,6 +134,7 @@ impl Provider {
 		}
 	}
 }
+#[async_trait]
 impl DecisionProvider for Provider {
 	fn implementation_id(&self) -> &str {
 		IMPLEMENTATION
@@ -152,9 +152,10 @@ impl DecisionProvider for Provider {
 			questions: questions.clone(),
 		}])
 	}
-	fn prepare(
+	async fn prepare(
 		&self,
 		request: &PreparedRequest,
+		_: Uuid,
 	) -> aidash_application::Result<Box<dyn PreparedDispatch + '_>> {
 		Ok(Box::new(Dispatch {
 			provider: self,
@@ -497,6 +498,31 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		journal.commit(&omitting, None, None).await,
 		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
 	));
+	// A rejection skips replay, yet it still carries only what its charges recorded:
+	// no unbacked answer, no other input, mode or looser restrictions.
+	let (_, saved) = evidence_rows(&f.store, run.id).await.remove(0);
+	let mut unbacked = saved.clone();
+	unbacked
+		.answers
+		.insert("unanswered".into(), Probability::new(1.0).unwrap());
+	let mut other_input = saved.clone();
+	other_input.boundary.input_digest = format!("sha256:{}", "b".repeat(64));
+	let mut other_mode = saved.clone();
+	other_mode.mode = Mode::Shadow;
+	let mut looser = saved.clone();
+	looser.restrictions.preserve_recent = 5;
+	for differing in [unbacked, other_input, other_mode, looser] {
+		assert!(matches!(
+			journal.commit(&differing, None, None).await,
+			Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+		));
+	}
+	let mut anonymous = saved.clone();
+	anonymous.id = Uuid::nil();
+	assert!(matches!(
+		journal.commit(&anonymous, None, None).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("decision identity")
+	));
 	// An expired marker must match its retention witness.
 	let (_, mut marked) = evidence_rows(&f.store, run.id).await.remove(0);
 	marked.state = StateReference::Expired {
@@ -741,13 +767,41 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 	assert_eq!(recovered.len(), 1);
 	assert_eq!(recovered[0].status, AttemptStatus::Answered);
 	assert_eq!(recovered[0].answers.as_ref(), Some(&answers));
-	// The call limit pauses the Run instead of charging a third attempt.
-	let mut second = record(&f.store, &run, worker, &decider, &["q2_call"], 'a');
-	second.decision = Uuid::new_v4();
+	// Another batch of the decision is charged only with the decision's inputs.
+	let mut sibling = record(&f.store, &run, worker, &decider, &["q2_call"], 'a');
+	sibling.decision = first.decision;
+	let mut other_input = sibling.clone();
+	other_input.boundary.input_digest = format!("sha256:{}", "b".repeat(64));
+	let mixed_batches = [
+		other_input,
+		DispatchRecord {
+			state_digest: format!("sha256:{}", "b".repeat(64)),
+			..sibling.clone()
+		},
+		DispatchRecord {
+			mode: Mode::Shadow,
+			..sibling.clone()
+		},
+		DispatchRecord {
+			binding_restrictions: Restrictions {
+				preserve_recent: 8,
+				..Default::default()
+			},
+			..sibling.clone()
+		},
+	];
+	for mixed in &mixed_batches {
+		assert!(matches!(
+			journal.reserve(mixed).await,
+			Err(aidash_application::Error::Conflict(_))
+		));
+	}
+	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
 	assert!(matches!(
-		journal.reserve(&second).await.unwrap(),
+		journal.reserve(&sibling).await.unwrap(),
 		Reservation::Fresh(_)
 	));
+	// The call limit pauses the Run instead of charging a third attempt.
 	let mut third = record(&f.store, &run, worker, &decider, &["q3_call"], 'a');
 	third.decision = Uuid::new_v4();
 	assert!(matches!(
