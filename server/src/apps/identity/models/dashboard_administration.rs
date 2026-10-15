@@ -190,18 +190,15 @@ impl DashboardRegistrationRequest {
 				// a new request still requires an explicit approval.
 				let personal = PersonalTenantLink::objects()
 					.filter(PersonalTenantLink::field_identity_id().eq(identity))
-					.all_with_db(tx)
-					.await?
-					.pop()
-					.map(|link| link.tenant);
-				let active_mapping = previous.status == "approved"
+					.exists_with_db(tx)
+					.await?;
+				let active_mapping = !personal
+					&& previous.status == "approved"
 					&& DashboardMapping::objects()
 						.filter(DashboardMapping::field_identity_id().eq(identity))
 						.filter(DashboardMapping::field_enabled().eq(true))
-						.all_with_db(tx)
-						.await?
-						.into_iter()
-						.any(|mapping| Some(&mapping.tenant) != personal.as_ref());
+						.exists_with_db(tx)
+						.await?;
 				if dashboard_rules::reuse_registration(&previous, now, active_mapping)? {
 					return Ok(previous);
 				}
