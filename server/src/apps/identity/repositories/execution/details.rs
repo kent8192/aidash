@@ -131,4 +131,13 @@ impl RunDetailsScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn finish_visible(
+		self: Box<Self>,
+		result: Result<RunInspection>,
+	) -> Result<RunInspection> {
+		self.access
+			.finish(result.map_err(Into::into))
+			.await
+			.map_err(Into::into)
+	}
 }

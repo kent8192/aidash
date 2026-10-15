@@ -629,6 +629,7 @@ impl ExecutionHome for Backend {
 				content: input.content.clone(),
 				idempotency_key: Some(input.idempotency_key.clone()),
 				created_at: "2026-10-02T00:00:00Z".parse().unwrap(),
+				run_id: None,
 			}));
 		}
 		assert_eq!(kind, "task");
@@ -3307,6 +3308,7 @@ fn run_message(fixture: &mut Fixture) {
 		content: content.into(),
 		idempotency_key: Some("input-2".into()),
 		created_at,
+		run_id: None,
 	}];
 	fixture.run.observed_input_seq = 1;
 }

@@ -32,6 +32,9 @@ pub struct Message {
 	pub idempotency_key: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// The Run that published this message on this Node; see the contract.
+	#[field(null = true)]
+	pub run_id: Option<uuid::Uuid>,
 }
 
 impl Message {
@@ -42,6 +45,7 @@ impl Message {
 		sender: &str,
 		content: &str,
 		key: &str,
+		run: Option<Uuid>,
 	) -> Result<MessageContract> {
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("messages"))
@@ -51,6 +55,7 @@ impl Message {
 				Alias::new("sender"),
 				Alias::new("content"),
 				Alias::new("idempotency_key"),
+				Alias::new("run_id"),
 			])
 			.values_panic([
 				IntoValue::into_value(Uuid::new_v4()),
@@ -58,6 +63,7 @@ impl Message {
 				IntoValue::into_value(sender),
 				IntoValue::into_value(content),
 				IntoValue::into_value(key),
+				IntoValue::into_value(run),
 			])
 			.on_conflict(
 				OnConflict::columns([Alias::new("idempotency_key")])
@@ -80,9 +86,12 @@ impl Message {
 				.map_err(FrameworkError::from)?
 				.pop()
 				.ok_or_else(|| Error::NotFound("message".into()))?;
+			// The publishing Run is part of the input: a replay that would bind
+			// another Run's citations, or none, is a reused key.
 			if message.workspace_id() != workspace
 				|| message.sender != sender
 				|| message.content != content
+				|| message.run_id != run
 			{
 				return Err(Error::Conflict("message idempotency key reused".into()));
 			}
@@ -141,6 +150,7 @@ impl crate::database::Record for Message {
 			content: row.try_get("content")?,
 			idempotency_key: row.try_get("idempotency_key")?,
 			created_at: row.try_get("created_at")?,
+			run_id: row.try_get("run_id")?,
 		})
 	}
 }

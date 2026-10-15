@@ -49,6 +49,7 @@ fn artifact(value: u128, visible: bool) -> Artifact {
 		created_by: if visible { "saved-author" } else { "hidden" }.into(),
 		idempotency_key: "immutable".into(),
 		created_at: Utc::now(),
+		run_id: None,
 	}
 }
 fn run(value: u128, visible: bool) -> RawRun {
