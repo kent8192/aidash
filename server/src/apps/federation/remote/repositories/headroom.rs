@@ -21,7 +21,7 @@ impl Definitions for Context<'_> {
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		self.0
 			.store
-			.run(run.id)
+			.run(&self.0.store.run_tenancy(run.id).await?, run.id)
 			.await?
 			.context
 			.binding_snapshot

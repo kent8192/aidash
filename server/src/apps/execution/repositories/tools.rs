@@ -163,6 +163,7 @@ impl ToolOperations for Operations {
 		super::bindings::Providers {
 			federation: self.0.home.federation.clone(),
 			home: self.0.home.clone(),
+			scope: self.0.scope.clone(),
 		}
 		.specifications(&self.0.run)
 	}

@@ -3,6 +3,7 @@ mod common;
 #[path = "transactions/review.rs"]
 mod review;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use chrono::{Duration, Utc};
 use common::*;
 use serde_json::{Value, json};
@@ -32,11 +33,12 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let run = f.store.runs().await.unwrap().remove(0);
-	let task = f.store.task(task_id).await.unwrap();
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let task = f.store.task(&TEST_FIXTURE, task_id).await.unwrap();
 	let task = f
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
@@ -79,12 +81,17 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 			Err(aidash_server::Error::NotFound(_))
 		));
 		assert_eq!(
-			f.store.run(run.id).await.unwrap().phase().as_str(),
+			f.store
+				.run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.phase()
+				.as_str(),
 			"TOOL_CALL"
 		);
 		assert!(
 			f.store
-				.snapshot(task.workspace_id)
+				.snapshot(&TEST_FIXTURE, task.workspace_id)
 				.await
 				.unwrap()
 				.artifacts
@@ -109,14 +116,29 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 				.unwrap();
 		}
 		assert_eq!(
-			f.store.task(task_id).await.unwrap().status.as_str(),
+			f.store
+				.task(&TEST_FIXTURE, task_id)
+				.await
+				.unwrap()
+				.status
+				.as_str(),
 			"COMPLETED"
 		);
 		assert_eq!(
-			f.store.run(run.id).await.unwrap().phase().as_str(),
+			f.store
+				.run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.phase()
+				.as_str(),
 			"COMPLETED"
 		);
-		let artifacts = f.store.snapshot(task.workspace_id).await.unwrap().artifacts;
+		let artifacts = f
+			.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap()
+			.artifacts;
 		assert_eq!(artifacts.len(), 1);
 		assert_eq!(artifacts[0].created_by, task.owner.unwrap());
 	}
@@ -139,7 +161,12 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, subject, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let manifest: Manifest = serde_json::from_value(json!({
 		"id": Uuid::new_v4(), "coordinator": f.config.node_id,
 		"isolation": "serializable", "deadline": Utc::now() + Duration::minutes(5),
@@ -196,7 +223,11 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	assert!(outcome.complete, "{outcome:?}");
 	assert_eq!(outcome.decision.as_deref(), Some(decision));
 	assert_eq!(
-		f.store.workspace(workspace).await.unwrap().revision,
+		f.store
+			.workspace(&TEST_FIXTURE, workspace)
+			.await
+			.unwrap()
+			.revision,
 		revision
 	);
 	assert_eq!(
@@ -240,7 +271,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	);
 	let workspace = f
 		.store
-		.create_workspace("Atomic", "Commit together")
+		.create_workspace(&TEST_FIXTURE, "Atomic", "Commit together")
 		.await
 		.unwrap();
 	let id = Uuid::new_v4();
@@ -319,7 +350,11 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		Err(Error::NotFound(_))
 	));
 	assert_eq!(
-		f.store.workspace(workspace.id).await.unwrap().state,
+		f.store
+			.workspace(&TEST_FIXTURE, workspace.id)
+			.await
+			.unwrap()
+			.state,
 		json!({})
 	);
 	cleanup(f, &url, &schema).await;
@@ -352,7 +387,12 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 	)
 	.await
 	.unwrap();
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"private":"do not disclose"}}]}]});
@@ -362,7 +402,14 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 		aidash_server::transactions::coordinator::status(&f, id).await,
 		Err(aidash_server::Error::NotFound(_))
 	));
-	assert_eq!(f.store.workspace(workspace).await.unwrap().revision, 0);
+	assert_eq!(
+		f.store
+			.workspace(&TEST_FIXTURE, workspace)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -377,7 +424,12 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]});
@@ -459,7 +511,14 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 			.as_deref(),
 		Some("COMMIT")
 	);
-	assert_eq!(f.store.workspace(workspace).await.unwrap().revision, 1);
+	assert_eq!(
+		f.store
+			.workspace(&TEST_FIXTURE, workspace)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -474,7 +533,12 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]})).unwrap();
 	assert_eq!(
@@ -509,7 +573,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	);
 	assert!(
 		f.store
-			.update_state(workspace, 0, json!({"escape":true}))
+			.update_state(&TEST_FIXTURE, workspace, 0, json!({"escape":true}))
 			.await
 			.is_err()
 	);
@@ -535,7 +599,14 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 			break;
 		}
 	}
-	assert_eq!(f.store.workspace(workspace).await.unwrap().revision, 0);
+	assert_eq!(
+		f.store
+			.workspace(&TEST_FIXTURE, workspace)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
 	cleanup(f, &url, &schema).await;
 }
 

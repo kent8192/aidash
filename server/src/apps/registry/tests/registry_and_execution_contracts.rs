@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures as upstream;
 use http::Method;
 use reinhardt::ServerRouter as Router;
@@ -88,7 +89,7 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	);
 	assert_eq!(
 		f.store
-			.events(0, None, 100)
+			.events(&TEST_FIXTURE, 0, None, 100)
 			.await
 			.unwrap()
 			.iter()
@@ -176,7 +177,11 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
-	let workspace = f.store.create_workspace("tree", "goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace(&TEST_FIXTURE, "tree", "goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "task".into(),
 		description: "work".into(),
@@ -186,7 +191,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	};
 	let parent = f
 		.store
-		.create_task(workspace.id, &input, "operator", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "operator", None)
 		.await
 		.unwrap();
 	let mut child = input.clone();
@@ -194,14 +199,14 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	child.dependencies = vec![parent.id];
 	assert!(
 		f.store
-			.create_task(workspace.id, &child, "operator", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &child, "operator", None)
 			.await
 			.is_err()
 	);
 	child.dependencies.clear();
 	let child = f
 		.store
-		.create_task(workspace.id, &child, "operator", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &child, "operator", None)
 		.await
 		.unwrap();
 	let mut grandchild = input;
@@ -209,7 +214,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	grandchild.dependencies = vec![parent.id];
 	assert!(
 		f.store
-			.create_task(workspace.id, &grandchild, "operator", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &grandchild, "operator", None)
 			.await
 			.is_err()
 	);
@@ -248,9 +253,15 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	f.store
 		.message(
+			&TEST_FIXTURE,
 			workspace,
 			"allowed",
 			"older-visible",
@@ -263,6 +274,7 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 	for index in 0..110 {
 		f.store
 			.message(
+				&TEST_FIXTURE,
 				workspace,
 				"denied",
 				&denied_content,
@@ -321,10 +333,15 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.create_workspace("operator", "goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace(&TEST_FIXTURE, "operator", "goal")
+		.await
+		.unwrap();
 	let task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "work".into(),
@@ -353,7 +370,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	}
 	assert_eq!(
 		f.store
-			.events(0, Some(workspace.id), 1000)
+			.events(&TEST_FIXTURE, 0, Some(workspace.id), 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -361,11 +378,12 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 			.count(),
 		1
 	);
-	let current = f.store.task(task.id).await.unwrap();
+	let current = f.store.task(&TEST_FIXTURE, task.id).await.unwrap();
 	let agent = f.registry.get("research", "1.0.0").await.unwrap();
 	assert!(
 		f.store
 			.claim(
+				&TEST_FIXTURE,
 				task.id,
 				current.revision,
 				"aidash://other/agents/research@1.0.0",
@@ -377,6 +395,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	assert_eq!(
 		f.store
 			.claim(
+				&TEST_FIXTURE,
 				task.id,
 				current.revision,
 				&aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.0"),
@@ -390,7 +409,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	);
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -413,7 +432,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	}
 	assert_eq!(
 		f.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -447,7 +466,7 @@ async fn scoped_run_details_keep_memory_home_namespace(
 		.0,
 		200
 	);
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let (status, details) = request(
 		&app,
 		&token,
@@ -685,7 +704,7 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 	}
 	assert_eq!(
 		f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -776,7 +795,12 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let key = Uuid::new_v4();
 	let path = format!("/api/workspaces/{workspace}/messages");
 	for actor in [&token, &f.config.api_token] {
@@ -804,7 +828,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 			409
 		);
 	}
-	let snapshot = f.store.snapshot(workspace).await.unwrap();
+	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace).await.unwrap();
 	assert_eq!(
 		snapshot
 			.messages
@@ -815,7 +839,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	);
 	assert_eq!(
 		f.store
-			.events(0, Some(workspace), 500)
+			.events(&TEST_FIXTURE, 0, Some(workspace), 500)
 			.await
 			.unwrap()
 			.iter()
@@ -823,7 +847,11 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 			.count(),
 		2
 	);
-	let other = f.store.create_workspace("other", "goal").await.unwrap();
+	let other = f
+		.store
+		.create_workspace(&TEST_FIXTURE, "other", "goal")
+		.await
+		.unwrap();
 	assert_eq!(
 		request(
 			&app,
@@ -853,7 +881,10 @@ async fn operator_conversation_returns_the_committed_task_revision(
 	assert_eq!(status, 200, "{response}");
 	let task = f
 		.store
-		.task(response["task"]["id"].as_str().unwrap().parse().unwrap())
+		.task(
+			&TEST_FIXTURE,
+			response["task"]["id"].as_str().unwrap().parse().unwrap(),
+		)
 		.await
 		.unwrap();
 	assert!(task.revision > 0);
@@ -901,7 +932,7 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 		if !harness.worker_once().await.unwrap() {
 			break;
 		}
-		let current = f.store.runs().await.unwrap().remove(0);
+		let current = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 		if let aidash_domain::RunState::Waiting(wait) = &current.state
 			&& let aidash_domain::WaitingState::ExternalApproval {
 				request_id, call, ..
@@ -910,12 +941,12 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 			assert_eq!(call.name, "plugin_0");
 			assert_eq!(call.id, "call-1");
 			f.store
-				.answer(*request_id, json!({"approved":true}))
+				.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
 				.await
 				.unwrap();
 		}
 	}
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(
 		run.phase().as_str(),
 		"COMPLETED",

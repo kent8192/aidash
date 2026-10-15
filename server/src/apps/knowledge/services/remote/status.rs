@@ -44,7 +44,8 @@ pub(crate) async fn run_receipt(
 	if matches!(&result, Err(Error::Forbidden | Error::RemoteSemantic(_))) {
 		// A denied reader cannot erase another subject's valid cache. Recheck the
 		// original worker authority after releasing the reader's transaction.
-		if let Ok(run) = f.store.run(id).await {
+		let scope = f.store.run_tenancy(id).await?;
+		if let Ok(run) = f.store.run(&scope, id).await {
 			match crate::apps::identity::services::peer::admission::worker_lease(
 				&f,
 				&run.metadata(),

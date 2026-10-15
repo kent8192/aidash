@@ -8,8 +8,9 @@ use crate::apps::execution::models::{
 	event_records,
 	inference::{InferenceAttempt, InferenceProgressRecord},
 };
-use crate::database::native::{self, Decode, Executor};
+use crate::database::native::{Decode, Executor};
 use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::provider::progress::{
 	InferenceAttemptId, InferenceProgress, InterruptionReason, MAX_PROGRESS_ITEM_BYTES,
 	ProgressOutcome, RETENTION, STARTED_EVENT,
@@ -626,11 +627,12 @@ async fn fence(tx: &mut dyn TransactionExecutor, run: Uuid, token: Uuid) -> Resu
 impl crate::store::Store {
 	pub async fn start_inference(
 		&self,
+		scope: &TenancyScope,
 		run: Uuid,
 		token: Uuid,
 		attempt: InferenceAttemptId,
 	) -> Result<()> {
-		let mut tx = native::begin_unscoped(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
 		let orphans = start(tx.as_mut(), &self.node_id, run, token, attempt).await?;
 		tx.commit().await?;
@@ -640,12 +642,13 @@ impl crate::store::Store {
 
 	pub async fn append_inference_progress(
 		&self,
+		scope: &TenancyScope,
 		run: Uuid,
 		token: Uuid,
 		attempt: InferenceAttemptId,
 		batch: &[InferenceProgress],
 	) -> Result<()> {
-		let mut tx = native::begin_unscoped(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
 		append(tx.as_mut(), run, attempt, batch).await?;
 		tx.commit().await
@@ -653,12 +656,13 @@ impl crate::store::Store {
 
 	pub async fn finish_inference(
 		&self,
+		scope: &TenancyScope,
 		run: Uuid,
 		token: Uuid,
 		attempt: InferenceAttemptId,
 		outcome: ProgressOutcome,
 	) -> Result<()> {
-		let mut tx = native::begin_unscoped(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		fence(tx.as_mut(), run, token).await?;
 		finish(tx.as_mut(), &self.node_id, run, attempt, outcome).await?;
 		tx.commit().await
@@ -666,9 +670,14 @@ impl crate::store::Store {
 
 	/// After a stale response rolls back, close its attempt as discarded under
 	/// the same lease. A lost lease leaves it to orphan closure.
-	pub(crate) async fn discard_stale_inference(&self, run: Uuid, token: Uuid) {
+	pub(crate) async fn discard_stale_inference(
+		&self,
+		scope: &TenancyScope,
+		run: Uuid,
+		token: Uuid,
+	) {
 		let result = async {
-			let mut tx = native::begin_unscoped(&self.pool).await?;
+			let mut tx = self.pool.begin(scope).await?;
 			fence(tx.as_mut(), run, token).await?;
 			let closed = close_pending(
 				tx.as_mut(),
@@ -690,7 +699,8 @@ impl crate::store::Store {
 	/// One bounded pass closing attempts no worker can finish. Returns the
 	/// number of attempts closed.
 	pub async fn close_orphaned_inference(&self) -> Result<usize> {
-		let mut tx = native::begin_unscoped(&self.pool).await?;
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::Retention);
+		let mut tx = self.pool.begin(scope).await?;
 		let closed = close_orphans(tx.as_mut(), &self.node_id).await?;
 		tx.commit().await?;
 		record_interruptions(&closed);
@@ -699,7 +709,8 @@ impl crate::store::Store {
 
 	/// One bounded retention pass. Returns the number of attempts pruned.
 	pub async fn prune_inference_progress(&self) -> Result<u64> {
-		let mut tx = native::begin_unscoped(&self.pool).await?;
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::Retention);
+		let mut tx = self.pool.begin(scope).await?;
 		let pruned = prune(tx.as_mut()).await?;
 		tx.commit().await?;
 		Ok(pruned)
@@ -707,18 +718,23 @@ impl crate::store::Store {
 
 	pub(crate) async fn inference_page(
 		&self,
+		scope: &TenancyScope,
 		run: Uuid,
 		after: i64,
 		limit: u64,
 	) -> Result<Vec<ProgressRow>> {
-		page(&self.pool, run, after, limit).await
+		page(self.pool.in_scope(scope), run, after, limit).await
 	}
 
-	pub(crate) async fn inference_bounds(&self, run: Uuid) -> Result<(Option<i64>, bool)> {
-		bounds(&self.pool, run).await
+	pub(crate) async fn inference_bounds(
+		&self,
+		scope: &TenancyScope,
+		run: Uuid,
+	) -> Result<(Option<i64>, bool)> {
+		bounds(self.pool.in_scope(scope), run).await
 	}
 
-	pub(crate) async fn inference_run(&self, run: Uuid) -> Result<RunTarget> {
-		target(&self.pool, run).await
+	pub(crate) async fn inference_run(&self, scope: &TenancyScope, run: Uuid) -> Result<RunTarget> {
+		target(self.pool.in_scope(scope), run).await
 	}
 }

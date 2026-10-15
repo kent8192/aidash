@@ -3,6 +3,7 @@
 mod upstream;
 use crate::native_database::{DatabaseFixture, database};
 use aidash_application::ports::VectorIndex;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
 	apps::{
@@ -2179,6 +2180,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace,
 			&NewTask {
 				title: "Tokyo transport".into(),
@@ -2237,7 +2239,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	)
 	.await
 	.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -2252,7 +2254,12 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		if (reflect && captured.lock().unwrap().len() > 1)
 			|| (!reflect
 				&& !captured.lock().unwrap().is_empty()
-				&& f.store.run(run.id).await.unwrap().phase().as_str() == "READY")
+				&& f.store
+					.run(&TEST_FIXTURE, run.id)
+					.await
+					.unwrap()
+					.phase()
+					.as_str() == "READY")
 		{
 			break;
 		}
@@ -2279,7 +2286,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			"earlier successful Bank must leave no phantom read"
 		);
 		if delivery != "later_bank" {
-			let error = f.store.run(run.id).await.unwrap().error;
+			let error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
 			assert!(
 				error
 					.as_deref()
@@ -2320,7 +2327,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		drop(provider);
 		return;
 	}
-	let run_error = f.store.run(run.id).await.unwrap().error;
+	let run_error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
 	assert_eq!(
 		captured.lock().unwrap().len(),
 		1,
@@ -2382,12 +2389,12 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	}
 	let latest = "最新の入力: 地下鉄の料金も確認してください。";
 	f.store
-		.accept_run_message(run.id, "alice", latest, "latest", 4096)
+		.accept_run_message(&TEST_FIXTURE, run.id, "alice", latest, "latest", 4096)
 		.await
 		.unwrap();
 	let message = f
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.into_iter()
@@ -2452,7 +2459,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		frames.len(),
 		2,
 		"Run error={:?}; last tool={:?}",
-		f.store.run(run.id).await.unwrap().error,
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error,
 		frames.last().map(|f| &f["history"])
 	);
 	let second = captured.lock().unwrap()[1]["current"]["semantic_memory"].clone();
@@ -2487,11 +2494,17 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.expect("an invalidated writer must not spin")
 			.unwrap();
-		if f.store.run(run.id).await.unwrap().control.as_str() == "PAUSED" {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str() == "PAUSED"
+		{
 			break;
 		}
 	}
-	let stopped = f.store.run(run.id).await.unwrap();
+	let stopped = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(stopped.control.as_str(), "PAUSED", "{:?}", stopped.error);
 	assert_eq!(
 		stopped.recovery.semantic_reason,
@@ -2527,7 +2540,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.expect("a restarted worker must not block on an invalidated Run")
 			.unwrap();
 	}
-	let after_restart = f.store.run(run.id).await.unwrap();
+	let after_restart = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(after_restart.control.as_str(), "PAUSED");
 	assert_eq!(
 		after_restart.recovery.semantic_reason,
@@ -2542,7 +2555,11 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	// That entry check reports the generic authority pause, not `invalidated`;
 	// rejecting such a resume outright is a decision requested in Issue #127.
 	f.store
-		.control(run.id, aidash_domain::RunControlAction::Resume)
+		.control(
+			&TEST_FIXTURE,
+			run.id,
+			aidash_domain::RunControlAction::Resume,
+		)
 		.await
 		.unwrap();
 	for _ in 0..4 {
@@ -2550,11 +2567,17 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.expect("a resumed invalidated Run must stop, not spin")
 			.unwrap();
-		if f.store.run(run.id).await.unwrap().control.as_str() == "PAUSED" {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str() == "PAUSED"
+		{
 			break;
 		}
 	}
-	let resumed = f.store.run(run.id).await.unwrap();
+	let resumed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(resumed.control.as_str(), "PAUSED", "{:?}", resumed.error);
 	assert_eq!(resumed.error.as_deref(), Some("execution authority denied"));
 	assert_eq!(captured.lock().unwrap().len(), 2);
@@ -2910,6 +2933,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	.unwrap();
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace,
 			&aidash_domain::NewTask {
 				title: "Canonical learning".into(),
@@ -3106,7 +3130,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		.await
 		.unwrap();
 
-	let run = store.run(id).await.unwrap();
+	let run = store.run(&TEST_FIXTURE, id).await.unwrap();
 	let proof = Evidence::Run {
 		id,
 		revision: run.revision,

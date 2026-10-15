@@ -126,11 +126,9 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 
 pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunManagement> {
 	let Actor::Subject(identity) = actor else {
-		let mut result: RunManagement = f.store.inspect_run(id).await?.into();
-		// A Deployment Administrator inspects a Run by id, in any Tenant.
-		let scope = aidash_application::tenancy::TenancyScope::Deployment(
-			aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-		);
+		// A Deployment Administrator names a Run; it works in the Run's Tenant.
+		let scope = f.store.run_tenancy(id).await?;
+		let mut result: RunManagement = f.store.inspect_run(&scope, id).await?.into();
 		let mut tx = f.store.control_pool.begin(&scope).await?;
 		result.memory_cleanup =
 			crate::apps::knowledge::repositories::receiver_caches::status(&mut tx, id).await?;
@@ -161,11 +159,12 @@ pub(crate) async fn control(
 		ManagementAction::Cancel => RunControlAction::Cancel,
 	};
 	let Actor::Subject(identity) = actor else {
-		let current = f.store.inspect_run(id).await?;
+		let scope = f.store.run_tenancy(id).await?;
+		let current = f.store.inspect_run(&scope, id).await?;
 		let run = if current.control == RunControl::Cancelled {
 			current
 		} else {
-			f.store.control(id, action).await?
+			f.store.control(&scope, id, action).await?
 		};
 		f.notify.notify_waiters();
 		return Ok(run.into());

@@ -1,4 +1,5 @@
 use crate::native_database::{DatabaseFixture, database};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::Error;
 use aidash_server::apps::knowledge::models::{SemanticEntry, SemanticIndexe};
 use aidash_server::authorization::identity::Actor;
@@ -24,7 +25,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Constraints", "Persisted authority")
+		.create_workspace(&TEST_FIXTURE, "Constraints", "Persisted authority")
 		.await
 		.unwrap();
 	service::configure(
@@ -148,7 +149,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Limits", "Verify memory limits")
+		.create_workspace(&TEST_FIXTURE, "Limits", "Verify memory limits")
 		.await
 		.unwrap();
 	service::configure(
@@ -239,7 +240,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Race", "Serialize limit changes")
+		.create_workspace(&TEST_FIXTURE, "Race", "Serialize limit changes")
 		.await
 		.unwrap();
 	service::configure(
@@ -306,7 +307,11 @@ async fn operator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Operator vectors", "Empty tenant remains scoped")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Operator vectors",
+			"Empty tenant remains scoped",
+		)
 		.await
 		.unwrap();
 	let transport = aidash_server::bootstrap::semantic_transport(&store);

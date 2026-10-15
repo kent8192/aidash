@@ -7,6 +7,7 @@ use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
 use crate::authorization::{Authorization, identity::Actor};
 use crate::store::Store;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::memory::*;
 use rstest::rstest;
 use serde_json::json;
@@ -45,6 +46,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 	let actor = authorization.authenticate(&credential.token).await.unwrap();
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			bank.workspace,
 			&aidash_domain::NewTask {
 				title: "Reader".into(),

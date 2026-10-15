@@ -1,5 +1,6 @@
 //! Distributed transaction behavior over production Reinhardt routes.
 use crate::fixtures::{Node, Pair, WorkerProcess, pair};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	Error,
 	apps::{
@@ -113,7 +114,7 @@ async fn unavailable(node: &Node, workspace_id: Uuid) {
 	assert!(
 		node.f
 			.store
-			.update_state(workspace_id, 0, json!({"bypass":true}))
+			.update_state(&TEST_FIXTURE, workspace_id, 0, json!({"bypass":true}))
 			.await
 			.is_err(),
 		"pending atomic work must reject a competing write"
@@ -382,6 +383,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 	let task =
 		a.f.store
 			.create_task(
+				&TEST_FIXTURE,
 				wa,
 				&NewTask {
 					title: "Atomic task".into(),
@@ -395,10 +397,14 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 			)
 			.await
 			.unwrap();
-	a.f.store.claim(task.id, 0, &owner, &agent).await.unwrap();
+	a.f.store
+		.claim(&TEST_FIXTURE, task.id, 0, &owner, &agent)
+		.await
+		.unwrap();
 	let task =
 		a.f.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				1,
 				&owner,
@@ -421,7 +427,13 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		.unwrap();
 	let run =
 		b.f.store
-			.accept_run(&task, &a.f.config.node_id, &agent.id, &agent.version)
+			.accept_run(
+				&TEST_FIXTURE,
+				&task,
+				&a.f.config.node_id,
+				&agent.id,
+				&agent.version,
+			)
 			.await
 			.unwrap();
 	pending_run(&b, run.id, json!([])).await;
@@ -446,10 +458,17 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		Some("ABORT")
 	);
 	assert_eq!(
-		a.f.store.task(task.id).await.unwrap().status,
+		a.f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Running
 	);
-	assert!(a.f.store.snapshot(wa).await.unwrap().artifacts.is_empty());
+	assert!(
+		a.f.store
+			.snapshot(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.artifacts
+			.is_empty()
+	);
 	pending_run(&b, run.id, json!([])).await;
 	a.submit(&manifest).await;
 	assert_eq!(
@@ -465,14 +484,24 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 			.unwrap();
 	}
 	assert_eq!(
-		a.f.store.task(task.id).await.unwrap().status,
+		a.f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Completed
 	);
 	assert_eq!(
-		b.f.store.run(run.id).await.unwrap().phase().as_str(),
+		b.f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
-	let artifacts = a.f.store.snapshot(wa).await.unwrap().artifacts;
+	let artifacts =
+		a.f.store
+			.snapshot(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.artifacts;
 	assert_eq!(artifacts.len(), 1);
 	assert_eq!(artifacts[0].created_by, owner);
 }

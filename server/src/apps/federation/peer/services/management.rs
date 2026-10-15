@@ -11,6 +11,7 @@ use crate::{
 	registry::{EntityRef, Entry, Search},
 	tool::required,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use futures_util::{StreamExt, stream};
 use http::HeaderMap;
 use reinhardt::injectable;
@@ -125,9 +126,11 @@ impl PeerManagement {
 				"offered task requirements do not match the agent".into(),
 			));
 		}
+		// A legacy peer offer creates a Run without an execution grant.
 		let run = f
 			.store
 			.accept_run_pinned(
+				&TenancyScope::Deployment(DeploymentScopeReason::LegacyRun),
 				&offer.task,
 				node,
 				&offer.agent.id,
@@ -188,12 +191,13 @@ impl PeerManagement {
 		headers: HeaderMap,
 		command: WorkspaceCommand,
 	) -> Result<Value> {
+		let scope = self.runtime.store.task_tenancy(command.task_id).await?;
 		let f = self.runtime.clone();
 		let node = peer_node(&headers)?;
 		f.authorize_task(node, command.task_id, &command.agent)
 			.await?;
 		let owner = qualified_agent(node, &command.agent.id, &command.agent.version);
-		let task = f.store.task(command.task_id).await?;
+		let task = f.store.task(&scope, command.task_id).await?;
 		let d = &command.data;
 		let key =
 			|| -> Result<String> { Ok(format!("{node}:{}:{}", task.id, required(d, "key")?)) };
@@ -332,11 +336,12 @@ impl PeerManagement {
 				tx.commit().await?;
 				json!(request)
 			}
-			"snapshot" => json!(f.store.snapshot(task.workspace_id).await?),
-			"snapshot_workspace" => json!(f.store.workspace(task.workspace_id).await?),
+			"snapshot" => json!(f.store.snapshot(&scope, task.workspace_id).await?),
+			"snapshot_workspace" => json!(f.store.workspace(&scope, task.workspace_id).await?),
 			"snapshot_page" => json!(
 				f.store
 					.snapshot_page(
+						&scope,
 						task.workspace_id,
 						required(d, "collection")?,
 						serde_json::from_value(d["after"].clone())?
@@ -346,7 +351,7 @@ impl PeerManagement {
 			"workspace_record" => {
 				let id: Uuid = serde_json::from_value(d["id"].clone())?;
 				f.store
-					.workspace_record(task.workspace_id, required(d, "kind")?, id)
+					.workspace_record(&scope, task.workspace_id, required(d, "kind")?, id)
 					.await?
 			}
 			"workspace_record_chunk" => {
@@ -361,7 +366,7 @@ impl PeerManagement {
 				let kind = required(d, "kind")?;
 				let record = f
 					.store
-					.workspace_record(task.workspace_id, kind, id)
+					.workspace_record(&scope, task.workspace_id, kind, id)
 					.await?;
 				crate::context::observation::chunk_record(
 					record,
@@ -378,7 +383,7 @@ impl PeerManagement {
 				}
 				json!(
 					f.store
-						.child_task_summary(task.workspace_id, parent_id)
+						.child_task_summary(&scope, task.workspace_id, parent_id)
 						.await?
 				)
 			}
@@ -397,6 +402,7 @@ impl PeerManagement {
 				json!(
 					f.store
 						.claim(
+							&scope,
 							task.id,
 							d["revision"]
 								.as_i64()
@@ -410,6 +416,7 @@ impl PeerManagement {
 			"transition" => json!(
 				f.store
 					.transition(
+						&scope,
 						task.id,
 						d["revision"]
 							.as_i64()
@@ -466,6 +473,7 @@ impl PeerManagement {
 			"complete" => json!(
 				f.store
 					.complete(
+						&scope,
 						task.id,
 						&owner,
 						&key()?,
@@ -488,6 +496,7 @@ impl PeerManagement {
 				json!(
 					f.store
 						.complete_remote_run_message(
+							&scope,
 							task.id,
 							&owner,
 							&key()?,
@@ -501,6 +510,7 @@ impl PeerManagement {
 			"artifact" => json!(
 				f.store
 					.publish_artifact(
+						&scope,
 						task.id,
 						&owner,
 						&key()?,
@@ -511,6 +521,7 @@ impl PeerManagement {
 			"create_task" => json!(
 				f.store
 					.create_task(
+						&scope,
 						task.workspace_id,
 						&serde_json::from_value::<NewTask>(d["task"].clone())?,
 						&owner,
@@ -522,7 +533,7 @@ impl PeerManagement {
 				let child_id = required(d, "task_id")?
 					.parse()
 					.map_err(|_| Error::Invalid("invalid task ID".into()))?;
-				let child = f.store.task(child_id).await?;
+				let child = f.store.task(&scope, child_id).await?;
 				if child.workspace_id != task.workspace_id {
 					return Err(Error::Unauthorized);
 				}
@@ -549,6 +560,7 @@ impl PeerManagement {
 				let message = f
 					.store
 					.message_record(
+						&scope,
 						task.workspace_id,
 						&sender,
 						required(d, "content")?,
@@ -577,19 +589,23 @@ impl PeerManagement {
 						.as_i64()
 						.ok_or_else(|| Error::Invalid("invalid included input sequence".into()))?;
 					f.store
-						.run_message_output_record_fenced(crate::store::FencedRunMessageOutput {
-							workspace: task.workspace_id,
-							task_id: task.id,
-							run_id,
-							included_input_seq,
-							sender: &owner,
-							content,
-							key: &message_key,
-						})
+						.run_message_output_record_fenced(
+							&scope,
+							crate::store::FencedRunMessageOutput {
+								workspace: task.workspace_id,
+								task_id: task.id,
+								run_id,
+								included_input_seq,
+								sender: &owner,
+								content,
+								key: &message_key,
+							},
+						)
 						.await?;
 				} else {
 					f.store
 						.run_message_output_record(
+							&scope,
 							task.workspace_id,
 							task.id,
 							run_id,
@@ -614,15 +630,18 @@ impl PeerManagement {
 				let content = required(d, "content")?;
 				json!(
 					f.store
-						.run_message_delivery_record(crate::store::RunMessageDelivery {
-							workspace: task.workspace_id,
-							task_id: task.id,
-							run_id,
-							sender: &format!("human@{node}"),
-							content,
-							input_key,
-							message_key: &key()?,
-						})
+						.run_message_delivery_record(
+							&scope,
+							crate::store::RunMessageDelivery {
+								workspace: task.workspace_id,
+								task_id: task.id,
+								run_id,
+								sender: &format!("human@{node}"),
+								content,
+								input_key,
+								message_key: &key()?,
+							}
+						)
 						.await?
 				)
 			}
@@ -638,6 +657,7 @@ impl PeerManagement {
 				}
 				f.store
 					.reserve_remote_run_message(
+						&scope,
 						task.id,
 						run_id,
 						node,
@@ -667,6 +687,7 @@ impl PeerManagement {
 					.transpose()?;
 				f.store
 					.commit_remote_run_message_with_sequence(
+						&scope,
 						task.id,
 						run_id,
 						input_key,
@@ -690,7 +711,7 @@ impl PeerManagement {
 					return Err(Error::Invalid("invalid run message keys".into()));
 				}
 				f.store
-					.release_remote_run_message(task.id, run_id, node, &keys)
+					.release_remote_run_message(&scope, task.id, run_id, node, &keys)
 					.await?;
 				json!({"released":true})
 			}
@@ -723,7 +744,14 @@ impl PeerManagement {
 					.ok_or_else(|| Error::Invalid("offset required".into()))?;
 				let messages = f
 					.store
-					.remote_run_message_history(task.workspace_id, node, task.id, run_id, offset)
+					.remote_run_message_history(
+						&scope,
+						task.workspace_id,
+						node,
+						task.id,
+						run_id,
+						offset,
+					)
 					.await?;
 				json!(messages)
 			}
@@ -792,7 +820,11 @@ impl PeerManagement {
 	pub(crate) async fn peer_observe(&self, headers: HeaderMap) -> Result<Value> {
 		let f = self.runtime.clone();
 		let node = peer_node(&headers)?;
-		Ok(serde_json::to_value(f.store.peer_observation(node).await?)?)
+		// A peer observes the Runs it is home to, in any Tenant, until #241.
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::FederationInbound);
+		Ok(serde_json::to_value(
+			f.store.peer_observation(&scope, node).await?,
+		)?)
 	}
 
 	pub(crate) async fn peer_control(
@@ -800,9 +832,10 @@ impl PeerManagement {
 		headers: HeaderMap,
 		input: RemoteControl,
 	) -> Result<Value> {
+		let scope = self.runtime.store.run_tenancy(input.run_id).await?;
 		let f = self.runtime.clone();
 		let node = peer_node(&headers)?;
-		let run = f.store.run(input.run_id).await?;
+		let run = f.store.run(&scope, input.run_id).await?;
 		if run.home_node != node {
 			return Err(Error::Unauthorized);
 		}
@@ -837,7 +870,7 @@ impl PeerManagement {
 						.answer_home_human(id, response.clone())
 						.await?;
 				}
-				Ok(json!(f.store.answer(id, response).await?))
+				Ok(json!(f.store.answer(&scope, id, response).await?))
 			}
 			"message" => {
 				let content = input
@@ -861,6 +894,7 @@ impl PeerManagement {
 			action => Ok(json!(
 				f.store
 					.control(
+						&scope,
 						run.id,
 						serde_json::from_value(json!(action))
 							.map_err(|_| Error::Invalid("invalid run control action".into()))?

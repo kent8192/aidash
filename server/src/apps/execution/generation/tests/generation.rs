@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
@@ -94,7 +95,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 	assert_eq!(policies[0]["generated_count"], 1);
 	assert_eq!(policies[0]["allocated_tokens"], 200000);
 	assert!(
-		f.store.runs().await.unwrap().is_empty(),
+		f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty(),
 		"approval must precede activation"
 	);
 	cleanup(f, &url, &schema).await;
@@ -165,7 +166,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
-	let runs = f.store.runs().await.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(runs.len(), 1);
 	assert_eq!(runs[0].agent_id, job["agent_id"].as_str().unwrap());
 	let (status, replayed) = request(
@@ -269,7 +270,12 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	};
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.run(runs[0].id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, runs[0].id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"CANCELLED"
 	);
 	cleanup(f, &url, &schema).await;
@@ -332,7 +338,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	);
 	a.unwrap();
 	b.unwrap();
-	let runs = f.store.runs().await.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(runs.len(), 1);
 	let entry = f
 		.registry
@@ -347,12 +353,17 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 		worker.worker_once().await.unwrap();
 	}
 	assert_eq!(
-		f.store.run(runs[0].id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, runs[0].id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(
 		f.store
-			.task(task.parse().unwrap())
+			.task(&TEST_FIXTURE, task.parse().unwrap())
 			.await
 			.unwrap()
 			.status
@@ -683,7 +694,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	)
 	.await;
 	assert_eq!(jobs[0]["status"], "FAILED");
-	assert!(f.store.runs().await.unwrap().is_empty());
+	assert!(f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
 	assert!(
 		f.registry
 			.get(
@@ -756,7 +767,7 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	let run = tokio::time::timeout(std::time::Duration::from_secs(15), async {
 		loop {
 			worker.worker_once().await.unwrap();
-			let run = f.store.runs().await.unwrap().remove(0);
+			let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 			if run.phase().as_str() == "FAILED" {
 				break run;
 			}
@@ -889,7 +900,7 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
-	let runs = f.store.runs().await.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(runs.len(), 2);
 	drop(server);
 	cleanup(f, &url, &schema).await;
@@ -1107,7 +1118,7 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 		federation: f.clone(),
 	};
 	worker.worker_once().await.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.control.as_str(), "PAUSED");
 	assert_eq!(run.phase().as_str(), "READY");
 	aidash_server::generation::provision::reconcile(&f)
@@ -1115,7 +1126,12 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 		.unwrap();
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"CANCELLED"
 	);
 	let (_, jobs) = request(
@@ -1222,18 +1238,18 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	assert_eq!(stopped.0, 200, "{:#?}", stopped.1);
 	release.notify_one();
 	running.await.unwrap();
-	let pending = f.store.runs().await.unwrap().remove(0);
+	let pending = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(pending.control.as_str(), "CANCELLED");
 	assert!(json!(pending.state)["data"].get("response").is_none());
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
 	worker.worker_once().await.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "CANCELLED");
 	assert!(
 		f.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -1295,7 +1311,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 		federation: f.clone(),
 	};
 	assert!(worker.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let waiting = tokio::spawn({
 		let worker = worker.clone();
 		async move { worker.worker_once().await }
@@ -1323,7 +1339,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 			.unwrap()
 			.unwrap()
 	);
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert!(current.recovery.retry.is_some());
 	assert!(json!(current.state)["data"].get("response").is_none());
@@ -1362,7 +1378,12 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	.expect("a due stale-inference retry must be claimed");
 	assert_eq!(calls.load(Ordering::SeqCst), 2);
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"TOOL_CALL"
 	);
 	drop(server);
@@ -1788,7 +1809,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	for _ in 0..3 {
 		worker.worker_once().await.unwrap();
 	}
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(run.control.as_str(), "PAUSED");
 	assert_eq!(json!(run.state)["data"]["cursor"], 0);
@@ -1827,7 +1848,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	);
 	for _ in 0..12 {
 		worker.worker_once().await.unwrap();
-		let current = f.store.run(run.id).await.unwrap();
+		let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		if let aidash_domain::RunState::Waiting(wait) = &current.state
 			&& let aidash_domain::WaitingState::ExternalApproval {
 				request_id, call, ..
@@ -1835,7 +1856,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		{
 			assert_eq!(call.name, "plugin_0");
 			f.store
-				.answer(*request_id, json!({"approved":true}))
+				.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
 				.await
 				.unwrap();
 		}
@@ -1844,7 +1865,12 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		}
 	}
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
@@ -1992,7 +2018,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 		.0,
 		200
 	);
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	{
 		let query_bind_1 = run.workspace_id;
 		sqlx::query(

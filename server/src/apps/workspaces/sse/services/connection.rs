@@ -6,6 +6,7 @@ use crate::{
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use futures_util::{Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, Method};
 use std::{
@@ -492,7 +493,13 @@ async fn read(
 			let events = context
 				.f
 				.store
-				.events(cursor, context.workspace, 100)
+				.events(
+					// A Deployment Administrator's stream spans Tenants.
+					&TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList),
+					cursor,
+					context.workspace,
+					100,
+				)
 				.await?;
 			let scanned = events.last().map_or(cursor, |event| event.sequence);
 			let more = events.len() == 100;

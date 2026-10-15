@@ -4,6 +4,7 @@
 #[path = "support/legacy.rs"]
 mod common;
 use aidash_application::ports::execution::ToolSlots;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	Error,
 	capabilities::{Profile, Runtime},
@@ -335,7 +336,7 @@ impl Batching {
 		assert_eq!(status, 200, "{body}");
 		self.f
 			.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.into_iter()
@@ -426,14 +427,14 @@ async fn complete(f: &Federation, run: Uuid) -> Vec<Step> {
 	};
 	let mut steps = Vec::new();
 	for _ in 0..64 {
-		let before = f.store.run(run).await.unwrap();
+		let before = f.store.run(&TEST_FIXTURE, run).await.unwrap();
 		if before.phase() == RunPhase::Completed {
 			return steps;
 		}
 		let started = Instant::now();
 		assert!(worker.worker_once().await.unwrap(), "{:?}", before.state);
 		let elapsed = started.elapsed();
-		let after = f.store.run(run).await.unwrap();
+		let after = f.store.run(&TEST_FIXTURE, run).await.unwrap();
 		assert!(
 			!matches!(
 				after.phase(),
@@ -467,7 +468,7 @@ fn tool_events(run: &Run) -> Vec<(String, String, Value)> {
 /// Journal events of one Run, in commit order.
 async fn tool_journal(f: &Federation, run: Uuid) -> Vec<(String, String)> {
 	f.store
-		.events(0, None, 10_000)
+		.events(&TEST_FIXTURE, 0, None, 10_000)
 		.await
 		.unwrap()
 		.into_iter()
@@ -584,7 +585,7 @@ async fn model_response_reads_run_as_one_batch_and_are_adopted_in_call_order(
 	assert!(events[2..].iter().all(|(kind, _)| kind == "tool.completed"));
 	// Observations keep the model's order and provider call IDs; each result
 	// carries its own read receipt rather than a shared batch snapshot.
-	let finished = b.f.store.run(run.id).await.unwrap();
+	let finished = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(finished.phase(), RunPhase::Completed);
 	let observed = tool_events(&finished);
 	assert_eq!(
@@ -664,7 +665,7 @@ async fn batched_reads_share_the_working_area_row(
 	let worker = Harness {
 		federation: b.f.clone(),
 	};
-	while b.f.store.run(run.id).await.unwrap().phase() != RunPhase::ToolCall {
+	while b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap().phase() != RunPhase::ToolCall {
 		assert!(worker.worker_once().await.unwrap());
 	}
 	// Another reader holds a shared lock on the Working Area row.
@@ -690,7 +691,7 @@ async fn batched_reads_share_the_working_area_row(
 		step.expect("batched reads must not take an exclusive area lock")
 			.unwrap()
 	);
-	let after = b.f.store.run(run.id).await.unwrap();
+	let after = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(after.state.tool().unwrap().cursor, 2);
 	b.close().await;
 }
@@ -746,7 +747,9 @@ async fn admit(
 		.zip(inputs)
 		.map(|((key, name), input)| (key.as_str(), name, input))
 		.collect::<Vec<_>>();
-	store.invocation_start_batch(run, worker, &calls).await
+	store
+		.invocation_start_batch(&TEST_FIXTURE, run, worker, &calls)
+		.await
 }
 
 #[rstest::rstest]
@@ -785,13 +788,13 @@ async fn batch_admission_journals_every_call_with_the_run_and_replays_unchanged(
 		journal.iter().map(|row| &row.input).collect::<Vec<_>>(),
 		inputs.iter().collect::<Vec<_>>()
 	);
-	let stored = b.f.store.run(run.id).await.unwrap();
+	let stored = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(stored.phase(), RunPhase::ToolCall);
 	assert_eq!(stored.state.tool().unwrap().batch_end, Some(2));
 	assert_eq!(stored.revision, run.revision + 1);
 	// Act: complete the first call, then admit the same batch again (restart).
 	b.f.store
-		.invocation_finish(&run, worker, &keys[0], &json!({"done":0}))
+		.invocation_finish(&TEST_FIXTURE, &run, worker, &keys[0], &json!({"done":0}))
 		.await
 		.unwrap();
 	let readmitted = admit(&b.f.store, &run, worker, &keys, &inputs)
@@ -868,6 +871,7 @@ async fn rejected_batch_admission_writes_nothing(
 			sequential.state.tool_mut().unwrap().batch_end = None;
 			b.f.store
 				.invocation_start(
+					&TEST_FIXTURE,
 					&sequential,
 					worker,
 					&keys[1],
@@ -880,7 +884,7 @@ async fn rejected_batch_admission_writes_nothing(
 			existing = 1;
 		}
 	}
-	let stored = b.f.store.run(run.id).await.unwrap();
+	let stored = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let events = tool_journal(&b.f, run.id).await;
 	// Act
 	let result = admit(&b.f.store, &run, worker, &keys, &inputs).await;
@@ -897,7 +901,7 @@ async fn rejected_batch_admission_writes_nothing(
 	assert_eq!(journal.len(), existing, "{journal:?}");
 	assert!(journal.iter().all(|row| row.idempotency_key != keys[0]));
 	assert_eq!(tool_journal(&b.f, run.id).await, events);
-	let unchanged = b.f.store.run(run.id).await.unwrap();
+	let unchanged = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(unchanged.revision, stored.revision);
 	assert_eq!(
 		unchanged
@@ -1059,7 +1063,7 @@ async fn tool_batch_latency_benchmark(
 				let (phase, count) = tool_phase(&steps);
 				tool_phases.push(phase);
 				step_counts.push(count);
-				let observed = tool_events(&b.f.store.run(run.id).await.unwrap());
+				let observed = tool_events(&b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap());
 				assert_eq!(observed.len(), calls.len());
 			}
 			let workload = format!("{workload} ({label})");
@@ -1094,7 +1098,7 @@ async fn tool_batch_latency_benchmark(
 			.collect::<Vec<_>>();
 		let started = Instant::now();
 		b.f.store
-			.invocation_start_batch(&leased, worker, &calls)
+			.invocation_start_batch(&TEST_FIXTURE, &leased, worker, &calls)
 			.await
 			.unwrap();
 		batched.push(started.elapsed());
@@ -1103,6 +1107,7 @@ async fn tool_batch_latency_benchmark(
 		for key in &keys {
 			b.f.store
 				.invocation_start(
+					&TEST_FIXTURE,
 					&leased,
 					worker,
 					&format!("{key}:sequential"),

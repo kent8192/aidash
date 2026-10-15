@@ -1,5 +1,6 @@
 //! Disposable receiver quotations have a Home-pinned deadline and durable cleanup intent.
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{RunMetadata, semantic::remote::Receipt};
 use chrono::{Duration, Utc};
 use reinhardt::query::{
@@ -261,10 +262,14 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			.limit(32)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_all(&store.pool)
+	.scalar_all(
+		store
+			.pool
+			.in_scope(&TenancyScope::Deployment(DeploymentScopeReason::Retention)),
+	)
 	.await?;
 	for id in rows {
-		let run = store.run(id).await?;
+		let run = store.run(&store.run_tenancy(id).await?, id).await?;
 		if purge(store, &run.metadata()).await.is_err() {
 			tracing::warn!(run = %id, "native receiver quotation cleanup postponed or failed");
 		}

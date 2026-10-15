@@ -5,6 +5,7 @@ use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
 use crate::apps::registry::models::Definition;
 use crate::authorization::identity::Actor;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::db::orm::Model;
 use reinhardt::query::QueryStatementBuilder;
 use rstest::rstest;
@@ -13,6 +14,7 @@ use serde_json::json;
 async fn run(store: &Store, bank: &Bank) -> Uuid {
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			bank.workspace,
 			&aidash_domain::NewTask {
 				title: "Local Delivery".into(),
@@ -170,7 +172,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace("Other", "Independent workspace lock")
+		.create_workspace(&TEST_FIXTURE, "Other", "Independent workspace lock")
 		.await
 		.unwrap();
 	AuthorizationWorkspace::objects()

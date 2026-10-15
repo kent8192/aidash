@@ -818,15 +818,20 @@ impl PeerAdmissionRepository for Repository<'_> {
 		result.map_err(Into::into)
 	}
 	async fn run(&self, id: Uuid) -> Result<Run> {
-		self.runtime.store.run(id).await.map_err(Into::into)
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		store.run(&scope, id).await.map_err(Into::into)
 	}
 	async fn inspect_run(&self, id: Uuid) -> Result<RunInspection> {
-		self.runtime.store.inspect_run(id).await.map_err(Into::into)
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		store.inspect_run(&scope, id).await.map_err(Into::into)
 	}
 	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection> {
-		self.runtime
-			.store
-			.control(id, action.action())
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		store
+			.control(&scope, id, action.action())
 			.await
 			.map_err(Into::into)
 	}
@@ -843,11 +848,14 @@ impl PeerAdmissionRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 	async fn message_recorded(&self, id: Uuid, key: &str, content: &str) -> bool {
-		self.runtime
-			.store
-			.run_input_sequence(id, key, content)
-			.await
-			.is_ok()
+		let store = &self.runtime.store;
+		match store.run_tenancy(id).await {
+			Ok(scope) => store
+				.run_input_sequence(&scope, id, key, content)
+				.await
+				.is_ok(),
+			Err(_) => false,
+		}
 	}
 	async fn deliver(&self, run: &Run) -> Result<()> {
 		self.runtime

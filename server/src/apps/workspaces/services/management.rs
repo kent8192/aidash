@@ -9,6 +9,7 @@ use crate::{
 	domain::*,
 	federation::Federation,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use http::HeaderMap;
 use reinhardt::injectable;
 use uuid::Uuid;
@@ -35,9 +36,11 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.task_page(page.offset).await;
 		}
-		let mut page = f.store.task_page(page.offset).await?;
+		// A Deployment Administrator lists tasks across Tenants.
+		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		let mut page = f.store.task_page(&listing, page.offset).await?;
 		let denied = crate::authorization::remote::operator::blocked(
-			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
+			&mut f.store.pool.begin(&listing).await?,
 			&page
 				.tasks
 				.iter()
@@ -59,19 +62,24 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.create(&input.title, &input.goal).await;
 		}
-		f.store.create_workspace(&input.title, &input.goal).await
+		// Operator execution creates a legacy Workspace that belongs to no Tenant.
+		f.store
+			.create_workspace(
+				&TenancyScope::Deployment(DeploymentScopeReason::LegacyRun),
+				&input.title,
+				&input.goal,
+			)
+			.await
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let f = self.runtime.clone();
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.snapshot(id).await;
 		}
-		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
-			id,
-		)
-		.await?;
-		f.store.snapshot(id).await
+		let scope = f.store.workspace_tenancy(id).await?;
+		crate::authorization::remote::operator::require(&mut f.store.pool.begin(&scope).await?, id)
+			.await?;
+		f.store.snapshot(&scope, id).await
 	}
 	pub(crate) async fn workspace_update(
 		&self,
@@ -83,12 +91,12 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.update(id, input.revision, input.state).await;
 		}
-		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
-			id,
-		)
-		.await?;
-		f.store.update_state(id, input.revision, input.state).await
+		let scope = f.store.workspace_tenancy(id).await?;
+		crate::authorization::remote::operator::require(&mut f.store.pool.begin(&scope).await?, id)
+			.await?;
+		f.store
+			.update_state(&scope, id, input.revision, input.state)
+			.await
 	}
 	pub(crate) async fn task_create(
 		&self,
@@ -107,8 +115,10 @@ impl CollaborationManagement {
 				)
 				.await;
 		}
+		let scope = f.store.workspace_tenancy(id).await?;
 		f.store
 			.create_task(
+				&scope,
 				id,
 				&input,
 				"human",
@@ -138,8 +148,9 @@ impl CollaborationManagement {
 			"workspace-human:{id}:{}",
 			input.idempotency_key.unwrap_or_else(Uuid::new_v4)
 		);
+		let scope = f.store.workspace_tenancy(id).await?;
 		f.store
-			.message(id, "human", &input.content, Some(&key))
+			.message(&scope, id, "human", &input.content, Some(&key))
 			.await?;
 		Ok(SentResponse { sent: true })
 	}
@@ -153,15 +164,18 @@ impl CollaborationManagement {
 		if let Actor::Subject(identity) = actor {
 			return interaction::abandon(&f, &identity, id, input.revision, &input.reason).await;
 		}
-		let existing = f.store.task(id).await?;
+		// A task names its Workspace; read it across Tenants first.
+		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		let existing = f.store.task(&listing, id).await?;
+		let scope = f.store.workspace_tenancy(existing.workspace_id).await?;
 		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			existing.workspace_id,
 		)
 		.await?;
 		let task = f
 			.store
-			.abandon_task(id, input.revision, &input.reason)
+			.abandon_task(&scope, id, input.revision, &input.reason)
 			.await?;
 		f.notify.notify_waiters();
 		Ok(task)

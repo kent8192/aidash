@@ -1,5 +1,6 @@
 //! Actual cleanup failures retain finite intent without blocking unrelated deletions.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 #[rstest]
@@ -500,7 +501,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 		ids.push(id);
 	}
 	let (_, run_id) = policy_bounds::recorded_run(&store, &private, &ids).await;
-	let run = store.run(run_id).await.unwrap();
+	let run = store.run(&TEST_FIXTURE, run_id).await.unwrap();
 	let proof = Evidence::Run {
 		id: run_id,
 		revision: run.revision,

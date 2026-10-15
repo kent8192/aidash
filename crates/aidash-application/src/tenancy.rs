@@ -50,17 +50,24 @@ impl From<DeploymentScopeReason> for TenancyScope {
 	}
 }
 
+/// The scope of test fixtures that span Tenants. Tests that check isolation
+/// open real Tenant scopes instead.
+#[cfg(feature = "test-support")]
+pub const TEST_FIXTURE: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::TestFixture);
+
 /// Why a transaction reaches every Tenant's data. The set is closed: work
 /// that needs a new reason adds a variant here, where review sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeploymentScopeReason {
-	/// Claiming, publishing, reconciling and recovering Run activations.
+	/// Claiming, publishing, reconciling and recovering Run activations, and
+	/// the worker's lease bookkeeping for the Runs it claimed.
 	ActivationClaim,
 	/// Claiming and publishing the event outbox.
 	OutboxDispatch,
 	/// Claiming and delivering delegations that are due for a retry.
 	DelegationRetry,
-	/// Listing generation provisioning jobs.
+	/// Listing and reconciling generation requests and foreign generation
+	/// intents.
 	GenerationReconcile,
 	/// Listing semantic entries that are due for indexing.
 	SemanticIndexing,
@@ -94,9 +101,13 @@ pub enum DeploymentScopeReason {
 	/// Resolving an inbound peer's local Tenant, until #241 gives every Node a
 	/// Tenant.
 	FederationInbound,
-	/// Finding the Tenant of a Run from its execution grant, until #265 records
-	/// the Tenant on the Run.
+	/// Finding the Tenant of a Run or a Workspace from its authorization
+	/// records, until #265 records the Tenant on the Run and the Workspace.
 	RunTenant,
+	/// Working on a Run without an execution grant. Since #243 only test
+	/// fixtures create such Runs; #265 removes them by giving every Run a
+	/// Tenant.
+	LegacyRun,
 	/// The activity observer, which writes this label by hand.
 	ActivityObserver,
 	/// Test fixtures that span Tenants.
@@ -126,6 +137,7 @@ impl DeploymentScopeReason {
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
+			Self::LegacyRun => "legacy-run",
 			Self::ActivityObserver => "activity-observer",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
@@ -140,15 +152,16 @@ impl DeploymentScopeReason {
 			| Self::OutboxDispatch
 			| Self::DelegationRetry
 			| Self::SemanticMaintenance
+			| Self::GenerationReconcile
 			| Self::Retention
 			| Self::BuiltInSeeding
 			| Self::MemoryRecovery
 			| Self::CredentialStoreRecovery
 			| Self::DeploymentAdministration
+			| Self::LegacyRun
 			| Self::IdentityTenants
 			| Self::IdentityStatus => true,
-			Self::GenerationReconcile
-			| Self::SemanticIndexing
+			Self::SemanticIndexing
 			| Self::TransactionRecovery
 			| Self::CredentialReconcile
 			| Self::DeploymentAdministratorList
@@ -197,6 +210,7 @@ mod tests {
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
+			DeploymentScopeReason::LegacyRun,
 			DeploymentScopeReason::ActivityObserver,
 		];
 		let labels = reasons

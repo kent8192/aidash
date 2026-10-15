@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 
@@ -101,7 +102,7 @@ async fn long_history(f: &Federation, job: &Value) -> aidash_server::domain::Run
 	.unwrap();
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -248,7 +249,7 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
 	for _ in 0..8 {
 		worker.worker_once().await.unwrap();
 	}
-	let completed = f.store.run(run.id).await.unwrap();
+	let completed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(completed.phase().as_str(), "COMPLETED", "{completed:?}");
 	assert_eq!(json!(completed.context)["compactions"], 1);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -373,7 +374,7 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 		}
 		.unwrap();
 	}
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(
 		current
 			.error
@@ -464,7 +465,12 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 	.await
 	.unwrap();
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().control.as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"PAUSED"
 	);
 	let count: i64 = sqlx::query_scalar(
@@ -495,7 +501,7 @@ fn queued_compaction(
 		let (token, _) = policy(&mut f, app, &fixture.server.url).await;
 		let (_, assigned) = assign(app, &token).await;
 		assert_eq!(assigned["generation"]["status"], "QUEUED");
-		assert!(f.store.runs().await.unwrap().is_empty());
+		assert!(f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
 		(fixture, token, assigned["generation"].clone(), f)
 	}
 	.boxed()
@@ -546,7 +552,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 		"worker status {:?}, run states {:?}, log {}",
 		worker.process.try_wait(),
 		f.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.iter()
@@ -555,7 +561,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 		worker.log()
 	);
 	drop(worker); // SIGKILL: no graceful settlement or application cleanup.
-	let runs = f.store.runs().await.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(runs.len(), 1);
 	let run = &runs[0];
 	seed_history(&f, run).await;
@@ -623,7 +629,13 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
 			worker.worker_once().await.unwrap();
-			if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
+			if f.store
+				.run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.phase()
+				.as_str() == "COMPLETED"
+			{
 				break;
 			}
 			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -633,7 +645,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	.unwrap();
 	assert_eq!(compaction_calls.load(Ordering::SeqCst), 2);
 	assert_eq!(model_calls.load(Ordering::SeqCst), 2);
-	assert_eq!(f.store.runs().await.unwrap().len(), 1);
+	assert_eq!(f.store.runs(&TEST_FIXTURE).await.unwrap().len(), 1);
 	let (_, usage) = request(
 		&app,
 		&token,
@@ -682,7 +694,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
-	let parent_run = f.store.runs().await.unwrap().remove(0);
+	let parent_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	{
 		let query_bind_1 = parent_run.id;
 		sqlx::query(
@@ -795,7 +807,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	let current = tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
 			worker.worker_once().await.unwrap();
-			let current = f.store.run(run.id).await.unwrap();
+			let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 			if matches!(
 				current.phase().as_str(),
 				"COMPLETED" | "FAILED" | "CANCELLED"

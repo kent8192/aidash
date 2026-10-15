@@ -3,6 +3,7 @@
 mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_application::{
 	Result,
 	provider_authorization::Target,
@@ -781,7 +782,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let workspace = f
 		.runtime
 		.store
-		.create_workspace("BYOK retrieval", "Test admission")
+		.create_workspace(&TEST_FIXTURE, "BYOK retrieval", "Test admission")
 		.await
 		.unwrap();
 	let mut tx = f.database.connection.begin().await.unwrap();
@@ -811,6 +812,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.runtime
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&aidash_domain::NewTask {
 				title: "Embedding admission".into(),
@@ -833,11 +835,23 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		"{rejected}"
 	);
 	assert_eq!(
-		f.runtime.store.task(task.id).await.unwrap().status,
+		f.runtime
+			.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status,
 		aidash_domain::TaskStatus::Open
 	);
 	// The failed admission must roll back its Run as well as every credential pin.
-	assert!(f.runtime.store.runs().await.unwrap().is_empty());
+	assert!(
+		f.runtime
+			.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	let credential = service
 		.create(
 			"beta",
@@ -854,7 +868,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.await
 		.unwrap();
 	assert_json(actor.post(&claim_path, &claim, "json").await.unwrap(), 200);
-	let run = f.runtime.store.runs().await.unwrap().remove(0);
+	let run = f.runtime.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let pins = Pin::objects()
 		.filter(Pin::field_run_id().eq(run.id))

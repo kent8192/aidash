@@ -4,6 +4,7 @@ mod common;
 mod edge_cases;
 #[path = "sse_delivery/process.rs"]
 mod process;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{domain::Event, federation::Federation, sse};
 use common::*;
 use futures_util::FutureExt;
@@ -79,6 +80,7 @@ impl Fixture {
 		self.f
 			.store
 			.emit(
+				&TEST_FIXTURE,
 				Some(workspace),
 				"workspace.updated",
 				json!({"id":workspace,"number":number}),
@@ -244,7 +246,13 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 		}
 	}
 	tx.commit().await.unwrap();
-	let created = fixture.f.store.events(0, Some(ws), 1).await.unwrap()[0].sequence;
+	let created = fixture
+		.f
+		.store
+		.events(&TEST_FIXTURE, 0, Some(ws), 1)
+		.await
+		.unwrap()[0]
+		.sequence;
 	let began = Instant::now();
 	let mut stream = fixture
 		.stream(0, Some(ws), Some(&created.to_string()))
@@ -501,6 +509,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		.f
 		.store
 		.emit(
+			&TEST_FIXTURE,
 			Some(ws),
 			"workspace.updated",
 			json!({"id":ws,"text":"x".repeat(300_000)}),

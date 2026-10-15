@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use std::sync::{
@@ -24,10 +25,11 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, parent_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let parent = f.store.task(parent_id).await.unwrap();
+	let parent = f.store.task(&TEST_FIXTURE, parent_id).await.unwrap();
 	for index in 0..102 {
 		f.store
 			.create_task(
+				&TEST_FIXTURE,
 				parent.workspace_id,
 				&NewTask {
 					title: format!("Large child {index}"),
@@ -119,7 +121,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let task_record = f.store.task(task).await.unwrap();
+	let task_record = f.store.task(&TEST_FIXTURE, task).await.unwrap();
 	assert_eq!(
 		request(
 			&app,
@@ -141,6 +143,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	let artifact = f
 		.store
 		.publish_artifact(
+			&TEST_FIXTURE,
 			task,
 			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
 			"resource-test-artifact",
@@ -212,7 +215,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 			"task leaked through {path}"
 		);
 	}
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(
 		request(
 			&app,
@@ -249,7 +252,12 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task]}}));
 	assert_eq!(
 		request(
@@ -295,9 +303,24 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 			403
 		);
 	}
-	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "OPEN");
-	assert_eq!(f.store.tasks(Some(workspace)).await.unwrap().len(), 1);
-	assert!(f.store.runs().await.unwrap().is_empty());
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"OPEN"
+	);
+	assert_eq!(
+		f.store
+			.tasks(&TEST_FIXTURE, Some(workspace))
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+	assert!(f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
 	cleanup(f, &url, &schema).await;
 }
 
@@ -330,7 +353,12 @@ async fn retained_snapshot_revocation(
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	assert_eq!(
 		request(
 			&app,
@@ -350,6 +378,7 @@ async fn retained_snapshot_revocation(
 	let artifact = f
 		.store
 		.publish_artifact(
+			&TEST_FIXTURE,
 			task,
 			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
 			"source-revoke",
@@ -369,6 +398,7 @@ async fn retained_snapshot_revocation(
 	for index in 0..25 {
 		f.store
 			.publish_artifact(
+				&TEST_FIXTURE,
 				task,
 				&qualified_agent(&f.config.node_id, "research", "1.0.0"),
 				&format!("unrelated-source-{index}"),
@@ -383,7 +413,7 @@ async fn retained_snapshot_revocation(
 	}
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(run.context.to_string().contains("private-artifact-content"));
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
@@ -453,7 +483,12 @@ async fn retained_snapshot_revocation(
 	}
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().control.as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"PAUSED"
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -474,10 +509,21 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let root_content = "older thread root";
 	f.store
-		.message(workspace, "human", root_content, Some("thread-root-old"))
+		.message(
+			&TEST_FIXTURE,
+			workspace,
+			"human",
+			root_content,
+			Some("thread-root-old"),
+		)
 		.await
 		.unwrap();
 	let root: uuid::Uuid = {
@@ -534,6 +580,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 	for index in 0..110 {
 		f.store
 			.message(
+				&TEST_FIXTURE,
 				workspace,
 				"human",
 				&format!("newer message {index}"),
@@ -605,7 +652,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -666,7 +713,12 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	bundle["subjects"]["bob"] = json!({"kind":"user"});
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"private-bob-message","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"bob"}}}));
 	assert_eq!(
@@ -767,7 +819,12 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-new-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
 	assert_eq!(
 		request(
@@ -793,10 +850,17 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 		.0,
 		403
 	);
-	assert_eq!(f.store.tasks(Some(workspace)).await.unwrap().len(), 1);
+	assert_eq!(
+		f.store
+			.tasks(&TEST_FIXTURE, Some(workspace))
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
 	assert!(
 		!f.store
-			.events(0, Some(workspace), 100)
+			.events(&TEST_FIXTURE, 0, Some(workspace), 100)
 			.await
 			.unwrap()
 			.iter()
@@ -828,7 +892,12 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, first) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(first).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, first)
+		.await
+		.unwrap()
+		.workspace_id;
 	let (_, second) = request(
 		&app,
 		&token,
@@ -867,7 +936,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		},
 	);
 	let mut updated = 0;
-	for run in f.store.runs().await.unwrap() {
+	for run in f.store.runs(&TEST_FIXTURE).await.unwrap() {
 		let mut context = run.context.clone();
 		context.history = journal.history.clone();
 		context.journal = journal.journal;
@@ -884,7 +953,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		updated, 2,
 		"both valid Run contexts retain the cyclic journal fixture"
 	);
-	let runs = f.store.runs().await.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(runs.len(), 2);
 	// Build the cycle in the current schema. Existing-data migration is outside
 	// this reset migration, but recursive visibility and revocation remain required.
@@ -973,7 +1042,12 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	assert_eq!(
 		request(
 			&app,
@@ -993,6 +1067,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	let artifact = f
 		.store
 		.publish_artifact(
+			&TEST_FIXTURE,
 			task,
 			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
 			"hidden-provider-source",
@@ -1016,7 +1091,13 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.0,
 		200
 	);
-	let hidden_message = f.store.snapshot(workspace).await.unwrap().messages[0].id;
+	let hidden_message = f
+		.store
+		.snapshot(&TEST_FIXTURE, workspace)
+		.await
+		.unwrap()
+		.messages[0]
+		.id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-artifact","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}}));
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-messages","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[hidden_message]}}));
 	assert_eq!(
@@ -1034,7 +1115,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	for _ in 0..6 {
 		worker.worker_once().await.unwrap();
 	}
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	assert_eq!(
@@ -1070,7 +1151,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	}
 	.unwrap();
 	assert_eq!(hidden, 0);
-	let snapshot = f.store.snapshot(workspace).await.unwrap();
+	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace).await.unwrap();
 	let output = snapshot
 		.artifacts
 		.iter()
@@ -1139,7 +1220,12 @@ async fn artifact_state_page_is_filled_after_task_denials(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut bundle, token, hidden) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(hidden).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, hidden)
+		.await
+		.unwrap()
+		.workspace_id;
 	let (_, visible) = request(
 		&app,
 		&token,
@@ -1311,7 +1397,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	for _ in 0..12 {
 		worker.worker_once().await.unwrap();
 	}
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	let path = format!("/api/runs/{}", run.id);
 	let (status, journal) = request(&app, &token, "GET", &path, Value::Null).await;

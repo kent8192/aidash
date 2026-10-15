@@ -4,6 +4,7 @@ use super::{
 	common,
 	stream::{Frame, Stream, until},
 };
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{domain::qualified_agent, federation::Federation, harness::Harness, sse};
 use common::upstream_fixtures::{reply, upstream};
 use common::{bootstrap, cleanup, request};
@@ -218,7 +219,7 @@ async fn a_streamed_reply_is_shown_live_and_accepted_once(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "THINKING");
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
@@ -280,7 +281,7 @@ async fn a_streamed_reply_is_shown_live_and_accepted_once(
 			.all(|frame| frame.data["data"]["attempt_id"] == json!(attempt))
 	);
 	assert!(stepped);
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "TOOL_CALL");
 	let response = &json!(current.state)["data"]["response"];
 	assert_eq!(response["text"], REPLY);

@@ -1,5 +1,6 @@
 //! Replacement policies and maintenance keep bank and provider bounds consistent.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{apps::registry::models::Definition, database::native};
 
 async fn config(database: &DatabaseFixture) -> serde_json::Value {
@@ -34,7 +35,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	.unwrap();
 	let bank = participant.bank;
 	let (_, run_id) = recorded_run(&store, &bank, &[]).await;
-	let run = store.run(run_id).await.unwrap();
+	let run = store.run(&TEST_FIXTURE, run_id).await.unwrap();
 	let proof = Evidence::Run {
 		id: run_id,
 		revision: run.revision,
@@ -912,7 +913,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	let database = database.await;
 	let (store, _, indexed) = setup(&database, bounds).await;
 	let workspace = store
-		.create_workspace("Late index", "Deletion must remain usable")
+		.create_workspace(&TEST_FIXTURE, "Late index", "Deletion must remain usable")
 		.await
 		.unwrap()
 		.id;
@@ -1098,6 +1099,7 @@ pub(super) async fn recorded_run(
 	};
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			bank.workspace,
 			&aidash_domain::NewTask {
 				title: "Large provenance Run".into(),

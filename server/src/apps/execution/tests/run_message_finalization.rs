@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
@@ -39,7 +40,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let old_worker = Uuid::new_v4();
 	let old_lease = reinhardt::query::Query::update()
 		.table(reinhardt::query::Alias::new("runs"))
@@ -63,18 +64,40 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	let limit = f.run_message_limit(&run).await.unwrap();
 	assert!(matches!(
 		f.store
-			.accept_run_message(run.id, "human", "correction", &key, limit)
+			.accept_run_message(&TEST_FIXTURE, run.id, "human", "correction", &key, limit)
 			.await,
 		Err(aidash_server::error::Error::Conflict(_))
 	));
-	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
-	f.store.release_lease(run.id, old_worker).await.unwrap();
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	f.store
-		.accept_run_message(run.id, "human", "correction", &key, limit)
+		.release_lease(&TEST_FIXTURE, run.id, old_worker)
 		.await
 		.unwrap();
-	assert!(f.store.run(run.id).await.unwrap().ledger_worker_ready);
-	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+	f.store
+		.accept_run_message(&TEST_FIXTURE, run.id, "human", "correction", &key, limit)
+		.await
+		.unwrap();
+	assert!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.ledger_worker_ready
+	);
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
 	assert!(
 		sqlx::query(&old_lease)
 			.bind(run.id)
@@ -96,6 +119,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	assert!(
 		f.store
 			.message_record(
+				&TEST_FIXTURE,
 				run.workspace_id,
 				"agent",
 				"stale legacy response",
@@ -111,6 +135,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	assert!(
 		f.store
 			.message_record(
+				&TEST_FIXTURE,
 				run.workspace_id,
 				"agent",
 				"stale peer-prefixed response",
@@ -123,7 +148,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	Home::new(f.clone(), leased.clone())
 		.response_message(
 			upgraded_worker,
-			f.store.run_inputs(run.id).await.unwrap()[0].seq,
+			f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap()[0].seq,
 			&output_key,
 			"response after observing the correction",
 		)
@@ -131,7 +156,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		.unwrap();
 	assert!(
 		f.store
-			.renew_lease(run.id, upgraded_worker, 30)
+			.renew_lease(&TEST_FIXTURE, run.id, upgraded_worker, 30)
 			.await
 			.unwrap()
 	);
@@ -158,7 +183,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		.is_err()
 	);
 	f.store
-		.release_lease(run.id, upgraded_worker)
+		.release_lease(&TEST_FIXTURE, run.id, upgraded_worker)
 		.await
 		.unwrap();
 	// Model an older lease that was already active when the fence migration
@@ -193,18 +218,19 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		.await
 	}
 	.unwrap();
-	let mut stale = f.store.run(run.id).await.unwrap();
+	let mut stale = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	stale.state = aidash_server::domain::RunState::Thinking(Default::default());
 	let error = f
 		.store
-		.save_run(&stale, stale_worker, "run.message_received")
+		.save_run(&TEST_FIXTURE, &stale, stale_worker, "run.message_received")
 		.await
 		.unwrap_err();
 	assert!(error.to_string().contains("requires an upgraded worker"));
-	let task = f.store.task(run.task_id).await.unwrap();
+	let task = f.store.task(&TEST_FIXTURE, run.task_id).await.unwrap();
 	let task = if task.status == aidash_server::domain::TaskStatus::Claimed {
 		f.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				task.revision,
 				task.owner.as_deref().unwrap(),
@@ -223,6 +249,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	let error = f
 		.store
 		.complete(
+			&TEST_FIXTURE,
 			task.id,
 			task.owner.as_deref().unwrap(),
 			"legacy-completion",
@@ -235,10 +262,18 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		"legacy completion must be rejected by the unobserved input fence, got: {error}"
 	);
 	assert_eq!(
-		f.store.task(task.id).await.unwrap().status.as_str(),
+		f.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"RUNNING"
 	);
-	f.store.release_lease(run.id, stale_worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, stale_worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -261,7 +296,7 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let old_worker = Uuid::new_v4();
 	{
 		let query_bind_1 = run.id;
@@ -308,7 +343,11 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	tx.commit().await.unwrap();
 	let paused = f
 		.store
-		.control(run.id, aidash_server::domain::RunControlAction::Pause)
+		.control(
+			&TEST_FIXTURE,
+			run.id,
+			aidash_server::domain::RunControlAction::Pause,
+		)
 		.await
 		.unwrap();
 	assert_eq!(paused.control.as_str(), "PAUSED");
@@ -335,7 +374,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let pending = common::tool_pending(json!({
 		"included_input_seq":1,
 		"response":{"text":"","tool_calls":[{"id":"stale-call","name":"unsafe","arguments":{"action":"write"}}],"input_tokens":0,"output_tokens":0},
@@ -449,10 +488,11 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 	}
 	.unwrap();
 	backfill.commit().await.unwrap();
-	let stale_run = f.store.run(run.id).await.unwrap();
+	let stale_run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let error = f
 		.store
 		.invocation_start(
+			&TEST_FIXTURE,
 			&stale_run,
 			old_worker,
 			"stale-tool-invocation",
@@ -502,7 +542,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(!run.ledger_worker_ready);
 	let old_worker = Uuid::new_v4();
 	sqlx::query(
@@ -547,7 +587,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	assert!(reclaimed.ledger_worker_ready);
 	assert!(reclaimed.recovery.lease_recovered);
 	f.store
-		.release_lease(run.id, upgraded_worker)
+		.release_lease(&TEST_FIXTURE, run.id, upgraded_worker)
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;
@@ -584,7 +624,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let worker = Harness {
 		federation: f.clone(),
 	};
@@ -610,13 +650,23 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	release.notify_one();
 	assert!(first.await.unwrap().unwrap());
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"THINKING"
 	);
 	tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"TOOL_CALL"
 	);
 	let second_key = Uuid::new_v4();
@@ -631,7 +681,12 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert_eq!(status, 200, "{body}");
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"THINKING"
 	);
 	assert!(worker.worker_once().await.unwrap());
@@ -640,7 +695,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert_eq!(leased.id, run.id);
 	assert!(
 		f.store
-			.begin_final_completion(&leased, lease_token)
+			.begin_final_completion(&TEST_FIXTURE, &leased, lease_token)
 			.await
 			.unwrap()
 	);
@@ -653,14 +708,27 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	)
 	.await;
 	assert_eq!(status, 409, "{body}");
-	f.store.release_lease(run.id, lease_token).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, lease_token)
+		.await
+		.unwrap();
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(
-		f.store.task(run.task_id).await.unwrap().status.as_str(),
+		f.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"COMPLETED"
 	);
 	let seen = requests.lock().await;
@@ -670,7 +738,11 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert!(seen[2].to_string().contains("first correction"));
 	assert!(seen[2].to_string().contains("second correction"));
 	drop(seen);
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	let correction = snapshot
 		.messages
 		.iter()
@@ -751,7 +823,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(
 		Harness {
 			federation: f.clone()
@@ -763,6 +835,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	f.store
 		.accept_run_message(
+			&TEST_FIXTURE,
 			run.id,
 			"human",
 			"reference to read",
@@ -771,7 +844,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 		)
 		.await
 		.unwrap();
-	let input_seq = f.store.run_inputs(run.id).await.unwrap()[0].seq;
+	let input_seq = f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap()[0].seq;
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	assert_eq!(leased.observed_input_seq, 0);
@@ -782,18 +855,21 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 		"cursor":0
 	}))));
 	f.store
-		.save_run(&leased, worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
 		.await
 		.expect("the provider request included the reference");
 	let leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	assert!(
 		!f.store
-			.begin_final_completion(&leased, worker)
+			.begin_final_completion(&TEST_FIXTURE, &leased, worker)
 			.await
 			.unwrap(),
 		"the reference has not been read yet"
 	);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -811,7 +887,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 		"title":"Stale tool response","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let agent = f
 		.registry
 		.get(&run.agent_id, &run.agent_version)
@@ -835,7 +911,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 		"cursor":0
 	}))));
 	f.store
-		.save_run(&leased, worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
 		.await
 		.unwrap();
 	let publish_worker = Uuid::new_v4();
@@ -867,9 +943,12 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	f.store.release_lease(run.id, publish_worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, publish_worker)
+		.await
+		.unwrap();
 	assert!(harness.worker_once().await.unwrap());
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert_eq!(current.step, max_steps - 1);
 	assert!(
@@ -879,7 +958,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	assert!(json!(current.state)["data"].get("response").is_none());
 	assert!(
 		f.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.messages
@@ -896,7 +975,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 		.unwrap();
 	let corrected_seq = f
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
@@ -913,7 +992,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 		.expect("the corrected inference uses a fresh deterministic output key");
 	assert!(
 		f.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.messages
@@ -921,7 +1000,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 			.any(|message| message.content == "corrected tool output")
 	);
 	f.store
-		.release_lease(run.id, corrected_worker)
+		.release_lease(&TEST_FIXTURE, run.id, corrected_worker)
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;
@@ -950,7 +1029,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(
 		(Harness {
 			federation: f.clone()
@@ -984,7 +1063,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		"run_message_summary_limit":8
 	}))));
 	f.store
-		.save_run(&leased, worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
 		.await
 		.unwrap();
 	assert!(
@@ -995,7 +1074,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		.await
 		.unwrap()
 	);
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert_eq!(current.step, max_steps);
 	assert_eq!(json!(current.context)["run_message_summary_seq"], 0);
@@ -1024,7 +1103,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		.await
 		.unwrap()
 	);
-	let bounded = f.store.run(run.id).await.unwrap();
+	let bounded = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
@@ -1048,7 +1127,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(
 		Harness {
 			federation: f.clone()
@@ -1074,7 +1153,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 		"observed_input_seq_before_response":0
 	}))));
 	f.store
-		.save_run(&leased, worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
 		.await
 		.unwrap();
 	assert!(
@@ -1085,7 +1164,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 		.await
 		.unwrap()
 	);
-	let retried = f.store.run(run.id).await.unwrap();
+	let retried = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(retried.phase().as_str(), "THINKING");
 	assert_eq!(retried.step, max_steps);
 	assert!(
@@ -1096,7 +1175,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 		.await
 		.unwrap()
 	);
-	let bounded = f.store.run(run.id).await.unwrap();
+	let bounded = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
@@ -1120,10 +1199,11 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	f.store
 		.accept_run_message(
+			&TEST_FIXTURE,
 			run.id,
 			"human",
 			"large correction to inspect",
@@ -1132,7 +1212,12 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		)
 		.await
 		.unwrap();
-	let input = f.store.run_inputs(run.id).await.unwrap().remove(0);
+	let input = f
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap()
+		.remove(0);
 	let mut tx = f.store.pool.driver().begin().await.unwrap();
 	sqlx::query_scalar::<_, String>(
 		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
@@ -1161,10 +1246,13 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		"cursor":0
 	}))));
 	f.store
-		.save_run(&leased, worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
 		.await
 		.unwrap();
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	assert!(
 		(Harness {
 			federation: f.clone()
@@ -1173,7 +1261,7 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		.await
 		.unwrap()
 	);
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert!(json!(current.state)["data"].get("response").is_none());
 	assert_eq!(json!(current.context)["media_inferred_seq"], 0);
@@ -1182,7 +1270,11 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		json!([input.message_id.unwrap()])
 	);
 	assert_eq!(current.step, leased.step + 1);
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	assert!(
 		!snapshot
 			.messages
@@ -1217,10 +1309,10 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let previously_observed = f
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
@@ -1228,6 +1320,7 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	f.store
 		.accept_run_message(
+			&TEST_FIXTURE,
 			run.id,
 			"human",
 			"correction admitted after the provider response",
@@ -1255,6 +1348,7 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	assert!(matches!(
 		f.store
 			.invocation_start(
+				&TEST_FIXTURE,
 				&leased,
 				worker,
 				"stale-invocation",
@@ -1283,7 +1377,12 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	.await
 	.unwrap();
 	assert_eq!(stale_invocation_count, 0);
-	let messages = f.store.snapshot(run.workspace_id).await.unwrap().messages;
+	let messages = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap()
+		.messages;
 	assert!(
 		!messages
 			.iter()
@@ -1291,7 +1390,7 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	);
 	let included_now = f
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
@@ -1308,14 +1407,17 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 		.unwrap();
 	assert!(
 		f.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.messages
 			.iter()
 			.any(|message| message.content == "fresh response text")
 	);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1339,7 +1441,7 @@ async fn channel_messages_a_local_run_publishes_record_that_run(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 
 	// Act: the agent publishes through the channel, not as its response.
 	Home::new(f.clone(), run.clone())
@@ -1351,7 +1453,12 @@ async fn channel_messages_a_local_run_publishes_record_that_run(
 		.unwrap();
 
 	// Assert: its citations can bind to the publishing Run.
-	let messages = f.store.snapshot(run.workspace_id).await.unwrap().messages;
+	let messages = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap()
+		.messages;
 	let published = messages
 		.iter()
 		.find(|message| message.content == "published through the channel")
@@ -1380,7 +1487,7 @@ async fn a_message_key_replayed_for_another_run_is_rejected(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let key = format!("{}:channel-message", run.id);
 	Home::new(f.clone(), run.clone())
 		.message(&key, "published once")
@@ -1400,7 +1507,12 @@ async fn a_message_key_replayed_for_another_run_is_rejected(
 	// Assert: only the publishing Run's replay is the same message.
 	replayed.unwrap();
 	assert!(matches!(reused, Err(aidash_server::Error::Conflict(_))));
-	let messages = f.store.snapshot(run.workspace_id).await.unwrap().messages;
+	let messages = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap()
+		.messages;
 	let published: Vec<_> = messages
 		.iter()
 		.filter(|message| message.content == "published once")
@@ -1424,7 +1536,7 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 		"title":"Run message budget","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let path = format!("/api/runs/{}/message", run.id);
 	let large = "x".repeat(32_768);
 	let (status, body) = request(
@@ -1436,10 +1548,16 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 	)
 	.await;
 	assert_eq!(status, 400, "{body}");
-	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	assert!(
 		!f.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.messages
@@ -1475,7 +1593,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 		"title":"Private correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let worker = Harness {
 		federation: f.clone(),
 	};
@@ -1495,7 +1613,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 	);
 	let message = f
 		.store
-		.snapshot(run.workspace_id)
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
 		.await
 		.unwrap()
 		.messages
@@ -1520,7 +1638,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 		200
 	);
 	assert!(worker.worker_once().await.unwrap());
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(paused.control.as_str(), "PAUSED");
 	assert_eq!(paused.phase().as_str(), "THINKING");
 	cleanup(f, &url, &schema).await;
@@ -1543,7 +1661,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 		assert_eq!(status, 200, "{created}");
 		let run = f
 			.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.into_iter()
@@ -1553,7 +1671,11 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 			.unwrap();
 		if *terminal == "cancel" {
 			f.store
-				.control(run.id, aidash_server::domain::RunControlAction::Cancel)
+				.control(
+					&TEST_FIXTURE,
+					run.id,
+					aidash_server::domain::RunControlAction::Cancel,
+				)
 				.await
 				.unwrap();
 		} else {
@@ -1597,10 +1719,16 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 		)
 		.await;
 		assert_eq!(status, 409, "{body}");
-		assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+		assert!(
+			f.store
+				.run_inputs(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.is_empty()
+		);
 		assert!(
 			!f.store
-				.snapshot(run.workspace_id)
+				.snapshot(&TEST_FIXTURE, run.workspace_id)
 				.await
 				.unwrap()
 				.messages
@@ -1625,7 +1753,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 		"title":"Expired lease", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let worker = Uuid::new_v4();
 	{ let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = common::tool_pending(json!({"response":{"text":"answer","tool_calls":[],"input_tokens":1,"output_tokens":1},"cursor":0})); sqlx::query(&reinhardt::query::Query::update()
 			.table(reinhardt::query::Alias::new("runs"))
@@ -1650,13 +1778,15 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 	.execute(f.store.pool.driver())
 	.await }
 	.unwrap();
-	let stale = f.store.run(run.id).await.unwrap();
+	let stale = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(matches!(
-		f.store.begin_final_completion(&stale, worker).await,
+		f.store
+			.begin_final_completion(&TEST_FIXTURE, &stale, worker)
+			.await,
 		Err(aidash_server::Error::Conflict(_))
 	));
 	assert_ne!(
-		json!(f.store.run(run.id).await.unwrap().state)["data"]["finalizing"],
+		json!(f.store.run(&TEST_FIXTURE, run.id).await.unwrap().state)["data"]["finalizing"],
 		true
 	);
 	cleanup(f, &url, &schema).await;

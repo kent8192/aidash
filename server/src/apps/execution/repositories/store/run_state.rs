@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{DateTime, Utc};
 use reinhardt::query::{Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query};
 fn a(name: &str) -> Alias {
@@ -97,7 +98,8 @@ impl Store {
 		worker: Uuid,
 		seconds: i32,
 	) -> Result<Option<FailureDelivery>> {
-		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
+		let mut tx = self.pool.begin(scope).await?;
 		let now: DateTime<Utc> = crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
@@ -194,6 +196,7 @@ impl Store {
 	}
 	pub(crate) async fn finish_failure_delivery(
 		&self,
+		scope: &TenancyScope,
 		delivery: &FailureDelivery,
 		worker: Uuid,
 		result: Result<TaskStatus>,
@@ -233,7 +236,7 @@ impl Store {
 			}
 		};
 		let m = &delivery.metadata;
-		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let query = Query::update()
 			.table(a("runs"))
 			.value(a("phase"), state.phase().as_str())
@@ -280,7 +283,7 @@ impl Store {
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		Ok(())
 	}
-	pub async fn inspect_run(&self, id: Uuid) -> Result<RunInspection> {
+	pub async fn inspect_run(&self, scope: &TenancyScope, id: Uuid) -> Result<RunInspection> {
 		let raw: RawRun = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -288,12 +291,12 @@ impl Store {
 				.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&self.pool)
+		.fetch_optional(self.pool.in_scope(scope))
 		.await?
 		.ok_or_else(|| Error::NotFound("run".into()))?;
 		Ok(raw.inspect())
 	}
-	pub async fn inspect_runs(&self) -> Result<Vec<RunInspection>> {
+	pub async fn inspect_runs(&self, scope: &TenancyScope) -> Result<Vec<RunInspection>> {
 		let rows: Vec<RawRun> = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -302,7 +305,7 @@ impl Store {
 				.limit(500)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&self.pool)
+		.fetch_all(self.pool.in_scope(scope))
 		.await?;
 		Ok(rows.into_iter().map(RawRun::inspect).collect())
 	}

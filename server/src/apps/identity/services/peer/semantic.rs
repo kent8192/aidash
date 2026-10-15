@@ -215,11 +215,12 @@ pub(crate) async fn verify_in(
 	if record.digest != input.digest()? {
 		return Err(Error::Forbidden);
 	}
-	let run = f.store.run(input.admission_id).await?;
+	let scope = f.store.run_tenancy(input.admission_id).await?;
+	let run = f.store.run(&scope, input.admission_id).await?;
 	if run.step != input.boundary.step {
 		return Err(Error::Forbidden);
 	}
-	let inputs = f.store.run_inputs(run.id).await?;
+	let inputs = f.store.run_inputs(&scope, run.id).await?;
 	for required in &input.inputs {
 		if !inputs.iter().any(|i| {
 			i.seq == required.sequence

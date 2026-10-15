@@ -4,6 +4,7 @@ mod endpoint_fixtures;
 #[path = "support/native_database.rs"]
 mod native_database;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::workspaces::models::states::ArtifactKind;
 use aidash_server::apps::workspaces::models::{Artifact, Message};
 use aidash_server::{
@@ -51,7 +52,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	))
 	.unwrap();
 	f.store
-		.accept_run(&task, &f.config.node_id, "lead", "1.0.0")
+		.accept_run(&TEST_FIXTURE, &task, &f.config.node_id, "lead", "1.0.0")
 		.await
 		.unwrap();
 	let worker = Uuid::new_v4();
@@ -60,6 +61,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		home: Home::new(f.clone(), run.clone()),
 		store: f.store.clone(),
 		run: run.clone(),
+		scope: TEST_FIXTURE,
 	};
 	let tools = builtins();
 	let mut first_size = 0;
@@ -67,7 +69,15 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	for i in 0..8 {
 		let key = format!("observe-{i}");
 		f.store
-			.invocation_start(&run, worker, &key, "workspace_observe", &json!({}), true)
+			.invocation_start(
+				&TEST_FIXTURE,
+				&run,
+				worker,
+				&key,
+				"workspace_observe",
+				&json!({}),
+				true,
+			)
 			.await
 			.unwrap();
 		let result = tools["workspace_observe"]
@@ -75,11 +85,11 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.await
 			.unwrap();
 		f.store
-			.invocation_finish(&run, worker, &key, &result)
+			.invocation_finish(&TEST_FIXTURE, &run, worker, &key, &result)
 			.await
 			.unwrap();
 		// Assert
-		let audit = f.store.snapshot(workspace.id).await.unwrap();
+		let audit = f.store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
 		assert!(
 			audit
 				.events
@@ -103,7 +113,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			"observation grew recursively: {size}"
 		);
 	}
-	let snapshot = f.store.snapshot(workspace.id).await.unwrap();
+	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
 	let event = snapshot
 		.events
 		.iter()
@@ -165,6 +175,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		let child = f
 			.store
 			.create_task(
+				&TEST_FIXTURE,
 				workspace.id,
 				&NewTask {
 					title: format!("Child {index}"),
@@ -181,6 +192,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		if index == 0 {
 			f.store
 				.transition(
+					&TEST_FIXTURE,
 					child.id,
 					child.revision,
 					"human",
@@ -192,7 +204,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	}
 	let children = f
 		.store
-		.child_task_summary(workspace.id, task.id)
+		.child_task_summary(&TEST_FIXTURE, workspace.id, task.id)
 		.await
 		.unwrap();
 	assert!(children.has_pending && children.has_failed);
@@ -200,6 +212,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let old_event = f
 		.store
 		.emit(
+			&TEST_FIXTURE,
 			Some(workspace.id),
 			"old-record-regression",
 			json!({"marker":"beyond the recent event snapshot"}),
@@ -208,6 +221,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.unwrap();
 	f.store
 		.message(
+			&TEST_FIXTURE,
 			workspace.id,
 			"review-test",
 			"old message",
@@ -247,18 +261,24 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	] {
 		let record = f
 			.store
-			.workspace_record(workspace.id, kind, id)
+			.workspace_record(&TEST_FIXTURE, workspace.id, kind, id)
 			.await
 			.unwrap();
 		assert!(record.to_string().contains(expected));
 	}
 	for index in 0..105 {
 		f.store
-			.emit(Some(workspace.id), "newer-record", json!({"index":index}))
+			.emit(
+				&TEST_FIXTURE,
+				Some(workspace.id),
+				"newer-record",
+				json!({"index":index}),
+			)
 			.await
 			.unwrap();
 		f.store
 			.message(
+				&TEST_FIXTURE,
 				workspace.id,
 				"review-test",
 				&format!("new message {index}"),
@@ -267,7 +287,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.await
 			.unwrap();
 	}
-	let recent = f.store.snapshot(workspace.id).await.unwrap();
+	let recent = f.store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
 	assert!(!recent.events.iter().any(|event| event.id == old_event.id));
 	assert!(
 		!recent
@@ -301,6 +321,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let prepared_input = json!({"kind":"artifact","id":Uuid::new_v4(),"max_chars":97});
 	f.store
 		.invocation_start(
+			&TEST_FIXTURE,
 			&prepared_run,
 			worker,
 			"workspace-read-plan-durability",
@@ -310,14 +331,14 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		)
 		.await
 		.unwrap();
-	let recovered = f.store.run(run.id).await.unwrap();
+	let recovered = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		serde_json::to_value(&recovered.state).unwrap()["data"],
 		serde_json::to_value(&prepared_run.state).unwrap()["data"]
 	);
 	let other = f
 		.store
-		.create_workspace("Private", "Another workspace")
+		.create_workspace(&TEST_FIXTURE, "Private", "Another workspace")
 		.await
 		.unwrap();
 	assert!(

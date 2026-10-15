@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::FutureExt;
 use http::Method;
@@ -751,12 +752,17 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	assert_eq!(grant["revision"], 1);
 	let workspace = federation
 		.store
-		.create_workspace("Browser management", "Pause and cancel an admitted run")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Browser management",
+			"Pause and cancel an admitted run",
+		)
 		.await
 		.unwrap();
 	let task = federation
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
@@ -791,7 +797,13 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	}
 	let run = federation
 		.store
-		.accept_run(&task, &federation.config.node_id, "fixture-agent", "1.0.0")
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&federation.config.node_id,
+			"fixture-agent",
+			"1.0.0",
+		)
 		.await
 		.unwrap();
 	let run_management = format!("/api/runs/{}/management", run.id);
@@ -812,7 +824,12 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		"restoring the route must retain CSRF enforcement"
 	);
 	assert_eq!(
-		federation.store.inspect_run(run.id).await.unwrap().control,
+		federation
+			.store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control,
 		aidash_server::domain::RunControl::Active
 	);
 	for (action, expected) in [
@@ -833,7 +850,12 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["control"], json!(expected));
 		assert_eq!(
-			federation.store.inspect_run(run.id).await.unwrap().control,
+			federation
+				.store
+				.inspect_run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.control,
 			expected
 		);
 	}

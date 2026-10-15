@@ -2,6 +2,7 @@
 //! Each case maps to a row of `docs/memory-recovery.md#change-matrix`.
 use super::policy_bounds::{recorded_run, run_visible};
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 /// The shape a caller chooses for a change is not an exemption. A correction
 /// that keeps the text byte-identical and only edits metadata, or repeats the
@@ -217,6 +218,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 	use aidash_server::database::native;
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace,
 			&aidash_domain::NewTask {
 				title: "Second reader".into(),

@@ -1,5 +1,6 @@
 //! Review regressions exercise real admission, recovery, retention, and Run reads.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 #[rstest]
@@ -29,7 +30,11 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		candidates.push(review_delivery::candidate(&store, &bank).await);
 	}
 	let later_workspace = store
-		.create_workspace("Later bank", "Maintenance must reach this bank")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Later bank",
+			"Maintenance must reach this bank",
+		)
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();
@@ -344,7 +349,11 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	// Admit the bank against a valid index, then remove the disposable search
 	// service. Its source quota is independent of the Run lifetime read journal.
 	let workspace = store
-		.create_workspace("Long Run", "Accumulate admitted recall pages")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Long Run",
+			"Accumulate admitted recall pages",
+		)
 		.await
 		.unwrap()
 		.id;

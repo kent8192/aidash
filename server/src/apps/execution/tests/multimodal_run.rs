@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
@@ -77,7 +78,7 @@ async fn verify_audio_batches(
 	let audio_workspace = audio_created["workspace"]["id"].as_str().unwrap();
 	let audio_run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -196,7 +197,12 @@ async fn verify_audio_batches(
 	}
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(audio_run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, audio_run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 }
@@ -218,7 +224,7 @@ async fn verify_attachment_labels_count_toward_admission(
 	let workspace = created["workspace"]["id"].as_str().unwrap();
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -226,7 +232,7 @@ async fn verify_attachment_labels_count_toward_admission(
 		.unwrap();
 	let seq = f
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
@@ -260,7 +266,13 @@ async fn verify_attachment_labels_count_toward_admission(
 	)
 	.await;
 	assert_eq!(status, 400, "{rejected}");
-	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	let (status, sent) = request(
 		app,
 		operator,
@@ -270,7 +282,14 @@ async fn verify_attachment_labels_count_toward_admission(
 	)
 	.await;
 	assert_eq!(status, 200, "{sent}");
-	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
 }
 
 async fn verify_expired_route_retry(
@@ -321,7 +340,7 @@ async fn verify_expired_route_retry(
 	let workspace = created["workspace"]["id"].as_str().unwrap();
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -344,14 +363,28 @@ async fn verify_expired_route_retry(
 	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 	let (status, body) = request(app, operator, "POST", &path, input).await;
 	assert_eq!(status, 200, "{body}");
-	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
 	assert!(worker.worker_once().await.unwrap());
 	assert!(worker.worker_once().await.unwrap());
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(paused.control.as_str(), "PAUSED");
 	assert_eq!(paused.phase().as_str(), "THINKING");
 	assert_eq!(paused.context.media_inferred_seq, 0);
-	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+	assert_eq!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
 }
 
 async fn verify_separate_format_routes(
@@ -409,7 +442,7 @@ async fn verify_separate_format_routes(
 	let workspace = created["workspace"]["id"].as_str().unwrap();
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -475,13 +508,24 @@ async fn verify_separate_format_routes(
 	}
 	assert_eq!(seen, vec![0, 1], "both formats must reach their own route");
 	for _ in 0..4 {
-		if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
 			break;
 		}
 		assert!(worker.worker_once().await.unwrap());
 	}
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 }
@@ -571,7 +615,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert_eq!(status, 200, "{body}");
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Media input","goal":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let workspace = run.workspace_id.to_string();
 	let (status, details) = request(
 		&app,
@@ -613,7 +657,13 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	)
 	.await;
 	assert_eq!(status, 400, "{rejected}");
-	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	let mut large_audio = vec![0_u8; 512 * 1024];
 	large_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
 	let first_large = upload(
@@ -643,7 +693,13 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	)
 	.await;
 	assert_eq!(status, 400, "{rejected}");
-	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	assert!(
+		f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	let audio = upload(
 		&app,
 		&token,
@@ -724,7 +780,12 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		"model request did not include the accepted run media"
 	);
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"TOOL_CALL"
 	);
 	let (status, correction) = request(
@@ -738,7 +799,12 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert_eq!(status, 200, "{correction}");
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"THINKING"
 	);
 	assert!(worker.worker_once().await.unwrap());
@@ -754,13 +820,24 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		"{retried_types:?}"
 	);
 	for _ in 0..4 {
-		if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
 			break;
 		}
 		assert!(worker.worker_once().await.unwrap());
 	}
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	let operator = f.config.api_token.clone();
@@ -776,7 +853,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let operator_workspace = created["workspace"]["id"].as_str().unwrap();
 	let operator_run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -802,7 +879,12 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			base64::engine::general_purpose::STANDARD.encode(&bytes)
 		));
 	}
-	let original_inputs = f.store.run_inputs(operator_run.id).await.unwrap().len();
+	let original_inputs = f
+		.store
+		.run_inputs(&TEST_FIXTURE, operator_run.id)
+		.await
+		.unwrap()
+		.len();
 	let (status, rejected) = request(
 		&app,
 		&operator,
@@ -813,7 +895,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	.await;
 	assert_eq!(status, 400, "{rejected}");
 	assert_eq!(
-		f.store.run_inputs(operator_run.id).await.unwrap().len(),
+		f.store
+			.run_inputs(&TEST_FIXTURE, operator_run.id)
+			.await
+			.unwrap()
+			.len(),
 		original_inputs
 	);
 	for ids in image_ids.chunks(5) {
@@ -851,7 +937,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			break;
 		}
 	}
-	let final_operator_run = f.store.run(operator_run.id).await.unwrap();
+	let final_operator_run = f.store.run(&TEST_FIXTURE, operator_run.id).await.unwrap();
 	assert!(
 		media_batches.len() == 3,
 		"operator run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
@@ -862,7 +948,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		final_operator_run.lease_owner,
 		final_operator_run.lease_until,
 		f.store
-			.task(final_operator_run.task_id)
+			.task(&TEST_FIXTURE, final_operator_run.task_id)
 			.await
 			.unwrap()
 			.status
@@ -874,7 +960,12 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	);
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(operator_run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, operator_run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	Box::pin(verify_audio_batches(

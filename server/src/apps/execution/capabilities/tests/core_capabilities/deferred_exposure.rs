@@ -2,6 +2,7 @@
 //! scripted provider discovers, loads and invokes capabilities while every
 //! request it receives is recorded for inspection.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	domain::{Run, RunControl, RunPhase},
 	harness::Harness,
@@ -259,7 +260,7 @@ impl Deferred {
 		self.c
 			.f
 			.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.into_iter()
@@ -288,7 +289,7 @@ impl Deferred {
 		.unwrap();
 	}
 	async fn run(&self, id: Uuid) -> Run {
-		self.c.f.store.run(id).await.unwrap()
+		self.c.f.store.run(&TEST_FIXTURE, id).await.unwrap()
 	}
 	/// Step until the Run completes, fails, is cancelled or is paused.
 	async fn drive(&self, id: Uuid) -> Run {
@@ -1143,7 +1144,7 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 		d.c.f.deliver_run_messages(&run).await.unwrap();
 	}
 	// An earlier summary turns every later run message into catch-up.
-	let summarized = d.c.f.store.run_inputs(run.id).await.unwrap()[0].seq;
+	let summarized = d.c.f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap()[0].seq;
 	let worker = Uuid::new_v4();
 	let mut leased = d.c.f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	assert_eq!(leased.id, run.id);
@@ -1152,10 +1153,14 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 	leased.observed_input_seq = summarized;
 	d.c.f
 		.store
-		.save_run(&leased, worker, "run.message_received")
+		.save_run(&TEST_FIXTURE, &leased, worker, "run.message_received")
 		.await
 		.unwrap();
-	d.c.f.store.release_lease(run.id, worker).await.unwrap();
+	d.c.f
+		.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	let finished = d.drive(run.id).await;
 	completed(&finished);
 	let requests = d.requests().await;

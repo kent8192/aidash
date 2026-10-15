@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 fn manifest(node: &str, workspace: Uuid) -> Value {
@@ -19,7 +20,12 @@ async fn abort_honors_manifest_attribute_denies(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let manifest = manifest(&f.config.node_id, workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", manifest.clone())
@@ -81,7 +87,12 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let old_pool = f.store.control_pool.clone();
 	f.store.control_pool = old_pool
 		.options()
@@ -176,7 +187,12 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let oldest = manifest(&f.config.node_id, workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", oldest.clone())
@@ -298,7 +314,12 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let own = manifest(&f.config.node_id, workspace);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/transactions", own.clone())

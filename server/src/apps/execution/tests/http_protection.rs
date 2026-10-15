@@ -1,6 +1,7 @@
 #[path = "support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::http::Settings;
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -235,7 +236,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	);
 	let before = federation
 		.store
-		.events(0, None, 500)
+		.events(&TEST_FIXTURE, 0, None, 500)
 		.await
 		.unwrap()
 		.last()
@@ -253,7 +254,12 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 			.status_code(),
 		200
 	);
-	let after = federation.store.events(before, None, 500).await.unwrap()[0].sequence;
+	let after = federation
+		.store
+		.events(&TEST_FIXTURE, before, None, 500)
+		.await
+		.unwrap()[0]
+		.sequence;
 	let stream_request = || {
 		Request::builder()
 			.uri("/api/events/stream?after=0")

@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use http::Method;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
@@ -145,7 +146,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	.await
 	.unwrap();
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
-	let run = a.store.runs().await.unwrap().remove(0);
+	let run = a.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let path = format!("/api/runs/{}", run.id);
 	assert_eq!(
 		request(&a_app, &token, "GET", &path, Value::Null).await.0,
@@ -273,7 +274,12 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	};
 	restarted.worker_once().await.unwrap();
 	assert_eq!(
-		a.store.run(run.id).await.unwrap().control.as_str(),
+		a.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"PAUSED"
 	);
 	assert_eq!(
@@ -307,12 +313,23 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	);
 	for _ in 0..12 {
 		restarted.worker_once().await.unwrap();
-		if a.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
+		if a.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
 			break;
 		}
 	}
 	assert_eq!(
-		a.store.run(run.id).await.unwrap().phase().as_str(),
+		a.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 2);

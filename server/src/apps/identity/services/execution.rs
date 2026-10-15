@@ -146,6 +146,10 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	/// The scope of every transaction this authority's Run opens.
+	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
+		self.access.read().await.tenancy()
+	}
 	/// Concurrent core tool calls of one Run share the outer authority lease.
 	/// Each call runs in its own inner transaction while the outer transaction
 	/// keeps the authorization locks, so revocation waits until every concurrent
@@ -484,6 +488,8 @@ pub(crate) struct Guard {
 	access: Arc<RwLock<Access>>,
 	run: Run,
 	agent: AgentConfig,
+	/// The Run's Tenant, learned from its authority when the step began.
+	tenancy: aidash_application::tenancy::TenancyScope,
 }
 
 pub(in crate::apps::identity) async fn authorize_guard(
@@ -564,12 +570,17 @@ impl Guard {
 			run,
 		)
 		.await?;
-		Ok(entry.map(|entry| Self {
-			remote: entry.remote.then(|| f.clone()),
-			access: Arc::new(RwLock::new(entry.scope)),
-			run: run.clone(),
-			agent: entry.agent,
-		}))
+		entry
+			.map(|entry| {
+				Ok(Self {
+					tenancy: entry.scope.tenancy()?,
+					remote: entry.remote.then(|| f.clone()),
+					access: Arc::new(RwLock::new(entry.scope)),
+					run: run.clone(),
+					agent: entry.agent,
+				})
+			})
+			.transpose()
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.write().await;
@@ -597,6 +608,10 @@ impl Guard {
 	}
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()
+	}
+	/// The scope of every transaction this Run's step opens.
+	pub(crate) fn tenancy(&self) -> &aidash_application::tenancy::TenancyScope {
+		&self.tenancy
 	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.

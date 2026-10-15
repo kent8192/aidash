@@ -7,6 +7,7 @@ mod stream;
 #[path = "inference_progress/worker.rs"]
 mod worker;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::provider::progress::{
 	InferenceAttemptId, InferenceProgress, InterruptionReason, ProgressOutcome,
 };
@@ -65,7 +66,7 @@ async fn conversation(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	Conversation {
 		_owner: owner,
 		f,
@@ -88,7 +89,7 @@ impl Conversation {
 		let attempt = InferenceAttemptId::new();
 		self.f
 			.store
-			.start_inference(self.run.id, worker, attempt)
+			.start_inference(&TEST_FIXTURE, self.run.id, worker, attempt)
 			.await
 			.unwrap();
 		attempt
@@ -98,6 +99,7 @@ impl Conversation {
 		self.f
 			.store
 			.append_inference_progress(
+				&TEST_FIXTURE,
 				self.run.id,
 				worker,
 				attempt,
@@ -205,7 +207,7 @@ async fn every_attempt_records_exactly_one_outcome(
 	match closure {
 		Closure::Accepted => {
 			c.f.store
-				.save_run(&completed(leased), worker, "model.completed")
+				.save_run(&TEST_FIXTURE, &completed(leased), worker, "model.completed")
 				.await
 				.unwrap();
 		}
@@ -213,18 +215,21 @@ async fn every_attempt_records_exactly_one_outcome(
 			let key = format!("human:{}:{}", c.run.id, Uuid::new_v4());
 			let limit = c.f.run_message_limit(&c.run).await.unwrap();
 			c.f.store
-				.accept_run_message(c.run.id, "human", "correction", &key, limit)
+				.accept_run_message(&TEST_FIXTURE, c.run.id, "human", "correction", &key, limit)
 				.await
 				.unwrap();
 			assert!(matches!(
 				c.f.store
-					.save_run(&completed(leased), worker, "model.completed")
+					.save_run(&TEST_FIXTURE, &completed(leased), worker, "model.completed")
 					.await,
 				Err(Error::StaleInference)
 			));
 		}
 		Closure::OrphanOnNextStart => {
-			c.f.store.release_lease(c.run.id, worker).await.unwrap();
+			c.f.store
+				.release_lease(&TEST_FIXTURE, c.run.id, worker)
+				.await
+				.unwrap();
 			let next = Uuid::new_v4();
 			c.lease(next).await;
 			let replacement = c.start(next).await;
@@ -234,29 +239,40 @@ async fn every_attempt_records_exactly_one_outcome(
 			let mut failed = leased;
 			failed.state = RunState::Failed(TerminalState {});
 			c.f.store
-				.save_run(&failed, worker, "run.failed")
+				.save_run(&TEST_FIXTURE, &failed, worker, "run.failed")
 				.await
 				.unwrap();
 		}
 		Closure::PausedThenAccepted => {
 			// A management pause lets the in-flight call finish under its lease.
 			c.f.store
-				.control(c.run.id, aidash_server::domain::RunControlAction::Pause)
+				.control(
+					&TEST_FIXTURE,
+					c.run.id,
+					aidash_server::domain::RunControlAction::Pause,
+				)
 				.await
 				.unwrap();
 			assert_eq!(c.f.store.close_orphaned_inference().await.unwrap(), 0);
 			c.f.store
-				.save_run(&completed(leased), worker, "model.completed")
+				.save_run(&TEST_FIXTURE, &completed(leased), worker, "model.completed")
 				.await
 				.unwrap();
 		}
 		Closure::PausedThenLeaseLapsed => {
 			// Activation never schedules the paused Run to close the attempt.
 			c.f.store
-				.control(c.run.id, aidash_server::domain::RunControlAction::Pause)
+				.control(
+					&TEST_FIXTURE,
+					c.run.id,
+					aidash_server::domain::RunControlAction::Pause,
+				)
 				.await
 				.unwrap();
-			c.f.store.release_lease(c.run.id, worker).await.unwrap();
+			c.f.store
+				.release_lease(&TEST_FIXTURE, c.run.id, worker)
+				.await
+				.unwrap();
 			assert_eq!(c.f.store.close_orphaned_inference().await.unwrap(), 1);
 			assert_eq!(c.f.store.close_orphaned_inference().await.unwrap(), 0);
 		}
@@ -265,6 +281,7 @@ async fn every_attempt_records_exactly_one_outcome(
 	let late =
 		c.f.store
 			.finish_inference(
+				&TEST_FIXTURE,
 				c.run.id,
 				worker,
 				attempt,
@@ -293,12 +310,16 @@ async fn writes_after_the_lease_is_lost_are_rejected(
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
 	let attempt = c.start(worker).await;
-	c.f.store.release_lease(c.run.id, worker).await.unwrap();
+	c.f.store
+		.release_lease(&TEST_FIXTURE, c.run.id, worker)
+		.await
+		.unwrap();
 
 	// Act
 	let append =
 		c.f.store
 			.append_inference_progress(
+				&TEST_FIXTURE,
 				c.run.id,
 				worker,
 				attempt,
@@ -310,6 +331,7 @@ async fn writes_after_the_lease_is_lost_are_rejected(
 	let finish =
 		c.f.store
 			.finish_inference(
+				&TEST_FIXTURE,
 				c.run.id,
 				worker,
 				attempt,
@@ -318,7 +340,7 @@ async fn writes_after_the_lease_is_lost_are_rejected(
 			.await;
 	let start =
 		c.f.store
-			.start_inference(c.run.id, worker, InferenceAttemptId::new())
+			.start_inference(&TEST_FIXTURE, c.run.id, worker, InferenceAttemptId::new())
 			.await;
 
 	// Assert
@@ -352,7 +374,7 @@ async fn dashboard_projections_omit_inference_markers(
 	let leased = c.lease(worker).await;
 	let attempt = c.start(worker).await;
 	c.f.store
-		.save_run(&completed(leased), worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &completed(leased), worker, "model.completed")
 		.await
 		.unwrap();
 	assert_eq!(c.closures(attempt).await, (1, 1));

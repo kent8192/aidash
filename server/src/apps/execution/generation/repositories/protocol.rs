@@ -1,5 +1,6 @@
 //! Native authority leases and unchanged PostgreSQL queries implement allowance ports.
 use crate::{authorization::access::Access, federation::Federation, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::generation::protocol::{
@@ -23,6 +24,11 @@ use serde::Deserialize as _;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+/// A remote Home names an admission, not its local Tenant (#241).
+fn inbound() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::FederationInbound)
+}
+
 pub(crate) struct NativeProtocolRepository {
 	pub store: Store,
 }
@@ -45,13 +51,16 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_one(&self.store.pool)
+			.scalar_one(self.store.pool.in_scope(&inbound()))
 			.await?
 		};
 		Ok(serde_json::from_value(description)?)
 	}
 	async fn run(&self, admission: Uuid) -> Result<Run> {
-		self.store.run(admission).await.map_err(Into::into)
+		self.store
+			.run(&inbound(), admission)
+			.await
+			.map_err(Into::into)
 	}
 	async fn semantic_ready(&self, admission: Uuid, grant: Uuid, step: i32) -> Result<bool> {
 		let ready: bool = {
@@ -60,7 +69,7 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 			let query_bind_3 = step;
 			crate::database::native::query_scalar(&Query::select().expr(Expr::cust("COUNT(*) > 0")).from(Alias::new("semantic_remote_operations"))
                 .and_where(SimpleExpr::CustomWithExpr("(admission_id=? AND grant_id=? AND state='READY' AND (binding->'operation'->'boundary'->>'step')::integer=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
-                .to_string(PostgresQueryBuilder)).scalar_one(&self.store.pool).await?
+                .to_string(PostgresQueryBuilder)).scalar_one(self.store.pool.in_scope(&inbound())).await?
 		};
 		Ok(ready)
 	}

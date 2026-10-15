@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::{
 	FutureExt,
@@ -55,7 +56,7 @@ impl Fixture {
 				let run = self
 					.f
 					.store
-					.runs()
+					.runs(&TEST_FIXTURE)
 					.await
 					.unwrap()
 					.into_iter()
@@ -74,7 +75,7 @@ impl Fixture {
 			let states: Vec<_> = self
 				.f
 				.store
-				.runs()
+				.runs(&TEST_FIXTURE)
 				.await
 				.unwrap()
 				.into_iter()
@@ -131,7 +132,7 @@ impl Fixture {
 			let states: Vec<_> = self
 				.f
 				.store
-				.runs()
+				.runs(&TEST_FIXTURE)
 				.await
 				.unwrap()
 				.into_iter()
@@ -721,11 +722,12 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 	let approved = case == "approved";
 	let mut fixture = semantic_fixture_1;
 	let parent = fixture.job.clone();
-	let parent_run = fixture.f.store.runs().await.unwrap().remove(0);
+	let parent_run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	fixture
 		.f
 		.store
 		.control(
+			&TEST_FIXTURE,
 			parent_run.id,
 			aidash_server::domain::RunControlAction::Pause,
 		)
@@ -942,7 +944,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 		fixture.embedding_started.notified(),
 	)
 	.await;
-	let states = fixture.f.store.runs().await.unwrap();
+	let states = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap();
 	let activity: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
 		&reinhardt::query::Query::select()
 			.columns(
@@ -1001,7 +1003,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	// Recovery repeats native retrieval and durable reservation boundaries.
 	tokio::time::timeout(std::time::Duration::from_secs(90), async {
 		loop {
-			let run = fixture.f.store.runs().await.unwrap().remove(0);
+			let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 			if run.phase().as_str() == "FAILED" {
 				break;
 			}
@@ -1011,7 +1013,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	.await
 	.expect("new worker must recover the original run and enforce the retained call limit");
 	drop(worker);
-	assert_eq!(fixture.f.store.runs().await.unwrap().len(), 1);
+	assert_eq!(fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().len(), 1);
 	assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 3);
 	assert_eq!(fixture.inference.load(Ordering::SeqCst), 1);
 	assert_eq!(fixture.usage().await["embedding_calls"], 2);
@@ -1147,12 +1149,16 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 
 	let mut fixture = semantic_fixture_1;
 	let first = fixture.remember().await;
-	let parent = fixture.f.store.runs().await.unwrap().remove(0);
+	let parent = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let parent_request: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
 	fixture
 		.f
 		.store
-		.control(parent.id, aidash_server::domain::RunControlAction::Pause)
+		.control(
+			&TEST_FIXTURE,
+			parent.id,
+			aidash_server::domain::RunControlAction::Pause,
+		)
 		.await
 		.unwrap();
 	let (status, task) = request(&fixture.app, &fixture.token, "POST",
@@ -1221,7 +1227,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	let child_run = fixture
 		.f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -1230,7 +1236,11 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	fixture
 		.f
 		.store
-		.control(child_run.id, aidash_server::domain::RunControlAction::Pause)
+		.control(
+			&TEST_FIXTURE,
+			child_run.id,
+			aidash_server::domain::RunControlAction::Pause,
+		)
 		.await
 		.unwrap();
 	let provider = EntityRef {
@@ -1491,7 +1501,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 	};
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	let fixture = semantic_fixture_1;
-	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let participant: Uuid = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("participant_id"))
@@ -1512,6 +1522,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 		home: aidash_server::federation::Home::new(fixture.f.clone(), run.clone()),
 		store: fixture.f.store.clone(),
 		run,
+		scope: TEST_FIXTURE,
 	};
 	let tools = aidash_server::tool::builtins();
 	let tool = &tools["memory_mutate"];
@@ -1628,7 +1639,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	semantic::worker::sweep(&fixture.f.store).await.unwrap();
 	fixture.remember.store(usize::MAX, Ordering::SeqCst);
 	fixture.drive().await;
-	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	// Reindex an admitted generated unit after its Run completes, then fail one
 	// provider attempt. Completion must preserve the scheduled retry's authority.
@@ -2071,7 +2082,7 @@ mod semantic_fixture_composition {
 		} = _state;
 		async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let server=server.await;let endpoint=server.url.clone();let memory_recovery_directory=recovery_directory;
 		let (_, token, original_task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-		let workspace = f.store.task(original_task).await.unwrap().workspace_id;
+		let workspace = f.store.task(&TEST_FIXTURE, original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
 			&app,
 			&f.config.api_token,

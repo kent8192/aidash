@@ -27,23 +27,26 @@ impl RunMessages for Messages<'_> {
 		&self.run
 	}
 	async fn inputs(&self) -> Result<Vec<aidash_domain::run_input::RunInput>> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
-			.run_inputs(self.run.id)
+			.run_inputs(&scope, self.run.id)
 			.await
 			.map_err(Into::into)
 	}
 	async fn has_media(&self, message: Uuid) -> Result<bool> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
-			.run_message_has_media(&[message])
+			.run_message_has_media(&scope, &[message])
 			.await
 			.map_err(Into::into)
 	}
 	async fn sequence(&self, key: &str, content: &str) -> Result<i64> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
-			.run_input_sequence(self.run.id, key, content)
+			.run_input_sequence(&scope, self.run.id, key, content)
 			.await
 			.map_err(Into::into)
 	}
@@ -57,9 +60,10 @@ impl RunMessages for Messages<'_> {
 			.map_err(Into::into)
 	}
 	async fn accept(&self, sender: &str, content: &str, key: &str, limit: usize) -> Result<()> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
-			.accept_run_message(self.run.id, sender, content, key, limit)
+			.accept_run_message(&scope, self.run.id, sender, content, key, limit)
 			.await
 			.map_err(Into::into)
 	}
@@ -71,9 +75,11 @@ impl RunMessages for Messages<'_> {
 		key: &str,
 		limit: usize,
 	) -> Result<()> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
 			.import_remote_run_messages_and_accept(
+				&scope,
 				self.run.id,
 				history,
 				sender,
@@ -85,16 +91,18 @@ impl RunMessages for Messages<'_> {
 			.map_err(Into::into)
 	}
 	async fn import_history(&self, history: &[(String, Message)], limit: usize) -> Result<()> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
-			.import_remote_run_messages(self.run.id, history, limit)
+			.import_remote_run_messages(&scope, self.run.id, history, limit)
 			.await
 			.map_err(Into::into)
 	}
 	async fn bind(&self, key: &str, message: Uuid) -> Result<()> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		self.federation
 			.store
-			.bind_run_input_message(self.run.id, key, message)
+			.bind_run_input_message(&scope, self.run.id, key, message)
 			.await
 			.map_err(Into::into)
 	}
@@ -134,11 +142,12 @@ impl RunMessages for Messages<'_> {
 		Ok(())
 	}
 	async fn delivery(&self, key: &str, content: &str) -> Result<Option<Message>> {
+		let scope = self.federation.store.run_tenancy(self.run.id).await?;
 		if self.local() {
 			return self
 				.federation
 				.store
-				.message_record(self.run.workspace_id, "human", content, Some(key))
+				.message_record(&scope, self.run.workspace_id, "human", content, Some(key))
 				.await
 				.map(Some)
 				.map_err(Into::into);

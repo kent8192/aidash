@@ -10,6 +10,7 @@ mod native_database;
 #[path = "../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::registry::models::AgentKnowledge;
 use aidash_server::{context, domain::NewTask, harness::Harness, knowledge, registry::Entry, tool};
 use endpoint::assert_json;
@@ -139,12 +140,13 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	);
 	let workspace = f
 		.store
-		.create_workspace("Personal", "Use documents")
+		.create_workspace(&TEST_FIXTURE, "Personal", "Use documents")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Read documents".into(),

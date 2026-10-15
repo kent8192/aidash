@@ -1,5 +1,6 @@
 //! Authorization endpoint regressions against the native route and database fixtures.
 use crate::endpoint::{EndpointFixture, endpoint};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::identity::models::{
 	AuthorizationCredential, AuthorizationDecision, AuthorizationRevision,
 };
@@ -131,7 +132,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	let app = Arc::new(endpoint.await);
 	let store = app.runtime.store.clone();
 	let legacy = store
-		.create_workspace("operator-only", "legacy secret")
+		.create_workspace(&TEST_FIXTURE, "operator-only", "legacy secret")
 		.await
 		.unwrap();
 	let mut tokens = vec![];
@@ -249,12 +250,21 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert_eq!(status, 200, "task creation: {task}");
 	assert_eq!(task["created_by"], "alice");
 	let stored_task = store
-		.task(Uuid::parse_str(task["id"].as_str().unwrap()).unwrap())
+		.task(
+			&TEST_FIXTURE,
+			Uuid::parse_str(task["id"].as_str().unwrap()).unwrap(),
+		)
 		.await
 		.unwrap();
 	assert!(matches!(
 		store
-			.accept_run(&stored_task, "aidash://untrusted", "agent", "1.0.0")
+			.accept_run(
+				&TEST_FIXTURE,
+				&stored_task,
+				"aidash://untrusted",
+				"agent",
+				"1.0.0"
+			)
 			.await,
 		Err(aidash_server::Error::Forbidden)
 	));
@@ -441,10 +451,10 @@ async fn subject_receives_thread_opened_event_for_a_visible_root_message(
 	let token = credential["token"].as_str().unwrap();
 	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
 	store
-		.message(workspace_id, "alice", "Visible root", None)
+		.message(&TEST_FIXTURE, workspace_id, "alice", "Visible root", None)
 		.await
 		.unwrap();
-	let snapshot = store.snapshot(workspace_id).await.unwrap();
+	let snapshot = store.snapshot(&TEST_FIXTURE, workspace_id).await.unwrap();
 	let root_id = snapshot
 		.messages
 		.iter()
@@ -453,7 +463,7 @@ async fn subject_receives_thread_opened_event_for_a_visible_root_message(
 		.id
 		.to_string();
 	let cursor = store
-		.events(0, Some(workspace_id), 100)
+		.events(&TEST_FIXTURE, 0, Some(workspace_id), 100)
 		.await
 		.unwrap()
 		.last()
@@ -510,6 +520,7 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
 	store
 		.message(
+			&TEST_FIXTURE,
 			workspace_id,
 			"alice",
 			"must not escape a revoked stream",
@@ -698,7 +709,7 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 	);
 	let id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
 	assert_eq!(
-		store.workspace(id).await.unwrap().state,
+		store.workspace(&TEST_FIXTURE, id).await.unwrap().state,
 		json!({"committed":true})
 	);
 }
@@ -838,7 +849,7 @@ async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses(
 		.0,
 		403
 	);
-	let unchanged = store.workspace(id).await.unwrap();
+	let unchanged = store.workspace(&TEST_FIXTURE, id).await.unwrap();
 	assert_eq!(unchanged.revision, 0);
 	assert_eq!(unchanged.state, json!({}));
 	let mut db = app.database.lease.handle();

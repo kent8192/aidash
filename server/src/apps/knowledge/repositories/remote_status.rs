@@ -152,7 +152,7 @@ impl StatusScope for Scope<'_> {
 			let store = self.store.ok_or_else(|| {
 				NativeError::Invalid("semantic status storage unavailable".into())
 			})?;
-			let run = store.run(id).await?;
+			let run = store.run(&self.access.tenancy()?, id).await?;
 			self.access.run_visible(&run).await
 		}
 		.await;

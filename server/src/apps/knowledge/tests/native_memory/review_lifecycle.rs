@@ -1,5 +1,6 @@
 //! Bank admission and retirement regressions use canonical PostgreSQL boundaries.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 #[rstest]
@@ -315,6 +316,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	for ordinal in 0..(2 * page + 1) {
 		let task = store
 			.create_task(
+				&TEST_FIXTURE,
 				workspace,
 				&NewTask {
 					title: format!("Memory reader {ordinal}"),

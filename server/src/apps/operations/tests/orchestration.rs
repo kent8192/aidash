@@ -1,5 +1,6 @@
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::execution::services::lifecycle::ProcessLifecycle;
 
 use futures_util::FutureExt;
@@ -54,7 +55,7 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 		.collect();
 	assert_eq!(actual, expected);
 	assert_eq!(applied.len(), migrations.len());
-	assert_eq!(f.store.workspaces().await.unwrap().len(), 3);
+	assert_eq!(f.store.workspaces(&TEST_FIXTURE).await.unwrap().len(), 3);
 	common::cleanup(f, &url, &schema).await;
 }
 

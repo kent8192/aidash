@@ -32,7 +32,11 @@ impl FederationRepository for Repository {
 		self.federation.peer(node).await.map_err(Into::into)
 	}
 	async fn task(&self, id: uuid::Uuid) -> Result<Task> {
-		self.federation.store.task(id).await.map_err(Into::into)
+		let store = &self.federation.store;
+		store
+			.task(&store.task_tenancy(id).await?, id)
+			.await
+			.map_err(Into::into)
 	}
 	async fn require_legacy_workspace(&self, id: uuid::Uuid) -> Result<()> {
 		self.federation
@@ -83,8 +87,13 @@ impl FederationRepository for Repository {
 		&self,
 		task: uuid::Uuid,
 	) -> Result<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>> {
-		let lease = self.federation.store.orm_connection()?;
-		DelegationRecord::snapshot(&mut lease.handle(), task)
+		let store = &self.federation.store;
+		let scope = store.task_tenancy(task).await?;
+		store
+			.pool
+			.atomic(&scope, async |tx| {
+				DelegationRecord::snapshot(tx, task).await
+			})
 			.await
 			.map_err(Into::into)
 	}
@@ -92,6 +101,11 @@ impl FederationRepository for Repository {
 		self.federation
 			.store
 			.accept_run(
+				&self
+					.federation
+					.store
+					.workspace_tenancy(task.workspace_id)
+					.await?,
 				task,
 				&self.federation.config.node_id,
 				&agent.id,
