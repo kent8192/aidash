@@ -379,10 +379,8 @@ export function EntityForm({
                     }
                   : kind === "compactor"
                     ? {
-                        provider: "typesafe-system-one",
-                        endpoint: s("endpoint"),
+                        provider_credential: "openrouter",
                         model: s("model_id"),
-                        credential_env: "AIDASH_SECRET_JEV",
                         max_request_bytes: Number(s("max_request_bytes")),
                         max_questions: Number(s("max_questions")),
                         max_response_bytes: Number(s("max_response_bytes")),
@@ -630,15 +628,8 @@ export function EntityForm({
                 name="model_id"
                 required
                 maxLength={128}
-                defaultValue="jev-latest"
-              />
-            </Field>
-            <Field label={t("endpoint")}>
-              <Input
-                name="endpoint"
-                type="url"
-                required
-                defaultValue="https://api.typesafe.ai/v1/systemone"
+                pattern="typesafe/jev-(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)"
+                defaultValue="typesafe/jev-1.13"
               />
             </Field>
             <div className="grid min-w-0 gap-4 sm:grid-cols-3">

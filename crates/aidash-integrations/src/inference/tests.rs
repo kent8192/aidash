@@ -703,6 +703,9 @@ mod cache_salt {
 				.resolve(context, endpoint, source)
 				.await
 		}
+		async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+			unreachable!("inference never preflights a credential")
+		}
 	}
 
 	#[rstest::rstest]

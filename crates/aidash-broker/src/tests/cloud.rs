@@ -291,6 +291,7 @@ impl Cloud {
 			operations: vec![operation],
 			max_output_tokens: 10,
 			cache_breakpoints: false,
+			call: None,
 		});
 		context
 	}

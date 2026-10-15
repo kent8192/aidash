@@ -1,8 +1,9 @@
-//! A Home whose workspace embedding uses the Tenant's OpenRouter Provider
-//! Credential (ADR 0006). The fake issuer stands in for the Credential Broker:
-//! it records each mint and routes calls to the local embedding fixture. It
-//! returns no bearer because the shared fixture rejects any Authorization
-//! header; bearer delivery is covered by the broker and integration suites.
+//! A node whose Tenant uses its OpenRouter Provider Credential (ADR 0006):
+//! required-Home embeddings and Jev Decision Attempts (ADR 0041). The fake
+//! issuer stands in for the Credential Broker: it records each mint and routes
+//! calls to a local fixture. It returns no bearer because the shared fixtures
+//! reject any Authorization header; bearer delivery is covered by the broker
+//! and integration suites.
 use aidash_application::{
 	Result,
 	provider_access::{Access, Context, TokenIssuer},
@@ -83,14 +84,15 @@ impl TokenIssuer for EndpointIssuer {
 
 /// What the test observes: where Tenant calls go and every mint.
 #[derive(Clone)]
-pub struct TenantEmbedding {
+pub struct TenantOpenRouter {
 	pub endpoint: Arc<Mutex<String>>,
+	#[allow(dead_code)] // Suites that assert mints share this fixture with suites that do not.
 	pub mints: Arc<Mutex<Vec<(Context, Uuid)>>>,
 	service: Arc<Service>,
 }
 
 /// Configure the Home before its application is built.
-pub fn install(home: &mut Federation) -> TenantEmbedding {
+pub fn install(home: &mut Federation) -> TenantOpenRouter {
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: home.store.control_pool.clone(),
@@ -102,7 +104,7 @@ pub fn install(home: &mut Federation) -> TenantEmbedding {
 		fingerprint_key: "scoped-remote-fingerprint-key-of-32-bytes".into(),
 		max_per_tenant: 5,
 	});
-	let embedding = TenantEmbedding {
+	let credentials = TenantOpenRouter {
 		endpoint: Arc::new(Mutex::new(String::new())),
 		mints: Arc::new(Mutex::new(Vec::new())),
 		service: service.clone(),
@@ -110,14 +112,14 @@ pub fn install(home: &mut Federation) -> TenantEmbedding {
 	home.registry = home.registry.clone().with_provider_credentials(true);
 	home.store.provider_credentials = Some(service);
 	home.store.capability_issuer = Some(Arc::new(EndpointIssuer {
-		endpoint: embedding.endpoint.clone(),
-		mints: embedding.mints.clone(),
+		endpoint: credentials.endpoint.clone(),
+		mints: credentials.mints.clone(),
 	}));
-	embedding
+	credentials
 }
 
-impl TenantEmbedding {
-	/// Register and bind the Home Tenant's OpenRouter Provider Credential.
+impl TenantOpenRouter {
+	/// Register and bind the Tenant's OpenRouter Provider Credential.
 	pub async fn connect(&self, tenant: &str) -> Uuid {
 		let id = self
 			.service
@@ -137,5 +139,13 @@ impl TenantEmbedding {
 			.await
 			.unwrap();
 		id
+	}
+	/// Remove the Tenant's OpenRouter binding made by [`Self::connect`].
+	#[allow(dead_code)] // Only the remote compaction suite unbinds.
+	pub async fn unbind(&self, tenant: &str) {
+		self.service
+			.bind(tenant, Provider::Openrouter, None, 1, "operator")
+			.await
+			.unwrap();
 	}
 }
