@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
 import collector
-from control import Rejected, Runner
+from control import Rejected, Runner, termination_time
 
 
 def request(kind):
@@ -106,3 +106,26 @@ class OutputTailTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerminationTimeTest(unittest.TestCase):
+    """A Check is charged until its command stopped, not until the controller saw it."""
+
+    STARTED = 1_800_000_000.4  # 2027-01-15T08:00:00.4Z
+
+    def test_a_prompt_observation_keeps_its_sub_second_precision(self):
+        stopped = termination_time({"finishedAt": "2027-01-15T08:00:02Z"}, self.STARTED, self.STARTED + 2.3)
+        self.assertEqual(stopped, self.STARTED + 2.3)
+
+    def test_a_late_observation_is_capped_by_the_containers_own_stop(self):
+        # The controller restarted and saw the stop a minute late.
+        stopped = termination_time({"finishedAt": "2027-01-15T08:00:02Z"}, self.STARTED, self.STARTED + 60)
+        self.assertEqual(stopped, 1_800_000_003.0)
+
+    def test_without_a_usable_stop_time_the_observation_stands(self):
+        for terminated in ({}, {"finishedAt": None}, {"finishedAt": "not a time"},
+                           # The node's clock is far behind the controller's.
+                           {"finishedAt": "2027-01-15T07:59:00Z"}):
+            with self.subTest(terminated=terminated):
+                self.assertEqual(termination_time(terminated, self.STARTED, self.STARTED + 5), self.STARTED + 5)
+

@@ -6,6 +6,7 @@ from operation UUIDs; recovery observes those objects and never recreates a
 missing object after acceptance. No shell command runs on the controller host.
 """
 import base64
+from datetime import datetime
 import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +51,21 @@ def identity(value):
     if value != parsed:
         raise Rejected(400, "canonical UUID required")
     return parsed
+
+
+def termination_time(terminated, started_at, observed):
+    """When a command stopped, for charging a Check's runtime. The controller
+    polls, so `observed` can trail the stop, for example after a restart.
+    Kubernetes records `finishedAt` in whole seconds, so the stop came before
+    `finishedAt` + 1: cap the observation there. A missing or unparseable
+    `finishedAt`, or one the clocks put before the start, leaves `observed`."""
+    try:
+        finished = datetime.fromisoformat(terminated["finishedAt"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return observed
+    if started_at is not None and finished + 1 < started_at:
+        return observed
+    return min(observed, finished + 1)
 
 
 def settled(record):
@@ -802,7 +818,8 @@ class Runner:
                     # A Check is charged until its command stopped, not until
                     # its output and files were harvested below.
                     self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"],
-                                terminated_at=current.get("terminated_at") or time.time())
+                                terminated_at=current.get("terminated_at")
+                                or termination_time(terminal, current.get("started_at"), time.time()))
                     if "running" not in collector:
                         self.recover_stopped_shell(self.get(operation))
                         break
