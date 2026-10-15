@@ -42,6 +42,7 @@ impl OpenRouterProvider {
 			operations: vec![operation],
 			max_output_tokens,
 			cache_breakpoints,
+			call: None,
 		});
 		context
 	}

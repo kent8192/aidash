@@ -3,7 +3,7 @@
 use crate::{
 	Error, Result,
 	authorization::access::Access,
-	context::jev::{JevAsker, JevClient, Questions},
+	context::jev::{JevAsker, Questions, Unapproved},
 	domain::Run,
 	registry::EntityRef,
 	store::Store,
@@ -16,7 +16,6 @@ pub(crate) struct ApprovedCompactor {
 	pub access: Arc<RwLock<Access>>,
 	pub store: Store,
 	pub run: Run,
-	pub client: reqwest::Client,
 	pub remote: Option<crate::federation::Federation>,
 }
 
@@ -29,10 +28,15 @@ impl JevAsker for ApprovedCompactor {
 			});
 		}
 		let mut access = self.access.write().await;
+		let provider = crate::bootstrap::generation_compaction_provider(
+			&self.store,
+			access.identity.tenant.clone(),
+			self.run.id,
+		);
 		let transport = aidash_application::generation::compaction::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
 			&crate::bootstrap::generation_compaction_repository(&self.store),
-			&crate::bootstrap::generation_compaction_provider(),
+			&provider,
 			&aidash_domain::generation::compaction::Context {
 				run: self.run.id,
 				task: self.run.task_id,
@@ -51,9 +55,8 @@ impl JevAsker for ApprovedCompactor {
 		if let Some(transport) = transport {
 			transport.ask(state, questions).await.map_err(Into::into)
 		} else {
-			JevClient::from_env(self.client.clone())?
-				.ask(state, questions)
-				.await
+			// Outside a generated chain no compactor is approved (ADR 0041).
+			Unapproved.ask(state, questions).await
 		}
 	}
 }
@@ -66,9 +69,14 @@ impl ApprovedCompactor {
 		questions: &Questions,
 	) -> Result<Value> {
 		let mut access = self.access.write().await;
+		let provider = crate::bootstrap::generation_compaction_provider(
+			&self.store,
+			access.identity.tenant.clone(),
+			self.run.id,
+		);
 		aidash_application::generation::compaction::remote::ask(
 			&mut crate::bootstrap::generation_remote_compaction_scope(&mut access, federation),
-			&crate::bootstrap::generation_compaction_provider(),
+			&provider,
 			&self.run,
 			state,
 			questions,

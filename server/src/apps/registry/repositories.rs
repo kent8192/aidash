@@ -3,11 +3,10 @@ use super::models::{records, transaction_records};
 use crate::apps::execution::models::event_records;
 use crate::{
 	Result,
-	registry::{AgentPage, Entry, Package, PackageRecord, Search},
+	registry::{AgentPage, Entry, Search},
 };
 use aidash_application::ports::registry::{
-	DefinitionDocument, DefinitionLookup, DefinitionWriter, PackageScope, PackageSnapshot,
-	RegistrationScope, RegistryRead,
+	DefinitionDocument, DefinitionLookup, DefinitionWriter, RegistrationScope, RegistryRead,
 };
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
@@ -61,14 +60,11 @@ impl Registry {
 	}
 	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
 		let mut db = self.db;
-		Ok(aidash_application::registry::effective(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
-			id,
-			version,
-		)
+		Ok(OrmScope {
+			db: &mut db,
+			node: &self.node_id,
+		}
+		.definition(id, version)
 		.await?)
 	}
 	pub(crate) async fn get_for_run(
@@ -156,56 +152,6 @@ impl Registry {
 		let mut db = self.db;
 		validate_references_with(&mut db, entry, &self.node_id, &self.validation()).await
 	}
-	pub async fn publish(&self, package: Package) -> Result<PackageRecord> {
-		self.db
-			.atomic(async |tx| {
-				Ok(aidash_application::registry::publish(
-					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
-					},
-					&self.validation(),
-					package,
-				)
-				.await?)
-			})
-			.await
-	}
-	pub async fn install(
-		&self,
-		id: &str,
-		version: &str,
-		expected_digest: &str,
-		config: Value,
-	) -> Result<Entry> {
-		let mut db = self.db;
-		let record = records::package(&mut db, id, version).await?;
-		let plan = aidash_application::registry::prepare_install(
-			PackageSnapshot {
-				manifest: record.manifest.0,
-				source: record.manifest_source,
-				digest: record.digest,
-			},
-			expected_digest,
-			config,
-		)?;
-		self.db
-			.atomic(async |tx| {
-				Ok(aidash_application::registry::install(
-					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
-					},
-					&self.validation(),
-					plan,
-					&self.node_id,
-					id,
-					version,
-				)
-				.await?)
-			})
-			.await
-	}
 }
 
 pub(crate) struct OrmScope<'a, E: OrmExecutor> {
@@ -238,16 +184,6 @@ impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
 		bindings::installation(self.db, projection)
 			.await
 			.map_err(Into::into)
-	}
-
-	async fn overrides(
-		&mut self,
-		id: &str,
-		version: &str,
-	) -> aidash_application::Result<Option<Value>> {
-		Ok(records::installation(self.db, id, version)
-			.await?
-			.map(|record| record.config.0))
 	}
 }
 #[async_trait]
@@ -300,41 +236,6 @@ impl RegistryRead for OrmScope<'_, DatabaseConnection> {
 			.map_err(Into::into)
 	}
 }
-#[async_trait]
-impl PackageScope for OrmScope<'_, AtomicTransaction> {
-	fn registry_node(&self) -> &str {
-		self.node
-	}
-	async fn publish(
-		&mut self,
-		id: &str,
-		version: &str,
-		manifest: Value,
-		digest: &str,
-		source: &str,
-	) -> aidash_application::Result<(PackageRecord, bool)> {
-		records::publish(self.db, id, version, manifest, digest, source)
-			.await
-			.map_err(Into::into)
-	}
-	async fn install(
-		&mut self,
-		entry: &Entry,
-		digest: &str,
-		config: Value,
-	) -> aidash_application::Result<bool> {
-		records::install(self.db, entry, digest, config)
-			.await
-			.map_err(Into::into)
-	}
-	async fn append_event(&mut self, kind: &str, payload: Value) -> aidash_application::Result<()> {
-		event_records::append(self.db, self.node, None, kind, payload)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
-}
-
 pub(crate) struct NativeScope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
 #[async_trait]
 impl DefinitionLookup for NativeScope<'_> {
@@ -363,26 +264,6 @@ impl DefinitionLookup for NativeScope<'_> {
 				.metadata
 				.into_inner(),
 		)?)
-	}
-	async fn overrides(
-		&mut self,
-		id: &str,
-		version: &str,
-	) -> aidash_application::Result<Option<Value>> {
-		transaction_records::installation(self.0, id, version)
-			.await
-			.map_err(Into::into)
-	}
-	async fn executor_kind(
-		&mut self,
-		id: &str,
-		version: &str,
-	) -> aidash_application::Result<Option<String>> {
-		Ok(Some(
-			aidash_application::registry::effective(self, id, version)
-				.await?
-				.kind,
-		))
 	}
 }
 #[async_trait]

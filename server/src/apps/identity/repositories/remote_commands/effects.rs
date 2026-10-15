@@ -150,7 +150,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 								owner,
 								key,
 								artifact,
-								None,
+								crate::store::Publication::default(),
 								Some((admission, through)),
 							)
 							.await?;
@@ -178,7 +178,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 								owner,
 								key,
 								artifact,
-								None,
+								crate::store::Publication::default(),
 							)
 							.await?;
 						let id = value.id;

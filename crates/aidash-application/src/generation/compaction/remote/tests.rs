@@ -74,8 +74,8 @@ fn world() -> World {
 		updated_at: now,
 	};
 	let entry:Entry=serde_json::from_value(json!({"id":"compactor","version":"1.0.0","kind":"compactor",
-        "name":{"en":"Compactor"},"description":{},"config":{"provider":"typesafe","endpoint":"https://provider.example/v1",
-        "model":"fixture","credential_env":"FIXTURE_KEY","max_request_bytes":2048,"max_questions":10,"max_response_bytes":1024}})).unwrap();
+        "name":{"en":"Compactor"},"description":{},"config":{"provider_credential":"openrouter",
+        "model":"typesafe/jev-1.13","max_request_bytes":2048,"max_questions":10,"max_response_bytes":1024}})).unwrap();
 	let provider = Provider {
 		node_id: "aidash://executor".into(),
 		entry: reference(),
@@ -308,7 +308,7 @@ impl RemoteCompactionProvider for Factory {
 }
 #[async_trait]
 impl RemoteCompactionTransport for Transport {
-	fn check_credential(&self) -> Result<()> {
+	async fn check_credential(&self) -> Result<()> {
 		let mut state = self.0.0.lock().unwrap();
 		state.events.push("provider.credential".into());
 		if state.credential_fails {
@@ -325,13 +325,19 @@ impl RemoteCompactionTransport for Transport {
 		}
 		Ok(100)
 	}
-	async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+	async fn ask(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &CompactionQuestions,
+	) -> Result<Value> {
 		assert_eq!(state, &json!({"history":"bounded"}));
 		assert_eq!(questions.len(), 2);
 		{
 			let data = self.0.0.lock().unwrap();
 			assert!(!data.held);
-			assert!(data.input.is_some());
+			// The provider call is the attempt that Home admitted.
+			assert_eq!(attempt, data.input.as_ref().unwrap().usage.attempt_id);
 		}
 		self.0.point("provider.ask").await?;
 		if self.0.0.lock().unwrap().provider_fails {

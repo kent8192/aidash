@@ -442,23 +442,6 @@ pub fn deployment_observations(
 	)
 }
 
-/// Bind the classifier to the same rotating credential resolver as inference.
-pub fn compaction_transport(
-	client: reqwest::Client,
-	endpoint: String,
-	model: String,
-	credential_env: String,
-) -> Result<aidash_integrations::compaction::JevClient> {
-	aidash_integrations::compaction::JevClient::new(
-		client,
-		endpoint,
-		model,
-		credential_env,
-		Arc::new(EnvironmentCredentials),
-	)
-	.map_err(Into::into)
-}
-
 /// Semantic transports share rotating credentials with inference and compaction.
 pub fn semantic_transport(
 	store: &Store,
@@ -945,7 +928,29 @@ pub(crate) fn generation_summary_repository(
 		store: store.clone(),
 	}
 }
-pub(crate) struct ApprovedCompactionProvider;
+/// Approved compactors call Jev as Decision Attempts of one Run, with the Run's
+/// Tenant's current OpenRouter Provider Credential (ADR 0041).
+pub(crate) struct ApprovedCompactionProvider {
+	store: Store,
+	context: aidash_application::provider_access::Context,
+}
+impl ApprovedCompactionProvider {
+	fn transport(
+		&self,
+		config: aidash_domain::registry::CompactorConfig,
+	) -> aidash_application::Result<crate::context::jev::JevClient> {
+		registry_validation_for(&self.store).validate_compactor(&config, true)?;
+		Ok(crate::context::jev::JevClient::approved(
+			config,
+			Arc::new(
+				crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+					store: self.store.clone(),
+				},
+			),
+			self.context.clone(),
+		)?)
+	}
+}
 impl aidash_application::ports::generation::compaction::GenerationCompactionProvider
 	for ApprovedCompactionProvider
 {
@@ -955,11 +960,22 @@ impl aidash_application::ports::generation::compaction::GenerationCompactionProv
 	) -> aidash_application::Result<
 		Arc<dyn aidash_application::ports::generation::compaction::ApprovedCompactionTransport>,
 	> {
-		Ok(Arc::new(crate::context::jev::JevClient::approved(config)?))
+		Ok(Arc::new(self.transport(config)?))
 	}
 }
-pub(crate) fn generation_compaction_provider() -> ApprovedCompactionProvider {
-	ApprovedCompactionProvider
+pub(crate) fn generation_compaction_provider(
+	store: &Store,
+	tenant: String,
+	run: uuid::Uuid,
+) -> ApprovedCompactionProvider {
+	ApprovedCompactionProvider {
+		store: store.clone(),
+		context: aidash_application::provider_access::Context {
+			tenant,
+			run: Some(run),
+			..Default::default()
+		},
+	}
 }
 
 pub(crate) fn generation_protocol_authority(
@@ -991,7 +1007,7 @@ impl aidash_application::ports::generation::compaction::remote::RemoteCompaction
 	for ApprovedCompactionProvider
 {
 	fn approved_remote(&self, config: aidash_domain::registry::CompactorConfig) -> aidash_application::Result<Arc<dyn aidash_application::ports::generation::compaction::remote::RemoteCompactionTransport>>{
-		Ok(Arc::new(crate::context::jev::JevClient::approved(config)?))
+		Ok(Arc::new(self.transport(config)?))
 	}
 }
 
@@ -1456,7 +1472,6 @@ pub(crate) fn transaction_participant(
 			},
 		),
 		transaction_coordinator(runtime),
-		registry_validation_for(&runtime.store),
 	)
 }
 

@@ -33,6 +33,7 @@ fn artifact() -> Artifact {
 		created_by: "stored-artifact-author".into(),
 		idempotency_key: "key".into(),
 		created_at: chrono::Utc::now(),
+		run_id: None,
 	}
 }
 fn message(id: u128, sender: &str) -> Message {
@@ -43,6 +44,7 @@ fn message(id: u128, sender: &str) -> Message {
 		content: "same content".into(),
 		idempotency_key: None,
 		created_at: chrono::Utc::now(),
+		run_id: None,
 	}
 }
 fn human(id: u128) -> HumanRequest {
@@ -594,4 +596,21 @@ async fn event_membership_errors_stop_disclosure(
 		.unwrap_err();
 	assert!(matches!(error,Error::Port(ref e) if e.to_string()=="resource adapter fault"));
 	assert_eq!(scope.calls.last().map(String::as_str), Some(boundary));
+}
+
+#[rstest]
+#[case::message("message.created", json!({"id":Uuid::from_u128(4),"run_id":Uuid::from_u128(9)}))]
+#[case::artifact("artifact.published", json!({"id":Uuid::from_u128(3),"run_id":Uuid::from_u128(9)}))]
+#[tokio::test]
+async fn a_publishing_run_in_an_output_event_never_hands_its_disclosure_to_that_run(
+	mut scope: Scope,
+	#[case] kind: &str,
+	#[case] data: Value,
+) {
+	// The output's own reader decides, so the generic `run_id` lookup that would
+	// demand Run visibility from a channel reader is never reached.
+	assert_eq!(
+		event_visible(&mut scope, &event(kind, data)).await.unwrap(),
+		Some(true)
+	);
 }

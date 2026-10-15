@@ -271,7 +271,7 @@ impl DecisionGate<'_> {
 				return batch.recover(prior.clone(), request);
 			}
 			origin = Reason::ProviderFailure;
-			let transport = self.provider.prepare(request)?;
+			let transport = self.provider.prepare(request, record.attempt).await?;
 			origin = Reason::JournalFailure;
 			let permit = match self.journal.reserve(record).await? {
 				Reservation::Fresh(permit) => {

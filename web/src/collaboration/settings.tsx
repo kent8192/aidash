@@ -38,7 +38,7 @@ import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
 import { ProviderCredentialsPage } from "../provider-credentials";
 import { RecordView, ReferenceName } from "../record-view";
 import { SemanticPage } from "../semantic";
-import type { Entry, Package, State } from "../types";
+import type { Entry, State } from "../types";
 import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import type { Selection } from "./details";
@@ -67,13 +67,11 @@ const listCopy = {
     filter: "名前・タグで絞り込む",
     entries: (count: number) => `${count} 件`,
     noMatches: "条件に一致するエントリはありません。",
-    packages: "公開済みパッケージ",
   },
   "en-US": {
     filter: "Filter by name or tag",
     entries: (count: number) => `${count} ${count === 1 ? "entry" : "entries"}`,
     noMatches: "No entries match this filter.",
-    packages: "Published packages",
   },
 };
 
@@ -329,55 +327,6 @@ function EntryList({
   );
 }
 
-function PackageList({
-  packages,
-  data,
-  open,
-  action,
-}: {
-  packages: Package[];
-  data: State;
-  open: (selection: Selection) => void;
-  action: ReactNode;
-}) {
-  const { t, local, locale } = useI18n();
-  return (
-    <section className="grid min-w-0 gap-3">
-      <div className="flex items-center gap-2">
-        <h2 className="text-[13px] font-semibold text-foreground">
-          {listCopy[locale].packages}
-        </h2>
-        <span className="font-mono text-xs text-faint tabular">
-          {packages.length}
-        </span>
-        <span className="ml-auto">{action}</span>
-      </div>
-      {packages.length === 0 ? (
-        <Empty />
-      ) : (
-        <ul className="divide-y divide-border rounded-md border border-border bg-surface">
-          {packages.map((value) => {
-            const installed = data.installations.some(
-              (item) => item.id === value.id && item.version === value.version,
-            );
-            return (
-              <EntryRow
-                key={`${value.id}@${value.version}`}
-                name={local(value.manifest.entity.name)}
-                description={local(value.manifest.entity.description)}
-                kind={value.manifest.entity.kind}
-                tags={[`v${value.version}`]}
-                trailing={installed ? t("installed") : t("details")}
-                onOpen={() => open({ kind: "package", package: value })}
-              />
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 function NodeView({
   data,
   open,
@@ -488,7 +437,6 @@ export function Configuration({
   section,
   select,
   open,
-  packages,
   disconnect,
   integration,
   channel,
@@ -497,7 +445,6 @@ export function Configuration({
   section: SettingsSection;
   select: (section: SettingsSection) => void;
   open: (selection: Selection) => void;
-  packages: Package[];
   disconnect: () => void;
   integration?: IntegratedView;
   channel?: string;
@@ -559,23 +506,7 @@ export function Configuration({
               />
             )}
           {section === "marketplace" && operator && (
-            <>
-              <MarketplaceAdministration />
-              <PackageList
-                packages={packages}
-                data={data}
-                open={open}
-                action={
-                  <Button
-                    type="button"
-                    onClick={() => open({ kind: "publish" })}
-                  >
-                    <Plus aria-hidden />
-                    {t("publish")}
-                  </Button>
-                }
-              />
-            </>
+            <MarketplaceAdministration />
           )}
           {section === "node" && (
             <NodeView data={data} open={open} disconnect={disconnect} />

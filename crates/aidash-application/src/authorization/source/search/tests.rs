@@ -147,6 +147,7 @@ fn message() -> Message {
 		content: "input text".into(),
 		idempotency_key: None,
 		created_at: Utc.timestamp_opt(0, 0).unwrap(),
+		run_id: None,
 	}
 }
 fn operation() -> Operation {

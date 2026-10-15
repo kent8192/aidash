@@ -11,7 +11,7 @@ use aidash_server::{
 	config::Config,
 	domain::*,
 	federation::Federation,
-	registry::{Entry, Package, Registry, Search},
+	registry::{Entry, Registry, Search},
 	store::Store,
 };
 use common::{TestEnvironment, test_environment};
@@ -438,7 +438,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn registry_installation_versions_and_authenticated_api(
+async fn registry_versions_and_authenticated_api(
 	#[from(store)] _store_fixture: StoreFuture,
 	#[from(authenticated_runtime)]
 	#[with(_store_fixture.clone())]
@@ -457,42 +457,14 @@ async fn registry_installation_versions_and_authenticated_api(
 		"research-guide",
 		json!({"instructions":"Keep citations"}),
 	);
-	let package = Package {
-		entity: skill.clone(),
-		author: "Fixture".into(),
-		permissions: vec![],
-		dependencies: vec![],
-	};
-	let record = registry.publish(package.clone()).await.unwrap();
-	assert!(
-		registry
-			.install(&skill.id, &skill.version, "sha256:wrong", json!({}))
-			.await
-			.is_err()
-	);
-	registry
-		.install(
-			&skill.id,
-			&skill.version,
-			&record.digest,
-			json!({"instructions":"Use node-local citations"}),
-		)
-		.await
-		.unwrap();
+	registry.register(skill.clone()).await.unwrap();
 	assert_eq!(
 		registry.get(&skill.id, &skill.version).await.unwrap(),
-		Entry {
-			binding_normalization: None,
-			config: json!({"instructions":"Use node-local citations"}),
-			..skill.clone()
-		}
+		skill
 	);
-	let mut changed = package;
-	changed
-		.entity
-		.description
-		.insert("en".into(), "Changed".into());
-	assert!(registry.publish(changed).await.is_err());
+	let mut changed = skill;
+	changed.description.insert("en".into(), "Changed".into());
+	assert!(registry.register(changed).await.is_err());
 	let matches = registry
 		.list(&Search {
 			kind: Some("agent".into()),

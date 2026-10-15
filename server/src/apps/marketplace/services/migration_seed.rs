@@ -1,4 +1,5 @@
-//! Query-generated baseline Marketplace compatibility gate.
+//! Query-generated baseline seed of the Marketplace compatibility gate, which
+//! `marketplace/0008_remove_compatibility_gate` drops; the frozen asset stays.
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, Value,
 };

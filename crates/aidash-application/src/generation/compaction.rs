@@ -18,6 +18,19 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// An approved transport bound to the compaction attempt that `reserve` charged.
+pub struct ReservedCompaction {
+	pub attempt: Uuid,
+	transport: Arc<dyn ApprovedCompactionTransport>,
+}
+impl ReservedCompaction {
+	/// Calls the provider as the reserved attempt, so the broker audit and
+	/// reported cost correlate with its charge and recovery record.
+	pub async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+		self.transport.ask(self.attempt, state, questions).await
+	}
+}
+
 /// Return a validated transport only after the entire ancestor reservation commits.
 /// Ordinary agents retain their separately configured compaction transport.
 pub async fn reserve(
@@ -27,7 +40,7 @@ pub async fn reserve(
 	context: &Context,
 	state: &Value,
 	questions: &CompactionQuestions,
-) -> Result<Option<Arc<dyn ApprovedCompactionTransport>>> {
+) -> Result<Option<ReservedCompaction>> {
 	let jobs = scope.ancestors(repository.node_id()).await?;
 	if jobs.is_empty() {
 		return Ok(None);
@@ -63,6 +76,8 @@ pub async fn reserve(
 	}
 	let transport = provider.approved(serde_json::from_value(entry.config)?)?;
 	let bytes = transport.check_request(state, questions)?;
+	// A missing or revoked binding sends no request, so it must not charge one.
+	transport.check_credential().await?;
 	let attempt = Attempt {
 		id: Uuid::new_v4(),
 		run: context.run,
@@ -82,7 +97,10 @@ pub async fn reserve(
 	transaction.commit().await?;
 	// Failed, uncertain and crashed provider calls stay charged. Every retry
 	// reserves a new attempt, including retries of the same worker step.
-	Ok(Some(transport))
+	Ok(Some(ReservedCompaction {
+		attempt: attempt.id,
+		transport,
+	}))
 }
 
 #[cfg(test)]

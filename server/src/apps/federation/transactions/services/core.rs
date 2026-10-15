@@ -9,10 +9,8 @@ pub mod gate;
 #[path = "participant.rs"]
 pub mod participant;
 
-/// Native callers assemble registry validation through the shared bootstrap.
 pub fn validate(manifest: &Manifest) -> crate::Result<()> {
-	aidash_application::transactions::validate(&crate::bootstrap::registry_validation(), manifest)
-		.map_err(Into::into)
+	aidash_application::transactions::validate(manifest).map_err(Into::into)
 }
 
 pub use crate::apps::federation::transactions::serializers::contracts::{

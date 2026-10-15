@@ -34,7 +34,11 @@ import { threadCopy } from "./thread-copy";
 import { taskProgress } from "./model";
 import { entityKey } from "../agent-graph/model";
 import type { Selection } from "./details";
-import { ChannelConversation, type SystemLine } from "./conversation";
+import {
+  ChannelConversation,
+  MessageText,
+  type SystemLine,
+} from "./conversation";
 import { ChannelStatus, useRunControl } from "./status";
 import { channelAgents, terminalRun } from "./workspace-model";
 import { ChannelRequests } from "./requests";
@@ -187,7 +191,16 @@ export function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
                   />
                 </summary>
                 <div className="px-3 pb-3">
-                  <JsonView value={artifact.content} />
+                  {artifact.run_id && typeof artifact.content === "string" ? (
+                    <p className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+                      <MessageText
+                        text={artifact.content}
+                        run={artifact.run_id}
+                      />
+                    </p>
+                  ) : (
+                    <JsonView value={artifact.content} />
+                  )}
                 </div>
               </details>
             </li>

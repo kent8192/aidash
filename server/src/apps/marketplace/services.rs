@@ -103,8 +103,7 @@ pub(crate) async fn state_response(
 }
 
 pub use super::serializers::contracts::{
-	Activate, Adopt, Audience, AudienceInput, Compatibility, CompatibilityInput, Configure,
-	DependencyBinding, Detail, Install, Installation, InstallationRevision, Projection,
-	PublicationPreview, Publish, Summary,
+	Activate, Audience, AudienceInput, Configure, DependencyBinding, Detail, Install, Installation,
+	InstallationRevision, Projection, PublicationPreview, Publish, Summary,
 };
 use reinhardt::Response;
