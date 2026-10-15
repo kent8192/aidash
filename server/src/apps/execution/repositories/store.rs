@@ -2580,9 +2580,11 @@ impl Store {
 				.fetch_one(&mut **tx)
 				.await?
 			};
+			// This path never publishes for a Run, so a Run's message is no replay.
 			if message.workspace_id != workspace
 				|| message.sender != sender
 				|| message.content != content
+				|| message.run_id.is_some()
 			{
 				return Err(Error::Conflict("message idempotency key reused".into()));
 			}

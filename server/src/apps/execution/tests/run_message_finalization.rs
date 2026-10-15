@@ -1362,6 +1362,56 @@ async fn channel_messages_a_local_run_publishes_record_that_run(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_message_key_replayed_for_another_run_is_rejected(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: a Run has published a message under a key.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Replay provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let key = format!("{}:channel-message", run.id);
+	Home::new(f.clone(), run.clone())
+		.message(&key, "published once")
+		.await
+		.unwrap();
+	let mut other = run.clone();
+	other.id = Uuid::new_v4();
+
+	// Act: the same Run replays it, then another Run reuses the key.
+	let replayed = Home::new(f.clone(), run.clone())
+		.message(&key, "published once")
+		.await;
+	let reused = Home::new(f.clone(), other)
+		.message(&key, "published once")
+		.await;
+
+	// Assert: only the publishing Run's replay is the same message.
+	replayed.unwrap();
+	assert!(matches!(reused, Err(aidash_server::Error::Conflict(_))));
+	let messages = f.store.snapshot(run.workspace_id).await.unwrap().messages;
+	let published: Vec<_> = messages
+		.iter()
+		.filter(|message| message.content == "published once")
+		.collect();
+	assert_eq!(published.len(), 1);
+	assert_eq!(published[0].run_id, Some(run.id));
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn run_message_limit_rejects_oversized_input_before_recording_it(
 	#[future(awt)]
 	#[from(common::native_application)]

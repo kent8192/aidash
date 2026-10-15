@@ -86,9 +86,12 @@ impl Message {
 				.map_err(FrameworkError::from)?
 				.pop()
 				.ok_or_else(|| Error::NotFound("message".into()))?;
+			// The publishing Run is part of the input: a replay that would bind
+			// another Run's citations, or none, is a reused key.
 			if message.workspace_id() != workspace
 				|| message.sender != sender
 				|| message.content != content
+				|| message.run_id != run
 			{
 				return Err(Error::Conflict("message idempotency key reused".into()));
 			}
