@@ -652,7 +652,7 @@ impl Store {
 		let mut tx = native::begin(&self.pool).await?;
 		let due = native::query(
 			&Query::select()
-				.columns(["id", "evidence_id", "run_id", "digest", "expires_at"].map(Alias::new))
+				.columns(["id", "evidence_id", "run_id", "digest"].map(Alias::new))
 				.from(Alias::new(STATES))
 				.and_where(Expr::col("expires_at").lte(Expr::value(now)))
 				.lock(LockType::Update)
@@ -665,7 +665,6 @@ impl Store {
 			let evidence_id: Uuid = row.try_get("evidence_id")?;
 			let run: Uuid = row.try_get("run_id")?;
 			let digest: String = row.try_get("digest")?;
-			let expires_at: DateTime<Utc> = row.try_get("expires_at")?;
 			let saved: Value = native::query_scalar(
 				&Query::select()
 					.column(Alias::new("evidence"))
@@ -678,16 +677,20 @@ impl Store {
 			.scalar_one(&mut *tx)
 			.await?;
 			let mut evidence: Evidence = serde_json::from_value(saved)?;
-			if evidence.state
-				!= (StateReference::Retained {
-					id,
-					digest: digest.clone(),
+			// The column keeps PostgreSQL's microsecond precision, while the
+			// evidence keeps the exact deadline its retention witness names.
+			let expires_at = match &evidence.state {
+				StateReference::Retained {
+					id: retained,
+					digest: retained_digest,
 					expires_at,
-				}) {
-				return Err(Error::Invalid(
-					"retained decision state differs from its evidence".into(),
-				));
-			}
+				} if *retained == id && *retained_digest == digest => *expires_at,
+				_ => {
+					return Err(Error::Invalid(
+						"retained decision state differs from its evidence".into(),
+					));
+				}
+			};
 			evidence.state = StateReference::Expired {
 				id,
 				digest,
