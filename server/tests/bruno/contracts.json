@@ -13542,6 +13542,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -13552,6 +13556,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -13581,6 +13589,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -23050,6 +23073,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -23060,6 +23087,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -23089,6 +23120,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -25247,6 +25293,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -25257,6 +25307,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -25286,6 +25340,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -27202,6 +27271,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -27212,6 +27285,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -27241,6 +27318,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -30261,6 +30353,433 @@
               "type": "string"
             }
           }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/research-revocation",
+    "name": "run-research-revocation",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RevocationRecord"
+      },
+      "definitions": {
+        "RevocationRecord": {
+          "type": "object",
+          "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
+          "required": [
+            "run_id",
+            "tenant",
+            "revoked_by",
+            "reason",
+            "revoked_at",
+            "removed"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "removed": {
+              "$ref": "#/components/schemas/RemovedCopies"
+            },
+            "revoked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revoked_by": {
+              "type": "string",
+              "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token."
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Run's Tenant, when it has one."
+            }
+          }
+        },
+        "RemovedCopies": {
+          "type": "object",
+          "description": "What a revocation removed, counted and identified by digest only.",
+          "required": [
+            "sources",
+            "snapshots",
+            "fragments",
+            "attempts",
+            "invocations",
+            "snapshot_digests"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "fragments": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocations": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_digests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`sha256:` text digests of the revoked Document snapshots."
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/research-revocations",
+    "name": "research-revocation-list",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RevocationRecord"
+        }
+      },
+      "definitions": {
+        "RevocationRecord": {
+          "type": "object",
+          "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
+          "required": [
+            "run_id",
+            "tenant",
+            "revoked_by",
+            "reason",
+            "revoked_at",
+            "removed"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "removed": {
+              "$ref": "#/components/schemas/RemovedCopies"
+            },
+            "revoked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revoked_by": {
+              "type": "string",
+              "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token."
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Run's Tenant, when it has one."
+            }
+          }
+        },
+        "RemovedCopies": {
+          "type": "object",
+          "description": "What a revocation removed, counted and identified by digest only.",
+          "required": [
+            "sources",
+            "snapshots",
+            "fragments",
+            "attempts",
+            "invocations",
+            "snapshot_digests"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "fragments": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocations": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_digests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`sha256:` text digests of the revoked Document snapshots."
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/retention",
+    "name": "tenant-retention",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantRetention"
+      },
+      "definitions": {
+        "TenantRetention": {
+          "type": "object",
+          "description": "The periods that apply to one Tenant and where they come from.",
+          "required": ["tenant", "deployment", "tenant_rules", "effective"],
+          "properties": {
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
+        },
+        "RetentionRules": {
+          "type": "object",
+          "description": "The periods of every kind of content Aidash keeps only for a while.",
+          "required": ["document_snapshots"],
+          "properties": {
+            "document_snapshots": {
+              "$ref": "#/components/schemas/SnapshotPeriods"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SnapshotPeriods": {
+          "type": "object",
+          "description": "How long the contents of a Document snapshot are kept.",
+          "required": ["after_run_seconds", "max_age_seconds"],
+          "properties": {
+            "after_run_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Kept this long after the snapshot's Run ends.",
+              "minimum": 0
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Never kept longer than this after retrieval, even while the Run lasts.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/retention",
+    "name": "tenant-retention-update",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantRetention"
+      },
+      "definitions": {
+        "TenantRetention": {
+          "type": "object",
+          "description": "The periods that apply to one Tenant and where they come from.",
+          "required": ["tenant", "deployment", "tenant_rules", "effective"],
+          "properties": {
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
+        },
+        "RetentionRules": {
+          "type": "object",
+          "description": "The periods of every kind of content Aidash keeps only for a while.",
+          "required": ["document_snapshots"],
+          "properties": {
+            "document_snapshots": {
+              "$ref": "#/components/schemas/SnapshotPeriods"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SnapshotPeriods": {
+          "type": "object",
+          "description": "How long the contents of a Document snapshot are kept.",
+          "required": ["after_run_seconds", "max_age_seconds"],
+          "properties": {
+            "after_run_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Kept this long after the snapshot's Run ends.",
+              "minimum": 0
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Never kept longer than this after retrieval, even while the Run lasts.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/retention-history",
+    "name": "tenant-retention-history",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RetentionChange"
+        }
+      },
+      "definitions": {
+        "RetentionChange": {
+          "type": "object",
+          "description": "One change of a Tenant's periods, as kept in its history.",
+          "required": ["rules", "changed_at", "changed_by"],
+          "properties": {
+            "changed_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "changed_by": {
+              "type": "string",
+              "description": "The recorded [`Decider`]."
+            },
+            "rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The periods stored from then on; none when they were cleared and the\nDeployment's periods applied again."
+            }
+          }
+        },
+        "RetentionRules": {
+          "type": "object",
+          "description": "The periods of every kind of content Aidash keeps only for a while.",
+          "required": ["document_snapshots"],
+          "properties": {
+            "document_snapshots": {
+              "$ref": "#/components/schemas/SnapshotPeriods"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SnapshotPeriods": {
+          "type": "object",
+          "description": "How long the contents of a Document snapshot are kept.",
+          "required": ["after_run_seconds", "max_age_seconds"],
+          "properties": {
+            "after_run_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Kept this long after the snapshot's Run ends.",
+              "minimum": 0
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Never kept longer than this after retrieval, even while the Run lasts.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       }
     }

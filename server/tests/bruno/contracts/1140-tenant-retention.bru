@@ -1,0 +1,22 @@
+meta {
+  name: 1140 tenant-retention - Application read preserves the typed response contract
+  type: http
+  seq: 1140
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/retention
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{operator_token}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Documented response fields and types", function () { const contract={"schema":{"$ref":"#/components/schemas/TenantRetention"},"definitions":{"TenantRetention":{"type":"object","description":"The periods that apply to one Tenant and where they come from.","required":["tenant","deployment","tenant_rules","effective"],"properties":{"deployment":{"$ref":"#/components/schemas/RetentionRules","description":"The Deployment's periods, also the longest the Tenant may keep."},"effective":{"$ref":"#/components/schemas/RetentionRules","description":"What applies: the shorter of the two for every period."},"tenant":{"type":"string"},"tenant_rules":{"anyOf":[{"$ref":"#/components/schemas/RetentionRules"},{"type":"null"}],"description":"The Tenant's own shorter periods, if it stores any."}}},"RetentionRules":{"type":"object","description":"The periods of every kind of content Aidash keeps only for a while.","required":["document_snapshots"],"properties":{"document_snapshots":{"$ref":"#/components/schemas/SnapshotPeriods"}},"additionalProperties":false},"SnapshotPeriods":{"type":"object","description":"How long the contents of a Document snapshot are kept.","required":["after_run_seconds","max_age_seconds"],"properties":{"after_run_seconds":{"type":"integer","format":"uint32","description":"Kept this long after the snapshot's Run ends.","minimum":0},"max_age_seconds":{"type":"integer","format":"uint32","description":"Never kept longer than this after retrieval, even while the Run lasts.","minimum":0}},"additionalProperties":false}}}; function valid(value,schema){if(schema.$ref)return valid(value,contract.definitions[schema.$ref.split("/").pop()]);if(schema.anyOf)return schema.anyOf.some(item=>valid(value,item));if(schema.oneOf)return schema.oneOf.filter(item=>valid(value,item)).length===1;if(schema.allOf&&!schema.allOf.every(item=>valid(value,item)))return false;if(schema.enum&&!schema.enum.some(item=>JSON.stringify(item)===JSON.stringify(value)))return false;const types=Array.isArray(schema.type)?schema.type:schema.type?[schema.type]:[];if(types.length&&!types.some(type=>type==="null"?value===null:type==="array"?Array.isArray(value):type==="object"?value!==null&&typeof value==="object"&&!Array.isArray(value):type==="integer"?Number.isInteger(value):typeof value===type))return false;if(value!==null&&typeof value==="object"&&!Array.isArray(value)){if((schema.required||[]).some(field=>!(field in value)))return false;for(const [field,property] of Object.entries(schema.properties||{}))if(field in value&&!valid(value[field],property))return false;}if(Array.isArray(value)&&schema.items&&!value.every(item=>valid(item,schema.items)))return false;return true;}expect(valid(res.getBody(),contract.schema)).to.equal(true); });
+  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json"); });
+}
