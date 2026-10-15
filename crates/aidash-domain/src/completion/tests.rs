@@ -611,11 +611,15 @@ fn an_unavailable_area_is_never_unchanged_content() {
 	);
 }
 
-/// Retrying cannot restore spent verification time, so that review does not
-/// offer it.
+/// Neither retrying nor new input restores spent verification time, so that
+/// review offers neither.
 #[test]
 fn a_time_exhausted_review_does_not_offer_retry() {
-	assert!(!ReviewReason::TimeExhausted.prompt().contains("retry"));
+	let time = ReviewReason::TimeExhausted.prompt();
+	assert!(
+		!time.contains("retry") && !time.contains("new message"),
+		"{time}"
+	);
 	// New input renews the Repair Allowance, not the Run's steps.
 	let steps = ReviewReason::StepsExhausted {
 		check: "tests".into(),

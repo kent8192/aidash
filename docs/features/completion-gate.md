@@ -101,7 +101,10 @@ whose prompt starts with `Completion Review:`. Answering `retry` (or
 `{"retry": true}`) runs the refused Checks again on the same content; any other answer raises a new
 review. Sending a new message also ends the review: the candidate is stale, the
 review request is answered `{"superseded": true}` by `system`, and the model
-continues with the correction. Cancelling the Run stops it.
+continues with the correction. Cancelling the Run stops it. Once the Run's
+verification time is spent, neither `retry` nor a new message lets a Check
+run again, so that review only offers cancelling the Run and verifying the
+correction in a new one.
 
 ## Freshness and recovery
 

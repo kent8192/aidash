@@ -536,9 +536,10 @@ impl ReviewReason {
 					"Completion Review: Check {check} still fails and the Run has no step left to repair it. Answer retry to run the Checks again, or cancel the Run."
 				);
 			}
-			// Retrying cannot help: the verification time stays spent.
+			// Neither retry nor new input renews the verification time, so no
+			// Check can run in this Run again.
 			Self::TimeExhausted => {
-				return "Completion Review: the Run's verification time is spent. Send a new message to correct the task, or cancel the Run.".into();
+				return "Completion Review: the Run's verification time is spent, so no Check can run in this Run again. Cancel the Run and start a new one to verify a correction.".into();
 			}
 		};
 		format!(
