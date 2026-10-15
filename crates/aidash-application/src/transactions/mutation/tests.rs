@@ -1,37 +1,15 @@
 use super::*;
-use crate::ports::{
-	Credentials,
-	registry::{CoreToolCatalog, DefinitionLookup, DefinitionWriter},
-};
 use aidash_domain::{
 	Artifact, ArtifactInput, RecoveryState, RunControl, RunPhase, RunState, Task, Workspace,
-	capabilities::CoreCapabilities,
 	context::{Context, ContextUsage},
-	provider::{ToolCall, ToolSpec},
-	registry::Entry,
+	provider::ToolCall,
 	run_state::{RawRun, ToolCallState, encode},
 	transactions::{Isolation, Participant},
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
-
-struct Catalog;
-impl Credentials for Catalog {
-	fn resolve(&self, name: &str) -> Result<String> {
-		Err(Error::NotFound(name.into()))
-	}
-}
-impl CoreToolCatalog for Catalog {
-	fn specifications(&self, _config: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
-		BTreeMap::new()
-	}
-}
-fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(Catalog), Arc::new(Catalog))
-}
 
 #[fixture]
 fn task() -> Task {
@@ -100,7 +78,6 @@ struct Scope {
 	delegated: Option<String>,
 	source: Option<Uuid>,
 	leased: bool,
-	inserted: bool,
 	failure: Option<&'static str>,
 	calls: Vec<&'static str>,
 	keys: Vec<String>,
@@ -116,7 +93,6 @@ fn scope(task: Task, run: RawRun) -> Scope {
 		delegated: None,
 		source: None,
 		leased: false,
-		inserted: true,
 		failure: None,
 		calls: vec![],
 		keys: vec![],
@@ -131,22 +107,6 @@ impl Scope {
 			return Err(Error::External(format!("fault:{name}")));
 		}
 		Ok(())
-	}
-}
-#[async_trait]
-impl DefinitionLookup for Scope {
-	async fn definition(&mut self, id: &str, _version: &str) -> Result<Entry> {
-		Err(Error::NotFound(id.into()))
-	}
-	async fn overrides(&mut self, _id: &str, _version: &str) -> Result<Option<Value>> {
-		Ok(None)
-	}
-}
-#[async_trait]
-impl DefinitionWriter for Scope {
-	async fn insert_definition(&mut self, _entry: &Entry) -> Result<bool> {
-		self.call("definition")?;
-		Ok(self.inserted)
 	}
 }
 #[async_trait]
@@ -203,6 +163,7 @@ impl MutationScope for Scope {
 			created_by: task.owner.clone().unwrap(),
 			idempotency_key: key.into(),
 			created_at: task.created_at,
+			run_id: None,
 		};
 		Ok((saved, created))
 	}
@@ -263,7 +224,7 @@ async fn task_guards_precede_delegation_and_writes(
 		_ => scope.children = true,
 	}
 	let manifest = manifest("aidash://home", vec![completion()], None);
-	let error = apply(&mut scope, &validation(), "aidash://home", &manifest)
+	let error = apply(&mut scope, "aidash://home", &manifest)
 		.await
 		.unwrap_err();
 	assert_eq!(error.to_string(), message);
@@ -288,7 +249,7 @@ async fn delegated_task_requires_its_executor_pair(
 	});
 	let manifest = manifest("aidash://home", vec![completion()], peer);
 	assert_eq!(
-		apply(&mut scope, &validation(), "aidash://home", &manifest)
+		apply(&mut scope, "aidash://home", &manifest)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -311,9 +272,7 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 			mutations: vec![finalization()],
 		}),
 	);
-	apply(&mut scope, &validation(), "aidash://home", &manifest)
-		.await
-		.unwrap();
+	apply(&mut scope, "aidash://home", &manifest).await.unwrap();
 	let key = format!("atomic:{}:task:{}", manifest.id, scope.task.id);
 	assert_eq!(scope.keys.as_slice(), std::slice::from_ref(&key));
 	assert_eq!(
@@ -373,7 +332,7 @@ async fn run_preconditions_take_precedence_over_corrupt_execution_state(
 	}
 	let manifest = manifest("aidash://worker", vec![finalization()], None);
 	assert!(
-		matches!(apply(&mut scope, &validation(), "aidash://worker", &manifest).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == "run must be quiescent at its expected tool-call revision")
+		matches!(apply(&mut scope, "aidash://worker", &manifest).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == "run must be quiescent at its expected tool-call revision")
 	);
 	assert_eq!(scope.calls, ["run"]);
 }
@@ -409,7 +368,7 @@ async fn execution_state_is_checked_before_home_pair_and_writes(
 	}
 	let manifest = manifest("aidash://worker", vec![finalization()], None);
 	assert_eq!(
-		apply(&mut scope, &validation(), "aidash://worker", &manifest)
+		apply(&mut scope, "aidash://worker", &manifest)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -433,7 +392,7 @@ async fn run_completion_requires_the_home_task_pair(
 	});
 	let manifest = manifest("aidash://worker", vec![finalization()], home);
 	assert_eq!(
-		apply(&mut scope, &validation(), "aidash://worker", &manifest)
+		apply(&mut scope, "aidash://worker", &manifest)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -463,9 +422,7 @@ async fn execution_event_preserves_raw_usage_and_home_visibility(
 		)
 	};
 	let manifest = manifest(node, mutations, other);
-	apply(&mut scope, &validation(), node, &manifest)
-		.await
-		.unwrap();
+	apply(&mut scope, node, &manifest).await.unwrap();
 	assert_eq!(
 		scope.events[0],
 		(
@@ -491,7 +448,7 @@ async fn provenance_failures_stop_event_publication(
 	scope.failure = Some(failure);
 	let manifest = manifest("aidash://home", vec![completion()], None);
 	assert_eq!(
-		apply(&mut scope, &validation(), "aidash://home", &manifest)
+		apply(&mut scope, "aidash://home", &manifest)
 			.await
 			.unwrap_err()
 			.to_string(),
@@ -499,44 +456,4 @@ async fn provenance_failures_stop_event_publication(
 	);
 	assert_eq!(scope.calls, calls);
 	assert!(scope.events.is_empty());
-}
-
-#[rstest]
-#[case::insert(true)]
-#[case::replay(false)]
-#[tokio::test]
-async fn registry_replay_emits_no_duplicate_event_and_workspace_keeps_its_json(
-	mut scope: Scope,
-	#[case] inserted: bool,
-) {
-	scope.inserted = inserted;
-	let entry: Entry = serde_json::from_value(json!({"id":"skill","version":"1.0.0","kind":"skill","name":{"en":"Skill"},"description":{"en":"Atomic registration"},"config":{"instructions":"Follow the task"}})).unwrap();
-	let manifest = manifest(
-		"aidash://home",
-		vec![
-			Mutation::RegistryRegister {
-				entry: Box::new(entry),
-			},
-			Mutation::WorkspaceState {
-				workspace_id: scope.task.workspace_id,
-				expected_revision: 6,
-				state: json!({"ready":true,"value":null}),
-			},
-		],
-		None,
-	);
-	apply(&mut scope, &validation(), "aidash://home", &manifest)
-		.await
-		.unwrap();
-	let mut expected = vec![];
-	if inserted {
-		expected.push((
-			"aidash://home".into(),
-			None,
-			"registry.registered".into(),
-			json!({"id":"skill","version":"1.0.0"}),
-		));
-	}
-	expected.push(("aidash://home".into(), Some(scope.task.workspace_id), "workspace.updated".into(), json!({"id":scope.task.workspace_id,"title":"Workspace","goal":"Goal","state":{"ready":true,"value":null},"revision":7,"created_at":scope.task.created_at})));
-	assert_eq!(scope.events, expected);
 }

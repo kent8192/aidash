@@ -11,7 +11,7 @@ use aidash_server::{
 	config::Config,
 	domain::*,
 	federation::Federation,
-	registry::{Entry, Package, Registry, Search},
+	registry::{Entry, Registry, Search},
 	store::Store,
 };
 use common::{TestEnvironment, test_environment};
@@ -206,17 +206,18 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
+async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
+	#[values("ordered", "native")] version: &str,
 ) {
-	// Arrange: a model that declares Ordered and an Agent that names it, on a
-	// node without Cache Salt Keys.
+	// Arrange: a model that declares the salted version and an Agent that
+	// names it, on a node without Cache Salt Keys.
 	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
-	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
-	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
+	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
+	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
 	let workspace = store
 		.create_workspace("Research", "Compare frameworks")
 		.await
@@ -437,7 +438,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn registry_installation_versions_and_authenticated_api(
+async fn registry_versions_and_authenticated_api(
 	#[from(store)] _store_fixture: StoreFuture,
 	#[from(authenticated_runtime)]
 	#[with(_store_fixture.clone())]
@@ -456,42 +457,14 @@ async fn registry_installation_versions_and_authenticated_api(
 		"research-guide",
 		json!({"instructions":"Keep citations"}),
 	);
-	let package = Package {
-		entity: skill.clone(),
-		author: "Fixture".into(),
-		permissions: vec![],
-		dependencies: vec![],
-	};
-	let record = registry.publish(package.clone()).await.unwrap();
-	assert!(
-		registry
-			.install(&skill.id, &skill.version, "sha256:wrong", json!({}))
-			.await
-			.is_err()
-	);
-	registry
-		.install(
-			&skill.id,
-			&skill.version,
-			&record.digest,
-			json!({"instructions":"Use node-local citations"}),
-		)
-		.await
-		.unwrap();
+	registry.register(skill.clone()).await.unwrap();
 	assert_eq!(
 		registry.get(&skill.id, &skill.version).await.unwrap(),
-		Entry {
-			binding_normalization: None,
-			config: json!({"instructions":"Use node-local citations"}),
-			..skill.clone()
-		}
+		skill
 	);
-	let mut changed = package;
-	changed
-		.entity
-		.description
-		.insert("en".into(), "Changed".into());
-	assert!(registry.publish(changed).await.is_err());
+	let mut changed = skill;
+	changed.description.insert("en".into(), "Changed".into());
+	assert!(registry.register(changed).await.is_err());
 	let matches = registry
 		.list(&Search {
 			kind: Some("agent".into()),

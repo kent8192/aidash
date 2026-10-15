@@ -149,7 +149,7 @@ impl PeerManagement {
 			.handle()
 			.atomic(async |tx| {
 				let entry =
-					crate::apps::registry::services::admission::effective(tx, &id, &version)
+					crate::apps::registry::services::admission::definition(tx, &id, &version)
 						.await?;
 				let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
 					tx,

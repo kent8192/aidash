@@ -444,6 +444,9 @@ impl ProviderAccess for FakeAccess {
 			keyless: None,
 		})
 	}
+	async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+		unreachable!("inference never preflights a credential")
+	}
 	async fn plan_rejected(&self, _: &Context, disposition: Disposition) -> Result<bool> {
 		self.reports.lock().unwrap().push(disposition);
 		if disposition == Disposition::RefreshThenReconnect && self.refresh_succeeds {

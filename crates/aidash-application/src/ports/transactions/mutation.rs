@@ -1,12 +1,12 @@
 //! All mutation reads, writes and events borrow one caller-owned transaction.
-use crate::{Result, ports::registry::DefinitionWriter};
+use crate::Result;
 use aidash_domain::{Artifact, ArtifactInput, Task, Workspace, run_state::RawRun};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
 #[async_trait]
-pub trait MutationScope: DefinitionWriter {
+pub trait MutationScope: Send {
 	async fn replace_workspace(
 		&mut self,
 		id: Uuid,

@@ -18,6 +18,7 @@ pub mod runs;
 
 pub mod human_requests;
 pub mod invocations;
+pub mod research;
 pub mod run_inputs;
 
 pub(crate) mod openapi;

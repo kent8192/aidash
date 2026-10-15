@@ -5,8 +5,8 @@ mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
 
+use aidash_server::apps::registry::models::Definition;
 use aidash_server::apps::registry::models::states::DefinitionKind;
-use aidash_server::apps::registry::models::{Definition, Installation};
 use aidash_server::registry::{Entry, ModelConfig};
 use endpoint_fixtures::{EndpointFixture, assert_json, endpoint};
 use reinhardt::core::exception::DatabaseErrorKind;
@@ -107,76 +107,6 @@ async fn configured_timeouts_round_trip_through_the_registry_api(
 
 #[rstest]
 #[tokio::test]
-async fn persisted_timeout_overrides_are_applied_by_registry_reads(
-	#[future] endpoint: EndpointFixture,
-	timeout_model: Value,
-	supported_timeouts: Vec<Option<Value>>,
-) {
-	// Arrange
-	let app = endpoint.await;
-	let mut connection = app.database.lease.handle();
-	for (index, timeout) in supported_timeouts.into_iter().enumerate() {
-		let id = format!("overridden-{index}");
-		let mut entry = timeout_model.clone();
-		entry["id"] = json!(id);
-		// Use a different base value to make an applied override observable.
-		entry["config"]["request_timeout_secs"] = json!(45);
-		assert_json(
-			app.operator
-				.post("/api/registry", &entry, "json")
-				.await
-				.unwrap(),
-			200,
-		);
-		let _definition = Definition::objects()
-			.filter(Definition::field_id().eq(id.clone()))
-			.get_with_db(&mut connection)
-			.await
-			.unwrap();
-		let mut overrides = json!({});
-		if let Some(value) = &timeout {
-			overrides["request_timeout_secs"] = value.clone();
-		}
-		let installation = Installation::build()
-			.id(&id)
-			.version("1.0.0")
-			.digest("timeout-fixture")
-			.config(overrides.clone().into())
-			.finish();
-		// Act
-		Installation::objects()
-			.create_with_conn(&mut connection, &installation)
-			.await
-			.unwrap();
-		let found = assert_json(
-			app.operator
-				.get(&format!("/api/registry/{id}/1.0.0"))
-				.await
-				.unwrap(),
-			200,
-		);
-		let saved = Installation::objects()
-			.filter(Installation::field_id().eq(id))
-			.get_with_db(&mut connection)
-			.await
-			.unwrap();
-		// Assert
-		assert_eq!(saved.config.0, overrides);
-		let expected = match &timeout {
-			None => 45,
-			Some(value) => value.as_u64().unwrap_or(900),
-		};
-		let config: ModelConfig = serde_json::from_value(found["config"].clone()).unwrap();
-		assert_eq!(config.request_timeout().unwrap().as_secs(), expected);
-		assert_eq!(
-			found["config"]["request_timeout_secs"],
-			timeout.unwrap_or(json!(45))
-		);
-	}
-}
-
-#[rstest]
-#[tokio::test]
 async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 	#[future] endpoint: EndpointFixture,
 	timeout_model: Value,
@@ -237,14 +167,6 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 			.unwrap(),
 		seeded_definitions
 	);
-	assert!(
-		Installation::objects()
-			.all()
-			.all_with_db(&mut connection)
-			.await
-			.unwrap()
-			.is_empty()
-	);
 }
 
 fn assert_constraint(error: reinhardt::core::exception::Error, constraint: &str) {
@@ -260,65 +182,14 @@ fn assert_constraint(error: reinhardt::core::exception::Error, constraint: &str)
 
 #[rstest]
 #[tokio::test]
-async fn database_validates_registered_and_overridden_timeouts(
+async fn database_validates_registered_timeouts(
 	#[future] endpoint: EndpointFixture,
 	timeout_model: Value,
-	supported_timeouts: Vec<Option<Value>>,
 	invalid_configs: Vec<Value>,
 ) {
-	// Arrange: keep an existing installation so invalid updates must retain it.
+	// Arrange
 	let app = endpoint.await;
 	let mut connection = app.database.lease.handle();
-	assert_json(
-		app.operator
-			.post("/api/registry", &timeout_model, "json")
-			.await
-			.unwrap(),
-		200,
-	);
-	let id = timeout_model["id"].as_str().unwrap();
-	Installation::objects()
-		.create_with_conn(
-			&mut connection,
-			&Installation::build()
-				.id(id)
-				.version("1.0.0")
-				.digest("timeout-fixture")
-				.config(json!({}).into())
-				.finish(),
-		)
-		.await
-		.unwrap();
-	for timeout in supported_timeouts.into_iter().flatten() {
-		let config = json!({"request_timeout_secs": timeout});
-		// Act / Assert: accepted updates remain effective at the registry boundary.
-		let updated = Installation::objects()
-			.filter(Installation::field_id().eq(id.to_owned()))
-			.update_fields_with_conn(
-				&mut connection,
-				[(
-					Installation::field_config(),
-					reinhardt::db::orm::Json(config),
-				)],
-			)
-			.await
-			.unwrap();
-		assert_eq!(updated, 1);
-		let found = assert_json(
-			app.operator
-				.get(&format!("/api/registry/{id}/1.0.0"))
-				.await
-				.unwrap(),
-			200,
-		);
-		assert_eq!(found["config"]["request_timeout_secs"], timeout);
-	}
-	let retained = Installation::objects()
-		.filter(Installation::field_id().eq(id.to_owned()))
-		.get_with_db(&mut connection)
-		.await
-		.unwrap()
-		.config;
 	for (index, config) in invalid_configs.into_iter().enumerate() {
 		let mut entry = timeout_model.clone();
 		entry["id"] = json!(format!("raw-invalid-{index}"));
@@ -332,6 +203,7 @@ async fn database_validates_registered_and_overridden_timeouts(
 			.kind(DefinitionKind::Model)
 			.metadata(entry.into())
 			.finish();
+		// Act / Assert
 		assert_constraint(
 			Definition::objects()
 				.create_with_conn(&mut connection, &definition)
@@ -339,47 +211,18 @@ async fn database_validates_registered_and_overridden_timeouts(
 				.unwrap_err(),
 			"registry_model_config",
 		);
-		let error = Installation::objects()
-			.filter(Installation::field_id().eq(id.to_owned()))
-			.update_fields_with_conn(
-				&mut connection,
-				[(
-					Installation::field_config(),
-					reinhardt::db::orm::Json(config),
-				)],
-			)
-			.await
-			.unwrap_err();
-		assert_constraint(error, "installations_config");
-		assert_eq!(
-			Installation::objects()
-				.filter(Installation::field_id().eq(id.to_owned()))
-				.get_with_db(&mut connection)
-				.await
-				.unwrap()
-				.config,
-			retained
-		);
 	}
 }
 
 #[rstest]
 #[tokio::test]
-async fn database_validates_media_route_members_for_models_and_installations(
+async fn database_validates_media_route_members_for_models(
 	#[future] endpoint: EndpointFixture,
 	timeout_model: Value,
 ) {
 	// Arrange
 	let app = endpoint.await;
 	let mut connection = app.database.lease.handle();
-	assert_json(
-		app.operator
-			.post("/api/registry", &timeout_model, "json")
-			.await
-			.unwrap(),
-		200,
-	);
-	let id = timeout_model["id"].as_str().unwrap();
 	let route = json!({"tag":"fixture/verified", "formats":["image/png"],
 		"source":"fixture verification", "verified_at":"2026-09-28T12:00:00Z",
 		"expires_at":"2026-10-28T12:00:00Z"});
@@ -394,19 +237,6 @@ async fn database_validates_media_route_members_for_models_and_installations(
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
 				.metadata(valid.into())
-				.finish(),
-		)
-		.await
-		.unwrap();
-	let config = json!({"media_routes":[route]});
-	Installation::objects()
-		.create_with_conn(
-			&mut connection,
-			&Installation::build()
-				.id(id)
-				.version("1.0.0")
-				.digest("timeout-fixture")
-				.config(config.clone().into())
 				.finish(),
 		)
 		.await
@@ -426,11 +256,6 @@ async fn database_validates_media_route_members_for_models_and_installations(
 			.kind(DefinitionKind::Model).metadata(entry.into()).finish();
 		assert_constraint(Definition::objects().create_with_conn(&mut connection, &definition)
 			.await.unwrap_err(), "registry_model_config");
-		assert_constraint(Installation::objects().filter(Installation::field_id().eq(id.to_owned()))
-			.update_fields_with_conn(&mut connection, [(Installation::field_config(), reinhardt::db::orm::Json(json!({"media_routes":routes})))])
-			.await.unwrap_err(), "installations_config");
-		assert_eq!(Installation::objects().filter(Installation::field_id().eq(id.to_owned()))
-			.get_with_db(&mut connection).await.unwrap().config.0, config);
 	}
 }
 
@@ -454,6 +279,9 @@ async fn projection_versions_persist_and_gate_agent_registration(
 	let mut declared = timeout_model.clone();
 	declared["id"] = json!("ordered-model");
 	declared["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	let mut native_model = timeout_model.clone();
+	native_model["id"] = json!("native-model");
+	native_model["config"]["projection_versions"] = json!(["legacy", "native"]);
 	// Act
 	let created = assert_json(
 		app.operator
@@ -489,20 +317,39 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		)
 		.await
 		.unwrap();
-	let unimplemented = app
+	let undeclared_native = app
 		.operator
 		.post(
 			"/api/registry",
-			&agent_on("native-agent", "ordered-model", "native"),
+			&agent_on("undeclared-native-agent", "ordered-model", "native"),
 			"json",
 		)
 		.await
 		.unwrap();
+	assert_json(
+		app.operator
+			.post("/api/registry", &native_model, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	let native = assert_json(
+		app.operator
+			.post(
+				"/api/registry",
+				&agent_on("native-agent", "native-model", "native"),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
 	// Assert
 	assert_eq!(created["config"], declared["config"]);
 	assert_eq!(accepted["config"]["projection_version"], "ordered");
+	assert_eq!(native["config"]["projection_version"], "native");
 	assert_json(undeclared, 400);
-	assert_json(unimplemented, 400);
+	assert_json(undeclared_native, 400);
 	for (index, versions) in [json!("ordered"), json!(["v4"]), json!([1]), json!(null)]
 		.into_iter()
 		.enumerate()

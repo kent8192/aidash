@@ -516,6 +516,7 @@ async fn history_rechecks_disclosure_for_every_stored_message(mut scope: Scope) 
 			content: "protected".into(),
 			idempotency_key: None,
 			created_at: chrono::Utc::now(),
+			run_id: None,
 		})
 		.collect();
 	assert_eq!(

@@ -1,11 +1,11 @@
 //! Management use cases.
 use crate::{
 	Error, Result,
+	apps::execution::serializers::research::CitedEvidence,
 	apps::execution::serializers::runs::RunDetails,
 	apps::execution::serializers::state::StateResponse,
 	apps::federation::remote::serializers::actions::SentResponse,
 	apps::identity::serializers::session::AccessProfile,
-	apps::registry::serializers::installations::Installation,
 	apps::workspaces::serializers::tasks::PageQuery,
 	authorization::{execution, identity::Actor, interaction},
 	domain::*,
@@ -169,22 +169,6 @@ impl HarnessManagement {
 		)
 		.fetch_all(&f.store.pool)
 		.await?;
-		let installations: Vec<Installation> = crate::database::native::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("installations"))
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("installed_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(&f.store.pool)
-		.await?;
 		let mut state = StateResponse {
 			access: AccessProfile::Operator,
 			node: f.config.identity(vec![]),
@@ -240,7 +224,6 @@ impl HarnessManagement {
 			peers: f.peers().await?,
 			events,
 			artifacts,
-			installations,
 		};
 		crate::authorization::remote::operator::filter_state(
 			&mut crate::database::native::begin(&f.store.pool).await?,
@@ -294,6 +277,26 @@ impl HarnessManagement {
 		let mut details = f.store.run_details(id, page.offset).await?;
 		details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 		Ok(details)
+	}
+	/// One Source citation of a Run, for a reader who may read that Run now.
+	/// Every reason the reader cannot see it is the same `NotFound`.
+	pub(crate) async fn run_evidence(
+		&self,
+		actor: Actor,
+		run: Uuid,
+		reference: &str,
+	) -> Result<CitedEvidence> {
+		let f = self.runtime.clone();
+		let readers = crate::apps::execution::repositories::research::Readers {
+			federation: &f,
+			actor: &actor,
+		};
+		let store = crate::research::evidence_store(f.store.clone());
+		Ok(
+			aidash_application::research::reading::read(&readers, &store, run, reference)
+				.await?
+				.into(),
+		)
 	}
 	pub(crate) async fn run_control(
 		&self,
@@ -616,6 +619,7 @@ impl HarnessManagement {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;

@@ -93,6 +93,7 @@ async fn compact(
 			tools: &[],
 			max_output_tokens: 256,
 			projection: &aidash_domain::context::RequestProjection::Legacy,
+			estimate: Default::default(),
 		},
 		pinned,
 	)

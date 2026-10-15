@@ -1375,14 +1375,14 @@ def check_approval(approval, corpus_sha256, models, ceiling, now):
                   "disclosure", "external_compaction"):
         if field not in approval:
             raise GuardRefusal(f"disclosure approval is missing {field}")
-    # Ordinary Runs call the Node's environment-configured Jev compactor whenever a request
-    # outgrows the window. Nothing bounds or prices those calls and the Node does not expose
-    # whether Jev is configured, so the operator must attest that the Node has no Jev
-    # credential: compaction then fails before any request (crates/aidash-integrations/src/compaction.rs).
+    # Ordinary Runs are never pruned (ADR 0041); only a Run whose generation policy names an
+    # approved compactor calls Jev, on the Tenant's own OpenRouter credential. Nothing here bounds
+    # or prices those calls and the Node does not expose its approvals, so the operator must attest
+    # that the evaluated Tenant approves no compactor.
     if approval["external_compaction"] != "disabled":
         raise GuardRefusal("disclosure approval external_compaction must be \"disabled\": the live tier cannot "
-                           "reserve or price the Node's Jev compaction calls, so the evaluated Node must have no "
-                           "Jev credential (AIDASH_SECRET_JEV unset)")
+                           "reserve or price Jev compaction calls, so the evaluated Tenant must approve no "
+                           "compactor")
     for field in ("approver", "corpus_sha256", "disclosure"):
         if not isinstance(approval[field], str) or not approval[field].strip():
             raise GuardRefusal(f"disclosure approval {field} must be a non-empty string")

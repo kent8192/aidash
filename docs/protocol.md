@@ -82,16 +82,44 @@ Decider pins and historical replay contracts for #108. Native execution still
 uses the compaction path described below until its separate integration lands.
 
 The compaction trigger, post-compaction fit check and final preflight use the
-same complete-request estimate: UTF-8 bytes of the serialized model-visible
-messages and tool definitions, plus `max_output_tokens`, plus 1,024 framing
-tokens. This deliberately conservative estimate is not the provider's actual
-token count. It includes the JSON escaping of context inside message text.
+same complete-request estimate, the Request Estimate (ADR 0017). Its upper
+bound is the byte estimate: the UTF-8 bytes of the serialized model-visible
+messages and tool definitions (the byte basis, including the JSON escaping of
+context inside message text and the cache-salt reserve), plus the media
+allowance, `max_output_tokens` and 1,024 framing tokens. It is not the
+provider's actual token count.
 Output fits inside the registered context window; it is not extra input space.
 Failure to fit leaves saved context unchanged, prevents inference I/O and pauses
 the Run with the typed reason `context_unreducible`.
 New model registrations capture OpenRouter's advertised maximum completion
 tokens as `max_output_tokens`; model versions created before this field existed
 retain their previous output allowance until re-registered.
+
+A model definition that sets `request_estimator: calibrated` scales only the
+byte basis. The ratio is the nearest-rank 99th percentile of reported
+`prompt_tokens` per byte of basis over the newest 200 samples of the same
+upstream model slug and Projection Version, plus a 10% margin. The media
+allowance, output reservation and framing are added unscaled, and the result
+never exceeds the byte estimate. With fewer than 20 samples the estimate stays
+the byte estimate. Omitting the field means `bytes`; new registrations write
+`calibrated`. Samples come only from complete, media-free Inference Attempts
+of Run steps. They are kept Deployment-wide in `estimate_calibration_samples`,
+which holds no Run, Tenant or attempt identifier, and are written in the same
+transaction that completes the Usage Record. Operators read per-key aggregates
+with `manage diagnostics calibration`.
+
+Each Run step pins an Estimate Snapshot (estimator, version, ratio and margin)
+in the Run's context before the step relies on it. A resumed step reuses it,
+so it makes the same fitting and compaction decisions even after calibration
+data changed. Run inspection shows the pinned snapshot without its sample
+count. Snapshot quotas are byte budgets that convert through the snapshot's
+ratio, while the Ordered Stable Prefix quota and the semantic budget always use
+the byte estimate, so calibration never changes the Stable Prefix or the
+Retrieval Key. Summary Stage requests, Jev, Registry workbench requests, the
+run-message limit and the media headroom keep the byte estimate.
+Every Usage Record keeps its Request Estimate with the byte basis, the output
+reservation and the snapshot ratio, so the estimation error of an attempt is
+`estimated_tokens - output_reservation - input_tokens`.
 
 Under a `deferred@1` [Exposure policy](operations/registry-capabilities.md#deferred-capability-exposure),
 the model-visible tool definitions are only the request's Exposure set, and the
@@ -122,13 +150,13 @@ the working context. This changes only observation representation; human
 records, other tool results and the underlying audit journal are preserved.
 The conversion commits only when the complete request fits.
 
-Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events. Jev receives a fitted classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events, non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch sees the same fitted state, with bounded request size and four concurrent requests. Invalid answers, missing credentials or insufficient compaction leave the original context unchanged. Compaction uses `AIDASH_SECRET_JEV`, with endpoint/model overrides in `.env.example`, independently of the explicitly selected inference model. Token estimates are conservative and are not provider tokenization.
+Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events. Jev receives a fitted classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events, non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch sees the same fitted state, with bounded request size and four concurrent requests. Invalid answers, a missing OpenRouter binding or insufficient compaction leave the original context unchanged. Only a Run with an approved compactor is pruned; any other Run that outgrows its window stops with `prune_unavailable` (ADR 0041). Compaction uses the compactor's exact Jev release and the Tenant's current OpenRouter Provider Credential, independently of the explicitly selected inference model and of whichever grant serves it. Token estimates are conservative and are not provider tokenization.
 
 The default retention threshold is 0.5: keep the complete pair when the result probability reaches the threshold; otherwise retain the call with the first 300 result characters and a notice when the call probability reaches it; otherwise drop the pair. Results up to 420 characters are unchanged. The first and latest six history events are pinned.
 
-The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
+The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens, below the 32,000-token context OpenRouter lists for Jev. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
 
-The default endpoint is `https://api.typesafe.ai/v1/systemone` and the default model is `jev-latest`. Bearer-authenticated requests send `{model,state,questions}`. The upstream MIT notice is included in [LICENSE](../LICENSE).
+Requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.13`; aliases are refused. Each request is a Decision Attempt with its own identifier: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.13-20260917`). The reported `usage.cost` is logged with the Decision Attempt and is not a Usage Record. The upstream MIT notice is included in [LICENSE](../LICENSE).
 
 ### Context recovery
 
@@ -153,7 +181,7 @@ versions. The opt-in `context-recovery/1` policy accepts:
 
 | Field                 | Default | Bounds                | Meaning                                                                                           |
 | --------------------- | ------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `preserve_recent`     | 6       | 6–1000                | Latest events that are never pruned or summarized                                                 |
+| `preserve_recent`     | 6       | 6–1000                | Latest events (Model Turns on `native`) that are never pruned or summarized                       |
 | `overflow_retries`    | 2       | 0–4                   | Compact-and-retry attempts after a provider Context Overflow                                      |
 | `overflow_shrink`     | 0.75    | 0.5–0.9               | Factor applied to the effective window on each overflow retry                                     |
 | `summary.model`       | none    | exact model reference | Separately approved summarizer; enables the Summary Stage                                         |
@@ -170,7 +198,10 @@ inference request. Human answers, corrections, continuation markers and
 `model_media_observation` events, whose source messages a summary could not
 recheck, always stay verbatim. So do `workspace_observe` pages and workspace
 record reads other than message reads, whose records are visible one by one
-while a summary rechecks only message sources. The summarizer receives only the
+while a summary rechecks only message sources. On the `native` Projection
+Version the unit is a Model Turn: an `assistant` event and the `tool` events of
+its calls are absorbed together or not at all, and Jev elides a dropped result
+under its call instead of removing the call. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 copies the previous goal verbatim and
@@ -245,7 +276,12 @@ without that proof, such as a media payload limit, is not.
 Only a Context Overflow enters compact-and-retry. Each retry shrinks the
 effective window for the rest of the Run, re-runs the pipeline, and must send a
 smaller request than the previous overflowing one; otherwise, or once the retry
-allowance is spent, the Run pauses with `overflow_retries_exhausted`. Output
+allowance is spent, the Run pauses with `overflow_retries_exhausted`. An
+overflow that follows a calibrated Request Estimate is an estimator defect: the
+Run is demoted to the byte estimate for its remaining steps, in the same save,
+and the overflowing request is recorded by its byte estimate so the next
+comparison uses the same unit. `aidash_context_overflow_total` carries the
+estimator as its `estimator` label. Output
 truncation (`output_truncated`) and refusals (`refused`) pause immediately and
 never dispatch the response's tool calls; their reported usage still settles
 the call's token reservation. A paused Run's typed reason is reported as
@@ -261,8 +297,9 @@ Metrics: `aidash_context_compaction_total{stage,outcome}` counts prune and
 summary outcomes (`applied`, `insufficient`, `unavailable`, `invalid`,
 `unauthorized`, `revoked`), `aidash_context_compaction_tokens{stage,phase}`
 records estimated sizes before and after, and
-`aidash_context_overflow_total{outcome}` counts `retried` and `exhausted`
-overflow recoveries. Labels never contain Run identifiers or content.
+`aidash_context_overflow_total{outcome,estimator}` counts `retried` and
+`exhausted` overflow recoveries by the estimator (`bytes` or `calibrated`)
+whose request overflowed. Labels never contain Run identifiers or content.
 
 ## Marketplace and localization
 

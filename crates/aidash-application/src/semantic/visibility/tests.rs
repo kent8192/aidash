@@ -38,6 +38,7 @@ fn artifact() -> Artifact {
 		created_by: "artifact-author".into(),
 		idempotency_key: "artifact-key".into(),
 		created_at: chrono::Utc::now(),
+		run_id: None,
 	}
 }
 #[fixture]
@@ -49,6 +50,7 @@ fn message() -> Message {
 		content: "original message bytes\n".into(),
 		idempotency_key: None,
 		created_at: chrono::Utc::now(),
+		run_id: None,
 	}
 }
 struct Scope {

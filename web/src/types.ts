@@ -15,5 +15,4 @@ export type {
   Event as MeshEvent,
   StateResponse as State,
   MeshResponse as Mesh,
-  PackageRecord as Package,
 } from "./generated/models";

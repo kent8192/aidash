@@ -679,8 +679,8 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     Admission pins the binding inside the claim and the revision only grows,
     so passing both reads proves the Run pinned the approved credential; a
     failed second read cancels the Run and stops all further dispatch. A Run
-    that applied a compaction proves the Node's Jev compactor answered, which
-    the approval attests cannot happen, and also stops all further dispatch.
+    that applied a compaction proves a Jev compactor answered, which the
+    approval attests cannot happen, and also stops all further dispatch.
 
     Appends each finished (planned, repeat, observation) to `observations`,
     which the caller owns so that an exception or interrupt cannot lose the

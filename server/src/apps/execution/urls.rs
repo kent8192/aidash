@@ -17,6 +17,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::run_get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::run_evidence)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::run_control)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::run_message)

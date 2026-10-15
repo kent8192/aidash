@@ -3,7 +3,6 @@ use super::coordination::Coordinator;
 use crate::{
 	Error, Result,
 	ports::transactions::participation::{ParticipantRepository, ParticipantScope},
-	registry::DefinitionValidation,
 };
 use aidash_domain::transactions::{
 	Manifest,
@@ -15,24 +14,18 @@ use std::sync::Arc;
 pub struct Participant {
 	repository: Arc<dyn ParticipantRepository>,
 	coordinator: Coordinator,
-	validation: DefinitionValidation,
 }
 
 impl Participant {
-	pub fn new(
-		repository: Arc<dyn ParticipantRepository>,
-		coordinator: Coordinator,
-		validation: DefinitionValidation,
-	) -> Self {
+	pub fn new(repository: Arc<dyn ParticipantRepository>, coordinator: Coordinator) -> Self {
 		Self {
 			repository,
 			coordinator,
-			validation,
 		}
 	}
 
 	fn sender(&self, caller: &str, manifest: &Manifest) -> Result<()> {
-		super::validate(&self.validation, manifest)?;
+		super::validate(manifest)?;
 		manifest
 			.local(self.repository.node_id())
 			.map_err(|_| Error::Forbidden)?;

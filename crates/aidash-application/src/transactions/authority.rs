@@ -33,7 +33,6 @@ pub fn request(manifest: &Manifest, origin: &Origin, node: &str) -> Result<Prefl
 					id: *run_id,
 					task_id: Some(*task_id),
 				},
-				Mutation::RegistryRegister { .. } => return Err(Error::Forbidden),
 			})
 		})
 		.collect::<Result<Vec<_>>>()?;

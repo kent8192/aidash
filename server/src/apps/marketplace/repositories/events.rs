@@ -6,11 +6,6 @@ use async_trait::async_trait;
 use uuid::Uuid;
 #[async_trait]
 impl<Effects: Send> EventScope for NativeDefinitions<'_, Effects> {
-	async fn compatibility_ready(&mut self) -> aidash_application::Result<()> {
-		crate::apps::marketplace::services::storage::gate(&mut self.access.tx)
-			.await
-			.map_err(Into::into)
-	}
 	async fn workspace_allowed(
 		&mut self,
 		workspace: Uuid,

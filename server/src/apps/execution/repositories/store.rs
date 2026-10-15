@@ -93,6 +93,28 @@ pub(crate) fn tool_parallelism(value: Option<&str>, pool_connections: usize) -> 
 
 pub use crate::apps::execution::serializers::run_inputs::RunInput;
 
+/// How a Run's Artifact is attributed. `run` is the Run that published it on
+/// this Node, recorded on the Artifact itself; `tracked` also records it for
+/// Run output visibility, which only scoped execution authority needs.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Publication {
+	pub run: Option<Uuid>,
+	pub tracked: bool,
+}
+
+impl Publication {
+	/// Published by `run` on this Node.
+	pub(crate) fn by(run: Uuid, tracked: bool) -> Self {
+		Self {
+			run: Some(run),
+			tracked,
+		}
+	}
+	fn tracked_run(self) -> Option<Uuid> {
+		self.run.filter(|_| self.tracked)
+	}
+}
+
 pub(crate) struct RunResponseMessage<'a> {
 	pub run: &'a Run,
 	pub worker: uuid::Uuid,
@@ -164,6 +186,7 @@ impl Store {
 			sender,
 			content,
 			key,
+			Some(run.id),
 		)
 		.await?;
 		if track_output {
@@ -1261,7 +1284,7 @@ impl Store {
 		key: &str,
 		artifact: &ArtifactInput,
 	) -> Result<Task> {
-		self.complete_from_run(id, owner, key, artifact, None, None)
+		self.complete_from_run(id, owner, key, artifact, Publication::default(), None)
 			.await
 	}
 	pub(crate) async fn complete_remote_run_message(
@@ -1276,8 +1299,15 @@ impl Store {
 		if through_seq < 0 {
 			return Err(Error::Invalid("invalid terminal input sequence".into()));
 		}
-		self.complete_from_run(id, owner, key, artifact, None, Some((run_id, through_seq)))
-			.await
+		self.complete_from_run(
+			id,
+			owner,
+			key,
+			artifact,
+			Publication::default(),
+			Some((run_id, through_seq)),
+		)
+		.await
 	}
 	pub(crate) async fn complete_from_run(
 		&self,
@@ -1285,7 +1315,7 @@ impl Store {
 		owner: &str,
 		key: &str,
 		artifact: &ArtifactInput,
-		source_run: Option<Uuid>,
+		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
 	) -> Result<Task> {
 		let mut tx = crate::database::native::begin(&self.pool).await?;
@@ -1296,7 +1326,7 @@ impl Store {
 				owner,
 				key,
 				artifact,
-				source_run,
+				publication,
 				remote_run_fence,
 			)
 			.await?;
@@ -1312,7 +1342,7 @@ impl Store {
 		owner: &str,
 		key: &str,
 		artifact: &ArtifactInput,
-		source_run: Option<Uuid>,
+		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
 	) -> Result<Task> {
 		nonempty(key, "idempotency key")?;
@@ -1367,8 +1397,14 @@ impl Store {
 					"completion key reused with different input".into(),
 				));
 			}
-			self.record_output_in(tx, source_run, t.workspace_id, "artifact", a.id)
-				.await?;
+			self.record_output_in(
+				tx,
+				publication.tracked_run(),
+				t.workspace_id,
+				"artifact",
+				a.id,
+			)
+			.await?;
 			return Ok(t);
 		}
 		if t.status != crate::domain::TaskStatus::Running {
@@ -1433,6 +1469,7 @@ impl Store {
 			let query_bind_6 = &artifact.content;
 			let query_bind_7 = owner;
 			let query_bind_8 = key;
+			let query_bind_9 = publication.run;
 			aidash_server::database::query_as(
 				&reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("artifacts"))
@@ -1445,6 +1482,7 @@ impl Store {
 						reinhardt::query::Alias::new("content"),
 						reinhardt::query::Alias::new("created_by"),
 						reinhardt::query::Alias::new("idempotency_key"),
+						reinhardt::query::Alias::new("run_id"),
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -1480,6 +1518,10 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_8.to_owned()).into()],
 							))
+							.expr(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_9.to_owned()).into()],
+							))
 							.to_owned(),
 					)
 					.returning_all()
@@ -1488,8 +1530,14 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		self.record_output_in(tx, source_run, t.workspace_id, "artifact", a.id)
-			.await?;
+		self.record_output_in(
+			tx,
+			publication.tracked_run(),
+			t.workspace_id,
+			"artifact",
+			a.id,
+		)
+		.await?;
 		let t: Task = {
 			let query_bind_1 = id;
 			let query_bind_2 = key;
@@ -1538,7 +1586,7 @@ impl Store {
 		key: &str,
 		input: &ArtifactInput,
 	) -> Result<Artifact> {
-		self.publish_artifact_from_run(task_id, owner, key, input, None)
+		self.publish_artifact_from_run(task_id, owner, key, input, Publication::default())
 			.await
 	}
 	pub(crate) async fn publish_artifact_from_run(
@@ -1547,11 +1595,11 @@ impl Store {
 		owner: &str,
 		key: &str,
 		input: &ArtifactInput,
-		source_run: Option<Uuid>,
+		publication: Publication,
 	) -> Result<Artifact> {
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let result = self
-			.publish_artifact_in(&mut tx, task_id, owner, key, input, source_run)
+			.publish_artifact_in(&mut tx, task_id, owner, key, input, publication)
 			.await?;
 		tx.commit().await?;
 		Ok(result)
@@ -1563,7 +1611,7 @@ impl Store {
 		owner: &str,
 		key: &str,
 		input: &ArtifactInput,
-		source_run: Option<Uuid>,
+		publication: Publication,
 	) -> Result<Artifact> {
 		input.validate()?;
 		let task: Task = {
@@ -1594,6 +1642,7 @@ impl Store {
 			let query_bind_6 = &input.content;
 			let query_bind_7 = owner;
 			let query_bind_8 = key;
+			let query_bind_9 = publication.run;
 			aidash_server::database::query_as(
 				&Query::insert()
 					.into_table(Alias::new("artifacts"))
@@ -1606,6 +1655,7 @@ impl Store {
 						Alias::new("content"),
 						Alias::new("created_by"),
 						Alias::new("idempotency_key"),
+						Alias::new("run_id"),
 					])
 					.from_subquery(
 						Query::select()
@@ -1640,6 +1690,10 @@ impl Store {
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_8.to_owned()).into()],
+							))
+							.expr(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.to_owned(),
 					)
@@ -1686,8 +1740,14 @@ impl Store {
 				a
 			}
 		};
-		self.record_output_in(tx, source_run, task.workspace_id, "artifact", a.id)
-			.await?;
+		self.record_output_in(
+			tx,
+			publication.tracked_run(),
+			task.workspace_id,
+			"artifact",
+			a.id,
+		)
+		.await?;
 		Ok(a)
 	}
 
@@ -2277,25 +2337,38 @@ impl Store {
 		tx.commit().await?;
 		Ok(true)
 	}
+	/// A channel message a local Run publishes, attributed to that Run so its
+	/// Source citations resolve. Only scoped authority tracks it as Run output.
 	pub(crate) async fn message_from_run(
 		&self,
-		run: &Run,
+		run: &RunMetadata,
 		sender: &str,
 		content: &str,
 		key: &str,
+		track_output: bool,
 	) -> Result<()> {
+		nonempty(content, "message")?;
 		let mut tx = crate::database::native::begin(&self.pool).await?;
-		let message = self
-			.message_in(&mut tx, run.workspace_id, sender, content, Some(key))
-			.await?;
-		self.record_output_in(
-			&mut tx,
-			Some(run.id),
+		let message = MessageRecord::append_in(
+			tx.as_mut(),
+			&self.node_id,
 			run.workspace_id,
-			"message",
-			message.id,
+			sender,
+			content,
+			key,
+			Some(run.id),
 		)
 		.await?;
+		if track_output {
+			self.record_output_in(
+				&mut tx,
+				Some(run.id),
+				run.workspace_id,
+				"message",
+				message.id,
+			)
+			.await?;
+		}
 		tx.commit().await?;
 		Ok(())
 	}
@@ -2507,9 +2580,11 @@ impl Store {
 				.fetch_one(&mut **tx)
 				.await?
 			};
+			// This path never publishes for a Run, so a Run's message is no replay.
 			if message.workspace_id != workspace
 				|| message.sender != sender
 				|| message.content != content
+				|| message.run_id.is_some()
 			{
 				return Err(Error::Conflict("message idempotency key reused".into()));
 			}
@@ -2923,11 +2998,15 @@ impl Store {
 				return Err(Error::StaleInference);
 			}
 		}
-		// Source observation continues the same step. A revoked summary's
-		// restoration keeps the lease so the step's authority pause applies to
-		// the saved Run. An adopted compaction ends its step and releases the
-		// lease so the next poll can continue the Run immediately.
-		let retain_lease = matches!(kind, "run.sources_observed" | "context.summary_revoked");
+		// Source observation and a pinned Estimate Snapshot continue the same
+		// step. A revoked summary's restoration keeps the lease so the step's
+		// authority pause applies to the saved Run. An adopted compaction ends
+		// its step and releases the lease so the next poll can continue the Run
+		// immediately.
+		let retain_lease = matches!(
+			kind,
+			"run.sources_observed" | "run.estimate_pinned" | "context.summary_revoked"
+		);
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
@@ -3673,6 +3752,20 @@ impl Store {
 		let completed = InferenceUsage::complete(tx.as_mut(), run.id, attempt, outcome).await?;
 		tx.commit().await?;
 		Ok(completed)
+	}
+	/// The newest Deployment-wide calibration samples of one key (ADR 0017).
+	pub async fn calibration_samples(
+		&self,
+		upstream_model: &str,
+		projection_version: u8,
+	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
+		let lease = self.orm_connection()?;
+		crate::apps::execution::models::EstimateCalibrationSample::newest(
+			&mut lease.handle(),
+			upstream_model,
+			i32::from(projection_version),
+		)
+		.await
 	}
 	// The empty namespace preserves pre-federation local memory. Peer node IDs
 	// are validated nonempty, so no remote home can address this namespace.

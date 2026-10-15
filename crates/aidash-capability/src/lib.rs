@@ -15,6 +15,9 @@ pub enum Operation {
 	Chat,
 	Discovery,
 	Embeddings,
+	/// One System One request to a Decider's provider (a Decision Attempt).
+	/// It is always alone in `ops`, for a Run subject, with no output bound.
+	Decision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +232,16 @@ impl PublicKeys {
 		{
 			return Err(Failure::Model);
 		}
-		if claims.max_output_tokens == 0 {
+		// A Decision Attempt returns probabilities, not completion tokens (ADR 0041).
+		if claims.ops.contains(&Operation::Decision) {
+			if claims.ops.len() != 1
+				|| claims.max_output_tokens != 0
+				|| claims.cache_breakpoints
+				|| !matches!(claims.sub, TokenSubject::Run { .. })
+			{
+				return Err(Failure::ClaimViolation);
+			}
+		} else if claims.max_output_tokens == 0 {
 			return Err(Failure::ClaimViolation);
 		}
 		Ok(claims)

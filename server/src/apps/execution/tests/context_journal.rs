@@ -373,3 +373,41 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	f.store.release_lease(run.id, worker).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
+
+/// A pinned Estimate Snapshot is durable before the step relies on it and
+/// keeps the worker's lease, so the same step continues and a resume reads
+/// the snapshot back (ADR 0017).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_pinned_estimate_is_durable_and_keeps_the_lease(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Arrange
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (mut run, worker) = leased(&f, &app, &token).await;
+	let snapshot =
+		aidash_domain::provider::estimate::EstimateSnapshot::calibrated(run.step, 250_000, 20);
+	run.context.estimate.snapshot = Some(snapshot);
+	let revision = run.revision;
+	// Act
+	ExecutionStore::pin_estimate(&f.store, &mut run, worker)
+		.await
+		.unwrap();
+	// Assert: the saved revision is adopted, the lease still admits the step's
+	// next save, and a reload reads the snapshot.
+	assert_eq!(run.revision, revision + 1);
+	f.store
+		.save_run(&run, worker, "run.sources_observed")
+		.await
+		.unwrap();
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().context.estimate.snapshot,
+		Some(snapshot)
+	);
+	f.store.release_lease(run.id, worker).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}

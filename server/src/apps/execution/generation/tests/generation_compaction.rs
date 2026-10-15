@@ -2,6 +2,8 @@ use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 
 use upstream_fixtures::{async_upstream, reply};
+#[path = "../../tests/support/tenant_openrouter.rs"]
+mod tenant_openrouter;
 #[path = "../../tests/support/worker_process.rs"]
 mod worker_process;
 use worker_process::WorkerProcess;
@@ -17,9 +19,20 @@ use std::sync::{
 	atomic::{AtomicUsize, Ordering},
 };
 
-async fn policy(f: &Federation, app: &common::TestApplication, endpoint: &str) -> (String, Value) {
+/// Approves the `jev` compactor for Tenant `acme`. Jev calls use the Tenant's
+/// OpenRouter Provider Credential (ADR 0041), which the fake issuer routes to
+/// `endpoint`; workers must use the reconfigured `f`.
+async fn policy(
+	f: &mut Federation,
+	app: &common::TestApplication,
+	endpoint: &str,
+) -> (String, Value) {
+	let openrouter = tenant_openrouter::install(f);
+	app.context.set_singleton(f.clone());
 	let (_, token, _) = bootstrap(f, app, endpoint).await;
-	let compactor = json!({"id":"jev","version":"1.0.0","kind":"compactor","name":{"en":"Approved Jev"},"description":{"en":"Local fixture"},"capabilities":[],"languages":[],"tags":[],"skills":[],"schema":{},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":200000,"max_questions":200,"max_response_bytes":16000}});
+	openrouter.connect("acme").await;
+	*openrouter.endpoint.lock().unwrap() = endpoint.into();
+	let compactor = json!({"id":"jev","version":"1.0.0","kind":"compactor","name":{"en":"Approved Jev"},"description":{"en":"Local fixture"},"capabilities":[],"languages":[],"tags":[],"skills":[],"schema":{},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":200000,"max_questions":200,"max_response_bytes":16000}});
 	let (status, body) =
 		request(app, &f.config.api_token, "POST", "/api/registry", compactor).await;
 	assert_eq!(status, 200, "{body}");
@@ -151,9 +164,9 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = fixture.runtime.parts();
+	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
-	let (_, mut spec) = policy(&f, &app, "http://127.0.0.1:9").await;
+	let (_, mut spec) = policy(&mut f, &app, "http://127.0.0.1:9").await;
 	let model = json!({
 		"id":"large-output-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Large output model"},"description":{"en":"Budget fixture"},
@@ -205,12 +218,12 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
 	#[from(provider_1)]
 	fixture: Provider1Fixture,
 ) {
-	let (f, url, schema) = fixture.application.runtime.parts();
+	let (mut f, url, schema) = fixture.application.runtime.parts();
 	let app = fixture.application.application;
 	let server = fixture.server;
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
-	let (token, mut spec) = policy(&f, &app, &endpoint).await;
+	let (token, mut spec) = policy(&mut f, &app, &endpoint).await;
 	let (status, assigned) = assign(&app, &token).await;
 	assert_eq!(status, 200, "{assigned}");
 	let job = &assigned["generation"];
@@ -275,9 +288,9 @@ async fn compaction_total_budget_is_atomic_and_unused_calls_release_once(
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = fixture.runtime.parts();
+	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
-	let (token, _) = policy(&f, &app, "http://127.0.0.1:9").await;
+	let (token, _) = policy(&mut f, &app, "http://127.0.0.1:9").await;
 	let (first, second) = tokio::join!(assign(&app, &token), assign(&app, &token));
 	assert_eq!(first.0, 200);
 	assert_eq!(second.0, 200);
@@ -321,12 +334,12 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 	#[from(provider_2)]
 	fixture: Provider2Fixture,
 ) {
-	let (f, url, schema) = fixture.application.runtime.parts();
+	let (mut f, url, schema) = fixture.application.runtime.parts();
 	let app = fixture.application.application;
 	let server = fixture.server;
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
-	let (token, _) = policy(&f, &app, &endpoint).await;
+	let (token, _) = policy(&mut f, &app, &endpoint).await;
 	let (_, assignment) = assign(&app, &token).await;
 	let run = long_history(&f, &assignment["generation"]).await;
 	for expected in 1..=3 {
@@ -404,9 +417,9 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 	fixture: common::ApplicationFixture,
 	#[case] revoke_catalog: bool,
 ) {
-	let (f, url, schema) = fixture.runtime.parts();
+	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
-	let (token, _) = policy(&f, &app, "http://127.0.0.1:9").await;
+	let (token, _) = policy(&mut f, &app, "http://127.0.0.1:9").await;
 	let (_, assignment) = assign(&app, &token).await;
 	let run = long_history(&f, &assignment["generation"]).await;
 	if revoke_catalog {
@@ -467,21 +480,23 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 	cleanup(f, &url, &schema).await;
 }
 
+/// The fixture, a subject token, the queued generation and the runtime
+/// reconfigured with the Tenant's OpenRouter Provider Credential.
 type PreparedCompaction =
-	futures_util::future::Shared<BoxFuture<'static, (Provider3Fixture, String, Value)>>;
+	futures_util::future::Shared<BoxFuture<'static, (Provider3Fixture, String, Value, Federation)>>;
 #[rstest::fixture]
 fn queued_compaction(
 	#[from(provider_3)] provider: BoxFuture<'static, Provider3Fixture>,
 ) -> PreparedCompaction {
 	async move {
 		let fixture = provider.await;
-		let f = &fixture.application.runtime.federation;
+		let mut f = fixture.application.runtime.federation.clone();
 		let app = &fixture.application.application;
-		let (token, _) = policy(f, app, &fixture.server.url).await;
+		let (token, _) = policy(&mut f, app, &fixture.server.url).await;
 		let (_, assigned) = assign(app, &token).await;
 		assert_eq!(assigned["generation"]["status"], "QUEUED");
 		assert!(f.store.runs().await.unwrap().is_empty());
-		(fixture, token, assigned["generation"].clone())
+		(fixture, token, assigned["generation"].clone(), f)
 	}
 	.boxed()
 	.shared()
@@ -491,9 +506,11 @@ fn compaction_worker_configuration(
 	queued_compaction: PreparedCompaction,
 ) -> worker_process::ConfigurationFuture {
 	async move {
-		let (fixture, _, _) = queued_compaction.await;
-		let (f, url, schema) = fixture.application.runtime.parts();
-		(f, url, schema, None)
+		// The worker provisions definitions that use the Tenant's credential, so it
+		// starts from the runtime that has a Provider Credential Store.
+		let (fixture, _, _, credentialed) = queued_compaction.await;
+		let (_, url, schema) = fixture.application.runtime.parts();
+		(credentialed, url, schema, None)
 	}
 	.boxed()
 	.shared()
@@ -510,16 +527,8 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	#[from(worker_process::worker_process)]
 	#[with(_configuration.clone())]
 	initial_worker: WorkerProcess,
-	#[future(awt)]
-	#[from(worker_process::worker_command)]
-	#[with(_configuration.clone())]
-	first_restart: worker_process::WorkerCommand,
-	#[future(awt)]
-	#[from(worker_process::worker_command)]
-	#[with(_configuration.clone())]
-	second_restart: worker_process::WorkerCommand,
 ) {
-	let (fixture, token, job) = queued_compaction.await;
+	let (fixture, token, job, credentialed) = queued_compaction.await;
 	let (f, url, schema) = fixture.application.runtime.parts();
 	let app = fixture.application.application;
 	let server = fixture.server;
@@ -528,8 +537,10 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	let model_calls = fixture.model_calls;
 	let compaction_calls = fixture.compaction_calls;
 	let mut worker = initial_worker;
+	// The worker process checks migrations and opens its Provider Credential
+	// Store before it provisions the request, which can take tens of seconds.
 	let reached =
-		tokio::time::timeout(std::time::Duration::from_secs(20), first_model.notified()).await;
+		tokio::time::timeout(std::time::Duration::from_secs(60), first_model.notified()).await;
 	assert!(
 		reached.is_ok(),
 		"worker status {:?}, run states {:?}, log {}",
@@ -567,15 +578,25 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 		.await
 	}
 	.unwrap();
-	// Restart after SIGKILL is the recovery behavior under test.
-	let worker = WorkerProcess::spawn(first_restart);
+	// Restart after SIGKILL is the recovery behavior under test. Compaction runs
+	// in-process: no worker process can be pointed at a fake OpenRouter, which
+	// is what keeps Tenant Key Material on the catalog host (ADR 0006).
+	// Aborting the worker mid-request leaves the same durable state as SIGKILL:
+	// the committed reservation and no settlement.
+	let interrupted = tokio::spawn({
+		let worker = Harness {
+			federation: credentialed.clone(),
+		};
+		async move { worker.worker_once().await }
+	});
 	tokio::time::timeout(
 		std::time::Duration::from_secs(20),
 		first_compaction.notified(),
 	)
 	.await
 	.unwrap();
-	drop(worker);
+	interrupted.abort();
+	assert!(interrupted.await.unwrap_err().is_cancelled());
 	{
 		let query_bind_1 = run.id;
 		sqlx::query(
@@ -596,9 +617,12 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	}
 	.unwrap();
 	// A second restart exercises settlement after the uncertain provider call.
-	let worker = WorkerProcess::spawn(second_restart);
+	let worker = Harness {
+		federation: credentialed.clone(),
+	};
 	tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
+			worker.worker_once().await.unwrap();
 			if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
 				break;
 			}
@@ -607,7 +631,6 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	})
 	.await
 	.unwrap();
-	drop(worker);
 	assert_eq!(compaction_calls.load(Ordering::SeqCst), 2);
 	assert_eq!(model_calls.load(Ordering::SeqCst), 2);
 	assert_eq!(f.store.runs().await.unwrap().len(), 1);
@@ -649,12 +672,12 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	fixture: Provider4Fixture,
 	#[case] approved: bool,
 ) {
-	let (f, url, schema) = fixture.application.runtime.parts();
+	let (mut f, url, schema) = fixture.application.runtime.parts();
 	let app = fixture.application.application;
 	let server = fixture.server;
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
-	let (token, mut spec) = policy(&f, &app, &endpoint).await;
+	let (token, mut spec) = policy(&mut f, &app, &endpoint).await;
 	let (_, parent) = assign(&app, &token).await;
 	aidash_server::generation::provision::reconcile(&f)
 		.await
@@ -768,7 +791,8 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	let worker = Harness {
 		federation: f.clone(),
 	};
-	let current = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+	// Each Decision Attempt also resolves the Tenant's binding; allow for load.
+	let current = tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
 			worker.worker_once().await.unwrap();
 			let current = f.store.run(run.id).await.unwrap();
@@ -838,9 +862,10 @@ fn provider_1_router(
             seen.fetch_add(1, Ordering::SeqCst);
             let attempts: i64 = sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("generation_compaction_usage")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
             assert_eq!(attempts, 1, "reservation must be committed before HTTP");
-            assert_eq!(body["model"], "fixture-jev");
+            assert_eq!(body["model"], "typesafe/jev-1.13");
+            assert_eq!(body["provider"], json!({"zdr": true}));
             let answers: serde_json::Map<_,_> = body["questions"].as_object().unwrap().keys().map(|key| (key.clone(), json!({"noul":0.0}))).collect();
-            reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
+            reinhardt::Response::ok().with_json(&json!({"model":"typesafe/jev-1.13-20260917","answers":answers})).unwrap()
         }
     }))
 .route("/v1/chat/completions", http::Method::POST, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Compacted result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap() })).into_server_router();
@@ -993,7 +1018,7 @@ fn provider_3_router(
                 assert_eq!(committed,number as i64);
                 if number == 1 { started.notify_one(); std::future::pending::<()>().await; }
                 let answers:serde_json::Map<_,_>=body["questions"].as_object().unwrap().keys().map(|k|(k.clone(),json!({"noul":0.0}))).collect();
-                reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
+                reinhardt::Response::ok().with_json(&json!({"model":"typesafe/jev-1.13-20260917","answers":answers})).unwrap()
             }}
         })).into_server_router();
 
@@ -1068,7 +1093,7 @@ fn provider_4_router(
                 let charges:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("generation_compaction_usage")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
                 assert_eq!(charges,2,"both ancestor reservations precede disclosure");
                 let answers:serde_json::Map<_,_>=body["questions"].as_object().unwrap().keys().map(|k|(k.clone(),json!({"noul":0.0}))).collect();
-                reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
+                reinhardt::Response::ok().with_json(&json!({"model":"typesafe/jev-1.13-20260917","answers":answers})).unwrap()
             }
         }))
 .route("/v1/chat/completions", http::Method::POST, reply(|_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Nested result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap()})).into_server_router();

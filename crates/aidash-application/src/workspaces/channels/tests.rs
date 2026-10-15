@@ -17,6 +17,7 @@ fn message(id: u128) -> Message {
 		content: "content".into(),
 		idempotency_key: None,
 		created_at: DateTime::from_timestamp(id as i64, 0).unwrap(),
+		run_id: None,
 	}
 }
 fn thread_record() -> ChannelThread {
