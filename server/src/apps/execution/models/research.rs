@@ -7,7 +7,11 @@ use aidash_domain::research::{
 	Operation,
 	citations::EvidenceRef,
 	document::{Completeness, Line},
-	evidence::{AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, SourceRecord},
+	evidence::{
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Purge, PurgeReason,
+		SourceRecord,
+	},
+	revocation::{EvidenceRevocation, Removed},
 };
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -465,6 +469,8 @@ impl ResearchSnapshot {
 			.completeness(snapshot.completeness.as_str().to_owned())
 			.lines(Json(serde_json::to_value(&snapshot.lines)?))
 			.text_bytes(i64::try_from(bytes).unwrap_or(i64::MAX))
+			.purged_at(None)
+			.purge_reason(None)
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -503,12 +509,22 @@ impl ResearchSnapshot {
 						Completeness::TextLimit
 					},
 					lines: serde_json::from_value::<Vec<Line>>(record.lines.0)?,
+					purged: match (record.purged_at, record.purge_reason.as_deref()) {
+						(Some(at), Some(reason)) => Some(Purge {
+							at,
+							reason: PurgeReason::parse(reason).ok_or_else(|| {
+								Error::Invalid("unknown snapshot purge reason".into())
+							})?,
+						}),
+						_ => None,
+					},
 				})
 			})
 			.transpose()
 	}
 
-	/// Snapshot count and retained text bytes of one Run.
+	/// Count and text bytes of one Run's retained snapshots. A Purged snapshot
+	/// counts toward neither, so the Run can read its Source again (ADR 0045).
 	pub(crate) async fn usage(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<(u32, u64)> {
 		let (sql, values) = Query::select()
 			.expr_as(
@@ -524,6 +540,7 @@ impl ResearchSnapshot {
 			)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("purged_at").is_null())
 			.build(PostgresQueryBuilder);
 		let row = tx.fetch_one(&sql, convert_values(values)).await?;
 		let data = QueryRow::from_backend_row(row).data;
@@ -599,4 +616,256 @@ impl ResearchFragment {
 		}
 		Ok(fragments)
 	}
+}
+
+impl ResearchSnapshot {
+	/// Remove the contents of the snapshots `ids` still retained, keeping
+	/// their identity, retrieval time and digests. Returns how many lost them.
+	pub(crate) async fn purge(
+		tx: &mut dyn TransactionExecutor,
+		ids: &[Uuid],
+		at: DateTime<Utc>,
+	) -> Result<u64> {
+		if ids.is_empty() {
+			return Ok(0);
+		}
+		let (sql, values) = Self::removal(at, PurgeReason::Retention)
+			.and_where(Expr::col("id").is_in(ids.iter().map(|id| Expr::value(*id))))
+			.and_where(Expr::col("purged_at").is_null())
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected)
+	}
+
+	/// Remove the contents and titles of all of one Run's snapshots for an
+	/// Evidence Revocation, whatever an earlier purge left. Returns their
+	/// count and distinct text digests.
+	pub(crate) async fn revoke(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		at: DateTime<Utc>,
+	) -> Result<(u32, Vec<String>)> {
+		let digests = Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.into_iter()
+			.map(|record| record.text_digest)
+			.collect::<std::collections::BTreeSet<_>>();
+		let (sql, values) = Self::removal(at, PurgeReason::Revocation)
+			.value(Alias::new("title"), Option::<String>::None)
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		let removed = tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected;
+		Ok((
+			u32::try_from(removed).unwrap_or(u32::MAX),
+			digests.into_iter().collect(),
+		))
+	}
+
+	fn removal(at: DateTime<Utc>, reason: PurgeReason) -> reinhardt::query::UpdateStatement {
+		let mut update = Query::update();
+		update
+			.table(Alias::new(Self::table_name()))
+			.value(Alias::new("lines"), Expr::cust("'[]'::jsonb"))
+			.value(Alias::new("text_bytes"), 0_i64)
+			.value(Alias::new("purged_at"), at)
+			.value(Alias::new("purge_reason"), reason.as_str());
+		update
+	}
+}
+
+impl ResearchFragment {
+	/// Remove the delivered text of all of one Run's fragments.
+	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value(Alias::new("text"), "")
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		let removed = tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected;
+		Ok(u32::try_from(removed).unwrap_or(u32::MAX))
+	}
+}
+
+impl ResearchSource {
+	/// Remove the titles of all of one Run's Source records; their URLs, the
+	/// identity of each Source, remain.
+	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value(Alias::new("title"), "")
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		let removed = tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected;
+		Ok(u32::try_from(removed).unwrap_or(u32::MAX))
+	}
+}
+
+impl ResearchAttempt {
+	/// Replace the recorded result of every settled attempt of one Run with
+	/// the tombstone of its operation. Attempts stay, with their charges.
+	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
+		let mut removed = 0;
+		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+			let (sql, values) = Query::update()
+				.table(Alias::new(Self::table_name()))
+				.value(Alias::new("result"), revoked_result(operation))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("operation").eq(Expr::value(operation.as_str())))
+				.and_where(Expr::col("result").is_not_null())
+				.build(PostgresQueryBuilder);
+			removed += tx
+				.execute(&sql, convert_values(values))
+				.await?
+				.rows_affected;
+		}
+		Ok(u32::try_from(removed).unwrap_or(u32::MAX))
+	}
+
+	/// The operation of one attempt, to settle it with its tombstone.
+	pub(crate) async fn operation_of(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+	) -> Result<Option<Operation>> {
+		Ok(Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_invocation_key().eq(key.to_owned()))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.and_then(|record| Operation::parse(&record.operation)))
+	}
+}
+
+/// Replace the stored tool results of research invocations with tombstones,
+/// recognized by the shared result envelope like the harness recognizes
+/// them: those of `run`, or with none those of every revoked Run, which
+/// catches a result stored just after its Run was revoked. Idempotent.
+pub(crate) async fn revoke_invocations(
+	tx: &mut dyn TransactionExecutor,
+	run: Option<Uuid>,
+) -> Result<u32> {
+	let mut removed = 0;
+	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		let tombstone = revoked_result(operation);
+		let mut update = Query::update();
+		update
+			.table(Alias::new("invocations"))
+			.value(Alias::new("result"), tombstone.clone())
+			.and_where(Expr::cust("(result->>'version') = '1'"))
+			.and_where(Expr::cust("jsonb_typeof(result->'limits') = 'object'"))
+			.and_where(Expr::cust_with_values(
+				"(result->>'operation') = ?",
+				[operation.as_str()],
+			))
+			.and_where(Expr::col("result").ne(Expr::value(tombstone)));
+		match run {
+			Some(run) => update.and_where(Expr::col("run_id").eq(Expr::value(run))),
+			None => update.and_where(
+				Expr::col("run_id").in_subquery(
+					Query::select()
+						.column(Alias::new("run_id"))
+						.from(Alias::new(ResearchRevocation::table_name()))
+						.to_owned(),
+				),
+			),
+		};
+		let (sql, values) = update.build(PostgresQueryBuilder);
+		removed += tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected;
+	}
+	Ok(u32::try_from(removed).unwrap_or(u32::MAX))
+}
+
+impl ResearchRevocation {
+	/// Whether the Run's Research evidence was revoked.
+	pub(crate) async fn exists(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<bool> {
+		Ok(Self::find(tx, run).await?.is_some())
+	}
+
+	pub(crate) async fn find(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+	) -> Result<Option<EvidenceRevocation>> {
+		Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.map(Self::contract)
+			.transpose()
+	}
+
+	pub(crate) async fn record(
+		tx: &mut dyn TransactionExecutor,
+		revocation: &EvidenceRevocation,
+	) -> Result<()> {
+		let record = Self::build()
+			.run_id(revocation.run_id)
+			.tenant(revocation.tenant.clone())
+			.revoked_by(Json(serde_json::to_value(&revocation.revoked_by)?))
+			.reason(revocation.reason.clone())
+			.revoked_at(revocation.revoked_at)
+			.removed(Json(serde_json::to_value(&revocation.removed)?))
+			.finish();
+		Self::objects()
+			.insert_with_executor(tx, &record)
+			.await
+			.map_err(FrameworkError::from)?;
+		Ok(())
+	}
+
+	/// One Tenant's records, newest first.
+	pub(crate) async fn list(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		offset: u64,
+		limit: u32,
+	) -> Result<Vec<EvidenceRevocation>> {
+		Self::objects()
+			.filter(Self::field_tenant().eq(tenant.to_owned()))
+			.order_by(&["-revoked_at", "run_id"])
+			.offset(usize::try_from(offset).unwrap_or(usize::MAX))
+			.limit(limit as usize)
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.into_iter()
+			.map(Self::contract)
+			.collect()
+	}
+
+	fn contract(record: Self) -> Result<EvidenceRevocation> {
+		Ok(EvidenceRevocation {
+			run_id: record.run_id,
+			tenant: record.tenant,
+			revoked_by: serde_json::from_value(record.revoked_by.0)?,
+			reason: record.reason,
+			revoked_at: record.revoked_at,
+			removed: serde_json::from_value::<Removed>(record.removed.0)?,
+		})
+	}
+}
+
+/// What a research result is replaced with once its Run's evidence is revoked.
+pub(crate) fn revoked_result(operation: Operation) -> Value {
+	aidash_domain::research::revocation::tombstone(operation)
 }

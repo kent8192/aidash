@@ -78,3 +78,85 @@ impl From<Cited> for CitedEvidence {
 		}
 	}
 }
+
+/// A request to revoke all of one Run's Research evidence (ADR 0046).
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationInput {
+	/// Why the evidence is revoked, 1 to 1000 characters. It is kept as audit
+	/// history after the Run is deleted, so do not include URLs, page content
+	/// or personal data.
+	pub reason: String,
+}
+
+/// The audit record of one Evidence Revocation. It holds digests but no
+/// source content.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RevocationRecord {
+	pub run_id: Uuid,
+	/// The Run's Tenant, when it has one.
+	pub tenant: Option<String>,
+	/// `subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or
+	/// `deployment-administrator` for the deployment's API token.
+	pub revoked_by: String,
+	pub reason: String,
+	pub revoked_at: DateTime<Utc>,
+	pub removed: RemovedCopies,
+}
+
+/// What a revocation removed, counted and identified by digest only.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RemovedCopies {
+	pub sources: u32,
+	pub snapshots: u32,
+	pub fragments: u32,
+	pub attempts: u32,
+	pub invocations: u32,
+	/// `sha256:` text digests of the revoked Document snapshots.
+	pub snapshot_digests: Vec<String>,
+}
+
+impl From<aidash_domain::research::revocation::EvidenceRevocation> for RevocationRecord {
+	fn from(record: aidash_domain::research::revocation::EvidenceRevocation) -> Self {
+		let removed = record.removed;
+		Self {
+			run_id: record.run_id,
+			tenant: record.tenant,
+			revoked_by: record.revoked_by.recorded(),
+			reason: record.reason,
+			revoked_at: record.revoked_at,
+			removed: RemovedCopies {
+				sources: removed.sources,
+				snapshots: removed.snapshots,
+				fragments: removed.fragments,
+				attempts: removed.attempts,
+				invocations: removed.invocations,
+				snapshot_digests: removed.snapshot_digests,
+			},
+		}
+	}
+}
+
+/// One page of audit history, newest first.
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+pub struct HistoryPage {
+	#[serde(default)]
+	pub offset: u64,
+	/// At most 200; 50 when absent.
+	#[serde(default = "history_limit")]
+	pub limit: u32,
+}
+
+fn history_limit() -> u32 {
+	50
+}
+
+/// A change of a Tenant's own Retention Rules (ADR 0045).
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionInput {
+	/// The Tenant's periods, none longer than the Deployment's; null clears
+	/// them so the Deployment's periods apply again. A change applies to
+	/// content already kept at the next hourly sweep.
+	pub rules: Option<aidash_domain::retention::RetentionRules>,
+}

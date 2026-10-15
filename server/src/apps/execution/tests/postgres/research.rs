@@ -456,6 +456,7 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 			.record_sources(run.id, "s1", &[candidate], limits.sources)
 			.await
 			.unwrap()
+			.unwrap()
 			.is_empty()
 	);
 	assert_eq!(evidence.usage(run.id).await.unwrap().sources, 1);

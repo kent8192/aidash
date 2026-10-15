@@ -758,59 +758,19 @@ impl<'a> Executor<'a> {
 	/// never readable again and the Run continues without research. The
 	/// Context Journal keeps what the model already read.
 	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
-		use aidash_domain::research::revocation;
-		let mut originals = std::collections::BTreeSet::new();
-		if !run.context.research_revoked {
-			// Compaction may have cut a research result to a string; only the
-			// Context Journal still shows what it was.
-			let cut = run
-				.context
-				.history
-				.iter()
-				.filter(|entry| {
-					matches!(&entry.event, ContextEvent::Tool { result, .. }
-						if aidash_application::context::truncated_result(result))
-				})
-				.map(|entry| entry.seq)
-				.collect::<Vec<_>>();
-			let may_carry = run.context.execution_summary.is_some()
-				|| !cut.is_empty()
-				|| run
-					.context
-					.history
-					.iter()
-					.any(|entry| revocation::carries_research(&entry.event));
-			let store = self.environment.store();
-			if !may_carry || !store.research_revoked(run).await? {
-				return Ok(());
-			}
-			if let (Some(&from), Some(&through)) = (cut.first(), cut.last()) {
-				originals = store
-					.context_journal(run.id, from, through)
-					.await?
-					.into_iter()
-					.filter(|entry| {
-						cut.contains(&entry.seq) && revocation::carries_research(&entry.event)
-					})
-					.map(|entry| entry.seq)
-					.collect();
-			}
-			if let Some(summary) = run.context.execution_summary.as_deref() {
-				let source = summary.source.clone();
-				let journal = store
-					.context_journal(run.id, source.from_seq, source.through_seq)
-					.await?;
-				if journal.iter().any(|entry| {
-					source.absorbs(entry.seq) && revocation::carries_research(&entry.event)
-				}) {
-					aidash_application::context::restore_summarized(&mut run.context, journal)?;
-					aidash_application::context::record_stage("summary", "research_revoked");
-				}
-			}
-			run.context.research_revoked = true;
+		use aidash_application::research::revocation;
+		let store = self.environment.store();
+		if !run.context.research_revoked
+			&& (!revocation::may_carry_research(&run.context)
+				|| !store.research_revoked(run).await?)
+		{
+			return Ok(());
 		}
-		revocation::redact(&mut run.context.history, &originals);
-		Ok(())
+		revocation::revoke_projection(
+			&mut run.context,
+			&revocation::RunJournal { store, run: run.id },
+		)
+		.await
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.

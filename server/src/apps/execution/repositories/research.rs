@@ -1,6 +1,7 @@
 //! PostgreSQL Research evidence for the host-owned research use cases.
 use crate::apps::execution::models::research::{
-	ResearchAttempt, ResearchFragment, ResearchSnapshot, ResearchSource, lock,
+	ResearchAttempt, ResearchFragment, ResearchRevocation, ResearchSnapshot, ResearchSource, lock,
+	revoked_result,
 };
 use crate::store::Store;
 use crate::{authorization::identity::Actor, federation::Federation};
@@ -22,6 +23,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
+
+pub(crate) mod retention;
+mod revocation;
+pub(crate) use revocation::{Revocations, scrub_revoked_projections};
 
 #[derive(Clone)]
 pub(crate) struct Evidence {
@@ -70,8 +75,25 @@ impl RunReader for Readers<'_> {
 	}
 }
 
+/// The advisory lock that serializes one Run's research writes with its
+/// Evidence Revocation.
+fn run_lock(run: Uuid) -> String {
+	format!("research-run:{run}")
+}
+
 #[async_trait]
 impl EvidenceStore for Evidence {
+	async fn revoked(&self, run: Uuid) -> Result<bool> {
+		native(
+			async {
+				let mut tx = self.store.database().begin().await?;
+				let revoked = ResearchRevocation::exists(tx.as_mut(), run).await?;
+				tx.commit().await?;
+				Ok(revoked)
+			}
+			.await,
+		)
+	}
 	async fn attempt(&self, run: Uuid, key: &str) -> Result<Option<AttemptState>> {
 		native(
 			async {
@@ -137,6 +159,17 @@ impl EvidenceStore for Evidence {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
+				// An attempt dispatched before its Run was revoked records no
+				// evidence: it settles, still charged, with a tombstone.
+				lock(tx.as_mut(), &run_lock(run)).await?;
+				let revoked = if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					ResearchAttempt::operation_of(tx.as_mut(), run, key)
+						.await?
+						.map(revoked_result)
+				} else {
+					None
+				};
+				let result = revoked.as_ref().unwrap_or(result);
 				if !ResearchAttempt::settle(tx.as_mut(), run, key, outcome, result).await? {
 					return Err(crate::Error::Conflict(
 						"research attempt is not dispatched".into(),
@@ -154,11 +187,14 @@ impl EvidenceStore for Evidence {
 		_: &str,
 		sources: &[SourceCandidate],
 		max_sources: u32,
-	) -> Result<Vec<SourceRecord>> {
+	) -> Result<std::result::Result<Vec<SourceRecord>, Failure>> {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				lock(tx.as_mut(), &format!("research-run:{run}")).await?;
+				lock(tx.as_mut(), &run_lock(run)).await?;
+				if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					return Ok(Err(Failure::EvidenceRevoked));
+				}
 				let held = ResearchSource::count(tx.as_mut(), run).await?;
 				let room = max_sources.saturating_sub(held) as usize;
 				let mut records = Vec::with_capacity(sources.len().min(room));
@@ -169,7 +205,7 @@ impl EvidenceStore for Evidence {
 					);
 				}
 				tx.commit().await?;
-				Ok(records)
+				Ok(Ok(records))
 			}
 			.await,
 		)
@@ -196,7 +232,10 @@ impl EvidenceStore for Evidence {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				lock(tx.as_mut(), &format!("research-run:{run}")).await?;
+				lock(tx.as_mut(), &run_lock(run)).await?;
+				if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					return Ok(Err(Failure::EvidenceRevoked));
+				}
 				let (snapshots, held) = ResearchSnapshot::usage(tx.as_mut(), run).await?;
 				let bytes = page
 					.lines
@@ -225,6 +264,7 @@ impl EvidenceStore for Evidence {
 					text_digest: text_digest(&page.lines),
 					completeness: page.completeness,
 					lines: page.lines.clone(),
+					purged: None,
 				};
 				ResearchSnapshot::record(tx.as_mut(), &snapshot).await?;
 				tx.commit().await?;
@@ -246,18 +286,22 @@ impl EvidenceStore for Evidence {
 	}
 	async fn record_fragment(
 		&self,
-		_: Uuid,
+		run: Uuid,
 		document: &DocumentSnapshot,
 		passage: &Passage,
-	) -> Result<EvidenceFragment> {
+	) -> Result<std::result::Result<EvidenceFragment, Failure>> {
 		native(
 			async {
 				let fragment =
 					EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), document, passage);
 				let mut tx = self.store.database().begin().await?;
+				lock(tx.as_mut(), &run_lock(run)).await?;
+				if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					return Ok(Err(Failure::EvidenceRevoked));
+				}
 				ResearchFragment::record(tx.as_mut(), &fragment).await?;
 				tx.commit().await?;
-				Ok(fragment)
+				Ok(Ok(fragment))
 			}
 			.await,
 		)
@@ -270,7 +314,13 @@ impl EvidenceStore for Evidence {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				let fragments = ResearchFragment::delivered(tx.as_mut(), run, references).await?;
+				// Revoked evidence is never delivered: later citations of it are
+				// unknown, and readers get the uniform absence (ADR 0046).
+				let fragments = if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					Vec::new()
+				} else {
+					ResearchFragment::delivered(tx.as_mut(), run, references).await?
+				};
 				tx.commit().await?;
 				Ok(fragments)
 			}

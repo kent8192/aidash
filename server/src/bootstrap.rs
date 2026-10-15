@@ -250,13 +250,27 @@ impl RuntimeTasks {
 			}));
 		}
 		let retention = federation.store.clone();
+		// An invalid Deployment retention period refuses to start (ADR 0045).
+		let research_retention =
+			crate::apps::execution::repositories::research::retention::configured_rules()?;
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
 			// orphaned on unscheduled Runs are closed first; hourly workbench
-			// purges keep their cadence on the same loop.
+			// and Research evidence purges keep their cadence on the same loop.
 			let mut ticks = 0_u32;
 			loop {
 				if ticks.is_multiple_of(60) {
+					// Deployment Scope: every Tenant's snapshots, under each
+					// Tenant's own periods.
+					if let Err(error) =
+						crate::apps::execution::repositories::research::retention::sweep(
+							&retention,
+							&research_retention,
+						)
+						.await
+					{
+						tracing::warn!(%error, "research evidence retention sweep failed");
+					}
 					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
 						tracing::warn!(%error, "agent test retention cleanup failed");
 					}

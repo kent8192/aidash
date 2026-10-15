@@ -29,6 +29,14 @@ use uuid::Uuid;
 
 #[async_trait]
 impl ExecutionStore for Store {
+	async fn research_revoked(&self, run: &Run) -> Result<bool> {
+		use aidash_application::ports::research::EvidenceStore;
+		super::research::Evidence {
+			store: self.clone(),
+		}
+		.revoked(run.id)
+		.await
+	}
 	async fn unknown_evidence(
 		&self,
 		run: &Run,

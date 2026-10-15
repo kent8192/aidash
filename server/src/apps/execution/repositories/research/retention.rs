@@ -1,0 +1,218 @@
+//! The retention sweep of Document snapshot contents (ADR 0045), run in
+//! Deployment Scope on the hourly retention loop.
+use super::native;
+use crate::apps::execution::models::research::{ResearchSnapshot, revoke_invocations};
+use crate::store::Store;
+use aidash_application::{
+	Error, Result,
+	ports::research::{RetainedSnapshot, SnapshotRetention},
+};
+use aidash_domain::retention::{MAX_PERIOD_SECONDS, RetentionRules, SnapshotPeriods};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use reinhardt::db::orm::{QueryRow, execution::convert_values};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, Func, JoinType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, TableRef,
+};
+use serde::Deserialize;
+use uuid::Uuid;
+
+/// The settings naming the Deployment's snapshot periods, in seconds.
+pub(crate) const AFTER_RUN: &str = "AIDASH_RETENTION_SNAPSHOT_AFTER_RUN_SECONDS";
+pub(crate) const MAX_AGE: &str = "AIDASH_RETENTION_SNAPSHOT_MAX_AGE_SECONDS";
+
+/// The Deployment's Retention Rules: the code defaults, which are the same in
+/// every Offering, unless whoever runs the Deployment sets other finite
+/// periods. A change takes effect when the server restarts.
+pub(crate) fn deployment_rules(read: impl Fn(&str) -> Option<String>) -> Result<RetentionRules> {
+	let seconds = |key: &str, default: u32| -> Result<u32> {
+		let value = read(key)
+			.map(|value| value.trim().parse::<u32>())
+			.transpose()
+			.map_err(|_| Error::Invalid(format!("invalid {key}")))?
+			.unwrap_or(default);
+		if value > MAX_PERIOD_SECONDS {
+			return Err(Error::Invalid(format!(
+				"{key} must not exceed ten years ({MAX_PERIOD_SECONDS} seconds)"
+			)));
+		}
+		Ok(value)
+	};
+	let defaults = RetentionRules::DEFAULT.document_snapshots;
+	Ok(RetentionRules {
+		document_snapshots: SnapshotPeriods {
+			after_run_seconds: seconds(AFTER_RUN, defaults.after_run_seconds)?,
+			max_age_seconds: seconds(MAX_AGE, defaults.max_age_seconds)?,
+		},
+	})
+}
+
+/// The Deployment's Retention Rules from the process environment.
+pub(crate) fn configured_rules() -> Result<RetentionRules> {
+	deployment_rules(|key| std::env::var(key).ok())
+}
+
+pub(crate) struct Snapshots {
+	pub store: Store,
+}
+
+#[derive(Deserialize)]
+struct Candidate {
+	id: Uuid,
+	fetched_at: DateTime<Utc>,
+	run_ended_at: Option<DateTime<Utc>>,
+	snapshot_after_run_seconds: Option<i64>,
+	snapshot_max_age_seconds: Option<i64>,
+}
+
+/// A Run's phase once it has ended; terminal Runs never change phase again.
+const ENDED: &str = "r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED')";
+
+#[async_trait]
+impl SnapshotRetention for Snapshots {
+	async fn candidates(
+		&self,
+		after: Option<Uuid>,
+		retrieved_before: DateTime<Utc>,
+		limit: u32,
+	) -> Result<Vec<RetainedSnapshot>> {
+		let snapshot = |column: &str| (Alias::new("s"), Alias::new(column));
+		let mut query = Query::select();
+		query
+			.column(snapshot("id"))
+			.column(snapshot("fetched_at"))
+			// A terminal Run is saved for the last time when it ends.
+			.expr_as(
+				Expr::cust(format!("CASE WHEN {ENDED} THEN r.updated_at END")),
+				Alias::new("run_ended_at"),
+			)
+			.column((Alias::new("t"), Alias::new("snapshot_after_run_seconds")))
+			.column((Alias::new("t"), Alias::new("snapshot_max_age_seconds")))
+			.from_as(
+				Alias::new(<ResearchSnapshot as reinhardt::db::orm::Model>::table_name()),
+				Alias::new("s"),
+			)
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(Alias::new("runs"), Alias::new("r")),
+				Expr::col((Alias::new("r"), Alias::new("id"))).equals(snapshot("run_id")),
+			)
+			.join(
+				JoinType::LeftJoin,
+				TableRef::table_alias(Alias::new("authorization_workspaces"), Alias::new("w")),
+				Expr::col((Alias::new("w"), Alias::new("workspace_id")))
+					.equals((Alias::new("r"), Alias::new("workspace_id"))),
+			)
+			.join(
+				JoinType::LeftJoin,
+				TableRef::table_alias(Alias::new("tenant_retention_rules"), Alias::new("t")),
+				Expr::col((Alias::new("t"), Alias::new("tenant")))
+					.equals((Alias::new("w"), Alias::new("tenant"))),
+			)
+			.and_where(Expr::col(snapshot("purged_at")).is_null())
+			.and_where(
+				Expr::cust(ENDED).or(Expr::col(snapshot("fetched_at")).lt(Expr::value(retrieved_before))),
+			)
+			.order_by(snapshot("id"), Order::Asc)
+			.limit(u64::from(limit));
+		if let Some(after) = after {
+			query.and_where(Expr::col(snapshot("id")).gt(Expr::value(after)));
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		native(
+			async {
+				let mut tx = self.store.database().begin().await?;
+				let rows = tx.fetch_all(&sql, convert_values(values)).await?;
+				tx.commit().await?;
+				rows.into_iter()
+					.map(|row| {
+						let candidate: Candidate =
+							serde_json::from_value(QueryRow::from_backend_row(row).data)?;
+						let period = |seconds: Option<i64>| {
+							seconds.and_then(|seconds| u32::try_from(seconds).ok())
+						};
+						Ok(RetainedSnapshot {
+							id: candidate.id,
+							fetched_at: candidate.fetched_at,
+							run_ended_at: candidate.run_ended_at,
+							tenant_rules: period(candidate.snapshot_after_run_seconds)
+								.zip(period(candidate.snapshot_max_age_seconds))
+								.map(|(after_run_seconds, max_age_seconds)| RetentionRules {
+									document_snapshots: SnapshotPeriods {
+										after_run_seconds,
+										max_age_seconds,
+									},
+								}),
+						})
+					})
+					.collect()
+			}
+			.await,
+		)
+	}
+	async fn shortest_tenant_max_age(&self) -> Result<Option<u32>> {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Func::min(Expr::col(Alias::new("snapshot_max_age_seconds")).into()),
+				Alias::new("shortest"),
+			)
+			.from(Alias::new("tenant_retention_rules"))
+			.build(PostgresQueryBuilder);
+		native(
+			async {
+				let mut tx = self.store.database().begin().await?;
+				let row = tx.fetch_one(&sql, convert_values(values)).await?;
+				tx.commit().await?;
+				let shortest = &QueryRow::from_backend_row(row).data["shortest"];
+				Ok(shortest
+					.as_i64()
+					.or_else(|| shortest.as_str().and_then(|text| text.parse().ok()))
+					.and_then(|seconds| u32::try_from(seconds).ok()))
+			}
+			.await,
+		)
+	}
+	async fn purge(&self, ids: &[Uuid], at: DateTime<Utc>) -> Result<u64> {
+		native(
+			async {
+				let mut tx = self.store.database().begin().await?;
+				let purged = ResearchSnapshot::purge(tx.as_mut(), ids, at).await?;
+				tx.commit().await?;
+				Ok(purged)
+			}
+			.await,
+		)
+	}
+}
+
+/// One retention pass: purge every snapshot without a retention basis, and
+/// catch up revoked Runs whose stored copies were written while they were
+/// being revoked: tombstone research results stored for their invocations
+/// and scrub their stored projections. Returns how many snapshots were
+/// purged.
+pub(crate) async fn sweep(store: &Store, rules: &RetentionRules) -> Result<u64> {
+	let purged = aidash_application::research::retention::sweep(
+		&Snapshots {
+			store: store.clone(),
+		},
+		rules,
+		Utc::now(),
+		aidash_application::research::retention::BATCH,
+	)
+	.await?;
+	native(
+		async {
+			let mut tx = store.database().begin().await?;
+			revoke_invocations(tx.as_mut(), None).await?;
+			tx.commit().await?;
+			Ok(())
+		}
+		.await,
+	)?;
+	super::scrub_revoked_projections(store).await?;
+	Ok(purged)
+}
+
+#[cfg(test)]
+mod tests;

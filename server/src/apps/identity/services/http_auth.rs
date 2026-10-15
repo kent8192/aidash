@@ -37,14 +37,20 @@ pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	if path.starts_with("/tenants/")
 		&& (path.contains("/provider-credentials")
 			|| path.contains("/provider-credential-bindings")
-			|| path.contains("/provider-authorizations/"))
+			|| path.contains("/provider-authorizations/")
+			|| path.ends_with("/retention"))
 	{
 		return true;
 	}
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),
-		["", "runs", _, "control" | "management"] | ["", "tasks", _, "abandon"]
+		[
+			"",
+			"runs",
+			_,
+			"control" | "management" | "research-revocation"
+		] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}

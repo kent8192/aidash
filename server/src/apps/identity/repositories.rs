@@ -141,6 +141,7 @@ pub(crate) mod personal_tenant;
 pub(crate) mod home_execution;
 
 pub(crate) mod desktop;
+pub(crate) mod retention;
 
 pub mod provider_credentials;
 
