@@ -80,6 +80,20 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(
       pasted.getByRole("button", { name: copy.source(1) }),
     ).toHaveCount(0);
+    // A citation inside bold or italics keeps the surrounding formatting.
+    const formatted = page.locator("article", { hasText: "Formatted" });
+    await expect(
+      formatted
+        .locator("strong")
+        .getByRole("button", { name: copy.source(1), exact: true }),
+    ).toHaveCount(1);
+    await expect(
+      formatted
+        .locator("em")
+        .getByRole("button", { name: copy.source(2), exact: true }),
+    ).toHaveCount(1);
+    await expect(formatted).not.toContainText("**");
+    await expect(formatted).not.toContainText("[[cite:");
     expect(reads, "nothing is read before a chip opens").toEqual([]);
 
     // Act: open the first citation.

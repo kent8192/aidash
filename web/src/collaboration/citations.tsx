@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 import {
@@ -12,33 +12,34 @@ import type { CitedEvidence } from "../generated/models";
 import { ApiError } from "../transport";
 import { useI18n } from "../ui";
 import { citationCopy } from "./citation-copy";
-import { citationParts, linkable } from "./citations-model";
+import { linkable, type CitationPart } from "./citations-model";
 
 /**
- * Text a Run published, with its Source citations as numbered chips. Each chip
- * reads its evidence only when opened, and only from the publishing Run.
+ * Literal text with Source citations as numbered chips. Each chip reads its
+ * evidence only when opened, and only from the publishing Run.
  */
 export function CitedText({
   run,
-  text,
-  render,
+  parts,
 }: {
-  run: string;
-  text: string;
-  render: (text: string) => ReactNode;
+  run?: string | null;
+  parts: readonly CitationPart[];
 }) {
   return (
     <>
-      {citationParts(text).map((part, index) =>
+      {parts.map((part, index) =>
         part.kind === "text" ? (
-          <Fragment key={index}>{render(part.text)}</Fragment>
+          <Fragment key={index}>{part.text}</Fragment>
         ) : (
-          <Citation
-            key={index}
-            run={run}
-            reference={part.reference}
-            ordinal={part.ordinal}
-          />
+          // Parts hold citations only when parsed for the publishing Run.
+          run && (
+            <Citation
+              key={index}
+              run={run}
+              reference={part.reference}
+              ordinal={part.ordinal}
+            />
+          )
         ),
       )}
     </>

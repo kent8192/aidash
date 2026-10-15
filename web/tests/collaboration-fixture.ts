@@ -430,6 +430,15 @@ export async function setup(
       created_at: "2026-09-22T10:12:00Z",
       run_id: null,
     });
+    messages["workspace-one"].push({
+      id: "message-formatted",
+      workspace_id: "workspace-one",
+      sender: published.sender,
+      content: `Formatted **important [[cite:${CITED}]] claim** and _aside [[cite:${UNAVAILABLE}]] note_.`,
+      idempotency_key: null,
+      created_at: "2026-09-22T10:12:30Z",
+      run_id: "run-0",
+    });
     data.artifacts = [
       {
         id: "artifact-answer",
