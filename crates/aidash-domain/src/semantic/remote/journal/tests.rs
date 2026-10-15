@@ -106,3 +106,26 @@ fn transient_exhaustion_is_durable_and_permanent_failures_do_not_consume_retries
 	assert_eq!(r.failures, 3);
 	assert!(r.delay.is_none());
 }
+#[rstest::rstest]
+fn a_pending_failure_waits_without_consuming_an_outage_retry() {
+	// Arrange
+	let now = Utc::now();
+	// Act
+	let r = retry(5, Failure::Pending);
+	// Assert
+	assert_eq!(r.failure, Failure::Pending);
+	assert_eq!(r.state, "WAITING");
+	assert_eq!(r.failures, 5);
+	assert_eq!(r.delay, Some(1));
+	let mut waiting = record(r.state);
+	waiting.failures = r.failures;
+	waiting.next_attempt = Some(now + Duration::seconds(r.delay.unwrap()));
+	assert!(matches!(
+		claim_plan(&waiting, now),
+		ClaimPlan::Rejected(Failure::Pending)
+	));
+	assert!(matches!(
+		claim_plan(&waiting, now + Duration::seconds(1)),
+		ClaimPlan::Fresh
+	));
+}

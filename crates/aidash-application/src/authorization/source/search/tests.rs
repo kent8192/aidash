@@ -469,22 +469,26 @@ impl JournalScope for JournalLease {
 	async fn fail_operation(
 		&mut self,
 		_: &JournalRecord,
-		_: i32,
-		_: Option<i64>,
+		failures: i32,
+		delay: Option<i64>,
 		state: &str,
 		error: &str,
 	) -> Result<()> {
 		if error == "context_budget" {
 			assert_eq!(state, "PAUSED");
 		} else {
-			assert_eq!(error, "unavailable");
+			assert!(["unavailable", "pending"].contains(&error), "{error}");
 			assert_eq!(state, "WAITING");
 		}
-		self.working.state = state.into();
+		let r = &mut self.working;
+		r.state = state.into();
+		r.failures = failures;
+		r.error = Some(error.into());
+		r.next_attempt = delay.map(|secs| Utc.timestamp_opt(secs, 0).unwrap());
 		Ok(())
 	}
 	async fn fail_attempt(&mut self, _: &Attempt, error: &str) -> Result<()> {
-		assert!(["context_budget", "unavailable"].contains(&error));
+		assert!(["context_budget", "unavailable", "pending"].contains(&error));
 		Ok(())
 	}
 	async fn resume_records(&mut self, _: Uuid, _: Uuid) -> Result<Vec<JournalRecord>> {
@@ -901,10 +905,11 @@ async fn native_finalization_failures_rollback_dependencies_and_receipt(
 	assert_eq!(record.state, "WAITING");
 }
 
-/// A native memory model attempt still inside its call deadline backs the
-/// operation off like an outage instead of pausing it as `Pending` (#233).
+/// A native memory model attempt still inside its call deadline leaves the
+/// operation waiting as `Pending`. It neither pauses the operation nor spends
+/// one of its outage retries, however long the call deadline is (#233).
 #[tokio::test]
-async fn a_live_native_memory_attempt_backs_off_instead_of_pausing_the_operation() {
+async fn a_live_native_memory_attempt_waits_without_spending_an_outage_retry() {
 	// Arrange
 	let mut native = NativeFixture::new();
 	native.fault = "pending";
@@ -922,10 +927,18 @@ async fn a_live_native_memory_attempt_backs_off_instead_of_pausing_the_operation
 	let result = search(&repo, "aidash://receiver", op).await;
 	// Assert
 	assert!(
-		matches!(result, Err(Error::RemoteSemantic(Failure::Unavailable))),
+		matches!(result, Err(Error::RemoteSemantic(Failure::Pending))),
 		"{result:?}"
 	);
-	assert_eq!(repo.journal.record.lock().unwrap().state, "WAITING");
+	let record = repo.journal.record.lock().unwrap();
+	assert_eq!(record.state, "WAITING");
+	assert_eq!(record.failures, 0, "a live attempt spends no outage retry");
+	assert_eq!(record.error.as_deref(), Some("pending"));
+	assert_eq!(
+		record.next_attempt,
+		Some(Utc.timestamp_opt(1, 0).unwrap()),
+		"the operation is claimable again a second later"
+	);
 }
 
 #[rstest]

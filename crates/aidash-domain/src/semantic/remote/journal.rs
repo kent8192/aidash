@@ -77,6 +77,17 @@ pub struct Retry {
 	pub state: &'static str,
 }
 pub fn retry(failures: i32, failure: Failure) -> Retry {
+	// An earlier call may still answer, such as a native memory model attempt
+	// inside its call deadline. The operation waits a second, as a worker waits
+	// on `Pending`, and spends none of its outage retries (#233).
+	if failure == Failure::Pending {
+		return Retry {
+			failures,
+			delay: Some(1),
+			failure,
+			state: "WAITING",
+		};
+	}
 	let failures = failures + i32::from(failure.transient());
 	let delay = failure.transient().then(|| retry_delay(failures)).flatten();
 	let failure = if failure.transient() && delay.is_none() {
