@@ -8,6 +8,7 @@ use crate::authorization::{
 	identity::{Actor, SubjectIdentity},
 };
 use crate::{Error, Result, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use serde_json::Value;
 
 use uuid::Uuid;
@@ -19,24 +20,37 @@ pub(crate) enum Lease<'a> {
 	Inherited(&'a mut Access),
 }
 impl Lease<'_> {
-	pub(crate) async fn begin(store: &Store, actor: &Actor) -> Result<Self> {
+	/// Begin as `actor`. A Subject works in its own Tenant; an Operator works
+	/// in the Tenant of `workspace`.
+	pub(crate) async fn begin(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Self> {
 		Ok(match actor {
 			Actor::Operator => {
-				Self::Operator(crate::database::native::begin_unscoped(&store.pool).await?)
+				let scope = store.workspace_tenancy(workspace).await?;
+				Self::Operator(store.pool.begin(&scope).await?)
 			}
 			Actor::Subject(identity) => {
 				Self::Scoped(Box::new(Access::begin(store, identity).await?))
 			}
 		})
 	}
-	pub(crate) async fn restore(store: &Store, authority: Value) -> Result<Self> {
+	/// Begin work in `scope` without a Subject's authority, such as a worker's
+	/// work for its Run.
+	pub(crate) async fn within(store: &Store, scope: &TenancyScope) -> Result<Self> {
+		Ok(Self::Operator(store.pool.begin(scope).await?))
+	}
+	/// Begin system work that reaches every Tenant's knowledge for `reason`.
+	pub(crate) async fn deployment(store: &Store, reason: DeploymentScopeReason) -> Result<Self> {
+		Self::within(store, &TenancyScope::Deployment(reason)).await
+	}
+	/// Restore the authority saved with work on `workspace`.
+	pub(crate) async fn restore(store: &Store, authority: Value, workspace: Uuid) -> Result<Self> {
 		let authority: SavedAuthority = serde_json::from_value(authority)?;
 		match authority.credential {
 			None if authority.subject == "operator"
 				&& authority.tenant.is_empty()
 				&& authority.subjects.is_empty() =>
 			{
-				Self::begin(store, &Actor::Operator).await
+				Self::begin(store, &Actor::Operator, workspace).await
 			}
 			Some(credential_id) => {
 				let mut access = Access::begin(

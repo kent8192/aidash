@@ -272,6 +272,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	};
+	let scope = store.run_tenancy(run.id).await?;
 	let index: Option<i64> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("revision"))
@@ -279,7 +280,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(run.workspace_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_optional(&store.pool)
+	.scalar_optional(store.pool.in_scope(&scope))
 	.await?;
 	let binding = crate::database::native::query_as::<(uuid::Uuid, i64)>(
 		&Query::select()
@@ -289,7 +290,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 			.to_string(PostgresQueryBuilder),
 	)
 	.columns(&["participant_id", "participant_revision"])
-	.fetch_optional(&store.pool)
+	.fetch_optional(store.pool.in_scope(&scope))
 	.await?;
 	Ok(SourceRevisions {
 		index,

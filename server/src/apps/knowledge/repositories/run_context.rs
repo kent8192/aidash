@@ -10,9 +10,14 @@ pub(crate) struct Journal {
 	run: Uuid,
 }
 impl Journal {
-	pub(crate) async fn begin(store: &Store, run: Uuid) -> NativeResult<Self> {
+	/// Begin journaling the reads of `run`, in the Run's tenancy `scope`.
+	pub(crate) async fn begin(
+		store: &Store,
+		scope: &aidash_application::tenancy::TenancyScope,
+		run: Uuid,
+	) -> NativeResult<Self> {
 		Ok(Self {
-			tx: crate::database::native::begin_unscoped(&store.pool).await?,
+			tx: store.pool.begin(scope).await?,
 			run,
 		})
 	}

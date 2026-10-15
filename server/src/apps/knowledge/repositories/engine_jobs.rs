@@ -2,6 +2,7 @@
 //! Inputs contain exact evidence identities, never a second copy of memory bodies.
 use super::{access::Lease, native_memory as repository, units};
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{Duration, Utc};
 use reinhardt::query::{
@@ -13,6 +14,9 @@ use uuid::Uuid;
 mod completion;
 mod consolidation;
 mod discovery;
+
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 pub(crate) use completion::completion_ready;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -298,13 +302,20 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 			.and_where(Expr::col("id").eq(Expr::value(run_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&store.run_tenancy(run_id).await?))
 	.await?;
 	let access =
 		crate::authorization::execution::access_for_run(store, &run.metadata(), true).await;
 	let mut lease = match access {
 		Ok(Some(access)) => Lease::Scoped(Box::new(access)),
-		Ok(None) => Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?,
+		Ok(None) => {
+			Lease::begin(
+				store,
+				&crate::authorization::identity::Actor::Operator,
+				run.workspace_id,
+			)
+			.await?
+		}
 		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(None),
 		Err(e) => return Err(e),
 	};
@@ -356,7 +367,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			.limit(32)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&MAINTENANCE))
 	.await?;
 	let mut count = 0;
 	for row in rows {
@@ -368,7 +379,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 }
 
 async fn process(store: &Store, id: Uuid) -> Result<bool> {
-	let mut claim_tx = native::begin_unscoped(&store.pool).await?;
+	let mut claim_tx = store.pool.begin(&MAINTENANCE).await?;
 	let Some(row) = native::query(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -479,7 +490,7 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 			Some("engine_unavailable"),
 		),
 	};
-	let mut tx = native::begin_unscoped(&store.pool).await?;
+	let mut tx = store.pool.begin(&MAINTENANCE).await?;
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))
@@ -512,7 +523,7 @@ async fn execute(
 	input: &Input,
 	authority: serde_json::Value,
 ) -> Result<()> {
-	let mut lease = Lease::restore(store, authority).await?;
+	let mut lease = Lease::restore(store, authority, bank.workspace).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 		// Hold the exact claim through admission, so an expired worker cannot publish.

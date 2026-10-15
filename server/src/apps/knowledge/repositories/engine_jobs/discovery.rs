@@ -1,5 +1,6 @@
 //! A finite discovery cycle prevents a revoked/full oldest bank from starving later Runs.
 use crate::{Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
 	Alias, Condition, Expr, ExprTrait, LockBehavior, LockType, OnConflict, Order,
@@ -7,9 +8,12 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
+
 pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 	let epoch = DateTime::<Utc>::UNIX_EPOCH;
-	let mut tx = native::begin_unscoped(&store.pool).await?;
+	let mut tx = store.pool.begin(&MAINTENANCE).await?;
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_learning_discovery"))

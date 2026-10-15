@@ -135,8 +135,8 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 	(run, actor)
 }
 
-async fn cause(store: &Store, actor: &Actor, run: Uuid) -> Option<Failure> {
-	let mut lease = Lease::begin(store, actor).await.unwrap();
+async fn cause(store: &Store, actor: &Actor, workspace: Uuid, run: Uuid) -> Option<Failure> {
+	let mut lease = Lease::begin(store, actor, workspace).await.unwrap();
 	let result = invalidity(&mut lease, run).await;
 	lease.finish(result).await.unwrap()
 }
@@ -185,7 +185,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	.await
 	.unwrap();
 	let (run, actor) = reader(&store, &bank, id).await;
-	assert_eq!(cause(&store, &actor, run).await, None);
+	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
 
 	// Act
 	let corrected = |edit: fn(&mut Content)| {
@@ -262,7 +262,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 
 	// Assert
 	assert_eq!(
-		cause(&store, &actor, run).await,
+		cause(&store, &actor, bank.workspace, run).await,
 		expected,
 		"{change} must report its own cause"
 	);

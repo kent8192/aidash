@@ -5,6 +5,7 @@ use crate::{
 	database::native::{self, Pool},
 };
 use aidash_application::ports::{EmbeddingProvider, VectorIndex};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::semantic::{Embedding, EmbeddingConfig, Point, VectorConfig, VectorFilter};
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -13,6 +14,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+use crate::database::scope::recorded as tenancy;
+/// Deleting retired points and collections is semantic cleanup.
+const CLEANUP: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
 #[derive(Clone)]
 pub struct Transport {
@@ -77,7 +82,8 @@ impl VectorIndex for Transport {
 					"invalid PostgreSQL vector collection".into(),
 				));
 			}
-			let mut tx = self.pool.begin_unscoped().await?;
+			// Collections are Deployment-wide; no Tenant's vectors are touched.
+			let mut tx = self.pool.begin(&TenancyScope::NoTenant).await?;
 			native::query(
 				&Query::insert()
 					.into_table(Alias::new("semantic_vector_collections"))
@@ -132,7 +138,7 @@ impl VectorIndex for Transport {
 			let tenant = payload["tenant"]
 				.as_str()
 				.ok_or_else(|| Error::Invalid("missing vector tenant".into()))?;
-			let mut tx = self.pool.begin_unscoped().await?;
+			let mut tx = self.pool.begin(&tenancy(tenant)?).await?;
 			let width: i32 = native::query_scalar(
 				&Query::select()
 					.column(Alias::new("dimensions"))
@@ -227,7 +233,7 @@ impl VectorIndex for Transport {
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(point)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&self.pool)
+		.execute(self.pool.in_scope(&CLEANUP))
 		.await?;
 		Ok(())
 	}
@@ -237,7 +243,7 @@ impl VectorIndex for Transport {
 		collection: &str,
 	) -> aidash_application::Result<()> {
 		provider(config)?;
-		let mut tx = self.pool.begin_unscoped().await?;
+		let mut tx = self.pool.begin(&CLEANUP).await?;
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new("semantic_vectors"))
@@ -295,7 +301,9 @@ impl VectorIndex for Transport {
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(limit as u64)
 			.to_string(PostgresQueryBuilder);
-		let rows = native::query(&sql).fetch_all(&self.pool).await?;
+		let rows = native::query(&sql)
+			.fetch_all(self.pool.in_scope(&tenancy(filter.tenant)?))
+			.await?;
 		rows.iter()
 			.map(|row| {
 				Ok(Point {
@@ -311,6 +319,7 @@ impl VectorIndex for Transport {
 		&self,
 		config: &VectorConfig,
 		collection: &str,
+		tenant: &str,
 		ids: &[Uuid],
 	) -> aidash_application::Result<bool> {
 		provider(config)?;
@@ -322,10 +331,11 @@ impl VectorIndex for Transport {
 				.expr(Expr::cust("COUNT(DISTINCT id)"))
 				.from(Alias::new("semantic_vectors"))
 				.and_where(Expr::col(Alias::new("collection")).eq(collection))
+				.and_where(Expr::col(Alias::new("tenant")).eq(tenant))
 				.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&self.pool)
+		.scalar_one(self.pool.in_scope(&tenancy(tenant)?))
 		.await?;
 		Ok(count as usize == ids.iter().collect::<std::collections::BTreeSet<_>>().len())
 	}

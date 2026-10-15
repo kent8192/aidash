@@ -95,6 +95,7 @@ impl RunSemanticScope for Scope<'_> {
 		Ok(Box::new(
 			crate::apps::knowledge::repositories::run_context::Journal::begin(
 				self.store,
+				&self.access.tenancy()?,
 				self.run.id,
 			)
 			.await?,

@@ -36,9 +36,9 @@ impl Models {
 		&self,
 		units: impl Iterator<Item = &'a Unit> + Send,
 	) -> Result<()> {
-		let mut lease = Lease::begin(
+		let mut lease = Lease::within(
 			&self.store,
-			&crate::authorization::identity::Actor::Operator,
+			&crate::database::scope::recorded(&self.bank.tenant)?,
 		)
 		.await?;
 		let result = async {
@@ -100,7 +100,11 @@ impl Models {
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&self.store.control_pool)
+		.fetch_one(
+			self.store
+				.control_pool
+				.in_scope(&self.store.run_tenancy(run).await?),
+		)
 		.await?;
 		if record.home_node != self.bank.home || record.workspace_id != self.bank.workspace {
 			return Err(Error::Forbidden);

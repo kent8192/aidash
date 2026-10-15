@@ -708,9 +708,9 @@ impl ExecutionEnvironment for Environment<'_> {
 				.recheck_source_observation(&self.federation.store, content)
 				.await?;
 		} else if let Some(semantic) = content.get("semantic_memory").filter(|v| !v.is_null()) {
-			let mut lease = crate::semantic::service::Lease::begin(
+			let mut lease = crate::semantic::service::Lease::within(
 				&self.federation.store,
-				&crate::authorization::identity::Actor::Operator,
+				&self.run_store.scope,
 			)
 			.await?;
 			let result = crate::semantic::services::memory_context::recheck(
@@ -855,11 +855,9 @@ impl ExecutionEnvironment for Environment<'_> {
 		let agent = AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
 			|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
 		)?)?;
-		let mut lease = crate::semantic::service::Lease::begin(
-			&self.federation.store,
-			&crate::authorization::identity::Actor::Operator,
-		)
-		.await?;
+		let mut lease =
+			crate::semantic::service::Lease::within(&self.federation.store, &self.run_store.scope)
+				.await?;
 		let mut query = format!("{}\n{}", task.title, task.description);
 		for (_, text) in inputs {
 			query.push('\n');

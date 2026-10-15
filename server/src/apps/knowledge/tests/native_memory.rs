@@ -1753,7 +1753,12 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 		.delete_point(&config, "fixture", ids[0])
 		.await
 		.unwrap();
-	assert!(!index.present(&config, "fixture", &ids[..2]).await.unwrap());
+	assert!(
+		!index
+			.present(&config, "fixture", "acme", &ids[..2])
+			.await
+			.unwrap()
+	);
 	index.delete_collection(&config, "fixture").await.unwrap();
 }
 

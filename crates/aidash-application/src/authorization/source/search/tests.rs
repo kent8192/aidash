@@ -131,6 +131,7 @@ impl VectorIndex for NoEffects {
 		&self,
 		_: &aidash_domain::semantic::VectorConfig,
 		_: &str,
+		_: &str,
 		_: &[uuid::Uuid],
 	) -> Result<bool> {
 		panic!("unexpected present effect in disclosure scenario")

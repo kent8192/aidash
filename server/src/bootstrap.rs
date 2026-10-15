@@ -1093,9 +1093,11 @@ pub(crate) fn semantic_entries_scope<'a, 'scope>(
 
 pub(crate) fn semantic_configuration_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 	crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 		store: store.clone(),
+		scope,
 	}
 }
 
@@ -1751,8 +1753,9 @@ pub(crate) fn transfer_scope<'a>(
 
 pub(crate) fn semantic_journal_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::remote_journal::Repository<'_> {
-	crate::apps::knowledge::repositories::remote_journal::Repository { store }
+	crate::apps::knowledge::repositories::remote_journal::Repository { store, scope }
 }
 pub(crate) fn semantic_journal_scope<'a>(
 	store: &'a Store,
@@ -1797,8 +1800,9 @@ pub(crate) fn semantic_status_scope<'a>(
 }
 pub(crate) fn semantic_status_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::remote_status::Repository<'_> {
-	crate::apps::knowledge::repositories::remote_status::Repository { store }
+	crate::apps::knowledge::repositories::remote_status::Repository { store, scope }
 }
 
 pub(crate) fn peer_mapping_repository(
@@ -1888,7 +1892,7 @@ pub(crate) fn source_semantic_search_repository(
 ) -> crate::apps::identity::repositories::remote_grants::search::Repository<'_> {
 	crate::apps::identity::repositories::remote_grants::search::Repository {
 		runtime,
-		journal: semantic_journal_repository(&runtime.store),
+		journal: semantic_journal_repository(&runtime.store, scope.clone()),
 		dispatch: crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 			store: runtime.store.clone(),
 			scope,

@@ -195,7 +195,13 @@ impl VectorIndex for Vector {
 	async fn delete_collection(&self, _: &VectorConfig, _: &str) -> Result<()> {
 		panic!("retrieval must not delete collections")
 	}
-	async fn present(&self, config: &VectorConfig, collection: &str, ids: &[Uuid]) -> Result<bool> {
+	async fn present(
+		&self,
+		config: &VectorConfig,
+		collection: &str,
+		_: &str,
+		ids: &[Uuid],
+	) -> Result<bool> {
 		self.calls.lock().unwrap().push("present");
 		assert_eq!(config.provider, "postgres");
 		assert_eq!(collection, "collection");

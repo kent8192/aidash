@@ -46,6 +46,7 @@ impl PreparedSearch {
 			.present(
 				&spec.vector,
 				&index.collection,
+				&index.tenant,
 				&allowed.keys().copied().collect::<Vec<_>>(),
 			)
 			.await

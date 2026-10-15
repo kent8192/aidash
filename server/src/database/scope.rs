@@ -47,6 +47,18 @@ fn set_config(name: &str, value: String) -> SimpleExpr {
 	)
 }
 
+/// The scope of rows that record their Tenant by name. A legacy Workspace's
+/// rows record none until #265 gives every Workspace a Tenant.
+pub(crate) fn recorded(tenant: &str) -> Result<TenancyScope> {
+	if tenant.is_empty() {
+		Ok(TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::LegacyRun,
+		))
+	} else {
+		Ok(TenancyScope::tenant(tenant)?)
+	}
+}
+
 /// Write `scope` into the transaction's settings. Call it once, before any
 /// other statement of the transaction.
 pub(crate) async fn enter(tx: &mut dyn TransactionExecutor, scope: &TenancyScope) -> Result<()> {

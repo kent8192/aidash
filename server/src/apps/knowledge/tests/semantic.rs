@@ -678,6 +678,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			.present(
 				&config.vector,
 				second["collection"].as_str().unwrap(),
+				second["tenant"].as_str().unwrap(),
 				&[serde_json::from_value(current_point.clone()).unwrap()]
 			)
 			.await

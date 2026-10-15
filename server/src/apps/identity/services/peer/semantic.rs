@@ -80,7 +80,7 @@ pub(crate) async fn context(
 		metadata: json!({}),
 	};
 	operation.set_id()?;
-	journal::prepare(&f.store, &operation, &description.semantic).await?;
+	journal::prepare(&f.store, tenancy, &operation, &description.semantic).await?;
 	let receipt: Receipt = super::authority_request(
 		f,
 		&run.home_node,
@@ -211,11 +211,11 @@ pub(crate) async fn verify_in(
 ) -> Result<()> {
 	// The receiver durably fixed these inputs before asking Home. Home cannot
 	// substitute a different query, step, budget, or admission in a callback.
-	let record = journal::bound(&f.store, input, &description.semantic).await?;
+	let scope = f.store.run_tenancy(input.admission_id).await?;
+	let record = journal::bound(&f.store, &scope, input, &description.semantic).await?;
 	if record.digest != input.digest()? {
 		return Err(Error::Forbidden);
 	}
-	let scope = f.store.run_tenancy(input.admission_id).await?;
 	let run = f.store.run(&scope, input.admission_id).await?;
 	if run.step != input.boundary.step {
 		return Err(Error::Forbidden);

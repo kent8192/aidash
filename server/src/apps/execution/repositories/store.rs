@@ -395,8 +395,6 @@ impl Store {
 			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
 			pool.options().get_max_connections() as usize,
 		)?);
-		let data_pool: Pool = pool.clone().into();
-		crate::semantic::repositories::discard::legacy(&data_pool).await?;
 		let control_pool = pool
 			.options()
 			.clone()
