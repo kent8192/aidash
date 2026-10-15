@@ -57,6 +57,7 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		model_version: "1.0.0".into(),
 		projection_version: ProjectionVersion::Legacy.number(),
 		estimate: RequestEstimate::conservative_bytes(1234),
+		cache_identity: None,
 	}
 }
 
@@ -331,6 +332,56 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 			.complete_usage_record(&run, attempt.attempt, &UsageOutcome::Unknown)
 			.await
 			.unwrap()
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+async fn cache_identity(store: &Store, attempt: Uuid) -> Option<String> {
+	let sql = Query::select()
+		.column(Alias::new("cache_identity"))
+		.from(Alias::new("inference_usage"))
+		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(attempt)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar::<_, Option<String>>(&sql)
+		.fetch_one(store.pool.driver())
+		.await
+		.unwrap()
+}
+
+/// A salted attempt records its Stable Prefix cache identity; an unsalted
+/// one leaves it unknown rather than empty (ADR 0018).
+#[rstest::rstest]
+#[tokio::test]
+async fn usage_records_keep_the_cache_identity_of_salted_attempts(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let legacy = dispatch(token);
+	let native = UsageDispatch {
+		attempt: Uuid::now_v7(),
+		projection_version: ProjectionVersion::Native.number(),
+		cache_identity: Some("prefix-digest".into()),
+		..dispatch(token)
+	};
+
+	// Act
+	for attempt in [&legacy, &native] {
+		store
+			.record_usage_dispatch(&run, token, attempt)
+			.await
+			.unwrap();
+	}
+
+	// Assert
+	assert_eq!(cache_identity(&store, legacy.attempt).await, None);
+	assert_eq!(
+		cache_identity(&store, native.attempt).await.as_deref(),
+		Some("prefix-digest")
 	);
 	cleanup(store, &url, &schema).await;
 }

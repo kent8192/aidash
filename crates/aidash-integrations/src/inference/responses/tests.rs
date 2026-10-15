@@ -441,6 +441,7 @@ impl ProviderAccess for FakeAccess {
 		Ok(Access {
 			endpoint: self.endpoint.clone(),
 			bearer: format!("access-{}", self.generation.lock().unwrap()).into(),
+			keyless: None,
 		})
 	}
 	async fn plan_rejected(&self, _: &Context, disposition: Disposition) -> Result<bool> {
@@ -477,7 +478,12 @@ fn provider(url: &str, refresh_succeeds: bool) -> (ResponsesProvider, Arc<FakeAc
 	});
 	(
 		ResponsesProvider {
-			client: reqwest::Client::new(),
+			clients: crate::keyless::Clients::new(
+				reqwest::Client::new(),
+				std::time::Duration::from_secs(30),
+				std::time::Duration::from_secs(5),
+			)
+			.unwrap(),
 			config: config(),
 			access: access.clone(),
 			context: Context {

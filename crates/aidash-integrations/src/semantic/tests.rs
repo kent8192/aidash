@@ -15,8 +15,20 @@ impl aidash_application::provider_access::ProviderAccess for FixtureAccess {
 		Ok(aidash_application::provider_access::Access {
 			endpoint: endpoint.into(),
 			bearer: "fixture-key".to_owned().into(),
+			keyless: None,
 		})
 	}
+}
+
+/// Keyless access that permits this fixture's loopback origin (ADR 0036).
+fn permitting(endpoint: &str) -> aidash_application::provider_access::KeylessAccess {
+	let origin = reqwest::Url::parse(endpoint)
+		.unwrap()
+		.origin()
+		.ascii_serialization();
+	aidash_application::provider_access::KeylessAccess::permitting(
+		aidash_domain::keyless::PermittedOrigins::parse([origin]).unwrap(),
+	)
 }
 
 struct Server(tokio::task::JoinHandle<()>);
@@ -77,7 +89,7 @@ async fn openrouter_gemini_sends_approved_dimensions_and_bearer_credentials(
 	let result = embed(
 		&FixtureAccess,
 		&Context::default(),
-		&client().unwrap(),
+		&clients().unwrap(),
 		&config,
 		input_text,
 	)
@@ -112,9 +124,9 @@ async fn openrouter_withholds_output_that_violates_the_approved_contract(#[case]
 	config.dimensions = 1;
 	assert!(matches!(
 		embed(
-			&aidash_application::provider_access::KeylessAccess,
+			&permitting(&config.endpoint),
 			&Context::default(),
-			&client().unwrap(),
+			&clients().unwrap(),
 			&config,
 			"query"
 		)

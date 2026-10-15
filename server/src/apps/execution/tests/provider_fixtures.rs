@@ -17,6 +17,29 @@ use std::{
 use tokio::sync::{Notify, mpsc};
 use upstream_fixtures::upstream;
 
+/// The legacy provider with only its fixture's own origin permitted for
+/// Keyless calls, as an Operator would permit a private model server (ADR 0036).
+pub fn fixture_provider(
+	client: reqwest::Client,
+	config: aidash_server::registry::ModelConfig,
+) -> aidash_server::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
+	let keyless = permitting(&config.endpoint);
+	aidash_server::provider::provider(client, config, keyless)
+}
+
+/// Keyless access permitting the origin of `endpoint`, or nothing for an
+/// endpoint that is not a URL.
+pub fn permitting(endpoint: &str) -> aidash_application::provider_access::KeylessAccess {
+	reqwest::Url::parse(endpoint)
+		.ok()
+		.and_then(|url| {
+			aidash_domain::keyless::PermittedOrigins::parse([url.origin().ascii_serialization()])
+				.ok()
+		})
+		.map(aidash_application::provider_access::KeylessAccess::permitting)
+		.unwrap_or_default()
+}
+
 #[derive(Clone)]
 #[allow(dead_code)] // Different integration binaries select different provider replies.
 pub enum Reply {
