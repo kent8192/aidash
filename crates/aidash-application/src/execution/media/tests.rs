@@ -59,6 +59,7 @@ fn model() -> ModelConfig {
 		cost: json!({}),
 		projection_versions: vec![],
 		cache_mode: None,
+		request_estimator: None,
 	}
 }
 #[derive(Default)]
