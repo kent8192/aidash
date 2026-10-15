@@ -1513,6 +1513,47 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_with_snapshot_context() {
 	assert_eq!(context.after, [Pages::new().lines[2].clone()]);
 }
 
+/// Reads the Run until a revocation lands after its first `readable` check.
+struct RevokedAfterFirstCheck {
+	run: Uuid,
+	checks: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl crate::ports::research::RunReader for RevokedAfterFirstCheck {
+	async fn readable(&self, run: Uuid) -> Result<bool> {
+		let check = self
+			.checks
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(run == self.run && check == 0)
+	}
+}
+
+#[tokio::test]
+async fn a_revocation_during_the_evidence_read_withholds_the_evidence() {
+	// Arrange: the reader loses access after the first readability decision.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	let reader = RevokedAfterFirstCheck {
+		run,
+		checks: Default::default(),
+	};
+
+	// Act
+	let error = reading::read(&reader, &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert: the same absence as any other unreadable evidence.
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+	assert_eq!(
+		reader.checks.load(std::sync::atomic::Ordering::SeqCst),
+		2,
+		"readability is decided again after the evidence read"
+	);
+}
+
 #[tokio::test]
 async fn every_reason_a_reader_cannot_see_evidence_is_the_same_absence() {
 	// Arrange: one Run with evidence, another readable Run, and an unknown Run.

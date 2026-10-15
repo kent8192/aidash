@@ -3,6 +3,11 @@
 //! fragments, and only for a reader who may read that Run now. Every reason a
 //! reader cannot see the evidence is reported as the same absence, so a
 //! response never reveals whether the Run or its evidence exists.
+//!
+//! The readability decision commits before the evidence is read, so a
+//! revocation could land in between. The read therefore asks again after the
+//! evidence is in hand and returns it only to a reader who may still read the
+//! Run, as if the read had stayed inside the authorization.
 use crate::{
 	Error, Result,
 	ports::research::{EvidenceStore, RunReader},
@@ -39,5 +44,8 @@ pub async fn read(
 		.snapshot(run, fragment.document_id)
 		.await?
 		.ok_or_else(unavailable)?;
+	if !reader.readable(run).await? {
+		return Err(unavailable());
+	}
 	Ok(CitedEvidence::new(fragment, &document))
 }
