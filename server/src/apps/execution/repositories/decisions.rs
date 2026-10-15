@@ -537,6 +537,10 @@ impl<'a> RunDecisionJournal<'a> {
 			let record = &saved.permit.record;
 			if record.request_digest != attempt.request_digest
 				|| record.questions != attempt.questions
+				|| record
+					.questions
+					.iter()
+					.any(|question| !evidence.questions.contains_key(question))
 				|| saved.permit.owner_receipts != attempt.owner_receipts
 				|| !same_input(&record.boundary, &evidence.boundary)
 				|| record.decider != evidence.decider
@@ -622,7 +626,8 @@ impl<'a> RunDecisionJournal<'a> {
 			) if !id.is_nil()
 				&& id == witness
 				&& *digest == evidence.state_digest
-				&& expired_at == deadline => {}
+				&& expired_at == deadline
+				&& *expired_at <= self.now() => {}
 			(None, StateReference::Disabled, StateRetentionWitness::Disabled) => {}
 			_ => {
 				return Err(Error::Invalid(

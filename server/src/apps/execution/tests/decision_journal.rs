@@ -511,7 +511,11 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	other_mode.mode = Mode::Shadow;
 	let mut looser = saved.clone();
 	looser.restrictions.preserve_recent = 5;
-	for differing in [unbacked, other_input, other_mode, looser] {
+	let mut uncatalogued = saved.clone();
+	uncatalogued
+		.questions
+		.remove(&saved.attempts[0].questions[0]);
+	for differing in [unbacked, other_input, other_mode, looser, uncatalogued] {
 		assert!(matches!(
 			journal.commit(&differing, None, None).await,
 			Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
@@ -536,6 +540,22 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	};
 	assert!(matches!(
 		journal.commit(&marked, None, None).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
+	));
+	// A marker whose deadline has not passed by the commit is not an expiry.
+	let (_, mut premature) = evidence_rows(&f.store, run.id).await.remove(0);
+	let (id, deadline) = (Uuid::new_v4(), Utc::now() + Duration::days(1));
+	premature.state = StateReference::Expired {
+		id,
+		digest: premature.state_digest.clone(),
+		expired_at: deadline,
+	};
+	premature.state_retention = StateRetentionWitness::Enabled {
+		id,
+		expires_at: deadline,
+	};
+	assert!(matches!(
+		journal.commit(&premature, None, None).await,
 		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
 	));
 	assert_eq!(evidence_rows(&f.store, run.id).await.len(), 1);

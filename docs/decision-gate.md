@@ -101,7 +101,8 @@ before anything is charged. Recovery reports a `pending` row as uncertain and ke
 its original worker fence. Only the exact permit an attempt was charged with records
 its result, and a late result is still recorded after the lease moved. Committed
 evidence must name exactly the attempts charged for its decision, locked for the commit,
-each with its durable status. It must keep their input commitment and mode, keep
+each with its durable status and with its questions in the evidence's question catalog.
+It must keep their input commitment and mode, keep
 restrictions at least as strict as their binding restrictions, and carry exactly the
 answers its answered attempts recorded. A rejected snapshot, which skips replay, must
 still carry its decision identity.
@@ -112,7 +113,8 @@ Decision Evidence in that transaction. Shadow and rejected decisions never touch
 Run. Applying context or retaining state rechecks the current policy inside the commit
 transaction and is forbidden once that policy no longer names the admitted pin;
 evidence without either effect is still recorded. Retained state must match its digest,
-and an expired marker must match its retention witness and the evidence's state digest.
+and an expired marker must match its retention witness and the evidence's state digest,
+and its deadline must have passed by the commit.
 A decision has at most one applied or shadow snapshot; each retry of a rejected
 decision appends another. Retained state whose deadline passed before the commit keeps
 only its expired marker, and `Store::expire_decision_states` later deletes due state and
