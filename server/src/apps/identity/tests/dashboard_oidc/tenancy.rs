@@ -749,7 +749,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	assert_eq!(status, 200, "{overview}");
 	assert_eq!(
 		overview["actions"].as_array().unwrap().len(),
-		9,
+		10,
 		"{overview}"
 	);
 	d.finish().await;
@@ -786,7 +786,7 @@ async fn members_cannot_remove_the_last_unconditional_administrator(
 	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"bob-over-api","effect":"allow","subjects":{"ids":["bob"]},"actions":["*"],
 		"resources":{"kinds":["*"]},
-		"condition":{"op":"eq","left":{"source":"environment","path":"transport"},
+		"condition":{"op":"eq","left":{"source":"environment","path":"/transport"},
 			"right":{"source":"literal","value":"api"}}
 	}));
 	let (status, replaced) = d

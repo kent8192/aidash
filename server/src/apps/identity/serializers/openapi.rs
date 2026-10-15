@@ -28,6 +28,67 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	use super::provider_credentials as pc;
 	use aidash_application::provider_credentials::Metadata;
 	use aidash_domain::provider_credentials::Binding as ProviderBinding;
+	{
+		use super::invitations as inv;
+		use super::tenants as t;
+		contracts.request::<_, t::TenantCreation>(document, views::tenants::create)?;
+		contracts.response::<_, t::CreatedTenant>(
+			document,
+			views::tenants::create,
+			201,
+			"application/json",
+		)?;
+		contracts.response::<_, Vec<t::TenantRecord>>(
+			document,
+			views::tenants::list,
+			200,
+			"application/json",
+		)?;
+		contracts.request::<_, t::LabelUpdate>(document, views::tenants::relabel)?;
+		contracts.response::<_, t::TenantLabel>(
+			document,
+			views::tenants::relabel,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::tenants::relabel, &["String"])?;
+		contracts.request::<_, inv::InvitationRequest>(document, views::invitations::issue)?;
+		contracts.response::<_, inv::IssuedInvitation>(
+			document,
+			views::invitations::issue,
+			201,
+			"application/json",
+		)?;
+		contracts.path(document, views::invitations::issue, &["String"])?;
+		contracts.response::<_, Vec<inv::InvitationView>>(
+			document,
+			views::invitations::list,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::invitations::list, &["String"])?;
+		contracts.response::<_, inv::InvitationView>(
+			document,
+			views::invitations::revoke,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::invitations::revoke, &["String", "Uuid"])?;
+		contracts.request::<_, inv::InvitationLink>(document, views::invitations::inspect)?;
+		contracts.response::<_, inv::InvitationPreview>(
+			document,
+			views::invitations::inspect,
+			200,
+			"application/json",
+		)?;
+		contracts.request::<_, inv::InvitationLink>(document, views::invitations::redeem)?;
+		contracts.response::<_, super::oidc::Registration>(
+			document,
+			views::invitations::redeem,
+			200,
+			"application/json",
+		)?;
+	}
 	contracts.response::<_, Vec<Metadata>>(
 		document,
 		views::provider_credentials::list,

@@ -14,7 +14,7 @@ Node startup seeds 22 builtin declarations at exact immutable versions (`aidash.
 
 ## Pending Host packages
 
-Configure `node.default_host_packages` with unique group names in the normal Node settings, for example `default_host_packages = ["shell", "python", "task_assign"]`. The operator's new-tenant policy request (`POST /api/authorization/{tenant}` with `expected_revision: 0`) stages the configured available groups in the same transaction as the new policy. Its response includes `pending_host_packages`, including unavailable reasons. If staging fails, neither the tenant policy nor any package is committed. Policy updates and startup never provision packages. An empty list preserves creation without package staging.
+Tenants receive no host packages when they are created. An Operator stages them through `POST /api/marketplace/host-packages`.
 
 An authenticated operator can request the exact generated groups with `POST /api/marketplace/host-packages`:
 
@@ -41,7 +41,7 @@ Web research providers are packages of the same operator workflow. Their
 groups are `research_brave` (`research.brave@1`: `search`), `research_page`
 (`research.page@1`: `fetch`, `find`) and `research_fixture`
 (`research.fixture@1`: `search`, `fetch`, `find`). Request them by name in
-`POST /api/marketplace/host-packages` or `node.default_host_packages`, then
+`POST /api/marketplace/host-packages`, then
 review and approve them like Host groups. Entries are named
 `aidash.research.<provider>.<operation>@1.0.0` and use the default Model
 aliases `research_search`, `research_fetch` and `research_find` with the same

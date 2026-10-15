@@ -230,17 +230,19 @@ fn conditional_or_narrowed_administration_does_not_count() {
 	};
 	conditional.condition = Some(
 		serde_json::from_value(json!({
-		"op":"eq","left":{"source":"environment","path":"transport"},
+		"op":"eq","left":{"source":"environment","path":"/transport"},
 		"right":{"source":"literal","value":"api"}}))
 		.unwrap(),
 	);
 	bundle.policies.push(conditional.clone());
+	bundle.validate().unwrap();
 	assert!(!has_unconditional_administrator(&bundle, ["bob"]));
 	let mut narrowed = conditional;
 	narrowed.id = "narrowed".into();
 	narrowed.condition = None;
 	narrowed.resources.ids = [COLLECTION.to_owned()].into();
 	bundle.policies.push(narrowed);
+	bundle.validate().unwrap();
 	assert!(!has_unconditional_administrator(&bundle, ["bob"]));
 }
 
@@ -261,11 +263,12 @@ fn any_deny_on_an_administration_action_counts_against() {
 		},
 		condition: Some(
 			serde_json::from_value(json!({
-				"op":"eq","left":{"source":"environment","path":"day"},
+				"op":"eq","left":{"source":"environment","path":"/day"},
 				"right":{"source":"literal","value":"sunday"}}))
 			.unwrap(),
 		),
 	});
+	bundle.validate().unwrap();
 	assert!(!has_unconditional_administrator(&bundle, [OWNER]));
 }
 

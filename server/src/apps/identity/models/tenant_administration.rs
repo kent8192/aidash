@@ -420,7 +420,27 @@ impl TenantAdministrator {
 				}
 			}
 			let administrator = !actions.is_empty();
+			let tenant = self.tenant().to_owned();
+			if self
+				.allowed(
+					tx,
+					&snapshot,
+					aidash_domain::identity::tenancy::TENANT_UPDATE,
+					&tenant,
+					json!({}),
+				)
+				.await?
+			{
+				actions.push(aidash_domain::identity::tenancy::TENANT_UPDATE.to_owned());
+			}
+			let label = super::Tenant::objects()
+				.filter(super::Tenant::field_name().eq(tenant))
+				.all_with_db(tx)
+				.await?
+				.pop()
+				.and_then(|root| root.label);
 			Ok(TenantAdministration {
+				label,
 				tenant: self.tenant().to_owned(),
 				actions,
 				assignable_groups: if administrator {

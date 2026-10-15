@@ -132,7 +132,16 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 					"{}: {sql}",
 					migration.name
 				);
-				if sql.starts_with("ALTER TABLE") {
+				if sql.starts_with("ALTER TABLE")
+					&& (migration.app_label.as_str(), migration.name.as_str())
+						== ("identity", "0020_tenancy_schema")
+				{
+					// The pinned typed AlterColumn renders no NOT NULL change.
+					assert_eq!(
+						sql.trim(),
+						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
+					);
+				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
 					// assets because the filesystem loader resolves assets in RunSQL.
 					let check = match (migration.app_label.as_str(), migration.name.as_str()) {

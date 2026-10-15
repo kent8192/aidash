@@ -50,6 +50,7 @@ pub fn resource_kind(action: &str) -> &'static str {
 		REGISTRATION_READ | REGISTRATION_APPROVE | REGISTRATION_REJECT => "registration",
 		MAPPING_READ | MAPPING_DISABLE => "mapping",
 		INVITATION_CREATE | INVITATION_READ | INVITATION_REVOKE => "invitation",
+		crate::identity::tenancy::TENANT_UPDATE => "tenant",
 		_ => "subject",
 	}
 }

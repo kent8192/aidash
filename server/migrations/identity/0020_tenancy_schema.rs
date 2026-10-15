@@ -153,13 +153,14 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 		})
 		// Tenant creation by the Deployment Administrator bearer token and
-		// Invitation issuance concern no External Identity.
-		.add_operation(Operation::AlterColumn {
-			table: "dashboard_administration_history".into(),
-			column: "identity_id".into(),
-			old_definition: Some(ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true)),
-			new_definition: ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(false),
-			mysql_options: None,
+		// Invitation issuance concern no External Identity. The pinned typed
+		// AlterColumn renders no NOT NULL change for PostgreSQL, so this one
+		// statement is a documented RunSQL exception.
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0020_history_identity_nullable.sql").to_owned(),
+			reverse_sql: Some(
+				include_str!("sql/backward/0020_history_identity_nullable.sql").to_owned(),
+			),
 		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0020_tenancy_backfill.sql").to_owned(),

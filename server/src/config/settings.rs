@@ -159,6 +159,8 @@ fn file_settings_builder(
                 .with_value("provider_credentials", serde_json::json!({}))
                 .with_value("cache_salt", serde_json::json!({}))
                 .with_value("keyless_endpoints", serde_json::json!({}))
+                // Tenancy Rules default to the Self-hosted Offering's.
+                .with_value("tenancy", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({})),
         )
         // Medium priority: Base TOML file
