@@ -114,11 +114,12 @@ async fn catalog_admissions_end_with_their_transaction_or_a_savepoint_rollback()
 		"description":{"en":"Fixture"}, "config":{"instructions":"Frozen"}
 	}))
 	.unwrap();
-	let mut tx =
-		AccessTransaction::new(crate::database::native::Transaction::detached(pool.clone()));
+	let probe = crate::database::native::probe::SavepointProbe::default();
+	let mut tx = AccessTransaction::new(probe.transaction(pool.clone()));
 	tx.admit(admission.clone(), entry.clone());
 	assert_eq!(tx.admitted(&admission), Some(entry.clone()));
-	tx.transaction.as_mut().unwrap().note_savepoint_rollback();
+	tx.rollback_to_savepoint("admission").await.unwrap();
+	assert_eq!(probe.statements(), ["ROLLBACK TO SAVEPOINT"]);
 	assert_eq!(
 		tx.admitted(&admission),
 		None,

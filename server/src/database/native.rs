@@ -102,6 +102,7 @@ pub struct Transaction(
 	/// Savepoint rollbacks so far: each may release locks taken after its savepoint.
 	u64,
 );
+// A savepoint rollback issued on the deref'd executor bypasses the lock epoch.
 impl std::ops::Deref for Transaction {
 	type Target = dyn TransactionExecutor;
 	fn deref(&self) -> &Self::Target {
@@ -138,6 +139,36 @@ impl Transaction {
 	/// Changes whenever a savepoint rollback may have released locks held so far.
 	pub(crate) fn lock_epoch(&self) -> u64 {
 		self.3
+	}
+	// Savepoint statements are inherent so that method calls bind here before `Deref`
+	// reaches the executor, whether or not the caller imports `TransactionExecutor`.
+	pub async fn savepoint(&mut self, name: &str) -> reinhardt::db::backends::error::Result<()> {
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.savepoint(name)
+			.await
+	}
+	pub async fn release_savepoint(
+		&mut self,
+		name: &str,
+	) -> reinhardt::db::backends::error::Result<()> {
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.release_savepoint(name)
+			.await
+	}
+	pub async fn rollback_to_savepoint(
+		&mut self,
+		name: &str,
+	) -> reinhardt::db::backends::error::Result<()> {
+		self.3 += 1;
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.rollback_to_savepoint(name)
+			.await
 	}
 
 	pub(crate) fn pool(&self) -> &Pool {
@@ -199,9 +230,6 @@ impl Transaction {
 	/// A connectionless transaction shell for adapter state tests.
 	pub(crate) fn detached(pool: Pool) -> Self {
 		Self(None, pool, Default::default(), 0)
-	}
-	pub(crate) fn note_savepoint_rollback(&mut self) {
-		self.3 += 1;
 	}
 }
 impl AsMut<dyn TransactionExecutor> for Transaction {
@@ -603,35 +631,25 @@ impl TransactionExecutor for Transaction {
 	async fn rollback(self: Box<Self>) -> reinhardt::db::backends::error::Result<()> {
 		self.0.expect("active transaction").rollback().await
 	}
+	// `Transaction::…` paths resolve to the inherent methods above, not to these.
 	async fn savepoint(&mut self, name: &str) -> reinhardt::db::backends::error::Result<()> {
-		self.0
-			.as_mut()
-			.expect("active transaction")
-			.savepoint(name)
-			.await
+		Transaction::savepoint(self, name).await
 	}
 	async fn release_savepoint(
 		&mut self,
 		name: &str,
 	) -> reinhardt::db::backends::error::Result<()> {
-		self.0
-			.as_mut()
-			.expect("active transaction")
-			.release_savepoint(name)
-			.await
+		Transaction::release_savepoint(self, name).await
 	}
 	async fn rollback_to_savepoint(
 		&mut self,
 		name: &str,
 	) -> reinhardt::db::backends::error::Result<()> {
-		self.3 += 1;
-		self.0
-			.as_mut()
-			.expect("active transaction")
-			.rollback_to_savepoint(name)
-			.await
+		Transaction::rollback_to_savepoint(self, name).await
 	}
 }
 
+#[cfg(test)]
+pub(crate) mod probe;
 #[cfg(test)]
 mod tests;
