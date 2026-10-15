@@ -84,7 +84,8 @@ composition and durable database/worker acceptance remain pending.
 PostgreSQL `DecisionJournal` for one leased Run and the exact Decider pin admitted
 for it. Its boundary maps `run_revision` to `runs.revision` and `input_revision` to
 `runs.observed_input_seq`; reserving, recovering and committing lock the Run row and
-require the current lease and both revisions. A Decision Attempt is charged once, as a
+require the current lease and both revisions, and the boundary's step and revisions
+must also match the Run snapshot the journal was created with. A Decision Attempt is charged once, as a
 `pending` row keyed by its stable identity, together with a receipt for the Run's own
 per-Run call limit (`ExecutionAllowance::max_calls_per_run`). Every reservation reads
 the Run's current policy again through `CurrentAllowance` inside its transaction and
@@ -95,12 +96,16 @@ limit or a Decider the current policy no longer allows stops with `PruneUnavaila
 before anything is charged. Recovery reports a `pending` row as uncertain and keeps
 its original worker fence. Only the exact permit an attempt was charged with records
 its result, and a late result is still recorded after the lease moved. Committed
-evidence must carry the answers each of its answered attempts recorded.
+evidence must report each attempt with its durable status and carry the answers each
+answered attempt recorded.
 
 An applied decision saves the Run's context through the same lease-fenced save as an
 adopted Summary Stage (`context.compacted`), which ends the step, and writes its
 Decision Evidence in that transaction. Shadow and rejected decisions never touch the
-Run. A decision has at most one applied or shadow snapshot; each retry of a rejected
+Run. Applying context or retaining state rechecks the current policy inside the commit
+transaction and is forbidden once that policy no longer names the admitted pin;
+evidence without either effect is still recorded. Retained state must match its digest.
+A decision has at most one applied or shadow snapshot; each retry of a rejected
 decision appends another. Retained state whose deadline passed before the commit keeps
 only its expired marker, and `Store::expire_decision_states` later deletes due state and
 writes the matching marker into its evidence. Decision Evidence is not exposed through

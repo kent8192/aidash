@@ -17,6 +17,7 @@ use aidash_domain::{
 		AttemptStatus, Boundary, Evidence, Mode, Outcome, OutcomeLink, Probability, Restrictions,
 		StateReference, StateRetentionWitness, policy::ExecutionAllowance, validate_digest,
 	},
+	registry::rules,
 };
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
@@ -255,6 +256,15 @@ impl<'a> RunDecisionJournal<'a> {
 				"decision boundary belongs to another Run or Node".into(),
 			));
 		}
+		// An applied commit saves this snapshot, so it must be the Run the boundary saw.
+		if boundary.step != self.run.step
+			|| boundary.run_revision != self.run.revision
+			|| boundary.input_revision != self.run.observed_input_seq
+		{
+			return Err(Error::Conflict(
+				"decision boundary differs from the journal's Run; reload the Run".into(),
+			));
+		}
 		Ok(())
 	}
 
@@ -459,7 +469,7 @@ impl<'a> RunDecisionJournal<'a> {
 	}
 
 	/// Every attempt the evidence names must be one this Run charged for the
-	/// decision, and the evidence must carry the answers each one durably recorded.
+	/// decision, with its durable status and the answers it durably recorded.
 	async fn check_attempts(
 		&self,
 		tx: &mut native::Transaction,
@@ -480,12 +490,12 @@ impl<'a> RunDecisionJournal<'a> {
 				|| saved.permit.owner_receipts != attempt.owner_receipts
 				|| record.decider != evidence.decider
 				|| record.state_digest != evidence.state_digest
-				|| attempt.status == AttemptStatus::Answered
-					&& saved.answers.as_ref().is_none_or(|answers| {
-						answers.iter().any(|(question, answer)| {
-							evidence.answers.get(question) != Some(answer)
-						})
-					}) {
+				|| attempt.status != saved.status
+				|| saved.answers.as_ref().is_some_and(|answers| {
+					answers
+						.iter()
+						.any(|(question, answer)| evidence.answers.get(question) != Some(answer))
+				}) {
 				return Err(Error::Invalid(
 					"decision evidence differs from its charged attempts".into(),
 				));
@@ -530,6 +540,7 @@ impl<'a> RunDecisionJournal<'a> {
 				&& state.id == *witness
 				&& state.digest == *digest
 				&& state.digest == evidence.state_digest
+				&& rules::digest(&state.state) == state.digest
 				&& state.expires_at == *expires_at
 				&& state.expires_at == *deadline => {}
 			(None, StateReference::Disabled, StateRetentionWitness::Disabled)
@@ -557,6 +568,17 @@ impl<'a> RunDecisionJournal<'a> {
 			};
 			false
 		});
+		// Applying context or retaining state needs the admitted pin to be current;
+		// evidence without either effect is still recorded after a revocation.
+		if (context.is_some() || retained.is_some())
+			&& self
+				.current
+				.current(&mut tx, &self.run)
+				.await?
+				.is_none_or(|current| current.decider != self.allowance.decider)
+		{
+			return Err(Error::Forbidden);
+		}
 		let mut closed = Vec::new();
 		if let Some(context) = context {
 			let mut run = self.run.clone();

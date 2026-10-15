@@ -8,7 +8,7 @@ use aidash_application::{
 	decision::{CompactionResult, DecisionGate, Evaluation, compaction_input_digest},
 	ports::decision::{
 		Approval, DecisionAuthority, DecisionJournal, DecisionProvider, Disclosure, DispatchError,
-		DispatchRecord, PreparedDispatch, PreparedRequest, Reservation,
+		DispatchRecord, PreparedDispatch, PreparedRequest, Reservation, RetainedState,
 	},
 };
 use aidash_domain::{
@@ -181,10 +181,13 @@ impl PreparedDispatch for Dispatch<'_> {
 
 /// Approves every check; `forbid_after_dispatch` forbids applying once the
 /// provider has answered, and `retain_state` keeps the classification state.
+/// `revoke` is the journal's current policy, which loses its Decider once the
+/// provider has answered.
 struct Authority<'a> {
 	provider: &'a Provider,
 	forbid_after_dispatch: AtomicBool,
 	retain_state: bool,
+	revoke: Option<&'a Policy>,
 }
 #[async_trait]
 impl DecisionAuthority for Authority<'_> {
@@ -194,8 +197,13 @@ impl DecisionAuthority for Authority<'_> {
 		_: &DeciderPin,
 		_: &[SourcePin],
 	) -> aidash_application::Result<Approval> {
-		let forbid = self.forbid_after_dispatch.load(Ordering::SeqCst)
-			&& self.provider.calls.load(Ordering::SeqCst) > 0;
+		let answered = self.provider.calls.load(Ordering::SeqCst) > 0;
+		let forbid = self.forbid_after_dispatch.load(Ordering::SeqCst) && answered;
+		if let Some(policy) = self.revoke
+			&& answered
+		{
+			policy.set(None);
+		}
 		Ok(Approval {
 			restrictions: Restrictions {
 				forbid_apply: forbid,
@@ -295,9 +303,10 @@ async fn decide(
 	provider: &Provider,
 ) -> (aidash_application::Result<CompactionResult>, Context) {
 	let decider = bound(&store.node_id, mode);
-	let policy = Policy::new(allowance(&decider, 10));
+	let admitted = Policy::new(allowance(&decider, 10));
+	let policy = authority.revoke.unwrap_or(&admitted);
 	let journal =
-		RunDecisionJournal::new(store, run.clone(), allowance(&decider, 10), &policy).unwrap();
+		RunDecisionJournal::new(store, run.clone(), allowance(&decider, 10), policy).unwrap();
 	let mut context = run.context.clone();
 	let boundary = boundary(store, run, worker, &context);
 	let definition = definition(mode);
@@ -404,6 +413,7 @@ async fn an_applied_decision_commits_its_context_and_evidence_atomically(
 		provider: &provider,
 		forbid_after_dispatch: AtomicBool::new(false),
 		retain_state: false,
+		revoke: None,
 	};
 	// Act
 	let (result, context) =
@@ -448,6 +458,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		provider: &provider,
 		forbid_after_dispatch: AtomicBool::new(true),
 		retain_state: false,
+		revoke: None,
 	};
 	// Arrange: the final approval forbids applying after the provider answered.
 	let (rejected, unchanged) =
@@ -470,6 +481,13 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	*tampered.answers.values_mut().next().unwrap() = Probability::new(1.0).unwrap();
 	assert!(matches!(
 		journal.commit(&tampered, None, None).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+	));
+	// So is evidence that reports a durably answered attempt with another status.
+	let (_, mut relabeled) = evidence_rows(&f.store, run.id).await.remove(0);
+	relabeled.attempts[0].status = AttemptStatus::Uncertain;
+	assert!(matches!(
+		journal.commit(&relabeled, None, None).await,
 		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
 	));
 	assert_eq!(evidence_rows(&f.store, run.id).await.len(), 1);
@@ -527,6 +545,7 @@ async fn retained_state_expires_to_its_marker(
 		provider: &provider,
 		forbid_after_dispatch: AtomicBool::new(false),
 		retain_state: true,
+		revoke: None,
 	};
 	// Arrange: a Shadow decision keeps its state and leaves the Run unchanged.
 	let (result, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
@@ -534,7 +553,29 @@ async fn retained_state_expires_to_its_marker(
 	assert_eq!(f.store.run(run.id).await.unwrap().revision, run.revision);
 	assert_eq!(count(&f.store, "decision_states", run.id).await, 1);
 	let (_, retained) = evidence_rows(&f.store, run.id).await.remove(0);
-	assert!(matches!(retained.state, StateReference::Retained { .. }));
+	let StateReference::Retained {
+		id,
+		digest,
+		expires_at,
+	} = retained.state.clone()
+	else {
+		panic!("a Shadow decision retains its state");
+	};
+	// State bytes that do not match their digest are never retained.
+	let decider = bound(&f.store.node_id, Mode::Shadow);
+	let policy = Policy::new(allowance(&decider, 10));
+	let journal =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
+	let foreign = RetainedState {
+		id,
+		digest,
+		expires_at,
+		state: json!({"another":"evaluation"}),
+	};
+	assert!(matches!(
+		journal.commit(&retained, None, Some(&foreign)).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
+	));
 	// Act: nothing is due yet, then the deadline passes.
 	assert_eq!(f.store.expire_decision_states(Utc::now()).await.unwrap(), 0);
 	let expired = f
@@ -761,6 +802,51 @@ async fn every_charge_rechecks_the_current_allowance(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_decider_revoked_before_the_commit_never_retains_state(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let provider = Provider::new(Mode::Shadow);
+	let decider = bound(&f.store.node_id, Mode::Shadow);
+	let policy = Policy::new(allowance(&decider, 10));
+	let authority = Authority {
+		provider: &provider,
+		forbid_after_dispatch: AtomicBool::new(false),
+		retain_state: true,
+		revoke: Some(&policy),
+	};
+	// Act: the current policy drops the Decider after the provider answered.
+	let (retaining, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
+	// Assert: nothing is retained or recorded, and the Run is unchanged.
+	assert!(matches!(
+		retaining,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
+	assert_eq!(count(&f.store, "decision_evidence", run.id).await, 0);
+	assert_eq!(f.store.run(run.id).await.unwrap().revision, run.revision);
+	// Evidence without an effect is still recorded from the charged answers.
+	let authority = Authority {
+		retain_state: false,
+		..authority
+	};
+	let (recorded, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
+	assert!(matches!(recorded.unwrap(), CompactionResult::Shadow(_)));
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	assert_eq!(count(&f.store, "decision_evidence", run.id).await, 1);
+	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
+	f.store.release_lease(run.id, worker).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_original_fence(
 	#[future(awt)]
 	#[from(native_application)]
@@ -788,6 +874,12 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 		journal.reserve(&stale).await,
 		Err(aidash_application::Error::Conflict(_))
 	));
+	let mut altered = charged.clone();
+	altered.boundary.step += 1;
+	assert!(matches!(
+		journal.reserve(&altered).await,
+		Err(aidash_application::Error::Conflict(_))
+	));
 	let Reservation::Fresh(permit) = journal.reserve(&charged).await.unwrap() else {
 		panic!("a new attempt is charged");
 	};
@@ -806,6 +898,13 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 	let mut resumed = charged.clone();
 	resumed.boundary.worker = successor;
 	resumed.boundary.run_revision = leased.revision;
+	// A journal still holding the earlier Run snapshot never serves the new lease.
+	let outdated =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
+	assert!(matches!(
+		outdated.recover(charged.decision, &resumed.boundary).await,
+		Err(aidash_application::Error::Conflict(_))
+	));
 	let recovered = journal
 		.recover(charged.decision, &resumed.boundary)
 		.await
