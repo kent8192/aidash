@@ -6,6 +6,7 @@ use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::openrouter::CatalogModel;
+use crate::apps::execution::serializers::research::CitedEvidence;
 use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::StateResponse;
 use crate::apps::federation::remote::serializers::actions::SentResponse;
@@ -47,6 +48,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, PageQuery>(document, views::management::run_get)?;
 	contracts.path(document, views::management::run_get, &["Uuid"])?;
+	contracts.response::<_, CitedEvidence>(
+		document,
+		views::management::run_evidence,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::management::run_evidence,
+		&["Uuid", "String"],
+	)?;
 	contracts.response::<_, Run>(
 		document,
 		views::management::run_control,

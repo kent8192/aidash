@@ -776,20 +776,28 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
-	let entry = c.f.registry.get("research", "1.1.0").await.unwrap();
-	c.f.registry
-		.publish(aidash_server::registry::Package {
-			entity: entry,
-			author: "legacy".into(),
-			permissions: vec![],
-			dependencies: vec![],
-		})
-		.await
-		.unwrap();
-	let (status,installation)=request(&c.app,&c.f.config.api_token,"POST","/api/marketplace/adoptions",
-        json!({"tenant":"acme","source":{"id":"research","version":"1.1.0"},"idempotency_key":Uuid::new_v4()})).await;
+	let (status, package) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/marketplace/packages",
+		json!({"source":{"id":"research","version":"1.1.0"},"package_id":"research","author":"Fixture","idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{package}");
+	let (status, installation) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!(
+			"/api/marketplace/packages/{}/install",
+			package["key"].as_str().unwrap()
+		),
+		json!({"digest":package["digest"],"config":{},"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
 	assert_eq!(status, 200, "{installation}");
-	let id = installation["id"].as_str().unwrap();
+	let id = installation["installation"]["id"].as_str().unwrap();
 	let (status, revision) = request(
 		&c.app,
 		&c.token,

@@ -1,11 +1,8 @@
 //! OpenAPI payload contracts for native endpoints.
 use super::super::views;
 use crate::apps::registry::serializers::contracts::Entry as RegistryContractsEntry;
-use crate::apps::registry::serializers::contracts::Package;
-use crate::apps::registry::serializers::contracts::PackageRecord;
 use crate::apps::registry::serializers::contracts::Search;
 use crate::apps::registry::serializers::knowledge::PersonalAgent;
-use crate::apps::registry::serializers::management::InstallInput;
 use crate::apps::registry::serializers::skill_import::ImportRequest;
 use crate::apps::registry::serializers::skill_import::ImportResult;
 use crate::{Result, config::openapi::Contracts};
@@ -46,32 +43,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.request::<_, ImportRequest>(document, views::management::skill_import)?;
-	contracts.response::<_, Vec<PackageRecord>>(
-		document,
-		views::management::marketplace,
-		200,
-		"application/json",
-	)?;
-	contracts.query::<_, Search>(document, views::management::marketplace)?;
-	contracts.response::<_, PackageRecord>(
-		document,
-		views::management::package_publish,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, Package>(document, views::management::package_publish)?;
-	contracts.response::<_, RegistryContractsEntry>(
-		document,
-		views::management::package_install,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, InstallInput>(document, views::management::package_install)?;
-	contracts.path(
-		document,
-		views::management::package_install,
-		&["String", "String"],
-	)?;
 	contracts.response::<_, RegistryContractsEntry>(
 		document,
 		views::personal_agents::create,

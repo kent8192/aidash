@@ -17,6 +17,23 @@ fn http_error(error: reqwest::Error) -> Error {
 	Error::External(error.without_url().to_string())
 }
 
+pub(crate) fn validate_endpoint(endpoint: &str) -> Result<()> {
+	let url =
+		reqwest::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+	if !matches!(url.scheme(), "http" | "https")
+		|| url.host_str().is_none()
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.query().is_some()
+		|| url.fragment().is_some()
+	{
+		return Err(Error::Invalid(
+			"endpoint requires HTTP(S) without inline credentials, query or fragment".into(),
+		));
+	}
+	Ok(())
+}
+
 pub mod nats;
 
 pub mod tools;

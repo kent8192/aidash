@@ -57,6 +57,21 @@ pub async fn run_get(
 	crate::http::json(service.run_get(actor, id, page).await)
 }
 
+/// One Source citation of the Run. A reader who may not read the Run, and a
+/// reference the Run does not hold, both get the same 404.
+#[get(
+	"/api/runs/{id}/evidence/{reference}",
+	name = "run-evidence",
+	auth = "protected"
+)]
+pub async fn run_evidence(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path((id, reference)): Path<(Uuid, String)>,
+) -> ViewResult<Response> {
+	crate::http::json(service.run_evidence(actor, id, &reference).await)
+}
+
 #[post("/api/runs/{id}/control", name = "run-control", auth = "protected")]
 pub async fn run_control(
 	#[inject] service: Depends<HarnessManagement>,

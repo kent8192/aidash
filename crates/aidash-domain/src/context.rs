@@ -65,6 +65,12 @@ pub struct Context {
 	pub journal: JournalCursor,
 	#[serde(default, skip_serializing_if = "recovery::RecoveryState::is_initial")]
 	pub recovery: recovery::RecoveryState,
+	/// Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::provider::estimate::EstimateState::is_initial"
+	)]
+	pub estimate: crate::provider::estimate::EstimateState,
 	pub usage: Option<ContextUsage>,
 	pub compactions: u32,
 	// Execution proof stays out of provider context and survives Jev history
@@ -103,6 +109,8 @@ struct StoredContext {
 	journal: Option<JournalCursor>,
 	#[serde(default)]
 	recovery: recovery::RecoveryState,
+	#[serde(default)]
+	estimate: crate::provider::estimate::EstimateState,
 	usage: Option<ContextUsage>,
 	compactions: u32,
 	message_read_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
@@ -191,6 +199,7 @@ impl<'de> Deserialize<'de> for Context {
 			history,
 			journal,
 			recovery: stored.recovery,
+			estimate: stored.estimate,
 			usage: stored.usage,
 			compactions: stored.compactions,
 			message_read_coverage: stored.message_read_coverage,
@@ -273,6 +282,9 @@ pub struct InspectionContext<'a> {
 	pub message_inference_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
 	#[serde(skip_serializing_if = "ExposureState::is_empty")]
 	pub exposure: &'a ExposureState,
+	/// The Run's pinned Estimate Snapshot, without its sample count.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub estimate: Option<crate::provider::estimate::EstimateView>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -289,6 +301,7 @@ impl Context {
 			message_read_coverage: &self.message_read_coverage,
 			message_inference_coverage: &self.message_inference_coverage,
 			exposure: &self.exposure,
+			estimate: self.estimate.view(),
 		}
 	}
 }
@@ -311,8 +324,8 @@ pub fn estimated_tokens(value: &str) -> usize {
 	value.len()
 }
 
-/// Estimate how much one durable event adds to a complete provider request.
-/// Fixed instructions, tools, and pinned context cancel out, so this probe
+/// Estimate how much one durable event adds to a complete provider request,
+/// under the Run's current Estimate Snapshot. Fixed instructions, tools, and pinned context cancel out, so this probe
 /// measures the same encoded context growth without storing that payload.
 /// Legacy and Ordered encode `history` as the same JSON array inside one
 /// escaped text value, so the Legacy probe measures Ordered growth exactly.
@@ -341,6 +354,8 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			// Growth is in the unit of the Run's current Request Estimates.
+			estimate: context.estimate.current(),
 		}
 		.estimated_total_tokens()
 	};
@@ -370,12 +385,15 @@ impl RequestProjection {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct RequestBudget<'a> {
 	pub window: usize,
 	pub instructions: &'a str,
 	pub tools: &'a [crate::provider::ToolSpec],
 	pub max_output_tokens: u32,
 	pub projection: &'a RequestProjection,
+	/// The step's Estimate Snapshot; every request this budget builds carries it.
+	pub estimate: crate::provider::estimate::EstimateSnapshot,
 }
 
 impl RequestBudget<'_> {
@@ -404,6 +422,16 @@ impl RequestBudget<'_> {
 			// Set per step by the harness; salted estimates count it either way.
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			estimate: self.estimate,
+		}
+	}
+
+	/// The same budget under the conservative byte estimate. Run-fixed quotas
+	/// derive from it, so they never move with calibration (ADR 0017).
+	pub fn conservative(&self) -> Self {
+		Self {
+			estimate: crate::provider::estimate::EstimateSnapshot::conservative(self.estimate.step),
+			..*self
 		}
 	}
 
@@ -544,7 +572,8 @@ pub fn bound_ordered_snapshot(
 
 pub const MIN_CONTEXT_RESERVE: usize = 2048;
 
-/// Reserve room for history using the same complete request estimate as execution.
+/// Reserve room for history using the same complete request estimate as
+/// execution. Registration passes the conservative snapshot.
 pub fn request_context_budget(
 	window: usize,
 	max_output_tokens: u32,
@@ -552,6 +581,7 @@ pub fn request_context_budget(
 	specifications: &[crate::provider::ToolSpec],
 	private_context: &Value,
 	projection: &RequestProjection,
+	estimate: crate::provider::estimate::EstimateSnapshot,
 ) -> Result<usize> {
 	let budget = RequestBudget {
 		window,
@@ -559,6 +589,7 @@ pub fn request_context_budget(
 		tools: specifications,
 		max_output_tokens,
 		projection,
+		estimate,
 	}
 	.remaining(&Context::default(), private_context);
 	if budget < MIN_CONTEXT_RESERVE {

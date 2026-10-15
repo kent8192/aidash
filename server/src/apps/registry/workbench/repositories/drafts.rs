@@ -106,9 +106,6 @@ impl DefinitionLookup for Scope {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		NativeScope(&mut self.tx).definition(id, version).await
 	}
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
-		NativeScope(&mut self.tx).overrides(id, version).await
-	}
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		NativeScope(&mut self.tx).executor_kind(id, version).await
 	}

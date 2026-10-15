@@ -26,6 +26,8 @@ use serde_json::{Value, json};
 use url::Url;
 use uuid::Uuid;
 
+pub mod reading;
+
 /// Instruction returned with a pending Web disclosure approval.
 pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision; after approval, repeat this exact call.";
 

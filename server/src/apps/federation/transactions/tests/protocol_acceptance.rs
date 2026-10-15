@@ -773,9 +773,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn registry_workspace_task_execution_and_artifact_commit_together_once(
-	#[future(awt)] pair: Pair,
-) {
+async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt)] pair: Pair) {
 	use aidash_server::{
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
@@ -865,7 +863,6 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
         .execute(b.f.store.pool.driver())
         .await }
         .unwrap();
-	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"registry_register","entry":{"id":"atomic-skill","version":"1.0.0","kind":"skill","name":{"en":"Atomic skill"},"description":{"en":"Prepared registration"},"config":{"instructions":"Complete atomic work"}}})).unwrap());
 	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Atomic result","content":"one committed result"}})).unwrap());
 	manifest.participants[1].mutations.push(
 		serde_json::from_value(
@@ -951,14 +948,6 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 	assert_eq!(
 		b.f.store.run(run.id).await.unwrap().phase().as_str(),
 		"COMPLETED"
-	);
-	assert_eq!(
-		a.f.registry
-			.get("atomic-skill", "1.0.0")
-			.await
-			.unwrap()
-			.kind,
-		"skill"
 	);
 	let artifacts = a.f.store.snapshot(wa).await.unwrap().artifacts;
 	assert_eq!(artifacts.len(), 1);

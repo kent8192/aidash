@@ -92,16 +92,10 @@ impl DefinitionValidation {
 				let config: aidash_domain::decision::DeciderConfig =
 					serde_json::from_value(e.config.clone())?;
 				config.validate()?;
-				if local {
-					let credential = self
-						.credentials
-						.resolve(&config.credential_env)
-						.map_err(|_| Error::Invalid("Decider credential unavailable".into()))?;
-					if credential.trim().is_empty() {
-						return Err(Error::Invalid(
-							"Decider credential must not be empty".into(),
-						));
-					}
+				if local && !self.provider_credentials_enabled {
+					return Err(Error::Invalid(
+						"Provider Credential Store is not configured".into(),
+					));
 				}
 			}
 			"memory" | "source" if e.config.get("schema_version").is_some() => {
@@ -266,28 +260,19 @@ impl DefinitionValidation {
 	}
 
 	pub fn validate_compactor(&self, config: &CompactorConfig, local: bool) -> Result<()> {
-		validate_endpoint(&config.endpoint)?;
-		if config.provider != "typesafe-system-one"
-			|| config.model.trim().is_empty()
-			|| config.model.len() > 128
-			|| !(1024..=1_048_576).contains(&config.max_request_bytes)
+		aidash_domain::decision::validate_provider_credential(&config.provider_credential)?;
+		aidash_domain::decision::validate_model(&config.model)?;
+		if !(1024..=1_048_576).contains(&config.max_request_bytes)
 			|| !(1..=1024).contains(&config.max_questions)
 			|| !(128..=1_048_576).contains(&config.max_response_bytes)
 		{
 			return Err(Error::Invalid(
-				"invalid compactor transport or request/response bounds".into(),
+				"invalid compactor request/response bounds".into(),
 			));
 		}
-		validate_secret_reference(&config.credential_env)?;
-		if local
-			&& self
-				.credentials
-				.resolve(&config.credential_env)?
-				.trim()
-				.is_empty()
-		{
+		if local && !self.provider_credentials_enabled {
 			return Err(Error::Invalid(
-				"compactor credential must not be empty".into(),
+				"Provider Credential Store is not configured".into(),
 			));
 		}
 		Ok(())
@@ -447,6 +432,8 @@ impl DefinitionValidation {
 			&specifications,
 			private_context,
 			&registration_projection(version),
+			// Registration measures the conservative byte estimate (ADR 0017).
+			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)
 		.map_err(Into::into)
 	}
@@ -535,6 +522,8 @@ impl DefinitionValidation {
 			&exposed,
 			private_context,
 			&registration_projection(version),
+			// Registration measures the conservative byte estimate (ADR 0017).
+			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)?
 		.checked_sub(reserve)
 		.filter(|remaining| *remaining >= aidash_domain::context::MIN_CONTEXT_RESERVE)

@@ -40,6 +40,7 @@ fn message(id: usize, visible: bool) -> Message {
 		content: "saved content".into(),
 		idempotency_key: None,
 		created_at: Utc::now(),
+		run_id: None,
 	}
 }
 fn event(sequence: i64, visible: bool) -> Event {
@@ -64,6 +65,7 @@ fn artifact(id: usize, visible: bool) -> Artifact {
 		created_by: if visible { "visible" } else { "hidden" }.into(),
 		idempotency_key: "artifact".into(),
 		created_at: Utc::now(),
+		run_id: None,
 	}
 }
 struct Scope {

@@ -250,7 +250,8 @@ impl RemoteRunMessageFence {
 			))
 			.build(PostgresQueryBuilder);
 		TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-		let message = Message::append_in(tx, node, workspace, sender, content, message_key).await?;
+		let message =
+			Message::append_in(tx, node, workspace, sender, content, message_key, None).await?;
 		Self::objects()
 			.filter(Self::field_task_id().eq(record.task_id))
 			.filter(Self::field_idempotency_key().eq(&record.idempotency_key))

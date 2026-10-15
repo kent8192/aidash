@@ -133,6 +133,10 @@ struct State {
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
+	/// Serve a model version that opts into the calibrated estimator.
+	calibrated_model: bool,
+	/// Calibration samples the store returns, newest first.
+	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -195,6 +199,9 @@ impl Backend {
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
+		}
+		if self.0.calibrated_model && id != "summarizer" {
+			config["request_estimator"] = json!("calibrated");
 		}
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
 	}
@@ -430,6 +437,15 @@ impl ExecutionStore for Backend {
 		usage.push((dispatch.clone(), None));
 		Ok(())
 	}
+	async fn calibration_samples(
+		&self,
+		upstream_model: &str,
+		_projection_version: u8,
+	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
+		assert_eq!(upstream_model, "fixture");
+		self.record("calibration.samples");
+		Ok(self.0.calibration.lock().unwrap().clone())
+	}
 	async fn complete_usage_record(
 		&self,
 		run: &Run,
@@ -613,6 +629,7 @@ impl ExecutionHome for Backend {
 				content: input.content.clone(),
 				idempotency_key: Some(input.idempotency_key.clone()),
 				created_at: "2026-10-02T00:00:00Z".parse().unwrap(),
+				run_id: None,
 			}));
 		}
 		assert_eq!(kind, "task");
@@ -1262,6 +1279,8 @@ fn fixture() -> Fixture {
 		explicit_cache_model: false,
 		known_evidence: vec![],
 		artifacts: Mutex::new(vec![]),
+		calibrated_model: false,
+		calibration: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }
 }
@@ -3289,6 +3308,7 @@ fn run_message(fixture: &mut Fixture) {
 		content: content.into(),
 		idempotency_key: Some("input-2".into()),
 		created_at,
+		run_id: None,
 	}];
 	fixture.run.observed_input_seq = 1;
 }
@@ -4218,6 +4238,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 		tools: &tools,
 		max_output_tokens: 100,
 		projection: &context::RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	budget.window = budget.request(&context, &pinned).estimated_total_tokens() / 2;
 	let policy = context::policy::Effective::of(None);
@@ -4241,6 +4262,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 }
 
 mod batch;
+mod estimate;
 mod native;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
@@ -4573,6 +4595,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 			tools: &[],
 			max_output_tokens: 4096,
 			projection,
+			estimate: Default::default(),
 		}
 		.request(&context, &pinned)
 	};
@@ -4604,6 +4627,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 			tools: &[],
 			max_output_tokens: 4096,
 			projection,
+			estimate: Default::default(),
 		};
 		budget.request(&grown, &pinned).estimated_total_tokens()
 			- budget.request(&context, &pinned).estimated_total_tokens()

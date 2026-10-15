@@ -47,7 +47,6 @@ pub async fn approve_and_activate(
 	}
 	scope.load_tenant(&input.tenant).await?;
 	scope.distribution_lock(true).await?;
-	gate(scope).await?;
 	scope.enable_writer().await?;
 	let mut installs = vec![];
 	let mut references = std::collections::BTreeMap::new();

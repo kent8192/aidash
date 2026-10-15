@@ -46,17 +46,6 @@ impl DefinitionLookup for SqlScope<'_> {
 			.map_err(Into::into)
 	}
 
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
-		let query = Query::select()
-			.column(Alias::new("config"))
-			.from(Alias::new("installations"))
-			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("version").eq(Expr::value(version)))
-			.to_string(PostgresQueryBuilder);
-		Ok(crate::database::native::query_scalar(&query)
-			.scalar_optional(&mut **self.0)
-			.await?)
-	}
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		let query = Query::select()
 			.column(Alias::new("kind"))

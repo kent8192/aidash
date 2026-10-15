@@ -141,22 +141,20 @@ impl EstimateConfidence {
 /// never merged into reported counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestEstimate {
+	/// The whole Request Estimate, output reservation included.
 	pub tokens: u64,
 	pub estimator: String,
 	pub version: u32,
 	pub confidence: EstimateConfidence,
-}
-
-impl RequestEstimate {
-	/// The byte estimator that sizes reservations and preflight fitting.
-	pub fn conservative_bytes(tokens: usize) -> Self {
-		Self {
-			tokens: u64::try_from(tokens).unwrap_or(u64::MAX),
-			estimator: "bytes".into(),
-			version: 1,
-			confidence: EstimateConfidence::Conservative,
-		}
-	}
+	/// Serialized request body plus the cache-salt reserve, in bytes. Every
+	/// attempt records it, whichever estimator it used, so it can calibrate.
+	pub byte_basis: u64,
+	/// The output reservation inside `tokens`; `tokens - output_reservation`
+	/// is the input-side estimate compared with reported prompt tokens.
+	pub output_reservation: u64,
+	/// The Estimate Snapshot's 99th-percentile ratio in parts per million;
+	/// `None` for the byte estimator.
+	pub ratio_ppm: Option<u32>,
 }
 
 /// Facts recorded before provider I/O for one Inference Attempt.
@@ -171,7 +169,12 @@ pub struct UsageDispatch {
 	pub model_version: String,
 	/// The Run's pinned Projection Version, as [`crate::projection::ProjectionVersion::number`].
 	pub projection_version: u8,
+	/// The upstream model slug (`ModelConfig::model_id`), the calibration key.
+	pub upstream_model: String,
 	pub estimate: RequestEstimate,
+	/// A complete outcome becomes a calibration sample: a media-free Inference
+	/// Attempt of a Run step (ADR 0017).
+	pub calibration_sample: bool,
 	/// The request's Stable Prefix cache identity
 	/// ([`crate::provider::ModelRequest::cache_identity`]); `None` for an
 	/// unsalted request, which has no Cache Scope.
@@ -252,15 +255,6 @@ mod tests {
 		#[case] expected: Option<ProviderCost>,
 	) {
 		assert_eq!(ProviderCost::from_report(cost, upstream), expected);
-	}
-
-	#[rstest]
-	fn byte_estimates_are_conservative_version_one() {
-		let estimate = RequestEstimate::conservative_bytes(42);
-		assert_eq!(estimate.tokens, 42);
-		assert_eq!(estimate.estimator, "bytes");
-		assert_eq!(estimate.version, 1);
-		assert_eq!(estimate.confidence, EstimateConfidence::Conservative);
 	}
 
 	#[rstest]

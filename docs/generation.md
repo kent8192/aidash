@@ -58,7 +58,7 @@ Successful, complete, positive and bounded provider usage refunds unused reserva
 
 ## Approved compaction
 
-Register a `compactor` Registry entry and approve its exact version in the tenant catalog. Its configuration selects `provider: "typesafe-system-one"`, `endpoint`, `model`, `credential_env`, `max_request_bytes` (1024–1048576), `max_questions` (1–1024) and `max_response_bytes` (128–1048576). Credentials use configured `AIDASH_SECRET_*` references. The bilingual Registry form exposes these fields. HTTPS/HTTP endpoints must not contain credentials, query strings or fragments; approved calls never follow redirects, have a 5-second connection timeout and a 30-second request timeout, and enforce response size while reading.
+Register a `compactor` Registry entry and approve its exact version in the tenant catalog. Its configuration names `provider_credential: "openrouter"`, an exact Jev release as `model` (such as `typesafe/jev-1.13`; aliases are refused), `max_request_bytes` (1024–1048576), `max_questions` (1–1024) and `max_response_bytes` (128–1048576). It has no endpoint or key: calls go to OpenRouter's System One API with the Tenant's current OpenRouter Provider Credential and `provider.zdr = true` (ADR 0041). The bilingual Registry form exposes these fields. Approved calls never follow redirects, have a 5-second connection timeout and a 30-second request timeout, and enforce response size while reading.
 
 A policy explicitly references that entry:
 
@@ -76,7 +76,7 @@ The request pins this contract to its immutable policy revision. Each generation
 
 Input bytes and question counts are checked before reservation. The worker then atomically commits one call and an attempt record for every generated ancestor before network I/O. The ledger retains provider/version, run, byte count and question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries reserve new attempts. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after successful compaction and rechecks lifetime before its own HTTP request.
 
-No configured compaction permission is needed when the context already fits. Generated chains never fall back to the node's environment-selected Jev provider. Ordinary agents outside a generated chain retain that provider selection, with bounded 1 MiB request/response payloads and at most 1024 questions per request.
+No configured compaction permission is needed when the context already fits. There is no environment-selected Jev provider: an ordinary agent outside a generated chain is not pruned and stops with `prune_unavailable` when its context outgrows its model, until #108 binds the built-in compaction Decider. A Tenant without an OpenRouter binding fails the same way before any allowance is reserved.
 
 ## Approved Summary Stage model
 

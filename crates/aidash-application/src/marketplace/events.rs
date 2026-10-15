@@ -9,11 +9,6 @@ pub async fn visible(scope: &mut dyn EventScope, event: &Event, node: &str) -> R
 	if event.kind == "marketplace.audit" {
 		return Ok(false);
 	}
-	match scope.compatibility_ready().await {
-		Ok(()) => {}
-		Err(Error::Forbidden) => return Ok(false),
-		Err(error) => return Err(error),
-	}
 	let result = async {
 		if let Some(id) = event.data["installation"].as_str() {
 			if event.data["tenant"].as_str() != Some(scope.tenant()) {
@@ -84,15 +79,11 @@ async fn entries(
 	scope: &mut dyn EventScope,
 	input: Vec<Entry>,
 	single: bool,
-	gate_before_read: bool,
 	_node: &str,
 ) -> Result<Vec<Entry>> {
 	let mut output = vec![];
 	for entry in input {
 		let checked = async {
-			if gate_before_read && entry.installation.is_some() {
-				scope.compatibility_ready().await?;
-			}
 			let entry = scope.catalog(&reference(&entry), "registry.read").await?;
 			installations::check_pinned(scope, &entry).await?;
 			if !single && !installations::active(scope, &entry).await? {
@@ -115,14 +106,14 @@ pub async fn registry_entries(
 	single: bool,
 	node: &str,
 ) -> Result<Vec<Entry>> {
-	entries(scope, input, single, true, node).await
+	entries(scope, input, single, node).await
 }
 pub async fn state_registry(
 	scope: &mut dyn EventScope,
 	input: Vec<Entry>,
 	node: &str,
 ) -> Result<Vec<Entry>> {
-	entries(scope, input, false, false, node).await
+	entries(scope, input, false, node).await
 }
 /// No database lease survives the downstream SSE yield; the caller commits the
 /// bounded queue insertion while authority is still held.

@@ -57,15 +57,6 @@ pub(crate) async fn writer(tx: &mut crate::database::native::Transaction) -> Res
 	.await?;
 	Ok(())
 }
-pub(crate) async fn gate(tx: &mut crate::database::native::Transaction) -> Result<()> {
-	let state: Compatibility = get(tx, "marketplace_gate", "v1")
-		.await?
-		.ok_or(Error::Forbidden)?;
-	if !aidash_domain::marketplace::installations::compatible(&state) {
-		return Err(Error::Forbidden);
-	}
-	Ok(())
-}
 pub(super) async fn begin(
 	store: &crate::store::Store,
 	identity: &crate::authorization::identity::SubjectIdentity,
@@ -76,7 +67,6 @@ pub(super) async fn begin(
 		serde_json::json!({"request_id":Uuid::new_v4(),"tenant":identity.tenant,"actor":identity.subject,"credential_id":identity.credential_id,"policy_revision":access.snapshot.revision,"authority":{}}),
 	);
 	lock(&mut access.tx, write).await?;
-	gate(&mut access.tx).await?;
 	if write {
 		writer(&mut access.tx).await?;
 	}
@@ -145,7 +135,5 @@ pub(crate) fn authority(access: &mut Access, name: String, revision: i64) {
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
-
-pub(super) use crate::apps::marketplace::repositories::storage::get;
 
 use reinhardt::query::SimpleExpr;

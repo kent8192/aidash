@@ -59,6 +59,7 @@ fn scope() -> Scope {
 			created_by: "saved-author".into(),
 			idempotency_key: "artifact".into(),
 			created_at: now,
+			run_id: None,
 		},
 		message: Message {
 			id: Uuid::from_u128(13),
@@ -67,6 +68,7 @@ fn scope() -> Scope {
 			content: "日本語\u{0000}".into(),
 			idempotency_key: None,
 			created_at: now,
+			run_id: None,
 		},
 		event: Event {
 			sequence: 15,
