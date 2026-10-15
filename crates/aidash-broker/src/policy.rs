@@ -186,3 +186,23 @@ fn chat_messages(
 	}
 	Ok(())
 }
+
+/// A System One body may carry only the decision itself and the zero-data-retention
+/// routing flag. `trace`, `user` and `session_id` reach OpenRouter's observability
+/// destinations, and any other `provider` preference could widen routing.
+pub(crate) fn decision_input(value: &Value) -> Result<(), Failure> {
+	let fields = value.as_object().ok_or(Failure::ClaimViolation)?;
+	if fields
+		.keys()
+		.any(|key| !matches!(key.as_str(), "model" | "state" | "questions" | "provider"))
+		|| !fields.contains_key("state")
+		|| fields
+			.get("questions")
+			.and_then(Value::as_object)
+			.is_none_or(|questions| questions.is_empty())
+		|| fields.get("provider") != Some(&json!({"zdr": true}))
+	{
+		return Err(Failure::ClaimViolation);
+	}
+	Ok(())
+}

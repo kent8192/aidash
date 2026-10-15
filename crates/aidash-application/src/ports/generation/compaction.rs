@@ -1,10 +1,7 @@
 //! Compaction keeps inherited authority and atomic call reservations behind ports.
 use crate::{
 	Result,
-	ports::{
-		CompactionClassifier, CompactionQuestions, catalog::CatalogScope,
-		generation::publication::GenerationLive,
-	},
+	ports::{CompactionQuestions, catalog::CatalogScope, generation::publication::GenerationLive},
 };
 use aidash_domain::{generation::compaction::Attempt, registry::CompactorConfig};
 use async_trait::async_trait;
@@ -20,9 +17,21 @@ pub trait GenerationCompactionAuthority: Send {
 	fn catalog(&mut self) -> &mut dyn CatalogScope;
 }
 
-pub trait ApprovedCompactionTransport: CompactionClassifier {
+#[async_trait]
+pub trait ApprovedCompactionTransport: Send + Sync {
 	/// Validate the exact request against the approved provider's bounds.
 	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize>;
+	/// Fail before any call is charged when the Tenant has no usable OpenRouter
+	/// binding; it neither mints a token nor reads Key Material.
+	async fn check_credential(&self) -> Result<()>;
+	/// One provider call as the reserved compaction attempt, which is its call
+	/// identity in the Capability Token and the provider audit.
+	async fn ask(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &CompactionQuestions,
+	) -> Result<Value>;
 }
 
 pub trait GenerationCompactionProvider: Send + Sync {

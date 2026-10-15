@@ -824,7 +824,6 @@ impl Guard {
 			access: self.access.clone(),
 			store: f.store.clone(),
 			run: self.run.clone(),
-			client: f.client.clone(),
 			remote: self.remote.clone(),
 		}
 	}

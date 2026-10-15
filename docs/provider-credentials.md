@@ -17,8 +17,23 @@ has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
 Every model-provider key therefore comes from a Provider Credential Store, on
 Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
-store references keep their `AIDASH_SECRET_*` configuration; compactors move to
-OpenRouter with Jev (see the #158 PR).
+store references keep their `AIDASH_SECRET_*` configuration.
+
+Jev also runs through OpenRouter, at `POST {base}/systemone` with
+`provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
+`provider_credential = "openrouter"` and an exact release such as
+`typesafe/jev-1.13`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
+`AIDASH_JEV_MODEL` are gone, and the `registry_compactor_config` constraint
+rejects the old shape. Each request is a Decision Attempt of the Run whose
+context it reduces, and it uses the Provider Credential that the Tenant's
+OpenRouter binding names at the time of the call, not the Run's admitted
+inference pin: Runs on a Plan Connection or a Keyless endpoint have no such
+pin. On Cloud its Capability Token names the Run as subject with the Decision
+Attempt as `call`, carries only the `decision` operation and no output bound,
+and the broker admits a body of exactly `model`, `state`, `questions` and
+`provider: {"zdr": true}`. Before reserving remote compaction allowances, the
+caller checks that the binding is usable without minting a token or reading
+Key Material.
 
 ## Keyless endpoints
 

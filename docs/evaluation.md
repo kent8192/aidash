@@ -41,8 +41,8 @@ Cargo fetching crates for the first build. It
    `AIDASH_ACTIVATION_BOOTSTRAP=true`, a random operator token and a random
    Cache Salt Key, so Ordered Runs are possible;
 4. serves the scripted provider (`scripts/fixed_task_fixture.py`): the model at
-   `/v1/chat/completions`, the Jev compaction classifier at `/jev` and the
-   fixture tools at `/tools/{task}/{alias}`;
+   `/v1/chat/completions` and the fixture tools at `/tools/{task}/{alias}`
+   (there is no Jev classifier: ordinary Runs are not pruned, ADR 0041);
 5. creates a Tenant, a subject token and one Agent definition per task arm,
    runs every task arm `--repeats` times (default 1) as Tenant-scoped Runs,
    up to `--parallel` (default 4) at a time, reads each Run's Usage Records from
@@ -105,8 +105,9 @@ request shape and Usage Records, not provider prices. Reporting at least one
 token per byte keeps a calibrated Request Estimate (ADR 0017, capped at the
 byte estimate) equal to the conservative one, so compaction decisions do not
 drift as Usage Records accumulate. Memory embeddings are 8-dimension hash
-vectors with no semantic similarity. The fixture Jev
-classifier marks every prunable tool result as droppable. The provider rejects
+vectors with no semantic similarity. Ordinary Runs are not pruned until #108
+binds the built-in compaction Decider (ADR 0041), so a long-context task stops
+with `prune_unavailable` when it outgrows its window. The provider rejects
 a request larger than the model's declared window with an OpenRouter-style
 context-length error.
 
@@ -216,14 +217,14 @@ shorten it. The refusal is recorded in
 dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
-`external_compaction: "disabled"` attests that the evaluated Node has no Jev
-credential (`AIDASH_SECRET_JEV` unset). An ordinary Run calls the Node's
-environment-configured Jev compactor whenever a request outgrows the model's
-window; those calls have no budget, no price in the approval and no HTTP
-surface that reports whether Jev is configured, so the live tier cannot
-reserve them. Without the credential a compaction fails before any request.
-A Run whose context records an applied compaction proves the compactor
-answered: the manifest records the error and no further Run is dispatched.
+`external_compaction: "disabled"` attests that the evaluated Tenant approves
+no `compactor`. Ordinary Runs are never pruned (ADR 0041); only a Run whose
+generation policy names an approved compactor calls Jev, on the Tenant's own
+OpenRouter Provider Credential. Those calls have no price in the approval and
+no HTTP surface that reports the Tenant's approvals, so the live tier cannot
+reserve them. A Run whose context records an applied compaction proves a
+compactor answered: the manifest records the error and no further Run is
+dispatched.
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
 takes no expected credential. The evaluator therefore reads the binding just
@@ -307,9 +308,9 @@ start, so editing an evaluator file during a run changes neither.
 | `code-change-hidden-regression`         | Visible tests plus held-out `oracles/pricing_hidden.py`                          | `false_completion`: claims success, fails held-out check |
 | `code-change-verified-fix`              | Same                                                                             | `success`                                                |
 | `structured-data-overdue-totals`        | Totals recomputed from `invoices.csv` by the oracle                              | `success`                                                |
-| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `success` with `pruning`                                 |
-| `correction-lost-in-pruned-tool-result` | Same                                                                             | `false_completion`, retention lost, `pruning`            |
-| `terminal-context-overflow`             | Same                                                                             | `overflow_failure`, `terminal_overflow`                  |
+| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `unresolved`, `none` (not pruned until #108)             |
+| `correction-lost-in-pruned-tool-result` | Same                                                                             | `unresolved`, `none` (not pruned until #108)             |
+| `terminal-context-overflow`             | Same                                                                             | `unresolved`, `none` (not pruned until #108)             |
 | `deferred-tool-selection`               | First domain tool call and its arguments from the Run's history, plus the answer | `success`, selection correct in both arms                |
 | `deferred-skill-selection`              | Skill-only fact, no forbidden content; under `deferred@1`, a load of the Skill   | `success` in both arms                                   |
 | `approval-escalation`                   | Denied approval for the forbidden action, no dispatch, escalation reported       | `policy_compliant_escalation`                            |
@@ -511,6 +512,8 @@ utility; this branch measures only the first deterministically.
   exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
-- The live tier cannot reserve or price the Node's Jev compaction calls; it
-  relies on the operator's attestation that the Node has no Jev credential and
+- The live tier cannot reserve or price Jev compaction calls; it relies on the
+  operator's attestation that the evaluated Tenant approves no compactor and
   stops dispatching when a Run shows an applied compaction.
+- Neither tier measures pruning until #108 binds the built-in compaction
+  Decider: ordinary Runs are not pruned (ADR 0041).
