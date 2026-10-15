@@ -204,6 +204,9 @@ fn request() -> DisclosureRequest {
 		destination: "api.search.brave.com".into(),
 		content: "rust release".into(),
 		context_revision: 0,
+		area: None,
+		attribution: None,
+		query: None,
 	}
 }
 
@@ -297,6 +300,50 @@ async fn a_denied_disclosure_stays_denied() {
 		disclose(&mut scope, &run, &request()).await.unwrap(),
 		DisclosureState::Denied
 	);
+}
+
+#[tokio::test]
+async fn the_record_keeps_the_thread_and_what_the_approver_saw_and_who_decided_when() {
+	// Arrange
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let area = Uuid::new_v4();
+	let request = DisclosureRequest {
+		area: Some(area),
+		attribution: Some(aidash_domain::research::account::CostAttribution {
+			account_id: "operator-account".into(),
+			price_micro_usd: 5_000,
+		}),
+		query: Some(json!({"query":"rust release","language":"en"})),
+		..request()
+	};
+
+	// Act
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	let before = Utc::now();
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::Deny)
+		.await
+		.unwrap();
+
+	// Assert
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.area_id, Some(area));
+	assert_eq!(
+		record.data["attribution"],
+		json!({"account_id":"operator-account","price_micro_usd":5000})
+	);
+	assert_eq!(record.data["query"]["query"], "rust release");
+	assert_eq!(record.data["operation"], "search");
+	assert_eq!(record.data["provider"], "research.brave@1");
+	assert_eq!(record.state, "denied");
+	assert_eq!(record.data["decided_by"], "bob");
+	let decided_at: chrono::DateTime<Utc> =
+		serde_json::from_value(record.data["decided_at"].clone()).unwrap();
+	assert!(decided_at >= before);
 }
 
 /// An approved, not yet consumed disclosure whose admission is about to be

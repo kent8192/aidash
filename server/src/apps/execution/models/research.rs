@@ -229,6 +229,41 @@ impl ResearchAttempt {
 		.await
 	}
 
+	/// One Run's charges and the attempts whose outcome is not settled:
+	/// `(recorded prices of charged attempts, unknown, still dispatched)`.
+	pub(crate) async fn run_charges(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+	) -> Result<(u64, u32, u32)> {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Func::coalesce(vec![
+					Func::sum(Expr::col(Alias::new("price_micro_usd")).into()),
+					Expr::value(0_i64).into(),
+				]),
+				Alias::new("charged"),
+			)
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("outcome").ne(Expr::value(AttemptOutcome::Failed.as_str())))
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one(&sql, convert_values(values)).await?;
+		let data = QueryRow::from_backend_row(row).data;
+		let charged = data["charged"]
+			.as_i64()
+			.or_else(|| data["charged"].as_str().and_then(|text| text.parse().ok()))
+			.unwrap_or(0);
+		let unknown = count(
+			tx,
+			Self::table_name(),
+			run,
+			&[("outcome", AttemptOutcome::Unknown.as_str())],
+		)
+		.await?;
+		let dispatched = count(tx, Self::table_name(), run, &[("outcome", DISPATCHED)]).await?;
+		Ok((u64::try_from(charged).unwrap_or(0), unknown, dispatched))
+	}
+
 	/// Charged attempts of one account since `since`, including attempts whose
 	/// outcome is not yet known.
 	pub(crate) async fn spend(

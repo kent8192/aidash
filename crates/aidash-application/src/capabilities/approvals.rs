@@ -259,7 +259,7 @@ pub async fn decide(
 			{
 				return Err(Error::Invalid("INVALID_GRANT_SCOPE".into()));
 			}
-			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"context_revision":record.data["context_revision"]}),expires:Some(expires)}).await?;
+			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"context_revision":record.data["context_revision"],"operation":record.data["operation"],"provider":record.data["provider"]}),expires:Some(expires)}).await?;
 			scope.transfer_owner(grant.id, &record.owner).await?;
 			record.data["grant_id"] = json!(grant.id);
 			record.data["approval_mode"] = json!("allow_run");
@@ -267,6 +267,7 @@ pub async fn decide(
 		}
 	}
 	record.data["decided_by"] = json!(scope.principal());
+	record.data["decided_at"] = json!(Utc::now());
 	record.data["decision_policy_revision"] = json!(scope.policy_revision());
 	scope.update(&mut record).await?;
 	let result = json!({"approval_id":id,"state":record.state,"revision":record.revision,"grant_id":record.data["grant_id"]});
@@ -368,6 +369,13 @@ pub struct DisclosureRequest {
 	/// The Run's observed input sequence. Approvals and Run grants cover only
 	/// disclosures made before new user input.
 	pub context_revision: i64,
+	/// The Run's Working Area, so the approval appears in its Thread.
+	pub area: Option<Uuid>,
+	/// The Search service operator's account and price when approval is
+	/// requested; the approver sees these, not the current terms.
+	pub attribution: Option<aidash_domain::research::account::CostAttribution>,
+	/// The validated search query in provider-independent form.
+	pub query: Option<Value>,
 }
 
 fn disclosure_key(digest: &str, generation: u32) -> Uuid {
@@ -534,12 +542,12 @@ pub async fn disclose(
 	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
 	let id = Uuid::new_v4();
 	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
-		"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,
+		"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,"attribution":request.attribution,"query":request.query,
 		"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
 	let record = scope
 		.insert(Creation {
 			id,
-			area: None,
+			area: request.area,
 			kind: DISCLOSURE,
 			// A direct or granted disclosure is consumed by this call.
 			state: if state == "approved" {

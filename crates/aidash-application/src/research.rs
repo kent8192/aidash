@@ -88,6 +88,13 @@ pub struct Call<'a> {
 	pub disclosure_approval: bool,
 }
 
+/// What an approver is shown besides the exact outbound content.
+#[derive(Debug, Default)]
+struct Card {
+	attribution: Option<aidash_domain::research::account::CostAttribution>,
+	query: Option<Value>,
+}
+
 pub struct Research<'a> {
 	pub store: &'a dyn EvidenceStore,
 	pub gate: &'a dyn DisclosureGate,
@@ -153,7 +160,11 @@ impl Research<'_> {
 			Ok(outbound) => outbound,
 			Err(error) => return Ok(failure(operation, error)),
 		};
-		let approval = match self.disclose(call, operation, &outbound).await? {
+		let card = Card {
+			attribution: account.as_ref().map(|account| account.attribution()),
+			query: Some(query.effective()),
+		};
+		let approval = match self.disclose(call, operation, &outbound, card).await? {
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
@@ -315,7 +326,10 @@ impl Research<'_> {
 			destination: host,
 			content: url.to_string(),
 		};
-		let approval = match self.disclose(call, operation, &outbound).await? {
+		let approval = match self
+			.disclose(call, operation, &outbound, Card::default())
+			.await?
+		{
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
@@ -523,6 +537,7 @@ impl Research<'_> {
 		call: &Call<'_>,
 		operation: Operation,
 		outbound: &Outbound,
+		card: Card,
 	) -> Result<std::result::Result<Option<Uuid>, Value>> {
 		if !call.disclosure_approval {
 			return Ok(Ok(None));
@@ -532,6 +547,8 @@ impl Research<'_> {
 			provider: call.provider.into(),
 			outbound: outbound.clone(),
 			context_revision: call.context_revision,
+			attribution: card.attribution,
+			query: card.query,
 		};
 		Ok(match self.gate.admit(call.run, &disclosure).await? {
 			DisclosureState::Permitted => Ok(None),

@@ -81,6 +81,33 @@ impl Providers {
 		}
 	}
 
+	/// Every research provider this Node knows, with its operations and
+	/// whether it can be dispatched here. Why one is unavailable stays with
+	/// the Operator.
+	pub fn availability(&self) -> crate::apps::execution::serializers::runs::ResearchProviders {
+		use crate::apps::execution::serializers::runs::{ResearchProvider, ResearchProviders};
+		let available = |provider: &str| match provider {
+			"research.brave@1" => self.brave.is_ok(),
+			"research.page@1" => self.pages.is_some(),
+			"research.fixture@1" => self.fixture.is_some(),
+			_ => false,
+		};
+		ResearchProviders {
+			providers: aidash_domain::tool::providers::RESEARCH_PROVIDERS
+				.iter()
+				.map(|(provider, operations, _)| ResearchProvider {
+					provider: (*provider).into(),
+					operations: operations
+						.iter()
+						.map(|operation| (*operation).into())
+						.collect(),
+					available: available(provider),
+				})
+				.collect(),
+			limits: self.limits.into(),
+		}
+	}
+
 	fn search(&self, provider: &str) -> Result<Arc<dyn SearchProvider>> {
 		match provider {
 			"research.brave@1" => self
@@ -186,6 +213,10 @@ impl DisclosureGate for Gate<'_> {
 			destination: disclosure.outbound.destination.clone(),
 			content: disclosure.outbound.content.clone(),
 			context_revision: disclosure.context_revision,
+			// The authority places the approval in the Run's Working Area.
+			area: None,
+			attribution: disclosure.attribution.clone(),
+			query: disclosure.query.clone(),
 		};
 		authority
 			.web_disclosure(&self.context.store, &self.context.run, &request)

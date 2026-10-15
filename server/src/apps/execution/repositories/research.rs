@@ -239,3 +239,28 @@ impl EvidenceStore for Evidence {
 		)
 	}
 }
+
+/// One Run's research usage, charges and unsettled attempts. The caller has
+/// already decided that the reader may read the Run.
+pub(crate) async fn run_research(
+	store: &Store,
+	run: Uuid,
+	limits: Limits,
+) -> crate::Result<crate::apps::execution::serializers::runs::RunResearch> {
+	let usage = Evidence {
+		store: store.clone(),
+	}
+	.usage(run)
+	.await?;
+	let mut tx = store.database().begin().await?;
+	let (estimated_micro_usd, uncertain_attempts, in_flight_attempts) =
+		ResearchAttempt::run_charges(tx.as_mut(), run).await?;
+	tx.commit().await?;
+	Ok(crate::apps::execution::serializers::runs::RunResearch {
+		limits: limits.into(),
+		usage: usage.into(),
+		estimated_micro_usd,
+		uncertain_attempts,
+		in_flight_attempts,
+	})
+}

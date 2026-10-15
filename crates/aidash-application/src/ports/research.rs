@@ -157,6 +157,13 @@ pub struct WebDisclosure {
 	pub outbound: Outbound,
 	/// The Run's observed input sequence; new user input needs a new approval.
 	pub context_revision: i64,
+	/// The Search service operator's account and price for this request, as
+	/// they stand when approval is requested. Not part of the digest.
+	pub attribution: Option<CostAttribution>,
+	/// The host-validated search query in provider-independent form, so an
+	/// approver reads it without parsing a provider's request body. Not part
+	/// of the digest: the exact outbound content already binds it.
+	pub query: Option<Value>,
 }
 
 impl WebDisclosure {

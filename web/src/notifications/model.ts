@@ -1,7 +1,7 @@
 /** User-facing notices are derived from authorized snapshots, never raw broker frames. */
 export type NoticeKind = "approval" | "input" | "completed" | "failed";
 export type NoticeTarget = {
-  kind: "human" | "task";
+  kind: "human" | "task" | "approval";
   node: string;
   id: string;
   workspace: string;

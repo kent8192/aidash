@@ -149,6 +149,22 @@ host: a redirect to another host returns `cross_host_redirect` instead of being
 followed, a redirect from https to http returns `insecure_redirect`, and a
 same-host redirect is checked again before any request.
 
+The approval record keeps what the approver is shown, as it stood when the
+disclosure was requested: the operation and provider, the Search service
+operator's account and the price of this one request (none for a page read),
+the validated search query in a provider-independent form, and the Run's
+Working Area so that the approval appears in its Thread. A decision records
+who decided and when (`decided_by`, `decided_at`). An "allow for this Run"
+decision on a search creates a Run grant for the provider's host, so it covers
+every later search of that Run through the provider, including queries the
+approver has not seen, until new user input or its expiry.
+
+`GET /api/capabilities/approvals` takes two optional filters for an inbox:
+`state=pending` lists approvals awaiting a decision and `state=active` lists
+Run grants, both without expired ones, and `role=approver` keeps only records
+addressed to the reader as approver. Each card says whether its reader is that
+approver (`viewer_is_approver`).
+
 ## Cost attribution and limits
 
 A search provider may name the Search service operator's account. The Brave
@@ -170,6 +186,43 @@ page is requested, so it counts against the Source record limit (and keeps the
 record if the read then fails); reading an existing Source record creates none.
 A page read in progress holds a snapshot slot until it settles, so concurrent
 reads cannot together exceed the snapshot limit.
+
+`GET /api/runs/{run}/research` returns a Run's usage against these limits, the
+recorded prices of its charged attempts (an estimate, not an invoice) and how
+many attempts have an unknown outcome or are still sent. A reader needs exactly
+the authority of `GET /api/runs/{run}`. `GET /api/research/providers` lists the
+research providers this Node knows, whether each is available here, and the
+per-Run limits; it never says why a provider is unavailable.
+
+## In the dashboard
+
+There is no research mode of a Thread or an Agent. When the Agent selected in
+a Thread's Agent work panel binds research operations, directly or through a
+bundle, the panel lists each operation with its provider and whether this Node
+can run it, the per-Run limits and, for the Thread's Run, its usage, estimated
+research cost, attempts with an unknown outcome and the disclosures it is
+waiting on.
+
+A pasted `http(s)` address in the instruction offers "Read this page" when the
+Agent binds an available Page reading provider. Each selected page is sent as
+a URL intent in `read_pages` (at most five) with the start, queue or steer
+request, and the host appends a fixed instruction listing them to the Run's
+input. A URL intent only asks the Run to read the page: the Page reading it
+leads to still needs its own Web disclosure approval, even when the person who
+pasted it may approve. An address the host could not read returns
+`400 INVALID_URL_INTENT`; non-public destinations are refused when the page is
+read.
+
+The header's decision queue is the approver's inbox. Besides human requests it
+lists the capability approvals addressed to the signed-in approver and the Run
+grants they gave, which they can revoke, and a new approval raises the same
+in-app notification as a human approval request. A designated approver decides
+there without access to the Thread. The disclosure card shows the operation,
+destination, provider, Search service operator, estimated price, requester and
+Agent, a summary of the search query and, collapsed, the exact content sent.
+It never shows the Thread, the Run's output or the operator's remaining budget.
+In the Thread, a denied or expired disclosure stays listed as such and is never
+sent.
 
 ## Providers
 

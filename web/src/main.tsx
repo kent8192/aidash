@@ -69,6 +69,7 @@ import {
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { NotificationProvider } from "./notifications";
+import { useApprovalInbox } from "./capabilities/inbox";
 import type { NoticeTarget } from "./notifications/model";
 import {
   storedThemePreference,
@@ -285,6 +286,9 @@ function Dashboard({
   const operator = session.data?.access.kind === "operator";
   const subjectTenant =
     session.data?.access.kind === "subject" ? session.data.access.tenant : null;
+  // Capability approvals are addressed to tenant subjects, never to Operators.
+  const inbox = useApprovalInbox(connected && subjectTenant !== null);
+  const [queueOpen, setQueueOpen] = useState(false);
   const mesh = useQuery({
     queryKey: ["mesh"],
     queryFn: () => getMesh(),
@@ -771,6 +775,8 @@ function Dashboard({
       ]
     : [];
   const visit = (target: NoticeTarget) => {
+    // An approval is decided in the decision queue, where its card lives.
+    if (target.kind === "approval") return setQueueOpen(true);
     const item =
       target.kind === "human"
         ? requests.find(
@@ -800,6 +806,7 @@ function Dashboard({
         key={`${browserSessionId}:${context}`}
         data={data}
         remote={operator ? remote : undefined}
+        approvals={inbox.pending}
         locale={locale}
         theme={theme}
         onSelect={visit}
@@ -812,6 +819,9 @@ function Dashboard({
           operator={operator}
           streamStatus={streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
+          inbox={inbox}
+          queueOpen={queueOpen}
+          setQueueOpen={setQueueOpen}
           selectDecision={({ request, node }) =>
             visit({
               kind: "human",

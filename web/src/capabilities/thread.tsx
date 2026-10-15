@@ -39,6 +39,8 @@ import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
 import { TransferHistory } from "./transfers";
+import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
+import { urlIntents } from "../research";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
@@ -787,6 +789,8 @@ export function ThreadCapabilities({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [agent, setAgent] = useState("");
+  const [readPages, setReadPages] = useState<string[]>([]);
+  const [requested, setRequested] = useState<string[]>([]);
   const pendingEnqueue = useRef<{ signature: string; key: string } | undefined>(
     undefined,
   );
@@ -842,15 +846,19 @@ export function ThreadCapabilities({
     }
   };
   const enqueueRun = async (path: string, input: Record<string, unknown>) => {
-    const signature = JSON.stringify([path, input]);
+    const pages = selectedPages;
+    const body = pages.length ? { ...input, read_pages: pages } : input;
+    const signature = JSON.stringify([path, body]);
     if (pendingEnqueue.current?.signature !== signature)
       pendingEnqueue.current = { signature, key: crypto.randomUUID() };
     await post(path, {
-      ...input,
+      ...body,
       idempotency_key: pendingEnqueue.current.key,
     });
     pendingEnqueue.current = undefined;
     setPrompt("");
+    setRequested(pages);
+    setReadPages([]);
   };
   const availableAgents = agents.filter((e) => !area || e.id === area.agent_id);
   const effectiveAgent = availableAgents.some(
@@ -863,6 +871,10 @@ export function ThreadCapabilities({
   const target = availableAgents.find(
     (e) => `${e.id}@${e.version}` === effectiveAgent,
   );
+  const research = useResearch(target, data);
+  // A URL intent is offered only when the Agent can read pages on this Node.
+  const intents = research.canRead ? urlIntents(prompt) : [];
+  const selectedPages = readPages.filter((page) => intents.includes(page));
   if (!area && agents.length === 0 && !query.isError) return null;
   return (
     <section className={panelClass}>
@@ -897,6 +909,7 @@ export function ThreadCapabilities({
           </NativeSelect>
         </Field>
       )}
+      <ResearchPanel research={research} run={active} />
       <Field label={ja ? "次の指示" : "Next instruction"}>
         <Textarea
           disabled={busy}
@@ -904,6 +917,17 @@ export function ThreadCapabilities({
           onChange={(e) => setPrompt(e.target.value)}
         />
       </Field>
+      <UrlIntentPicker
+        candidates={intents}
+        selected={selectedPages}
+        onChange={setReadPages}
+      />
+      {requested.length > 0 && (
+        <Hint role="status">
+          {ja ? "読み取りを依頼しました" : "Asked the Run to read"}:{" "}
+          {requested.join(", ")}
+        </Hint>
+      )}
       <div className={inlineFormClass}>
         <Button
           variant="outline"
@@ -950,10 +974,12 @@ export function ThreadCapabilities({
               onClick={() =>
                 void act(async () => {
                   const expectedRunId = session.data!.active_run_id!;
+                  const pages = selectedPages;
                   const signature = JSON.stringify([
                     area.id,
                     expectedRunId,
                     prompt,
+                    pages,
                   ]);
                   if (pendingSteer.current?.signature !== signature)
                     pendingSteer.current = {
@@ -964,9 +990,12 @@ export function ThreadCapabilities({
                     idempotency_key: pendingSteer.current.key,
                     expected_run_id: expectedRunId,
                     content: prompt,
+                    ...(pages.length ? { read_pages: pages } : {}),
                   });
                   pendingSteer.current = undefined;
                   setPrompt("");
+                  setRequested(pages);
+                  setReadPages([]);
                 })
               }
             >

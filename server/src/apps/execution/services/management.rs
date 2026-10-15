@@ -626,6 +626,37 @@ impl HarnessManagement {
 		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
 	}
+	/// A Run's research usage, limits and estimated cost, for a reader who
+	/// may read that Run now, decided exactly as [`Self::run_get`] decides it.
+	pub(crate) async fn run_research(
+		&self,
+		actor: Actor,
+		id: Uuid,
+	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
+		let f = self.runtime.clone();
+		if let Actor::Subject(identity) = actor {
+			execution::details_page(&f, &identity, id, 0).await?;
+		} else {
+			let run = f.store.inspect_run(id).await?;
+			crate::authorization::remote::operator::require(
+				&mut crate::database::native::begin(&f.store.pool).await?,
+				run.workspace_id,
+			)
+			.await?;
+		}
+		crate::apps::execution::repositories::research::run_research(
+			&f.store,
+			id,
+			crate::research::providers().limits,
+		)
+		.await
+	}
+	/// The research providers of this Node and the per-Run research limits.
+	pub(crate) fn research_providers(
+		&self,
+	) -> crate::apps::execution::serializers::runs::ResearchProviders {
+		crate::research::providers().availability()
+	}
 }
 
 use reinhardt::Response;

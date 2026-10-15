@@ -204,6 +204,7 @@ pub(crate) async fn enqueue(
 		if sessions::status(&mut access, &area).await?.queue.len() >= 100 {
 			return Err(Error::Conflict("QUEUE_LIMIT".into()));
 		}
+		let description = with_url_intents(&input.description, &input.read_pages)?;
 		let workspace = access.workspace(area.workspace_id).await?;
 		access.require(&workspace, "task.create").await?;
 		let creator = access.identity.subject.clone();
@@ -214,7 +215,7 @@ pub(crate) async fn enqueue(
 				area.workspace_id,
 				&NewTask {
 					title: input.title,
-					description: input.description,
+					description,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -254,6 +255,13 @@ pub(crate) async fn enqueue(
 	Ok(result)
 }
 
+/// `text` with the person's URL intents rendered into it. A URL intent only
+/// asks the Run to read a page; its Web disclosure is approved separately.
+fn with_url_intents(text: &str, pages: &[String]) -> Result<String> {
+	aidash_domain::research::intent::render(text, pages)
+		.map_err(|error| Error::Invalid(format!("INVALID_URL_INTENT: {error}")))
+}
+
 pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -> Result<Steered> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
@@ -280,7 +288,8 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 			.await?;
 		let limit = f.run_message_limit(&run).await?;
 		let sender = access.identity.subject.clone();
-		Ok((None, Some((run, sender, limit, digest))))
+		let content = with_url_intents(&input.content, &input.read_pages)?;
+		Ok((None, Some((run, sender, limit, digest, content))))
 	}
 	.await;
 	let (cached, ready) = match result {
@@ -290,7 +299,7 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 	if let Some(cached) = cached {
 		return access.finish(Ok(cached)).await;
 	}
-	let (run, sender, limit, digest) = ready.expect("fresh steer input");
+	let (run, sender, limit, digest, content) = ready.expect("fresh steer input");
 	let tenant = access.identity.tenant.clone();
 	let mut access = access.into_native()?;
 	let result = async {
@@ -299,7 +308,7 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 				access.tx.as_mut(),
 				run.id,
 				&sender,
-				&input.content,
+				&content,
 				&format!("steer:{}:{}", run.id, input.idempotency_key),
 				limit,
 			)
@@ -433,6 +442,7 @@ pub(crate) async fn thread_run(
 		access
 			.workspace_record(workspace, "message", channel.root_message_id)
 			.await?;
+		let description = with_url_intents(&input.description, &input.read_pages)?;
 		let resource = access.workspace(workspace).await?;
 		access.require(&resource, "task.create").await?;
 		let creator = access.identity.subject.clone();
@@ -443,7 +453,7 @@ pub(crate) async fn thread_run(
 				workspace,
 				&NewTask {
 					title: input.title,
-					description: input.description,
+					description,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -555,24 +565,82 @@ pub(crate) async fn outbound_history(
 pub(crate) async fn approval_list(
 	f: Federation,
 	actor: Actor,
-	QueryInput(page): QueryInput<Page>,
+	QueryInput(query): QueryInput<ApprovalQuery>,
 ) -> Result<ApprovalPage> {
 	let mut access = access(&f, actor).await?;
-	let result=async {
-        let rows:Vec<super::records::Record>={ let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); crate::database::native::query_as(&sessions::select("core_records")
-            .and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("kind")).is_in(["outbound","grant","disclosure"]))
-            .and_where(SimpleExpr::CustomWithExpr("(owner = ? OR data->>'approver' = ?)".into(), vec![Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-            .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned()))).order_by(Alias::new("id"),Order::Asc).limit(51).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? };
-        let next_cursor=(rows.len()==51).then(||rows[49].id);
-        let mut items=vec![];
-        for row in rows.into_iter().take(50) {
-			if !super::approvals::visible(&mut access, &row).await? { continue; }
-            let run:Uuid=serde_json::from_value(row.data["run_id"].clone())?;
-            // Designated approvers see only the scoped card, never Run output.
-            items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":row.data["action"].as_str().or_else(||row.data["actions"][0].as_str()).unwrap_or("network.get"),"expires_at":row.expires_at,"grant_id":row.data["grant_id"],"disclosure":if row.kind=="disclosure"{row.data["content"].clone()}else{serde_json::Value::Null}}));
-        }
-        Ok(json!({"items":items,"next_cursor":next_cursor}))
-    }.await;
+	let result = async {
+		let subject = access.identity.subject.clone();
+		let mut select = sessions::select("core_records")
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.to_owned())))
+			.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query.cursor.unwrap_or(Uuid::nil()))))
+			.order_by(Alias::new("id"), Order::Asc)
+			.limit(51)
+			.to_owned();
+		select.and_where(match query.role {
+			// An inbox lists only what the reader is asked to decide or gave.
+			Some(ApprovalRole::Approver) => SimpleExpr::CustomWithExpr(
+				"data->>'approver' = ?".into(),
+				vec![Expr::value(subject.clone()).into()],
+			),
+			None => SimpleExpr::CustomWithExpr(
+				"(owner = ? OR data->>'approver' = ?)".into(),
+				vec![Expr::value(subject.clone()).into(), Expr::value(subject.clone()).into()],
+			),
+		});
+		let (kinds, state): (&[&str], _) = match query.state {
+			Some(ApprovalState::Pending) => (&["outbound", "disclosure"], Some("pending")),
+			Some(ApprovalState::Active) => (&["grant"], Some("active")),
+			None => (&["outbound", "grant", "disclosure"], None),
+		};
+		select.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()));
+		if let Some(state) = state {
+			select
+				.and_where(Expr::col(Alias::new("state")).eq(Expr::value(state)))
+				.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())));
+		}
+		let rows: Vec<super::records::Record> =
+			crate::database::native::query_as(&select.to_string(PostgresQueryBuilder))
+				.fetch_all(&mut **access.tx)
+				.await?;
+		let next_cursor = (rows.len() == 51).then(|| rows[49].id);
+		let mut items = vec![];
+		for row in rows.into_iter().take(50) {
+			if !super::approvals::visible(&mut access, &row).await? {
+				continue;
+			}
+			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
+			let expired = row.state == "pending" && row.expires_at.is_some_and(|t| t < chrono::Utc::now());
+			let data = &row.data;
+			// Designated approvers see only the scoped card, never Run output.
+			items.push(json!({
+				"id": row.id,
+				"kind": row.kind,
+				"run_id": run,
+				"area_id": row.area_id,
+				"state": if expired { "expired" } else { &row.state },
+				"revision": row.revision,
+				"requester": row.owner,
+				"approver": data["approver"],
+				"targets": data["targets"],
+				"action": data["action"].as_str().or_else(|| data["actions"][0].as_str()).unwrap_or("network.get"),
+				"expires_at": row.expires_at,
+				"grant_id": data["grant_id"],
+				"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
+				"viewer_is_approver": data["approver"] == json!(subject),
+				"agent_id": data["agent_id"],
+				"agent_version": data["agent_version"],
+				"operation": data["operation"],
+				"provider": data["provider"],
+				"operator_account": data["attribution"]["account_id"],
+				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
+				"query": data["query"],
+				"decided_by": data["decided_by"],
+				"decided_at": data["decided_at"],
+			}));
+		}
+		Ok(json!({"items": items, "next_cursor": next_cursor}))
+	}
+	.await;
 	typed(access.finish(result).await?)
 }
 pub(crate) async fn approval_decide(
@@ -1117,8 +1185,8 @@ pub async fn provide(#[inject] runtime: Federation) -> CapabilitiesManagement {
 use reinhardt::injectable;
 
 pub(crate) use crate::apps::execution::capabilities::serializers::endpoints::{
-	AreaQuery, DownloadChunk, ExpectedRevision, Offset, OutboundPage, Page, RecipientQuery,
-	ReferencePage,
+	ApprovalQuery, ApprovalRole, ApprovalState, AreaQuery, DownloadChunk, ExpectedRevision, Offset,
+	OutboundPage, Page, RecipientQuery, ReferencePage,
 };
 
 use reinhardt::query::SimpleExpr;

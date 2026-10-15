@@ -34,6 +34,28 @@ pub struct ApprovalCard {
 	/// would leave the Node.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub disclosure: Option<String>,
+	/// Whether the reader is the approver this card is addressed to.
+	pub viewer_is_approver: bool,
+	pub agent_id: Option<String>,
+	pub agent_version: Option<String>,
+	/// The research operation of a Web disclosure approval, or of the
+	/// approval a Web disclosure Run grant came from.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider: Option<String>,
+	/// The Search service operator's account, as recorded when approval was
+	/// requested. Absent for a page read.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operator_account: Option<String>,
+	/// The recorded price of this one request, an estimate and not an invoice.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub estimated_micro_usd: Option<i64>,
+	/// The validated search query in provider-independent form.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub query: Option<serde_json::Value>,
+	pub decided_by: Option<String>,
+	pub decided_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

@@ -841,6 +841,78 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 }
 
 #[tokio::test]
+async fn an_approver_sees_the_operator_price_and_the_validated_query_as_they_stood_when_asked() {
+	// Arrange
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let now = Utc::now();
+	let mut provider = Search::new("brave", "api.search.brave.com");
+	provider.account = Some(AccountProfile {
+		account_id: "operator-account".into(),
+		agreement_reference: "contract".into(),
+		verified_by: "operator".into(),
+		verified_at: now - Duration::days(1),
+		review_after: now + Duration::days(1),
+		storage_permitted: true,
+		query_training_prohibited: true,
+		evaluation_permitted: true,
+		retention_days: 30,
+		deletion_after_termination_days: 30,
+		credential_env: "AIDASH_SECRET_SEARCH".into(),
+		price_effective_at: now - Duration::days(1),
+		price_review_after: now + Duration::days(1),
+		request_price_micro_usd: 5_000,
+		monthly_base_fee_micro_usd: 0,
+		monthly_limit_micro_usd: 50_000,
+	});
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+
+	// Act
+	let searched = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"rust","language":"en","count":3}),
+		)
+		.await
+		.unwrap();
+	let read = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(searched["status"], "approval_required", "{searched}");
+	assert_eq!(read["status"], "approval_required", "{read}");
+	let requests = gate.requests.lock().unwrap().clone();
+	let search = &requests[0];
+	assert_eq!(
+		search.attribution,
+		Some(aidash_domain::research::account::CostAttribution {
+			account_id: "operator-account".into(),
+			price_micro_usd: 5_000,
+		})
+	);
+	let query = search.query.as_ref().unwrap();
+	assert_eq!(query["query"], "rust");
+	assert_eq!(query["language"], "en");
+	assert_eq!(query["count"], 3);
+	// A page read has neither an operator account nor a query.
+	assert_eq!(requests[1].attribution, None);
+	assert_eq!(requests[1].query, None);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is_never_repeated() {
 	let (store, gate) = (Memory::default(), Gate::permitting());
 	let research = Research {
@@ -1234,6 +1306,8 @@ impl DisclosureGate for RacedApproval<'_> {
 						content: "other".into(),
 					},
 					context_revision: 0,
+					attribution: None,
+					query: None,
 				},
 			)
 			.await?;

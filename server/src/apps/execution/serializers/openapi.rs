@@ -95,5 +95,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.query::<_, InferenceStreamQuery>(document, views::management::run_inference_stream)?;
 	contracts.path(document, views::management::run_inference_stream, &["Uuid"])?;
+	contracts.response::<_, crate::apps::execution::serializers::runs::RunResearch>(
+		document,
+		views::management::run_research,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::management::run_research, &["Uuid"])?;
+	contracts.response::<_, crate::apps::execution::serializers::runs::ResearchProviders>(
+		document,
+		views::management::research_providers,
+		200,
+		"application/json",
+	)?;
 	Ok(())
 }
