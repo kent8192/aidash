@@ -99,6 +99,7 @@ impl OperationWithdrawalScope for Scope {
 	fn snapshot(&self) -> Snapshot {
 		Snapshot {
 			operation_id: self.operation.id,
+			kind: self.operation.kind.clone(),
 			state: self.operation.state.clone(),
 			epoch: self.operation.epoch,
 			generation: self.operation.generation,
