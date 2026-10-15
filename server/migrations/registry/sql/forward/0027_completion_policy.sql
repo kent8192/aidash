@@ -1,9 +1,9 @@
 -- PostgreSQL function bodies have no typed migration operation. DDL only.
 -- Agent Bindings accept the opt-in Completion Policy (#112). The body keeps the
 -- 0017 Projection Version, 0018 prompt_cache, 0019 deferred exposure, 0021
--- tool_parallelism and 0022 Context Policy keys. Completion Policy is not an
--- installation override; registry/0025_remove_legacy_installations removed
--- installations.
+-- tool_parallelism and 0022 Context Policy keys. An explicit null is rejected
+-- wherever CompletionPolicy has no Option: `->` yields the JSON null, whose
+-- jsonb_typeof is 'null', never SQL NULL.
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];

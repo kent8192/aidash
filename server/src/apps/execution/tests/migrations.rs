@@ -1782,6 +1782,12 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"repair_allowance":17}),
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"verification_seconds":0}),
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"exception":"yes"}),
+		// CompletionPolicy has no Option for these, so an explicit null is not
+		// an omission.
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"repair_allowance":null}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"verification_seconds":null}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"exception":null}),
+		json!({"version":"checks/1","checks":null}),
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"unknown":true}),
 		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"},{"name":"t","capability":"shell","command":"y"}]}),
 		check(json!({"capability":"code_interpreter"})),
