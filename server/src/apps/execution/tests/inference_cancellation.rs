@@ -389,10 +389,15 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 				.cond_where(
 					reinhardt::query::Condition::all()
 						.add(
-							Expr::col(Alias::new("application_name"))
+							// A Deployment Scope relabels application_name; the
+							// database names this test's backends either way.
+							Expr::col(Alias::new("datname"))
 								.eq(Expr::value(query_bind_1.to_owned())),
 						)
-						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
+						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction")))
+						// Scoped probes, such as the interruption poll, idle only
+						// between their own statements; a held lease idles longer.
+						.add(Expr::cust("state_change < now() - interval '200 milliseconds'")),
 				)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -407,6 +412,8 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 		.await
 		.expect("worker must reach the provider")
 		.unwrap();
+	// Let any transaction held across the provider call idle past the probe window.
+	tokio::time::sleep(Duration::from_millis(400)).await;
 	let idle_transactions_during_inference: i64 = {
 		let query_bind_1 = &schema;
 		sqlx::query_scalar(
@@ -416,10 +423,15 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 				.cond_where(
 					reinhardt::query::Condition::all()
 						.add(
-							Expr::col(Alias::new("application_name"))
+							// A Deployment Scope relabels application_name; the
+							// database names this test's backends either way.
+							Expr::col(Alias::new("datname"))
 								.eq(Expr::value(query_bind_1.to_owned())),
 						)
-						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
+						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction")))
+						// Scoped probes, such as the interruption poll, idle only
+						// between their own statements; a held lease idles longer.
+						.add(Expr::cust("state_change < now() - interval '200 milliseconds'")),
 				)
 				.to_string(PostgresQueryBuilder),
 		)

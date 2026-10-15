@@ -843,6 +843,8 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	common::cleanup(f, &url, &schema).await;
 }
 
+/// Finds the waiter by its database: a Deployment Scope relabels
+/// `application_name` for the transaction's duration.
 async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	for _ in 0..500 {
@@ -854,8 +856,7 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 					.expr(Expr::cust("count(*)"))
 					.from(Alias::new("pg_stat_activity"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(application_name=? AND wait_event_type='Lock' AND query LIKE ?)"
-							.to_owned(),
+						"(datname=? AND wait_event_type='Lock' AND query LIKE ?)".to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),
