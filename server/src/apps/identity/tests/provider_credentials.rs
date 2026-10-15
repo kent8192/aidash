@@ -2345,7 +2345,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	recovery_settings(&f, dir.path(), &current);
 	let before = recovery_snapshot(&f).await;
 	let affected_count = expected_revocations.len();
-	let counts = json!({"affected_tenants":affected_count,"affected_provider_credentials":affected_count,"version_rows":affected_count + usize::from(partial),"key_registry_rows":1});
+	let counts = json!({"affected_tenants":affected_count,"affected_provider_credentials":affected_count,"affected_plan_connections":0,"version_rows":affected_count + usize::from(partial),"key_registry_rows":1});
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let mut private_values = Vec::new();
 	for row in Version::objects()
@@ -2525,7 +2525,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	assert!(output.status.success());
 	assert_eq!(
 		serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-		json!({"affected_tenants":0,"affected_provider_credentials":0,"version_rows":0,"key_registry_rows":0})
+		json!({"affected_tenants":0,"affected_provider_credentials":0,"affected_plan_connections":0,"version_rows":0,"key_registry_rows":0})
 	);
 }
 

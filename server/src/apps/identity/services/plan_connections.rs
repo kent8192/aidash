@@ -110,8 +110,8 @@ impl PlanConnections {
 		input: Start,
 	) -> Result<Response> {
 		let provider = plan_provider(&provider)?;
-		let service = self.enabled()?;
 		let owner = owner(&actor, origin.as_ref(), &tenant)?;
+		let service = self.enabled()?;
 		let origin = origin.ok_or(Error::Forbidden)?;
 		let context = headers
 			.get("x-aidash-context")
@@ -162,8 +162,8 @@ impl PlanConnections {
 		input: Complete,
 	) -> Result<Response> {
 		let provider = plan_provider(&provider)?;
-		let service = self.enabled()?;
 		let owner = owner(&actor, origin.as_ref(), &tenant)?;
+		let service = self.enabled()?;
 		let origin = origin.ok_or(Error::Forbidden)?;
 		let state = callback_state(&input.callback_url)?;
 		let lease = self.runtime.store.orm_connection()?;
@@ -228,8 +228,8 @@ impl PlanConnections {
 		provider: String,
 	) -> Result<Models> {
 		plan_provider(&provider)?;
-		let service = self.enabled()?;
 		let owner = owner(&actor, origin.as_ref(), &tenant)?;
+		let service = self.enabled()?;
 		Ok(Models {
 			models: service.models(&owner).await?,
 		})

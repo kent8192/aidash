@@ -245,6 +245,33 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		insert_entry(f.store.pool.driver(), &keyed).await,
 		"registry_model_provider_keys",
 	);
+	// ADR 0007: a `chatgpt` model is served only by a Plan Connection at
+	// OpenAI's endpoint, and no other model names one.
+	let mut plan = good.clone();
+	plan["id"] = json!("plan-model");
+	plan["config"]["provider"] = json!("chatgpt");
+	plan["config"]["endpoint"] = json!("https://api.openai.com/v1");
+	plan["config"]["plan_connection"] = json!("chatgpt");
+	for (field, invalid) in [
+		("plan_connection", Value::Null),
+		("plan_connection", json!("openrouter")),
+		("endpoint", json!("https://openrouter.ai/api/v1")),
+		("provider_credential", json!("openrouter")),
+	] {
+		let mut entry = plan.clone();
+		entry["config"][field] = invalid;
+		check_rejected(
+			insert_entry(f.store.pool.driver(), &entry).await,
+			"registry_plan_connection_config",
+		);
+	}
+	let mut borrowed = good.clone();
+	borrowed["config"]["plan_connection"] = json!("chatgpt");
+	check_rejected(
+		insert_entry(f.store.pool.driver(), &borrowed).await,
+		"registry_plan_connection_config",
+	);
+	insert_entry(f.store.pool.driver(), &plan).await.unwrap();
 	let mut malformed = good.clone();
 	malformed["name"] = json!([]);
 	check_rejected(

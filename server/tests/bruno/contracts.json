@@ -30104,6 +30104,373 @@
   },
   {
     "method": "GET",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}",
+    "name": "plan-connection-status",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanConnectionStatus"
+      },
+      "definitions": {
+        "PlanConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "provider",
+            "state",
+            "connected_at",
+            "refreshed_at",
+            "refresh_expires_at",
+            "revision"
+          ],
+          "properties": {
+            "connected_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "refresh_expires_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the connection needs reconnection unless a call refreshes it."
+            },
+            "refreshed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "state": {
+              "$ref": "#/components/schemas/PlanConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "PlanConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Usable by Runs whose delegation chain starts at the owner.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "A refresh was rejected, or OpenAI confirmed that the grant ended. The\nowner must connect again; the Plan Tokens are already discarded.",
+              "enum": ["needs_reconnection"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI reports that the owner's plan or workspace is not eligible.\nReconnecting does not help, so the owner is not asked to.",
+              "enum": ["ineligible"]
+            }
+          ]
+        },
+        "PlanConnectionStatus": {
+          "type": "object",
+          "required": ["enabled", "connection"],
+          "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PlanConnectionMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether this Deployment lets its subjects connect a ChatGPT plan."
+            }
+          }
+        },
+        "Provider": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["openrouter"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+              "enum": ["chatgpt"]
+            }
+          ],
+          "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+    "name": "plan-authorization-start",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanAuthorizationStarted"
+      },
+      "definitions": {
+        "PlanAuthorizationStarted": {
+          "type": "object",
+          "required": ["authorization_url", "redirect_uri"],
+          "properties": {
+            "authorization_url": {
+              "type": "string",
+              "description": "OpenAI's consent page; the system or dashboard browser opens it."
+            },
+            "redirect_uri": {
+              "type": "string",
+              "description": "Where the browser lands after consent. For a paste, nothing listens\nthere and the owner copies the address from the browser."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+    "name": "plan-authorization-complete",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanAuthorizationCompleted"
+      },
+      "definitions": {
+        "PlanAuthorizationCompleted": {
+          "type": "object",
+          "required": ["outcome", "connection"],
+          "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PlanConnectionMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The owner's connection after the attempt, if any."
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/PlanAuthorizationOutcome"
+            }
+          }
+        },
+        "PlanAuthorizationOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["connected", "reconnected", "denied", "failed"]
+            },
+            {
+              "type": "string",
+              "description": "The grant lacked `chatgpt.tokens.use.direct`. Its tokens were revoked;\nonly the issued client and account are kept, so enabling plan usage\nlater reauthorizes the same client (OpenAI's recovery guidance).",
+              "enum": ["plan_usage_not_granted"]
+            }
+          ]
+        },
+        "PlanConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "provider",
+            "state",
+            "connected_at",
+            "refreshed_at",
+            "refresh_expires_at",
+            "revision"
+          ],
+          "properties": {
+            "connected_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "refresh_expires_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the connection needs reconnection unless a call refreshes it."
+            },
+            "refreshed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "state": {
+              "$ref": "#/components/schemas/PlanConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "PlanConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Usable by Runs whose delegation chain starts at the owner.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "A refresh was rejected, or OpenAI confirmed that the grant ended. The\nowner must connect again; the Plan Tokens are already discarded.",
+              "enum": ["needs_reconnection"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI reports that the owner's plan or workspace is not eligible.\nReconnecting does not help, so the owner is not asked to.",
+              "enum": ["ineligible"]
+            }
+          ]
+        },
+        "Provider": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["openrouter"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+              "enum": ["chatgpt"]
+            }
+          ],
+          "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}",
+    "name": "plan-connection-disconnect",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanDisconnection"
+      },
+      "definitions": {
+        "PlanDisconnection": {
+          "type": "object",
+          "description": "The result of a disconnect. OpenAI may be unreachable; Aidash's copy is\ndeleted either way, and the owner is told when revocation is unconfirmed.",
+          "required": ["revoked"],
+          "properties": {
+            "revoked": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}/models",
+    "name": "plan-connection-models",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanModels"
+      },
+      "definitions": {
+        "PlanModel": {
+          "type": "object",
+          "description": "One entry of the owner's ChatGPT model list, offered to model pickers.",
+          "required": [
+            "slug",
+            "display_name",
+            "context_window",
+            "max_output_tokens",
+            "defaulted"
+          ],
+          "properties": {
+            "context_window": {
+              "type": "integer",
+              "format": "uint",
+              "description": "Context window and output limit for the Registry form. Values OpenAI's\nlist does not report come from [`DEFAULT_CONTEXT_WINDOW`] and\n[`DEFAULT_MAX_OUTPUT_TOKENS`], flagged by `defaulted`.",
+              "minimum": 0
+            },
+            "defaulted": {
+              "type": "boolean"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "max_output_tokens": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "slug": {
+              "type": "string",
+              "description": "Sent as `model`."
+            }
+          }
+        },
+        "PlanModels": {
+          "type": "object",
+          "required": ["models"],
+          "properties": {
+            "models": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PlanModel"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
     "path": "/api/runs/{id}/evidence/{reference}",
     "name": "run-evidence",
     "source": "server/src/apps/execution/views/management.rs",

@@ -772,6 +772,37 @@ def render():
                 path=uri, headers=OPERATOR, body=json.dumps({"key_material": "sk-or-v1-pasted"}),
                 immutable=True)
             continue
+        if route["source"] == "server/src/apps/identity/views/plan_connections.rs":
+            # A Plan Connection is one subject's own grant: only that subject's
+            # dashboard or desktop session reaches it, never a bearer, and
+            # Plan Tokens are never an accepted field.
+            uri = path.replace("{provider}", "chatgpt")
+            body = (
+                json.dumps({"callback_url": "http://127.0.0.1:1457/auth/callback?state=s&code=c"})
+                if path.endswith("/complete")
+                else json.dumps({"expected_revision": 1})
+                if method == "DELETE"
+                else "{}"
+                if route["json"]
+                else None
+            )
+            add(endpoint, "Forged bearer cannot reach a Plan Connection", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Operator bearer owns no Plan Connection", OPERATOR),
+                ("Subject Credential bearer never reaches a Plan Connection", SUBJECT),
+            ]:
+                add(endpoint, label, 403, path=uri, headers=headers, body=body,
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    path=uri, headers=OPERATOR, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=uri, headers=OPERATOR, body="{", immutable=True)
+                add(endpoint, "Plan Tokens are not an accepted field", 422,
+                    path=uri, headers=OPERATOR, body=json.dumps({"access_token": "pasted"}),
+                    immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
             # Only a browser Mapping context can be a Tenant Administrator.
             uri = path.replace("{subject}", "alice")

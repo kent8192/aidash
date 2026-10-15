@@ -56,7 +56,9 @@ pub(crate) async fn lock_owner(
 			vec![SimpleExpr::FunctionCall(
 				"hashtextextended".into_iden(),
 				vec![
-					Expr::value(format!("{tenant}\u{0}{subject}")).into(),
+					// A JSON pair names one owner unambiguously; PostgreSQL text
+					// cannot carry the NUL a plain separator would need.
+					Expr::value(serde_json::json!([tenant, subject]).to_string()).into(),
 					Expr::value(OWNER_LOCK).into(),
 				],
 			)],
@@ -282,7 +284,7 @@ impl Scope for NativeScope {
 /// delegation-chain root for every Plan Connection provider the Run's Agent
 /// model selects (ADR 0007). A Run whose task arrived through Federation, or
 /// whose root holds no usable connection, is refused before it starts.
-pub(crate) async fn admit(
+pub async fn admit(
 	tx: &mut dyn TransactionExecutor,
 	store: &crate::store::Store,
 	grant: &aidash_domain::identity::execution::ExecutionGrant,
@@ -344,7 +346,7 @@ pub(crate) async fn admit(
 }
 
 /// The Plan Connection admission pinned for `run` and `provider`.
-pub(crate) async fn pinned(
+pub async fn pinned(
 	pool: &crate::database::native::Pool,
 	tenant: &str,
 	run: Uuid,

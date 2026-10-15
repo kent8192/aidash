@@ -1,0 +1,21 @@
+meta {
+  name: 1129 plan-connection-status - Forged bearer cannot reach a Plan Connection
+  type: http
+  seq: 1129
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer forged
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

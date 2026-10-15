@@ -161,6 +161,10 @@ name = "provider_authorizations"
 path = "src/apps/identity/tests/provider_authorizations.rs"
 
 [[test]]
+name = "plan_connections"
+path = "src/apps/identity/tests/plan_connections.rs"
+
+[[test]]
 name = "endpoints"
 path = "src/apps/execution/tests/endpoint_suite.rs"
 
