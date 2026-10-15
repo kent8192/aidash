@@ -540,6 +540,7 @@ async fn evaluate(
 		tools: &[],
 		max_output_tokens: 0,
 		projection: &aidash_domain::context::RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	let mut boundary = Boundary {
 		node: "aidash://execution".into(),

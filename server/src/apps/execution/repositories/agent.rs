@@ -55,6 +55,19 @@ impl ExecutionStore for Store {
 		*run = Store::save_run(self, run, token, "run.sources_observed").await?;
 		Ok(())
 	}
+	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(self, run, token, "run.estimate_pinned").await?;
+		Ok(())
+	}
+	async fn calibration_samples(
+		&self,
+		upstream_model: &str,
+		projection_version: u8,
+	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
+		Store::calibration_samples(self, upstream_model, projection_version)
+			.await
+			.map_err(Into::into)
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		Store::save_run(self, run, token, event)
 			.await

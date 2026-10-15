@@ -45,6 +45,17 @@ impl Transaction {
 			Self::Admitted(access) => access.tx.as_mut(),
 		}
 	}
+	/// An admitted rollback goes through the native transaction, whose lock epoch
+	/// ends the catalog admissions that the released locks proved.
+	async fn rollback_to_savepoint(
+		&mut self,
+		name: &str,
+	) -> reinhardt::db::backends::error::Result<()> {
+		match self {
+			Self::Standalone(tx) => tx.rollback_to_savepoint(name).await,
+			Self::Admitted(access) => access.tx.rollback_to_savepoint(name).await,
+		}
+	}
 }
 
 struct Scope {
@@ -149,10 +160,13 @@ impl ParticipantScope for Scope {
 			manifest,
 		)
 		.await?;
-		tx.rollback_to_savepoint("participant_validation")
+		self.transaction
+			.rollback_to_savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
-		tx.release_savepoint("participant_validation")
+		self.transaction
+			.executor()
+			.release_savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
 		Ok(())

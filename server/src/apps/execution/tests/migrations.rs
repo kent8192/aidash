@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		24
+		25
 	);
 	let tables = migrations
 		.iter()
@@ -288,14 +288,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0023_policy_probe")
+		.get_migration("execution", "0025_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0022_outbound_approval_activation".to_owned()
+			"0024_estimate_calibration_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -390,12 +390,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0008_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0009_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0007_model_state".to_owned())]
+		vec![("workspaces".to_owned(), "0008_publishing_run".to_owned())]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -556,7 +556,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		24
+		25
 	);
 }
 

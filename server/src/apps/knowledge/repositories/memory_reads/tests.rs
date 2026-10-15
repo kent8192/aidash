@@ -265,3 +265,29 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 		"{change} must report its own cause"
 	);
 }
+
+/// Issue #275: a rejected record rolls back to its savepoint, which may release
+/// the locks behind catalog admissions made inside it, so the transaction's lock
+/// epoch must move although this module does not import `TransactionExecutor`.
+#[tokio::test]
+async fn a_rejected_record_moves_the_lock_epoch_of_its_transaction() {
+	// Arrange
+	let probe = crate::database::native::probe::SavepointProbe::default();
+	let mut tx = probe.transaction(
+		sqlx::postgres::PgPoolOptions::new()
+			.connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+			.unwrap()
+			.into(),
+	);
+
+	// Act
+	let result = record(&mut Lease::BorrowedOperator(&mut tx), Uuid::new_v4(), &[]).await;
+
+	// Assert
+	assert!(result.is_err(), "the probe refuses the run read");
+	assert_eq!(
+		probe.statements(),
+		["SAVEPOINT", "ROLLBACK TO SAVEPOINT", "RELEASE SAVEPOINT"]
+	);
+	assert_eq!(tx.lock_epoch(), 1);
+}

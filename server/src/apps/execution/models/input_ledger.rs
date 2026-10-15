@@ -181,7 +181,7 @@ impl RunInput {
 		tx.execute(&sql, convert_values(values)).await?;
 		if run.home_node == node {
 			let message =
-				Message::append_in(tx, node, run.workspace_id, sender, content, key).await?;
+				Message::append_in(tx, node, run.workspace_id, sender, content, key, None).await?;
 			Self::bind_message(tx, run_id, key, message.id).await?;
 		}
 		Ok(false)

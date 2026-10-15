@@ -111,6 +111,8 @@ impl Task {
 					.ok_or_else(|| Error::Conflict("task has no owner".into()))?,
 			)
 			.idempotency_key(key)
+			// A transaction's completion is not a Run's publication.
+			.run_id(None)
 			.finish();
 		let artifact = Artifact::objects()
 			.insert_with_executor(tx, &draft)

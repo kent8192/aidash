@@ -763,6 +763,7 @@ let app=fixture.application.clone();
 			Uuid::new_v4()
 		)),
 		created_at: chrono::Utc::now() - chrono::Duration::minutes(1),
+		run_id: None,
 	};
 
 HistoryState {fixture,token,run,old_message}
