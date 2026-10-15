@@ -310,10 +310,11 @@ impl PendingCheck {
 		self.evidence(CheckOutcome::Unavailable, None, detail, now)
 	}
 	/// What an attempt the runner did not measure spends: the time since it
-	/// started, but never more than its effective timeout, so polling and
-	/// worker downtime after that are not charged as Check time.
+	/// started, a started second charged whole, but never more than its
+	/// effective timeout, so polling and worker downtime after that are not
+	/// charged as Check time.
 	fn unmeasured(&self, now: DateTime<Utc>) -> u64 {
-		elapsed(self.started_at, now).min(self.timeout_seconds)
+		charged(self.started_at, now).min(self.timeout_seconds)
 	}
 	fn evidence(
 		self,
@@ -366,6 +367,12 @@ pub const CHECK_GRACE_SECONDS: u64 = 120;
 
 fn elapsed(from: DateTime<Utc>, to: DateTime<Utc>) -> u64 {
 	u64::try_from((to - from).num_seconds()).unwrap_or(0)
+}
+
+/// Whole seconds from `from` to `to`, rounded up so a sub-second span still
+/// spends verification time.
+fn charged(from: DateTime<Utc>, to: DateTime<Utc>) -> u64 {
+	u64::try_from((to - from).num_milliseconds()).map_or(0, |millis| millis.div_ceil(1000))
 }
 
 /// The end of `text`, at most `limit` bytes, cut at a character boundary.

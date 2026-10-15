@@ -576,10 +576,18 @@ async fn a_completion_check_dispatches_the_verify_kind_under_shell_authority(
 	assert_eq!(trace.bodies[0]["code"], "echo fixture");
 	assert!(trace.commit);
 }
+/// The runner's runtime is charged in whole seconds, rounded up, so a Check
+/// that fails in under a second still spends verification time.
 #[rstest]
+#[case::fractional(1000.25, 1004.75, 5)]
+#[case::sub_second(1000.0, 1000.4, 1)]
+#[case::instant(1000.0, 1000.0, 0)]
 #[tokio::test]
 async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	repository: Repository,
+	#[case] started_at: f64,
+	#[case] finished_at: f64,
+	#[case] runtime_seconds: u64,
 ) {
 	let output = format!("{}test result: FAILED", "x".repeat(MAX_DIAGNOSTIC_BYTES));
 	{
@@ -588,7 +596,7 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 		trace.operation.state = "running".into();
 		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":true,
 			"exit_code":101,"truncated":false,"error":null,"stdout":STANDARD.encode(&output),
-			"started_at":1000.25,"finished_at":1004.75,
+			"started_at":started_at,"finished_at":finished_at,
 			"files":[{"path":"target/debug/app","object_id":"build","digest":"d","size":1}]});
 	}
 	run(&repository).await.unwrap();
@@ -605,7 +613,7 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	assert_eq!(saved.revision, 7, "a Check never changes the Area revision");
 	assert_eq!(saved.result["exit_code"], 101);
 	assert_eq!(
-		saved.result["runtime_seconds"], 4,
+		saved.result["runtime_seconds"], runtime_seconds,
 		"the runner's own runtime"
 	);
 	let preview = saved.result["preview"].as_str().unwrap();

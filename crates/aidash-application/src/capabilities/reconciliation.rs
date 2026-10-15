@@ -169,13 +169,15 @@ async fn reconcile(
 				operation.state = observed["status"].as_str().unwrap().into();
 				operation.result = json!({"preview":bounded_tail(&text, MAX_DIAGNOSTIC_BYTES),"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
 				// The runner's own measure of the command, unlike the time until
-				// the Completion Gate harvests this result.
+				// the Completion Gate harvests this result. A started second is
+				// charged whole, so sub-second Checks still spend the Run's
+				// verification time.
 				if let (Some(started), Some(finished)) = (
 					observed["started_at"].as_f64(),
 					observed["finished_at"].as_f64(),
 				) && finished >= started
 				{
-					operation.result["runtime_seconds"] = json!((finished - started) as u64);
+					operation.result["runtime_seconds"] = json!((finished - started).ceil() as u64);
 				}
 				scope.persist(&operation).await?;
 				return scope

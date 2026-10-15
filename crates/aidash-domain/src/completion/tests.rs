@@ -435,10 +435,23 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		(lost.outcome, lost.seconds),
 		(CheckOutcome::Unavailable, 60)
 	);
-	let unreported = pending.finish(false, None, "", None, at(3600));
+	let unreported = pending.clone().finish(false, None, "", None, at(3600));
 	assert_eq!(
 		(unreported.outcome, unreported.seconds),
 		(CheckOutcome::TimedOut, 60)
+	);
+	// A started second is charged whole, so a sub-second attempt still
+	// spends verification time.
+	let instant = pending.finish(
+		false,
+		Some(1),
+		"failed",
+		None,
+		at(0) + chrono::Duration::milliseconds(300),
+	);
+	assert_eq!(
+		(instant.outcome, instant.seconds),
+		(CheckOutcome::Failed, 1)
 	);
 
 	let run = Uuid::now_v7();
