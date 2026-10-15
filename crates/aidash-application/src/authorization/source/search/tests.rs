@@ -722,6 +722,9 @@ impl SemanticSearchScope for Scope {
 		_: &Operation,
 		budget: usize,
 	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
+		if self.native.as_ref().unwrap().fault == "pending" {
+			return Err(Error::RemoteSemantic(Failure::Pending));
+		}
 		let context = self.native.as_ref().unwrap().context.clone();
 		assert!(
 			serde_json::to_vec(&context)?.len() <= budget,
@@ -895,6 +898,33 @@ async fn native_finalization_failures_rollback_dependencies_and_receipt(
 	let record = repo.journal.record.lock().unwrap();
 	assert!(record.receipt.is_none());
 	assert_eq!(record.state, "WAITING");
+}
+
+/// A native memory model attempt still inside its call deadline backs the
+/// operation off like an outage instead of pausing it as `Pending` (#233).
+#[tokio::test]
+async fn a_live_native_memory_attempt_backs_off_instead_of_pausing_the_operation() {
+	// Arrange
+	let mut native = NativeFixture::new();
+	native.fault = "pending";
+	let mut op = operation();
+	op.max_tokens = 16_384;
+	let mut repo = Repository::new();
+	repo.native = Some(native.clone());
+	repo.journal.native = Some(native.clone());
+	{
+		let mut record = repo.journal.record.lock().unwrap();
+		record.digest = op.digest().unwrap();
+		record.binding = json!({"operation":op,"semantic":native.binding});
+	}
+	// Act
+	let result = search(&repo, "aidash://receiver", op).await;
+	// Assert
+	assert!(
+		matches!(result, Err(Error::RemoteSemantic(Failure::Unavailable))),
+		"{result:?}"
+	);
+	assert_eq!(repo.journal.record.lock().unwrap().state, "WAITING");
 }
 
 #[rstest]

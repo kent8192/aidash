@@ -209,7 +209,16 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 						&operation,
 						max_tokens - overhead,
 					)
-					.await?;
+					.await
+					// A memory model attempt still inside its call deadline is
+					// `Pending`. The journal would pause the operation on it, so
+					// back off as from an outage until the deadline passes (#233).
+					.map_err(|error| match error {
+						Error::RemoteSemantic(Failure::Pending) => {
+							Error::RemoteSemantic(Failure::Unavailable)
+						}
+						error => error,
+					})?;
 			}
 			receipt.fit_budget(max_tokens)?;
 			journal::complete(repository.journal(), &attempt, &receipt, &corpus).await?;
