@@ -2337,25 +2337,38 @@ impl Store {
 		tx.commit().await?;
 		Ok(true)
 	}
+	/// A channel message a local Run publishes, attributed to that Run so its
+	/// Source citations resolve. Only scoped authority tracks it as Run output.
 	pub(crate) async fn message_from_run(
 		&self,
-		run: &Run,
+		run: &RunMetadata,
 		sender: &str,
 		content: &str,
 		key: &str,
+		track_output: bool,
 	) -> Result<()> {
+		nonempty(content, "message")?;
 		let mut tx = crate::database::native::begin(&self.pool).await?;
-		let message = self
-			.message_in(&mut tx, run.workspace_id, sender, content, Some(key))
-			.await?;
-		self.record_output_in(
-			&mut tx,
-			Some(run.id),
+		let message = MessageRecord::append_in(
+			tx.as_mut(),
+			&self.node_id,
 			run.workspace_id,
-			"message",
-			message.id,
+			sender,
+			content,
+			key,
+			Some(run.id),
 		)
 		.await?;
+		if track_output {
+			self.record_output_in(
+				&mut tx,
+				Some(run.id),
+				run.workspace_id,
+				"message",
+				message.id,
+			)
+			.await?;
+		}
 		tx.commit().await?;
 		Ok(())
 	}
