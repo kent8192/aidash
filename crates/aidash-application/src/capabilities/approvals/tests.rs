@@ -523,6 +523,47 @@ async fn an_allow_run_grant_covers_later_disclosures_to_the_same_destination() {
 	));
 }
 
+#[rstest::rstest]
+#[case::shorter_than_a_minute(Duration::seconds(30), false)]
+#[case::one_minute(Duration::minutes(1), true)]
+#[case::the_deployment_ceiling(Duration::minutes(60), true)]
+#[case::beyond_the_ceiling(Duration::minutes(61), false)]
+#[tokio::test]
+async fn a_run_grant_lasts_between_one_minute_and_the_deployment_ceiling(
+	#[case] lasting: Duration,
+	#[case] accepted: bool,
+) {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	scope.principal = "bob".into();
+	let revision = scope.records[&approval_id].revision;
+	let result = decide(
+		&mut scope,
+		approval_id,
+		ApprovalDecision {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+			choice: ApprovalChoice::AllowRun,
+			targets: Some(vec!["api.search.brave.com".to_owned()]),
+			expires_at: Some(Utc::now() + lasting),
+		},
+	)
+	.await;
+	match result {
+		Ok(_) => assert!(accepted, "a grant lasting {lasting} was accepted"),
+		Err(Error::Invalid(reason)) => {
+			assert!(!accepted, "a grant lasting {lasting} was refused");
+			assert_eq!(reason, "INVALID_GRANT_SCOPE");
+		}
+		Err(error) => panic!("unexpected {error:?}"),
+	}
+}
+
 #[tokio::test]
 async fn a_disclosure_run_grant_is_visible_to_its_approver_as_a_research_resource() {
 	let mut scope = scope(Value::Null);

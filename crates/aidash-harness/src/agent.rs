@@ -1153,6 +1153,30 @@ impl<'a> Executor<'a> {
 						);
 					}
 				}
+				// URL intents live beside their inputs, never in their text
+				// (ADR 0052): each run message names its own pages, and the
+				// instruction below is rendered only into steps that carry any.
+				let url_intents = self.environment.url_intents(run).await?;
+				let mut requested_pages: Vec<String> = url_intents
+					.iter()
+					.filter(|intent| intent.input_key.is_none())
+					.flat_map(|intent| intent.pages.iter().cloned())
+					.collect();
+				for (position, (index, _)) in page.entries.iter().enumerate() {
+					let key = inputs[*index].idempotency_key.as_str();
+					let Some(intent) = url_intents
+						.iter()
+						.find(|intent| intent.input_key.as_deref() == Some(key))
+					else {
+						continue;
+					};
+					run_messages[position]["read_pages"] = json!(intent.pages);
+					for page in &intent.pages {
+						if !requested_pages.contains(page) {
+							requested_pages.push(page.clone());
+						}
+					}
+				}
 				let output = if run_message_catchup {
 					output_limit.min(RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT)
 				} else {
@@ -1334,6 +1358,13 @@ impl<'a> Executor<'a> {
 				// workspace preview. Admission has already capped its aggregate size.
 				if !run_messages.is_empty() {
 					pinned["run_messages"] = json!(run_messages);
+				}
+				// Catch-up only summarizes; it never acts on a request.
+				if !requested_pages.is_empty() && !run_message_catchup {
+					pinned["url_intents"] = json!({
+						"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+						"pages": requested_pages,
+					});
 				}
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);

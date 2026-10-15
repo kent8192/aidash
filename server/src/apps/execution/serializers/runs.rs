@@ -80,19 +80,58 @@ pub struct RunResearch {
 	pub uncertain_attempts: u32,
 	/// Attempts sent and not yet settled.
 	pub in_flight_attempts: u32,
+	/// The pages people asked the Run to read, oldest first. Each only asked
+	/// for a Page reading; none approved a Web disclosure.
+	pub url_intents: Vec<RunUrlIntent>,
 }
 
-/// One research provider this Node knows and whether it can dispatch it.
+/// The pages one input asked a Run to read.
+#[derive(Serialize, JsonSchema)]
+pub struct RunUrlIntent {
+	/// `task` for the input that started or queued the Run, `run_message`
+	/// for a later message steering it.
+	pub input: UrlIntentInput,
+	pub pages: Vec<String>,
+	pub requested_by: String,
+	pub requested_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UrlIntentInput {
+	Task,
+	RunMessage,
+}
+
+/// A tool definition of the reader's Tenant, by identifier and version.
+#[derive(Serialize, JsonSchema)]
+pub struct DefinitionRef {
+	pub id: String,
+	pub version: String,
+}
+
+/// One research operation of a provider and the tool definitions through
+/// which the reader's Tenant may bind it here.
+#[derive(Serialize, JsonSchema)]
+pub struct ResearchProviderOperation {
+	pub operation: String,
+	/// The Tenant's tool definitions of this operation that have a Catalog
+	/// Approval. A Run can use the operation only through one of them.
+	pub approved_definitions: Vec<DefinitionRef>,
+}
+
+/// One Research provider this Deployment knows.
 #[derive(Serialize, JsonSchema)]
 pub struct ResearchProvider {
 	pub provider: String,
-	pub operations: Vec<String>,
-	/// `false` until an Operator sets the provider up on this Node.
-	pub available: bool,
+	/// Whether whoever runs the Deployment has set the provider up, with
+	/// current account terms where it has any. It never says what is missing.
+	pub set_up: bool,
+	pub operations: Vec<ResearchProviderOperation>,
 }
 
-/// The research providers of this Node and the per-Run limits every Run here
-/// is held to.
+/// The Research providers of this Deployment and the per-Run limits every
+/// Run is held to.
 #[derive(Serialize, JsonSchema)]
 pub struct ResearchProviders {
 	pub providers: Vec<ResearchProvider>,

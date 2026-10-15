@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
-/// Path of the Search service operator's Brave account profile (JSON).
+/// Path of the Research account holder's Brave account profile (JSON).
 pub const BRAVE_PROFILE_ENV: &str = "AIDASH_RESEARCH_BRAVE_PROFILE";
 /// `enabled` admits the public page reading provider.
 pub const PAGE_READING_ENV: &str = "AIDASH_RESEARCH_PAGE_READING";
@@ -81,13 +81,20 @@ impl Providers {
 		}
 	}
 
-	/// Every research provider this Node knows, with its operations and
-	/// whether it can be dispatched here. Why one is unavailable stays with
-	/// the Operator.
+	/// Every Research provider this Deployment knows, its operations and
+	/// whether it is set up now. Account terms are checked on every call, so
+	/// terms that lapsed after startup read as not set up. A Tenant's approved
+	/// definitions are the caller's to fill in; why a provider is not set up
+	/// is never said.
 	pub fn availability(&self) -> crate::apps::execution::serializers::runs::ResearchProviders {
-		use crate::apps::execution::serializers::runs::{ResearchProvider, ResearchProviders};
-		let available = |provider: &str| match provider {
-			"research.brave@1" => self.brave.is_ok(),
+		use crate::apps::execution::serializers::runs::{
+			ResearchProvider, ResearchProviderOperation, ResearchProviders,
+		};
+		let set_up = |provider: &str| match provider {
+			"research.brave@1" => self
+				.brave
+				.as_ref()
+				.is_ok_and(|brave| brave.account().is_ok()),
 			"research.page@1" => self.pages.is_some(),
 			"research.fixture@1" => self.fixture.is_some(),
 			_ => false,
@@ -97,11 +104,14 @@ impl Providers {
 				.iter()
 				.map(|(provider, operations, _)| ResearchProvider {
 					provider: (*provider).into(),
+					set_up: set_up(provider),
 					operations: operations
 						.iter()
-						.map(|operation| (*operation).into())
+						.map(|operation| ResearchProviderOperation {
+							operation: (*operation).into(),
+							approved_definitions: vec![],
+						})
 						.collect(),
-					available: available(provider),
 				})
 				.collect(),
 			limits: self.limits.into(),

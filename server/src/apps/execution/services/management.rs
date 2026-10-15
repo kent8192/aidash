@@ -655,11 +655,16 @@ impl HarnessManagement {
 		)
 		.await
 	}
-	/// The research providers of this Node and the per-Run research limits.
-	pub(crate) fn research_providers(
+	/// The Research providers of this Deployment for a Tenant's subject.
+	pub(crate) async fn research_providers(
 		&self,
-	) -> crate::apps::execution::serializers::runs::ResearchProviders {
-		crate::research::providers().availability()
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
+		crate::apps::execution::capabilities::services::endpoints::research_providers(
+			self.runtime.clone(),
+			actor,
+		)
+		.await
 	}
 }
 

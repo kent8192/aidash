@@ -190,8 +190,8 @@ pub async fn run_research(
 	crate::http::json(service.run_research(actor, id).await)
 }
 
-/// The research providers of this Node, whether each can be used here, and
-/// the per-Run research limits.
+/// The Research providers of this Deployment, whether each is set up and
+/// approved for the reader's Tenant, and the per-Run research limits.
 #[get(
 	"/api/research/providers",
 	name = "research-providers",
@@ -199,6 +199,7 @@ pub async fn run_research(
 )]
 pub async fn research_providers(
 	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
 ) -> ViewResult<Response> {
-	crate::http::json(Ok::<_, crate::Error>(service.research_providers()))
+	crate::http::json(service.research_providers(actor).await)
 }

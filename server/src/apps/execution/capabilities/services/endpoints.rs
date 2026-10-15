@@ -204,7 +204,7 @@ pub(crate) async fn enqueue(
 		if sessions::status(&mut access, &area).await?.queue.len() >= 100 {
 			return Err(Error::Conflict("QUEUE_LIMIT".into()));
 		}
-		let description = with_url_intents(&input.description, &input.read_pages)?;
+		check_url_intents(&input.read_pages)?;
 		let workspace = access.workspace(area.workspace_id).await?;
 		access.require(&workspace, "task.create").await?;
 		let creator = access.identity.subject.clone();
@@ -215,7 +215,7 @@ pub(crate) async fn enqueue(
 				area.workspace_id,
 				&NewTask {
 					title: input.title,
-					description,
+					description: input.description,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -235,6 +235,10 @@ pub(crate) async fn enqueue(
 			},
 		)
 		.await?;
+		if !input.read_pages.is_empty() {
+			let run = run_of_task(&mut access, task.id).await?;
+			record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
+		}
 		let result = sessions::status(&mut access, &area).await?;
 		if result.queue.is_empty()
 			|| !result
@@ -255,11 +259,136 @@ pub(crate) async fn enqueue(
 	Ok(result)
 }
 
-/// `text` with the person's URL intents rendered into it. A URL intent only
-/// asks the Run to read a page; its Web disclosure is approved separately.
-fn with_url_intents(text: &str, pages: &[String]) -> Result<String> {
-	aidash_domain::research::intent::render(text, pages)
-		.map_err(|error| Error::Invalid(format!("INVALID_URL_INTENT: {error}")))
+/// The Run just admitted for `task` in this transaction.
+async fn run_of_task(access: &mut Access, task: Uuid) -> Result<Run> {
+	aidash_server::database::query_as(
+		&sessions::select("runs")
+			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut **access.tx)
+	.await
+}
+
+fn invalid_url_intent(error: aidash_domain::research::intent::InvalidUrlIntent) -> Error {
+	Error::Invalid(format!("INVALID_URL_INTENT: {error}"))
+}
+
+/// Checks the pages one input asks the Run to read, before anything is
+/// written. They are recorded beside the input, never in its text (ADR 0052).
+fn check_url_intents(pages: &[String]) -> Result<()> {
+	aidash_domain::research::intent::validate(pages).map_err(invalid_url_intent)
+}
+
+/// Records the pages `requested_by` asked `run` to read with one input:
+/// its Task when `input_key` is `None`. A Run whose Agent binds no Page
+/// reading operation cannot act on them, so they are refused instead.
+async fn record_url_intents(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: &Run,
+	input_key: Option<&str>,
+	pages: &[String],
+	requested_by: &str,
+) -> Result<()> {
+	if pages.is_empty() {
+		return Ok(());
+	}
+	let reads = run
+		.context
+		.binding_snapshot
+		.as_deref()
+		.is_some_and(aidash_domain::research::intent::reads_pages);
+	if !reads {
+		return Err(invalid_url_intent(
+			aidash_domain::research::intent::InvalidUrlIntent::NoPageReading,
+		));
+	}
+	crate::apps::execution::models::url_intents::UrlIntentRecord::record(
+		tx,
+		run.id,
+		input_key,
+		pages,
+		requested_by,
+	)
+	.await
+}
+
+/// The Research providers of this Deployment, whether each is set up, and
+/// which of the reader's Tenant's tool definitions of each operation have a
+/// Catalog Approval. Only a Tenant's subjects read it.
+pub(crate) async fn research_providers(
+	f: Federation,
+	actor: Actor,
+) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
+	use crate::apps::execution::serializers::runs::DefinitionRef;
+	if !matches!(actor, Actor::Subject(_)) {
+		return Err(Error::Forbidden);
+	}
+	let mut access = access(&f, actor).await?.into_native()?;
+	let mut providers = crate::research::providers().availability();
+	let result = async {
+		let (tx, tenant) = access.tenant_transaction();
+		// Approved tool definitions of the Tenant that name a research
+		// provider, whatever their identifiers: installed copies have their own.
+		let (sql, values) = reinhardt::query::Query::select()
+			.column((Alias::new("r"), Alias::new("id")))
+			.column((Alias::new("r"), Alias::new("version")))
+			.expr_as(
+				Expr::cust("r.metadata->'config'->>'provider'"),
+				Alias::new("provider"),
+			)
+			.expr_as(
+				Expr::cust("r.metadata->'config'->>'operation'"),
+				Alias::new("operation"),
+			)
+			.from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+			.join(
+				reinhardt::query::JoinType::InnerJoin,
+				reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
+				Expr::cust("r.id = c.entry_id AND r.version = c.entry_version"),
+			)
+			.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
+			.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(Expr::value(true)))
+			.and_where(Expr::col((Alias::new("r"), Alias::new("kind"))).eq(Expr::value("tool")))
+			.and_where(Expr::cust(
+				"r.metadata->'config'->>'provider' LIKE 'research.%'",
+			))
+			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
+			.build(PostgresQueryBuilder);
+		let rows = tx
+			.fetch_all(&sql, reinhardt::db::orm::execution::convert_values(values))
+			.await?;
+		for row in rows {
+			let get = |column: &str| -> Result<String> {
+				row.get::<String>(column).map_err(|error| {
+					Error::Invalid(format!("research definition {column}: {error}"))
+				})
+			};
+			let (id, version, provider, operation) = (
+				get("id")?,
+				get("version")?,
+				get("provider")?,
+				get("operation")?,
+			);
+			if let Some(known) = providers
+				.providers
+				.iter_mut()
+				.find(|item| item.provider == provider)
+				.and_then(|item| {
+					item.operations
+						.iter_mut()
+						.find(|item| item.operation == operation)
+				}) {
+				known
+					.approved_definitions
+					.push(DefinitionRef { id, version });
+			}
+		}
+		Ok(providers)
+	}
+	.await;
+	access.finish(result).await
 }
 
 pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -> Result<Steered> {
@@ -288,8 +417,8 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 			.await?;
 		let limit = f.run_message_limit(&run).await?;
 		let sender = access.identity.subject.clone();
-		let content = with_url_intents(&input.content, &input.read_pages)?;
-		Ok((None, Some((run, sender, limit, digest, content))))
+		check_url_intents(&input.read_pages)?;
+		Ok((None, Some((run, sender, limit, digest))))
 	}
 	.await;
 	let (cached, ready) = match result {
@@ -299,7 +428,7 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 	if let Some(cached) = cached {
 		return access.finish(Ok(cached)).await;
 	}
-	let (run, sender, limit, digest, content) = ready.expect("fresh steer input");
+	let (run, sender, limit, digest) = ready.expect("fresh steer input");
 	let tenant = access.identity.tenant.clone();
 	let mut access = access.into_native()?;
 	let result = async {
@@ -308,11 +437,19 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 				access.tx.as_mut(),
 				run.id,
 				&sender,
-				&content,
+				&input.content,
 				&format!("steer:{}:{}", run.id, input.idempotency_key),
 				limit,
 			)
 			.await?;
+		record_url_intents(
+			access.tx.as_mut(),
+			&run,
+			Some(&format!("steer:{}:{}", run.id, input.idempotency_key)),
+			&input.read_pages,
+			&sender,
+		)
+		.await?;
 		let result = Steered {
 			accepted_run_id: run.id,
 		};
@@ -442,7 +579,7 @@ pub(crate) async fn thread_run(
 		access
 			.workspace_record(workspace, "message", channel.root_message_id)
 			.await?;
-		let description = with_url_intents(&input.description, &input.read_pages)?;
+		check_url_intents(&input.read_pages)?;
 		let resource = access.workspace(workspace).await?;
 		access.require(&resource, "task.create").await?;
 		let creator = access.identity.subject.clone();
@@ -453,7 +590,7 @@ pub(crate) async fn thread_run(
 				workspace,
 				&NewTask {
 					title: input.title,
-					description,
+					description: input.description,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -473,20 +610,9 @@ pub(crate) async fn thread_run(
 			},
 		)
 		.await?;
-		let run: Run = {
-			let query_bind_1 = task.id;
-			aidash_server::database::query_as(
-				&sessions::select("runs")
-					.and_where(
-						Expr::col(Alias::new("task_id")).eq(Expr::value(query_bind_1.to_owned())),
-					)
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **access.tx)
-			.await?
-		};
+		let run = run_of_task(&mut access, task.id).await?;
 		let _ = delegation;
+		record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
 		let area = sessions::for_run(&mut access, &run).await?;
 		sessions::cache(
 			&mut access,
@@ -631,11 +757,11 @@ pub(crate) async fn approval_list(
 				"agent_version": data["agent_version"],
 				"operation": data["operation"],
 				"provider": data["provider"],
-				"operator_account": data["attribution"]["account_id"],
 				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
 				"query": data["query"],
 				"decided_by": data["decided_by"],
 				"decided_at": data["decided_at"],
+				"closed_reason": data["closed_reason"],
 			}));
 		}
 		Ok(json!({"items": items, "next_cursor": next_cursor}))

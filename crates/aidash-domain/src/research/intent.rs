@@ -1,16 +1,30 @@
 //! URL intents: a person's request, made with their input, that the Run read
-//! particular pages. The host renders them into a fixed instruction; a URL
-//! intent never approves the Web disclosure the Page reading leads to.
-use super::search::candidate_host;
+//! particular pages. The host records the pages beside the person's text and
+//! never in it (ADR 0052); a URL intent never approves the Web disclosure the
+//! Page reading leads to.
+use super::{Operation, search::candidate_host};
+use crate::{
+	registry::bindings::BindingSnapshot,
+	tool::providers::{ToolDescriptor, research_operation},
+};
+use serde::{Deserialize, Serialize};
 
 /// Most pages one input may ask the Run to read.
 pub const MAX_URL_INTENTS: usize = 5;
 
-/// Opening line of the rendered instruction. The dashboard recognizes a URL
-/// intent by this exact line.
-pub const URL_INTENT_HEADING: &str = "Read these pages with the page reading tool before you answer. Each page still needs its own Web disclosure approval:";
+/// What a request's step state tells the model about recorded URL intents.
+/// It is rendered into every step that carries one and is never stored.
+pub const URL_INTENT_INSTRUCTION: &str = "The person asked you to read these pages with the page reading tool before you answer. Each page still needs its own Web disclosure approval.";
 
-/// Why a URL intent is refused. Nothing is rendered when any page is refused.
+/// The pages one input asked the Run to read: the Run's Task when
+/// `input_key` is `None`, otherwise the run input with that idempotency key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UrlIntent {
+	pub input_key: Option<String>,
+	pub pages: Vec<String>,
+}
+
+/// Why a URL intent is refused. Nothing is recorded when any page is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidUrlIntent {
 	TooMany,
@@ -18,6 +32,8 @@ pub enum InvalidUrlIntent {
 	/// characters.
 	Address(String),
 	Duplicate(String),
+	/// The Run's Agent binds no Page reading operation.
+	NoPageReading,
 }
 
 impl std::fmt::Display for InvalidUrlIntent {
@@ -29,16 +45,13 @@ impl std::fmt::Display for InvalidUrlIntent {
 				"a requested page must be an absolute http(s) URL without credentials or fragment"
 			),
 			Self::Duplicate(_) => write!(f, "a page is requested more than once"),
+			Self::NoPageReading => write!(f, "the Agent binds no page reading operation"),
 		}
 	}
 }
 
-/// `text` followed by the instruction to read `pages`, in the given order.
-/// Without pages, `text` is returned unchanged.
-pub fn render(text: &str, pages: &[String]) -> Result<String, InvalidUrlIntent> {
-	if pages.is_empty() {
-		return Ok(text.to_owned());
-	}
+/// Checks the pages one input asks the Run to read, in the given order.
+pub fn validate(pages: &[String]) -> Result<(), InvalidUrlIntent> {
 	if pages.len() > MAX_URL_INTENTS {
 		return Err(InvalidUrlIntent::TooMany);
 	}
@@ -50,16 +63,21 @@ pub fn render(text: &str, pages: &[String]) -> Result<String, InvalidUrlIntent> 
 			return Err(InvalidUrlIntent::Duplicate(page.clone()));
 		}
 	}
-	let mut rendered = text.trim_end().to_owned();
-	if !rendered.is_empty() {
-		rendered.push_str("\n\n");
-	}
-	rendered.push_str(URL_INTENT_HEADING);
-	for page in pages {
-		rendered.push_str("\n- ");
-		rendered.push_str(page);
-	}
-	Ok(rendered)
+	Ok(())
+}
+
+/// Whether a Run with `snapshot` can act on a URL intent: its Agent binds a
+/// Page reading operation, directly or through a bundle. A remote Run never
+/// can, because Research operations are never exposed to remote Runs.
+pub fn reads_pages(snapshot: &BindingSnapshot) -> bool {
+	!snapshot.remote
+		&& snapshot.definitions.iter().any(|resolved| {
+			resolved.definition.kind == "tool"
+				&& serde_json::from_value::<ToolDescriptor>(resolved.definition.config.clone())
+					.ok()
+					.and_then(|tool| research_operation(&tool.provider, &tool.operation))
+					.is_some_and(|(operation, _)| operation == Operation::Fetch)
+		})
 }
 
 #[cfg(test)]

@@ -137,6 +137,8 @@ struct State {
 	calibrated_model: bool,
 	/// Calibration samples the store returns, newest first.
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
+	/// URL intents recorded beside the Run's Task and inputs.
+	url_intents: Vec<aidash_domain::research::intent::UrlIntent>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -912,6 +914,12 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		Ok(16000)
 	}
+	async fn url_intents(
+		&self,
+		_run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		Ok(self.0.url_intents.clone())
+	}
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
 		let _ = run;
 		self.record("inputs.deliver");
@@ -1281,6 +1289,7 @@ fn fixture() -> Fixture {
 		artifacts: Mutex::new(vec![]),
 		calibrated_model: false,
 		calibration: Mutex::new(vec![]),
+		url_intents: vec![],
 	}));
 	Fixture { backend, run }
 }
@@ -3382,6 +3391,58 @@ async fn legacy_thinking_request_matches_byte_baseline(
 		sorted
 	);
 	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
+}
+
+/// The step state a Legacy request carries.
+fn step_state(request: &ModelRequest) -> Value {
+	serde_json::to_value(request).unwrap()["context"]["current"].clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_are_rendered_from_their_records_only_into_steps_that_carry_them(
+	mut fixture: Fixture,
+) {
+	// Arrange: the Task asks for one page and a run message for another;
+	// their text says nothing about pages.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents = vec![
+		aidash_domain::research::intent::UrlIntent {
+			input_key: None,
+			pages: vec!["https://example.com/notes".into()],
+		},
+		aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		},
+	];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(
+		state["url_intents"],
+		json!({
+			"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+			"pages": ["https://example.com/notes", "https://example.org/rollback"],
+		})
+	);
+	assert_eq!(
+		state["run_messages"][0]["read_pages"],
+		json!(["https://example.org/rollback"])
+	);
+	assert_eq!(
+		state["run_messages"][0]["content"], "Also include the rollback steps.",
+		"the person's text is never rewritten"
+	);
+	assert_eq!(
+		state["task"]["description"],
+		fixture.backend.0.task.lock().unwrap().description
+	);
 }
 
 /// A tool whose results the test scripts in call order; counts real invocations.

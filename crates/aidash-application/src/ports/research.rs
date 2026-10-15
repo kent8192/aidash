@@ -35,7 +35,7 @@ pub trait SearchProvider: Send + Sync {
 	/// The exact outbound content; a query the provider cannot send unchanged
 	/// is rejected here, before any approval is requested.
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure>;
-	/// The Search service operator's current account terms, or `None` for a
+	/// The Research account holder's current account terms, or `None` for a
 	/// provider that sends nothing outside the Node.
 	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure>;
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure>;
@@ -165,7 +165,7 @@ pub struct WebDisclosure {
 	pub outbound: Outbound,
 	/// The Run's observed input sequence; new user input needs a new approval.
 	pub context_revision: i64,
-	/// The Search service operator's account and price for this request, as
+	/// The Research account holder's account and price for this request, as
 	/// they stand when approval is requested. Not part of the digest.
 	pub attribution: Option<CostAttribution>,
 	/// The host-validated search query in provider-independent form, so an

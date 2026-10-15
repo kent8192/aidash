@@ -44,11 +44,10 @@ pub struct ApprovalCard {
 	pub operation: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider: Option<String>,
-	/// The Search service operator's account, as recorded when approval was
-	/// requested. Absent for a page read.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub operator_account: Option<String>,
-	/// The recorded price of this one request, an estimate and not an invoice.
+	/// The price of this one request, recorded when approval was requested
+	/// and charged to the Research account holder: an estimate, not an
+	/// invoice. Absent for a provider without a price. The account itself is
+	/// kept with the approval for audit and never shown.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub estimated_micro_usd: Option<i64>,
 	/// The validated search query in provider-independent form.
@@ -56,6 +55,10 @@ pub struct ApprovalCard {
 	pub query: Option<serde_json::Value>,
 	pub decided_by: Option<String>,
 	pub decided_at: Option<DateTime<Utc>>,
+	/// Why a `closed` approval or Run grant was closed, such as
+	/// `evidence_revoked`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub closed_reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

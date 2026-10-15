@@ -17,29 +17,29 @@ struct Research {
 	c: CoreFixture,
 	_provider: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	requests: Arc<AtomicUsize>,
+	/// The Tenant's installed copy of the fixture provider's search tool.
+	search_tool: Value,
 }
 
 #[rstest::fixture]
 fn research_requests() -> Arc<AtomicUsize> {
 	Arc::new(AtomicUsize::new(0))
 }
-/// The first page a URL intent asks the Run to read, found in any text of a
-/// model request, including JSON-encoded context.
+/// The first page a URL intent asks the Run to read, found in the step state
+/// of a model request, including JSON-encoded context.
 fn intent_page(value: &Value) -> Option<String> {
-	use aidash_domain::research::intent::URL_INTENT_HEADING;
+	use aidash_domain::research::intent::URL_INTENT_INSTRUCTION;
 	match value {
-		Value::String(text) if text.contains(URL_INTENT_HEADING) => {
-			serde_json::from_str::<Value>(text)
-				.ok()
-				.and_then(|inner| intent_page(&inner))
-				.or_else(|| {
-					let after = &text[text.find(URL_INTENT_HEADING)? + URL_INTENT_HEADING.len()..];
-					let start = after.find("\n- ")? + 3;
-					Some(after[start..].split(['\n', '"']).next()?.to_owned())
-				})
+		Value::String(text) if text.contains(URL_INTENT_INSTRUCTION) => {
+			intent_page(&serde_json::from_str::<Value>(text).ok()?)
 		}
+		Value::Object(fields) => match fields.get("url_intents") {
+			Some(intents) if intents["instruction"] == URL_INTENT_INSTRUCTION => {
+				intents["pages"][0].as_str().map(str::to_owned)
+			}
+			_ => fields.values().find_map(intent_page),
+		},
 		Value::Array(items) => items.iter().find_map(intent_page),
-		Value::Object(fields) => fields.values().find_map(intent_page),
 		_ => None,
 	}
 }
@@ -155,10 +155,18 @@ async fn research_fixture(
 		let (status, value) = request(&c.app, &c.f.config.api_token, method, &path, body).await;
 		assert_eq!(status, 200, "{value}");
 	}
+	let search_tool = installations
+		.iter()
+		.find(|row| {
+			row["entry"]["kind"] == "tool" && row["entry"]["config"]["operation"] == "search"
+		})
+		.map(|row| json!({"id":row["entry"]["id"],"version":row["entry"]["version"]}))
+		.unwrap();
 	Research {
 		c,
 		_provider: provider.await,
 		requests,
+		search_tool,
 	}
 }
 
@@ -195,6 +203,32 @@ impl Research {
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");
+	}
+	/// Registers `research@3.1.0`, which binds only Web search, under the
+	/// policy revision `expected_revision`.
+	async fn register_search_only_agent(&mut self, expected_revision: i64) {
+		let node = self.c.f.config.node_id.clone();
+		self.c.policy["subjects"]
+			[aidash_server::domain::qualified_agent(&node, "research", "3.1.0")] = json!({"kind":"agent"});
+		let mut agent = self.c.f.registry.get("research", VERSION).await.unwrap();
+		agent.version = "3.1.0".into();
+		agent.binding_normalization = None;
+		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
+		for (path, body) in [
+			(
+				"/api/authorization/acme",
+				json!({"expected_revision":expected_revision,"bundle":self.c.policy}),
+			),
+			("/api/registry", json!(agent)),
+			(
+				"/api/authorization/acme/catalog",
+				json!({"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
+			),
+		] {
+			let (status, value) =
+				request(&self.c.app, &self.c.f.config.api_token, "POST", path, body).await;
+			assert_eq!(status, 200, "{path}: {value}");
+		}
 	}
 	async fn delegate(&self) -> Run {
 		let (status, value) = request(
@@ -409,6 +443,24 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 		refused.to_string().contains("INVALID_URL_INTENT"),
 		"{refused}"
 	);
+	// An Agent version that binds Web search but no Page reading cannot act
+	// on one, and nothing is created.
+	r.register_search_only_agent(4).await;
+	let (status, refused) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&path,
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"3.1.0","title":"Notes","description":"Summarize them.","read_pages":[page]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{refused}");
+	assert!(
+		refused
+			.to_string()
+			.contains("binds no page reading operation"),
+		"{refused}"
+	);
 	let (status, area) = request(
 		&r.c.app,
 		&r.c.token,
@@ -442,11 +494,46 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 			.await
 			.unwrap();
 	assert_eq!(
-		task.description,
-		format!(
-			"Summarize them.\n\n{}\n- {page}",
-			aidash_domain::research::intent::URL_INTENT_HEADING
-		)
+		task.description, "Summarize them.",
+		"the person's text is stored as written"
+	);
+	let (status, research) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		&format!("/api/runs/{run}/research"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{research}");
+	assert_eq!(research["url_intents"][0]["input"], "task");
+	assert_eq!(research["url_intents"][0]["pages"], json!([page]));
+	// Steering records its own URL intent beside the message text.
+	let steered_page = "https://example.org/rollback";
+	let (status, steered) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/working-areas/{}/steer", area["id"].as_str().unwrap()),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run,"content":"Also cover the rollback.","read_pages":[steered_page]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{steered}");
+	let (_, research) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		&format!("/api/runs/{run}/research"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(research["url_intents"][1]["input"], "run_message");
+	assert_eq!(research["url_intents"][1]["pages"], json!([steered_page]));
+	let inputs = r.c.f.store.run_inputs(run).await.unwrap();
+	assert_eq!(
+		inputs.last().unwrap().content,
+		"Also cover the rollback.",
+		"the steering text is stored as written"
 	);
 	assert_eq!(r.attempts(run).await, 0, "nothing is sent before approval");
 	let (status, inbox) = request(
@@ -505,6 +592,18 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 	assert_eq!(card["query"]["query"], QUERY);
 	assert_eq!(card["agent_id"], "research");
 	assert_eq!(card["agent_version"], VERSION);
+	let (status, too_short) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/capabilities/approvals/{first}/decide"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now() + chrono::Duration::seconds(30)}),
+	)
+	.await;
+	assert_eq!(
+		status, 400,
+		"a Run grant lasts at least a minute: {too_short}"
+	);
 	let (status, decided) = request(
 		&r.c.app,
 		&r.c.token,
@@ -824,5 +923,77 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 		assert_eq!(status, 404, "{case}: {body}");
 		assert_eq!(body, json!({"error":"evidence unavailable"}), "{case}");
 	}
+	r.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_subject(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the fixture provider is set up and its package approved for
+	// this Tenant; Brave and public page reading are not set up.
+	let r = research_fixture.await;
+
+	// Act
+	let (status, providers) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/research/providers",
+		Value::Null,
+	)
+	.await;
+	let (operator_status, _) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"GET",
+		"/api/research/providers",
+		Value::Null,
+	)
+	.await;
+
+	// Assert
+	assert_eq!(status, 200, "{providers}");
+	let provider = |name: &str| {
+		providers["providers"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["provider"] == name)
+			.unwrap_or_else(|| panic!("{providers}"))
+			.clone()
+	};
+	let fixture = provider("research.fixture@1");
+	assert_eq!(fixture["set_up"], true);
+	let approved = |operation: &str| {
+		fixture["operations"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["operation"] == operation)
+			.unwrap()["approved_definitions"]
+			.clone()
+	};
+	// The Tenant's installed copy, whatever its identifier, is approved.
+	assert_eq!(approved("search"), json!([r.search_tool]));
+	assert_eq!(approved("fetch").as_array().unwrap().len(), 1);
+	assert_eq!(approved("find").as_array().unwrap().len(), 1);
+	assert_eq!(provider("research.brave@1")["set_up"], false);
+	assert_eq!(provider("research.page@1")["set_up"], false);
+	assert_eq!(
+		provider("research.page@1")["operations"][0]["approved_definitions"],
+		json!([]),
+		"no package of the page provider is approved for this Tenant"
+	);
+	assert!(
+		!providers.to_string().contains("AIDASH_"),
+		"never names configuration: {providers}"
+	);
+	assert_eq!(providers["limits"]["search_attempts"], 20);
+	assert_eq!(
+		operator_status, 403,
+		"Deployment Administrators read no Tenant's research setup"
+	);
 	r.close().await;
 }

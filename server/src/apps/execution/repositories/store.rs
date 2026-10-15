@@ -2138,6 +2138,21 @@ impl Store {
 		)
 		.await
 	}
+	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
+	pub async fn url_intents(
+		&self,
+		run_id: Uuid,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		let lease = self.orm_connection()?;
+		let records = lease
+			.handle()
+			.atomic(async |tx| {
+				crate::apps::execution::models::url_intents::UrlIntentRecord::for_run(tx, run_id)
+					.await
+			})
+			.await?;
+		Ok(records.iter().map(|record| record.intent()).collect())
+	}
 	pub async fn run_inputs(&self, run_id: Uuid) -> Result<Vec<RunInput>> {
 		let lease = self.orm_connection()?;
 		lease

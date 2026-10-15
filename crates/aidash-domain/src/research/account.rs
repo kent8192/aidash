@@ -1,4 +1,4 @@
-//! The Search service operator's account terms. Every search attempt is
+//! The Research account holder's account terms. Every search attempt is
 //! attributed to this account and priced before dispatch.
 use crate::{Error, Result};
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -83,7 +83,7 @@ impl AccountProfile {
 	}
 }
 
-/// The charge one attempt attributes to the Search service operator.
+/// The charge one attempt attributes to the Research account holder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CostAttribution {
 	pub account_id: String,

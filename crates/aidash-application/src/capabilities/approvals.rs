@@ -27,6 +27,11 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 pub const DISCLOSURE: &str = "disclosure";
 /// The policy action a Web disclosure approval authorizes.
 pub const DISCLOSE: &str = "research.disclose";
+/// The shortest Run grant an approver may give. The dashboard offers whole
+/// minutes; a few seconds of slack let a one-minute grant survive the trip
+/// to the server.
+const MIN_RUN_GRANT_SECONDS: i64 = 60;
+const GRANT_CLOCK_SLACK_SECONDS: i64 = 5;
 
 fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) -> Resource {
 	scope.resource(
@@ -253,9 +258,11 @@ pub async fn decide(
 			let expires = input
 				.expires_at
 				.ok_or_else(|| Error::Invalid("explicit expiry required".into()))?;
+			let now = Utc::now();
 			if targets != vec![origin.to_owned()]
-				|| expires <= Utc::now()
-				|| expires > Utc::now() + Duration::seconds(limits.grant_seconds as i64)
+				|| expires
+					< now + Duration::seconds(MIN_RUN_GRANT_SECONDS - GRANT_CLOCK_SLACK_SECONDS)
+				|| expires > now + Duration::seconds(limits.grant_seconds as i64)
 			{
 				return Err(Error::Invalid("INVALID_GRANT_SCOPE".into()));
 			}
@@ -371,8 +378,8 @@ pub struct DisclosureRequest {
 	pub context_revision: i64,
 	/// The Run's Working Area, so the approval appears in its Thread.
 	pub area: Option<Uuid>,
-	/// The Search service operator's account and price when approval is
-	/// requested; the approver sees these, not the current terms.
+	/// The Research account holder's account and price when approval is
+	/// requested; the approver sees the price, not the current terms.
 	pub attribution: Option<aidash_domain::research::account::CostAttribution>,
 	/// The validated search query in provider-independent form.
 	pub query: Option<Value>,
