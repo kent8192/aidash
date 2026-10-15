@@ -19256,20 +19256,6 @@
           "oneOf": [
             {
               "type": "object",
-              "required": ["kind", "entry"],
-              "properties": {
-                "entry": {
-                  "$ref": "#/components/schemas/Entry"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": ["registry_register"]
-                }
-              },
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
               "required": [
                 "kind",
                 "workspace_id",
@@ -19339,115 +19325,6 @@
               "additionalProperties": false
             }
           ]
-        },
-        "Entry": {
-          "type": "object",
-          "required": [
-            "id",
-            "version",
-            "kind",
-            "name",
-            "description",
-            "capabilities",
-            "tags",
-            "languages",
-            "skills",
-            "schema",
-            "config"
-          ],
-          "properties": {
-            "capabilities": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "config": {
-              "type": "object",
-              "default": {},
-              "additionalProperties": true
-            },
-            "description": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "id": {
-              "type": "string"
-            },
-            "installation": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/MarketplaceProjection"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "languages": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "name": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "schema": {
-              "default": {}
-            },
-            "skills": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "version": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        "MarketplaceProjection": {
-          "type": "object",
-          "required": ["contract", "tenant", "installation", "revision"],
-          "properties": {
-            "contract": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "tenant": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
         },
         "ArtifactInput": {
           "type": "object",
@@ -19643,20 +19520,6 @@
           "oneOf": [
             {
               "type": "object",
-              "required": ["kind", "entry"],
-              "properties": {
-                "entry": {
-                  "$ref": "#/components/schemas/Entry"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": ["registry_register"]
-                }
-              },
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
               "required": [
                 "kind",
                 "workspace_id",
@@ -19726,115 +19589,6 @@
               "additionalProperties": false
             }
           ]
-        },
-        "Entry": {
-          "type": "object",
-          "required": [
-            "id",
-            "version",
-            "kind",
-            "name",
-            "description",
-            "capabilities",
-            "tags",
-            "languages",
-            "skills",
-            "schema",
-            "config"
-          ],
-          "properties": {
-            "capabilities": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "config": {
-              "type": "object",
-              "default": {},
-              "additionalProperties": true
-            },
-            "description": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "id": {
-              "type": "string"
-            },
-            "installation": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/MarketplaceProjection"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "languages": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "name": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "schema": {
-              "default": {}
-            },
-            "skills": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "version": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        "MarketplaceProjection": {
-          "type": "object",
-          "required": ["contract", "tenant", "installation", "revision"],
-          "properties": {
-            "contract": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "tenant": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
         },
         "ArtifactInput": {
           "type": "object",
@@ -19963,20 +19717,6 @@
           "oneOf": [
             {
               "type": "object",
-              "required": ["kind", "entry"],
-              "properties": {
-                "entry": {
-                  "$ref": "#/components/schemas/Entry"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": ["registry_register"]
-                }
-              },
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
               "required": [
                 "kind",
                 "workspace_id",
@@ -20046,115 +19786,6 @@
               "additionalProperties": false
             }
           ]
-        },
-        "Entry": {
-          "type": "object",
-          "required": [
-            "id",
-            "version",
-            "kind",
-            "name",
-            "description",
-            "capabilities",
-            "tags",
-            "languages",
-            "skills",
-            "schema",
-            "config"
-          ],
-          "properties": {
-            "capabilities": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "config": {
-              "type": "object",
-              "default": {},
-              "additionalProperties": true
-            },
-            "description": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "id": {
-              "type": "string"
-            },
-            "installation": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/MarketplaceProjection"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "languages": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "name": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "schema": {
-              "default": {}
-            },
-            "skills": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "version": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        "MarketplaceProjection": {
-          "type": "object",
-          "required": ["contract", "tenant", "installation", "revision"],
-          "properties": {
-            "contract": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "tenant": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
         },
         "ArtifactInput": {
           "type": "object",
@@ -20278,20 +19909,6 @@
           "oneOf": [
             {
               "type": "object",
-              "required": ["kind", "entry"],
-              "properties": {
-                "entry": {
-                  "$ref": "#/components/schemas/Entry"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": ["registry_register"]
-                }
-              },
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
               "required": [
                 "kind",
                 "workspace_id",
@@ -20361,115 +19978,6 @@
               "additionalProperties": false
             }
           ]
-        },
-        "Entry": {
-          "type": "object",
-          "required": [
-            "id",
-            "version",
-            "kind",
-            "name",
-            "description",
-            "capabilities",
-            "tags",
-            "languages",
-            "skills",
-            "schema",
-            "config"
-          ],
-          "properties": {
-            "capabilities": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "config": {
-              "type": "object",
-              "default": {},
-              "additionalProperties": true
-            },
-            "description": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "id": {
-              "type": "string"
-            },
-            "installation": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/MarketplaceProjection"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "languages": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "name": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "schema": {
-              "default": {}
-            },
-            "skills": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "tags": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": []
-            },
-            "version": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        "MarketplaceProjection": {
-          "type": "object",
-          "required": ["contract", "tenant", "installation", "revision"],
-          "properties": {
-            "contract": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "tenant": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
         },
         "ArtifactInput": {
           "type": "object",
