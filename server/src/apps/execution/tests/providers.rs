@@ -743,6 +743,7 @@ async fn keyless_inference_to_an_unpermitted_private_origin_sends_nothing(
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&NoProgress,
 		)
