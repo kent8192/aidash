@@ -174,6 +174,9 @@ async fn bootstrap_with_resources(
 		assert_eq!(status, 200, "{result}");
 		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
+	// unreachable fixture address stays permitted so it keeps failing to connect.
+	f.store.keyless.permit_origin_of(endpoint).unwrap();
 	for (kind, id, config) in [
 		(
 			"model",
@@ -275,6 +278,8 @@ pub fn native_process_environment(
 	settings.node.background_enabled = true;
 	settings.node.worker_count = worker_count;
 	settings.dashboard.oidc = f.config.oidc.clone();
+	// A child process must reach the same Keyless fixtures (ADR 0036).
+	settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
 	let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 	std::fs::create_dir_all(&destination).unwrap();
 	std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();

@@ -1,5 +1,6 @@
 //! Per-call provider access. Key Material never crosses Registry or federation metadata.
 use crate::{Error, Result};
+use aidash_domain::keyless::{Destination, PermittedOrigins};
 use async_trait::async_trait;
 use secrecy::SecretString;
 use std::sync::Arc;
@@ -71,6 +72,9 @@ impl Source {
 pub struct Access {
 	pub endpoint: String,
 	pub bearer: SecretString,
+	/// How a Keyless endpoint may connect (ADR 0036); `None` for a Provider
+	/// Catalog endpoint.
+	pub keyless: Option<Destination>,
 }
 #[async_trait]
 pub trait ProviderAccess: Send + Sync {
@@ -86,8 +90,41 @@ pub trait ProviderAccess: Send + Sync {
 		Ok(false)
 	}
 }
-/// Access without a Provider Credential Store: keyless endpoints only.
-pub struct KeylessAccess;
+/// Access without a Provider Credential Store: Keyless endpoints only, limited
+/// to public addresses except the Deployment's permitted private origins.
+#[derive(Debug, Clone, Default)]
+pub struct KeylessAccess {
+	/// Shared by every clone. Production code sets it once at startup; only
+	/// test builds can add to it later (`permit_origin_of`).
+	origins: Arc<std::sync::RwLock<PermittedOrigins>>,
+}
+impl KeylessAccess {
+	pub fn permitting(origins: PermittedOrigins) -> Self {
+		Self {
+			origins: Arc::new(std::sync::RwLock::new(origins)),
+		}
+	}
+	/// Permit the origin of `url` for this access and every clone of it, as an
+	/// Operator would permit a private model server. Test fixtures start after
+	/// the runtime that holds this access, so they cannot be listed up front.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn permit_origin_of(&self, url: &str) -> Result<()> {
+		let origin = url::Url::parse(url)
+			.map_err(|_| Error::Invalid("invalid fixture URL".into()))?
+			.origin()
+			.ascii_serialization();
+		let added = PermittedOrigins::parse([origin])?;
+		let mut origins = self.origins.write().expect("Keyless origins lock");
+		*origins = std::mem::take(&mut *origins).with(added);
+		Ok(())
+	}
+	/// The permitted origins, so that a test can configure a child process alike.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn permitted_origins(&self) -> Vec<String> {
+		let origins = self.origins.read().expect("Keyless origins lock");
+		origins.iter().map(str::to_owned).collect()
+	}
+}
 #[async_trait]
 impl ProviderAccess for KeylessAccess {
 	async fn resolve(&self, _: &Context, endpoint: &str, source: &Source) -> Result<Access> {
@@ -104,10 +141,20 @@ impl ProviderAccess for KeylessAccess {
 				));
 			}
 		}
-		aidash_domain::configuration::validate_endpoint(endpoint)?;
+		let destination = {
+			let origins = self.origins.read().expect("Keyless origins lock");
+			aidash_domain::keyless::destination(endpoint, &origins)?
+		};
+		if destination == Destination::Forbidden {
+			tracing::warn!(
+				"Keyless endpoint refused: a non-public address outside the permitted private origins"
+			);
+			return Err(Error::Forbidden);
+		}
 		Ok(Access {
 			endpoint: endpoint.into(),
 			bearer: String::new().into(),
+			keyless: Some(destination),
 		})
 	}
 }
@@ -192,6 +239,9 @@ impl ProviderAccess for TenantAccess {
 		Ok(Access {
 			endpoint: provider.base_url().into(),
 			bearer,
+			keyless: None,
 		})
 	}
 }
+#[cfg(test)]
+mod tests;

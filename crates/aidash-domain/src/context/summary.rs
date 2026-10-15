@@ -366,11 +366,16 @@ impl SummaryContent {
 }
 
 /// Events the Summary Stage may absorb: tool results, whose sources the
-/// summary tracks as dependencies. Human answers, corrections, continuation
-/// markers and media observations, whose source messages a summary could not
-/// recheck, always stay verbatim in the projection.
+/// summary tracks as dependencies, and the Native `Assistant` event that
+/// opens their Model Turn, which is absorbed whole. Human answers,
+/// corrections, continuation markers and media observations, whose source
+/// messages a summary could not recheck, always stay verbatim in the
+/// projection.
 pub fn absorbable(event: &ContextEvent) -> bool {
-	matches!(event, ContextEvent::Tool { .. })
+	matches!(
+		event,
+		ContextEvent::Tool { .. } | ContextEvent::Assistant { .. }
+	)
 }
 
 /// A failed tool call: its result carries a non-null top-level `error`, or the

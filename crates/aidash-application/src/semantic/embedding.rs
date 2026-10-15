@@ -29,11 +29,14 @@ pub async fn invoke(
 	let output = provider.embed(config, text).await.map_err(|error| {
 		// Tenant access failures are admission/state failures, never a retryable
 		// provider outage. Preserve them without changing self-hosted diagnostics.
-		if config.provider_credential.is_some()
-			&& matches!(
-				error,
-				Error::Invalid(_) | Error::NotFound(_) | Error::Forbidden | Error::Conflict(_)
-			) {
+		// A Keyless endpoint the Deployment does not permit (ADR 0036) is likewise
+		// refused, not unavailable.
+		if matches!(error, Error::Forbidden)
+			|| config.provider_credential.is_some()
+				&& matches!(
+					error,
+					Error::Invalid(_) | Error::NotFound(_) | Error::Conflict(_)
+				) {
 			error
 		} else {
 			Error::SemanticUnavailable

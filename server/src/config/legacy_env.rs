@@ -135,6 +135,18 @@ fn values_with_oidc(
 	if !oidc.is_empty() {
 		result.insert("dashboard".into(), json!({"oidc": oidc}));
 	}
+	if let Some(value) = read("AIDASH_KEYLESS_PRIVATE_ORIGINS") {
+		// A comma-separated list; settings validation rejects malformed origins.
+		let origins: Vec<&str> = value
+			.split(',')
+			.map(str::trim)
+			.filter(|origin| !origin.is_empty())
+			.collect();
+		result.insert(
+			"keyless_endpoints".into(),
+			json!({"permitted_private_origins": origins}),
+		);
+	}
 	Ok(result)
 }
 
@@ -318,6 +330,53 @@ mod tests {
 		assert_eq!(db["options"]["application_name"], "worker");
 		assert_eq!(data["node"]["worker_count"], "2");
 		assert!(!data.contains_key("dashboard"));
+	}
+
+	#[rstest::rstest]
+	#[case::listed(Some(" http://ollama.lan:11434 , https://models.lan:443,"), Some(&["http://ollama.lan:11434", "https://models.lan"][..]))]
+	#[case::absent(None, None)]
+	fn keyless_private_origins_participate_in_settings_composition(
+		#[case] variable: Option<&str>,
+		#[case] expected: Option<&[&str]>,
+	) {
+		// Arrange: Helm joins keylessEndpoints.permittedPrivateOrigins with commas.
+		let data = values(|name| match name {
+			"AIDASH_KEYLESS_PRIVATE_ORIGINS" => variable.map(str::to_owned),
+			_ => None,
+		})
+		.unwrap();
+		// Act: deserialize the same fragment consumed by composed settings.
+		let settings: crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings =
+			serde_json::from_value(
+				data.get("keyless_endpoints").cloned().unwrap_or(json!({})),
+			)
+			.unwrap();
+		// Assert: entries are trimmed, then normalized origins are permitted.
+		let origins = settings.origins().unwrap();
+		match expected {
+			Some(expected) => {
+				for origin in expected {
+					assert!(origins.permits(origin), "{origin} should be permitted");
+				}
+			}
+			None => {
+				assert!(settings.permitted_private_origins.is_empty());
+				assert_eq!(origins, aidash_domain::keyless::PermittedOrigins::default());
+			}
+		}
+	}
+
+	#[rstest::rstest]
+	fn malformed_keyless_private_origins_fail_settings_validation() {
+		let data = values(|name| match name {
+			"AIDASH_KEYLESS_PRIVATE_ORIGINS" => Some("http://ollama.lan/v1".into()),
+			_ => None,
+		})
+		.unwrap();
+		let settings: crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings =
+			serde_json::from_value(data["keyless_endpoints"].clone()).unwrap();
+		use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+		assert!(settings.validate(&Profile::Development).is_err());
 	}
 
 	#[rstest::rstest]

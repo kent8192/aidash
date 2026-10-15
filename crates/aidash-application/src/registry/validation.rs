@@ -416,7 +416,7 @@ impl DefinitionValidation {
 				version,
 			);
 		}
-		let mut instructions = aidash_domain::context::agent_instructions("");
+		let mut instructions = aidash_domain::context::versioned_agent_instructions(version, "");
 		let mut specifications = vec![];
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
@@ -499,7 +499,7 @@ impl DefinitionValidation {
 			}
 		}
 		let selection = exposure::select(budgets, &catalog, &ExposureState::default())?;
-		let mut instructions = aidash_domain::context::agent_instructions("");
+		let mut instructions = aidash_domain::context::versioned_agent_instructions(version, "");
 		for alias in &selection.skills {
 			let capability = catalog
 				.iter()
@@ -552,13 +552,15 @@ impl DefinitionValidation {
 fn registration_projection(
 	version: aidash_domain::projection::ProjectionVersion,
 ) -> aidash_domain::context::RequestProjection {
-	if version.salted() {
-		aidash_domain::context::RequestProjection::Ordered(aidash_domain::projection::CacheScope {
-			tenant: String::new(),
-			key_version: 0,
-		})
-	} else {
-		aidash_domain::context::RequestProjection::Legacy
+	use aidash_domain::{context::RequestProjection, projection::ProjectionVersion};
+	let scope = aidash_domain::projection::CacheScope {
+		tenant: String::new(),
+		key_version: 0,
+	};
+	match version {
+		ProjectionVersion::Legacy => RequestProjection::Legacy,
+		ProjectionVersion::Ordered => RequestProjection::Ordered(scope),
+		ProjectionVersion::Native => RequestProjection::Native(scope),
 	}
 }
 

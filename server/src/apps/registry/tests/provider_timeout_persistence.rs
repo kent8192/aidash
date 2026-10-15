@@ -454,6 +454,9 @@ async fn projection_versions_persist_and_gate_agent_registration(
 	let mut declared = timeout_model.clone();
 	declared["id"] = json!("ordered-model");
 	declared["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	let mut native_model = timeout_model.clone();
+	native_model["id"] = json!("native-model");
+	native_model["config"]["projection_versions"] = json!(["legacy", "native"]);
 	// Act
 	let created = assert_json(
 		app.operator
@@ -489,20 +492,39 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		)
 		.await
 		.unwrap();
-	let unimplemented = app
+	let undeclared_native = app
 		.operator
 		.post(
 			"/api/registry",
-			&agent_on("native-agent", "ordered-model", "native"),
+			&agent_on("undeclared-native-agent", "ordered-model", "native"),
 			"json",
 		)
 		.await
 		.unwrap();
+	assert_json(
+		app.operator
+			.post("/api/registry", &native_model, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	let native = assert_json(
+		app.operator
+			.post(
+				"/api/registry",
+				&agent_on("native-agent", "native-model", "native"),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
 	// Assert
 	assert_eq!(created["config"], declared["config"]);
 	assert_eq!(accepted["config"]["projection_version"], "ordered");
+	assert_eq!(native["config"]["projection_version"], "native");
 	assert_json(undeclared, 400);
-	assert_json(unimplemented, 400);
+	assert_json(undeclared_native, 400);
 	for (index, versions) in [json!("ordered"), json!(["v4"]), json!([1]), json!(null)]
 		.into_iter()
 		.enumerate()
