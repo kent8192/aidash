@@ -62,6 +62,7 @@ pub enum DispatchError {
 	InvalidAnswers,
 }
 
+#[async_trait]
 pub trait DecisionProvider: Send + Sync {
 	/// Opaque identity of this concrete adapter in the trusted Node Provider catalog.
 	/// It must match the admitted implementation, independently of the protocol/config.
@@ -73,8 +74,13 @@ pub trait DecisionProvider: Send + Sync {
 	/// Credential and request construction failures happen before reserving a physical call.
 	/// The returned transport retains the resolved credentials and exact request;
 	/// dispatch must not repeat fallible construction or credential resolution.
-	/// Credentials never enter the planned body or error messages.
-	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>>;
+	/// Credentials never enter the planned body or error messages. `attempt` is the
+	/// Decision Attempt the physical call will be reserved as, and is its call identity.
+	async fn prepare(
+		&self,
+		request: &PreparedRequest,
+		attempt: Uuid,
+	) -> Result<Box<dyn PreparedDispatch + '_>>;
 }
 
 /// A fully constructed transport consumed by one reserved physical attempt.

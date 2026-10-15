@@ -48,21 +48,6 @@ impl JevClient {
 	}
 }
 #[async_trait]
-impl JevAsker for JevClient {
-	async fn ask(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		aidash_application::ports::CompactionClassifier::ask(&self.0, state, questions)
-			.await
-			.map_err(Into::into)
-	}
-}
-
-#[async_trait]
-impl aidash_application::ports::CompactionClassifier for JevClient {
-	async fn ask(&self, state: &Value, questions: &Questions) -> aidash_application::Result<Value> {
-		aidash_application::ports::CompactionClassifier::ask(&self.0, state, questions).await
-	}
-}
-
 impl aidash_application::ports::generation::compaction::ApprovedCompactionTransport for JevClient {
 	fn check_request(
 		&self,
@@ -70,6 +55,14 @@ impl aidash_application::ports::generation::compaction::ApprovedCompactionTransp
 		questions: &Questions,
 	) -> aidash_application::Result<usize> {
 		self.0.check_request(state, questions)
+	}
+	async fn ask(
+		&self,
+		attempt: uuid::Uuid,
+		state: &Value,
+		questions: &Questions,
+	) -> aidash_application::Result<Value> {
+		self.0.ask(attempt, state, questions).await
 	}
 }
 
@@ -87,7 +80,12 @@ impl aidash_application::ports::generation::compaction::remote::RemoteCompaction
 	) -> aidash_application::Result<usize> {
 		self.0.check_request(state, questions)
 	}
-	async fn ask(&self, state: &Value, questions: &Questions) -> aidash_application::Result<Value> {
-		self.0.ask_remote(state, questions).await
+	async fn ask(
+		&self,
+		attempt: uuid::Uuid,
+		state: &Value,
+		questions: &Questions,
+	) -> aidash_application::Result<Value> {
+		self.0.ask_remote(attempt, state, questions).await
 	}
 }

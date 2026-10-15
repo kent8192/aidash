@@ -96,10 +96,8 @@ pub trait ProviderAccess: Send + Sync {
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 	/// Whether `resolve` would find an active credential, without minting a
 	/// Capability Token or reading Key Material. Callers use it to fail before
-	/// they reserve allowances.
-	async fn check(&self, context: &Context, endpoint: &str, source: &Source) -> Result<()> {
-		self.resolve(context, endpoint, source).await.map(|_| ())
-	}
+	/// they reserve allowances. There is no default: `resolve` does both.
+	async fn check(&self, context: &Context, endpoint: &str, source: &Source) -> Result<()>;
 	/// Reports a rejected plan call so the Run's Plan Connection can be
 	/// refreshed or marked ineligible. Returns `true` when a forced refresh
 	/// produced a new token that the caller may retry with once.
@@ -177,6 +175,11 @@ impl ProviderAccess for KeylessAccess {
 			bearer: String::new().into(),
 			keyless: Some(destination),
 		})
+	}
+	/// Keyless access holds no Key Material and mints no token, so checking it
+	/// is resolving it.
+	async fn check(&self, context: &Context, endpoint: &str, source: &Source) -> Result<()> {
+		self.resolve(context, endpoint, source).await.map(|_| ())
 	}
 }
 

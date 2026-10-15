@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use uuid::Uuid;
 
 /// Implemented by the Node's versioned provider/tokenizer capability catalog.
 /// Restrictions here must describe the external service, never an Aidash ceiling.
@@ -94,6 +95,7 @@ impl JevDecisionProvider {
 		})
 	}
 }
+#[async_trait]
 impl DecisionProvider for JevDecisionProvider {
 	fn implementation_id(&self) -> &str {
 		&self.implementation
@@ -152,7 +154,11 @@ impl DecisionProvider for JevDecisionProvider {
 		}
 		Ok(batches)
 	}
-	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>> {
+	async fn prepare(
+		&self,
+		request: &PreparedRequest,
+		attempt: Uuid,
+	) -> Result<Box<dyn PreparedDispatch + '_>> {
 		let body: Value = serde_json::from_slice(&request.body)
 			.map_err(|_| Error::Invalid("invalid prepared decision payload".into()))?;
 		let state = body
@@ -172,16 +178,37 @@ impl DecisionProvider for JevDecisionProvider {
 			operations: vec![Operation::Decision],
 			max_output_tokens: 0,
 			cache_breakpoints: false,
-			call: None,
+			call: Some(attempt),
 		});
+		// Resolved before the attempt is reserved, so a missing or revoked
+		// credential never charges an attempt that sends no request.
+		let access = self
+			.access
+			.resolve(
+				&scope,
+				Provider::Openrouter.base_url(),
+				&Source::Tenant {
+					provider: self.config.provider_credential.clone(),
+				},
+			)
+			.await?;
+		let mut transport = self
+			.client
+			.post(format!(
+				"{}/systemone",
+				access.endpoint.trim_end_matches('/')
+			))
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.body(request.body.clone());
+		if !access.bearer.expose_secret().is_empty() {
+			transport = transport.bearer_auth(access.bearer.expose_secret());
+		}
+		let transport = transport
+			.build()
+			.map_err(|_| Error::Invalid("invalid decision HTTP request".into()))?;
 		Ok(Box::new(JevDispatch {
 			client: self.client.clone(),
-			access: self.access.clone(),
-			scope,
-			provider: Source::Tenant {
-				provider: self.config.provider_credential.clone(),
-			},
-			body: request.body.clone(),
+			request: transport,
 			model: self.config.model.clone(),
 			questions: request.questions.clone(),
 		}))
@@ -190,10 +217,7 @@ impl DecisionProvider for JevDecisionProvider {
 
 struct JevDispatch {
 	client: reqwest::Client,
-	access: Arc<dyn ProviderAccess>,
-	scope: Context,
-	provider: Source,
-	body: Vec<u8>,
+	request: reqwest::Request,
 	model: String,
 	questions: Questions,
 }
@@ -202,23 +226,9 @@ impl PreparedDispatch for JevDispatch {
 	async fn dispatch(
 		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
-		let access = self
-			.access
-			.resolve(&self.scope, Provider::Openrouter.base_url(), &self.provider)
-			.await?;
-		let mut request = self
+		let response = self
 			.client
-			.post(format!(
-				"{}/systemone",
-				access.endpoint.trim_end_matches('/')
-			))
-			.header(reqwest::header::CONTENT_TYPE, "application/json")
-			.body(self.body);
-		if !access.bearer.expose_secret().is_empty() {
-			request = request.bearer_auth(access.bearer.expose_secret());
-		}
-		let response = request
-			.send()
+			.execute(self.request)
 			.await
 			.map_err(|_| Error::External("decision provider transport failed".into()))?;
 		if !response.status().is_success() {

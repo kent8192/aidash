@@ -2,7 +2,6 @@ use super::*;
 use crate::{
 	generation::test_support,
 	ports::{
-		CompactionClassifier,
 		catalog::CatalogScope,
 		generation::{compaction::GenerationCompactionSession, publication::GenerationLive},
 	},
@@ -201,6 +200,7 @@ impl GenerationCompactionProvider for Provider {
 		Ok(Arc::new(Transport(self.0.clone())))
 	}
 }
+#[async_trait]
 impl ApprovedCompactionTransport for Transport {
 	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize> {
 		assert_eq!(questions.len(), 2);
@@ -217,16 +217,20 @@ impl ApprovedCompactionTransport for Transport {
 		}
 		Ok(130)
 	}
-}
-#[async_trait]
-impl CompactionClassifier for Transport {
-	async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+	async fn ask(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &CompactionQuestions,
+	) -> Result<Value> {
 		assert_eq!(state, &json!({"history":"bounded"}));
 		assert_eq!(questions.len(), 2);
 		{
 			let state = self.0.0.lock().unwrap();
 			assert_eq!(state.active, 0);
 			assert!(state.commits > 0);
+			// The provider call is the attempt that was just reserved.
+			assert_eq!(attempt, state.ledger.attempts.last().unwrap().1.id);
 		}
 		point(&self.0, "provider.call".into()).await?;
 		Ok(json!({"p1":0.9,"p2":0.1}))
@@ -305,10 +309,7 @@ fn context() -> Context {
 		},
 	}
 }
-async fn prepare(
-	world: &World,
-	state: &Value,
-) -> Result<Option<Arc<dyn ApprovedCompactionTransport>>> {
+async fn prepare(world: &World, state: &Value) -> Result<Option<ReservedCompaction>> {
 	reserve(
 		&mut Authority(world.clone()),
 		&Repository(world.clone()),
@@ -339,6 +340,7 @@ async fn prepared_transport_is_returned_after_every_ancestor_is_durable(world: W
 		let state = world.0.lock().unwrap();
 		let first = &state.ledger.attempts[0].1;
 		assert_eq!(first, &state.ledger.attempts[1].1);
+		assert_eq!(transport.attempt, first.id);
 		assert_eq!(
 			(first.run, first.request_bytes, first.questions),
 			(Uuid::from_u128(77), 130, 2)

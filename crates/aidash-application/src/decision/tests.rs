@@ -419,6 +419,7 @@ impl DecisionJournal for Fixture {
 		Ok(())
 	}
 }
+#[async_trait]
 impl DecisionProvider for Fixture {
 	fn implementation_id(&self) -> &str {
 		&self.provider_implementation
@@ -449,7 +450,11 @@ impl DecisionProvider for Fixture {
 			})
 			.collect())
 	}
-	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>> {
+	async fn prepare(
+		&self,
+		request: &PreparedRequest,
+		_: Uuid,
+	) -> Result<Box<dyn PreparedDispatch + '_>> {
 		if self.fail_prepare {
 			return Err(Error::Invalid("credential unavailable".into()));
 		}

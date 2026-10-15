@@ -113,6 +113,7 @@ pub fn validate_provider_credential(provider: &str) -> Result<()> {
 
 /// An exact OpenRouter Jev release such as `typesafe/jev-1.13`. Aliases such as
 /// `~typesafe/jev-latest` move under a pinned version, so they are refused.
+/// A Capability Token must also be able to carry it.
 pub fn validate_model(model: &str) -> Result<()> {
 	let canonical = |part: &str| {
 		!part.is_empty()
@@ -128,7 +129,7 @@ pub fn validate_model(model: &str) -> Result<()> {
 			"Jev requires an exact OpenRouter model version such as typesafe/jev-1.13".into(),
 		));
 	}
-	Ok(())
+	crate::provider_credentials::validate_model_id(model)
 }
 
 /// OpenRouter reports the dated snapshot that served a pinned release, such as

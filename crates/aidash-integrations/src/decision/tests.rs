@@ -47,6 +47,9 @@ impl ProviderAccess for AccessFixture {
 			keyless: None,
 		})
 	}
+	async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+		unreachable!("a Decider resolves its credential when it prepares an attempt")
+	}
 }
 fn run_context() -> Context {
 	Context {
@@ -101,8 +104,8 @@ fn questions(count: usize) -> Questions {
 		})
 		.collect()
 }
-#[test]
-fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candidates() {
+#[tokio::test]
+async fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candidates() {
 	let client = provider("https://example.test", Some(2));
 	let state = json!({"goal":"complete"});
 	let questions = questions(7);
@@ -110,7 +113,7 @@ fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candid
 	assert_eq!(plan.len(), 4);
 	let mut coverage = BTreeMap::new();
 	for batch in &plan {
-		client.prepare(batch).unwrap();
+		client.prepare(batch, Uuid::now_v7()).await.unwrap();
 		let payload: Value = serde_json::from_slice(&batch.body).unwrap();
 		assert_eq!(payload["state"], state);
 		assert_eq!(payload["model"], "typesafe/jev-1.13");
@@ -125,8 +128,8 @@ fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candid
 			.is_err()
 	);
 }
-#[test]
-fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
+#[tokio::test]
+async fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
 	let client = provider("https://example.test", None);
 	let state = json!({"goal":"x".repeat(1_100_000)});
 	let questions = questions(1100);
@@ -134,7 +137,7 @@ fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
 	assert_eq!(plan.len(), 1);
 	assert!(plan[0].body.len() > 1_048_576);
 	assert_eq!(plan[0].questions.len(), 1100);
-	client.prepare(&plan[0]).unwrap();
+	client.prepare(&plan[0], Uuid::now_v7()).await.unwrap();
 	let payload: Value = serde_json::from_slice(&plan[0].body).unwrap();
 	assert_eq!(payload["state"], state);
 	assert!(
@@ -212,7 +215,7 @@ async fn server(router: Router) -> (String, Server) {
 }
 
 #[tokio::test]
-async fn each_dispatch_resolves_the_tenant_credential_and_fails_closed_after_revocation() {
+async fn each_prepared_attempt_resolves_the_tenant_credential_and_revocation_fails_before_it() {
 	let received = Arc::new(Mutex::new(Vec::new()));
 	let collected = received.clone();
 	let router = Router::new().route(
@@ -250,31 +253,36 @@ async fn each_dispatch_resolves_the_tenant_credential_and_fails_closed_after_rev
 	let requests = client
 		.plan(&json!({"goal":"authorized"}), &questions(3))
 		.unwrap();
-	let transports: Vec<_> = requests
-		.iter()
-		.map(|r| client.prepare(r).unwrap())
-		.collect();
-	// Preparing never resolves a credential; each physical attempt does.
-	assert_eq!(access.resolutions.load(Ordering::SeqCst), 0);
-	let mut transports = transports.into_iter();
-	for (transport, request) in transports.by_ref().take(2).zip(&requests) {
+	let attempts = [Uuid::now_v7(), Uuid::now_v7()];
+	let mut transports = vec![];
+	for (request, attempt) in requests.iter().zip(attempts) {
+		transports.push(client.prepare(request, attempt).await.unwrap());
+	}
+	// Preparing resolves the credential, as the Decision Attempt that the call
+	// will be reserved as, before any request.
+	assert_eq!(access.resolutions.load(Ordering::SeqCst), 2);
+	assert!(received.lock().unwrap().is_empty());
+	for (scope, attempt) in access.scopes.lock().unwrap().iter().zip(attempts) {
+		assert!(scope.is_decision());
+		let inference = scope.inference.as_ref().unwrap();
+		assert_eq!(inference.max_output_tokens, 0);
+		assert_eq!(inference.call, Some(attempt));
+	}
+	for (transport, request) in transports.into_iter().zip(&requests) {
 		let answers = transport.dispatch().await.unwrap();
 		assert_eq!(answers.len(), request.questions.len());
 		assert!(answers.values().all(|p| *p == Probability::half()));
 	}
+	// Dispatch sends the prepared request without resolving again.
 	assert_eq!(access.resolutions.load(Ordering::SeqCst), 2);
-	for scope in access.scopes.lock().unwrap().iter() {
-		assert!(scope.is_decision());
-		assert_eq!(scope.inference.as_ref().unwrap().max_output_tokens, 0);
-	}
-	// A revoked or unbound credential stops the remaining attempt before any request.
+	// A revoked or unbound credential fails preparation, so no attempt is
+	// reserved and no request is sent.
 	access.available.store(false, Ordering::SeqCst);
-	let error = transports
-		.next()
-		.unwrap()
-		.dispatch()
+	let error = client
+		.prepare(&requests[2], Uuid::now_v7())
 		.await
-		.unwrap_err()
+		.err()
+		.unwrap()
 		.to_string();
 	assert!(!error.contains("fixture-secret"));
 	assert_eq!(
@@ -306,7 +314,13 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 		.unwrap()
 		.remove(0);
 	assert_eq!(
-		client.prepare(&request).unwrap().dispatch().await.unwrap()["q0"],
+		client
+			.prepare(&request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await
+			.unwrap()["q0"],
 		Probability::half()
 	);
 	let router = Router::new().route(
@@ -316,7 +330,8 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
 	let error = client
-		.prepare(&request)
+		.prepare(&request, Uuid::now_v7())
+		.await
 		.unwrap()
 		.dispatch()
 		.await
@@ -358,7 +373,15 @@ async fn redirects_and_failures_do_not_create_unreserved_requests() {
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
 	let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
-	assert!(client.prepare(&request).unwrap().dispatch().await.is_err());
+	assert!(
+		client
+			.prepare(&request, Uuid::now_v7())
+			.await
+			.unwrap()
+			.dispatch()
+			.await
+			.is_err()
+	);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -379,17 +402,22 @@ async fn successful_http_with_invalid_answers_is_a_contract_violation() {
 		let client = provider(&endpoint, None);
 		let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
 		assert!(matches!(
-			client.prepare(&request).unwrap().dispatch().await,
+			client
+				.prepare(&request, Uuid::now_v7())
+				.await
+				.unwrap()
+				.dispatch()
+				.await,
 			Err(DispatchError::InvalidAnswers)
 		));
 	}
 }
-#[test]
-fn prepared_body_cannot_change_the_model_or_question_map() {
+#[tokio::test]
+async fn prepared_body_cannot_change_the_model_or_question_map() {
 	let client = provider("https://example.test", None);
 	let mut request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
 	let mut body: Value = serde_json::from_slice(&request.body).unwrap();
 	body["model"] = "jev-latest".into();
 	request.body = serde_json::to_vec(&body).unwrap();
-	assert!(client.prepare(&request).is_err());
+	assert!(client.prepare(&request, Uuid::now_v7()).await.is_err());
 }

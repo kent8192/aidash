@@ -1416,6 +1416,8 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 		json!({"provider_credential":"typesafe","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
 		json!({"provider_credential":"openrouter","model":"~typesafe/jev-latest","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
 		json!({"provider_credential":"openrouter","model":"jev-latest","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
+		// A Capability Token carries at most 256 bytes of model ID.
+		json!({"provider_credential":"openrouter","model":format!("typesafe/jev-1.{}", "1".repeat(256)),"max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
 	] {
 		entry["config"] = invalid;
 		check_rejected(

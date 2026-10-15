@@ -76,7 +76,13 @@ impl AuditSink for CloudLogging {
 				.and_then(|usage| usage.get(field))
 				.and_then(Value::as_u64)
 		};
-		tracing::info!(jti = %a.jti, subject = ?a.subject, tenant = %a.tenant, credential = %a.credential, version = %a.version, provider = %a.provider, model = %a.model, operation = ?a.operation, status = a.status, latency_ms = a.latency_ms as u64, prompt_tokens = count("prompt_tokens"), completion_tokens = count("completion_tokens"), total_tokens = count("total_tokens"), "provider_call");
+		let cost = a
+			.usage
+			.as_ref()
+			.and_then(|usage| usage.get("cost"))
+			.and_then(Value::as_f64);
+		// System One reports `input_tokens`, `output_tokens` and `cost` instead.
+		tracing::info!(jti = %a.jti, subject = ?a.subject, tenant = %a.tenant, credential = %a.credential, version = %a.version, provider = %a.provider, model = %a.model, operation = ?a.operation, status = a.status, latency_ms = a.latency_ms as u64, prompt_tokens = count("prompt_tokens"), completion_tokens = count("completion_tokens"), total_tokens = count("total_tokens"), input_tokens = count("input_tokens"), output_tokens = count("output_tokens"), cost, "provider_call");
 	}
 }
 pub struct Broker {

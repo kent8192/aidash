@@ -45,6 +45,10 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 			"{field}={value}"
 		);
 	}
+	// A Capability Token carries at most 256 bytes of model ID.
+	let mut json = original.clone();
+	json["model"] = format!("typesafe/jev-1.{}", "1".repeat(256)).into();
+	assert!(serde_json::from_value::<DeciderConfig>(json).map_or(true, |c| c.validate().is_err()));
 	for field in [
 		"max_request_bytes",
 		"max_questions",

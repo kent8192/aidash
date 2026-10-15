@@ -75,6 +75,9 @@ impl ProviderAccess for AccessFixture {
 		assert!(matches!(source, Source::Tenant { provider } if provider == "openrouter"));
 		self.issuer.mint(context, &self.credential).await
 	}
+	async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
+		unreachable!("inference never preflights a credential")
+	}
 }
 
 #[derive(Default)]
@@ -279,22 +282,36 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 				.expose_secret()
 		)
 	);
+	let last = || -> Value {
+		serde_json::from_str(
+			std::str::from_utf8(&output.lock().unwrap())
+				.unwrap()
+				.lines()
+				.last()
+				.unwrap(),
+		)
+		.unwrap()
+	};
+	// A System One Decision Attempt reports its own usage fields and cost.
+	audit.operation = Operation::Decision;
+	audit.usage = Some(json!({"input_tokens":12,"output_tokens":3,"cost":0.000002}));
+	CloudLogging.record(&audit);
+	let decision = last();
+	assert_eq!(decision["fields"]["input_tokens"].as_u64(), Some(12));
+	assert_eq!(decision["fields"]["output_tokens"].as_u64(), Some(3));
+	assert_eq!(decision["fields"]["cost"].as_f64(), Some(0.000002));
+	assert!(decision["fields"].get("prompt_tokens").is_none());
 	audit.usage = None;
 	CloudLogging.record(&audit);
-	let output = output.lock().unwrap();
-	let last: Value = serde_json::from_str(
-		std::str::from_utf8(&output)
-			.unwrap()
-			.lines()
-			.last()
-			.unwrap(),
-	)
-	.unwrap();
+	let last = last();
 	for field in [
 		"usage",
 		"prompt_tokens",
 		"completion_tokens",
 		"total_tokens",
+		"input_tokens",
+		"output_tokens",
+		"cost",
 	] {
 		assert!(last["fields"].get(field).is_none());
 	}

@@ -1,5 +1,6 @@
 use super::*;
 use aidash_application::provider_access::Access;
+use async_trait::async_trait;
 use std::sync::{
 	Mutex,
 	atomic::{AtomicUsize, Ordering},
@@ -185,23 +186,31 @@ async fn system_one_requests_carry_zdr_and_a_decision_scope_and_redact_failures(
 		..Default::default()
 	});
 	let client = client(access.clone());
-	let response = client.ask(&json!("ok"), &questions()).await.unwrap();
+	let attempt = Uuid::now_v7();
+	let response = client
+		.ask(attempt, &json!("ok"), &questions())
+		.await
+		.unwrap();
 	assert_eq!(probability(&response, "q").unwrap(), 0.75);
 	let scope = access.scopes.lock().unwrap()[0].clone();
 	let inference = scope.inference.as_ref().unwrap();
 	assert!(scope.is_decision());
 	assert_eq!(inference.model, "typesafe/jev-1.13");
 	assert_eq!(inference.max_output_tokens, 0);
-	assert!(inference.call.is_some_and(|call| !call.is_nil()));
+	// The caller's reserved attempt is the call the token is issued for.
+	assert_eq!(inference.call, Some(attempt));
 	assert_eq!(scope.provider_credential_id, None);
 	assert_eq!(scope.tenant, "tenant-a");
 	assert!(access.sources.lock().unwrap()[0].contains("openrouter"));
 	for state in ["http-error", "malformed", "missing", "other-model"] {
-		let error = client.ask(&json!(state), &questions()).await.unwrap_err();
+		let error = client
+			.ask(Uuid::now_v7(), &json!(state), &questions())
+			.await
+			.unwrap_err();
 		assert!(!error.to_string().contains("private provider detail"));
 		assert!(!error.to_string().contains("fixture-key"));
 	}
-	// Each request is its own Decision Attempt.
+	// Each request is its own Decision Attempt, as its caller reserved it.
 	let calls: std::collections::BTreeSet<_> = access
 		.scopes
 		.lock()
@@ -229,7 +238,7 @@ async fn a_missing_binding_fails_before_any_request_and_remotely_as_configuratio
 	assert_eq!(access.checks.load(Ordering::SeqCst), 2);
 	assert!(
 		client
-			.ask(&json!({}), &questions())
+			.ask(Uuid::now_v7(), &json!({}), &questions())
 			.await
 			.unwrap_err()
 			.to_string()
@@ -237,7 +246,7 @@ async fn a_missing_binding_fails_before_any_request_and_remotely_as_configuratio
 	);
 	assert!(matches!(
 		client
-			.ask_remote(&json!({}), &questions())
+			.ask_remote(Uuid::now_v7(), &json!({}), &questions())
 			.await
 			.unwrap_err(),
 		Error::RemoteSemantic(aidash_domain::semantic::Failure::Configuration)
@@ -283,7 +292,7 @@ async fn bounded_transport_rejects_oversize_requests_responses_and_redirects() {
 	let transport = client(oversize).with_bounds(1024, 1, 128);
 	assert!(
 		transport
-			.ask(&json!("x".repeat(1024)), &questions())
+			.ask(Uuid::now_v7(), &json!("x".repeat(1024)), &questions())
 			.await
 			.unwrap_err()
 			.to_string()
@@ -291,11 +300,16 @@ async fn bounded_transport_rejects_oversize_requests_responses_and_redirects() {
 	);
 	let mut excess = questions();
 	excess.insert("another".into(), json!({"type":"noul"}));
-	assert!(transport.ask(&json!({}), &excess).await.is_err());
+	assert!(
+		transport
+			.ask(Uuid::now_v7(), &json!({}), &excess)
+			.await
+			.is_err()
+	);
 	assert_eq!(requests.load(Ordering::SeqCst), 0);
 	assert!(
 		transport
-			.ask(&json!({}), &questions())
+			.ask(Uuid::now_v7(), &json!({}), &questions())
 			.await
 			.unwrap_err()
 			.to_string()
@@ -309,7 +323,7 @@ async fn bounded_transport_rejects_oversize_requests_responses_and_redirects() {
 	assert!(
 		client(redirect)
 			.with_bounds(1024, 1, 128)
-			.ask(&json!({}), &questions())
+			.ask(Uuid::now_v7(), &json!({}), &questions())
 			.await
 			.unwrap_err()
 			.to_string()

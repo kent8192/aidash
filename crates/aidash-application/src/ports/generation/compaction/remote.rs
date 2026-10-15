@@ -34,7 +34,13 @@ pub trait RemoteCompactionTransport: Send + Sync {
 	/// binding; it neither mints a token nor reads Key Material.
 	async fn check_credential(&self) -> Result<()>;
 	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize>;
-	async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value>;
+	/// One provider call as the admitted attempt, which is its call identity.
+	async fn ask(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &CompactionQuestions,
+	) -> Result<Value>;
 }
 pub trait RemoteCompactionProvider: Send + Sync {
 	fn approved_remote(

@@ -387,22 +387,60 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
-		use aidash_application::provider_access::{Source, TenantAccess};
+		use aidash_application::provider_access::Source;
 		let Source::Tenant { provider } = source else {
 			return crate::bootstrap::keyless_provider_access(&self.store)
 				.resolve(context, endpoint, source)
 				.await;
 		};
-		// Runless maintenance and a Run's Decision Attempts use the Tenant's
-		// current binding, never the Run's admitted inference pin (ADR 0041).
-		if context.run.is_none() || context.is_decision() {
-			return self.tenant()?.resolve(context, endpoint, source).await;
-		}
+		let context = self.scoped(context, provider).await?;
+		self.tenant()?.resolve(&context, endpoint, source).await
+	}
+	async fn check(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		endpoint: &str,
+		source: &aidash_application::provider_access::Source,
+	) -> Result<()> {
+		use aidash_application::provider_access::Source;
+		let Source::Tenant { provider } = source else {
+			return crate::bootstrap::keyless_provider_access(&self.store)
+				.check(context, endpoint, source)
+				.await;
+		};
+		let context = self.scoped(context, provider).await?;
+		self.tenant()?.check(&context, endpoint, source).await
+	}
+}
+impl AdmittedAccess {
+	fn tenant(&self) -> Result<aidash_application::provider_access::TenantAccess> {
 		let service =
 			self.store.provider_credentials.as_ref().ok_or_else(|| {
 				Error::Invalid("Provider Credential Store is not configured".into())
 			})?;
-		let run = context.run.expect("Run was checked above");
+		Ok(aidash_application::provider_access::TenantAccess {
+			keyless: self.store.keyless.clone(),
+			repository: service.repository.clone(),
+			reader: self.store.provider_key_material_reader.clone(),
+			issuer: self.store.capability_issuer.clone(),
+		})
+	}
+	/// The call scope with the Run's admitted Provider Credential pin. Runless
+	/// maintenance and a Run's Decision Attempts use the Tenant's current
+	/// binding, never the Run's admitted inference pin (ADR 0041).
+	async fn scoped(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		provider: &str,
+	) -> Result<aidash_application::provider_access::Context> {
+		let Some(run) = context.run.filter(|_| !context.is_decision()) else {
+			return Ok(context.clone());
+		};
+		if self.store.provider_credentials.is_none() {
+			return Err(Error::Invalid(
+				"Provider Credential Store is not configured".into(),
+			));
+		}
 		let mut tx = self
 			.store
 			.control_pool
@@ -427,46 +465,12 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			return Err(Error::Forbidden);
 		}
 		tx.commit().await.map_err(crate::Error::from)?;
-		let context = aidash_application::provider_access::Context {
+		Ok(aidash_application::provider_access::Context {
 			tenant: pin.tenant,
 			run: Some(run),
 			maintenance: context.maintenance,
 			provider_credential_id: Some(pin.provider_credential_id),
 			inference: context.inference.clone(),
-		};
-		TenantAccess {
-			keyless: self.store.keyless.clone(),
-			repository: service.repository.clone(),
-			reader: self.store.provider_key_material_reader.clone(),
-			issuer: self.store.capability_issuer.clone(),
-		}
-		.resolve(&context, endpoint, source)
-		.await
-	}
-	async fn check(
-		&self,
-		context: &aidash_application::provider_access::Context,
-		endpoint: &str,
-		source: &aidash_application::provider_access::Source,
-	) -> Result<()> {
-		use aidash_application::provider_access::Source;
-		if !matches!(source, Source::Tenant { .. }) || !context.is_decision() {
-			return self.resolve(context, endpoint, source).await.map(|_| ());
-		}
-		self.tenant()?.check(context, endpoint, source).await
-	}
-}
-impl AdmittedAccess {
-	fn tenant(&self) -> Result<aidash_application::provider_access::TenantAccess> {
-		let service =
-			self.store.provider_credentials.as_ref().ok_or_else(|| {
-				Error::Invalid("Provider Credential Store is not configured".into())
-			})?;
-		Ok(aidash_application::provider_access::TenantAccess {
-			keyless: self.store.keyless.clone(),
-			repository: service.repository.clone(),
-			reader: self.store.provider_key_material_reader.clone(),
-			issuer: self.store.capability_issuer.clone(),
 		})
 	}
 }

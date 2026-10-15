@@ -325,13 +325,19 @@ impl RemoteCompactionTransport for Transport {
 		}
 		Ok(100)
 	}
-	async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+	async fn ask(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &CompactionQuestions,
+	) -> Result<Value> {
 		assert_eq!(state, &json!({"history":"bounded"}));
 		assert_eq!(questions.len(), 2);
 		{
 			let data = self.0.0.lock().unwrap();
 			assert!(!data.held);
-			assert!(data.input.is_some());
+			// The provider call is the attempt that Home admitted.
+			assert_eq!(attempt, data.input.as_ref().unwrap().usage.attempt_id);
 		}
 		self.0.point("provider.ask").await?;
 		if self.0.0.lock().unwrap().provider_fails {

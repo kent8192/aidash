@@ -3,12 +3,8 @@
 //! Attempt of a Run that uses the Tenant's current OpenRouter Provider
 //! Credential (ADR 0006, ADR 0041); no endpoint or key is configured here.
 use crate::{Error, Result};
-use aidash_application::{
-	ports::CompactionClassifier,
-	provider_access::{Context, Inference, Operation, ProviderAccess, Source},
-};
+use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::provider_credentials::Provider;
-use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -82,7 +78,7 @@ impl JevClient {
 		Ok(bytes)
 	}
 
-	/// The call scope of one Decision Attempt.
+	/// The call scope of one Decision Attempt; `attempt` is the call identity.
 	fn scope(&self, attempt: Option<Uuid>) -> Context {
 		let mut context = self.context.clone();
 		context.provider_credential_id = None;
@@ -112,18 +108,11 @@ impl JevClient {
 				&Self::source(),
 			)
 			.await
-			.map_err(Into::into)
 	}
 
-	async fn send(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		self.send_checked(state, questions, false).await
-	}
-}
-
-#[async_trait]
-impl CompactionClassifier for JevClient {
-	async fn ask(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		self.send(state, questions).await
+	/// One request as the compaction attempt the caller reserved for it.
+	pub async fn ask(&self, attempt: Uuid, state: &Value, questions: &Questions) -> Result<Value> {
+		self.send_checked(attempt, state, questions, false).await
 	}
 }
 
@@ -139,14 +128,20 @@ impl JevClient {
 
 	/// Keep remote retries and provider-contract failures on the same durable
 	/// semantic pause path as embedding and inference, without exposing bodies.
-	pub async fn ask_remote(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		self.send_checked(state, questions, true).await
+	pub async fn ask_remote(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &Questions,
+	) -> Result<Value> {
+		self.send_checked(attempt, state, questions, true).await
 	}
 }
 
 impl JevClient {
 	async fn send_checked(
 		&self,
+		attempt: Uuid,
 		state: &Value,
 		questions: &Questions,
 		remote: bool,
@@ -160,7 +155,6 @@ impl JevClient {
 			}
 		};
 		self.check_request(state, questions)?;
-		let attempt = Uuid::now_v7();
 		let access = self
 			.access
 			.resolve(
@@ -169,7 +163,7 @@ impl JevClient {
 				&Self::source(),
 			)
 			.await
-			.map_err(|error| failure(Failure::Configuration, error.into()))?;
+			.map_err(|error| failure(Failure::Configuration, error))?;
 		let mut request = self
 			.client
 			.post(format!(
