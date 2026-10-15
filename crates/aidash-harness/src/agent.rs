@@ -11,7 +11,7 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
+	tool::{ResultFitting, ToolContract, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -987,6 +987,13 @@ impl<'a> Executor<'a> {
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
+				// Revoked Research evidence never reaches a model provider again;
+				// the Context Journal keeps what the model already read (ADR 0046).
+				if tools.values().any(|tool| yields_research(&tool.contract()))
+					&& store.research_revoked(run).await?
+				{
+					redact_revoked_research(&mut run.context, &tools);
+				}
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
@@ -2960,6 +2967,26 @@ fn summarizable(event: &ContextEvent, tools: &Tools) -> bool {
 		Some(ResultFitting::Observation) => false,
 		Some(ResultFitting::WorkspaceRecord) => message_read_target(&contract, call).is_some(),
 		_ => true,
+	}
+}
+/// Whether a tool returns Research evidence, by its declared behavior.
+fn yields_research(contract: &ToolContract) -> bool {
+	[Yield::Search, Yield::Fetch, Yield::Citations]
+		.into_iter()
+		.any(|kind| contract.behavior.yields(kind))
+}
+/// Replace every research result with a placeholder once the Run's evidence
+/// is revoked. A Model Turn keeps its call, so its `tool_call_id` still pairs.
+fn redact_revoked_research(context: &mut Context, tools: &Tools) {
+	for entry in &mut context.history {
+		if let ContextEvent::Tool { call, result } = &mut entry.event
+			&& tools
+				.get(&call.name)
+				.is_some_and(|tool| yields_research(&tool.contract()))
+			&& !ContextEvent::is_revoked_result(result)
+		{
+			*result = ContextEvent::revoked_result(&call.id);
+		}
 	}
 }
 /// Sources whose current authority the summarized text depends on.

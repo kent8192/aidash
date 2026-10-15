@@ -8,6 +8,7 @@ pub mod account;
 pub mod citations;
 pub mod document;
 pub mod evidence;
+pub mod revocation;
 pub mod search;
 
 /// Upper bound of one research result as recorded in a Run's history.
@@ -82,6 +83,10 @@ pub enum Failure {
 	ResponseStreamError,
 	/// A dispatched attempt has no recorded outcome; it is never repeated.
 	OutcomeUnknown,
+	/// The Document snapshot's contents were purged; read its Source again.
+	SnapshotPurged,
+	/// The Run's Research evidence was revoked; the Run can do no more research.
+	EvidenceRevoked,
 }
 
 impl Failure {
@@ -112,6 +117,8 @@ impl Failure {
 			Self::TransportError => "transport_error",
 			Self::ResponseStreamError => "response_stream_error",
 			Self::OutcomeUnknown => "outcome_unknown",
+			Self::SnapshotPurged => "snapshot_purged",
+			Self::EvidenceRevoked => "evidence_revoked",
 		}
 	}
 	fn explanation(self) -> &'static str {
@@ -146,6 +153,12 @@ impl Failure {
 			}
 			Self::OutcomeUnknown => {
 				"An earlier attempt of this call has no recorded outcome and is not repeated."
+			}
+			Self::SnapshotPurged => {
+				"The snapshot's contents are no longer retained; read its source again to continue."
+			}
+			Self::EvidenceRevoked => {
+				"This Run's Research evidence was revoked; it cannot be read, cited or extended."
 			}
 		}
 	}

@@ -134,6 +134,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.sources_observed").await
 	}
+	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
+	/// without research evidence has nothing to revoke.
+	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
+		Ok(false)
+	}
 	/// The cited Evidence fragments this Run's evidence store does not hold.
 	/// A store without research evidence fails closed: nothing is known.
 	async fn unknown_evidence(

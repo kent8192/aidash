@@ -46,6 +46,8 @@ mod dashboard_registration_requests;
 pub use dashboard_registration_requests::DashboardRegistrationRequest;
 mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
+mod tenant_retention_rules;
+pub use tenant_retention_rules::{TenantRetentionRule, TenantRetentionRuleHistory};
 
 mod dashboard_administration;
 mod tenant_administration;

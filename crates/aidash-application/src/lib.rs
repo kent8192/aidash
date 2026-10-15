@@ -14,6 +14,7 @@ pub mod provider_authorization;
 pub mod provider_credentials;
 pub mod recovery;
 pub mod research;
+pub mod retention;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

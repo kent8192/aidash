@@ -123,6 +123,9 @@ impl Research<'_> {
 		input: &Value,
 	) -> Result<Value> {
 		let operation = Operation::Search;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
 		let Ok(query) = SearchQuery::parse(input, None) else {
 			return Ok(failure(operation, Failure::InvalidInput));
 		};
@@ -190,10 +193,22 @@ impl Research<'_> {
 		};
 		let mut page = query.normalize(results);
 		// The store keeps the Run within its Source record limit under its lock.
-		let records = self
+		let records = match self
 			.store
 			.record_sources(call.run, call.key, &page.sources, self.limits.sources)
-			.await?;
+			.await?
+		{
+			Ok(records) => records,
+			// Revoked while the provider answered: nothing is recorded, and the
+			// attempt stays charged.
+			Err(refused) => {
+				let result = failure(operation, refused);
+				self.store
+					.settle(call.run, call.key, AttemptOutcome::Completed, &result)
+					.await?;
+				return Ok(result);
+			}
+		};
 		if records.len() < page.sources.len() {
 			page.sources.truncate(records.len());
 			page.truncated = true;
@@ -252,6 +267,9 @@ impl Research<'_> {
 		input: &Value,
 	) -> Result<Value> {
 		let operation = Operation::Fetch;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
 		let Ok(input) = serde_json::from_value::<FetchInput>(input.clone()) else {
 			return Ok(failure(operation, Failure::InvalidInput));
 		};
@@ -272,6 +290,9 @@ impl Research<'_> {
 			let Some(snapshot) = self.store.snapshot(call.run, document).await? else {
 				return Ok(failure(operation, Failure::UnknownDocument));
 			};
+			if let Err(purged) = snapshot.readable() {
+				return Ok(failure(operation, purged));
+			}
 			let position = match input.cursor.as_deref().map(|cursor| {
 				Cursor::decode(cursor)?.check(snapshot.id, &snapshot.text_digest, operation, None)
 			}) {
@@ -385,6 +406,9 @@ impl Research<'_> {
 	/// Evidence fragment; nothing leaves the Node.
 	pub async fn find(&self, call: &Call<'_>, input: &Value) -> Result<Value> {
 		let operation = Operation::Find;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
 		let Ok(input) = serde_json::from_value::<FindInput>(input.clone()) else {
 			return Ok(failure(operation, Failure::InvalidInput));
 		};
@@ -398,6 +422,9 @@ impl Research<'_> {
 		let Some(snapshot) = self.store.snapshot(call.run, input.document_id).await? else {
 			return Ok(failure(operation, Failure::UnknownDocument));
 		};
+		if let Err(purged) = snapshot.readable() {
+			return Ok(failure(operation, purged));
+		}
 		let binding = document::find_binding(&input.query, input.case_sensitive);
 		let start = match input.cursor.as_deref().map(|cursor| {
 			Cursor::decode(cursor)?.check(
@@ -440,10 +467,14 @@ impl Research<'_> {
 				next = Some(index);
 				break;
 			}
-			let fragment = self
+			let fragment = match self
 				.store
 				.record_fragment(call.run, &snapshot, &passage)
-				.await?;
+				.await?
+			{
+				Ok(fragment) => fragment,
+				Err(refused) => return Ok(failure(operation, refused)),
+			};
 			matches.push(fragment.delivered(&snapshot));
 		}
 		let cursor = next.map(|line| {
@@ -490,10 +521,14 @@ impl Research<'_> {
 				delivery.next,
 			);
 			if probe.to_string().len() <= MAX_RESULT_BYTES {
-				let fragment = self
+				let fragment = match self
 					.store
 					.record_fragment(call.run, snapshot, &delivery.passage)
-					.await?;
+					.await?
+				{
+					Ok(fragment) => fragment,
+					Err(refused) => return Ok(failure(operation, refused)),
+				};
 				break (delivery, fragment);
 			}
 			if budget <= 1 {
@@ -506,6 +541,15 @@ impl Research<'_> {
 			fragment.delivered(snapshot),
 			delivery.next,
 		))
+	}
+
+	/// A Run whose evidence was revoked does no further research (ADR 0046).
+	async fn revoked(&self, call: &Call<'_>, operation: Operation) -> Result<Option<Value>> {
+		Ok(self
+			.store
+			.revoked(call.run)
+			.await?
+			.then(|| failure(operation, Failure::EvidenceRevoked)))
 	}
 
 	async fn replay(&self, call: &Call<'_>, operation: Operation) -> Result<Option<Value>> {
@@ -681,6 +725,9 @@ fn find_result(
 		probe_cursor.is_some(),
 	)
 }
+
+pub mod retention;
+pub mod revocation;
 
 #[cfg(test)]
 mod tests;

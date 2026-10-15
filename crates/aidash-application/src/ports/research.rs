@@ -11,8 +11,10 @@ use aidash_domain::research::{
 		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, RunUsage,
 		SourceRecord,
 	},
+	revocation::EvidenceRevocation,
 	search::{ProviderResults, SearchQuery, SourceCandidate},
 };
+use aidash_domain::retention::{Decider, RetentionRules};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -97,9 +99,18 @@ pub enum Reserved {
 
 /// Run-scoped Research evidence. Every read is limited to the given Run; an
 /// identifier of another Run is reported as absent.
+///
+/// After an Evidence Revocation of the Run (ADR 0046) every write that would
+/// record evidence is refused with [`Failure::EvidenceRevoked`] under the
+/// Run's lock, settling stores a tombstone instead of the given result, and
+/// no fragment is delivered any more.
 #[async_trait]
 pub trait EvidenceStore: Send + Sync {
+	/// Whether the Run's Research evidence was revoked.
+	async fn revoked(&self, run: Uuid) -> Result<bool>;
 	async fn attempt(&self, run: Uuid, key: &str) -> Result<Option<AttemptState>>;
+	/// Purged snapshots count toward neither the snapshot nor the byte limit,
+	/// so a Run can read a Source again after its contents were purged.
 	async fn usage(&self, run: Uuid) -> Result<RunUsage>;
 	/// Charges attributed to `account` since `since`, including dispatched
 	/// attempts whose outcome is still unknown.
@@ -121,11 +132,11 @@ pub trait EvidenceStore: Send + Sync {
 		key: &str,
 		sources: &[SourceCandidate],
 		max_sources: u32,
-	) -> Result<Vec<SourceRecord>>;
+	) -> Result<std::result::Result<Vec<SourceRecord>, Failure>>;
 	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>>;
 	/// A new Document snapshot of the Source record `source`. Under the Run's
 	/// lock, the snapshot is refused with `SnapshotLimit` when it would exceed
-	/// the Run's snapshot limits.
+	/// the Run's snapshot limits, or with `EvidenceRevoked`.
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
@@ -134,14 +145,16 @@ pub trait EvidenceStore: Send + Sync {
 		page: &ExtractedPage,
 		limits: &Limits,
 	) -> Result<std::result::Result<DocumentSnapshot, Failure>>;
+	/// A Purged snapshot is returned with its purge and without contents.
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>>;
 	async fn record_fragment(
 		&self,
 		run: Uuid,
 		document: &DocumentSnapshot,
 		passage: &Passage,
-	) -> Result<EvidenceFragment>;
-	/// The subset of `references` delivered to this Run.
+	) -> Result<std::result::Result<EvidenceFragment, Failure>>;
+	/// The subset of `references` delivered to this Run; none once the Run's
+	/// evidence is revoked, so later citations of it are unknown.
 	async fn fragments(
 		&self,
 		run: Uuid,
@@ -198,4 +211,64 @@ pub trait DisclosureGate: Send + Sync {
 	/// Consume a one-time approval. `false` when it was already consumed or is
 	/// no longer approved; the disclosure must then not be sent.
 	async fn consume(&self, run: Uuid, approval_id: Uuid) -> Result<bool>;
+}
+
+/// One Evidence Revocation in one transaction (ADR 0046).
+#[async_trait]
+pub trait RevocationScope: Send {
+	/// Who is revoking.
+	fn decider(&self) -> Decider;
+	/// Whether the Run exists. A subject is told `Forbidden` instead of
+	/// `NotFound` by [`RevocationScope::require`], so it learns nothing.
+	async fn run_exists(&mut self, run: Uuid) -> Result<bool>;
+	/// A subject must read the Run's workspace, see the Run, and be permitted
+	/// `action` on the Run's `research` resource.
+	async fn require(&mut self, run: Uuid, action: &str) -> Result<()>;
+	/// The Run's Tenant, when it has one.
+	async fn tenant(&mut self, run: Uuid) -> Result<Option<String>>;
+	/// Under the Run's research lock: replace every stored copy of the Run's
+	/// source content with a tombstone, close its pending Web disclosure
+	/// approvals and record `revocation` with what was removed. A Run already
+	/// revoked keeps its first record, which is returned unchanged.
+	async fn revoke(&mut self, revocation: &EvidenceRevocation) -> Result<EvidenceRevocation>;
+	async fn finish(
+		self: Box<Self>,
+		result: Result<EvidenceRevocation>,
+	) -> Result<EvidenceRevocation>;
+}
+
+#[async_trait]
+pub trait RevocationRepository: Send + Sync {
+	async fn begin(&self) -> Result<Box<dyn RevocationScope + '_>>;
+	/// Wake workers so Runs waiting on a closed approval continue.
+	fn notify(&self);
+}
+
+/// A Document snapshot whose contents may have lost their retention basis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedSnapshot {
+	pub id: Uuid,
+	pub fetched_at: DateTime<Utc>,
+	/// When the snapshot's Run ended, if it has.
+	pub run_ended_at: Option<DateTime<Utc>>,
+	/// The periods stored by the Run's Tenant, if any.
+	pub tenant_rules: Option<RetentionRules>,
+}
+
+/// The snapshot contents the retention sweeper may purge.
+#[async_trait]
+pub trait SnapshotRetention: Send + Sync {
+	/// Up to `limit` unpurged snapshots after `after` in identifier order whose
+	/// Run has ended or that were retrieved before `retrieved_before`. Others
+	/// cannot have lost their basis yet.
+	async fn candidates(
+		&self,
+		after: Option<Uuid>,
+		retrieved_before: DateTime<Utc>,
+		limit: u32,
+	) -> Result<Vec<RetainedSnapshot>>;
+	/// The shortest maximum age any Tenant stores, if any Tenant stores one.
+	async fn shortest_tenant_max_age(&self) -> Result<Option<u32>>;
+	/// Purge the contents of `ids` that are still unpurged; returns how many.
+	async fn purge(&self, ids: &[Uuid], at: DateTime<Utc>) -> Result<u64>;
 }

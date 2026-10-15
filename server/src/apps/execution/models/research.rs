@@ -112,12 +112,20 @@ pub struct ResearchSnapshot {
 	pub text_digest: String,
 	#[field(field_type = "text")]
 	pub completeness: String,
+	/// Empty once the contents are purged.
 	#[field]
 	pub lines: Json<Value>,
+	/// Zero once the contents are purged.
 	#[field]
 	pub text_bytes: i64,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// When the contents were purged; null while they are retained.
+	#[field(null = true)]
+	pub purged_at: Option<DateTime<Utc>>,
+	/// `retention` or `revocation`, set together with `purged_at`.
+	#[field(field_type = "text", null = true)]
+	pub purge_reason: Option<String>,
 }
 
 #[model(app_label = "execution", table_name = "research_fragments")]
@@ -139,6 +147,27 @@ pub struct ResearchFragment {
 	pub pages: Json<Value>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+}
+
+/// The audit record of one Evidence Revocation (ADR 0046). It does not
+/// reference its Run, so it outlives the Run, and holds no source content.
+#[model(app_label = "execution", table_name = "research_revocations")]
+#[derive(Serialize, Deserialize)]
+pub struct ResearchRevocation {
+	#[field(primary_key = true)]
+	pub run_id: Uuid,
+	#[field(field_type = "text", null = true)]
+	pub tenant: Option<String>,
+	/// The [`Decider`](aidash_domain::retention::Decider) who revoked.
+	#[field]
+	pub revoked_by: Json<Value>,
+	#[field(field_type = "text")]
+	pub reason: String,
+	#[field]
+	pub revoked_at: DateTime<Utc>,
+	/// What was removed: counts and snapshot text digests only.
+	#[field]
+	pub removed: Json<Value>,
 }
 
 fn stored(value: usize) -> i32 {

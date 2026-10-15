@@ -131,6 +131,8 @@ struct State {
 	explicit_cache_model: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
+	/// The Run's Research evidence was revoked.
+	research_revoked: bool,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 }
@@ -318,6 +320,10 @@ impl ExecutionStore for Backend {
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
 		let _ = (workspace, kind, data);
 		unexpected("ExecutionStore.emit")
+	}
+	async fn research_revoked(&self, _: &Run) -> Result<bool> {
+		self.record("store.research_revoked");
+		Ok(self.0.research_revoked)
 	}
 	async fn unknown_evidence(
 		&self,
@@ -1261,6 +1267,7 @@ fn fixture() -> Fixture {
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
 		known_evidence: vec![],
+		research_revoked: false,
 		artifacts: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }

@@ -7,13 +7,14 @@ use aidash_domain::research::{
 	account::AccountProfile,
 	citations::EvidenceRef,
 	document::{ExtractedPage, Line},
-	evidence::{EvidenceFragment, RunUsage, SourceRecord},
+	evidence::{EvidenceFragment, Purge, PurgeReason, RunUsage, SourceRecord},
+	revocation,
 	search::{ProviderCandidate, ProviderResults, SourceCandidate},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Duration};
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, BTreeSet},
 	sync::{
 		Mutex,
 		atomic::{AtomicUsize, Ordering},
@@ -27,10 +28,57 @@ struct Memory {
 	snapshots: Mutex<Vec<DocumentSnapshot>>,
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
+	revoked: Mutex<BTreeSet<Uuid>>,
+}
+
+impl Memory {
+	/// What the Node's store does on an Evidence Revocation.
+	fn revoke(&self, run: Uuid) {
+		self.revoked.lock().unwrap().insert(run);
+		for snapshot in self.snapshots.lock().unwrap().iter_mut() {
+			if snapshot.run_id == run {
+				purge(snapshot, PurgeReason::Revocation);
+			}
+		}
+		for fragment in self.fragments.lock().unwrap().iter_mut() {
+			if fragment.run_id == run {
+				fragment.text.clear();
+			}
+		}
+		for ((owner, _), (reservation, state)) in self.attempts.lock().unwrap().iter_mut() {
+			if *owner == run
+				&& let AttemptState::Settled { result, .. } = state
+			{
+				*result = revocation::tombstone(reservation.operation);
+			}
+		}
+	}
+	/// What the retention sweeper does to one snapshot.
+	fn purge_snapshot(&self, id: Uuid) {
+		for snapshot in self.snapshots.lock().unwrap().iter_mut() {
+			if snapshot.id == id {
+				purge(snapshot, PurgeReason::Retention);
+			}
+		}
+	}
+	fn is_revoked(&self, run: Uuid) -> bool {
+		self.revoked.lock().unwrap().contains(&run)
+	}
+}
+
+fn purge(snapshot: &mut DocumentSnapshot, reason: PurgeReason) {
+	snapshot.lines.clear();
+	snapshot.purged.get_or_insert(Purge {
+		at: Utc::now(),
+		reason,
+	});
 }
 
 #[async_trait]
 impl EvidenceStore for Memory {
+	async fn revoked(&self, run: Uuid) -> Result<bool> {
+		Ok(self.is_revoked(run))
+	}
 	async fn attempt(&self, run: Uuid, key: &str) -> Result<Option<AttemptState>> {
 		Ok(self
 			.attempts
@@ -50,7 +98,9 @@ impl EvidenceStore for Memory {
 				.count() as u32
 		};
 		let snapshots = self.snapshots.lock().unwrap();
-		let owned = snapshots.iter().filter(|snapshot| snapshot.run_id == run);
+		let owned = snapshots
+			.iter()
+			.filter(|snapshot| snapshot.run_id == run && snapshot.purged.is_none());
 		Ok(RunUsage {
 			search_attempts: count(Operation::Search),
 			fetch_attempts: count(Operation::Fetch),
@@ -96,7 +146,7 @@ impl EvidenceStore for Memory {
 				.lock()
 				.unwrap()
 				.iter()
-				.filter(|snapshot| snapshot.run_id == run)
+				.filter(|snapshot| snapshot.run_id == run && snapshot.purged.is_none())
 				.count() as u32;
 			let reading = attempts
 				.iter()
@@ -152,10 +202,12 @@ impl EvidenceStore for Memory {
 		let mut attempts = self.attempts.lock().unwrap();
 		match attempts.get_mut(&(run, key.into())) {
 			Some(entry) if entry.1 == AttemptState::Dispatched => {
-				entry.1 = AttemptState::Settled {
-					outcome,
-					result: result.clone(),
+				let result = if self.is_revoked(run) {
+					revocation::tombstone(entry.0.operation)
+				} else {
+					result.clone()
 				};
+				entry.1 = AttemptState::Settled { outcome, result };
 				Ok(())
 			}
 			_ => Err(crate::Error::Conflict("attempt is not dispatched".into())),
@@ -167,7 +219,10 @@ impl EvidenceStore for Memory {
 		_: &str,
 		sources: &[SourceCandidate],
 		max_sources: u32,
-	) -> Result<Vec<SourceRecord>> {
+	) -> Result<std::result::Result<Vec<SourceRecord>, Failure>> {
+		if self.is_revoked(run) {
+			return Ok(Err(Failure::EvidenceRevoked));
+		}
 		let held = self
 			.sources
 			.lock()
@@ -187,7 +242,7 @@ impl EvidenceStore for Memory {
 			})
 			.collect::<Vec<_>>();
 		self.sources.lock().unwrap().extend(records.clone());
-		Ok(records)
+		Ok(Ok(records))
 	}
 	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>> {
 		Ok(self
@@ -206,6 +261,9 @@ impl EvidenceStore for Memory {
 		page: &ExtractedPage,
 		limits: &Limits,
 	) -> Result<std::result::Result<DocumentSnapshot, Failure>> {
+		if self.is_revoked(run) {
+			return Ok(Err(Failure::EvidenceRevoked));
+		}
 		let usage = self.usage(run).await?;
 		let bytes = page
 			.lines
@@ -230,6 +288,7 @@ impl EvidenceStore for Memory {
 			text_digest: document::text_digest(&page.lines),
 			completeness: page.completeness,
 			lines: page.lines.clone(),
+			purged: None,
 		};
 		self.snapshots.lock().unwrap().push(snapshot.clone());
 		Ok(Ok(snapshot))
@@ -245,19 +304,25 @@ impl EvidenceStore for Memory {
 	}
 	async fn record_fragment(
 		&self,
-		_: Uuid,
+		run: Uuid,
 		document: &DocumentSnapshot,
 		passage: &Passage,
-	) -> Result<EvidenceFragment> {
+	) -> Result<std::result::Result<EvidenceFragment, Failure>> {
+		if self.is_revoked(run) {
+			return Ok(Err(Failure::EvidenceRevoked));
+		}
 		let fragment = EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), document, passage);
 		self.fragments.lock().unwrap().push(fragment.clone());
-		Ok(fragment)
+		Ok(Ok(fragment))
 	}
 	async fn fragments(
 		&self,
 		run: Uuid,
 		references: &[EvidenceRef],
 	) -> Result<Vec<EvidenceFragment>> {
+		if self.is_revoked(run) {
+			return Ok(vec![]);
+		}
 		Ok(self
 			.fragments
 			.lock()
@@ -702,7 +767,8 @@ impl DisclosureGate for ConcurrentSource<'_> {
 		};
 		self.store
 			.record_sources(run, "concurrent", &[candidate], 1)
-			.await?;
+			.await?
+			.expect("the Run is not revoked");
 		Ok(DisclosureState::Permitted)
 	}
 	async fn consume(&self, _: Uuid, _: Uuid) -> Result<bool> {
@@ -779,6 +845,7 @@ async fn a_page_read_by_address_holds_its_source_slot_from_the_reservation() {
 		store
 			.record_sources(run, "later", &[candidate], 1)
 			.await
+			.unwrap()
 			.unwrap()
 			.is_empty()
 	);
@@ -1438,4 +1505,193 @@ async fn recorded_redirect_and_retry_outcomes_never_repeat_the_old_request(
 		1,
 		"no second disclosure"
 	);
+}
+
+#[tokio::test]
+async fn a_revoked_run_does_no_further_research_and_never_replays_a_recorded_result() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let (run, search, pages) = (
+		Uuid::new_v4(),
+		Search::new("brave", "api.search.brave.com"),
+		Pages::new(),
+	);
+	let input = json!({"url": "https://example.com/page"});
+	let read = research
+		.fetch(&call(run, "read", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(read["status"], "ok", "{read}");
+	let reference: EvidenceRef =
+		serde_json::from_value(read["data"]["evidence_ref"].clone()).unwrap();
+	let document = read["data"]["document_id"].clone();
+	store.revoke(run);
+
+	// The same invocation key finds a tombstone, never the delivered passage.
+	let replayed = research
+		.fetch(&call(run, "read", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(replayed["error"]["code"], "evidence_revoked", "{replayed}");
+	for result in [
+		research
+			.search(
+				&call(run, "search", "research.brave@1"),
+				&search,
+				&json!({"query": "rust"}),
+			)
+			.await
+			.unwrap(),
+		research
+			.fetch(
+				&call(run, "again", "research.page@1"),
+				&pages,
+				&json!({"document_id": document}),
+			)
+			.await
+			.unwrap(),
+		research
+			.find(
+				&call(run, "find", "research.page@1"),
+				&json!({"document_id": document, "query": "line"}),
+			)
+			.await
+			.unwrap(),
+	] {
+		assert_eq!(result["error"]["code"], "evidence_revoked", "{result}");
+		assert!(result.get("data").is_none());
+	}
+	assert_eq!(search.calls.load(Ordering::SeqCst), 0);
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 1);
+	// Later citations of the Run's evidence are unknown.
+	assert!(store.fragments(run, &[reference]).await.unwrap().is_empty());
+}
+
+/// Revokes the Run while the page is being read, after the attempt was
+/// reserved and the provider called.
+struct RevokingPages<'a> {
+	store: &'a Memory,
+	run: Uuid,
+	pages: Pages,
+}
+
+#[async_trait]
+impl PageProvider for RevokingPages<'_> {
+	fn admit(&self, url: &Url) -> std::result::Result<(), Failure> {
+		self.pages.admit(url)
+	}
+	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure> {
+		self.store.revoke(self.run);
+		self.pages.fetch(url).await
+	}
+}
+
+#[tokio::test]
+async fn an_attempt_in_flight_at_revocation_records_nothing_and_stays_charged() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let pages = RevokingPages {
+		store: &store,
+		run,
+		pages: Pages::new(),
+	};
+	let result = research
+		.fetch(
+			&call(run, "read", "research.page@1"),
+			&pages,
+			&json!({"url": "https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["code"], "evidence_revoked", "{result}");
+	assert!(store.snapshots.lock().unwrap().is_empty());
+	assert!(store.fragments.lock().unwrap().is_empty());
+	// The provider was called, so the attempt is settled, not dispatched.
+	assert_eq!(
+		store.attempt(run, "read").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Completed,
+			result: revocation::tombstone(Operation::Fetch),
+		})
+	);
+	assert_eq!(store.usage(run).await.unwrap().fetch_attempts, 1);
+}
+
+#[tokio::test]
+async fn a_purged_snapshot_is_distinguishable_and_its_source_can_be_read_again() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let (run, pages) = (Uuid::new_v4(), Pages::new());
+	let read = research
+		.fetch(
+			&call(run, "read", "research.page@1"),
+			&pages,
+			&json!({"url": "https://example.com/page", "max_bytes": 12}),
+		)
+		.await
+		.unwrap();
+	let cursor = read["data"]["next_cursor"].clone();
+	assert!(cursor.is_string(), "{read}");
+	let document: Uuid = serde_json::from_value(read["data"]["document_id"].clone()).unwrap();
+	let reference: EvidenceRef =
+		serde_json::from_value(read["data"]["evidence_ref"].clone()).unwrap();
+	store.purge_snapshot(document);
+
+	let continued = research
+		.fetch(
+			&call(run, "continue", "research.page@1"),
+			&pages,
+			&json!({"document_id": document, "cursor": cursor}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(continued["error"]["code"], "snapshot_purged", "{continued}");
+	let found = research
+		.find(
+			&call(run, "find", "research.page@1"),
+			&json!({"document_id": document, "query": "line"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(found["error"]["code"], "snapshot_purged", "{found}");
+	// A document this Run never read is still reported as unknown.
+	let unknown = research
+		.fetch(
+			&call(run, "unknown", "research.page@1"),
+			&pages,
+			&json!({"document_id": Uuid::new_v4()}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(unknown["error"]["code"], "unknown_document");
+	// The delivered fragment still supports its citation.
+	assert_eq!(store.fragments(run, &[reference]).await.unwrap().len(), 1);
+	// A purged snapshot no longer counts toward the snapshot limits.
+	let usage = store.usage(run).await.unwrap();
+	assert_eq!((usage.snapshots, usage.snapshot_bytes), (0, 0));
+
+	let again = research
+		.fetch(
+			&call(run, "again", "research.page@1"),
+			&pages,
+			&json!({"source_id": read["data"]["source_id"]}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(again["status"], "ok", "{again}");
+	assert_ne!(again["data"]["document_id"], read["data"]["document_id"]);
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 2);
 }

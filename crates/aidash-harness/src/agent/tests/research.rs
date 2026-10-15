@@ -252,3 +252,77 @@ async fn each_user_input_gets_its_own_correction(mut fixture: Fixture) {
 	assert_eq!(last_write(&fixture).0, "run.citation_correction_required");
 	assert!(fixture.backend.0.artifacts.lock().unwrap().is_empty());
 }
+
+fn research_history(fixture: &mut Fixture) {
+	fixture.run.context.push(ContextEvent::tool(
+		call("call-page", "page", json!({"url": "https://example.com/"})),
+		json!({
+			"version": 1,
+			"operation": "fetch",
+			"status": "ok",
+			"limits": {"max_bytes": 32768, "truncated": false},
+			"data": {"text": "a revoked passage"},
+		}),
+	));
+	fixture.run.context.push(ContextEvent::tool(
+		call("call-other", "unbound", json!({})),
+		json!("an unrelated result"),
+	));
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+}
+
+fn first_request(fixture: &Fixture) -> String {
+	format!("{:?}", fixture.backend.0.requests.lock().unwrap()[0])
+}
+
+#[rstest]
+#[tokio::test]
+async fn revoked_research_results_never_reach_a_model_request_again(fixture: Fixture) {
+	let mut fixture = thinking(fixture);
+	bind(&mut fixture, "page", Scripted::research(Operation::Fetch));
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.research_revoked = true;
+	research_history(&mut fixture);
+	let _ = advance_sources(&mut fixture).await;
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked passage"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	// Results of tools that return no Research evidence are untouched.
+	assert!(request.contains("an unrelated result"), "{request}");
+	// The call stays paired with its placeholder.
+	assert!(fixture.run.context.events().any(|event| matches!(
+		event,
+		ContextEvent::Tool { call, result }
+			if call.id == "call-page" && ContextEvent::is_revoked_result(result)
+	)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn research_results_of_a_run_not_revoked_are_sent_unchanged(fixture: Fixture) {
+	let mut fixture = thinking(fixture);
+	bind(&mut fixture, "page", Scripted::research(Operation::Fetch));
+	research_history(&mut fixture);
+	let _ = advance_sources(&mut fixture).await;
+	assert!(first_request(&fixture).contains("a revoked passage"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn runs_binding_no_research_never_ask_whether_evidence_was_revoked(fixture: Fixture) {
+	let mut fixture = thinking(fixture);
+	let _ = advance_sources(&mut fixture).await;
+	assert!(
+		!fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.contains(&"store.research_revoked")
+	);
+}

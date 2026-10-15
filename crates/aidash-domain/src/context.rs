@@ -732,6 +732,21 @@ impl ContextEvent {
 	pub fn elided_result(call_id: &str) -> Value {
 		json!({"elided": true, "invocation": call_id})
 	}
+
+	/// A research tool result whose evidence was revoked. Later model requests
+	/// carry this instead; the Context Journal keeps the original (ADR 0046).
+	pub fn revoked_result(call_id: &str) -> Value {
+		json!({
+			"revoked": true,
+			"invocation": call_id,
+			"explanation": "This Run's Research evidence was revoked. Its content can no longer be read or cited.",
+		})
+	}
+
+	/// Whether this result is already a [`Self::revoked_result`].
+	pub fn is_revoked_result(result: &Value) -> bool {
+		result["revoked"] == json!(true) && result["invocation"].is_string()
+	}
 }
 
 impl ContextEvent {
