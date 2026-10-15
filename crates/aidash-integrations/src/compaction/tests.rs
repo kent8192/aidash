@@ -34,6 +34,7 @@ impl ProviderAccess for FixtureAccess {
 		Ok(Access {
 			endpoint: self.endpoint.clone(),
 			bearer: "fixture-key".to_owned().into(),
+			keyless: None,
 		})
 	}
 	async fn check(&self, _: &Context, _: &str, _: &Source) -> aidash_application::Result<()> {

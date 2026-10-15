@@ -44,6 +44,7 @@ impl ProviderAccess for AccessFixture {
 		Ok(aidash_application::provider_access::Access {
 			endpoint: self.endpoint.clone(),
 			bearer: "fixture-secret".to_owned().into(),
+			keyless: None,
 		})
 	}
 }
