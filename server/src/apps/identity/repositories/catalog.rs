@@ -269,6 +269,15 @@ impl CatalogScope for NativeCatalog<'_> {
 			.approved_catalog
 			.insert((reference.id.clone(), reference.version.clone()));
 	}
+	fn admitted(&self, reference: &EntityRef, action: &str) -> Option<Entry> {
+		self.0
+			.tx
+			.admitted(&self.0.catalog_admission(reference, action))
+	}
+	fn admit(&mut self, reference: &EntityRef, action: &str, entry: &Entry) {
+		let admission = self.0.catalog_admission(reference, action);
+		self.0.tx.admit(admission, entry.clone());
+	}
 	async fn distribution_lock(&mut self) -> aidash_application::Result<()> {
 		crate::marketplace::lock_catalog(&mut self.0.tx, false)
 			.await
