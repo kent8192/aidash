@@ -506,9 +506,11 @@ fn compaction_worker_configuration(
 	queued_compaction: PreparedCompaction,
 ) -> worker_process::ConfigurationFuture {
 	async move {
-		let (fixture, _, _, _) = queued_compaction.await;
-		let (f, url, schema) = fixture.application.runtime.parts();
-		(f, url, schema, None)
+		// The worker provisions definitions that use the Tenant's credential, so it
+		// starts from the runtime that has a Provider Credential Store.
+		let (fixture, _, _, credentialed) = queued_compaction.await;
+		let (_, url, schema) = fixture.application.runtime.parts();
+		(credentialed, url, schema, None)
 	}
 	.boxed()
 	.shared()
@@ -535,8 +537,10 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	let model_calls = fixture.model_calls;
 	let compaction_calls = fixture.compaction_calls;
 	let mut worker = initial_worker;
+	// The worker process checks migrations and opens its Provider Credential
+	// Store before it provisions the request, which can take tens of seconds.
 	let reached =
-		tokio::time::timeout(std::time::Duration::from_secs(20), first_model.notified()).await;
+		tokio::time::timeout(std::time::Duration::from_secs(60), first_model.notified()).await;
 	assert!(
 		reached.is_ok(),
 		"worker status {:?}, run states {:?}, log {}",
@@ -787,7 +791,8 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	let worker = Harness {
 		federation: f.clone(),
 	};
-	let current = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+	// Each Decision Attempt also resolves the Tenant's binding; allow for load.
+	let current = tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
 			worker.worker_once().await.unwrap();
 			let current = f.store.run(run.id).await.unwrap();

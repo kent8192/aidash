@@ -49,6 +49,24 @@ pub fn worker_command(
 		settings.node.lease_seconds = runtime.config.lease_seconds;
 		settings.node.background_enabled = true;
 		settings.node.worker_count = 1;
+		// A runtime with a Provider Credential Store gives its worker a self-hosted
+		// Store, so the worker admits definitions that use Tenant credentials.
+		let provider_store = runtime.store.provider_credentials.is_some();
+		if provider_store {
+			use aidash_server::apps::identity::serializers::provider_credentials::{
+				KeySource, StoreConfig,
+			};
+			let key = |env: &str| KeySource {
+				file: None,
+				env: Some(env.into()),
+			};
+			settings.provider_credentials.fingerprint_key =
+				Some(key("AIDASH_TEST_PROVIDER_FINGERPRINT_KEY"));
+			settings.provider_credentials.store = Some(StoreConfig::Postgres {
+				master_key: key("AIDASH_TEST_PROVIDER_STORE_MASTER_KEY"),
+				retired_master_keys: vec![],
+			});
+		}
 		settings
 			.core
 			.databases
@@ -78,6 +96,14 @@ pub fn worker_command(
 			.stderr(log);
 		if let Some(memory) = memory {
 			command.env("AIDASH_MEMORY_RECOVERY_DIR", memory);
+		}
+		if provider_store {
+			command
+				.env(
+					"AIDASH_TEST_PROVIDER_FINGERPRINT_KEY",
+					"worker-process-fingerprint-key-of-32-bytes",
+				)
+				.env("AIDASH_TEST_PROVIDER_STORE_MASTER_KEY", "1f".repeat(32));
 		}
 		WorkerCommand {
 			command,

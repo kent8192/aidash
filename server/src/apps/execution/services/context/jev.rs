@@ -26,13 +26,13 @@ impl JevAsker for Unapproved {
 pub struct JevClient(aidash_integrations::compaction::JevClient);
 impl JevClient {
 	/// One Run's transport for an approved compactor, using the Tenant's current
-	/// OpenRouter Provider Credential for each Decision Attempt.
+	/// OpenRouter Provider Credential for each Decision Attempt. The caller
+	/// validates `config` against the node's Provider Credential Store.
 	pub fn approved(
 		config: crate::registry::CompactorConfig,
 		access: std::sync::Arc<dyn aidash_application::provider_access::ProviderAccess>,
 		context: aidash_application::provider_access::Context,
 	) -> Result<Self> {
-		config.validate()?;
 		let client = reqwest::Client::builder()
 			.redirect(reqwest::redirect::Policy::none())
 			.connect_timeout(std::time::Duration::from_secs(5))
@@ -72,8 +72,6 @@ impl aidash_application::ports::generation::compaction::ApprovedCompactionTransp
 		self.0.check_request(state, questions)
 	}
 }
-
-use crate::registry::CompactorValidation;
 
 #[async_trait]
 impl aidash_application::ports::generation::compaction::remote::RemoteCompactionTransport

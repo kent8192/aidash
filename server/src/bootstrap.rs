@@ -931,6 +931,7 @@ impl ApprovedCompactionProvider {
 		&self,
 		config: aidash_domain::registry::CompactorConfig,
 	) -> aidash_application::Result<crate::context::jev::JevClient> {
+		registry_validation_for(&self.store).validate_compactor(&config, true)?;
 		Ok(crate::context::jev::JevClient::approved(
 			config,
 			Arc::new(
