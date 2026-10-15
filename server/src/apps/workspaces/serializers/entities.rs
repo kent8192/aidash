@@ -68,6 +68,7 @@ impl From<ArtifactRecord> for Artifact {
 			created_by: record.created_by,
 			idempotency_key: record.idempotency_key,
 			created_at: record.created_at,
+			run_id: record.run_id,
 		}
 	}
 }

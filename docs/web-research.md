@@ -109,6 +109,44 @@ reach the progress stream; the verified final answer is published as usual.
 A Run that binds only `search` has no citable evidence, so its answers are not
 checked; search snippets are never evidence.
 
+## Reading cited evidence
+
+A Source citation binds to the Run that published it. The Node records that
+Run on each message and result Artifact the Run publishes (`run_id` on
+`Message` and `Artifact`). People, peers and other Nodes cannot set it, and
+the dashboard never infers it from an idempotency key. Text without a
+publishing Run, such as a person's message or an answer another Node
+delivered, has no citations: its markers stay literal text.
+
+`GET /api/runs/{run}/evidence/{evidence_ref}` reads one Evidence fragment of that
+Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
+
+- the passage exactly as delivered to the Agent, with its lines, pages and the
+  snapshot's `text_digest`;
+- the Document snapshot's final `url` (and `requested_url` when a redirect
+  changed it), title, media type, `fetched_at` and completeness;
+- `context`: up to 20 whole snapshot lines and 4 KiB of text on each side of
+  the passage. The Agent never received these lines; they let a reader judge
+  the passage in its place. `context` is `null` once the snapshot's text is no
+  longer retained, while the passage itself stays readable.
+
+The reader needs exactly the authority of `GET /api/runs/{run}`, evaluated at
+each read. A Subject needs `workspace.read` and the Run's visibility; an
+Operator needs the Workspace's operator visibility. Each of these returns the
+same `404 {"error":"evidence unavailable"}`, so a response never reveals
+whether a Run or its evidence exists:
+
+- a reader who may not read the Run;
+- a Run or reference that does not exist, including evidence deleted with its
+  Run;
+- a reference that belongs to another Run;
+- a malformed reference.
+
+The dashboard shows the citations in channel and thread messages and in a
+Task's text result as numbered chips. A repeated reference keeps its number.
+Opening a chip reads that one fragment. Every 404 renders as "This source is
+unavailable", never as an error.
+
 ## Web disclosure approval
 
 `search` and `fetch` declare `disclosure_approval`: the exact query or page
@@ -242,7 +280,7 @@ contract against it and a production-shaped provider.
   billed-cost reconciliation need live verification with a real account.
 - Retained evidence has no separate retention period or revocation endpoint; it
   lives and is deleted with its Run.
-- There is no evidence viewer in the dashboard; citations appear as their
-  markers in the published answer.
+- Citations from one Run cannot be shown in another Run's text; a parent Run
+  that relays a child Run's answer does not carry the child's citations.
 - Third-party providers over the HTTP, MCP or Agent transports cannot declare
   research operations yet; providers are Node implementations.

@@ -76,6 +76,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			tools: &tools,
 			max_output_tokens: 4096,
 			projection: &aidash_domain::context::RequestProjection::Legacy,
+			estimate: Default::default(),
 		};
 		let private = json!({"reference_documents":input["documents"]});
 		// Leave 6,000 units for the system prompt and workspace: admission fits,

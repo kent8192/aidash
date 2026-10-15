@@ -9,7 +9,7 @@ feature, and Agent definitions that name no version, use `legacy`.
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `legacy`  | One JSON user message with alphabetically ordered keys. This is the default.                                                            |
 | `ordered` | A Tenant Cache Salt line at the start of `system`, then one user message with two text parts: a Stable Prefix part and a volatile part. |
-| `native`  | Reserved for model-native messages (#178). Registration rejects it.                                                                     |
+| `native`  | A Tenant Cache Salt line at the start of `system`, enveloped attachments, then model-native assistant and tool messages, then the step. |
 
 ## Selecting `ordered`
 
@@ -45,6 +45,61 @@ existing definitions, digests and Binding snapshots keep their bytes. Run
 creation checks the version again and rejects it if this node cannot render it.
 It never falls back to `legacy`. Migration `registry/0017_projection_versions`
 lets the registry database constraints accept both keys.
+
+## Selecting `native`
+
+Declare `native` in the model's `projection_versions` and name it in the Agent
+definition, exactly as for `ordered`. `native` is salted too, so its Runs need a
+Cache Salt Key and Tenant-scoped execution. Registration, Run creation and the
+OpenRouter adapter each reject `native` on a model that does not declare it;
+the adapter fails with a typed `UnsupportedProjection` error before any provider
+traffic, and nothing ever falls back to `legacy`.
+
+A `native` request has this shape:
+
+1. `system`: the salt line, the agent boilerplate and every harness instruction,
+   including the per-turn catch-up and media-intake paragraphs.
+2. One user message of Run-stable attachments: `identity`, `task`,
+   `reference_documents`, `run_message_summary` and the Execution Summary, each
+   a separate text part.
+3. The history. Each recorded Model Turn becomes an `assistant` message with its
+   exact `tool_calls`, followed by one `tool` message per call with the same
+   `tool_call_id`. A Human answer becomes a user message. Media observations
+   become user messages.
+4. One trailing user message with this step's volatile content (agent state,
+   workspace observation, run messages, `semantic_memory`, deferred reads and
+   the continuation markers no rendered Model Turn has answered yet) and this
+   step's media parts. It is never stored in history. A citation correction
+   asks for a corrected answer, so it stays through tool-call turns that
+   gather evidence until a turn without calls answers it.
+
+Everything derived from data is wrapped in a provenance envelope,
+`{"source", "provenance", "revision", "trust": "data", "content"}`: attachments,
+tool results, media observations, the question a Human answer replies to, the
+step's volatile content and the text labels of its media parts. Only the Human
+answer itself is unwrapped. Data never enters `system`. Request budgeting
+reserves the enveloped size of media labels before it bounds the snapshot.
+
+Only `native` Runs record Model Turns: once per accepted response, the Context
+Journal gains an `assistant` event with the response text and the IDs of its
+tool calls, before the first result. A final answer is a Model Turn without
+calls. Reasoning output is never recorded. A call that never ran, because an
+earlier call of the same response waited for a human or deferred its result, is
+left out of the rendered assistant message, as `legacy` leaves it out of
+history. A response without text whose calls never ran renders nothing and is
+no Model Turn. Text beside calls that the citation gate withholds is neither
+published nor recorded; its turn keeps only the calls. A request never carries
+part of a Model Turn; validation rejects one before sending.
+
+Context recovery works by Model Turn. Jev protects the first and the latest
+`preserve_recent` Model Turns. A result Jev drops is replaced by
+`{"elided": true, "invocation": "<call id>"}` under the same call, and a turn
+without text whose every call is dropped is removed whole. The Summary Stage
+absorbs whole turns that reached an accepted inference and lie outside the
+protected turns.
+
+With `prompt_cache: explicit`, the second breakpoint sits on the last history
+message, or on the last attachment when there is no history.
 
 ## Cache Salt Key
 
@@ -97,7 +152,7 @@ These events legitimately end the shared prefix:
   `legacy`, instead of failing the request.
 - A different tool set.
 
-For `ordered` Runs, a semantic retrieval is reused across steps while its
+For `ordered` and `native` Runs, a semantic retrieval is reused across steps while its
 Retrieval Key is unchanged. The key covers the query inputs, a Run-fixed budget,
 the binding, the authorization scope, and the policy, index and memory-binding
 revisions. It also covers a digest of the Workspace's semantic entries and of
@@ -149,7 +204,7 @@ default, or `explicit`):
 }
 ```
 
-`prompt_cache: explicit` requires `projection_version: ordered` and a model
+`prompt_cache: explicit` requires `projection_version: ordered` or `native` and a model
 that declares `cache_mode: explicit` for an allowlisted ID. Registration,
 publication, installation and each inference check this pairing. An opt-in is
 never dropped silently, and no other route ever receives `cache_control`.

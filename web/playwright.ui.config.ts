@@ -29,6 +29,7 @@ export default defineConfig({
     "provider-credentials.spec.ts",
     "tenant-administration.spec.ts",
     "keyless-approval.spec.ts",
+    "citations.spec.ts",
   ],
   workers: 1,
   retries: 0,

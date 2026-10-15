@@ -163,6 +163,7 @@ impl MutationScope for Scope {
 			created_by: task.owner.clone().unwrap(),
 			idempotency_key: key.into(),
 			created_at: task.created_at,
+			run_id: None,
 		};
 		Ok((saved, created))
 	}

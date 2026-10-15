@@ -46,6 +46,8 @@ import {
   type MessageSubmission,
 } from "./conversation-model";
 import { Avatar } from "./avatar";
+import { CitedText } from "./citations";
+import { messageParts } from "./citations-model";
 import { Textarea } from "../components/ui/textarea";
 import { Kbd } from "../components/ui/kbd";
 import {
@@ -72,34 +74,53 @@ function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
   return Math.max(0, end - scroll.clientHeight);
 }
 
-/** Only inline composer syntax is interpreted. React escapes all other content. */
-export function MessageText({ text }: { text: string }) {
+/**
+ * Only inline composer syntax is interpreted. React escapes all other content.
+ * In text a Run published (`run`), Source citations become numbered chips,
+ * also inside bold, italic and code spans.
+ */
+export function MessageText({
+  text,
+  run,
+}: {
+  text: string;
+  run?: string | null;
+}) {
   return (
     <>
-      {text
-        .split(/(\*\*[^*\n]+\*\*|_[^_\n]+_|`[^`\n]+`|@[\p{L}\p{N}_-]+)/gu)
-        .map((part, i) =>
-          part.startsWith("**") && part.endsWith("**") ? (
-            <strong key={i} className="font-semibold">
-              {part.slice(2, -2)}
-            </strong>
-          ) : part.startsWith("_") && part.endsWith("_") ? (
-            <em key={i}>{part.slice(1, -1)}</em>
-          ) : part.startsWith("`") && part.endsWith("`") ? (
-            <code
-              key={i}
-              className="rounded-sm bg-raised px-1 py-px font-mono text-[12px]"
-            >
-              {part.slice(1, -1)}
-            </code>
-          ) : part.startsWith("@") ? (
-            <span className="font-medium text-brand" key={i}>
-              {part}
-            </span>
-          ) : (
-            part
-          ),
-        )}
+      {messageParts(text, Boolean(run)).map((part, i) => {
+        switch (part.kind) {
+          case "strong":
+            return (
+              <strong key={i} className="font-semibold">
+                <CitedText run={run} parts={part.parts} />
+              </strong>
+            );
+          case "em":
+            return (
+              <em key={i}>
+                <CitedText run={run} parts={part.parts} />
+              </em>
+            );
+          case "code":
+            return (
+              <code
+                key={i}
+                className="rounded-sm bg-raised px-1 py-px font-mono text-[12px]"
+              >
+                <CitedText run={run} parts={part.parts} />
+              </code>
+            );
+          case "mention":
+            return (
+              <span className="font-medium text-brand" key={i}>
+                {part.text}
+              </span>
+            );
+          default:
+            return <CitedText key={i} run={run} parts={[part]} />;
+        }
+      })}
     </>
   );
 }
@@ -569,7 +590,10 @@ function ConversationFeed({
                         </time>
                       </header>
                       <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
-                        <MessageText text={message.content} />
+                        <MessageText
+                          text={message.content}
+                          run={message.run_id}
+                        />
                       </p>
                       {entry.attachments.length > 0 && (
                         <ul className="mt-1.5 flex flex-wrap gap-1.5">

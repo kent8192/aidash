@@ -6,6 +6,8 @@ use aidash_domain::provider;
 use async_trait::async_trait;
 use std::sync::Mutex;
 
+mod native;
+
 struct FakeJev {
 	answer: fn(&str) -> Value,
 	seen: Mutex<Vec<(Value, Questions)>>,
@@ -77,6 +79,7 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 		tools: &[],
 		max_output_tokens: 256,
 		projection: &RequestProjection::Legacy,
+		estimate: Default::default(),
 	}
 	.request(&context, &pinned);
 	check_request(12000, &request).unwrap();
@@ -92,11 +95,16 @@ async fn media_space_is_reserved_before_retained_history_is_compacted() {
 	}];
 	let window = 12_000;
 	let budget = RequestBudget {
-		window: window - provider::ModelRequest::content_parts_reservation(&media),
+		window: window
+			- provider::ModelRequest::content_parts_reservation(
+				&media,
+				aidash_domain::projection::ProjectionVersion::Legacy,
+			),
 		instructions: "Inspect the image",
 		tools: &[],
 		max_output_tokens: 256,
 		projection: &RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	let pinned = json!({"task":"Inspect accepted image"});
 	let mut context = journaled(history());
@@ -122,6 +130,7 @@ fn request_check_reserves_completion_tokens() {
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	};
 	assert!(check_request(2000, &request).is_err());
 }
@@ -134,6 +143,7 @@ fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() 
 		tools: &[],
 		max_output_tokens: 65_536,
 		projection: &RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	let request = budget.request(&Context::default(), &json!({}));
 	assert_eq!(request.max_output_tokens, 65_536);
@@ -163,6 +173,7 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 		tools: &tools,
 		max_output_tokens: 2048,
 		projection: &RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	let delta = budget
 		.request(&after, &pinned)
@@ -189,6 +200,7 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 			tools: &tools,
 			max_output_tokens: 4096,
 			projection: &RequestProjection::Legacy,
+			estimate: Default::default(),
 		};
 		let request = budget.request(&context, &pinned);
 		budget.window = request.estimated_total_tokens();
@@ -486,6 +498,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		tools: &specifications,
 		max_output_tokens: output,
 		projection: &RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	let window = request
 		.request(&Context::default(), &private_context)
@@ -498,6 +511,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		&specifications,
 		&private_context,
 		&RequestProjection::Legacy,
+		Default::default(),
 	)
 	.unwrap();
 	let execution_budget =
@@ -511,7 +525,8 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 			instructions,
 			&specifications,
 			&private_context,
-			&RequestProjection::Legacy
+			&RequestProjection::Legacy,
+			Default::default(),
 		)
 		.is_err()
 	);
@@ -550,6 +565,7 @@ async fn compact(
 			tools: &[],
 			max_output_tokens: 256,
 			projection: &RequestProjection::Legacy,
+			estimate: Default::default(),
 		},
 		pinned,
 	)
@@ -588,6 +604,7 @@ async fn compaction_counts_private_documents_without_disclosing_them() {
 		tools: &[],
 		max_output_tokens: 256,
 		projection: &RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	legacy(&mut context, &asker, &budget, &pinned)
 		.await
@@ -700,6 +717,7 @@ impl Scenario {
 			tools: &[],
 			max_output_tokens: 256,
 			projection: &RequestProjection::Legacy,
+			estimate: Default::default(),
 		}
 	}
 	async fn plan(&self, context: &mut Context, policy: &policy::Effective) -> Result<Compaction> {

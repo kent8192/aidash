@@ -184,6 +184,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			cost: json!({}),
 			projection_versions: vec![],
 			cache_mode: None,
+			request_estimator: None,
 		},
 		Arc::new(access),
 		context,
@@ -201,6 +202,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&aidash_application::ports::NoProgress,
 		)
