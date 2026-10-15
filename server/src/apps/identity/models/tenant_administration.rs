@@ -284,9 +284,30 @@ impl TenantAdministrator {
 			.into_iter()
 			.map(|identity| identity.id)
 			.collect();
+		// A Mapping whose credential is revoked or expired cannot act.
+		let now = super::dashboard_administration::database_time(tx).await?;
+		let usable: BTreeSet<Uuid> = super::AuthorizationCredential::objects()
+			.filter(
+				super::AuthorizationCredential::field_id().is_in(
+					mappings
+						.iter()
+						.map(|mapping| mapping.credential_id())
+						.collect::<Vec<_>>(),
+				),
+			)
+			.filter(super::AuthorizationCredential::field_revoked_at().is_null())
+			.filter(super::AuthorizationCredential::field_expires_at().gt(now))
+			.all_with_db(tx)
+			.await?
+			.into_iter()
+			.map(|credential| credential.id)
+			.collect();
 		let subjects = mappings
 			.iter()
-			.filter(|mapping| enabled.contains(&mapping.identity_id()))
+			.filter(|mapping| {
+				enabled.contains(&mapping.identity_id())
+					&& usable.contains(&mapping.credential_id())
+			})
 			.map(|mapping| mapping.subject.as_str());
 		if aidash_domain::identity::tenancy::has_unconditional_administrator(bundle, subjects) {
 			Ok(())

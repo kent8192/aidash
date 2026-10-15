@@ -109,6 +109,10 @@ async fn gcip_runtime(
 ) -> GcipFixture {
 	let mut runtime = runtime.await;
 	configure(&mut runtime.federation, &admin.url);
+	// A Tenant Binding addresses requests to its Tenant, which must exist.
+	for tenant in ["acme", "other"] {
+		common::tenant_root(&runtime.federation, tenant).await;
+	}
 	GcipFixture {
 		runtime,
 		status,
@@ -2344,7 +2348,7 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 		.unwrap();
 	assert_eq!(
 		overview,
-		json!({"tenant":"acme","actions":[],"assignable_groups":[],"policy_revision":null})
+		json!({"tenant":"acme","label":"acme","actions":[],"assignable_groups":[],"policy_revision":null})
 	);
 	assert_eq!(
 		carol

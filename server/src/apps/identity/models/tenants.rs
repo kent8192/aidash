@@ -27,7 +27,6 @@ pub struct Tenant {
 }
 
 use crate::Result;
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
@@ -47,8 +46,7 @@ impl Tenant {
 			.build(PostgresQueryBuilder);
 		Ok(tx
 			.fetch_optional(&sql, convert_values(values))
-			.await
-			.map_err(FrameworkError::from)?
+			.await?
 			.is_some())
 	}
 }
