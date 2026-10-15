@@ -1,4 +1,5 @@
 //! Native management-process lifecycle coverage with disposable Reinhardt fixtures.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../identity/tests/deployment.rs"]
 mod dashboard;
 #[path = "database_roles.rs"]

@@ -1,4 +1,5 @@
 //! Production-router and PostgreSQL proof of Provider Credential isolation and secrecy.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]

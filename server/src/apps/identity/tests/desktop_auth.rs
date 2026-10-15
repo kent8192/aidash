@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use http::StatusCode;

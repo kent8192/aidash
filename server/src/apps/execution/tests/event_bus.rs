@@ -1,4 +1,5 @@
 //! Durable event delivery through native PostgreSQL, real JetStream and HTTP replay.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/endpoint.rs"]
 mod endpoint;
 #[path = "support/event_bus.rs"]

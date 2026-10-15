@@ -1,4 +1,5 @@
 //! Observation and paged record reads against the native migration schema.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/endpoint.rs"]
 mod endpoint_fixtures;
 #[path = "support/native_database.rs"]

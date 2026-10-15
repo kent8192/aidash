@@ -80,6 +80,7 @@ impl Pool {
 	}
 	/// Open a transaction in `scope`. The scope is fixed for the transaction's
 	/// lifetime; savepoints inherit it.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin(&self, scope: &TenancyScope) -> Result<Transaction> {
 		let mut executor = self.connection.begin().await?;
 		super::scope::enter(executor.as_mut(), scope).await?;
@@ -92,6 +93,7 @@ impl Pool {
 		))
 	}
 	/// Like [`Self::begin`], at the serializable isolation level.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn begin_serializable(&self, scope: &TenancyScope) -> Result<Transaction> {
 		let mut executor = self
 			.connection
@@ -119,6 +121,7 @@ impl Pool {
 		Ok(value)
 	}
 	/// Run `work` in a Reinhardt ORM transaction opened in `scope`.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn atomic<T>(
 		&self,
 		scope: &TenancyScope,
@@ -134,6 +137,7 @@ impl Pool {
 			.await
 	}
 	/// Like [`Self::atomic`], acquiring write intent before the first read.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
 	pub async fn atomic_write<T>(
 		&self,
 		scope: &TenancyScope,

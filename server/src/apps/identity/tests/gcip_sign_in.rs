@@ -1,4 +1,5 @@
 //! Signed token and fake tenant Admin API acceptance through the production router.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_integrations::gcip::{AccessToken, AccountLookup, Services, SigningKeys, TokenVerifier};

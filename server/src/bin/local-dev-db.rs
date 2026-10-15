@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
+#[allow(clippy::disallowed_methods)] // The owner prepares a local database; no Tenant data is read.
 async fn prepare_database(database_url: &str) -> Result<(), Box<dyn Error>> {
 	let directory = env::var_os("AIDASH_BASE_DIR")
 		.map(PathBuf::from)

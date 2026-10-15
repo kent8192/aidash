@@ -2,6 +2,7 @@
 //! in-process fake OpenRouter enforces PKCE, single-use codes and code expiry;
 //! the HTTP adapter itself is exercised against a fake endpoint in
 //! `aidash-integrations`.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_application::{

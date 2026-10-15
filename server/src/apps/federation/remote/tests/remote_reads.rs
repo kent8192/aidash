@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use aidash_application::tenancy::TEST_FIXTURE;
 use http::Method;
 #[path = "../../../execution/tests/support/legacy.rs"]

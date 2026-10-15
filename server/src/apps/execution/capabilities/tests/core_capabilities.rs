@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../tests/support/legacy.rs"]
 mod common;
 use aidash_application::tenancy::TEST_FIXTURE;
@@ -1439,7 +1440,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
-	let run = c.f.store.runs().await.unwrap().remove(0);
+	let run = c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let (_, area) = request(
 		&c.app,
 		&c.token,
