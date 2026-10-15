@@ -80,7 +80,7 @@ pub(crate) async fn scrub_projection(
 	let (sql, values) = Query::update()
 		.table(Alias::new("runs"))
 		.value(Alias::new("context"), serde_json::to_value(&context)?)
-		.value(Alias::new("revision"), Expr::cust("revision + 1"))
+		.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
 		.build(PostgresQueryBuilder);
 	native(
@@ -240,7 +240,7 @@ impl Scope<'_> {
 		let (sql, values) = Query::update()
 			.table(Alias::new("core_records"))
 			.value(Alias::new("state"), "closed")
-			.value(Alias::new("revision"), Expr::cust("revision + 1"))
+			.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 			.and_where(Expr::col("kind").eq(Expr::value(
 				aidash_application::capabilities::approvals::DISCLOSURE,
 			)))

@@ -249,3 +249,11 @@ impl Tool for ResearchTool {
 		result.map_err(Into::into)
 	}
 }
+
+/// One Research evidence retention pass in Deployment Scope, as the hourly
+/// retention loop runs it under the configured Deployment periods.
+pub async fn sweep_retention(store: &crate::store::Store) -> crate::Result<u64> {
+	use crate::apps::execution::repositories::research::retention;
+	let rules = retention::configured_rules()?;
+	Ok(retention::sweep(store, &rules).await?)
+}

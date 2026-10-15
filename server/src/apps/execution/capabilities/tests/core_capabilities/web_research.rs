@@ -545,3 +545,6 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 	}
 	r.close().await;
 }
+
+#[path = "web_research/retention.rs"]
+mod retention;

@@ -673,7 +673,7 @@ impl ResearchSnapshot {
 		let mut update = Query::update();
 		update
 			.table(Alias::new(Self::table_name()))
-			.value(Alias::new("lines"), Expr::cust("'[]'::jsonb"))
+			.value_expr(Alias::new("lines"), Expr::cust("'[]'::jsonb"))
 			.value(Alias::new("text_bytes"), 0_i64)
 			.value(Alias::new("purged_at"), at)
 			.value(Alias::new("purge_reason"), reason.as_str());
