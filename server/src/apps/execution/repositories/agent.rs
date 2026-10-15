@@ -654,6 +654,11 @@ fn check_started(
 		Err(crate::Error::Forbidden | crate::Error::Unauthorized) => Ok(
 			completion::CheckStart::Denied("the shell capability is not authorized".into()),
 		),
+		// The shell Binding's narrowing refused the policy's command or limits:
+		// a decision of its authority, not an inability to run.
+		Err(crate::Error::Invalid(reason)) if reason.contains("exceeds Binding") => {
+			Ok(completion::CheckStart::Denied(reason))
+		}
 		Err(
 			crate::Error::Invalid(reason)
 			| crate::Error::Conflict(reason)

@@ -49,6 +49,18 @@ fn refused_authority_denies_the_check(#[case] error: Error) {
 	));
 }
 
+/// The shell Binding's narrowing is part of the Check's authority.
+#[rstest::rstest]
+#[case::scope("tool argument command exceeds Binding scope")]
+#[case::limit("tool argument timeout_seconds exceeds Binding limit")]
+fn a_narrowing_refusal_denies_the_check_with_its_reason(#[case] reason: &str) {
+	let CheckStart::Denied(kept) = check_started(Err(Error::Invalid(reason.into())), 1).unwrap()
+	else {
+		panic!("expected a denied Check");
+	};
+	assert_eq!(kept, reason);
+}
+
 #[rstest::rstest]
 #[case::no_runner(Error::Conflict(
 	"RUNTIME_UNAVAILABLE: no isolated runner configured".into()
