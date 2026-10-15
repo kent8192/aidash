@@ -506,6 +506,12 @@ pub enum ReviewReason {
 		check: String,
 		detail: String,
 	},
+	/// The Run's pinned Bindings do not bind the capability the Check invokes.
+	/// Neither retry nor new input changes them, so only a new Run can.
+	Unbound {
+		check: String,
+		capability: String,
+	},
 	Denied {
 		check: String,
 		detail: String,
@@ -526,7 +532,18 @@ impl ReviewReason {
 	pub fn prompt(&self) -> String {
 		let reason = match self {
 			Self::Unavailable { check, .. } => format!("Check {check} could not run"),
-			Self::Denied { check, .. } => format!("Check {check} was refused"),
+			Self::Unbound { check, capability } => {
+				return format!(
+					"Completion Review: Check {check} could not run because this Run's pinned Bindings do not bind capability {capability}. Neither retry nor a new message changes them. Cancel the Run and start a new one with a corrected Agent or Binding."
+				);
+			}
+			// New input cannot change the Run's authority or its pinned
+			// Bindings, so only a lifted refusal makes a retry worthwhile.
+			Self::Denied { check, .. } => {
+				return format!(
+					"Completion Review: Check {check} was refused. A new message cannot change the Run's authority or its pinned Bindings. Answer retry once the refusal is lifted to run the Checks again, or cancel the Run; if the Run's pinned Binding refused the Check, start a new Run with a corrected Binding."
+				);
+			}
 			Self::RepairExhausted { check } => {
 				format!("Check {check} still fails and the Repair Allowance is spent")
 			}
@@ -626,14 +643,16 @@ pub fn decide<'a>(
 				detail: detail.into(),
 			});
 		}
-		let (Some(content), Some(capability)) = (candidate.content, candidate.capability) else {
+		let Some(content) = candidate.content else {
 			return Decision::Review(ReviewReason::Unavailable {
 				check: check.name.clone(),
-				detail: if candidate.content.is_none() {
-					"the Run has no Working Area".into()
-				} else {
-					format!("capability {} is not bound", check.capability)
-				},
+				detail: "the Run has no Working Area".into(),
+			});
+		};
+		let Some(capability) = candidate.capability else {
+			return Decision::Review(ReviewReason::Unbound {
+				check: check.name.clone(),
+				capability: check.capability.clone(),
 			});
 		};
 		let subject = CheckSubject {

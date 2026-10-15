@@ -104,7 +104,11 @@ review request is answered `{"superseded": true}` by `system`, and the model
 continues with the correction. Cancelling the Run stops it. Once the Run's
 verification time is spent, neither `retry` nor a new message lets a Check
 run again, so that review only offers cancelling the Run and verifying the
-correction in a new one.
+correction in a new one. The same holds when the Run's pinned Bindings do not
+bind the capability a Check invokes. A refused Check's review does not offer a
+new message, which cannot change the Run's authority or its pinned Bindings:
+`retry` helps once the refusal is lifted, and a refusal by the pinned Binding's
+narrowing needs a new Run with a corrected Binding.
 
 ## Freshness and recovery
 

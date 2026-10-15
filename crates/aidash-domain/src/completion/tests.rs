@@ -329,10 +329,13 @@ fn refusals_that_need_a_person_pause_for_review() {
 		capability: None,
 		unavailable: None,
 	};
-	assert!(matches!(
+	assert_eq!(
 		decide(&policy, &CompletionProgress::default(), &unbound),
-		Decision::Review(ReviewReason::Unavailable { .. })
-	));
+		Decision::Review(ReviewReason::Unbound {
+			check: "tests".into(),
+			capability: "shell".into(),
+		})
+	);
 	let spent = CompletionProgress {
 		seconds: 600,
 		..Default::default()
@@ -608,6 +611,33 @@ fn an_unavailable_area_is_never_unchanged_content() {
 			check: "tests".into(),
 			detail: "the Working Area is uncertain".into(),
 		})
+	);
+}
+
+/// Neither retrying nor new input changes the Run's pinned Bindings, so an
+/// unbound capability's review offers neither. New input cannot lift a
+/// refusal either, so a refused Check's review does not offer it.
+#[test]
+fn reviews_offer_only_actions_that_can_recover() {
+	let unbound = ReviewReason::Unbound {
+		check: "tests".into(),
+		capability: "shell".into(),
+	}
+	.prompt();
+	assert!(
+		!unbound.contains("Answer retry")
+			&& !unbound.contains("send a new message")
+			&& unbound.contains("start a new one"),
+		"{unbound}"
+	);
+	let denied = ReviewReason::Denied {
+		check: "tests".into(),
+		detail: "exceeds Binding".into(),
+	}
+	.prompt();
+	assert!(
+		!denied.contains("send a new message") && denied.contains("start a new Run"),
+		"{denied}"
 	);
 }
 
