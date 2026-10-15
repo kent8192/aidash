@@ -96,10 +96,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             peers: [],
           },
         });
-      if (path === "/api/marketplace/compatibility")
-        return route.fulfill({
-          json: { enabled: true, revision: 2, contract: 1 },
-        });
       if (path === "/api/marketplace/administration")
         return route.fulfill({ json: [row("bundle"), row("task")] });
       if (path === "/api/authorization/a/catalog")
@@ -633,8 +629,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             peers: [],
           },
         });
-      if (url.pathname === "/api/marketplace/compatibility")
-        return route.fulfill({ json: { enabled: true, revision: 2 } });
       if (url.pathname === "/api/marketplace/administration") {
         if (denied)
           return route.fulfill({ status: 403, json: { error: "forbidden" } });

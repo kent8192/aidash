@@ -1,5 +1,5 @@
 //! Immutable definitions on a caller-owned native transaction.
-use super::{AgentKnowledge, Definition, Installation};
+use super::{AgentKnowledge, Definition};
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -43,24 +43,6 @@ pub(crate) async fn definition(
 	Ok(serde_json::from_value(
 		QueryRow::from_backend_row(row).data,
 	)?)
-}
-
-pub(crate) async fn installation(
-	tx: &mut dyn TransactionExecutor,
-	id: &str,
-	version: &str,
-) -> Result<Option<Value>> {
-	let (sql, values) = Query::select()
-		.column(Alias::new("config"))
-		.from(Alias::new(Installation::table_name()))
-		.and_where(Expr::col("id").eq(Expr::value(id)))
-		.and_where(Expr::col("version").eq(Expr::value(version)))
-		.lock(LockType::Share)
-		.build(PostgresQueryBuilder);
-	Ok(tx
-		.fetch_optional(&sql, convert_values(values))
-		.await?
-		.map(|row| QueryRow::from_backend_row(row).data["config"].clone()))
 }
 
 pub(crate) async fn insert_definition(

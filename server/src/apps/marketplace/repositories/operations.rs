@@ -15,7 +15,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, JoinType, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr, TableRef,
+	QueryStatementBuilder, TableRef,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -93,19 +93,6 @@ impl OperatorScope for NativeOperator<'_> {
 	}
 	async fn distribution_lock(&mut self, exclusive: bool) -> aidash_application::Result<()> {
 		crate::apps::marketplace::services::storage::lock(self.staging.tx, exclusive)
-			.await
-			.map_err(Into::into)
-	}
-	async fn compatibility(&mut self) -> aidash_application::Result<Option<Compatibility>> {
-		get(self.staging.tx, "marketplace_gate", "v1")
-			.await
-			.map_err(Into::into)
-	}
-	async fn save_compatibility(
-		&mut self,
-		state: &Compatibility,
-	) -> aidash_application::Result<()> {
-		put(self.staging.tx, "marketplace_gate", "v1", state)
 			.await
 			.map_err(Into::into)
 	}
@@ -210,65 +197,6 @@ impl OperatorScope for NativeOperator<'_> {
 		super::definitions::raw(self.staging.tx, reference)
 			.await
 			.map_err(Into::into)
-	}
-	async fn effective_legacy(
-		&mut self,
-		reference: &EntityRef,
-	) -> aidash_application::Result<Entry> {
-		super::storage::effective_legacy(self.staging.tx, &reference.id, &reference.version)
-			.await
-			.map_err(Into::into)
-	}
-	async fn package_record(
-		&mut self,
-		reference: &EntityRef,
-	) -> aidash_application::Result<Option<(String, String)>> {
-		let record: Option<(String, String)> = {
-			let query_bind_1 = &reference.id;
-			let query_bind_2 = &reference.version;
-			crate::database::native::query_as(
-				&Query::select()
-					.columns([Alias::new("manifest_source"), Alias::new("digest")])
-					.from(Alias::new("packages"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=? AND version=?)".to_owned(),
-						vec![
-							Expr::value(query_bind_1.to_owned()).into(),
-							Expr::value(query_bind_2.to_owned()).into(),
-						],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&["manifest_source", "digest"])
-			.fetch_optional(&mut **self.staging.tx)
-			.await?
-		};
-		Ok(record)
-	}
-	async fn legacy_config(
-		&mut self,
-		reference: &EntityRef,
-	) -> aidash_application::Result<Option<Value>> {
-		let config: Option<Value> = {
-			let query_bind_1 = &reference.id;
-			let query_bind_2 = &reference.version;
-			crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("config"))
-					.from(Alias::new("installations"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=? AND version=?)".to_owned(),
-						vec![
-							Expr::value(query_bind_1.to_owned()).into(),
-							Expr::value(query_bind_2.to_owned()).into(),
-						],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **self.staging.tx)
-			.await?
-		};
-		Ok(config)
 	}
 	async fn provenance(
 		&mut self,

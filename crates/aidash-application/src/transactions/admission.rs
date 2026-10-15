@@ -2,7 +2,6 @@
 use crate::{
 	Error, Result,
 	ports::transactions::admission::{AdmissionRepository, AdmissionScope},
-	registry::DefinitionValidation,
 };
 use aidash_domain::transactions::{
 	Manifest,
@@ -12,12 +11,11 @@ use serde_json::json;
 
 pub async fn submit(
 	repository: &dyn AdmissionRepository,
-	validation: &DefinitionValidation,
 	manifest: &Manifest,
 	origin: Option<&Origin>,
 ) -> Result<Status> {
 	let mut scope = repository.begin().await?;
-	let stored = submit_in(scope.admission().as_mut(), validation, manifest, origin).await?;
+	let stored = submit_in(scope.admission().as_mut(), manifest, origin).await?;
 	repository
 		.fault(manifest.id, "coordinator.submit.before")
 		.await?;
@@ -31,11 +29,10 @@ pub async fn submit(
 
 pub async fn submit_in(
 	scope: &mut dyn AdmissionScope,
-	validation: &DefinitionValidation,
 	manifest: &Manifest,
 	origin: Option<&Origin>,
 ) -> Result<Status> {
-	super::validate(validation, manifest)?;
+	super::validate(manifest)?;
 	if manifest.coordinator != scope.node_id() {
 		return Err(Error::Invalid("submit to the named coordinator".into()));
 	}

@@ -1,37 +1,11 @@
 use super::*;
-use crate::ports::{
-	Credentials, registry::CoreToolCatalog, transactions::admission::OwnedAdmissionScope,
-};
-use aidash_domain::{
-	capabilities::CoreCapabilities,
-	provider::ToolSpec,
-	transactions::{Isolation, Mutation, Participant},
-};
+use crate::ports::transactions::admission::OwnedAdmissionScope;
+use aidash_domain::transactions::{Isolation, Mutation, Participant};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use rstest::{fixture, rstest};
-use std::{
-	collections::BTreeMap,
-	sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-
-struct Catalog;
-impl Credentials for Catalog {
-	fn resolve(&self, name: &str) -> Result<String> {
-		Err(Error::NotFound(name.into()))
-	}
-}
-impl CoreToolCatalog for Catalog {
-	fn specifications(&self, _config: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
-		BTreeMap::new()
-	}
-}
-
-#[fixture]
-fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(Catalog), Arc::new(Catalog))
-}
 
 #[fixture]
 fn manifest() -> Manifest {
@@ -199,13 +173,12 @@ impl AdmissionRepository for Adapter {
 #[tokio::test]
 async fn new_admission_preserves_deadline_second_precision_and_bounds(
 	mut manifest: Manifest,
-	validation: DefinitionValidation,
 	#[case] milliseconds: i64,
 	#[case] accepted: bool,
 ) {
 	let mut adapter = Adapter::new();
 	manifest.deadline = adapter.now() + Duration::milliseconds(milliseconds);
-	let result = submit_in(&mut adapter, &validation, &manifest, None).await;
+	let result = submit_in(&mut adapter, &manifest, None).await;
 	if accepted {
 		assert_eq!(result.unwrap(), status(&manifest));
 	} else {
@@ -220,7 +193,6 @@ async fn new_admission_preserves_deadline_second_precision_and_bounds(
 #[tokio::test]
 async fn immutable_replay_checks_origin_before_manifest_and_skips_expired_deadline(
 	mut manifest: Manifest,
-	validation: DefinitionValidation,
 	origin: Origin,
 ) {
 	let mut adapter = Adapter::new();
@@ -233,7 +205,7 @@ async fn immutable_replay_checks_origin_before_manifest_and_skips_expired_deadli
 		state.trusted = false;
 	}
 	assert_eq!(
-		submit_in(&mut adapter, &validation, &manifest, Some(&origin))
+		submit_in(&mut adapter, &manifest, Some(&origin))
 			.await
 			.unwrap(),
 		stored
@@ -247,7 +219,6 @@ async fn immutable_replay_checks_origin_before_manifest_and_skips_expired_deadli
 #[tokio::test]
 async fn immutable_replay_cannot_change_digest_or_manifest(
 	manifest: Manifest,
-	validation: DefinitionValidation,
 	#[case] changed: &str,
 ) {
 	let mut adapter = Adapter::new();
@@ -259,22 +230,18 @@ async fn immutable_replay_cannot_change_digest_or_manifest(
 	}
 	adapter.0.lock().unwrap().status = Some(stored);
 	assert!(
-		matches!(submit_in(&mut adapter, &validation, &manifest, None).await, Err(Error::Conflict(message)) if message == "transaction ID already has another immutable manifest")
+		matches!(submit_in(&mut adapter, &manifest, None).await, Err(Error::Conflict(message)) if message == "transaction ID already has another immutable manifest")
 	);
 	assert_eq!(adapter.log(), ["status", "match_origin"]);
 }
 
 #[rstest]
 #[tokio::test]
-async fn replay_never_rebinds_another_origin(
-	manifest: Manifest,
-	validation: DefinitionValidation,
-	origin: Origin,
-) {
+async fn replay_never_rebinds_another_origin(manifest: Manifest, origin: Origin) {
 	let mut adapter = Adapter::new();
 	adapter.0.lock().unwrap().status = Some(status(&manifest));
 	assert!(matches!(
-		submit_in(&mut adapter, &validation, &manifest, Some(&origin)).await,
+		submit_in(&mut adapter, &manifest, Some(&origin)).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(adapter.log(), ["status", "match_origin"]);
@@ -285,11 +252,7 @@ async fn replay_never_rebinds_another_origin(
 #[case::peer_missing(true)]
 #[case::trust_disabled(false)]
 #[tokio::test]
-async fn peer_resolution_and_trust_precede_admission(
-	manifest: Manifest,
-	validation: DefinitionValidation,
-	#[case] missing: bool,
-) {
+async fn peer_resolution_and_trust_precede_admission(manifest: Manifest, #[case] missing: bool) {
 	let mut adapter = Adapter::new();
 	{
 		let mut state = adapter.0.lock().unwrap();
@@ -298,7 +261,7 @@ async fn peer_resolution_and_trust_precede_admission(
 			state.failure = Some("resolve_peer".into());
 		}
 	}
-	let result = submit_in(&mut adapter, &validation, &manifest, None).await;
+	let result = submit_in(&mut adapter, &manifest, None).await;
 	if missing {
 		assert!(matches!(result, Err(Error::External(message)) if message == "resolve_peer"));
 		assert_eq!(adapter.log(), ["status", "resolve_peer"]);
@@ -310,13 +273,9 @@ async fn peer_resolution_and_trust_precede_admission(
 
 #[rstest]
 #[tokio::test]
-async fn new_origin_is_bound_inside_the_same_admission_scope(
-	manifest: Manifest,
-	validation: DefinitionValidation,
-	origin: Origin,
-) {
+async fn new_origin_is_bound_inside_the_same_admission_scope(manifest: Manifest, origin: Origin) {
 	let mut adapter = Adapter::new();
-	submit_in(&mut adapter, &validation, &manifest, Some(&origin))
+	submit_in(&mut adapter, &manifest, Some(&origin))
 		.await
 		.unwrap();
 	assert_eq!(
@@ -337,11 +296,7 @@ async fn new_origin_is_bound_inside_the_same_admission_scope(
 #[case::wrong_coordinator(false)]
 #[case::invalid_manifest(true)]
 #[tokio::test]
-async fn invalid_submission_never_reads_storage(
-	mut manifest: Manifest,
-	validation: DefinitionValidation,
-	#[case] invalid: bool,
-) {
+async fn invalid_submission_never_reads_storage(mut manifest: Manifest, #[case] invalid: bool) {
 	let mut adapter = Adapter::new();
 	if invalid {
 		manifest.id = Uuid::nil();
@@ -349,7 +304,7 @@ async fn invalid_submission_never_reads_storage(
 		manifest.coordinator = "aidash://peer".into();
 	}
 	assert!(matches!(
-		submit_in(&mut adapter, &validation, &manifest, None).await,
+		submit_in(&mut adapter, &manifest, None).await,
 		Err(Error::Invalid(_)) | Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
 	assert_eq!(adapter.log(), Vec::<String>::new());
@@ -357,14 +312,9 @@ async fn invalid_submission_never_reads_storage(
 
 #[rstest]
 #[tokio::test]
-async fn standalone_submission_commits_before_waking_workers(
-	manifest: Manifest,
-	validation: DefinitionValidation,
-) {
+async fn standalone_submission_commits_before_waking_workers(manifest: Manifest) {
 	let adapter = Adapter::new();
-	submit(&adapter, &validation, &manifest, None)
-		.await
-		.unwrap();
+	submit(&adapter, &manifest, None).await.unwrap();
 	let log = adapter.log();
 	assert_eq!(
 		&log[log.len() - 4..],
@@ -384,14 +334,13 @@ async fn standalone_submission_commits_before_waking_workers(
 #[tokio::test]
 async fn failed_submission_preserves_its_commit_boundary(
 	manifest: Manifest,
-	validation: DefinitionValidation,
 	#[case] point: &str,
 	#[case] committed: bool,
 ) {
 	let adapter = Adapter::new();
 	adapter.0.lock().unwrap().failure = Some(point.into());
 	assert!(
-		matches!(submit(&adapter, &validation, &manifest, None).await, Err(Error::External(message)) if message == point)
+		matches!(submit(&adapter, &manifest, None).await, Err(Error::External(message)) if message == point)
 	);
 	let log = adapter.log();
 	assert_eq!(log.contains(&"rollback".into()), !committed);

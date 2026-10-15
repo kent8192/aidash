@@ -4,7 +4,6 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::apps::identity::serializers::session::AccessProfile;
-use crate::apps::registry::serializers::installations::Installation;
 
 #[derive(Serialize, JsonSchema)]
 pub struct StateResponse {
@@ -19,5 +18,4 @@ pub struct StateResponse {
 	pub peers: Vec<Peer>,
 	pub events: Vec<Event>,
 	pub artifacts: Vec<Artifact>,
-	pub installations: Vec<Installation>,
 }

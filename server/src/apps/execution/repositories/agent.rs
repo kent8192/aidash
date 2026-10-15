@@ -747,9 +747,8 @@ impl ExecutionEnvironment for Environment<'_> {
 			if let Some(authority) = &self.authority {
 				Box::new(authority.guard.compactor(self.federation))
 			} else {
-				Box::new(crate::context::jev::JevClient::from_env(
-					self.federation.client.clone(),
-				)?)
+				// An ordinary Run has no approved compactor, so it is not pruned (ADR 0041).
+				Box::new(crate::context::jev::Unapproved)
 			};
 		Ok(Box::new(Classifier(classifier)))
 	}

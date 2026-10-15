@@ -44,6 +44,7 @@ impl ResponsesProvider {
 			operations: vec![Operation::Chat],
 			max_output_tokens,
 			cache_breakpoints: false,
+			call: None,
 		});
 		context
 	}

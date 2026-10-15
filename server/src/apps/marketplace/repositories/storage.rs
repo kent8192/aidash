@@ -125,35 +125,4 @@ pub(crate) async fn put(
 	Ok(())
 }
 
-/// Preserve the legacy operator adoption snapshot on its existing transaction.
-pub(crate) async fn effective_legacy(
-	tx: &mut crate::database::native::Transaction,
-	id: &str,
-	version: &str,
-) -> Result<crate::registry::Entry> {
-	let sql = Query::select()
-		.column(Alias::new("metadata"))
-		.from(Alias::new("registry"))
-		.and_where(Expr::col("id").eq(Expr::value(id)))
-		.and_where(Expr::col("version").eq(Expr::value(version)))
-		.to_string(PostgresQueryBuilder);
-	let value: Value = crate::database::native::query_scalar(&sql)
-		.scalar_one(&mut **tx)
-		.await?;
-	let mut entry: crate::registry::Entry = serde_json::from_value(value)?;
-	let sql = Query::select()
-		.column(Alias::new("config"))
-		.from(Alias::new("installations"))
-		.and_where(Expr::col("id").eq(Expr::value(id)))
-		.and_where(Expr::col("version").eq(Expr::value(version)))
-		.to_string(PostgresQueryBuilder);
-	if let Some(config) = crate::database::native::query_scalar::<Value>(&sql)
-		.scalar_optional(&mut **tx)
-		.await?
-	{
-		crate::registry::overlay_config(&mut entry.config, &config)?;
-	}
-	Ok(entry)
-}
-
 use reinhardt::query::SimpleExpr;

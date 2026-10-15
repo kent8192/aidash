@@ -2,7 +2,6 @@ use super::*;
 use crate::{
 	generation::test_support,
 	ports::{
-		CompactionClassifier,
 		catalog::CatalogScope,
 		generation::{compaction::GenerationCompactionSession, publication::GenerationLive},
 	},
@@ -29,6 +28,7 @@ struct State {
 	document: Option<Value>,
 	approved: bool,
 	enabled: bool,
+	bound: bool,
 	denied: Option<String>,
 	exhausted: Option<Uuid>,
 	fail: Option<String>,
@@ -65,10 +65,11 @@ fn world() -> World {
 		},
 		jobs,
 		document: Some(
-			json!({"id":"compactor","version":"1.0.0","kind":"compactor","name":{"en":"Compactor"},"description":{"en":""},"config":{"provider":"typesafe","endpoint":"https://compaction.example/v1","model":"fixture","credential_env":"FIXTURE_COMPACTION_KEY","max_request_bytes":1024,"max_questions":10,"max_response_bytes":1024}}),
+			json!({"id":"compactor","version":"1.0.0","kind":"compactor","name":{"en":"Compactor"},"description":{"en":""},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":10,"max_response_bytes":1024}}),
 		),
 		approved: true,
 		enabled: true,
+		bound: true,
 		denied: None,
 		exhausted: None,
 		fail: None,
@@ -189,8 +190,8 @@ struct Transport(World);
 impl GenerationCompactionProvider for Provider {
 	fn approved(&self, config: CompactorConfig) -> Result<Arc<dyn ApprovedCompactionTransport>> {
 		assert_eq!(
-			(&*config.endpoint, &*config.model),
-			("https://compaction.example/v1", "fixture")
+			(&*config.provider_credential, &*config.model),
+			("openrouter", "typesafe/jev-1.13")
 		);
 		self.0
 			.0
@@ -201,6 +202,7 @@ impl GenerationCompactionProvider for Provider {
 		Ok(Arc::new(Transport(self.0.clone())))
 	}
 }
+#[async_trait]
 impl ApprovedCompactionTransport for Transport {
 	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize> {
 		assert_eq!(questions.len(), 2);
@@ -217,16 +219,30 @@ impl ApprovedCompactionTransport for Transport {
 		}
 		Ok(130)
 	}
-}
-#[async_trait]
-impl CompactionClassifier for Transport {
-	async fn ask(&self, state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+	async fn check_credential(&self) -> Result<()> {
+		let mut state = self.0.0.lock().unwrap();
+		state.events.push("provider.credential".into());
+		if !state.bound {
+			return Err(Error::Invalid(
+				"Provider Credential binding is missing".into(),
+			));
+		}
+		Ok(())
+	}
+	async fn ask(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &CompactionQuestions,
+	) -> Result<Value> {
 		assert_eq!(state, &json!({"history":"bounded"}));
 		assert_eq!(questions.len(), 2);
 		{
 			let state = self.0.0.lock().unwrap();
 			assert_eq!(state.active, 0);
 			assert!(state.commits > 0);
+			// The provider call is the attempt that was just reserved.
+			assert_eq!(attempt, state.ledger.attempts.last().unwrap().1.id);
 		}
 		point(&self.0, "provider.call".into()).await?;
 		Ok(json!({"p1":0.9,"p2":0.1}))
@@ -305,10 +321,7 @@ fn context() -> Context {
 		},
 	}
 }
-async fn prepare(
-	world: &World,
-	state: &Value,
-) -> Result<Option<Arc<dyn ApprovedCompactionTransport>>> {
+async fn prepare(world: &World, state: &Value) -> Result<Option<ReservedCompaction>> {
 	reserve(
 		&mut Authority(world.clone()),
 		&Repository(world.clone()),
@@ -339,6 +352,7 @@ async fn prepared_transport_is_returned_after_every_ancestor_is_durable(world: W
 		let state = world.0.lock().unwrap();
 		let first = &state.ledger.attempts[0].1;
 		assert_eq!(first, &state.ledger.attempts[1].1);
+		assert_eq!(transport.attempt, first.id);
 		assert_eq!(
 			(first.run, first.request_bytes, first.questions),
 			(Uuid::from_u128(77), 130, 2)
@@ -357,6 +371,7 @@ async fn prepared_transport_is_returned_after_every_ancestor_is_durable(world: W
 			"registry.read",
 			"compaction.invoke",
 			"provider.check",
+			"provider.credential",
 		] {
 			assert!(
 				state
@@ -394,6 +409,7 @@ async fn ordinary_agents_keep_their_separate_transport_without_charges(world: Wo
 #[case("compaction.invoke")]
 #[case("wrong_kind")]
 #[case("oversized")]
+#[case("unbound")]
 #[tokio::test]
 async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 	world: World,
@@ -423,6 +439,7 @@ async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 			"registry.read" | "compaction.invoke" => state.denied = Some(reason.into()),
 			"wrong_kind" => state.document.as_mut().unwrap()["kind"] = json!("model"),
 			"oversized" => {}
+			"unbound" => state.bound = false,
 			_ => panic!("unknown denial fixture"),
 		}
 	}
@@ -439,6 +456,10 @@ async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 	} else if reason == "oversized" {
 		assert!(
 			matches!(result,Err(Error::Invalid(message)) if message=="compaction request exceeds approved bounds")
+		);
+	} else if reason == "unbound" {
+		assert!(
+			matches!(result,Err(Error::Invalid(message)) if message=="Provider Credential binding is missing")
 		);
 	} else {
 		assert!(matches!(result, Err(Error::Forbidden)));

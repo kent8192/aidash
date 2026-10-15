@@ -1,55 +1,72 @@
-//! TypeSafe System One transport for fast-jev-compaction's probability questions.
+//! Jev (TypeSafe System One) through OpenRouter's System One API for
+//! fast-jev-compaction's probability questions. Every request is a Decision
+//! Attempt of a Run that uses the Tenant's current OpenRouter Provider
+//! Credential (ADR 0006, ADR 0041); no endpoint or key is configured here.
 use crate::{Error, Result};
-use aidash_application::ports::{CompactionClassifier, Credentials};
-use async_trait::async_trait;
+use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
+use aidash_domain::provider_credentials::Provider;
+use secrecy::ExposeSecret;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub type Questions = Map<String, Value>;
 use aidash_application::context::probability;
 
+/// OpenRouter's System One path under the catalog (or Credential Broker) base URL.
+const SYSTEM_ONE_PATH: &str = "systemone";
+
 pub struct JevClient {
-	credentials: Arc<dyn Credentials>,
+	access: Arc<dyn ProviderAccess>,
+	context: Context,
 	client: reqwest::Client,
-	endpoint: String,
 	model: String,
-	credential_env: String,
 	max_request_bytes: usize,
 	max_questions: usize,
 	max_response_bytes: usize,
 }
 
 impl JevClient {
+	/// `context` names the Run and its Tenant; the Provider Credential is the one
+	/// that Tenant's OpenRouter binding names at each call.
 	pub fn new(
 		client: reqwest::Client,
-		endpoint: String,
 		model: String,
-		credential_env: String,
-		credentials: Arc<dyn Credentials>,
+		access: Arc<dyn ProviderAccess>,
+		context: Context,
 	) -> Result<Self> {
-		validate_endpoint(&endpoint)?;
-		if model.trim().is_empty() || model.len() > 128 {
+		aidash_domain::decision::validate_model(&model)?;
+		if context.tenant.is_empty()
+			|| context.run.is_none_or(|run| run.is_nil())
+			|| context.maintenance.is_some()
+		{
 			return Err(Error::Invalid(
-				"Jev model must contain 1 to 128 bytes".into(),
+				"Jev calls are provider calls of one Run in its Tenant".into(),
 			));
 		}
 		Ok(Self {
-			credentials,
+			access,
+			context,
 			client,
-			endpoint,
 			model,
-			credential_env,
 			max_request_bytes: 1_048_576,
 			max_questions: 1024,
 			max_response_bytes: 1_048_576,
 		})
 	}
 
+	fn body(&self, state: &Value, questions: &Questions) -> Value {
+		// Zero data retention is required on every OpenRouter call.
+		json!({
+			"model": self.model, "state": state, "questions": questions,
+			"provider": {"zdr": true}
+		})
+	}
+
 	pub fn check_request(&self, state: &Value, questions: &Questions) -> Result<usize> {
-		let bytes =
-			serde_json::to_vec(&json!({"model":self.model,"state":state,"questions":questions}))
-				.map_err(|error| Error::External(error.to_string()))?
-				.len();
+		let bytes = serde_json::to_vec(&self.body(state, questions))
+			.map_err(|error| Error::External(error.to_string()))?
+			.len();
 		if bytes > self.max_request_bytes
 			|| questions.is_empty()
 			|| questions.len() > self.max_questions
@@ -61,28 +78,41 @@ impl JevClient {
 		Ok(bytes)
 	}
 
-	fn request(&self, state: &Value, questions: &Questions, key: &str) -> reqwest::RequestBuilder {
-		self.client
-			.post(&self.endpoint)
-			.bearer_auth(key)
-			.json(&json!({
-				"model": self.model, "state": state, "questions": questions
-			}))
+	/// The call scope of one Decision Attempt; `attempt` is the call identity.
+	fn scope(&self, attempt: Option<Uuid>) -> Context {
+		let mut context = self.context.clone();
+		context.provider_credential_id = None;
+		context.inference = Some(Inference {
+			model: self.model.clone(),
+			operations: vec![Operation::Decision],
+			max_output_tokens: 0,
+			cache_breakpoints: false,
+			call: attempt,
+		});
+		context
 	}
-	async fn send(&self, state: &Value, questions: &Questions, key: &str) -> Result<Value> {
-		self.send_checked(state, questions, key, false).await
-	}
-}
 
-#[async_trait]
-impl CompactionClassifier for JevClient {
-	async fn ask(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		// Resolve lazily: short runs never need a Jev key or a network request.
-		let key = self.credentials.resolve(&self.credential_env)?;
-		if key.trim().is_empty() {
-			return Err(Error::Invalid("Jev credential must not be empty".into()));
+	fn source() -> Source {
+		Source::Tenant {
+			provider: Provider::Openrouter.id().into(),
 		}
-		self.send(state, questions, &key).await
+	}
+
+	/// Fails before any allowance is reserved when the Tenant has no usable
+	/// OpenRouter binding; it neither mints a token nor reads Key Material.
+	pub async fn check_credential(&self) -> Result<()> {
+		self.access
+			.check(
+				&self.scope(None),
+				Provider::Openrouter.base_url(),
+				&Self::source(),
+			)
+			.await
+	}
+
+	/// One request as the compaction attempt the caller reserved for it.
+	pub async fn ask(&self, attempt: Uuid, state: &Value, questions: &Questions) -> Result<Value> {
+		self.send_checked(attempt, state, questions, false).await
 	}
 }
 
@@ -90,42 +120,30 @@ impl CompactionClassifier for JevClient {
 mod tests;
 
 impl JevClient {
-	pub fn check_remote_credential(&self) -> Result<()> {
-		let key = self
-			.credentials
-			.resolve(&self.credential_env)
-			.map_err(|_| Error::RemoteSemantic(aidash_domain::semantic::Failure::Configuration))?;
-		if key.trim().is_empty() {
-			return Err(Error::RemoteSemantic(
-				aidash_domain::semantic::Failure::Configuration,
-			));
-		}
-		Ok(())
+	pub async fn check_remote_credential(&self) -> Result<()> {
+		self.check_credential()
+			.await
+			.map_err(|_| Error::RemoteSemantic(aidash_domain::semantic::Failure::Configuration))
 	}
-}
 
-impl JevClient {
 	/// Keep remote retries and provider-contract failures on the same durable
 	/// semantic pause path as embedding and inference, without exposing bodies.
-	pub async fn ask_remote(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		use aidash_domain::semantic::Failure;
-		let key = self
-			.credentials
-			.resolve(&self.credential_env)
-			.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
-		if key.trim().is_empty() {
-			return Err(Error::RemoteSemantic(Failure::Configuration));
-		}
-		self.send_checked(state, questions, &key, true).await
+	pub async fn ask_remote(
+		&self,
+		attempt: Uuid,
+		state: &Value,
+		questions: &Questions,
+	) -> Result<Value> {
+		self.send_checked(attempt, state, questions, true).await
 	}
 }
 
 impl JevClient {
 	async fn send_checked(
 		&self,
+		attempt: Uuid,
 		state: &Value,
 		questions: &Questions,
-		key: &str,
 		remote: bool,
 	) -> Result<Value> {
 		use aidash_domain::semantic::Failure;
@@ -137,8 +155,26 @@ impl JevClient {
 			}
 		};
 		self.check_request(state, questions)?;
-		let mut response = self
-			.request(state, questions, key)
+		let access = self
+			.access
+			.resolve(
+				&self.scope(Some(attempt)),
+				Provider::Openrouter.base_url(),
+				&Self::source(),
+			)
+			.await
+			.map_err(|error| failure(Failure::Configuration, error))?;
+		let mut request = self
+			.client
+			.post(format!(
+				"{}/{SYSTEM_ONE_PATH}",
+				access.endpoint.trim_end_matches('/')
+			))
+			.json(&self.body(state, questions));
+		if !access.bearer.expose_secret().is_empty() {
+			request = request.bearer_auth(access.bearer.expose_secret());
+		}
+		let mut response = request
 			.send()
 			.await
 			.map_err(|error| failure(Failure::Unavailable, crate::http_error(error)))?;
@@ -184,12 +220,29 @@ impl JevClient {
 				Error::External("Jev response is missing answers".into()),
 			));
 		}
+		let served = value["model"].as_str().unwrap_or_default();
+		if !aidash_domain::decision::served_by(&self.model, served) {
+			return Err(failure(
+				Failure::ProviderContract,
+				Error::External("Jev response model differs from the pinned version".into()),
+			));
+		}
 		if remote {
 			for name in questions.keys() {
 				probability(&value, name)
 					.map_err(|_| Error::RemoteSemantic(Failure::ProviderContract))?;
 			}
 		}
+		// Until Decision Evidence keeps it (#108), cost is observable only here.
+		let input_tokens = value.pointer("/usage/input_tokens").and_then(Value::as_u64);
+		let cost_usd = value.pointer("/usage/cost").and_then(Value::as_f64);
+		tracing::info!(
+			decision_attempt = %attempt,
+			served_model = served,
+			input_tokens,
+			cost_usd,
+			"Jev Decision Attempt answered"
+		);
 		Ok(value)
 	}
 }
@@ -201,21 +254,4 @@ impl JevClient {
 		self.max_response_bytes = response;
 		self
 	}
-}
-
-pub(crate) fn validate_endpoint(endpoint: &str) -> Result<()> {
-	let url =
-		reqwest::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
-	if !matches!(url.scheme(), "http" | "https")
-		|| url.host_str().is_none()
-		|| !url.username().is_empty()
-		|| url.password().is_some()
-		|| url.query().is_some()
-		|| url.fragment().is_some()
-	{
-		return Err(Error::Invalid(
-			"endpoint requires HTTP(S) without inline credentials, query or fragment".into(),
-		));
-	}
-	Ok(())
 }

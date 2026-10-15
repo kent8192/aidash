@@ -29,14 +29,12 @@ pub(crate) struct NativeStaging<'a> {
 }
 #[async_trait]
 impl<Events: Send> InstallationRead for NativeDefinitions<'_, Events> {
-	async fn installation_gate(&mut self) -> aidash_application::Result<()> {
+	async fn installation_lease(&mut self) -> aidash_application::Result<()> {
 		// Inherited transactions already hold the outer distribution lease.
 		if !self.access.inherited_lease {
 			crate::apps::marketplace::services::storage::lock(&mut self.access.tx, false).await?;
 		}
-		crate::apps::marketplace::services::storage::gate(&mut self.access.tx)
-			.await
-			.map_err(Into::into)
+		Ok(())
 	}
 	async fn selected_installation(
 		&mut self,

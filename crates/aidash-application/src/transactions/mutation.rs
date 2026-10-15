@@ -1,36 +1,17 @@
 //! Apply local manifest mutations and their events in the caller's original scope.
-use crate::{
-	Error, Result, ports::transactions::mutation::MutationScope, registry::DefinitionValidation,
-};
+use crate::{Error, Result, ports::transactions::mutation::MutationScope};
 use aidash_domain::transactions::{Manifest, Mutation, mutation as rules};
 use serde_json::json;
 
 /// Preparation and commit invoke this same workflow; storage alone owns the
 /// rollback-only savepoint and the visibility gate around the caller's transaction.
-pub async fn apply(
-	scope: &mut dyn MutationScope,
-	validation: &DefinitionValidation,
-	node: &str,
-	manifest: &Manifest,
-) -> Result<()> {
+pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifest) -> Result<()> {
 	for mutation in &manifest
 		.local(node)
 		.map_err(|_| Error::Forbidden)?
 		.mutations
 	{
 		match mutation {
-			Mutation::RegistryRegister { entry } => {
-				if crate::registry::register_definition(scope, validation, entry, node).await? {
-					scope
-						.append_event(
-							node,
-							None,
-							"registry.registered",
-							json!({"id":entry.id,"version":entry.version}),
-						)
-						.await?;
-				}
-			}
 			Mutation::WorkspaceState {
 				workspace_id,
 				expected_revision,
