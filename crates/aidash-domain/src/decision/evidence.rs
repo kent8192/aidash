@@ -283,12 +283,19 @@ impl Evidence {
 	/// candidate exists, so it cannot replay. It still keeps every invariant
 	/// that holds for a rejection at any stage: a reason other than fitting, a
 	/// supported contract, the pinned Decider and model, a consistent retained
-	/// state reference and fit counts of the context that did not fit.
+	/// state reference and fit counts of the context that did not fit. An
+	/// `insufficient` rejection only follows a complete evaluation, so it
+	/// replays in full.
 	pub fn validate_rejection(&self) -> Result<()> {
 		if self.outcome != Outcome::Rejected || self.reason == Reason::Fits {
 			return Err(Error::Invalid(
 				"corrupt historical application outcome".into(),
 			));
+		}
+		// Only a complete evaluation finds the proposed context too large, so
+		// that rejection must replay in full, fit metrics included.
+		if self.reason == Reason::Insufficient {
+			return self.replay().map(|_| ());
 		}
 		self.validate_identity()?;
 		if self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)

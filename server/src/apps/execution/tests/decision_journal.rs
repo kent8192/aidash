@@ -523,12 +523,17 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	// no unsupported version and no restrictions looser than the policy floor.
 	let mut fitting = saved.clone();
 	fitting.reason = Reason::Fits;
+	// Only a complete evaluation finds the context too large, so this replays
+	// and its reason disagrees with the restrictions and fit metrics.
+	let mut mislabeled = saved.clone();
+	mislabeled.reason = Reason::Insufficient;
 	let mut unsupported = saved.clone();
 	unsupported.version = EVIDENCE_VERSION + 1;
 	let mut looser = saved.clone();
 	looser.restrictions.preserve_recent = 5;
 	for (invalid, expected) in [
 		(fitting, "corrupt historical application outcome"),
+		(mislabeled, "corrupt historical application outcome"),
 		(unsupported, "unsupported or incomplete"),
 		(looser, "unsupported or incomplete"),
 	] {

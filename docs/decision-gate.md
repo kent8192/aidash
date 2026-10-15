@@ -109,7 +109,8 @@ early failure has no answers or branches yet, but it must still carry its decisi
 identity and pass `Evidence::validate_rejection`: a reason other than `fits`, the
 supported evidence version and contracts, restrictions within the policy floor, the
 pinned Decider and model, a consistent retained-state reference, and fit counts of a
-context that did not fit.
+context that did not fit. An `insufficient` rejection only follows a complete
+evaluation, so it must replay in full.
 
 An applied decision saves the Run's context through the same lease-fenced save as an
 adopted Summary Stage (`context.compacted`), which ends the step, and writes its
