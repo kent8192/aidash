@@ -1753,8 +1753,8 @@ fn native_memory_binding_preserves_removed_read_operations() {
 
 fn decider_config() -> Value {
 	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
-        "provider_contract":"typesafe.jev/1","endpoint":"https://example.test/systemone","model":"jev-1.13.0",
-        "credential_env":"AIDASH_SECRET_JEV","builder":"aidash.compaction/1","option_source":"history_event/1",
+        "provider_contract":"typesafe.jev/1","provider_credential":"openrouter","model":"typesafe/jev-1.13",
+        "builder":"aidash.compaction/1","option_source":"history_event/1",
         "rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce"})
 }
 fn decider_binding(id: &str) -> Binding {
@@ -1800,21 +1800,21 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 		serde_json::to_value(&bound.pin).unwrap()["provider_implementation"],
 		implementation
 	);
-	assert_eq!(bound.config.model, "jev-1.13.0");
+	assert_eq!(bound.config.model, "typesafe/jev-1.13");
 	assert_eq!(bound.restrictions.preserve_recent, 8);
 	assert_eq!(bound.restrictions.keep_threshold.value(), 0.25);
 	catalog
 		.entries
 		.get_mut(&reference("decider"))
 		.unwrap()
-		.config["model"] = json!("jev-1.14.0");
+		.config["model"] = json!("typesafe/jev-1.14");
 	assert_eq!(
 		saved
 			.decider(aidash_domain::decision::Hook::Compaction)
 			.unwrap()
 			.config
 			.model,
-		"jev-1.13.0"
+		"typesafe/jev-1.13"
 	);
 	let mut corrupt = saved.clone();
 	corrupt
