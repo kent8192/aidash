@@ -27,6 +27,11 @@ pub trait RunDetailsScope: Send {
 	-> Result<Option<aidash_domain::memory::Binding>>;
 	async fn media_input_routes(&mut self, run: &RunMetadata) -> Result<Vec<Vec<String>>>;
 	async fn finish(self: Box<Self>, result: Result<RunDetails>) -> Result<RunDetails>;
+	/// Finish a visibility decision that read no diagnostics.
+	async fn finish_visible(
+		self: Box<Self>,
+		result: Result<RunInspection>,
+	) -> Result<RunInspection>;
 }
 #[async_trait]
 pub trait RunDetailsRepository: Send + Sync {

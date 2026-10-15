@@ -38,6 +38,7 @@ fn snapshot() -> WorkspaceSnapshot {
 			created_by: "saved".into(),
 			idempotency_key: "artifact".into(),
 			created_at: Utc::now(),
+			run_id: None,
 		}],
 		messages: vec![Message {
 			id: Uuid::from_u128(5),
@@ -46,6 +47,7 @@ fn snapshot() -> WorkspaceSnapshot {
 			content: "saved".into(),
 			idempotency_key: None,
 			created_at: Utc::now(),
+			run_id: None,
 		}],
 		events: vec![],
 	}
