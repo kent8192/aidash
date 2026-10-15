@@ -6,9 +6,10 @@ use crate::authorization::identity::Actor;
 use crate::http::json::Json;
 use reinhardt::{Depends, Path, Request, Response, StatusCode, get, http::ViewResult, post, put};
 
-/// Creates a Tenant under an assigned name. Its own authentication accepts the
-/// Deployment Administrator bearer token and browser sessions without a Mapping.
-#[post("/api/tenants", name = "tenants-create", auth = "public")]
+/// Creates a Tenant under an assigned name. The route boundary is public and
+/// the service authenticates the Deployment Administrator bearer token or a
+/// browser session without a Mapping; the bearer is what the contract declares.
+#[post("/api/tenants", name = "tenants-create", auth = "protected")]
 pub async fn create(
 	#[inject] service: Depends<Tenants>,
 	request: Request,

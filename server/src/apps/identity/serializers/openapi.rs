@@ -74,20 +74,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, views::invitations::revoke, &["String", "Uuid"])?;
-		contracts.request::<_, inv::InvitationLink>(document, views::invitations::inspect)?;
-		contracts.response::<_, inv::InvitationPreview>(
-			document,
-			views::invitations::inspect,
-			200,
-			"application/json",
-		)?;
-		contracts.request::<_, inv::InvitationLink>(document, views::invitations::redeem)?;
-		contracts.response::<_, super::oidc::Registration>(
-			document,
-			views::invitations::redeem,
-			200,
-			"application/json",
-		)?;
 	}
 	contracts.response::<_, Vec<Metadata>>(
 		document,
