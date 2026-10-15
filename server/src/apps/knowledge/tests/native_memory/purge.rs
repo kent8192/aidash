@@ -234,8 +234,10 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	}
 	// Fixture-only DDL injects a real PostgreSQL DELETE failure without bypassing
 	// visibility, tombstones or production cleanup. Runtime queries stay typed.
+	// Only the table owner changes the schema; the server role holds DML.
+	let owner = crate::native_database::owner_pool(store.pool.driver()).await;
 	sqlx::query("CREATE TABLE fixture_memory_history_hold (unit_id UUID, revision BIGINT, FOREIGN KEY (unit_id, revision) REFERENCES memory_history(unit_id, revision))")
-		.execute(store.pool.driver()).await.unwrap();
+		.execute(&owner).await.unwrap();
 	let mut tx = native::begin(&store.pool).await.unwrap();
 	for held in [protected, permanent] {
 		native::query(
@@ -366,9 +368,11 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	reopened.keyless = store.keyless.clone();
 	let reopened = aidash_server::semantic::services::memory_recovery::attach(
 		reopened,
 		database.recovery_directory.path().to_owned(),
@@ -425,7 +429,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		"purge_storage_unavailable"
 	);
 	sqlx::query("DROP TABLE fixture_memory_history_hold")
-		.execute(store.pool.driver())
+		.execute(&owner)
 		.await
 		.unwrap();
 	let bodies: Vec<String> = native::query_scalar(

@@ -166,12 +166,13 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 		..Default::default()
 	};
 	let provider = aidash_integrations::inference::provider(
-		reqwest::Client::new(),
+		clients(reqwest::Client::new()),
 		aidash_domain::model::ModelConfig {
 			provider: "openrouter".into(),
 			model_id: "author/model".into(),
 			endpoint: Provider::Openrouter.base_url().into(),
 			provider_credential: Some("openrouter".into()),
+			plan_connection: None,
 			request_timeout_secs: Some(5),
 			streaming: None,
 			stream_stall_timeout_secs: None,
@@ -183,6 +184,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			cost: json!({}),
 			projection_versions: vec![],
 			cache_mode: None,
+			request_estimator: None,
 		},
 		Arc::new(access),
 		context,
@@ -200,6 +202,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&aidash_application::ports::NoProgress,
 		)
@@ -295,4 +298,14 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 	] {
 		assert!(last["fields"].get(field).is_none());
 	}
+}
+
+/// Catalog calls use the direct client; the public-only one serves Keyless endpoints (ADR 0036).
+fn clients(direct: reqwest::Client) -> aidash_integrations::keyless::Clients {
+	aidash_integrations::keyless::Clients::new(
+		direct,
+		std::time::Duration::from_secs(120),
+		std::time::Duration::from_secs(10),
+	)
+	.unwrap()
 }

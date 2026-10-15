@@ -4,6 +4,7 @@ pub mod compaction;
 pub mod decision;
 pub mod federation;
 pub mod inference;
+pub mod keyless;
 pub mod kubernetes;
 pub mod openrouter;
 mod response;
@@ -34,6 +35,7 @@ pub mod oidc;
 
 pub mod gcip;
 
+pub mod chatgpt;
 pub mod provider_authorization;
 
 pub mod provider_credentials;

@@ -18,6 +18,10 @@ pub(super) struct Options {
 	pub max_state_tokens: usize,
 	pub max_request_tokens: usize,
 	pub truncate_head_chars: usize,
+	/// Native Runs prune by Model Turn: `preserve_recent` counts turns, a
+	/// dropped result is elided under its call, and a turn loses all of its
+	/// calls only as a whole (ADR 0015).
+	pub native: bool,
 }
 impl Default for Options {
 	fn default() -> Self {
@@ -27,6 +31,7 @@ impl Default for Options {
 			max_state_tokens: 25_000,
 			max_request_tokens: 30_000,
 			truncate_head_chars: 300,
+			native: false,
 		}
 	}
 }
@@ -57,8 +62,30 @@ pub(super) struct Compacted {
 fn pinned(index: usize, total: usize, recent: usize) -> bool {
 	index == 0 || index >= total.saturating_sub(recent)
 }
-fn entry_pinned(entry: &Entry, total: usize, recent: usize) -> bool {
-	entry.i.is_none_or(|i| pinned(i, total, recent))
+fn entry_pinned(entry: &Entry, protected: &[bool]) -> bool {
+	entry.i.is_none_or(|i| protected[i])
+}
+
+/// Entries Jev never classifies: the first and the latest `preserve_recent`
+/// events, or, for Native, every entry of the first and the latest
+/// `preserve_recent` Model Turns.
+fn protection(history: &[HistoryEntry], options: &Options) -> Vec<bool> {
+	let recent = options.preserve_recent;
+	if !options.native {
+		return (0..history.len())
+			.map(|index| pinned(index, history.len(), recent))
+			.collect();
+	}
+	let turns = model_turns(history);
+	let total = turns.iter().flatten().max().map_or(0, |last| last + 1);
+	turns
+		.iter()
+		.enumerate()
+		.map(|(index, turn)| match turn {
+			Some(turn) => pinned(*turn, total, recent),
+			None => pinned(index, history.len(), recent),
+		})
+		.collect()
 }
 fn text(value: &Value) -> String {
 	value
@@ -102,7 +129,7 @@ pub(super) fn estimate_tokens(value: &str) -> usize {
 	tenths.div_ceil(10)
 }
 
-fn collect_calls(history: &[HistoryEntry], recent: usize) -> Vec<Call<'_>> {
+fn collect_calls<'a>(history: &'a [HistoryEntry], protected: &[bool]) -> Vec<Call<'a>> {
 	let mut calls = Vec::new();
 	for (index, entry) in history.iter().enumerate() {
 		let ContextEvent::Tool { call, result } = &entry.event else {
@@ -121,7 +148,7 @@ fn collect_calls(history: &[HistoryEntry], recent: usize) -> Vec<Call<'_>> {
 			result: text(result),
 			is_error: !result["error"].is_null()
 				|| (result["is_error"] == true || result["isError"] == true),
-			pinned: pinned(index, history.len(), recent),
+			pinned: protected[index],
 		});
 	}
 	calls
@@ -175,6 +202,7 @@ fn fit_state(
 	calls: &[Call<'_>],
 	current: &Value,
 	options: &Options,
+	protected: &[bool],
 ) -> Result<Fitted> {
 	let goal = truncate(
 		current
@@ -195,7 +223,7 @@ fn fit_state(
 			return Ok(fitted);
 		}
 	}
-	let is_pinned = |entry: &Entry| entry_pinned(entry, history.len(), options.preserve_recent);
+	let is_pinned = |entry: &Entry| entry_pinned(entry, protected);
 	let order: Vec<_> = (0..view.len())
 		.filter(|i| !is_pinned(&view[*i]))
 		.chain((0..view.len()).filter(|i| is_pinned(&view[*i])))
@@ -345,7 +373,8 @@ pub(super) async fn prune(
 	asker: &dyn JevAsker,
 	options: &Options,
 ) -> Result<Compacted> {
-	let calls = collect_calls(history, options.preserve_recent);
+	let protected = protection(history, options);
+	let calls = collect_calls(history, &protected);
 	if calls.iter().all(|c| c.pinned) {
 		return Ok(Compacted {
 			history: history.to_vec(),
@@ -355,7 +384,7 @@ pub(super) async fn prune(
 			results_truncated: 0,
 		});
 	}
-	let fitted = fit_state(history, &calls, current, options)?;
+	let fitted = fit_state(history, &calls, current, options, &protected)?;
 	let batches = batches(&calls, &fitted.state, options)?;
 	// Each batch sees the same complete fitted state. Limit concurrent requests.
 	let mut requests = Vec::with_capacity(batches.len());
@@ -395,8 +424,43 @@ pub(super) async fn prune(
 		calls_dropped: 0,
 		results_truncated: 0,
 	};
+	let dropped = |index: usize| {
+		answers
+			.get(&index)
+			.is_some_and(|&(keep_call, keep_result)| {
+				keep_call < options.keep_threshold && keep_result < options.keep_threshold
+			})
+	};
+	// A Native turn goes whole when Jev drops every call it made and it has
+	// no text of its own; otherwise its dropped results are elided.
+	let removed_turns = if options.native {
+		let turns = model_turns(history);
+		let mut removable = BTreeMap::new();
+		for (index, turn) in turns.iter().enumerate() {
+			let Some(turn) = turn else { continue };
+			let keep = match &history[index].event {
+				ContextEvent::Assistant { text, calls, .. } => {
+					!text.trim().is_empty() || calls.is_empty()
+				}
+				_ => !dropped(index),
+			};
+			*removable.entry(*turn).or_insert(true) &= !keep;
+		}
+		turns
+			.iter()
+			.map(|turn| turn.is_some_and(|turn| removable[&turn]))
+			.collect()
+	} else {
+		vec![false; history.len()]
+	};
 	for (index, entry) in history.iter().enumerate() {
 		let event = &entry.event;
+		if removed_turns[index] {
+			if matches!(event, ContextEvent::Tool { .. }) {
+				output.calls_dropped += 1;
+			}
+			continue;
+		}
 		let Some(&(keep_call, keep_result)) = answers.get(&index) else {
 			output.history.push(entry.clone());
 			continue;
@@ -427,6 +491,14 @@ pub(super) async fn prune(
 				output.results_truncated += 1;
 			}
 			output.history.push(kept);
+		} else if options.native {
+			// The call stays in its Model Turn; only its result is elided.
+			let mut kept = entry.clone();
+			if let ContextEvent::Tool { call, result } = &mut kept.event {
+				*result = ContextEvent::elided_result(&call.id);
+			}
+			output.calls_dropped += 1;
+			output.history.push(kept);
 		} else {
 			output.calls_dropped += 1;
 		}
@@ -456,3 +528,4 @@ pub(crate) struct Entry {
 }
 
 use aidash_domain::context::{ContextEvent, HistoryEntry};
+use aidash_domain::projection::native::model_turns;

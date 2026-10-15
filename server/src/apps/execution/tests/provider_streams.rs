@@ -1,9 +1,10 @@
 //! Streamed OpenRouter completions against a scripted server-sent event fixture.
+use crate::provider_fixtures::fixture_provider;
 use crate::provider_fixtures::upstream_fixtures::{reply, upstream};
 use aidash_application::ports::{InferenceProgressSink, ModelProvider, NoProgress};
 use aidash_domain::{context::recovery::Failure, provider::progress::InferenceProgress};
 use aidash_server::{
-	provider::{ModelRequest, ModelResponse, ToolSpec, provider},
+	provider::{ModelRequest, ModelResponse, ToolSpec},
 	registry::{Entry, ModelConfig, validate},
 };
 use reinhardt::test::fixtures::server::TestServerGuard;
@@ -187,6 +188,7 @@ fn request(with_tools: bool) -> ModelRequest {
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	}
 }
 
@@ -199,7 +201,7 @@ impl InferenceProgressSink for Progress {
 }
 
 fn model(client: &reqwest::Client, endpoint: &str, streaming: bool) -> Arc<dyn ModelProvider> {
-	provider(client.clone(), model_config(endpoint, Some(streaming))).unwrap()
+	fixture_provider(client.clone(), model_config(endpoint, Some(streaming))).unwrap()
 }
 
 async fn infer_stream(
@@ -209,7 +211,7 @@ async fn infer_stream(
 ) -> aidash_application::Result<ModelResponse> {
 	let mut config = config;
 	config.endpoint = server.url.clone();
-	let model = provider(client, config).unwrap();
+	let model = fixture_provider(client, config).unwrap();
 	model.infer(request(false), &NoProgress).await
 }
 
@@ -703,7 +705,7 @@ fn provider_rejects_a_zero_stall_timeout(
 	model_config.stream_stall_timeout_secs = Some(0);
 
 	// Act
-	let result = provider(streaming_client, model_config);
+	let result = fixture_provider(streaming_client, model_config);
 
 	// Assert
 	assert!(matches!(result, Err(aidash_server::Error::Invalid(_))));

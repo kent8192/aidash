@@ -40,5 +40,7 @@ pub mod generation_remote_usage;
 
 mod inference_usage;
 pub(crate) use inference_usage::InferenceUsage;
+pub(crate) mod estimate_calibration;
+pub(crate) use estimate_calibration::EstimateCalibrationSample;
 
 pub(crate) mod research;

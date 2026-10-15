@@ -6,10 +6,7 @@ use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
 use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::test::fixtures::http_client;
 use serde_json::{Value, json};
-use sqlx::{
-	Connection, Executor,
-	postgres::{PgConnectOptions, PgConnection, PgPoolOptions},
-};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
@@ -18,6 +15,8 @@ mod environment;
 #[allow(unused_imports)] // Sixteen-Node acceptance cases need a separate connection budget.
 pub use environment::isolated_test_environment;
 use environment::postgres;
+#[allow(unused_imports)] // Only fault-injection suites change the schema.
+pub use environment::postgres::{admin_pool, owner_pool};
 pub use environment::{TestEnvironment, test_environment};
 #[path = "application.rs"]
 mod application;
@@ -175,6 +174,9 @@ async fn bootstrap_with_resources(
 		assert_eq!(status, 200, "{result}");
 		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
+	// unreachable fixture address stays permitted so it keeps failing to connect.
+	f.store.keyless.permit_origin_of(endpoint).unwrap();
 	for (kind, id, config) in [
 		(
 			"model",
@@ -276,6 +278,8 @@ pub fn native_process_environment(
 	settings.node.background_enabled = true;
 	settings.node.worker_count = worker_count;
 	settings.dashboard.oidc = f.config.oidc.clone();
+	// A child process must reach the same Keyless fixtures (ADR 0036).
+	settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
 	let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 	std::fs::create_dir_all(&destination).unwrap();
 	std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();
@@ -300,16 +304,21 @@ pub fn native_process_args(_f: &Federation, mode: &str) -> Vec<String> {
 	vec![mode.to_owned()]
 }
 
+/// A Store on the server role's URL, after migrating the same database as its owner.
 #[allow(dead_code)]
 pub async fn native_store(database_url: &str, node: &str) -> Store {
-	let pool = sqlx::PgPool::connect(database_url).await.unwrap();
-	let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(pool.clone())));
+	let owner = sqlx::PgPool::connect(&postgres::with_login(database_url, postgres::OWNER))
+		.await
+		.unwrap();
+	let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone())));
 	let migrations =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 			.all_migrations()
 			.await
 			.unwrap();
 	postgres::apply_migrations(connection, &migrations).await;
+	owner.close().await;
+	let pool = sqlx::PgPool::connect(database_url).await.unwrap();
 	Store::from_pool(pool, node.to_owned()).await.unwrap()
 }
 
@@ -329,8 +338,13 @@ pub type DatabaseFuture = Shared<BoxFuture<'static, Arc<ExecutionDatabase>>>;
 pub type RuntimeFuture = Shared<BoxFuture<'static, RuntimeFixture>>;
 
 pub struct ExecutionDatabase {
+	/// The server role's pool, which row-level security binds.
 	pub pool: sqlx::PgPool,
+	/// The server role's URL.
 	pub url: String,
+	/// The owner's URL, for migrations and fixture-only DDL.
+	#[allow(dead_code)]
+	pub owner_url: String,
 	pub schema: String,
 	environment: Arc<TestEnvironment>,
 }
@@ -375,17 +389,25 @@ pub fn execution_database(
 		// The preserved baseline names public explicitly. Isolate databases, not
 		// search paths. TestEnvironment owns the container and every database, so
 		// unwinding also removes fixtures that never reach explicit cleanup.
-		// CREATE DATABASE is administrative fixture DDL outside Reinhardt Query schema operations.
-		let mut admin = PgConnection::connect(&environment.database_url)
+		let logins = postgres::prepare_database(&environment.database_url, &database).await;
+		// Migrations run as the owner; everything else uses the server role.
+		let owner = PgPoolOptions::new()
+			.max_connections(2)
+			.connect(&logins.owner_url)
 			.await
 			.unwrap();
-		admin
-			.execute(format!("CREATE DATABASE {database}").as_str())
-			.await
-			.unwrap();
-		let mut url = reqwest::Url::parse(&environment.database_url).unwrap();
-		url.set_path(&database);
-		let url = url.to_string();
+		let migrations =
+			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+				.all_migrations()
+				.await
+				.expect("load the native migration graph");
+		postgres::apply_migrations(
+			DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone()))),
+			&migrations,
+		)
+		.await;
+		owner.close().await;
+		let url = logins.server_url;
 		let options = PgConnectOptions::from_str(&url)
 			.unwrap()
 			.application_name(&database);
@@ -394,16 +416,10 @@ pub fn execution_database(
 			.connect_with(options)
 			.await
 			.unwrap();
-		let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(pool.clone())));
-		let migrations =
-			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-				.all_migrations()
-				.await
-				.expect("load the native migration graph");
-		postgres::apply_migrations(connection, &migrations).await;
 		Arc::new(ExecutionDatabase {
 			pool,
 			url,
+			owner_url: logins.owner_url,
 			schema: database,
 			environment,
 		})

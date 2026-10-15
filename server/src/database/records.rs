@@ -67,7 +67,8 @@ record!(Artifact {
 	content,
 	created_by,
 	idempotency_key,
-	created_at
+	created_at,
+	run_id
 });
 record!(Event {
 	sequence,
@@ -102,7 +103,8 @@ record!(Message {
 	sender,
 	content,
 	idempotency_key,
-	created_at
+	created_at,
+	run_id
 });
 record!(
 	RunMetadata {

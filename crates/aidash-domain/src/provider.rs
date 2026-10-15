@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub mod estimate;
 pub mod usage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -53,6 +54,11 @@ pub struct ModelRequest {
 	/// request metadata and inference digests keep their bytes.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub disable_provider_transforms: bool,
+	/// The Run step's Estimate Snapshot (ADR 0017). Requests built outside a
+	/// Run step keep the conservative byte estimate. Never serialized, so the
+	/// request metadata and inference digest keep their bytes.
+	#[serde(skip)]
+	pub estimate: estimate::EstimateSnapshot,
 }
 
 /// Model-visible context in the shape fixed by the Run's Projection Version.
@@ -61,7 +67,10 @@ pub struct ModelRequest {
 pub enum ModelContext {
 	/// Ordered: two text parts, the Stable Prefix part first.
 	Ordered(OrderedContext),
-	/// Legacy: one JSON value sent as a single text message.
+	/// Native: attachments, model-native Model Turns and a volatile message.
+	Native(crate::projection::native::NativeContext),
+	/// Legacy: one JSON value sent as a single text message. It must stay
+	/// the last untagged variant, since any value decodes as Legacy.
 	Legacy(Value),
 }
 
@@ -81,11 +90,26 @@ impl ModelContext {
 	pub fn legacy_mut(&mut self) -> Option<&mut Value> {
 		match self {
 			Self::Legacy(value) => Some(value),
-			Self::Ordered(_) => None,
+			Self::Ordered(_) | Self::Native(_) => None,
 		}
 	}
 
-	/// Leading text parts of the user message, in send order.
+	/// The Projection Version this context was rendered under.
+	pub fn projection_version(&self) -> crate::projection::ProjectionVersion {
+		match self {
+			Self::Legacy(_) => crate::projection::ProjectionVersion::Legacy,
+			Self::Ordered(_) => crate::projection::ProjectionVersion::Ordered,
+			Self::Native(_) => crate::projection::ProjectionVersion::Native,
+		}
+	}
+
+	/// Whether this context may carry cache breakpoints (ADR 0019).
+	fn caches(&self) -> bool {
+		matches!(self, Self::Ordered(_) | Self::Native(_))
+	}
+
+	/// Leading text parts of the single user message of a Legacy or Ordered
+	/// context, in send order. A Native context has no single user message.
 	fn text_parts(&self) -> Vec<std::borrow::Cow<'_, str>> {
 		match self {
 			Self::Legacy(value) => vec![value.to_string().into()],
@@ -93,6 +117,7 @@ impl ModelContext {
 				ordered.stable.as_str().into(),
 				ordered.volatile.as_str().into(),
 			],
+			Self::Native(_) => vec![],
 		}
 	}
 }
@@ -254,7 +279,7 @@ impl ContentPart {
 }
 
 /// A five-minute provider cache breakpoint, the provider default (ADR 0019).
-fn cache_control() -> Value {
+pub(crate) fn cache_control() -> Value {
 	json!({"type":"ephemeral"})
 }
 
@@ -273,19 +298,26 @@ impl ModelRequest {
 		})
 	}
 
-	/// Space added to a media-free request by these parts, including text
-	/// labels, media part framing, and the conservative provider-side media
-	/// token allowance.
-	pub fn content_parts_reservation(parts: &[ContentPart]) -> usize {
+	/// Space added to a media-free request of `version` by these parts,
+	/// including text labels, media part framing, and the conservative
+	/// provider-side media token allowance.
+	pub fn content_parts_reservation(
+		parts: &[ContentPart],
+		version: crate::projection::ProjectionVersion,
+	) -> usize {
 		if parts.is_empty() {
 			return 0;
 		}
 		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
 		// Array/text framing replaces a plain context string; media parts keep
-		// their framing but not their encoded payload bytes.
+		// their framing but not their encoded payload bytes. Native sends text
+		// labels inside a data envelope, escaped once more.
 		for part in parts {
-			reserved =
-				reserved.saturating_add(part.estimate_frame().to_string().len().saturating_add(1));
+			let mut frame = part.estimate_frame();
+			if version == crate::projection::ProjectionVersion::Native {
+				frame = crate::projection::native::media_part(frame);
+			}
+			reserved = reserved.saturating_add(frame.to_string().len().saturating_add(1));
 		}
 		reserved
 	}
@@ -314,13 +346,41 @@ impl ModelRequest {
 		)
 	}
 
-	/// `breakpoints` marks `system` and the Ordered Stable Prefix part; it has
+	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
+	/// Ordered Stable Prefix part or the last Native history message. It has
 	/// no effect on a Legacy context.
 	fn body(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
+		let breakpoints = breakpoints && self.context.caches();
+		let system = if breakpoints {
+			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
+		} else {
+			json!(self.instructions)
+		};
+		let mut messages = vec![json!({"role":"system","content":system})];
+		match &self.context {
+			ModelContext::Native(native) => {
+				messages.extend(native.chat_messages(parts, breakpoints));
+			}
+			ModelContext::Legacy(_) | ModelContext::Ordered(_) => {
+				messages
+					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
+			}
+		}
+		let mut body = json!({ "messages": messages });
+		if !self.tools.is_empty() {
+			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		if let Some(format) = &self.response_format {
+			body["response_format"] = format.clone();
+		}
+		body
+	}
+
+	/// The single user message of a Legacy or Ordered context.
+	fn user_content(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
 		let mut parts = parts.peekable();
 		let text = self.context.text_parts();
-		let breakpoints = breakpoints && matches!(self.context, ModelContext::Ordered(_));
-		let content = match (&self.context, parts.peek()) {
+		match (&self.context, parts.peek()) {
 			(ModelContext::Legacy(_), None) => Value::String(text.concat()),
 			_ => Value::Array(
 				text.into_iter()
@@ -337,31 +397,31 @@ impl ModelRequest {
 					.chain(parts)
 					.collect(),
 			),
-		};
-		let system = if breakpoints {
-			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
-		} else {
-			json!(self.instructions)
-		};
-		let mut body = json!({"messages":[
-			{"role":"system","content":system},
-			{"role":"user","content":content}]});
-		if !self.tools.is_empty() {
-			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
-		if let Some(format) = &self.response_format {
-			body["response_format"] = format.clone();
-		}
-		body
 	}
 
-	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
-	/// completion tokens and framing separately, in the same unit at every gate.
+	/// The Request Estimate under this request's Estimate Snapshot. It is
+	/// never above the byte estimate and never a provider tokenizer count.
+	/// Completion tokens and framing are reserved in the same unit at every gate.
 	pub fn estimated_total_tokens(&self) -> usize {
-		self.estimated_total_tokens_with_parts(&self.content_parts)
+		self.estimate.tokens(&self.byte_estimate())
 	}
 
 	pub fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
+		self.estimate.tokens(&self.byte_estimate_with_parts(parts))
+	}
+
+	/// The labeled Request Estimate recorded with the Inference Attempt.
+	pub fn request_estimate(&self) -> usage::RequestEstimate {
+		self.estimate.request_estimate(&self.byte_estimate())
+	}
+
+	/// Conservative UTF-8 byte estimate, split by unit.
+	pub fn byte_estimate(&self) -> estimate::ByteEstimate {
+		self.byte_estimate_with_parts(&self.content_parts)
+	}
+
+	pub fn byte_estimate_with_parts(&self, parts: &[ContentPart]) -> estimate::ByteEstimate {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the transmitted array framing, excluding only encoded media
 		// payload bytes, and reserve a bounded media estimate.
@@ -373,19 +433,22 @@ impl ModelRequest {
 		} else {
 			0
 		};
-		body.to_string()
-			.len()
-			.saturating_add(salt)
-			.saturating_add(Self::media_tokens(parts))
-			.saturating_add(self.max_output_tokens as usize)
-			.saturating_add(1024)
+		estimate::ByteEstimate {
+			basis: body.to_string().len().saturating_add(salt),
+			media: Self::media_tokens(parts),
+			output: self.max_output_tokens as usize,
+			framing: estimate::FRAMING_RESERVE,
+		}
 	}
 
 	pub fn validate(&self) -> Result<()> {
-		if self.cache_breakpoints && !matches!(self.context, ModelContext::Ordered(_)) {
+		if self.cache_breakpoints && !self.context.caches() {
 			return Err(Error::Invalid(
-				"cache breakpoints require the Ordered Projection Version".into(),
+				"cache breakpoints require the Ordered or Native Projection Version".into(),
 			));
+		}
+		if let ModelContext::Native(native) = &self.context {
+			crate::projection::native::check_model_turns(&native.history)?;
 		}
 		for part in &self.content_parts {
 			part.validate()?;
@@ -417,8 +480,9 @@ impl ModelRequest {
 	fn check_estimate(window: usize, max_output_tokens: u32, estimated: usize) -> Result<()> {
 		if estimated > window {
 			return Err(Error::Invalid(format!(
-				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve 1024",
-				max_output_tokens
+				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve {}",
+				max_output_tokens,
+				estimate::FRAMING_RESERVE
 			)));
 		}
 		Ok(())
@@ -426,6 +490,25 @@ impl ModelRequest {
 }
 
 impl ModelRequest {
+	/// Identity of the fixed head of a salted request's Stable Prefix: its
+	/// Projection Version, Tenant, Cache Salt Key version, `system` and tool
+	/// definitions. It changes exactly when a provider can no longer reuse a
+	/// cached prefix from its start, such as a Load or Unload, a resident
+	/// Skill body or new instructions (ADR 0016). The Tenant is part of the
+	/// digested input because each Tenant's salt starts its own prefix. The
+	/// identity holds neither the salt, the Tenant nor any prompt text.
+	/// `None` for an unsalted request.
+	pub fn cache_identity(&self) -> Option<String> {
+		let scope = self.cache_scope.as_ref()?;
+		Some(crate::registry::rules::digest(&json!({
+			"projection_version": self.context.projection_version(),
+			"tenant": scope.tenant,
+			"key_version": scope.key_version,
+			"instructions": self.instructions,
+			"tools": self.tools,
+		})))
+	}
+
 	/// Bind the exact request metadata and ordered media hashes without persisting media bytes.
 	pub fn inference_digest(&self) -> String {
 		use sha2::{Digest, Sha256};

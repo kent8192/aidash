@@ -28,6 +28,9 @@ pub struct Artifact {
 	pub idempotency_key: String,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// The Run that published this Artifact on this Node; see the contract.
+	#[field(null = true)]
+	pub run_id: Option<uuid::Uuid>,
 }
 
 impl Artifact {}

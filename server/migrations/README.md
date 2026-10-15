@@ -162,8 +162,11 @@ cargo run --locked -p aidash-server --bin manage -- migrationseeds --check
 
 Both migration entry points use the same graph and transaction-scoped advisory
 lock `71003203` for the complete run. Initialization cannot use `--fake` or
-`--fake-initial`. The compatibility `serve`, `server`, and `worker` commands apply
-the same graph before assembling HTTP or worker dependencies.
+`--fake-initial`. Run `migrate` as the `aidash_owner` login; it then leaves the
+`reinhardt_migrations` ledger read-only to every other role. The compatibility
+`serve`, `server`, and `worker` commands never apply the graph: logged in as
+`aidash_server`, they read the ledger and refuse to start while any migration is
+pending, so a new or upgraded database needs a separate `migrate` run first.
 
 The physical baseline is reversible. Reinhardt's native command expands applied
 dependents across app labels, orders them through the complete dependency graph,
@@ -191,11 +194,15 @@ image does not provide its required `pg_jsonschema` extension.
 1. Stop new writes and request graceful shutdown of every old server and worker.
    Wait for drain, then back up their database and retain the old binaries.
 2. Provision a separate empty PostgreSQL 17 database with the `pg_jsonschema` 0.3.4
-   library available. A superuser may let native history create the extension.
-   For a database-scoped application role, provision `pg_jsonschema` as the
-   administrator first; the application must not receive superuser privileges.
-   Configure all new replicas to use that database and the same pinned image.
-3. Run the native migration command once. Inspect `showmigrations` and verify
+   library available. As a superuser, create the `aidash_owner` and
+   `aidash_server` logins, make `aidash_owner` own the database, create the
+   `pg_jsonschema`, `vector` and `pgroonga` extensions, and grant `aidash_server`
+   default privileges on the owner's tables and sequences, as
+   `deploy/postgres/init-roles.sh` does. Neither login is a superuser or has
+   `BYPASSRLS`. Configure all new replicas to use that database, the
+   `aidash_server` login and the same pinned image; servers and workers refuse
+   to start as a superuser, a `BYPASSRLS` role or an owner of database objects.
+3. Run the native migration command once as `aidash_owner`. Inspect `showmigrations` and verify
    replay, schema constraints, and configured peer/identity settings before
    accepting writes.
 4. Start the new server and worker roles. Verify health, authentication, a scoped
@@ -275,6 +282,8 @@ pruning or summary, journals those events as `imported`.
 
 `execution/0020_research_evidence` (after `execution/0019_summary_allowance_state`) creates the Run-scoped Research evidence tables `research_attempts`, `research_sources`, `research_snapshots` and `research_fragments` with typed operations. Snapshots and fragments reference their parent through `(run_id, id)` composite keys, so evidence can never point at another Run's snapshot; every table cascades with its Run. `research_attempts` is unique per `(run_id, invocation_key)`, records the Search service operator's account and price together or not at all, and has a partial `(account_id, created_at)` index for monthly limits. The generated state-only checkpoint `execution/0021_research_evidence_model_state` removes the checks, references, defaults and index from the ORM snapshot without dropping them physically.
 
-`execution/0023_decision_evidence` (after `execution/0022_outbound_approval_activation`) creates the Decision Evidence tables `decision_attempts`, `decision_evidence`, `decision_states` and `decision_outcomes` with typed operations. Every table cascades with its Run and records the Decider by its exact pin as JSONB, never through a Registry reference. `decision_attempts` is keyed by the stable attempt identity and keeps the reserving worker and Run revision; its CHECKs tie `pending` to a missing `finished_at` and `answered` to stored answers. A partial unique index allows one `applied` or `shadow` snapshot per decision, so only rejected snapshots repeat. Retained state references its evidence through `(run_id, evidence_id)`, so it can never point at another Run's evidence. Only the four `atomic_write_guard` statement triggers use `RunSQL`, because the typed API cannot express trigger DDL. Like `execution/0016_context_journal`, this physical migration is database-only and precedes its generated state-only snapshot `execution/0024_decision_evidence_model_state`.
+`execution/0025_decision_evidence` (after `execution/0024_estimate_calibration_state`) creates the Decision Evidence tables `decision_attempts`, `decision_evidence`, `decision_states` and `decision_outcomes` with typed operations. Every table cascades with its Run and records the Decider by its exact pin as JSONB, never through a Registry reference. `decision_attempts` is keyed by the stable attempt identity and keeps the reserving worker and Run revision; its CHECKs tie `pending` to a missing `finished_at` and `answered` to stored answers. A partial unique index allows one `applied` or `shadow` snapshot per decision, so only rejected snapshots repeat. Retained state references its evidence through `(run_id, evidence_id)`, so it can never point at another Run's evidence. Only the four `atomic_write_guard` statement triggers use `RunSQL`, because the typed API cannot express trigger DDL. Like `execution/0016_context_journal`, this physical migration is database-only and precedes its generated state-only snapshot `execution/0026_decision_evidence_model_state`.
 
 `registry/0023_research_providers` (after `registry/0022_context_policy`) admits the research contract Node providers (`research.brave@1`, `research.page@1` and `research.fixture@1` with their fixed operations and tiers, no transport and no lifecycle) in `aidash_descriptor_is_valid`. The function body has no typed Reinhardt operation, so it is a reversible SQL asset. It extends the `0021_tool_parallelism` body, keeping its concurrency narrowing rules, and rollback restores that body. It does not delete research descriptors already registered, whose later rewrites the NOT VALID registry checks then reject, so remove research packages before rolling back.
+
+`workspaces/0008_publishing_run` (after `workspaces/0007_model_state`) adds a nullable `run_id` to `messages` and `artifacts` with typed `AddColumn` operations. It records the Run that published the text on this Node, so a Source citation in it resolves only against that Run's Research evidence. It has no foreign key: the value outlives a deleted Run, so such a citation reads as unavailable rather than as text nobody published. Existing rows keep `NULL`, and rollback drops both columns.

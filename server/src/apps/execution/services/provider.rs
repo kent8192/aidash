@@ -5,8 +5,14 @@ pub use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, Tool
 use std::sync::Arc;
 
 /// A Legacy-only provider: salted requests are rejected without being sent.
-pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
-	crate::bootstrap::model_provider(client, config)
+/// A Keyless endpoint reaches a private address only through an origin that
+/// `keyless` permits (ADR 0036).
+pub fn provider(
+	client: reqwest::Client,
+	config: ModelConfig,
+	keyless: aidash_application::provider_access::KeylessAccess,
+) -> Result<Arc<dyn ModelProvider>> {
+	crate::bootstrap::model_provider(client, config, keyless)
 }
 
 pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {

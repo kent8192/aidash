@@ -2,13 +2,13 @@
 //! Decision Evidence, its charged Decision Attempts, optionally retained
 //! classification state and appended outcomes. Every table cascades with its Run
 //! and records the Decider by its exact pin, never by a Registry reference.
-//! Physical DDL precedes the `0024_decision_evidence_model_state` snapshot.
+//! Physical DDL precedes the `0026_decision_evidence_model_state` snapshot.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0023_decision_evidence", "execution")
+	Migration::new("0025_decision_evidence", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0022_outbound_approval_activation")
+		.add_dependency("execution", "0024_estimate_calibration_state")
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),

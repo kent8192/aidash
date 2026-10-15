@@ -522,6 +522,7 @@ async fn quarantine_is_durable_before_term(repository: Repository, #[case] stora
 #[rstest]
 #[case::claimed("claimed")]
 #[case::settled("settled")]
+#[case::deferred("deferred")]
 #[tokio::test]
 async fn recorded_redelivery_never_releases_another_execution(
 	repository: Repository,

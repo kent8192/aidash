@@ -186,6 +186,21 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 	.await
 	.unwrap()
 }
+/// Every obligation of the Run in generation order, for failure diagnostics.
+async fn activations(f: &Federation, id: Uuid) -> Value {
+	sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust(
+				"COALESCE(JSONB_AGG(TO_JSONB(run_activations) ORDER BY generation), '[]'::jsonb)",
+			))
+			.from(a("run_activations"))
+			.and_where(Expr::col(a("run_id")).eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap()
+}
 async fn complete(f: &Federation, id: Uuid) {
 	let start = Instant::now();
 
@@ -195,19 +210,10 @@ async fn complete(f: &Federation, id: Uuid) {
 			break;
 		}
 		if start.elapsed() >= Duration::from_secs(20) {
-			let activations: Value = sqlx::query_scalar(
-				&Query::select()
-					.expr(Expr::cust(
-						"COALESCE(JSONB_AGG(TO_JSONB(run_activations) ORDER BY generation), '[]'::jsonb)",
-					))
-					.from(a("run_activations"))
-					.and_where(Expr::col(a("run_id")).eq(Expr::value(id)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(f.store.pool.driver())
-			.await
-			.unwrap();
-			panic!("did not complete: {run:?}; activations: {activations}");
+			panic!(
+				"did not complete: {run:?}; activations: {}",
+				activations(f, id).await
+			);
 		}
 		tokio::time::sleep(Duration::from_millis(20)).await;
 	}
@@ -1923,6 +1929,8 @@ fn initial_environment(
 		settings.node.background_enabled = true;
 		settings.node.worker_count = worker_count;
 		settings.dashboard.oidc = f.config.oidc.clone();
+		// A child process must reach the same Keyless fixtures (ADR 0036).
+		settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
 		let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 		std::fs::create_dir_all(&destination).unwrap();
 		std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();

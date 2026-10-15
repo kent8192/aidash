@@ -28,6 +28,7 @@ impl From<MessageRecord> for Message {
 			content: record.content,
 			idempotency_key: record.idempotency_key,
 			created_at: record.created_at,
+			run_id: record.run_id,
 		}
 	}
 }

@@ -32,6 +32,7 @@ fn request(projection: RequestProjection, events: u32) -> ModelRequest {
 		tools: &tools(),
 		max_output_tokens: 64,
 		projection: &projection,
+		estimate: Default::default(),
 	}
 	.request(&context, &pinned)
 }
@@ -136,4 +137,26 @@ fn legacy_requests_reject_breakpoints_and_keep_their_bytes() {
 	assert!(legacy.validate().is_err());
 	assert_eq!(legacy.input_body(), body);
 	assert_eq!(legacy.estimated_total_tokens(), estimate);
+}
+
+/// Each Tenant's salt starts a prefix no other Tenant can reuse, so identical
+/// instructions and tools in two Tenants have distinct, undisclosed identities.
+#[rstest]
+fn cache_identity_follows_the_tenant_cache_boundary(ordered: ModelRequest) {
+	// Arrange
+	let other = request(
+		RequestProjection::Ordered(CacheScope {
+			tenant: "tenant-b".into(),
+			key_version: 1,
+		}),
+		2,
+	);
+	// Act
+	let (a, b) = (
+		ordered.cache_identity().unwrap(),
+		other.cache_identity().unwrap(),
+	);
+	// Assert
+	assert_ne!(a, b);
+	assert!(!a.contains("tenant-a") && !b.contains("tenant-b"));
 }

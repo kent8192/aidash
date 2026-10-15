@@ -1,11 +1,11 @@
 // reinhardt-migration-source: 1
 // Reinhardt makemigrations model state for the Decision Evidence models only.
-// Physical PostgreSQL DDL, keys, checks, indexes and triggers are applied by 0023_decision_evidence.
+// Physical PostgreSQL DDL, keys, checks, indexes and triggers are applied by 0025_decision_evidence.
 
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0024_decision_evidence_model_state", "execution")
+	Migration::new("0026_decision_evidence_model_state", "execution")
 		.add_operation(Operation::CreateTable {
 			name: "decision_attempts".to_string(),
 			columns: vec![
@@ -362,7 +362,7 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
-		.add_dependency("execution", "0023_decision_evidence")
+		.add_dependency("execution", "0025_decision_evidence")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(true)
