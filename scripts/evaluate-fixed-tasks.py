@@ -565,6 +565,8 @@ def run_deterministic(args, binary_directory):
                 "AIDASH_HTTP_TIMEOUT_SECONDS": "120",
                 # This disposable Node ID owns its JetStream streams and consumers.
                 "AIDASH_ACTIVATION_BOOTSTRAP": "true",
+                # The loopback model and embedding fixture is a Keyless endpoint.
+                "AIDASH_KEYLESS_PRIVATE_ORIGINS": fixture_url,
                 "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
             # Native memory needs its independent recovery ledger, initialized once after the
             # schema exists and before any bank is created (docs/memory-recovery.md).

@@ -1,8 +1,9 @@
+use crate::provider_fixtures::fixture_provider;
 use crate::provider_fixtures::upstream_fixtures;
 use crate::provider_fixtures::{CompletionFixture, completion_server, unavailable_server};
 use aidash_application::ports::NoProgress;
 use aidash_server::{
-	provider::{ContentPart, ModelRequest, ToolSpec, provider},
+	provider::{ContentPart, ModelRequest, ToolSpec},
 	registry::{Entry, MediaRouteEvidence, ModelConfig, validate},
 };
 use http::StatusCode;
@@ -93,7 +94,7 @@ fn registry_accepts_openrouter_and_rejects_unknown_providers(http_client: Client
 		entry.config["provider"] = json!(unsupported);
 		assert!(validate(&entry).is_err());
 		assert!(
-			provider(
+			fixture_provider(
 				http_client.clone(),
 				config(unsupported, "http://localhost".into())
 			)
@@ -144,7 +145,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 		let mut model_config = config("openrouter", endpoint.clone());
 		model_config.reasoning_effort = effort;
 		let max_output_tokens = model_config.output_token_limit();
-		let model = provider(client.clone(), model_config).unwrap();
+		let model = fixture_provider(client.clone(), model_config).unwrap();
 		for with_tools in [true, false] {
 			let response = model
 				.infer(
@@ -212,6 +213,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 ) {
 	use aidash_domain::{
 		model::CacheMode,
+		projection::ProjectionVersion,
 		provider::{ModelContext, OrderedContext},
 	};
 	let mut fixture = completion_server.await;
@@ -233,7 +235,8 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 	let mut explicit = config("openrouter", endpoint.clone());
 	explicit.model_id = "anthropic/claude-fixture".into();
 	explicit.cache_mode = Some(CacheMode::Explicit);
-	let model = provider(http_client.clone(), explicit).unwrap();
+	explicit.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
+	let model = fixture_provider(http_client.clone(), explicit).unwrap();
 
 	model.infer(ordered(true), &NoProgress).await.unwrap();
 	let request = fixture.received.recv().await.unwrap();
@@ -257,7 +260,8 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 
 	let mut automatic = config("openrouter", endpoint);
 	automatic.cache_mode = Some(CacheMode::Automatic);
-	let model = provider(http_client, automatic).unwrap();
+	automatic.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
+	let model = fixture_provider(http_client, automatic).unwrap();
 	assert!(model.infer(ordered(true), &NoProgress).await.is_err());
 	assert!(
 		fixture.received.try_recv().is_err(),
@@ -290,7 +294,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts(
 		verified_at: chrono::Utc::now() - chrono::Duration::hours(1),
 		expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
 	});
-	let model = provider(http_client.clone(), model_config).unwrap();
+	let model = fixture_provider(http_client.clone(), model_config).unwrap();
 	let image = b"\x89PNG\r\n\x1a\nimage".to_vec();
 	let audio = b"RIFF\0\0\0\0WAVEaudio".to_vec();
 	let response = model
@@ -401,7 +405,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline(
 		verified_at: chrono::Utc::now() - chrono::Duration::hours(1),
 		expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
 	});
-	let model = provider(http_client.clone(), model_config).unwrap();
+	let model = fixture_provider(http_client.clone(), model_config).unwrap();
 	let result = tokio::time::timeout(
 		Duration::from_secs(3),
 		model.infer(
@@ -497,7 +501,7 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 	http_client: Client,
 ) {
 	let mut fixture = unavailable_server.await;
-	let model = provider(
+	let model = fixture_provider(
 		http_client,
 		config("openrouter", fixture.server.url.clone()),
 	)
@@ -539,7 +543,7 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason(
 	http_client: Client,
 ) {
 	let endpoint = server.url.clone();
-	let model = provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
+	let model = fixture_provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
 	let error = model
 		.infer(
 			ModelRequest {
@@ -574,7 +578,7 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data(
 	http_client: Client,
 ) {
 	let endpoint = server.url.clone();
-	let model = provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
+	let model = fixture_provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
 	let error = model
 		.infer(
 			ModelRequest {
@@ -700,4 +704,42 @@ fn errors_cannot_echo_unrecognized_media_or_secret_data_router() -> Arc<Router> 
 			)
 			.into_server_router(),
 	)
+}
+
+/// A Keyless endpoint on a private address the Deployment does not permit is
+/// refused before any request leaves the node (ADR 0036).
+#[rstest::rstest]
+#[tokio::test]
+async fn keyless_inference_to_an_unpermitted_private_origin_sends_nothing(
+	#[future] completion_server: CompletionFixture,
+	http_client: Client,
+) {
+	// Arrange
+	let mut fixture = completion_server.await;
+	let model = aidash_server::provider::provider(
+		http_client,
+		config("openrouter", format!("{}/api/v1/", fixture.server.url)),
+		aidash_application::provider_access::KeylessAccess::default(),
+	)
+	.unwrap();
+	// Act
+	let result = model
+		.infer(
+			ModelRequest {
+				instructions: "Follow the task".into(),
+				context: json!({"task":"Read notes"}).into(),
+				tools: vec![],
+				max_output_tokens: 64,
+				response_format: None,
+				content_parts: vec![],
+				cache_scope: None,
+				cache_breakpoints: false,
+				disable_provider_transforms: false,
+			},
+			&NoProgress,
+		)
+		.await;
+	// Assert
+	assert!(matches!(result, Err(aidash_application::Error::Forbidden)));
+	assert!(fixture.received.try_recv().is_err());
 }

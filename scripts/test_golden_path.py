@@ -1,4 +1,8 @@
 """Verify receipt authority in the HTTP crash acceptance scenario."""
+import pathlib
+import socket
+import tempfile
+import threading
 import unittest
 from unittest.mock import call, patch
 
@@ -40,6 +44,41 @@ class ReconciliationTests(unittest.TestCase):
                     "http://receiver.invalid", "remote-run", lambda: {"other-run:4:0": {"ok": True}}
                 )
         request.assert_called_once_with("http://receiver.invalid", "/api/runs/remote-run")
+
+
+class KeylessFixtureProxyTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.upstream_file = pathlib.Path(directory.name) / "0"
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        self.reserved_port = held.getsockname()[1]
+        self.proxy = golden_path.KeylessFixtureProxy(held, self.upstream_file)
+        self.addCleanup(self.proxy.close)
+
+    def test_keeps_the_reserved_port_and_forwards_to_the_published_upstream(self):
+        with socket.socket() as other, self.assertRaises(OSError):
+            other.bind(("127.0.0.1", self.reserved_port))
+        upstream = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(upstream.close)
+
+        def echo():
+            connection, _ = upstream.accept()
+            with connection:
+                connection.sendall(connection.recv(1024).upper())
+
+        threading.Thread(target=echo, daemon=True).start()
+        self.upstream_file.write_text(str(upstream.getsockname()[1]))
+        self.proxy.start()
+        with socket.create_connection(("127.0.0.1", self.reserved_port), timeout=5) as client:
+            client.sendall(b"keyless")
+            self.assertEqual(client.recv(1024), b"KEYLESS")
+
+    def test_closes_connections_until_the_spec_publishes_its_port(self):
+        self.proxy.start()
+        with socket.create_connection(("127.0.0.1", self.reserved_port), timeout=5) as client:
+            self.assertEqual(client.recv(1024), b"")
 
 
 if __name__ == "__main__":

@@ -851,7 +851,7 @@ impl ExecutionEnvironment for Backend {
 	}
 	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope> {
 		let _ = run;
-		if self.0.projection != ProjectionVersion::Ordered {
+		if self.0.projection.is_legacy() {
 			unexpected("ExecutionEnvironment.cache_scope")
 		}
 		Ok(aidash_domain::projection::CacheScope {
@@ -4241,6 +4241,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 }
 
 mod batch;
+mod native;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {
@@ -4280,7 +4281,7 @@ fn ordered(fixture: &mut Fixture) {
 fn ordered_parts(request: &ModelRequest) -> (&str, &str) {
 	match &request.context {
 		ModelContext::Ordered(context) => (&context.stable, &context.volatile),
-		ModelContext::Legacy(_) => panic!("expected an Ordered request"),
+		ModelContext::Legacy(_) | ModelContext::Native(_) => panic!("expected an Ordered request"),
 	}
 }
 

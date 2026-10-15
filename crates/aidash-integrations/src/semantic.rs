@@ -1,5 +1,5 @@
 //! Explicit embedding adapter. PostgreSQL storage belongs to the native repository.
-use crate::{Error, Result};
+use crate::{Error, Result, keyless::Clients};
 use aidash_application::ports::EmbeddingProvider;
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::semantic::{Embedding, EmbeddingConfig};
@@ -10,15 +10,22 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
+const TIMEOUT: Duration = Duration::from_secs(20);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Own the connection pool with the node runtime. A process-global pool can
 /// retain dispatch tasks from a runtime that has already shut down.
 pub fn client() -> Result<reqwest::Client> {
 	reqwest::Client::builder()
-		.timeout(Duration::from_secs(20))
-		.connect_timeout(Duration::from_secs(3))
+		.timeout(TIMEOUT)
+		.connect_timeout(CONNECT_TIMEOUT)
 		.redirect(reqwest::redirect::Policy::none())
 		.build()
 		.map_err(crate::http_error)
+}
+/// [`client`] paired with a public-only client for Keyless endpoints (ADR 0036).
+pub fn clients() -> Result<Clients> {
+	Clients::new(client()?, TIMEOUT, CONNECT_TIMEOUT)
 }
 fn request(
 	client: &reqwest::Client,
@@ -32,7 +39,7 @@ fn request(
 pub async fn embed(
 	access: &dyn ProviderAccess,
 	context: &Context,
-	client: &reqwest::Client,
+	clients: &Clients,
 	config: &EmbeddingConfig,
 	text: &str,
 ) -> Result<Embedding> {
@@ -69,7 +76,7 @@ pub async fn embed(
 		)
 		.await?;
 	let mut call = request(
-		client,
+		clients.select(&access)?,
 		reqwest::Method::POST,
 		&access.endpoint,
 		"/embeddings",
@@ -79,7 +86,7 @@ pub async fn embed(
 		call = call.bearer_auth(access.bearer.expose_secret());
 	}
 
-	let response = call.send().await.map_err(crate::http_error)?;
+	let response = call.send().await.map_err(crate::keyless::send_error)?;
 	if !response.status().is_success() {
 		let status = response.status().as_u16();
 		if config.provider_credential.is_some() {
@@ -128,7 +135,7 @@ pub async fn embed(
 }
 #[derive(Clone)]
 pub struct SemanticClient {
-	pub client: reqwest::Client,
+	pub clients: Clients,
 	pub access: Arc<dyn ProviderAccess>,
 	pub context: Context,
 }
@@ -138,7 +145,7 @@ impl EmbeddingProvider for SemanticClient {
 		embed(
 			self.access.as_ref(),
 			&self.context,
-			&self.client,
+			&self.clients,
 			config,
 			text,
 		)

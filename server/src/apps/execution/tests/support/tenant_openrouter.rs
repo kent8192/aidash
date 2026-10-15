@@ -77,6 +77,7 @@ impl TokenIssuer for EndpointIssuer {
 		Ok(Access {
 			endpoint: self.endpoint.lock().unwrap().clone(),
 			bearer: String::new().into(),
+			keyless: None,
 		})
 	}
 }

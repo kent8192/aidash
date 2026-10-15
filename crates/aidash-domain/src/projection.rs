@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod native;
+
 /// Named by an Agent definition and fixed for a Run through its Binding
 /// snapshot. Each value is a complete, frozen rendering.
 #[derive(
@@ -28,7 +30,8 @@ pub enum ProjectionVersion {
 	/// Version 2: one user message with a Stable Prefix part and a volatile
 	/// part, and a Tenant Cache Salt at the start of `system` (#172).
 	Ordered,
-	/// Version 3: model-native assistant and tool messages. Reserved for #178.
+	/// Version 3: model-native assistant and tool messages, with Model Turns
+	/// recorded in the Context Journal (#178).
 	Native,
 }
 
@@ -37,10 +40,10 @@ impl ProjectionVersion {
 		*self == Self::Legacy
 	}
 
-	/// Whether this build can render the version. `Native` is reserved until
-	/// its renderer exists, so registration and Run creation reject it.
+	/// Whether this build can render the version. A version added later is
+	/// rejected by registration and Run creation until its renderer exists.
 	pub fn is_implemented(&self) -> bool {
-		matches!(self, Self::Legacy | Self::Ordered)
+		matches!(self, Self::Legacy | Self::Ordered | Self::Native)
 	}
 
 	pub fn salted(&self) -> bool {

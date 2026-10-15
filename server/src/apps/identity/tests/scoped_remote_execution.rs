@@ -285,9 +285,11 @@ async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 		.connect_with(f.store.pool.connect_options().as_ref().clone())
 		.await
 		.unwrap();
-	let store = aidash_server::store::Store::from_pool(pool, f.config.node_id.clone())
+	let mut store = aidash_server::store::Store::from_pool(pool, f.config.node_id.clone())
 		.await
 		.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	store.keyless = f.store.keyless.clone();
 	f.registry =
 		aidash_server::registry::Registry::new(store.pool.clone(), &f.config.node_id).unwrap();
 	f.store.pool.close().await;
@@ -1001,6 +1003,8 @@ async fn configure_semantic(
 		*tenant.endpoint.lock().unwrap() = endpoint.clone();
 		json!({"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"home-vector","model_version":"1","dimensions":3})
 	} else {
+		// A Keyless embedding fixture on loopback (ADR 0036).
+		a.store.keyless.permit_origin_of(&endpoint).unwrap();
 		json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3})
 	};
 	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;

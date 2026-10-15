@@ -29,7 +29,7 @@ use std::sync::Arc;
 const STREAM_ENVELOPE_FACTOR: usize = 128;
 
 pub struct ResponsesProvider {
-	pub client: reqwest::Client,
+	pub clients: crate::keyless::Clients,
 	pub config: ModelConfig,
 	pub access: Arc<dyn ProviderAccess>,
 	pub context: Context,
@@ -266,10 +266,11 @@ impl ModelProvider for ResponsesProvider {
 					.access
 					.resolve(&context, &self.config.endpoint, &source)
 					.await?;
+				let client = self.clients.select(&access)?;
 				let started = std::time::Instant::now();
 				let response = tokio::time::timeout(
 					stall,
-					self.client
+					client
 						.post(format!(
 							"{}/responses",
 							access.endpoint.trim_end_matches('/')
@@ -281,7 +282,7 @@ impl ModelProvider for ResponsesProvider {
 				)
 				.await
 				.map_err(|_| Error::InferenceStalled)?
-				.map_err(crate::http_error)?;
+				.map_err(crate::keyless::send_error)?;
 				metrics::histogram!("aidash_model_response_headers_seconds")
 					.record(started.elapsed().as_secs_f64());
 				if response.status().is_success() {

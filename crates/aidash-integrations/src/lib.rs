@@ -4,6 +4,7 @@ pub mod compaction;
 pub mod decision;
 pub mod federation;
 pub mod inference;
+pub mod keyless;
 pub mod kubernetes;
 pub mod openrouter;
 mod response;

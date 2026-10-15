@@ -35,6 +35,28 @@ and the broker admits a body of exactly `model`, `state`, `questions` and
 caller checks that the binding is usable without minting a token or reading
 Key Material.
 
+## Keyless endpoints
+
+A model or embedding configuration without `provider_credential` is a Keyless
+endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
+and Aidash promises nothing about what it retains (ADR 0036). It may connect
+only to public addresses unless the Deployment's Operators list its exact
+origin in `[keyless_endpoints] permitted_private_origins` (Helm:
+`keylessEndpoints.permittedPrivateOrigins`; environment:
+`AIDASH_KEYLESS_PRIVATE_ORIGINS`, comma-separated). An origin is
+`scheme://host[:port]` with any default port omitted, so list
+`http://ollama.lan`, not `http://ollama.lan:80`. A permitted origin does not
+extend to another port or scheme on the same host.
+
+- A host that is a non-public address literal (loopback, private, link-local,
+  the metadata server and similar ranges) is refused before any request.
+- A host name must resolve only to public addresses. The check runs when each
+  connection is made, against every resolved address, so a later DNS answer
+  cannot redirect it. Keyless calls follow no redirects and use no proxy.
+- A refused destination is an authority failure: inference pauses the Run,
+  and semantic retrieval does not treat it as an outage. Neither retries it.
+- Under Federation, the list of the Deployment that makes the call applies.
+
 Choose a Provider Credential Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
 unavailable.
