@@ -10,7 +10,7 @@ import type {
 } from "./generated/models";
 import { DisplayState, ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
-import { Field, useEntityLabel, useI18n } from "./ui";
+import { Field, useI18n } from "./ui";
 import { Group, Hint } from "./components/patterns";
 
 function clearResource(mutation: TransactionMutation): TransactionMutation {
@@ -21,8 +21,6 @@ function clearResource(mutation: TransactionMutation): TransactionMutation {
       return { ...mutation, task_id: "", expected_revision: 0 };
     case "finish_run":
       return { ...mutation, run_id: "", task_id: "", expected_revision: 0 };
-    case "registry_register":
-      return mutation;
   }
 }
 
@@ -37,7 +35,6 @@ export function TransactionComposer({
 }) {
   const data = useContext(DisplayState);
   const { t } = useI18n();
-  const entityLabel = useEntityLabel(data?.registry ?? []);
   const workspaceLabels = disambiguateLabels(
     data?.workspaces ?? [],
     (workspace) => workspace.id,
@@ -184,39 +181,15 @@ export function TransactionComposer({
                           task_id: "",
                           expected_revision: 0,
                         });
-                      else if (kind === "registry_register")
-                        setMutation({
-                          kind,
-                          entry: {
-                            id: crypto.randomUUID(),
-                            version: "1.0.0",
-                            kind: "skill",
-                            name: { en: "" },
-                            description: {},
-                            config: {},
-                            schema: {},
-                            skills: [],
-                            capabilities: [],
-                            tags: [],
-                            languages: [],
-                          },
-                        });
                     }}
                   >
-                    {[
-                      "workspace_state",
-                      "complete_task",
-                      "finish_run",
-                      "registry_register",
-                    ]
-                      .filter(
-                        (kind) => operator || kind !== "registry_register",
-                      )
-                      .map((kind) => (
+                    {["workspace_state", "complete_task", "finish_run"].map(
+                      (kind) => (
                         <option key={kind} value={kind}>
                           {t(`transactionOperation_${kind}`)}
                         </option>
-                      ))}
+                      ),
+                    )}
                   </NativeSelect>
                 </Field>
                 {mutation.kind === "workspace_state" && (
@@ -406,59 +379,20 @@ export function TransactionComposer({
                     )}
                   </>
                 )}
-                {mutation.kind === "registry_register" && (
-                  <>
-                    <Field label={t("packageEntity")}>
-                      <NativeSelect
-                        required
-                        value={
-                          data?.registry.some(
-                            (entry) =>
-                              entry.id === mutation.entry.id &&
-                              entry.version === mutation.entry.version,
-                          )
-                            ? `${mutation.entry.id}@${mutation.entry.version}`
-                            : ""
-                        }
-                        onChange={(event) => {
-                          const entry = data?.registry.find(
-                            (entry) =>
-                              `${entry.id}@${entry.version}` ===
-                              event.target.value,
-                          );
-                          if (entry) setMutation({ ...mutation, entry });
-                        }}
-                      >
-                        <option value="">{t("choose")}</option>
-                        {data?.registry.map((entry) => (
-                          <option
-                            key={`${entry.id}@${entry.version}`}
-                            value={`${entry.id}@${entry.version}`}
-                          >
-                            {entityLabel(entry)}
-                          </option>
-                        ))}
-                      </NativeSelect>
-                    </Field>
-                    <Hint>{t("transactionRegistryHelp")}</Hint>
-                  </>
-                )}
-                {mutation.kind !== "registry_register" && (
-                  <Field label={t("revision")}>
-                    <Input
-                      type="number"
-                      required
-                      min={0}
-                      value={mutation.expected_revision}
-                      onChange={(event) =>
-                        setMutation({
-                          ...mutation,
-                          expected_revision: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                )}
+                <Field label={t("revision")}>
+                  <Input
+                    type="number"
+                    required
+                    min={0}
+                    value={mutation.expected_revision}
+                    onChange={(event) =>
+                      setMutation({
+                        ...mutation,
+                        expected_revision: Number(event.target.value),
+                      })
+                    }
+                  />
+                </Field>
                 <Button
                   variant="ghost"
                   size="sm"

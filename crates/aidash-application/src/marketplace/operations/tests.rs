@@ -1,10 +1,13 @@
 use super::*;
-use crate::marketplace::installations::tests::{Fixture, entry, input, published, validation};
+use crate::marketplace::installations::{
+	self,
+	tests::{Fixture, input, published, validation},
+};
 use crate::ports::{marketplace::StagingScope, registry::PrivateKnowledgeRead};
 use aidash_domain::{
 	identity::Principal,
-	marketplace::{Audience, ConsentEdge, Revision, SourceGrant},
-	registry::{Entry, Package},
+	marketplace::{Audience, ConsentEdge, Revision},
+	registry::Entry,
 };
 use async_trait::async_trait;
 use rstest::rstest;
@@ -13,46 +16,21 @@ use std::collections::BTreeMap;
 pub(super) struct OperatorFixture {
 	pub(super) inner: Fixture,
 	pub(super) principal: Principal,
-	state: Compatibility,
 	pub(super) approved: BTreeSet<(String, String)>,
-	overlays: BTreeMap<String, Entry>,
-	records: BTreeMap<String, (String, String)>,
-	config: BTreeMap<String, Value>,
 	requests: BTreeMap<String, Value>,
 	pub(super) events: Vec<(String, Value)>,
 	pub(super) approvals: Vec<(String, EntityRef, i64, bool)>,
 }
 impl OperatorFixture {
 	pub(super) fn new() -> Self {
-		let mut scope = Self {
+		Self {
 			inner: published(),
 			principal: Principal::Operator,
-			state: Compatibility {
-				enabled: true,
-				revision: 2,
-				contract: 1,
-			},
 			approved: BTreeSet::new(),
-			overlays: BTreeMap::new(),
-			records: BTreeMap::new(),
-			config: BTreeMap::new(),
 			requests: BTreeMap::new(),
 			events: vec![],
 			approvals: vec![],
-		};
-		scope.package_record("source");
-		scope
-	}
-	fn package_record(&mut self, id: &str) {
-		let package = Package {
-			entity: self.inner.entries[id].clone(),
-			author: "Fixture".into(),
-			permissions: vec![],
-			dependencies: vec![],
-		};
-		let bytes = serde_json::to_string(&package).unwrap();
-		let digest = format!("sha256:{:x}", Sha256::digest(bytes.as_bytes()));
-		self.records.insert(id.into(), (bytes, digest));
+		}
 	}
 	pub(super) async fn installed() -> (Self, String) {
 		let mut scope = Self::new();
@@ -131,15 +109,6 @@ impl OperatorScope for OperatorFixture {
 			"shared_lock"
 		})
 	}
-	async fn compatibility(&mut self) -> Result<Option<Compatibility>> {
-		self.inner.record("compatibility")?;
-		Ok(Some(self.state.clone()))
-	}
-	async fn save_compatibility(&mut self, state: &Compatibility) -> Result<()> {
-		self.inner.record("save_compatibility")?;
-		self.state = state.clone();
-		Ok(())
-	}
 	async fn enable_writer(&mut self) -> Result<()> {
 		self.inner.record("enable_writer")
 	}
@@ -216,19 +185,6 @@ impl OperatorScope for OperatorFixture {
 			.cloned()
 			.ok_or(Error::Forbidden)
 	}
-	async fn effective_legacy(&mut self, reference: &EntityRef) -> Result<Entry> {
-		self.overlays
-			.get(&reference.id)
-			.or_else(|| self.inner.entries.get(&reference.id))
-			.cloned()
-			.ok_or(Error::Forbidden)
-	}
-	async fn package_record(&mut self, reference: &EntityRef) -> Result<Option<(String, String)>> {
-		Ok(self.records.get(&reference.id).cloned())
-	}
-	async fn legacy_config(&mut self, reference: &EntityRef) -> Result<Option<Value>> {
-		Ok(self.config.get(&reference.id).cloned())
-	}
 	async fn provenance(&mut self, entry: &Entry, _: &str) -> Result<BTreeSet<ConsentEdge>> {
 		Ok(self
 			.inner
@@ -272,16 +228,6 @@ impl OperatorScope for OperatorFixture {
 			.collect()
 	}
 }
-fn adoption() -> AdoptionCommand {
-	AdoptionCommand {
-		tenant: "owner".into(),
-		source: EntityRef {
-			id: "source".into(),
-			version: "1.0.0".into(),
-		},
-		idempotency_key: Uuid::nil(),
-	}
-}
 fn activation_input(enabled: bool) -> ActivationCommand {
 	ActivationCommand {
 		tenant: "owner".into(),
@@ -293,10 +239,7 @@ fn activation_input(enabled: bool) -> ActivationCommand {
 }
 
 #[rstest]
-#[case("read")]
-#[case("change")]
 #[case("activate")]
-#[case("adopt")]
 #[case("administration")]
 #[tokio::test]
 async fn every_operator_workflow_denies_subjects_before_persistence(#[case] operation: &str) {
@@ -308,21 +251,7 @@ async fn every_operator_workflow_denies_subjects_before_persistence(#[case] oper
 	};
 	// Act
 	let result = match operation {
-		"read" => compatibility(&mut scope).await.map(|_| ()),
-		"change" => set_compatibility(
-			&mut scope,
-			&CompatibilityChange {
-				enabled: false,
-				expected_revision: 2,
-				compatible_instances_confirmed: true,
-			},
-		)
-		.await
-		.map(|_| ()),
 		"activate" => activate(&mut scope, "installation", &activation_input(true))
-			.await
-			.map(|_| ()),
-		"adopt" => adopt(&mut scope, &validation(), &adoption(), "node")
 			.await
 			.map(|_| ()),
 		"administration" => administration(
@@ -340,42 +269,6 @@ async fn every_operator_workflow_denies_subjects_before_persistence(#[case] oper
 	// Assert
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(scope.inner.calls, Vec::<String>::new());
-	assert_eq!(scope.events.len(), 0);
-}
-#[rstest]
-#[tokio::test]
-async fn compatibility_enable_requires_confirmation_before_acquiring_distribution_lease() {
-	let mut scope = OperatorFixture::new();
-	let result = set_compatibility(
-		&mut scope,
-		&CompatibilityChange {
-			enabled: true,
-			expected_revision: 2,
-			compatible_instances_confirmed: false,
-		},
-	)
-	.await;
-	assert!(
-		matches!(result,Err(Error::Invalid(message)) if message=="confirm every serving instance and worker supports Marketplace contract 1")
-	);
-	assert_eq!(scope.inner.calls, Vec::<String>::new());
-}
-#[rstest]
-#[tokio::test]
-async fn stale_compatibility_revision_has_no_state_or_event_effect() {
-	let mut scope = OperatorFixture::new();
-	let result = set_compatibility(
-		&mut scope,
-		&CompatibilityChange {
-			enabled: false,
-			expected_revision: 1,
-			compatible_instances_confirmed: false,
-		},
-	)
-	.await;
-	assert!(matches!(result, Err(Error::Conflict(_))));
-	assert_eq!(scope.state.revision, 2);
-	assert!(scope.state.enabled);
 	assert_eq!(scope.events.len(), 0);
 }
 #[rstest]
@@ -405,26 +298,14 @@ async fn activation_and_revocation_preserve_pointer_semantics_and_effect_order(
 	assert_eq!(scope.approvals[0].3, enabled);
 	assert_eq!(
 		scope.inner.calls,
-		if enabled {
-			vec![
-				"load_tenant",
-				"exclusive_lock",
-				"compatibility",
-				"enable_writer",
-				"set_approval",
-				"save_installation",
-				"event:marketplace.activation_changed",
-			]
-		} else {
-			vec![
-				"load_tenant",
-				"exclusive_lock",
-				"enable_writer",
-				"set_approval",
-				"save_installation",
-				"event:marketplace.activation_changed",
-			]
-		}
+		[
+			"load_tenant",
+			"exclusive_lock",
+			"enable_writer",
+			"set_approval",
+			"save_installation",
+			"event:marketplace.activation_changed",
+		]
 	);
 	assert_eq!(scope.events[0].1["actor"], "operator");
 }
@@ -450,17 +331,6 @@ async fn revoked_dependency_prevents_catalog_and_pointer_changes() {
 }
 #[rstest]
 #[tokio::test]
-async fn disabling_an_approval_still_works_while_compatibility_is_disabled() {
-	let (mut scope, id) = OperatorFixture::installed().await;
-	scope.state.enabled = false;
-	let result = activate(&mut scope, &id, &activation_input(false))
-		.await
-		.unwrap();
-	assert_eq!(result.activation_revision, 1);
-	assert!(!scope.inner.calls.iter().any(|c| c == "compatibility"));
-}
-#[rstest]
-#[tokio::test]
 async fn denied_catalog_write_cannot_advance_the_active_pointer_or_emit_an_event() {
 	let (mut scope, id) = OperatorFixture::installed().await;
 	scope.inner.denied = Some("set_approval".into());
@@ -468,116 +338,6 @@ async fn denied_catalog_write_cannot_advance_the_active_pointer_or_emit_an_event
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(scope.inner.installations[&id].activation_revision, 0);
 	assert_eq!(scope.events.len(), 0);
-}
-#[rstest]
-#[tokio::test]
-async fn adoption_freezes_the_root_overlay_and_retries_without_another_revision() {
-	// Arrange
-	let mut scope = OperatorFixture::new();
-	let mut overlay = scope.inner.entries["source"].clone();
-	overlay.config = json!({"instructions":"Effective legacy bytes"});
-	scope.overlays.insert("source".into(), overlay.clone());
-	scope.config.insert(
-		"source".into(),
-		json!({"instructions":"Effective legacy bytes"}),
-	);
-	// Act
-	let first = adopt(&mut scope, &validation(), &adoption(), "node")
-		.await
-		.unwrap();
-	let second = adopt(&mut scope, &validation(), &adoption(), "node")
-		.await
-		.unwrap();
-	// Assert: legacy bytes remain intact, while the new immutable revision stays pending.
-	assert_eq!(first.id, second.id);
-	assert_eq!(second.latest_revision, 1);
-	assert_eq!(second.active_revision, None);
-	assert_eq!(scope.inner.allocation, 1);
-	assert_eq!(
-		scope.inner.revisions[&format!("{}:1", first.id)]
-			.entry
-			.config,
-		overlay.config
-	);
-	assert_eq!(
-		scope.inner.entries["source"].config,
-		json!({"instructions":"Frozen instructions"})
-	);
-	assert_eq!(scope.events.len(), 1);
-	assert_eq!(scope.events[0].1["actor"], "operator-adoption");
-}
-#[rstest]
-#[tokio::test]
-async fn changed_adoption_input_conflicts_before_loading_the_new_source() {
-	let mut scope = OperatorFixture::new();
-	adopt(&mut scope, &validation(), &adoption(), "node")
-		.await
-		.unwrap();
-	let mut request = adoption();
-	request.source.id = "unavailable".into();
-	let result = adopt(&mut scope, &validation(), &request, "node").await;
-	assert!(matches!(result, Err(Error::Conflict(_))));
-	assert_eq!(scope.inner.allocation, 1);
-}
-#[rstest]
-#[case::changed_raw(true)]
-#[case::changed_digest(false)]
-#[tokio::test]
-async fn altered_legacy_package_record_is_rejected_before_staging(#[case] changed_raw: bool) {
-	let mut scope = OperatorFixture::new();
-	if changed_raw {
-		scope.inner.entries.get_mut("source").unwrap().config = json!({"instructions":"Tampered"});
-	} else {
-		scope.records.get_mut("source").unwrap().1 = "sha256:tampered".into();
-	}
-	let result = adopt(&mut scope, &validation(), &adoption(), "node").await;
-	assert!(matches!(result, Err(Error::Conflict(_))));
-	assert_eq!(scope.inner.installations.len(), 0);
-	assert_eq!(scope.inner.allocation, 0);
-	assert_eq!(scope.events.len(), 0);
-}
-#[rstest]
-#[tokio::test]
-async fn imported_provenance_cannot_be_erased_through_legacy_adoption() {
-	let mut scope = OperatorFixture::new();
-	scope.inner.provenance.insert(
-		"source".into(),
-		BTreeSet::from([ConsentEdge {
-			source: "ancestor".into(),
-			redistributor: "owner".into(),
-			grant: SourceGrant::Consent,
-		}]),
-	);
-	let result = adopt(&mut scope, &validation(), &adoption(), "node").await;
-	assert!(matches!(result, Err(Error::Forbidden)));
-	assert_eq!(scope.inner.allocation, 0);
-	assert!(!scope.inner.calls.iter().any(|c| c == "insert_version"));
-}
-#[rstest]
-#[tokio::test]
-async fn transitive_legacy_overlay_is_rejected_instead_of_freezing_different_executable_content() {
-	let mut scope = OperatorFixture::new();
-	let mut root = entry("source");
-	root.kind = "tool".into();
-	root.config = json!({"registry_node":"aidash://node","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"node","agent":{"id":"dependency","version":"1.0.0"}}});
-	scope.inner.entries.insert("source".into(), root);
-	let dependency = entry("dependency");
-	scope
-		.inner
-		.entries
-		.insert("dependency".into(), dependency.clone());
-	scope.overlays.insert(
-		"dependency".into(),
-		Entry {
-			binding_normalization: None,
-			config: json!({"instructions":"Different"}),
-			..dependency
-		},
-	);
-	scope.package_record("source");
-	let result = adopt(&mut scope, &validation(), &adoption(), "node").await;
-	assert!(matches!(result, Err(Error::Forbidden)));
-	assert_eq!(scope.inner.allocation, 0);
 }
 #[rstest]
 #[tokio::test]

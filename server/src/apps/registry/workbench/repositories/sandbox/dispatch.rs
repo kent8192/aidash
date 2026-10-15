@@ -38,7 +38,7 @@ impl RealDispatchScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry> {
-		crate::apps::registry::services::admission::effective(
+		crate::apps::registry::services::admission::definition(
 			&mut self.tx,
 			&reference.id,
 			&reference.version,

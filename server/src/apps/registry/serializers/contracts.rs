@@ -8,4 +8,4 @@ pub use aidash_domain::registry::{Search, SkillFile};
 
 pub use aidash_domain::registry::{AgentConfig, AgentPage};
 
-pub use aidash_domain::registry::{ClusterConfig, CompactorConfig, Package, PackageRecord};
+pub use aidash_domain::registry::{ClusterConfig, CompactorConfig, Package};

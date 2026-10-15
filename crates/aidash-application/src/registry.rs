@@ -1,14 +1,10 @@
 //! Registry discovery, admission, publication and immutable Run binding.
 use crate::{
 	Error, Result,
-	ports::registry::{
-		DefinitionLookup, DefinitionWriter, PackageScope, PackageSnapshot, RegistrationScope,
-		RegistryRead,
-	},
+	ports::registry::{DefinitionLookup, DefinitionWriter, RegistrationScope, RegistryRead},
 };
-use aidash_domain::registry::rules::{digest, overlay_config, validate_override_keys};
 use aidash_domain::{
-	registry::{AgentPage, ClusterConfig, Entry, Package, PackageRecord, Search},
+	registry::{AgentPage, ClusterConfig, Entry, Search},
 	tool::ToolConfig,
 };
 use serde_json::{Value, json};
@@ -18,26 +14,11 @@ pub mod system;
 pub mod validation;
 pub use validation::DefinitionValidation;
 
-pub async fn overlay(scope: &mut dyn DefinitionLookup, mut entry: Entry) -> Result<Entry> {
-	if let Some(config) = scope.overrides(&entry.id, &entry.version).await? {
-		if system::is_builtin(&entry) {
-			return Err(Error::Conflict(
-				"system builtin has an unauthorized configuration overlay".into(),
-			));
-		}
-		overlay_config(&mut entry.config, &config)?;
-	}
-	Ok(entry)
-}
-pub async fn effective(scope: &mut dyn DefinitionLookup, id: &str, version: &str) -> Result<Entry> {
-	let entry = scope.definition(id, version).await?;
-	overlay(scope, entry).await
-}
 pub async fn list(scope: &mut dyn RegistryRead, search: &Search) -> Result<Vec<Entry>> {
 	let rows = scope.definitions(search.kind.as_deref(), 0, None).await?;
 	let mut entries = Vec::new();
 	for row in rows {
-		let entry = overlay(scope, serde_json::from_value(row.metadata)?).await?;
+		let entry: Entry = serde_json::from_value(row.metadata)?;
 		if search.matches(&entry) {
 			entries.push(entry);
 		}
@@ -83,7 +64,7 @@ pub async fn legacy_agents(
 				cursor += 1;
 				continue;
 			}
-			let entry = overlay(scope, serde_json::from_value(row.metadata)?).await?;
+			let entry: Entry = serde_json::from_value(row.metadata)?;
 			if !search.matches(&entry) {
 				cursor += 1;
 				continue;
@@ -346,141 +327,6 @@ pub async fn register_definition(
 	entry.normalize_agent(node)?;
 	validate_references(scope, validation, &entry, node).await?;
 	scope.insert_definition(&entry).await
-}
-
-pub async fn publish(
-	scope: &mut dyn PackageScope,
-	validation: &DefinitionValidation,
-	mut package: Package,
-) -> Result<PackageRecord> {
-	system::reject_distribution(&package.entity)?;
-	system::reject_owner_definition(&package.entity)?;
-	validation.validate_in(&package.entity, true)?;
-	if !matches!(
-		package.entity.kind.as_str(),
-		"agent" | "tool" | "skill" | "bundle" | "memory" | "source"
-	) || package.author.trim().is_empty()
-	{
-		return Err(Error::Invalid(
-			"packages require an author and a distributable capability".into(),
-		));
-	}
-	if package.entity.kind == "agent" {
-		let agent: aidash_domain::registry::bindings::AgentBindings =
-			serde_json::from_value(package.entity.config.clone())?;
-		let model = scope
-			.definition(&agent.model.id, &agent.model.version)
-			.await?;
-		let model: aidash_domain::model::ModelConfig = serde_json::from_value(model.config)
-			.map_err(|error| Error::Invalid(error.to_string()))?;
-		let version = agent.projection_version.unwrap_or_default();
-		model.require_projection(version)?;
-		model.require_prompt_cache(agent.prompt_cache.unwrap_or_default(), version)?;
-	}
-	// Publish authored edges only. Registration provenance and implicit defaults
-	// belong to the receiving Node and are never portable package content.
-	let node = scope.registry_node().to_owned();
-	let mut pending = crate::marketplace::definitions::refs(&package.entity, &node)?;
-	pending.extend(
-		package
-			.dependencies
-			.iter()
-			.cloned()
-			.map(|r| (r, String::new())),
-	);
-	let mut seen = std::collections::BTreeSet::new();
-	while let Some((reference, kind)) = pending.pop() {
-		if !seen.insert((reference.id.clone(), reference.version.clone())) {
-			continue;
-		}
-		if seen.len() > 128 {
-			return Err(Error::Invalid("package closure exceeds 128 entries".into()));
-		}
-		let entry = scope.definition(&reference.id, &reference.version).await?;
-		system::reject_distribution(&entry)?;
-		if !kind.is_empty() && entry.kind != kind {
-			return Err(Error::Invalid("package dependency kind changed".into()));
-		}
-		pending.extend(crate::marketplace::definitions::refs(&entry, &node)?);
-	}
-	package.entity.binding_normalization = None;
-	let value = serde_json::to_value(&package)?;
-	let source = value.to_string();
-	let hash = digest(&value);
-	let (stored, inserted) = scope
-		.publish(
-			&package.entity.id,
-			&package.entity.version,
-			value,
-			&hash,
-			&source,
-		)
-		.await?;
-	if inserted {
-		scope
-			.append_event(
-				"package.published",
-				json!({"id":stored.id,"version":stored.version}),
-			)
-			.await?;
-	}
-	Ok(stored)
-}
-
-pub struct InstallPlan {
-	pub package: Package,
-	pub effective: Entry,
-	pub config: Value,
-	pub digest: String,
-}
-pub fn prepare_install(
-	snapshot: PackageSnapshot,
-	expected: &str,
-	config: Value,
-) -> Result<InstallPlan> {
-	use sha2::{Digest, Sha256};
-	let source_digest = format!("sha256:{:x}", Sha256::digest(snapshot.source.as_bytes()));
-	let source: Value = serde_json::from_str(&snapshot.source)?;
-	if snapshot.digest != expected || source_digest != expected || source != snapshot.manifest {
-		return Err(Error::Conflict("package digest changed".into()));
-	}
-	let package: Package = serde_json::from_value(source)?;
-	system::reject_distribution(&package.entity)?;
-	validate_override_keys(&package.entity.kind, &config)?;
-	let mut effective = package.entity.clone();
-	overlay_config(&mut effective.config, &config)?;
-	Ok(InstallPlan {
-		package,
-		effective,
-		config,
-		digest: expected.into(),
-	})
-}
-pub async fn install(
-	scope: &mut dyn PackageScope,
-	validation: &DefinitionValidation,
-	mut plan: InstallPlan,
-	node: &str,
-	id: &str,
-	version: &str,
-) -> Result<Entry> {
-	plan.package.entity.normalize_agent(node)?;
-	plan.effective.normalize_agent(node)?;
-	validate_references(scope, validation, &plan.effective, node).await?;
-	for dependency in &plan.package.dependencies {
-		scope
-			.definition(&dependency.id, &dependency.version)
-			.await?;
-	}
-	if scope
-		.install(&plan.package.entity, &plan.digest, plan.config)
-		.await?
-	{
-		scope
-			.append_event("package.installed", json!({"id":id,"version":version}))
-			.await?;
-	}
-	Ok(plan.effective)
 }
 
 #[cfg(test)]

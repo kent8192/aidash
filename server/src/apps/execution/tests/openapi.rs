@@ -27,10 +27,7 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 		("/api/marketplace/installations", "get"),
 		("/api/marketplace/installations/{id}", "get"),
 		("/api/marketplace/installations/{id}", "post"),
-		("/api/marketplace/compatibility", "get"),
-		("/api/marketplace/compatibility", "put"),
 		("/api/marketplace/installations/{id}/activation", "post"),
-		("/api/marketplace/adoptions", "post"),
 		("/api/marketplace/administration", "get"),
 		("/api/marketplace/publication-access", "post"),
 		("/api/workspaces/{id}/threads", "post"),
@@ -109,10 +106,7 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 		schemas["AtomicTransaction"]["properties"]["manifest"]["$ref"],
 		"#/components/schemas/TransactionManifest"
 	);
-	assert_eq!(
-		schemas["PackageRecord"]["properties"]["manifest"]["$ref"],
-		"#/components/schemas/Package"
-	);
+	assert!(schemas.get("PackageRecord").is_none());
 	let upload = &document["paths"]["/api/workspaces/{id}/attachments"]["post"];
 	assert_eq!(
 		upload["requestBody"]["content"]["application/octet-stream"]["schema"]["format"],
@@ -142,11 +136,6 @@ fn openapi_distinguishes_input_defaults_from_serialized_responses(document: Valu
 			"/api/marketplace/publication-access",
 			"post",
 			"MarketplacePublicationPreview",
-		),
-		(
-			"/api/marketplace/compatibility",
-			"put",
-			"MarketplaceCompatibility",
 		),
 	] {
 		assert_eq!(

@@ -3,15 +3,6 @@ use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[model(app_label = "marketplace", table_name = "marketplace_gate")]
-#[derive(Serialize, Deserialize)]
-pub struct CompatibilityGate {
-	#[field(primary_key = true, field_type = "text")]
-	pub key: String,
-	#[field]
-	pub document: Json<Value>,
-}
-
 #[model(app_label = "marketplace", table_name = "marketplace_versions")]
 #[derive(Serialize, Deserialize)]
 pub struct PublishedVersion {

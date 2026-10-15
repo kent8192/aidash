@@ -796,18 +796,6 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let endpoint = server.url.clone();
 
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"PUT",
-			"/api/marketplace/compatibility",
-			json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true})
-		)
-		.await
-		.0,
-		200
-	);
 	let (status, pending) = request(
 		&app,
 		&f.config.api_token,

@@ -6,7 +6,6 @@ use crate::{
 	apps::execution::serializers::state::StateResponse,
 	apps::federation::remote::serializers::actions::SentResponse,
 	apps::identity::serializers::session::AccessProfile,
-	apps::registry::serializers::installations::Installation,
 	apps::workspaces::serializers::tasks::PageQuery,
 	authorization::{execution, identity::Actor, interaction},
 	domain::*,
@@ -170,22 +169,6 @@ impl HarnessManagement {
 		)
 		.fetch_all(&f.store.pool)
 		.await?;
-		let installations: Vec<Installation> = crate::database::native::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("installations"))
-				.order_by_expr(
-					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
-						reinhardt::query::Alias::new("installed_at"),
-					)),
-					reinhardt::query::Order::Desc,
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_all(&f.store.pool)
-		.await?;
 		let mut state = StateResponse {
 			access: AccessProfile::Operator,
 			node: f.config.identity(vec![]),
@@ -241,7 +224,6 @@ impl HarnessManagement {
 			peers: f.peers().await?,
 			events,
 			artifacts,
-			installations,
 		};
 		crate::authorization::remote::operator::filter_state(
 			&mut crate::database::native::begin(&f.store.pool).await?,

@@ -2,7 +2,7 @@
 #[path = "support/deployment.rs"]
 mod deployment;
 use aidash_server::apps::workspaces::models::Workspace;
-use deployment::deployment_command;
+use deployment::{deployment_command, deployment_command_excluding};
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
 use reinhardt::db::migrations::{
 	DatabaseMigrationRecorder, FilesystemSource, MigrationSource, SqlDialect,
@@ -26,6 +26,16 @@ use std::{
 };
 use tempfile::TempDir;
 use uuid::Uuid;
+
+/// Issue #243's migrations. Historical rollback tests run on the history before
+/// them, because reversing an earlier migration from the current head would
+/// reach objects those migrations removed or replaced.
+const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
+	("registry", "0025_remove_legacy_installations"),
+	("registry", "0026_remove_legacy_installations_state"),
+	("marketplace", "0008_remove_compatibility_gate"),
+	("marketplace", "0009_remove_compatibility_gate_state"),
+];
 
 async fn history_size() -> usize {
 	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
@@ -73,7 +83,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		26
+		28
 	);
 	let tables = migrations
 		.iter()
@@ -460,6 +470,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 
 impl MigrationFixture {
 	async fn migrate(&self) {
+		self.migrate_excluding(&[]).await;
+	}
+
+	/// Applies the history as it was before Issue #243's migrations.
+	async fn migrate_before_tenant_registry(&self) {
+		self.migrate_excluding(TENANT_REGISTRY_MIGRATIONS).await;
+	}
+
+	async fn migrate_excluding(&self, excluded: &[(&str, &str)]) {
 		let recorder = DatabaseMigrationRecorder::new(self.connection.clone());
 		let before = recorder
 			.get_applied_migrations_if_present()
@@ -468,7 +487,7 @@ impl MigrationFixture {
 			.len();
 		let log_path = self.directory.path().join("migrate.log");
 		let log = File::create(&log_path).unwrap();
-		let mut command = deployment_command(&self.url, self.directory.path());
+		let mut command = deployment_command_excluding(&self.url, self.directory.path(), excluded);
 		command
 			.arg("migrate")
 			.stdin(Stdio::null())
@@ -556,7 +575,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		26
+		28
 	);
 }
 
@@ -1051,25 +1070,22 @@ async fn assert_baseline_seed_data(connection: &BackendConnection) {
 	assert!(barrier[0].get::<bool>("singleton").unwrap());
 	assert!(barrier[0].get::<bool>("unlocked").unwrap());
 	assert_eq!(barrier[0].get::<i64>("commit_epoch").unwrap(), 0);
+	// The baseline seeds the Marketplace compatibility gate, which
+	// marketplace/0008 later removes with its table.
 	let gate = connection
 		.fetch_all(
 			&Query::select()
-				.column(Alias::new("key"))
 				.expr_as(
-					Expr::col(Alias::new("document")).cast_as(Alias::new("text")),
-					Alias::new("document"),
+					Expr::cust("to_regclass('public.marketplace_gate') IS NULL"),
+					Alias::new("absent"),
 				)
-				.from((Alias::new("public"), Alias::new("marketplace_gate")))
 				.to_string(PostgresQueryBuilder),
 			vec![],
 		)
 		.await
 		.unwrap();
 	assert_eq!(gate.len(), 1);
-	assert_eq!(gate[0].get::<String>("key").unwrap(), "v1");
-	let document: serde_json::Value =
-		serde_json::from_str(&gate[0].get::<String>("document").unwrap()).unwrap();
-	assert_eq!(document, json!({"enabled":false,"contract":1,"revision":1}));
+	assert!(gate[0].get::<bool>("absent").unwrap());
 }
 
 #[rstest]
@@ -1117,14 +1133,14 @@ async fn subsequent_native_migrations_can_rollback_to_the_complete_baseline(
 		fixture
 			.directory
 			.path()
-			.join("migrations/marketplace/0008_reversible_probe.rs"),
+			.join("migrations/marketplace/0010_reversible_probe.rs"),
 		r#"
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 use reinhardt::db::migrations::FieldType;
 pub(super) fn migration() -> Migration {
-    Migration::new("0008_reversible_probe", "marketplace")
-        .add_dependency("marketplace", "0007_model_state")
+    Migration::new("0010_reversible_probe", "marketplace")
+        .add_dependency("marketplace", "0009_remove_compatibility_gate_state")
         .add_operation(Operation::CreateTable {
             name: "rollback_probe".to_string(),
             columns: vec![ColumnDefinition::new("id", FieldType::Integer).with_primary_key(true)],
@@ -1137,9 +1153,13 @@ pub(super) fn migration() -> Migration {
 	fixture.migrate().await;
 	let extended = recorded_keys(&fixture.connection).await;
 	assert_eq!(extended.len(), before.len() + 1);
-	assert!(extended.contains(&("marketplace".into(), "0008_reversible_probe".into())));
+	assert!(extended.contains(&("marketplace".into(), "0010_reversible_probe".into())));
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
-	command.args(["migrate", "marketplace", "0007_model_state"]);
+	command.args([
+		"migrate",
+		"marketplace",
+		"0009_remove_compatibility_gate_state",
+	]);
 	// Act
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
 		.await
@@ -1205,7 +1225,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture.migrate_before_tenant_registry().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |cache: Option<serde_json::Value>| {
 		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","projection_version":"ordered"});
@@ -1344,7 +1364,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture.migrate_before_tenant_registry().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |extra: serde_json::Value| {
 		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","projection_version":"ordered","prompt_cache":"explicit"});
@@ -1545,7 +1565,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture.migrate_before_tenant_registry().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |policy: serde_json::Value| {
 		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
@@ -1717,87 +1737,12 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 
 #[rstest]
 #[tokio::test]
-async fn model_streaming_migration_refuses_rollback_with_installation_overrides(
-	#[future] fresh_database: MigrationFixture,
-) {
-	use aidash_server::apps::registry::{
-		models::{Definition, Installation},
-		services::states::DefinitionKind,
-	};
-	// Arrange: a model whose streaming settings exist only in its override.
-	let fixture = fresh_database.await;
-	fixture.migrate().await;
-	let pool = fixture.connection.clone().into_postgres().unwrap();
-	let upgraded = constraint_definition(&pool, "registry_model_config").await;
-	for key in ["streaming", "stream_stall_timeout_secs", "cache_mode"] {
-		assert!(upgraded.contains(&format!("'{key}'::text")), "{upgraded}");
-	}
-	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
-	let mut connection = lease.handle();
-	let metadata = json!({"id":"stream-model","version":"1.0.0","kind":"model",
-		"name":{"en":"Streaming fixture"},"description":{"en":"Migration test"},
-		"config":{"provider":"openrouter","model_id":"openai/model",
-			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"modalities":["text"],"cost":{}}});
-	Definition::objects()
-		.create_with_conn(
-			&mut connection,
-			&Definition::build()
-				.id("stream-model")
-				.version("1.0.0")
-				.kind(DefinitionKind::Model)
-				.metadata(metadata.into())
-				.finish(),
-		)
-		.await
-		.unwrap();
-	Installation::objects()
-		.create_with_conn(
-			&mut connection,
-			&Installation::build()
-				.id("stream-model")
-				.version("1.0.0")
-				.digest("streaming-fixture")
-				.config(json!({"streaming":false}).into())
-				.finish(),
-		)
-		.await
-		.unwrap();
-	let migration =
-		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-			.all_migrations()
-			.await
-			.unwrap()
-			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0020_model_streaming_config")
-			.unwrap();
-	let mut executor =
-		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
-	// Act
-	let error = executor
-		.rollback_migrations(std::slice::from_ref(&migration))
-		.await
-		.unwrap_err();
-	// Assert: the guard refuses before any DDL runs.
-	assert!(
-		error
-			.to_string()
-			.contains("registry 0020_model_streaming_config cannot be reversed"),
-		"{error}"
-	);
-	assert_eq!(
-		constraint_definition(&pool, "registry_model_config").await,
-		upgraded
-	);
-}
-
-#[rstest]
-#[tokio::test]
 async fn model_streaming_migration_composes_with_deferred_exposure_guard(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture.migrate_before_tenant_registry().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let query = Query::select()
 		.expr(Expr::cust(
@@ -1835,106 +1780,12 @@ async fn model_streaming_migration_composes_with_deferred_exposure_guard(
 
 #[rstest]
 #[tokio::test]
-async fn model_provider_keys_migration_refuses_installation_overrides_with_credential_env(
-	#[future] fresh_database: MigrationFixture,
-) {
-	use aidash_server::apps::registry::{
-		models::{Definition, Installation},
-		services::states::DefinitionKind,
-	};
-	// Arrange: before 0024 a model installation override could name an
-	// environment key that its base entry omits.
-	let fixture = fresh_database.await;
-	fixture.migrate().await;
-	let pool = fixture.connection.clone().into_postgres().unwrap();
-	let migration =
-		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-			.all_migrations()
-			.await
-			.unwrap()
-			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0024_model_provider_keys")
-			.unwrap();
-	let mut executor =
-		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
-	executor
-		.rollback_migrations(std::slice::from_ref(&migration))
-		.await
-		.unwrap();
-	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
-	let mut connection = lease.handle();
-	let metadata = json!({"id":"keyed-model","version":"1.0.0","kind":"model",
-		"name":{"en":"Keyed override fixture"},"description":{"en":"Migration test"},
-		"config":{"provider":"openrouter","model_id":"openai/model",
-			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"modalities":["text"],"cost":{}}});
-	Definition::objects()
-		.create_with_conn(
-			&mut connection,
-			&Definition::build()
-				.id("keyed-model")
-				.version("1.0.0")
-				.kind(DefinitionKind::Model)
-				.metadata(metadata.into())
-				.finish(),
-		)
-		.await
-		.unwrap();
-	let keyed = || {
-		Installation::build()
-			.id("keyed-model")
-			.version("1.0.0")
-			.digest("keyed-fixture")
-			.config(json!({"credential_env":"AIDASH_SECRET_OPENROUTER"}).into())
-			.finish()
-	};
-	Installation::objects()
-		.create_with_conn(&mut connection, &keyed())
-		.await
-		.unwrap();
-	// Act
-	let error = executor
-		.apply_migrations(std::slice::from_ref(&migration))
-		.await
-		.unwrap_err();
-	// Assert: the upgrade is refused instead of breaking admissions later.
-	assert!(
-		error.to_string().contains(
-			"registry 0024_model_provider_keys cannot be applied: 1 installation overrides set credential_env"
-		),
-		"{error}"
-	);
-	// Without the override the upgrade applies, and the installation guard
-	// rejects the key from then on.
-	sqlx::query(
-		&Query::delete()
-			.from_table(Alias::new("installations"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&pool)
-	.await
-	.unwrap();
-	executor
-		.apply_migrations(std::slice::from_ref(&migration))
-		.await
-		.unwrap();
-	assert!(
-		Installation::objects()
-			.create_with_conn(&mut connection, &keyed())
-			.await
-			.is_err(),
-		"the installation guard must reject credential_env"
-	);
-}
-
-#[rstest]
-#[tokio::test]
 async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_descriptors(
 	#[future] fresh_database: MigrationFixture,
 ) {
-	use aidash_server::apps::registry::models::Package;
 	use sha2::{Digest, Sha256};
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture.migrate_before_tenant_registry().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
 	let zero = json!({"input_per_million":0,"output_per_million":0});
@@ -1945,8 +1796,6 @@ async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_desc
             "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
             "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
 	let source = json!({"scope":"participant","memory":reference("native"),"max_tokens":4096});
-	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
-	let mut connection = lease.handle();
 	for (kind, config) in [("memory", provider.clone()), ("source", source.clone())] {
 		let id = format!("native-{kind}-package");
 		let manifest = json!({"entity":{"id":id,"version":"1.0.0","kind":kind,"name":{"en":"Native"},"description":{"en":"Fixture"},"schema":{},"config":config},"author":"fixture","permissions":[],"dependencies":[]});
@@ -1958,18 +1807,18 @@ async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_desc
 			)
 			.await
 		);
+		// The legacy table predates Issue #243, which removed its ORM model.
 		let text = serde_json::to_string(&manifest).unwrap();
-		let package = Package::build()
-			.id(id)
-			.version("1.0.0")
-			.manifest(manifest.into())
-			.digest(format!("sha256:{:x}", Sha256::digest(text.as_bytes())))
-			.manifest_source(text)
-			.finish();
-		Package::objects()
-			.create_with_conn(&mut connection, &package)
-			.await
-			.unwrap();
+		sqlx::query(
+			"INSERT INTO packages (id, version, manifest, digest, manifest_source) VALUES ($1, '1.0.0', $2, $3, $4)",
+		)
+		.bind(&id)
+		.bind(&manifest)
+		.bind(format!("sha256:{:x}", Sha256::digest(text.as_bytes())))
+		.bind(&text)
+		.execute(&pool)
+		.await
+		.unwrap();
 	}
 	let mut invalid = provider.clone();
 	invalid["policy"]["unexpected"] = json!(true);
@@ -2157,39 +2006,13 @@ async fn deferred_exposure_contract_rejects_explicit_null_budgets(
 
 #[rstest]
 #[tokio::test]
-async fn deferred_exposure_lets_agent_installations_override_exposure(
-	#[future] fresh_database: MigrationFixture,
-) {
-	// Arrange
-	let fixture = fresh_database.await;
-	// Act
-	fixture.migrate().await;
-	// Assert: only the Agent allowlist of the installation guard gains `exposure`.
-	let pool = fixture.connection.clone().into_postgres().unwrap();
-	let query = Query::select()
-		.expr(Expr::cust(
-			"pg_get_functiondef('public.guard_installation_config()'::regprocedure)",
-		))
-		.to_string(PostgresQueryBuilder);
-	let guard: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
-	assert!(
-		guard.contains(
-			"'remove_default','cluster','max_steps','exposure','tool_parallelism']::text[]"
-		),
-		"{guard}"
-	);
-	assert_eq!(guard.matches("'exposure'").count(), 1, "{guard}");
-}
-
-#[rstest]
-#[tokio::test]
 async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture.migrate_before_tenant_registry().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let deferred = json!({"schema_version":1,"model":{"id":"exposure-model","version":"1.0.0"},
 		"instructions":"Assist.","exposure":{"version":"deferred@1"}});

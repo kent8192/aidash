@@ -170,8 +170,8 @@ impl DistributionScope for Fixture {
 
 #[async_trait]
 impl InstallationRead for Fixture {
-	async fn installation_gate(&mut self) -> Result<()> {
-		self.record("installation_gate")
+	async fn installation_lease(&mut self) -> Result<()> {
+		self.record("installation_lease")
 	}
 	async fn selected_installation(&mut self, id: &str) -> Result<Option<Installation>> {
 		self.record("selected_installation")?;
@@ -564,18 +564,16 @@ impl crate::ports::marketplace::MarketplaceRead for Fixture {
 }
 
 #[rstest]
-#[case::wrong_tenant("other", 1, false, false, false)]
-#[case::unknown_contract("owner", 2, false, false, false)]
-#[case::disabled_gate("owner", 1, true, true, false)]
-#[case::missing_selected_row("owner", 1, false, false, false)]
-#[case::retained_inactive_revision("owner", 1, true, false, false)]
-#[case::selected_active_revision("owner", 1, true, false, true)]
+#[case::wrong_tenant("other", 1, false, false)]
+#[case::unknown_contract("owner", 2, false, false)]
+#[case::missing_selected_row("owner", 1, false, false)]
+#[case::retained_inactive_revision("owner", 1, true, false)]
+#[case::selected_active_revision("owner", 1, true, true)]
 #[tokio::test]
-async fn active_admission_rechecks_gate_then_selected_row(
+async fn active_admission_takes_the_lease_then_rechecks_the_selected_row(
 	#[case] tenant: &str,
 	#[case] contract: u8,
 	#[case] has_row: bool,
-	#[case] denied_gate: bool,
 	#[case] selected: bool,
 ) {
 	// Arrange
@@ -597,9 +595,6 @@ async fn active_admission_rechecks_gate_then_selected_row(
 			},
 		);
 	}
-	if denied_gate {
-		scope.denied = Some("installation_gate".into());
-	}
 	// Act
 	let result = active(&mut scope, &projected).await.unwrap();
 	// Assert: invalid projection metadata does not acquire a lease or decode rows.
@@ -608,18 +603,16 @@ async fn active_admission_rechecks_gate_then_selected_row(
 		scope.calls,
 		if tenant != "owner" || contract != 1 {
 			vec![]
-		} else if denied_gate {
-			vec!["installation_gate"]
 		} else {
-			vec!["installation_gate", "selected_installation"]
+			vec!["installation_lease", "selected_installation"]
 		}
 	);
 }
 #[rstest]
 #[tokio::test]
-async fn unprojected_definitions_need_no_marketplace_gate() {
+async fn unprojected_definitions_need_no_marketplace_lease() {
 	let mut scope = published();
-	scope.denied = Some("installation_gate".into());
+	scope.denied = Some("installation_lease".into());
 	let active = active(&mut scope, &entry("native")).await.unwrap();
 	assert!(active);
 	assert_eq!(scope.calls, Vec::<String>::new());
@@ -627,12 +620,6 @@ async fn unprojected_definitions_need_no_marketplace_gate() {
 
 #[async_trait]
 impl crate::ports::marketplace::EventScope for Fixture {
-	async fn compatibility_ready(&mut self) -> Result<()> {
-		if self.denied.as_deref() == Some("compatibility_external") {
-			return Err(Error::External("fixture connection failure".into()));
-		}
-		self.record("compatibility_ready")
-	}
 	async fn workspace_allowed(&mut self, _: Uuid, action: &str) -> Result<bool> {
 		self.calls.push(action.into());
 		Ok(self.denied.as_deref() != Some(action))

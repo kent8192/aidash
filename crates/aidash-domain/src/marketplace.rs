@@ -72,14 +72,6 @@ pub struct InstallationRevision {
 	pub actions: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, JsonSchema)]
-#[schemars(rename = "MarketplaceCompatibility")]
-pub struct Compatibility {
-	pub enabled: bool,
-	pub revision: i64,
-	pub contract: u8,
-}
-
 #[derive(Serialize, schemars::JsonSchema)]
 #[schemars(rename = "MarketplacePublicationPreview")]
 pub struct PublicationPreview {

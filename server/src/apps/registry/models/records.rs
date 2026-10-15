@@ -1,9 +1,8 @@
-//! Native persistence for immutable registry versions and local installations.
+//! Native persistence for immutable registry versions.
 use super::states::DefinitionKind;
-use super::{AgentKnowledge, Definition, Installation, Package, RegistryRequest};
-use crate::apps::registry::serializers::contracts::{Entry, PackageRecord};
+use super::{AgentKnowledge, Definition, RegistryRequest};
+use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, OrmExecutor};
 use serde_json::Value;
 use uuid::Uuid;
@@ -42,18 +41,6 @@ pub(crate) async fn definitions(
 		query = query.limit(limit);
 	}
 	Ok(query.all_with_db(&mut db).await?)
-}
-
-pub(crate) async fn installation<E: OrmExecutor>(
-	db: &mut E,
-	id: &str,
-	version: &str,
-) -> Result<Option<Installation>> {
-	Ok(Installation::objects()
-		.filter(Installation::field_id().eq(id.to_owned()))
-		.filter(Installation::field_version().eq(version.to_owned()))
-		.first_with_db(db)
-		.await?)
 }
 
 /// A conflicting insert waits for the winning transaction before reading it.
@@ -121,120 +108,6 @@ pub(crate) async fn assign_id<E: OrmExecutor>(
 	}
 	entry.id = stored.entity_id;
 	Ok(())
-}
-
-pub(crate) async fn package<E: OrmExecutor>(
-	db: &mut E,
-	id: &str,
-	version: &str,
-) -> Result<Package> {
-	Package::objects()
-		.filter(Package::field_id().eq(id.to_owned()))
-		.filter(Package::field_version().eq(version.to_owned()))
-		.first_with_db(db)
-		.await?
-		.ok_or_else(|| Error::NotFound("package".into()))
-}
-
-pub(crate) async fn packages(mut db: DatabaseConnection) -> Result<Vec<PackageRecord>> {
-	Ok(Package::objects()
-		.all()
-		.order_by(&["id", "version"])
-		.all_with_db(&mut db)
-		.await?
-		.into_iter()
-		.map(package_record)
-		.collect())
-}
-
-pub(crate) fn package_record(stored: Package) -> PackageRecord {
-	PackageRecord {
-		id: stored.id,
-		version: stored.version,
-		manifest: stored.manifest.0,
-		digest: stored.digest,
-	}
-}
-
-pub(crate) async fn publish(
-	db: &mut AtomicTransaction,
-	id: &str,
-	version: &str,
-	manifest: Value,
-	digest: &str,
-	manifest_source: &str,
-) -> Result<(PackageRecord, bool)> {
-	let (sql, values) = Query::insert()
-		.into_table(Alias::new("packages"))
-		.columns(["id", "version", "manifest", "digest", "manifest_source"].map(Alias::new))
-		.from_subquery(
-			reinhardt::query::Query::select()
-				.expr(Expr::value(id))
-				.expr(Expr::value(version))
-				.expr(Expr::value(manifest))
-				.expr(Expr::value(digest))
-				.expr(Expr::value(manifest_source))
-				.to_owned(),
-		)
-		.on_conflict(
-			OnConflict::columns(["id", "version"])
-				.do_nothing()
-				.to_owned(),
-		)
-		.build(PostgresQueryBuilder);
-	let inserted = OrmExecutor::execute(db, &sql, convert_values(values))
-		.await?
-		.rows_affected
-		== 1;
-	let stored = package(db, id, version).await?;
-	if stored.digest != digest || stored.manifest_source != manifest_source {
-		return Err(Error::Conflict("package version is immutable".into()));
-	}
-	Ok((package_record(stored), inserted))
-}
-
-/// All overlays serialize on the immutable definition, including first install.
-pub(crate) async fn install(
-	db: &mut AtomicTransaction,
-	entry: &Entry,
-	digest: &str,
-	config: Value,
-) -> Result<bool> {
-	insert_definition(db, entry).await?;
-	let _definition = Definition::objects()
-		.filter(Definition::field_id().eq(entry.id.clone()))
-		.filter(Definition::field_version().eq(entry.version.clone()))
-		.select_for_update()
-		.all_with_executor(db)
-		.await
-		.map_err(FrameworkError::from)?
-		.pop()
-		.ok_or_else(|| Error::NotFound("package definition".into()))?;
-	if let Some(mut stored) = installation(db, &entry.id, &entry.version).await? {
-		if stored.config.0 == config {
-			return Ok(false);
-		}
-		stored.config = config.into();
-		// Reinhardt #6458: the logical version is part of the primary key.
-		// Return to Manager::update_with_conn after composite updates are verified.
-		let updated = Installation::objects()
-			.filter(Installation::field_id().eq(&stored.id))
-			.filter(Installation::field_version().eq(&stored.version))
-			.update_fields_with_conn(db, [(Installation::field_config(), stored.config)])
-			.await?;
-		if updated != 1 {
-			return Err(Error::Conflict("installation changed".into()));
-		}
-	} else {
-		let draft = Installation::build()
-			.id(&entry.id)
-			.version(&entry.version)
-			.digest(digest)
-			.config(config.into())
-			.finish();
-		Installation::objects().create_with_conn(db, &draft).await?;
-	}
-	Ok(true)
 }
 
 pub(crate) async fn documents<E: OrmExecutor>(db: &mut E, entry: &Entry) -> Result<Option<Value>> {

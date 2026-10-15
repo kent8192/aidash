@@ -5,7 +5,6 @@ import { Textarea } from "../components/ui/textarea";
 import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
-import { RecordView } from "../record-view";
 import {
   Alert,
   Disclosure,
@@ -24,7 +23,6 @@ import {
   humanAnswer,
   taskAbandon,
   remoteAction,
-  packageInstall,
 } from "../generated/aidash";
 import type {
   Artifact,
@@ -32,7 +30,6 @@ import type {
   Entry,
   HumanRequest,
   Mesh,
-  Package,
   Run,
   State,
   Task,
@@ -52,7 +49,6 @@ import {
   EntityForm,
   GoalForm,
   PeerForm,
-  PublishForm,
   TaskForm,
   WorkspaceForm,
   type Submit,
@@ -78,7 +74,6 @@ export type Selection = {
   run?: Run;
   request?: HumanRequest;
   artifact?: Artifact;
-  package?: Package;
   node?: string;
 };
 export function OperationsDialog({
@@ -104,7 +99,7 @@ export function OperationsDialog({
   busy: boolean;
   visitChannel: (id: string) => void;
 }) {
-  const { t, local, locale } = useI18n();
+  const { t, locale } = useI18n();
   const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const d = selection;
@@ -125,13 +120,7 @@ export function OperationsDialog({
       : data.human_requests
   )?.find((value) => value.id === d.request?.id);
   const isOperator = data.access.kind === "operator";
-  const administrative = [
-    "entity",
-    "cluster",
-    "peer",
-    "publish",
-    "package",
-  ].includes(d.kind);
+  const administrative = ["entity", "cluster", "peer"].includes(d.kind);
   const taskRuns = task
     ? [
         ...data.runs
@@ -168,8 +157,6 @@ export function OperationsDialog({
                   entity: "register",
                   cluster: "register",
                   peer: "addPeer",
-                  publish: "publish",
-                  package: "package",
                 } as Record<string, string>
               )[d.kind] ?? d.kind,
             )
@@ -204,9 +191,6 @@ export function OperationsDialog({
               />
             )}
             {d.kind === "peer" && <PeerForm submit={submit} />}
-            {d.kind === "publish" && (
-              <PublishForm data={data} submit={submit} />
-            )}
             {d.kind === "assign" && task && (
               <AssignForm
                 data={data}
@@ -416,34 +400,6 @@ export function OperationsDialog({
                   {taskSnapshot.isPending ? copy.processing : copy.unavailable}
                 </Hint>
               ))}
-            {d.kind === "package" && d.package && (
-              <>
-                <header className="grid min-w-0 gap-1">
-                  <h2 className="text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
-                    {local(d.package.manifest.entity.name)}
-                  </h2>
-                  <p className="text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
-                    {local(d.package.manifest.entity.description)}
-                  </p>
-                </header>
-                <RecordView value={d.package.manifest} />
-                <div className="flex justify-end">
-                  <Button
-                    type="button"
-                    onClick={() =>
-                      void submit(() =>
-                        packageInstall(d.package!.id, d.package!.version, {
-                          digest: d.package!.digest,
-                          config: {},
-                        }),
-                      )
-                    }
-                  >
-                    {t("install")}
-                  </Button>
-                </div>
-              </>
-            )}
           </>
         )}
       </fieldset>

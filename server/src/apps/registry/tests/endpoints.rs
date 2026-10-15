@@ -1,8 +1,6 @@
 use crate::endpoint::{EndpointFixture, assert_json, endpoint};
 use aidash_server::apps::execution::models::Event;
-use aidash_server::apps::registry::models::{
-	AgentKnowledge, Definition, Installation, RegistryRequest,
-};
+use aidash_server::apps::registry::models::{AgentKnowledge, Definition, RegistryRequest};
 use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
@@ -57,84 +55,6 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 		.await
 		.unwrap();
 	assert_eq!(records.len(), seeded_definitions.len() + 1);
-}
-
-#[rstest]
-#[tokio::test]
-async fn package_install_checks_overrides_digest_and_immutable_versions(
-	#[future] endpoint: EndpointFixture,
-	skill: Value,
-) {
-	// Arrange
-	let app = endpoint.await;
-	let package =
-		json!({"entity":skill,"author":"Endpoint test","permissions":[],"dependencies":[]});
-	let published = assert_json(
-		app.operator
-			.post("/api/marketplace", &package, "json")
-			.await
-			.unwrap(),
-		200,
-	);
-	let path = "/api/marketplace/endpoint-skill/1.0.0/install";
-	// Act
-	let invalid_override = app
-		.operator
-		.post(
-			path,
-			&json!({"digest":published["digest"],"config":{"unknown":true}}),
-			"json",
-		)
-		.await
-		.unwrap();
-	let invalid_digest = app
-		.operator
-		.post(
-			path,
-			&json!({"digest":"sha256:incorrect","config":{}}),
-			"json",
-		)
-		.await
-		.unwrap();
-	// Assert
-	assert_json(invalid_override, 400);
-	assert_json(invalid_digest, 409);
-	assert!(
-		Installation::objects()
-			.all()
-			.all_with_db(&mut app.database.lease.handle())
-			.await
-			.unwrap()
-			.is_empty()
-	);
-	// Act
-	let install =
-		json!({"digest":published["digest"],"config":{"instructions":"Local instructions"}});
-	let installed = app.operator.post(path, &install, "json").await.unwrap();
-	let repeated = app.operator.post(path, &install, "json").await.unwrap();
-	let mut altered = package;
-	altered["entity"]["config"]["instructions"] = json!("Changed published version");
-	let conflict = app
-		.operator
-		.post("/api/marketplace", &altered, "json")
-		.await
-		.unwrap();
-	// Assert
-	assert_eq!(
-		assert_json(installed, 200)["config"]["instructions"],
-		"Local instructions"
-	);
-	assert_json(repeated, 200);
-	assert_json(conflict, 409);
-	assert_eq!(
-		Installation::objects()
-			.all()
-			.all_with_db(&mut app.database.lease.handle())
-			.await
-			.unwrap()
-			.len(),
-		1
-	);
 }
 
 #[rstest]
