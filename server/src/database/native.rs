@@ -81,6 +81,7 @@ impl Pool {
 			Some(self.connection.begin().await?),
 			self.clone(),
 			Default::default(),
+			0,
 		))
 	}
 	pub async fn close(&self) {
@@ -98,6 +99,8 @@ pub struct Transaction(
 	Option<Box<dyn TransactionExecutor>>,
 	Pool,
 	std::collections::BTreeMap<uuid::Uuid, aidash_domain::memory::Unit>,
+	/// Savepoint rollbacks so far: each may release locks taken after its savepoint.
+	u64,
 );
 impl std::ops::Deref for Transaction {
 	type Target = dyn TransactionExecutor;
@@ -122,6 +125,7 @@ impl Transaction {
 			Some(self.0.take().expect("active transaction")),
 			self.1.clone(),
 			std::mem::take(&mut self.2),
+			self.3,
 		)
 	}
 	pub(crate) fn restore(&mut self, lent: Self) {
@@ -129,6 +133,11 @@ impl Transaction {
 		self.0 = lent.0;
 		assert!(self.2.is_empty());
 		self.2 = lent.2;
+		self.3 = lent.3;
+	}
+	/// Changes whenever a savepoint rollback may have released locks held so far.
+	pub(crate) fn lock_epoch(&self) -> u64 {
+		self.3
 	}
 
 	pub(crate) fn pool(&self) -> &Pool {
@@ -185,6 +194,16 @@ impl Transaction {
 		Ok(self.0.expect("transaction is lent to an authority scope"))
 	}
 }
+#[cfg(test)]
+impl Transaction {
+	/// A connectionless transaction shell for adapter state tests.
+	pub(crate) fn detached(pool: Pool) -> Self {
+		Self(None, pool, Default::default(), 0)
+	}
+	pub(crate) fn note_savepoint_rollback(&mut self) {
+		self.3 += 1;
+	}
+}
 impl AsMut<dyn TransactionExecutor> for Transaction {
 	fn as_mut(&mut self) -> &mut (dyn TransactionExecutor + 'static) {
 		self.0
@@ -198,6 +217,7 @@ pub async fn begin(pool: &Pool) -> Result<Transaction> {
 		Some(pool.connection.begin().await?),
 		pool.clone(),
 		Default::default(),
+		0,
 	))
 }
 
@@ -604,6 +624,7 @@ impl TransactionExecutor for Transaction {
 		&mut self,
 		name: &str,
 	) -> reinhardt::db::backends::error::Result<()> {
+		self.3 += 1;
 		self.0
 			.as_mut()
 			.expect("active transaction")

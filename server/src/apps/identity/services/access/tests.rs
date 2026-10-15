@@ -36,7 +36,7 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,
 		// Same-credential publisher checks perform no database I/O.
-		tx: AccessTransaction(None),
+		tx: AccessTransaction::default(),
 		identity: identity.clone(),
 		snapshot,
 		subjects: vec!["alice".into()],
@@ -88,5 +88,51 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 			.bundle
 			.evaluate(&access.evaluation("alice", &resource, "memory.read"))
 			.allowed
+	);
+}
+
+#[tokio::test]
+async fn catalog_admissions_end_with_their_transaction_or_a_savepoint_rollback() {
+	let pool: Pool = sqlx::postgres::PgPoolOptions::new()
+		.connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+		.unwrap()
+		.into();
+	let admission = CatalogAdmission {
+		tenant: "acme".into(),
+		subject: "alice".into(),
+		revision: 1,
+		inherited_lease: false,
+		audit: true,
+		durable_audit: true,
+		authority: "authority".into(),
+		id: "first".into(),
+		version: "1.0.0".into(),
+		action: "registry.read".into(),
+	};
+	let entry: crate::registry::Entry = serde_json::from_value(json!({
+		"id":"first", "version":"1.0.0", "kind":"skill", "name":{"en":"first"},
+		"description":{"en":"Fixture"}, "config":{"instructions":"Frozen"}
+	}))
+	.unwrap();
+	let mut tx =
+		AccessTransaction::new(crate::database::native::Transaction::detached(pool.clone()));
+	tx.admit(admission.clone(), entry.clone());
+	assert_eq!(tx.admitted(&admission), Some(entry.clone()));
+	tx.transaction.as_mut().unwrap().note_savepoint_rollback();
+	assert_eq!(
+		tx.admitted(&admission),
+		None,
+		"a savepoint rollback may have released the admission's locks"
+	);
+	tx.admit(admission.clone(), entry.clone());
+	assert_eq!(tx.admitted(&admission), Some(entry.clone()));
+	drop(tx.take());
+	assert_eq!(tx.admitted(&admission), None);
+	tx.admit(admission.clone(), entry.clone());
+	tx.install(crate::database::native::Transaction::detached(pool));
+	assert_eq!(
+		tx.admitted(&admission),
+		None,
+		"a new transaction holds none of the earlier locks"
 	);
 }
