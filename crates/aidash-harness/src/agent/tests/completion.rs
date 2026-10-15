@@ -460,6 +460,17 @@ async fn new_input_closes_the_superseded_review_request(mut fixture: Fixture) {
 	assert_eq!(request.response, Some(json!({"superseded": true})));
 	assert_eq!(request.answered_by.as_deref(), Some("system"));
 	assert!(!completed(&fixture));
+	// The Run resumes the stale candidate only to discard it: the next step
+	// sees the newer input before the gate, so the model answers that input
+	// and no second review opens.
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		matches!(fixture.run.state, RunState::Thinking(_)),
+		"{:?}",
+		fixture.run.state
+	);
+	assert_eq!(fixture.run.context.completion.reviews, 1);
+	assert_eq!(fixture.run.context.completion.review, None);
 }
 
 #[rstest]
@@ -619,6 +630,20 @@ async fn failure_loss_and_exhaustion_stay_distinguishable(mut fixture: Fixture) 
 		CheckOutcome::Failed
 	);
 	assert!(repair_notes(&fixture.run).is_empty());
+	// No repair request carries the diagnostics, so the person answering the
+	// review reads them from the Run's inspection.
+	let inspection = serde_json::to_value(fixture.run.context.inspection()).unwrap();
+	let evidence = &inspection["completion"]["evidence"][0];
+	assert_eq!(evidence["outcome"], "failed");
+	assert!(
+		evidence["diagnostics"]
+			.as_str()
+			.unwrap()
+			.contains("assertion failed"),
+		"{evidence}"
+	);
+	let ungated = serde_json::to_value(aidash_domain::context::Context::default().inspection());
+	assert!(ungated.unwrap().get("completion").is_none());
 
 	// A retry runs the Check again; a lost operation is unavailable, not failed.
 	answer_review(&fixture, json!({"retry": true}));

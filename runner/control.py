@@ -799,11 +799,16 @@ class Runner:
                     self.exec_collector(operation, ["cancel"])
                 if "terminated" in execution:
                     terminal = execution["terminated"]
-                    self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"])
+                    # A Check is charged until its command stopped, not until
+                    # its output and files were harvested below.
+                    self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"],
+                                terminated_at=current.get("terminated_at") or time.time())
                     if "running" not in collector:
                         self.recover_stopped_shell(self.get(operation))
                         break
-                    captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final"]).stdout)
+                    # A Check keeps the end of its output, where the failure is.
+                    captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
+                                                                          *(["tail"] if record["request"]["kind"] == "verify" else [])]).stdout)
                     diagnostic = None
                     if terminal["exitCode"] != 0 and not captured["stdout"]:
                         diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")

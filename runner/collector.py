@@ -22,6 +22,10 @@ ROOTS = {"working": Path("/work"), "references": Path("/references"), "received"
 OUTPUT = Path("/tmp/output.bin")
 OUTPUT_STATE = Path("/tmp/output.state")
 OUTPUT_LIMIT = int(os.environ["AIDASH_OUTPUT_BYTES"])
+# The last bytes of the output, kept even after the stored prefix is full: a
+# Completion Check's failure summary comes at the end of a long run.
+OUTPUT_TAIL = Path("/tmp/output.tail")
+TAIL_LIMIT = 16384
 
 
 def save(path, value):
@@ -170,6 +174,11 @@ def append_output(data, connections=0):
             if captured:
                 output.flush()
                 os.fsync(output.fileno())
+        if data:
+            tail = (OUTPUT_TAIL.read_bytes() if OUTPUT_TAIL.exists() else b"") + data
+            temporary = OUTPUT_TAIL.with_suffix(".new")
+            temporary.write_bytes(tail[-TAIL_LIMIT:])
+            os.replace(temporary, OUTPUT_TAIL)
         if data or connections:
             save(OUTPUT_STATE, state)
         return state
@@ -181,10 +190,15 @@ def logs(limit):
     while "final" in sys.argv and state["connections"] and time.monotonic() < deadline:
         time.sleep(0.01)
         state = append_output(b"")
-    with OUTPUT.open("rb") as output:
-        data = output.read(min(limit, OUTPUT_LIMIT))
+    if "tail" in sys.argv:
+        data = OUTPUT_TAIL.read_bytes()[-min(limit, TAIL_LIMIT):] if OUTPUT_TAIL.exists() else b""
+        cut = state["total"] > len(data)
+    else:
+        with OUTPUT.open("rb") as output:
+            data = output.read(min(limit, OUTPUT_LIMIT))
+        cut = state["total"] > OUTPUT_LIMIT
     print(json.dumps({"stdout": base64.b64encode(data).decode(), "bytes": state["stored"],
-                      "truncated": state["total"] > OUTPUT_LIMIT or ("final" in sys.argv and state["connections"] > 0)}))
+                      "truncated": cut or ("final" in sys.argv and state["connections"] > 0)}))
 
 
 class Output(socketserver.BaseRequestHandler):

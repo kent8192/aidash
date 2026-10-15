@@ -1,11 +1,18 @@
 """A Completion Gate Check ("verify") runs like shell but never exports /work."""
+import base64
+import contextlib
+import io
+import json
+import os
 import tempfile
 import threading
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
+import collector
 from control import Rejected, Runner
 
 
@@ -67,6 +74,34 @@ class VerificationTest(unittest.TestCase):
     def test_a_stopped_shell_still_exports_its_files(self):
         calls, _ = self.stopped("shell")
         self.assertIn("export", calls)
+
+
+class OutputTailTest(unittest.TestCase):
+    def logs(self, *arguments):
+        stdout = io.StringIO()
+        with patch.object(collector.sys, "argv", ["collector.py", "logs", "1000", "final", *arguments]), \
+                contextlib.redirect_stdout(stdout):
+            collector.logs(1000)
+        captured = json.loads(stdout.getvalue())
+        return base64.b64decode(captured["stdout"]), captured["truncated"]
+
+    def test_a_check_reads_the_end_of_output_the_stored_prefix_dropped(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=8, TAIL_LIMIT=12):
+                collector.append_output(b"compiling crates\n")
+                collector.append_output(b"test result: FAILED")
+                self.assertEqual(self.logs("tail"), (b"sult: FAILED", True))
+                self.assertEqual(self.logs(), (b"compilin", True))
+
+    def test_a_short_check_output_is_returned_whole(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output(b"ok\n")
+                self.assertEqual(self.logs("tail"), (b"ok\n", False))
 
 
 if __name__ == "__main__":

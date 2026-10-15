@@ -327,6 +327,10 @@ pub struct InspectionContext<'a> {
 	/// The Run's pinned Estimate Snapshot, without its sample count.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub estimate: Option<crate::provider::estimate::EstimateView>,
+	/// Completion Gate state with its Verification Evidence, so a person
+	/// answering a Completion Review sees each Check's exit code and output.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub completion: Option<&'a crate::completion::CompletionProgress>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -344,6 +348,7 @@ impl Context {
 			message_inference_coverage: &self.message_inference_coverage,
 			exposure: &self.exposure,
 			estimate: self.estimate.view(),
+			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
 		}
 	}
 }
