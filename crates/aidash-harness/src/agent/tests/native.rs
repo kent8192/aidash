@@ -395,6 +395,7 @@ fn native_estimate_counts_the_complete_request_near_the_window(#[case] turns: u3
 		tools: &tools,
 		max_output_tokens: 4096,
 		projection: &scope,
+		estimate: Default::default(),
 	};
 	// Act
 	let request = budget(128_000).request(&context, &pinned);

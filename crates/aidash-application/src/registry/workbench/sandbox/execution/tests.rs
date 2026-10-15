@@ -393,6 +393,7 @@ fn job(model: Arc<Model>) -> Job {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			estimate: Default::default(),
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
 		pinned_draft: draft(7),

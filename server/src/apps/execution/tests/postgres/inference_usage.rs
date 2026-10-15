@@ -1,9 +1,10 @@
 //! Usage Records are dispatched under the worker lease and completed at most once.
 use super::*;
 use aidash_domain::projection::ProjectionVersion;
-use aidash_domain::provider::usage::{
-	ProviderCost, ReportedUsage, RequestEstimate, UsageDispatch, UsageOutcome,
+use aidash_domain::provider::estimate::{
+	ByteEstimate, CALIBRATION_WINDOW, EstimateSnapshot, FRAMING_RESERVE,
 };
+use aidash_domain::provider::usage::{ProviderCost, ReportedUsage, UsageDispatch, UsageOutcome};
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 
 /// outcome, input, output, cache read, cache write, reasoning, cost, upstream cost,
@@ -48,6 +49,15 @@ async fn usage_row(store: &Store, attempt: Uuid) -> UsageRow {
 		.unwrap()
 }
 
+/// 200 bytes of basis, a 10-token output reservation and the framing reserve:
+/// a 1,234-token byte estimate.
+const BYTES: ByteEstimate = ByteEstimate {
+	basis: 200,
+	media: 0,
+	output: 10,
+	framing: FRAMING_RESERVE,
+};
+
 fn dispatch(token: Uuid) -> UsageDispatch {
 	UsageDispatch {
 		attempt: Uuid::now_v7(),
@@ -56,7 +66,9 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		model_id: "model".into(),
 		model_version: "1.0.0".into(),
 		projection_version: ProjectionVersion::Legacy.number(),
-		estimate: RequestEstimate::conservative_bytes(1234),
+		upstream_model: "vendor/model".into(),
+		estimate: EstimateSnapshot::conservative(0).request_estimate(&BYTES),
+		calibration_sample: false,
 		cache_identity: None,
 	}
 }
@@ -382,6 +394,217 @@ async fn usage_records_keep_the_cache_identity_of_salted_attempts(
 	assert_eq!(
 		cache_identity(&store, native.attempt).await.as_deref(),
 		Some("prefix-digest")
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+/// byte basis, output reservation, ratio, upstream model, calibration sample.
+type EstimateParts = (Option<i64>, Option<i64>, Option<i64>, Option<String>, bool);
+
+async fn estimate_parts(store: &Store, attempt: Uuid) -> EstimateParts {
+	let sql = Query::select()
+		.columns([
+			Alias::new("byte_basis"),
+			Alias::new("output_reservation"),
+			Alias::new("estimate_ratio_ppm"),
+			Alias::new("upstream_model"),
+			Alias::new("calibration_sample"),
+		])
+		.from(Alias::new("inference_usage"))
+		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(attempt)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_as::<_, EstimateParts>(&sql)
+		.fetch_one(store.pool.driver())
+		.await
+		.unwrap()
+}
+
+async fn sample_columns(store: &Store) -> Vec<String> {
+	let sql = Query::select()
+		.column(Alias::new("column_name"))
+		.from((Alias::new("information_schema"), Alias::new("columns")))
+		.and_where(Expr::col(Alias::new("table_schema")).eq(Expr::cust("current_schema()")))
+		.and_where(
+			Expr::col(Alias::new("table_name")).eq(Expr::value("estimate_calibration_samples")),
+		)
+		.order_by(Alias::new("column_name"), reinhardt::query::Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar::<_, String>(&sql)
+		.fetch_all(store.pool.driver())
+		.await
+		.unwrap()
+}
+
+/// Only a complete calibration-sample attempt becomes a Deployment-wide
+/// sample, and the sample carries no Run, Tenant or attempt identifier
+/// (ADR 0017).
+#[rstest::rstest]
+#[tokio::test]
+async fn complete_sample_attempts_record_anonymous_calibration_samples(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let calibrated = UsageDispatch {
+		estimate: EstimateSnapshot::calibrated(4, 250_000, 20).request_estimate(&BYTES),
+		calibration_sample: true,
+		..dispatch(token)
+	};
+	let excluded = dispatch(token);
+	let rejected = UsageDispatch {
+		calibration_sample: true,
+		..dispatch(token)
+	};
+	let reported = ReportedUsage {
+		input_tokens: Some(60),
+		output_tokens: Some(5),
+		..Default::default()
+	};
+
+	// Act
+	for (attempt, outcome) in [
+		(&calibrated, UsageOutcome::Completed(reported.clone())),
+		(&excluded, UsageOutcome::Completed(reported.clone())),
+		(
+			&rejected,
+			UsageOutcome::Rejected {
+				class: "context_overflow".into(),
+			},
+		),
+	] {
+		store
+			.record_usage_dispatch(&run, token, attempt)
+			.await
+			.unwrap();
+		assert!(
+			store
+				.complete_usage_record(&run, attempt.attempt, &outcome)
+				.await
+				.unwrap()
+		);
+	}
+
+	// Assert
+	assert_eq!(
+		estimate_parts(&store, calibrated.attempt).await,
+		(
+			Some(200),
+			Some(10),
+			Some(250_000),
+			Some("vendor/model".into()),
+			true
+		)
+	);
+	assert_eq!(
+		estimate_parts(&store, excluded.attempt).await,
+		(
+			Some(200),
+			Some(10),
+			None,
+			Some("vendor/model".into()),
+			false
+		)
+	);
+	let samples = store
+		.calibration_samples("vendor/model", ProjectionVersion::Legacy.number())
+		.await
+		.unwrap();
+	assert_eq!(
+		samples,
+		vec![aidash_domain::provider::estimate::CalibrationSample {
+			byte_basis: 200,
+			prompt_tokens: 60,
+		}]
+	);
+	assert!(
+		store
+			.calibration_samples("vendor/model", ProjectionVersion::Ordered.number())
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	assert_eq!(
+		sample_columns(&store).await,
+		[
+			"byte_basis",
+			"completed_at",
+			"id",
+			"projection_version",
+			"prompt_tokens",
+			"upstream_model"
+		]
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+/// Each key keeps only its newest calibration window, newest first.
+#[rstest::rstest]
+#[tokio::test]
+async fn calibration_samples_keep_only_the_newest_window_per_key(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let extra = 5;
+	let complete = async |upstream_model: &str, prompt_tokens: u64| {
+		let attempt = UsageDispatch {
+			upstream_model: upstream_model.into(),
+			calibration_sample: true,
+			..dispatch(token)
+		};
+		store
+			.record_usage_dispatch(&run, token, &attempt)
+			.await
+			.unwrap();
+		let reported = ReportedUsage {
+			input_tokens: Some(prompt_tokens),
+			..Default::default()
+		};
+		assert!(
+			store
+				.complete_usage_record(&run, attempt.attempt, &UsageOutcome::Completed(reported))
+				.await
+				.unwrap()
+		);
+	};
+	for tokens in 1..=(CALIBRATION_WINDOW + extra) as u64 {
+		complete("vendor/model", tokens).await;
+	}
+	// Another key is pruned on its own.
+	complete("other/model", 7).await;
+
+	// Act
+	let samples = store
+		.calibration_samples("vendor/model", ProjectionVersion::Legacy.number())
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(samples.len(), CALIBRATION_WINDOW);
+	assert_eq!(
+		samples
+			.iter()
+			.map(|sample| sample.prompt_tokens)
+			.collect::<Vec<_>>(),
+		((extra as u64 + 1)..=(CALIBRATION_WINDOW + extra) as u64)
+			.rev()
+			.collect::<Vec<_>>()
+	);
+	assert_eq!(
+		store
+			.calibration_samples("other/model", ProjectionVersion::Legacy.number())
+			.await
+			.unwrap()
+			.len(),
+		1
 	);
 	cleanup(store, &url, &schema).await;
 }
