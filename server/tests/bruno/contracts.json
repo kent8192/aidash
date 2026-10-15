@@ -22473,8 +22473,7 @@
             "conversations",
             "peers",
             "events",
-            "artifacts",
-            "installations"
+            "artifacts"
           ],
           "properties": {
             "access": {
@@ -22502,12 +22501,6 @@
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/HumanRequest"
-              }
-            },
-            "installations": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/Installation"
               }
             },
             "node": {
@@ -22734,26 +22727,6 @@
             "workspace_id": {
               "type": "string",
               "format": "uuid"
-            }
-          }
-        },
-        "Installation": {
-          "type": "object",
-          "required": ["id", "version", "digest", "config", "installed_at"],
-          "properties": {
-            "config": {},
-            "digest": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string"
-            },
-            "installed_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "version": {
-              "type": "string"
             }
           }
         },
