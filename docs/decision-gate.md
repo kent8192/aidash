@@ -77,3 +77,30 @@ Rust adapters must update `Evaluation::decider` to accept `&BoundDecider`, inclu
 return `Reservation` from `reserve`. Handle `AttemptStatus::NotDispatched`, the new
 failure reasons and the required `Evidence::state_retention` field. Native Gate
 composition and durable database/worker acceptance remain pending.
+
+## Native persistence
+
+`RunDecisionJournal` (`server/src/apps/execution/repositories/decisions.rs`) is the
+PostgreSQL `DecisionJournal` for one leased Run and the exact Decider pin admitted
+for it. Its boundary maps `run_revision` to `runs.revision` and `input_revision` to
+`runs.observed_input_seq`; reserving, recovering and committing lock the Run row and
+require the current lease and both revisions. A Decision Attempt is charged once, as a
+`pending` row keyed by its stable identity, together with a receipt for the Run's own
+per-Run call limit (`ExecutionAllowance::max_calls_per_run`). Reserving the same
+attempt again returns it as recovered, a changed charge or an overlapping question
+plan is a conflict, and a spent limit stops with `PruneUnavailable` before anything is
+charged. Recovery reports a `pending` row as uncertain and keeps its original worker
+fence. A late result is still recorded after the lease moved.
+
+An applied decision saves the Run's context through the same lease-fenced save as an
+adopted Summary Stage (`context.compacted`), which ends the step, and writes its
+Decision Evidence in that transaction. Shadow and rejected decisions never touch the
+Run. A decision has at most one applied or shadow snapshot; each retry of a rejected
+decision appends another. Retained state whose deadline passed before the commit keeps
+only its expired marker, and `Store::expire_decision_states` later deletes due state and
+writes the matching marker into its evidence. Decision Evidence is not exposed through
+the public API.
+
+The gate is still not composed into native execution. Wiring it into context recovery,
+the server Decision Provider and Decision Authority, the `decider` Registry kind and
+generated-chain owners follow once #178 and #158 Phase 3 have merged.
