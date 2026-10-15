@@ -499,7 +499,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
 	));
 	// A rejection skips replay, yet it still carries only what its charges recorded:
-	// no unbacked answer, no other input, mode or looser restrictions.
+	// no unbacked answer, no other input or mode.
 	let (_, saved) = evidence_rows(&f.store, run.id).await.remove(0);
 	let mut unbacked = saved.clone();
 	unbacked
@@ -509,16 +509,32 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	other_input.boundary.input_digest = format!("sha256:{}", "b".repeat(64));
 	let mut other_mode = saved.clone();
 	other_mode.mode = Mode::Shadow;
-	let mut looser = saved.clone();
-	looser.restrictions.preserve_recent = 5;
 	let mut uncatalogued = saved.clone();
 	uncatalogued
 		.questions
 		.remove(&saved.attempts[0].questions[0]);
-	for differing in [unbacked, other_input, other_mode, looser, uncatalogued] {
+	for differing in [unbacked, other_input, other_mode, uncatalogued] {
 		assert!(matches!(
 			journal.commit(&differing, None, None).await,
 			Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+		));
+	}
+	// Nor does it skip the invariants every rejection keeps: no fitting reason,
+	// no unsupported version and no restrictions looser than the policy floor.
+	let mut fitting = saved.clone();
+	fitting.reason = Reason::Fits;
+	let mut unsupported = saved.clone();
+	unsupported.version = EVIDENCE_VERSION + 1;
+	let mut looser = saved.clone();
+	looser.restrictions.preserve_recent = 5;
+	for (invalid, expected) in [
+		(fitting, "corrupt historical application outcome"),
+		(unsupported, "unsupported or incomplete"),
+		(looser, "unsupported or incomplete"),
+	] {
+		assert!(matches!(
+			journal.commit(&invalid, None, None).await,
+			Err(aidash_application::Error::Invalid(message)) if message.contains(expected)
 		));
 	}
 	let mut anonymous = saved.clone();
@@ -527,7 +543,8 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		journal.commit(&anonymous, None, None).await,
 		Err(aidash_application::Error::Invalid(message)) if message.contains("decision identity")
 	));
-	// An expired marker must match its retention witness.
+	// An expired marker must match its retention witness, which the rejection
+	// invariants already check.
 	let (_, mut marked) = evidence_rows(&f.store, run.id).await.remove(0);
 	marked.state = StateReference::Expired {
 		id: Uuid::new_v4(),
@@ -540,7 +557,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	};
 	assert!(matches!(
 		journal.commit(&marked, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
+		Err(aidash_application::Error::Invalid(message)) if message.contains("retained-state reference changed")
 	));
 	// A marker whose deadline has not passed by the commit is not an expiry.
 	let (_, mut premature) = evidence_rows(&f.store, run.id).await.remove(0);

@@ -104,8 +104,12 @@ evidence must name exactly the attempts charged for its decision, locked for the
 each with its durable status and with its questions in the evidence's question catalog.
 It must keep their input commitment and mode, keep
 restrictions at least as strict as their binding restrictions, and carry exactly the
-answers its answered attempts recorded. A rejected snapshot, which skips replay, must
-still carry its decision identity.
+answers its answered attempts recorded. A rejected snapshot skips replay, because an
+early failure has no answers or branches yet, but it must still carry its decision
+identity and pass `Evidence::validate_rejection`: a reason other than `fits`, the
+supported evidence version and contracts, restrictions within the policy floor, the
+pinned Decider and model, a consistent retained-state reference, and fit counts of a
+context that did not fit.
 
 An applied decision saves the Run's context through the same lease-fenced save as an
 adopted Summary Stage (`context.compacted`), which ends the step, and writes its

@@ -582,7 +582,11 @@ impl<'a> RunDecisionJournal<'a> {
 				"only an applied decision replaces the Run's context".into(),
 			));
 		}
-		if evidence.outcome != Outcome::Rejected {
+		// A rejection after an early failure has nothing to replay, but it still
+		// keeps every invariant a rejection has at any stage.
+		if evidence.outcome == Outcome::Rejected {
+			evidence.validate_rejection()?;
+		} else {
 			evidence.replay()?;
 		}
 		// A rejection skips replay, yet later recovery and outcomes still link
