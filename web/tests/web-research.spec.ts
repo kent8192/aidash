@@ -44,7 +44,6 @@ const pending: Card[] = [
     agent_version: "1.0.0",
     operation: "search",
     provider: "research.brave@1",
-    operator_account: "brave-account",
     estimated_micro_usd: 5000,
     query: { query: "rust release", language: "en", count: 3 },
     decided_by: null,
@@ -118,7 +117,11 @@ const grants: Card[] = [
     decided_at: null,
   },
 ];
-/** What the requester's Thread lists: one waiting, one denied, one expired. */
+/**
+ * What the requester's Thread lists: one waiting, one denied, one expired,
+ * one closed by an Evidence Revocation, one nobody may approve, and the Run
+ * grant the requester may revoke.
+ */
 const thread: Card[] = [
   {
     ...pending[1],
@@ -142,6 +145,27 @@ const thread: Card[] = [
     approver: "bob",
     viewer_is_approver: false,
     expires_at: "2026-10-01T00:00:00Z",
+  },
+  {
+    ...pending[2],
+    id: "closed",
+    state: "closed",
+    approver: "bob",
+    viewer_is_approver: false,
+    closed_reason: "evidence_revoked",
+  },
+  {
+    ...pending[1],
+    id: "blocked",
+    state: "blocked",
+    approver: null,
+    viewer_is_approver: false,
+  },
+  {
+    ...grants[0],
+    id: "thread-grant",
+    approver: "bob",
+    viewer_is_approver: false,
   },
 ];
 
@@ -227,23 +251,43 @@ async function research(page: Page) {
       path.endsWith("/transfers")
     )
       return send({ items: [], next_cursor: null });
-    if (path === "/api/research/providers")
+    if (path === "/api/research/providers") {
+      // The Tenant approved the fixture's search and page reading copies,
+      // not its find; Brave and public page reading are not set up.
+      const operation = (provider: string, name: string, approved = true) => ({
+        operation: name,
+        approved_definitions: approved
+          ? [
+              {
+                id: `aidash.${provider.replace("@1", "")}.${name}`,
+                version: "1.0.0",
+              },
+            ]
+          : [],
+      });
       return send({
         providers: [
           {
             provider: "research.brave@1",
-            operations: ["search"],
-            available: false,
+            set_up: false,
+            operations: [operation("research.brave@1", "search", false)],
           },
           {
             provider: "research.page@1",
-            operations: ["fetch", "find"],
-            available: false,
+            set_up: false,
+            operations: [
+              operation("research.page@1", "fetch"),
+              operation("research.page@1", "find"),
+            ],
           },
           {
             provider: "research.fixture@1",
-            operations: ["search", "fetch", "find"],
-            available: true,
+            set_up: true,
+            operations: [
+              operation("research.fixture@1", "search"),
+              operation("research.fixture@1", "fetch"),
+              operation("research.fixture@1", "find", false),
+            ],
           },
         ],
         limits: {
@@ -254,6 +298,7 @@ async function research(page: Page) {
           snapshot_bytes: 8388608,
         },
       });
+    }
     if (path === "/api/runs/run-0/research")
       return send({
         limits: {
@@ -273,6 +318,14 @@ async function research(page: Page) {
         estimated_micro_usd: 15000,
         uncertain_attempts: 1,
         in_flight_attempts: 0,
+        url_intents: [
+          {
+            input: "task",
+            pages: ["https://example.com/notes"],
+            requested_by: "alice",
+            requested_at: "2026-10-14T08:00:00Z",
+          },
+        ],
       });
     if (path === "/api/capabilities/approvals") {
       const state = url.searchParams.get("state");
@@ -347,16 +400,23 @@ test("an Agent's bound research operations show their availability, the Run's us
   await expect(panel).toBeVisible();
   const operations = panel.getByRole("listitem");
   await expect(operations).toHaveText([
-    "Web search · research.fixture@1 · Available on this Node",
-    "Page reading · research.fixture@1 · Available on this Node",
-    "Page reading · research.page@1 · Needs Operator setup on this Node",
-    "Find in a read page · research.fixture@1 · Available on this Node",
+    "Web search · research.fixture@1 · Ready",
+    "Page reading · research.fixture@1 · Ready",
+    "Page reading · research.page@1 · Not set up in this Deployment",
+    "Find in a read page · research.fixture@1 · Not approved for use here",
   ]);
+  // Nothing names an environment variable or who must act.
+  await expect(panel).not.toContainText("AIDASH_");
+  await expect(panel).not.toContainText("Operator");
   await expect(
     panel.getByText(
-      "This Run: searches 3/20 · page readings 1/50 · sources 4/100 · snapshots 1/50 · estimated research cost $0.0150 (estimate, not an invoice)",
+      "This Run: searches 3/20 · page readings 1/50 · sources 4/100 · snapshots 1/50 · estimated research cost $0.0150 (an estimate, not an invoice; the Research account holder pays)",
     ),
   ).toBeVisible();
+  // The URL intent comes from its record, not from the Task's text.
+  await expect(
+    panel.getByText("Asked to read (alice):", { exact: false }),
+  ).toContainText("https://example.com/notes");
   await expect(
     panel.getByText(
       "1 attempts have an unknown outcome. They are never sent again automatically.",
@@ -433,7 +493,7 @@ test("an approver decides Web disclosures and revokes Run grants from the global
   for (const text of [
     "api.search.brave.com",
     "research.brave@1",
-    "brave-account",
+    "This Deployment's research.brave@1 account",
     "$0.0050 (estimate, not an invoice)",
     "researcher@1.0.0",
     "rust release",
@@ -511,5 +571,30 @@ test("an approver decides Web disclosures and revokes Run grants from the global
   await expect(
     page.getByText("Expired. Nothing is sent.", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Closed because this Run's research evidence was revoked. Nothing is sent.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  // Nobody may approve: shown apart from a denial, and never in an inbox.
+  await expect(
+    page.getByText(
+      "Nobody in this Tenant may approve Web disclosures to example.com. Nothing is sent.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  // The Thread lists the Run's grant with its scope; its requester may revoke it.
+  const threadGrant = page
+    .getByRole("article", { name: "Web disclosure Run grant" })
+    .filter({ hasText: "Approver: bob" });
+  await expect(
+    threadGrant.getByRole("button", { name: "Revoke" }),
+  ).toBeVisible();
+  // A disclosure approval itself is never revoked.
+  for (const card of await page
+    .getByRole("article", { name: /disclosure$/ })
+    .all())
+    await expect(card.getByRole("button", { name: "Revoke" })).toHaveCount(0);
   expect(errors).toEqual([]);
 });

@@ -30,6 +30,7 @@ import {
 } from "./components/ui/sheet";
 import type { Mesh, State } from "./types";
 import type { ApprovalCard } from "./generated/models";
+import { approvalNotice } from "./research";
 import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
@@ -86,6 +87,7 @@ function frame(
   data: State | undefined,
   remote: Mesh | undefined,
   approvals: ApprovalCard[] | undefined,
+  ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
   const scopes = data.workspaces.map((workspace) =>
@@ -172,10 +174,7 @@ function frame(
         scope,
         signature: `${approval.revision}:${approval.state}`,
         kind: approval.state === "pending" ? "approval" : null,
-        detail: (approval.disclosure ?? approval.targets.join(", ")).slice(
-          0,
-          180,
-        ),
+        detail: approvalNotice(approval, ja).slice(0, 180),
         workspaceTitle: approval.agent_id ?? "",
         target: {
           kind: "approval",
@@ -269,7 +268,7 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, remote, approvals));
+    store.observe(frame(data, remote, approvals, locale === "ja-JP"));
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -342,7 +341,17 @@ export function NotificationProvider({
         },
       );
     }, delay);
-  }, [data, remote, approvals, store, toastId, show, visit, centerOpen]);
+  }, [
+    data,
+    remote,
+    approvals,
+    locale,
+    store,
+    toastId,
+    show,
+    visit,
+    centerOpen,
+  ]);
   useEffect(
     () => () => {
       clearTimeout(timer.current);

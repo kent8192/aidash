@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  approvalNotice,
   dollars,
+  researchFailure,
   researchBindings,
   runGrantScope,
   urlIntents,
@@ -63,10 +65,24 @@ test("research operations come from tool and bundle bindings, once each, in cont
     ]),
     registry,
   );
+  const ref = (id) => ({ id, version: "1.0.0" });
   assert.deepEqual(bound, [
-    { provider: "research.fixture@1", operation: "search" },
-    { provider: "research.page@1", operation: "fetch" },
-    { provider: "research.fixture@1", operation: "find" },
+    {
+      provider: "research.fixture@1",
+      operation: "search",
+      // Bound through the bundle and directly: one operation, one definition.
+      definitions: [ref("aidash.research.fixture.search")],
+    },
+    {
+      provider: "research.page@1",
+      operation: "fetch",
+      definitions: [ref("aidash.research.page.fetch")],
+    },
+    {
+      provider: "research.fixture@1",
+      operation: "find",
+      definitions: [ref("aidash.research.fixture.find")],
+    },
   ]);
 });
 
@@ -131,6 +147,67 @@ test("prices read as dollars and Run grant scopes say what they cover", () => {
       },
       false,
     ),
-    /Later page readings from example\.com in this Run/,
+    /Later page readings from example\.com in this Run, whichever Research provider reads them/,
+  );
+});
+
+test("a notification names what is asked, never what would be sent", () => {
+  const card = {
+    kind: "disclosure",
+    operation: "search",
+    targets: ["api.search.brave.com"],
+    agent_id: "researcher",
+    agent_version: "1.0.0",
+    requester: "alice",
+    disclosure: '{"q":"confidential merger plans"}',
+    query: { query: "confidential merger plans" },
+  };
+  const line = approvalNotice(card, false);
+  assert.equal(
+    line,
+    "Web search · api.search.brave.com · researcher@1.0.0 · requested by alice",
+  );
+  assert.doesNotMatch(line, /merger/);
+  assert.match(
+    approvalNotice({ ...card, operation: "fetch" }, true),
+    /^ページ読み取り · /,
+  );
+  assert.match(
+    approvalNotice(
+      { kind: "outbound", targets: ["https://example.com"], requester: "bob" },
+      false,
+    ),
+    /^Outbound request · https:\/\/example\.com · requested by bob$/,
+  );
+});
+
+test("research failures read in plain words without amounts", () => {
+  const failure = (code, operation = "search") => ({
+    version: 1,
+    operation,
+    status: "error",
+    error: { code, explanation: "x", retryable: false },
+  });
+  assert.match(
+    researchFailure(failure("budget_exhausted"), false),
+    /monthly limit .* reached\. It is available again next month\.$/,
+  );
+  assert.doesNotMatch(
+    researchFailure(failure("budget_exhausted"), false),
+    /\$|\d/,
+  );
+  assert.match(
+    researchFailure(failure("account_unavailable", "fetch"), true),
+    /現在使えません/,
+  );
+  assert.match(
+    researchFailure(failure("disclosure_denied", "fetch"), false),
+    /nothing was sent/,
+  );
+  assert.equal(researchFailure(failure("rate_limited"), false), null);
+  assert.equal(
+    researchFailure({ error: { code: "budget_exhausted" } }, false),
+    null,
+    "only research tool results are explained",
   );
 });

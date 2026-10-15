@@ -92,9 +92,14 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
   const facts: [string, string][] = [
     [ja ? "送信先" : "Destination", item.targets.join(", ")],
     [ja ? "Provider" : "Provider", item.provider ?? none],
+    // The Research account holder pays; its account ID is kept for audit only.
     [
-      ja ? "検索サービスの運用者" : "Search service operator",
-      item.operator_account ?? none,
+      ja ? "課金先" : "Charged to",
+      item.estimated_micro_usd == null
+        ? none
+        : ja
+          ? `この Deployment の ${item.provider ?? ""} アカウント`
+          : `This Deployment's ${item.provider ?? ""} account`,
     ],
     [
       ja ? "推定費用（1回）" : "Estimated cost (this request)",
@@ -136,7 +141,25 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
 function stateText(item: Approval, ja: boolean, locale: string) {
   const when = (value: string | null | undefined) =>
     value ? new Date(value).toLocaleString(locale) : "";
+  const host = item.targets.join(", ");
   switch (item.state) {
+    case "closed":
+      return item.closed_reason === "evidence_revoked"
+        ? ja
+          ? "閉じられました。この Run の Research evidence が取り消されたためです。送信されません。"
+          : "Closed because this Run's research evidence was revoked. Nothing is sent."
+        : ja
+          ? "閉じられました。送信されません。"
+          : "Closed. Nothing is sent.";
+    case "blocked":
+      // Nobody may approve: the fix is the Tenant's policy, not a person.
+      return disclosure(item)
+        ? ja
+          ? `この Tenant には ${host} への Web 開示を承認できる人がいません。送信されません。`
+          : `Nobody in this Tenant may approve Web disclosures to ${host}. Nothing is sent.`
+        : ja
+          ? `この Tenant には ${host} への接続を承認できる人がいません。送信されません。`
+          : `Nobody in this Tenant may approve requests to ${host}. Nothing is sent.`;
     case "denied":
       return ja
         ? `拒否されました（${item.decided_by ?? "?"}・${when(item.decided_at)}）。送信されません。`

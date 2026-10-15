@@ -21,10 +21,14 @@ const OPERATION: Record<string, [string, string]> = {
   find: ["Find in a read page", "読んだページ内の検索"],
 };
 
+/** Why a bound research operation can or cannot run here. */
+export type Readiness = "ready" | "not_set_up" | "not_approved" | "unknown";
+
 /**
- * The research operations an Agent binds and whether this Node can run them.
- * Page reading is possible only when a bound Page reading provider is
- * available here; only then is a URL intent offered.
+ * The research operations an Agent binds and whether each can run here: its
+ * Research provider must be set up in this Deployment, and this Tenant must
+ * have a Catalog Approval for its definition. Only then is a URL intent
+ * offered for Page reading.
  */
 export function useResearch(agent: Agent | undefined, data: State) {
   const bound = researchBindings(agent, data.registry);
@@ -36,19 +40,45 @@ export function useResearch(agent: Agent | undefined, data: State) {
     staleTime: 60_000,
     retry: false,
   });
-  const available = (binding: ResearchBinding) =>
-    providers.data?.providers.find(
-      (provider) => provider.provider === binding.provider,
-    )?.available === true;
+  const readiness = (binding: ResearchBinding): Readiness => {
+    const provider = providers.data?.providers.find(
+      (item) => item.provider === binding.provider,
+    );
+    if (!provider) return "unknown";
+    if (!provider.set_up) return "not_set_up";
+    const approved =
+      provider.operations.find((item) => item.operation === binding.operation)
+        ?.approved_definitions ?? [];
+    // Ready only through a bound definition this Tenant has approved here.
+    return binding.definitions.some((definition) =>
+      approved.some(
+        (item) =>
+          item.id === definition.id && item.version === definition.version,
+      ),
+    )
+      ? "ready"
+      : "not_approved";
+  };
   return {
     bound,
     providers: providers.data,
-    available,
+    readiness,
     canRead: bound.some(
-      (binding) => binding.operation === "fetch" && available(binding),
+      (binding) =>
+        binding.operation === "fetch" && readiness(binding) === "ready",
     ),
   };
 }
+
+const READINESS: Record<Readiness, [string, string]> = {
+  ready: ["Ready", "利用できます"],
+  not_set_up: [
+    "Not set up in this Deployment",
+    "この Deployment では未設定です",
+  ],
+  not_approved: ["Not approved for use here", "ここでの利用は未承認です"],
+  unknown: ["…", "…"],
+};
 
 /**
  * The Web research of the selected Agent in a Thread: its bound research
@@ -101,15 +131,7 @@ export function ResearchPanel({
           <li key={`${binding.provider} ${binding.operation}`}>
             {(OPERATION[binding.operation] ?? [binding.operation])[ja ? 1 : 0]}{" "}
             · <code>{binding.provider}</code> ·{" "}
-            {research.providers === undefined
-              ? "…"
-              : research.available(binding)
-                ? ja
-                  ? "この Node で利用できます"
-                  : "Available on this Node"
-                : ja
-                  ? "この Node では Operator の設定が必要です"
-                  : "Needs Operator setup on this Node"}
+            {READINESS[research.readiness(binding)][ja ? 1 : 0]}
           </li>
         ))}
       </ul>
@@ -130,7 +152,7 @@ export function ResearchPanel({
           · {ja ? "スナップショット" : "snapshots"}{" "}
           {of(used?.snapshots, limits.snapshots)}
           {usage.data &&
-            ` · ${ja ? "推定調査費用" : "estimated research cost"} ${dollars(usage.data.estimated_micro_usd)} ${ja ? "（見積もり。請求額ではありません）" : "(estimate, not an invoice)"}`}
+            ` · ${ja ? "推定調査費用" : "estimated research cost"} ${dollars(usage.data.estimated_micro_usd)} ${ja ? "（見積もり。請求額ではなく、Research account holder が支払います）" : "(an estimate, not an invoice; the Research account holder pays)"}`}
         </Hint>
       )}
       {(usage.data?.uncertain_attempts ?? 0) > 0 && (
@@ -147,6 +169,19 @@ export function ResearchPanel({
           {item.approver ??
             (ja ? "承認できる人がいません" : "no eligible approver")}{" "}
           · <code>{item.targets.join(", ")}</code>
+        </Hint>
+      ))}
+      {(usage.data?.url_intents ?? []).map((intent) => (
+        <Hint key={`${intent.requested_at} ${intent.pages.join(" ")}`}>
+          {ja ? "読み取りの依頼" : "Asked to read"}
+          {ja ? "（" : " ("}
+          {intent.requested_by}
+          {ja ? "）：" : "): "}
+          {intent.pages.map((page) => (
+            <code key={page} className="mr-1 [overflow-wrap:anywhere]">
+              {page}
+            </code>
+          ))}
         </Hint>
       ))}
       {usage.isError && <Hint>{usage.error.message}</Hint>}
