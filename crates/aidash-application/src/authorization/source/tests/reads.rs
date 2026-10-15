@@ -335,6 +335,37 @@ async fn authorized_source_leaf_records_only_the_exact_admission_dependency() {
 }
 #[rstest]
 #[tokio::test]
+async fn required_home_disclosure_recheck_restores_admitted_provider_attributes() {
+	let provider = |id: &str| json!({"node_id":"aidash://home","entry":{"id":id,"version":"1"},"digest":"digest","configuration_digest":"config"});
+	let mut reader = Reader::new();
+	reader.grant.as_mut().unwrap().semantic = json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":provider("embedding"),"compactor":provider("compactor"),"summarizer":provider("summarizer")});
+	assert!(
+		use_case::visible(
+			&mut reader,
+			"aidash://receiver",
+			Uuid::from_u128(3),
+			Uuid::from_u128(5)
+		)
+		.await
+		.unwrap()
+	);
+	let (_, workspace, _) = reader
+		.base
+		.calls
+		.iter()
+		.find(|(action, ..)| action == "semantic.disclose")
+		.unwrap();
+	assert_eq!(
+		workspace.attributes["compactor"],
+		json!({"id":"compactor","version":"1"})
+	);
+	assert_eq!(
+		workspace.attributes["summarizer"],
+		json!({"id":"summarizer","version":"1"})
+	);
+}
+#[rstest]
+#[tokio::test]
 async fn output_coordinator_verifies_foreign_dependencies_before_visibility() {
 	let mut reader = Reader::new();
 	reader.frontier = None;

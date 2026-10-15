@@ -993,9 +993,11 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		memory::operate(&store, &Actor::Operator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
-	let reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
+	// A restarted node keeps its Deployment's permitted Keyless origins.
+	reopened.keyless = store.keyless.clone();
 	let reopened = recovery::initialize_if_missing(&reopened, directory.to_owned())
 		.await
 		.unwrap();
@@ -2264,8 +2266,13 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	if delivery == "commit_failure" {
 		// DDL exception: SeaQuery cannot express PostgreSQL deferred constraint
 		// triggers. Reject the enclosing task-snapshot commit after reads are
-		// staged, before inference, rather than failing the read insert.
-		let mut tx = aidash_server::database::native::begin(&store.pool)
+		// staged, before inference, rather than failing the read insert. Only
+		// the table owner can add a trigger; the server role holds DML.
+		let owner: aidash_server::database::native::Pool =
+			crate::native_database::owner_pool(store.pool.driver())
+				.await
+				.into();
+		let mut tx = aidash_server::database::native::begin(&owner)
 			.await
 			.unwrap();
 		let ddl = [

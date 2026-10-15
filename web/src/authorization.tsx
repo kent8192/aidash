@@ -20,6 +20,7 @@ import {
   transactionRevocations,
   authorizationCatalog,
   authorizationSetCatalog,
+  registryGet,
 } from "./generated/aidash";
 import type {
   Binding,
@@ -32,6 +33,7 @@ import type {
   Snapshot,
 } from "./generated/models";
 import { ApiError } from "./transport";
+import { keylessOrigin } from "./keyless";
 import {
   Badge,
   Empty,
@@ -400,6 +402,15 @@ function TenantAuthorization({
                               {binding.revision}
                             </span>
                           </span>
+                          <KeylessOrigin
+                            id={binding.entry_id}
+                            version={binding.entry_version}
+                            known={entries.find(
+                              (entry) =>
+                                entry.id === binding.entry_id &&
+                                entry.version === binding.entry_version,
+                            )}
+                          />
                         </div>
                         <AccessBadge
                           value={
@@ -939,6 +950,7 @@ function CatalogForm({
   }) => Promise<boolean>;
 }) {
   const { t, local } = useI18n();
+  const [selected, setSelected] = useState("");
   const available = entries.filter(
     (entry) =>
       !bindings.some(
@@ -948,15 +960,18 @@ function CatalogForm({
           binding.enabled,
       ),
   );
+  // A refetch can remove the selected option; the controlled select then
+  // returns to the placeholder instead of silently showing another entry
+  // whose Keyless notice was never rendered.
+  const choice = available.find(
+    (entry) => JSON.stringify([entry.id, entry.version]) === selected,
+  );
   return (
     <form
       className="flex flex-wrap items-end gap-2"
       onSubmit={(event) => {
         event.preventDefault();
-        const selected = String(new FormData(event.currentTarget).get("entry"));
-        const entry = available.find(
-          (entry) => JSON.stringify([entry.id, entry.version]) === selected,
-        );
+        const entry = choice;
         if (!entry) return;
         const binding = bindings.find(
           (binding) =>
@@ -972,7 +987,12 @@ function CatalogForm({
     >
       <div className="w-full min-w-0 sm:w-96">
         <Field label={t("authCatalogEntry")}>
-          <NativeSelect name="entry" required defaultValue="">
+          <NativeSelect
+            name="entry"
+            required
+            value={choice ? selected : ""}
+            onChange={(event) => setSelected(event.currentTarget.value)}
+          >
             <option value="" disabled>
               {t("authSelectEntry")}
             </option>
@@ -990,7 +1010,55 @@ function CatalogForm({
       <Button variant="outline" disabled={busy || !available.length}>
         {t("authApprove")}
       </Button>
+      <KeylessNotice entry={choice} />
     </form>
+  );
+}
+
+/** Before approval: a Keyless definition carries no data retention guarantee (ADR 0036). */
+function KeylessNotice({ entry }: { entry?: Entry }) {
+  const { t } = useI18n();
+  const origin = entry && keylessOrigin(entry);
+  if (!origin) return null;
+  return (
+    <Notice tone="warning" role="status" className="keyless-notice w-full">
+      {t("authKeylessNotice")} <span className="font-mono">{origin}</span>
+    </Notice>
+  );
+}
+
+/**
+ * On an approved row: where the Keyless definition sends requests. The
+ * definition is read on its own when the Registry state is unavailable, so a
+ * degraded dashboard still shows the warning.
+ */
+function KeylessOrigin({
+  id,
+  version,
+  known,
+}: {
+  id: string;
+  version: string;
+  known?: Entry;
+}) {
+  const { t } = useI18n();
+  const fetched = useQuery({
+    queryKey: ["registry", id, version],
+    queryFn: () =>
+      registryGet(encodeURIComponent(id), encodeURIComponent(version)),
+    enabled: !known,
+    // A definition never changes, but a failed read during the same outage
+    // must not leave the warning missing: poll like the catalog until it loads.
+    staleTime: Infinity,
+    refetchInterval: (query) => (query.state.data ? false : 5000),
+  });
+  const entry = known ?? (!fetched.isError ? fetched.data : undefined);
+  const origin = entry && keylessOrigin(entry);
+  if (!origin) return null;
+  return (
+    <span className="keyless-origin text-[11px] text-warning [overflow-wrap:anywhere]">
+      {t("authKeyless")} · <span className="font-mono">{origin}</span>
+    </span>
   );
 }
 

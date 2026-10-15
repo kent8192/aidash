@@ -1,4 +1,5 @@
 import { apiFetch } from "../transport";
+import { sha256 } from "@noble/hashes/sha2.js";
 export type CoreFile = {
   file_id: string;
   path: string;
@@ -40,6 +41,8 @@ export const post = <T>(path: string, input: unknown = {}) =>
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
   });
+const MAX_BROWSER_DOWNLOAD_BYTES = 128 * 1024 * 1024;
+
 export async function download(
   path: string,
 ): Promise<{ blob: Blob; file: CoreFile }> {
@@ -47,6 +50,7 @@ export async function download(
   let offset: number | null = 0;
   let file: CoreFile | undefined;
   let bytes = 0;
+  const digestState = sha256.create();
   while (offset !== null) {
     const page: { file: CoreFile; data: string; next_offset: number | null } =
       await apiFetch(`/api${path}?offset=${offset}`);
@@ -59,6 +63,8 @@ export async function download(
       file.size < 0
     )
       throw new Error("File changed or has an invalid size");
+    if (file.size > MAX_BROWSER_DOWNLOAD_BYTES)
+      throw new Error("File exceeds the browser download limit");
     const chunk = Uint8Array.from(atob(page.data), (c) => c.charCodeAt(0));
     bytes += chunk.length;
     if (
@@ -68,15 +74,14 @@ export async function download(
     )
       throw new Error("Invalid download continuation");
     parts.push(chunk);
+    digestState.update(chunk);
     offset = page.next_offset;
   }
   if (!file) throw new Error("File unavailable");
   const blob = new Blob(parts, { type: file.media_type });
-  const digest = Array.from(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()),
-    ),
-    (n) => n.toString(16).padStart(2, "0"),
+  parts.length = 0;
+  const digest = Array.from(digestState.digest(), (n) =>
+    n.toString(16).padStart(2, "0"),
   ).join("");
   if (blob.size !== file.size || digest !== file.digest)
     throw new Error("File integrity check failed");

@@ -1305,13 +1305,28 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 			);
 		}
 	}
-	let truncate_model_refs = sqlx::query("TRUNCATE registry_agent_model_refs")
+	// TRUNCATE skips row-level security, so the server role may not issue it.
+	let refused = sqlx::query("TRUNCATE registry_agent_model_refs")
 		.execute(f.store.pool.driver())
+		.await
+		.unwrap_err();
+	assert_eq!(
+		refused
+			.as_database_error()
+			.and_then(|error| error.code())
+			.as_deref(),
+		Some("42501"),
+		"{refused}"
+	);
+	// Even the table owner cannot TRUNCATE past the reference triggers.
+	let owner = common::owner_pool(f.store.pool.driver()).await;
+	let truncate_model_refs = sqlx::query("TRUNCATE registry_agent_model_refs")
+		.execute(&owner)
 		.await
 		.map(|_| ());
 	check_rejected(truncate_model_refs, "registry_agent_model_reference");
 	let truncate_resource_refs = sqlx::query("TRUNCATE registry_agent_resource_refs")
-		.execute(f.store.pool.driver())
+		.execute(&owner)
 		.await
 		.map(|_| ());
 	check_rejected(truncate_resource_refs, "registry_agent_resource_reference");

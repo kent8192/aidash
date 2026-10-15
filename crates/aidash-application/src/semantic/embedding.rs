@@ -36,9 +36,12 @@ pub async fn invoke(
 			// A rejected key (401–403) or a broken response contract is not an
 			// outage: keep its typed reason so the Run pauses instead of retrying.
 			Error::RemoteSemantic(reason) if !reason.transient() => error,
+			// A Keyless endpoint the Deployment does not permit (ADR 0036) is
+			// refused, not unavailable.
+			Error::Forbidden => error,
 			// Tenant access failures are admission/state failures, never a retryable
 			// provider outage. Preserve them without changing self-hosted diagnostics.
-			Error::Invalid(_) | Error::NotFound(_) | Error::Forbidden | Error::Conflict(_)
+			Error::Invalid(_) | Error::NotFound(_) | Error::Conflict(_)
 				if config.provider_credential.is_some() =>
 			{
 				error

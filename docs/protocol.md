@@ -153,7 +153,7 @@ versions. The opt-in `context-recovery/1` policy accepts:
 
 | Field                 | Default | Bounds                | Meaning                                                                                           |
 | --------------------- | ------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `preserve_recent`     | 6       | 6–1000                | Latest events that are never pruned or summarized                                                 |
+| `preserve_recent`     | 6       | 6–1000                | Latest events (Model Turns on `native`) that are never pruned or summarized                       |
 | `overflow_retries`    | 2       | 0–4                   | Compact-and-retry attempts after a provider Context Overflow                                      |
 | `overflow_shrink`     | 0.75    | 0.5–0.9               | Factor applied to the effective window on each overflow retry                                     |
 | `summary.model`       | none    | exact model reference | Separately approved summarizer; enables the Summary Stage                                         |
@@ -170,7 +170,10 @@ inference request. Human answers, corrections, continuation markers and
 `model_media_observation` events, whose source messages a summary could not
 recheck, always stay verbatim. So do `workspace_observe` pages and workspace
 record reads other than message reads, whose records are visible one by one
-while a summary rechecks only message sources. The summarizer receives only the
+while a summary rechecks only message sources. On the `native` Projection
+Version the unit is a Model Turn: an `assistant` event and the `tool` events of
+its calls are absorbed together or not at all, and Jev elides a dropped result
+under its call instead of removing the call. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 copies the previous goal verbatim and

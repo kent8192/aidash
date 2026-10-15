@@ -43,6 +43,9 @@ pub enum Error {
 	External(String),
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
+	/// A Plan Connection could not serve a call (ADR 0007); never retried.
+	#[error("{0}")]
+	Plan(aidash_domain::plan_connections::Failure),
 	/// A streamed provider response stopped producing data. Retryable like a
 	/// provider transport timeout.
 	#[error("model provider stream stalled")]
@@ -95,6 +98,22 @@ impl Error {
 				StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
 				self.to_string(),
 			),
+			Self::Plan(failure) => {
+				use aidash_domain::plan_connections::Failure;
+				(
+					match failure {
+						Failure::UsageLimit => StatusCode::TOO_MANY_REQUESTS,
+						Failure::Unsupported(_) => StatusCode::BAD_REQUEST,
+						Failure::Misconfigured => StatusCode::BAD_GATEWAY,
+						Failure::NotConnected
+						| Failure::NotAdmitted
+						| Failure::NeedsReconnection
+						| Failure::Ineligible
+						| Failure::Restricted => StatusCode::CONFLICT,
+					},
+					self.to_string(),
+				)
+			}
 			Self::Framework(FrameworkError::ParamValidation(context))
 				if matches!(
 					context.param_type,
@@ -254,11 +273,15 @@ impl From<aidash_application::Error> for Error {
 				Self::Context(reason)
 			}
 			ApplicationError::ContextOverflow => Self::ContextOverflow,
+			error @ ApplicationError::UnsupportedProjection { .. } => {
+				Self::Invalid(error.to_string())
+			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
 				Self::ProviderRejected { status, reason }
 			}
+			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
 			ApplicationError::Port(error) => match error.downcast::<Self>() {
@@ -286,6 +309,7 @@ impl From<Error> for aidash_application::Error {
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
 			Error::InferenceStalled => Self::InferenceStalled,
+			Error::Plan(failure) => Self::Plan(failure),
 			error => Self::Port(Box::new(error)),
 		}
 	}

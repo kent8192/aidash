@@ -24,6 +24,7 @@ import {
   marketplace,
 } from "./generated/aidash";
 import { subscribe } from "./event-stream";
+import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
   sessionFetch,
@@ -507,6 +508,7 @@ function Dashboard({
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
+    const refresher = coalescedRefresh(client);
     let timer: ReturnType<typeof setTimeout> | undefined;
     void subscribe(
       controller.signal,
@@ -525,7 +527,7 @@ function Dashboard({
             "provider-credentials",
             "provider-credential-bindings",
           ]) {
-            void client.invalidateQueries({ queryKey: [key] });
+            refresher.refresh(key);
           }
           timer = undefined;
         }, 250);
@@ -534,6 +536,7 @@ function Dashboard({
     );
     return () => {
       controller.abort();
+      refresher.close();
       clearTimeout(timer);
     };
   }, [connected, client, context]);
@@ -575,11 +578,18 @@ function Dashboard({
     setError("");
     try {
       const result = await request();
-      await client.invalidateQueries();
       if (selection?.kind === "workspace" || selection?.kind === "goal") {
+        // A channel renders only once the dashboard state lists it, so the
+        // new one is opened after the refresh.
+        await client.invalidateQueries();
         const value = result as { id?: string; workspace?: { id?: string } };
         const id = value?.workspace?.id ?? value?.id;
         if (id) go("collaboration", { channel: id });
+      } else {
+        // The request has succeeded, so the dialog closes now and the
+        // dashboard refreshes behind it. A full refresh can take seconds,
+        // longest right after an answer resumes a Run.
+        void client.invalidateQueries();
       }
       setSelection(null);
       return true;

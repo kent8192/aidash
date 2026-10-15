@@ -1,5 +1,6 @@
 //! Authentication and transaction visibility at the HTTP boundary.
 use super::http_auth::{bearer, browser_operator_allowed, peer_node};
+use crate::apps::identity::models::DashboardRegistrationRequest;
 use crate::{
 	Error, Result,
 	authorization::{Authorization, identity::Actor},
@@ -10,6 +11,7 @@ use crate::{
 };
 use aidash_domain::federation::protocol::compatible;
 use async_trait::async_trait;
+use http::Method;
 use http::header::{AUTHORIZATION, CACHE_CONTROL};
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::{Injectable, InjectionContext, Request, Response};
@@ -142,12 +144,66 @@ impl Middleware for AccessBoundary {
 				return Ok(Response::new(reinhardt::StatusCode::TOO_MANY_REQUESTS)
 					.with_header("Retry-After", "1"));
 			}
+			let browser = request.extensions.get::<dashboard_auth::BrowserOrigin>();
+			let self_identity_write = browser.as_ref().is_some_and(|origin| {
+				request
+					.uri
+					.path()
+					.strip_prefix("/api/dashboard/identities/")
+					.and_then(|path| {
+						path.strip_suffix("/operator-grant")
+							.or_else(|| path.strip_suffix("/restore"))
+							.or_else(|| path.strip_suffix("/display-erasure"))
+					})
+					.and_then(|id| uuid::Uuid::parse_str(id).ok())
+					== Some(origin.identity_id)
+			});
+			if self_identity_write && request.method != Method::GET {
+				return Err(Error::Forbidden);
+			}
+			let registration_decision = request
+				.uri
+				.path()
+				.strip_prefix("/api/dashboard/registrations/")
+				.and_then(|path| {
+					path.strip_suffix("/approve")
+						.or_else(|| path.strip_suffix("/reject"))
+				})
+				.and_then(|id| uuid::Uuid::parse_str(id).ok());
+			if let (Some(origin), Some(registration)) = (browser.as_ref(), registration_decision)
+				&& request.method != Method::GET
+			{
+				// A decision locks the registration's identity for update in its own
+				// transaction, while the operator lease below holds a shared lock on
+				// the operator's identity: deciding one's own request could never finish.
+				let lease = runtime.store.orm_connection()?;
+				if DashboardRegistrationRequest::identity_of(&mut lease.handle(), registration)
+					.await? == Some(origin.identity_id)
+				{
+					return Err(Error::Forbidden);
+				}
+			}
+			let mut operator_lease = if matches!(actor, Some(Actor::Operator))
+				&& request.method != Method::GET
+				&& request.method != Method::HEAD
+				&& request.method != Method::OPTIONS
+				&& let Some(origin) = browser
+			{
+				let mut lease = crate::database::native::begin(&runtime.store.pool).await?;
+				origin.require_operator(&mut lease, true).await?;
+				Some(lease)
+			} else {
+				None
+			};
 			let _visibility = if self.visibility {
 				Some(ReadLease::begin(&runtime.store).await?)
 			} else {
 				None
 			};
 			let mut response = next.handle(request).await?;
+			if let Some(lease) = operator_lease.take() {
+				lease.commit().await?;
+			}
 			if matches!(
 				self.requirement,
 				Requirement::Authenticated | Requirement::Operator

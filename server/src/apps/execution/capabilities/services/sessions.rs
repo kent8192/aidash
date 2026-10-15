@@ -35,6 +35,22 @@ pub(crate) async fn authorize(access: &mut Access, area: &Area, action: &str) ->
 	.await
 	.map_err(Into::into)
 }
+/// Execution-owned read gate: a core run stays visible only while its working area grants
+/// `file.read` to the caller; runs without a core area are unaffected.
+pub(crate) async fn run_area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
+	let Some(area) = crate::apps::execution::repositories::sessions::run_area(access, run).await?
+	else {
+		return Ok(true);
+	};
+	let Some(area) = area else {
+		return Ok(false);
+	};
+	match authorize(access, &area, "file.read").await {
+		Ok(()) => Ok(true),
+		Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => Ok(false),
+		Err(error) => Err(error),
+	}
+}
 pub(crate) async fn authorize_sources(
 	access: &mut Access,
 	workspace: Uuid,

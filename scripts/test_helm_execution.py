@@ -85,6 +85,7 @@ class ChartsTest(unittest.TestCase):
         values = dict(self.base, image={'repository': 'registry/app', 'digest': 'sha256:' + 'c' * 64},
                       release={'sourceSha': sha}, frontend={'enabled': False},
                       trustedProxy={'cidrs': ['10.4.0.0/14', '127.0.0.1']},
+                      keylessEndpoints={'permittedPrivateOrigins': ['http://ollama.lan:11434', 'https://models.lan']},
                       backendIngress={'podSelectors': [{'aidash.run/edge': 'env'}]})
         objects = render(self.aidash, values, 'app')
         for role in ('server', 'worker'):
@@ -95,6 +96,9 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(container['image'], 'registry/app@sha256:' + 'c' * 64)
             proxies = [variable.get('value') for variable in container['env'] if variable['name'] == 'AIDASH_AUTH_TRUSTED_PROXY_IPS']
             self.assertEqual(proxies, ['10.4.0.0/14,127.0.0.1'] if role == 'server' else [])
+            # Workers make Keyless calls too, so both roles carry the permitted origins.
+            origins = [variable.get('value') for variable in container['env'] if variable['name'] == 'AIDASH_KEYLESS_PRIVATE_ORIGINS']
+            self.assertEqual(origins, ['http://ollama.lan:11434,https://models.lan'])
         # The runtime image serves the web bundle; nothing selects frontend Pods.
         self.assertEqual(sorted(value['metadata']['name'] for value in objects if value['kind'] in ('Deployment', 'Service')),
                          ['app-aidash-server', 'app-aidash-worker', 'app-backend'])
@@ -113,9 +117,14 @@ class ChartsTest(unittest.TestCase):
                          ['app-aidash-metadata-egress'])
         self.assertEqual(select(defaults, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]['image'], 'aidash:0.1.0')
         self.assertNotIn('annotations', select(defaults, 'Deployment', '-aidash-server')['metadata'])
+        # No private origin is permitted unless an Operator lists one.
+        self.assertNotIn('AIDASH_KEYLESS_PRIVATE_ORIGINS', [variable['name'] for variable in
+                         select(defaults, 'Deployment', '-aidash-worker')['spec']['template']['spec']['containers'][0]['env']])
         self.assertEqual(select(defaults, 'Deployment', '-frontend')['spec']['replicas'], 1)
         for invalid in ({'release': {'sourceSha': sha[:39]}}, {'release': {'sourceSha': sha.upper()}},
-                        {'image': {'repository': 'registry/app', 'digest': 'sha256:short'}}):
+                        {'image': {'repository': 'registry/app', 'digest': 'sha256:short'}},
+                        {'keylessEndpoints': {'permittedPrivateOrigins': ['http://ollama.lan/v1']}},
+                        {'keylessEndpoints': {'permittedPrivateOrigins': ['ollama.lan:11434']}}):
             with self.subTest(values=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(self.base, **invalid))
 

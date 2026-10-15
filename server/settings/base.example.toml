@@ -74,6 +74,13 @@ default_host_packages = []
 # session_absolute_seconds = 43200
 # session_idle_seconds = 1800
 
+# Private origins that Tenants' Keyless model and embedding endpoints (those
+# without provider_credential) may reach. Every other Keyless endpoint may
+# connect only to public addresses. Omit default ports.
+[keyless_endpoints]
+permitted_private_origins = []
+# permitted_private_origins = ["http://ollama.lan:11434"]
+
 [kubernetes]
 enabled = false
 # namespace = "aidash"

@@ -236,6 +236,25 @@ async fn provider_rejection_and_contract_violation_keep_their_typed_reason(
 }
 #[rstest]
 #[tokio::test]
+async fn a_refused_keyless_destination_is_not_an_outage() {
+	let (calls, mut scope, mut provider) = fixture();
+	provider.failure = Some(|| Error::Forbidden);
+	assert!(configuration().provider_credential.is_none());
+	let error = invoke(
+		&mut scope,
+		&provider,
+		Uuid::from_u128(1),
+		&configuration(),
+		"query",
+		Origin::Query(Some(Uuid::from_u128(2))),
+	)
+	.await
+	.unwrap_err();
+	assert!(matches!(error, Error::Forbidden));
+	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider"]);
+}
+#[rstest]
+#[tokio::test]
 async fn settlement_error_keeps_adapter_identity_and_withholds_embedding() {
 	let (calls, mut scope, provider) = fixture();
 	scope.settlement_fails = true;

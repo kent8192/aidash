@@ -19,6 +19,12 @@ pub struct ModelConfig {
 	/// configurations never name an environment key.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider_credential: Option<String>,
+	/// The Provider Catalog entry served by the Plan Connection of the subject
+	/// at the root of each Run's delegation chain (ADR 0007). A model names at
+	/// most one of `provider_credential` and `plan_connection`, and neither
+	/// ever falls back to the other.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub plan_connection: Option<String>,
 	/// Total inference request timeout in seconds, including the response body.
 	/// Omitted or null values use 900 seconds; configured values must be positive.
 	/// BYOK configurations are capped at the broker's 3600-second deadline.
@@ -142,6 +148,45 @@ impl ModelConfig {
 		Ok(())
 	}
 
+	/// Whether calls are served by a Plan Connection (ADR 0007).
+	pub fn uses_plan_connection(&self) -> bool {
+		self.plan_connection.is_some()
+	}
+
+	/// Plan usage reaches only OpenAI's Responses API, which needs a stream and
+	/// supports neither OpenRouter media routes, cache breakpoints, audio input
+	/// nor, for now, the Native Projection Version (#249).
+	pub fn validate_plan_usage(&self) -> Result<()> {
+		if !self.uses_plan_connection() {
+			return Ok(());
+		}
+		let invalid = |reason: &str| {
+			Err(Error::Invalid(format!(
+				"model {} uses a Plan Connection, so {reason}",
+				self.model_id
+			)))
+		};
+		if self.streaming == Some(false) {
+			return invalid("it must stream");
+		}
+		if !self.media_routes.is_empty() {
+			return invalid("it has no OpenRouter media routes");
+		}
+		if self.cache_mode == Some(CacheMode::Explicit) {
+			return invalid("it cannot declare explicit prompt caching");
+		}
+		if self.modalities.iter().any(|modality| modality == "audio") {
+			return invalid("it cannot accept audio input");
+		}
+		if self
+			.projection_versions
+			.contains(&crate::projection::ProjectionVersion::Native)
+		{
+			return invalid("it supports only the Legacy and Ordered Projection Versions");
+		}
+		Ok(())
+	}
+
 	/// Whether this route may receive `cache_control` breakpoints.
 	pub fn accepts_cache_breakpoints(&self) -> bool {
 		self.cache_mode == Some(CacheMode::Explicit)
@@ -163,8 +208,8 @@ impl ModelConfig {
 	}
 
 	/// An Agent may opt in to explicit prompt caching only with the Ordered
-	/// Projection Version on a model that accepts cache breakpoints. Callers
-	/// never drop an opt-in silently (ADR 0019).
+	/// or a later Projection Version on a model that accepts cache
+	/// breakpoints. Callers never drop an opt-in silently (ADR 0019).
 	pub fn require_prompt_cache(
 		&self,
 		prompt_cache: crate::projection::PromptCache,
@@ -180,9 +225,9 @@ impl ModelConfig {
 				EXPLICIT_CACHE_PREFIXES.join(", ")
 			)));
 		}
-		if version != crate::projection::ProjectionVersion::Ordered {
+		if version.is_legacy() {
 			return Err(Error::Invalid(
-				"Agent prompt_cache explicit requires projection_version ordered".into(),
+				"Agent prompt_cache explicit requires projection_version ordered or native".into(),
 			));
 		}
 		Ok(())
@@ -215,6 +260,10 @@ impl ModelConfig {
 		if formats.is_empty() {
 			return Ok(());
 		}
+		// Plan usage has no OpenRouter routes; the declared modalities decide.
+		if self.uses_plan_connection() {
+			return Ok(());
+		}
 		if !self.has_current_media_route(formats) {
 			return Err(Error::Invalid(format!(
 				"recipient model {} has no current media route for every selected format",
@@ -237,7 +286,7 @@ impl ModelConfig {
 
 	fn has_current_media_route<'a>(&self, formats: impl IntoIterator<Item = &'a str>) -> bool {
 		let formats: Vec<_> = formats.into_iter().collect();
-		if formats.is_empty() {
+		if formats.is_empty() || self.uses_plan_connection() {
 			return true;
 		}
 		self.current_media_routes().any(|route| {
@@ -272,6 +321,21 @@ impl ModelConfig {
 			"audio/flac",
 			"audio/x-flac",
 		];
+		// Plan usage has no OpenRouter routes; its declared image modality
+		// is the one route, and it never accepts audio.
+		if self.uses_plan_connection() {
+			return if self.modalities.iter().any(|modality| modality == "image") {
+				vec![
+					MEDIA_TYPES
+						.into_iter()
+						.filter(|media_type| media_type.starts_with("image/"))
+						.map(str::to_owned)
+						.collect(),
+				]
+			} else {
+				Vec::new()
+			};
+		}
 		self.current_media_routes()
 			.map(|route| {
 				MEDIA_TYPES
@@ -336,3 +400,6 @@ impl ModelConfig {
 			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
 	}
 }
+
+#[cfg(test)]
+mod tests;

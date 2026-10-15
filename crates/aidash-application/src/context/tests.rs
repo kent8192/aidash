@@ -6,6 +6,8 @@ use aidash_domain::provider;
 use async_trait::async_trait;
 use std::sync::Mutex;
 
+mod native;
+
 struct FakeJev {
 	answer: fn(&str) -> Value,
 	seen: Mutex<Vec<(Value, Questions)>>,
@@ -92,7 +94,11 @@ async fn media_space_is_reserved_before_retained_history_is_compacted() {
 	}];
 	let window = 12_000;
 	let budget = RequestBudget {
-		window: window - provider::ModelRequest::content_parts_reservation(&media),
+		window: window
+			- provider::ModelRequest::content_parts_reservation(
+				&media,
+				aidash_domain::projection::ProjectionVersion::Legacy,
+			),
 		instructions: "Inspect the image",
 		tools: &[],
 		max_output_tokens: 256,

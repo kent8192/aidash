@@ -155,12 +155,10 @@ async fn accepted_load_and_idle_reduction(
 	for repetition in 0..3 {
 		let (fixture, dir) = scenarios.pop_front().unwrap().await;
 
-		// SeaQuery has no CREATE EXTENSION DDL builder. This is fixture-only instrumentation.
-		fixture
-			.f
-			.store
-			.pool
-			.driver()
+		// SeaQuery has no CREATE EXTENSION DDL builder. This is fixture-only
+		// instrumentation, installed by the superuser rather than the server role.
+		common::admin_pool(fixture.f.store.pool.driver())
+			.await
 			.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
 			.await
 			.unwrap();

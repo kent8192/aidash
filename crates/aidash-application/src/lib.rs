@@ -7,6 +7,7 @@ pub mod execution;
 pub mod federation;
 pub mod lifecycle;
 pub mod memory;
+pub mod plan_connections;
 pub mod ports;
 pub mod provider_access;
 pub mod provider_authorization;
@@ -61,9 +62,20 @@ pub enum Error {
 		aidash_domain::context::recovery::Failure,
 		Box<aidash_domain::provider::ModelResponse>,
 	),
+	/// A Plan Connection could not serve a call (ADR 0007). Never retried as
+	/// transport and never answered by a Provider Credential.
+	#[error("{0}")]
+	Plan(aidash_domain::plan_connections::Failure),
 	/// Provider-proven Context Overflow. Only this enters compact-and-retry.
 	#[error("the provider reported that the request exceeded its context window")]
 	ContextOverflow,
+	/// A request rendered under a Projection Version that its model does not
+	/// declare. It is never retried or rendered under another version.
+	#[error("model {model} does not support Projection Version {version}")]
+	UnsupportedProjection {
+		model: String,
+		version: aidash_domain::projection::ProjectionVersion,
+	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	/// Opaque adapter errors retain their identity for retry and recovery.

@@ -206,17 +206,18 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
+async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
+	#[values("ordered", "native")] version: &str,
 ) {
-	// Arrange: a model that declares Ordered and an Agent that names it, on a
-	// node without Cache Salt Keys.
+	// Arrange: a model that declares the salted version and an Agent that
+	// names it, on a node without Cache Salt Keys.
 	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
-	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
-	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
+	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
+	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
 	let workspace = store
 		.create_workspace("Research", "Compare frameworks")
 		.await
@@ -1391,6 +1392,12 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 
 	let endpoint = server.url.clone();
 	let federation = _federation.await.federation;
+	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
+	federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
 	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
 		.registry
@@ -2349,10 +2356,12 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	let app = _application.application.clone();
 	// Simulate an event insertion failure after the primary mutation.
 	// SeaQuery cannot add a CHECK constraint to an existing table.
+	// Only the table owner can add a constraint; the server role holds DML.
+	let owner = common::owner_pool(store.pool.driver()).await;
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_registration CHECK(kind <> 'registry.registered')",
 	)
-	.execute(store.pool.driver())
+	.execute(&owner)
 	.await
 	.unwrap();
 	let response = http_client
@@ -2382,7 +2391,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_conversation CHECK(kind <> 'conversation.created')",
 	)
-	.execute(store.pool.driver())
+	.execute(&owner)
 	.await
 	.unwrap();
 	let response=http_client.request(Method::POST, app.url("/api/conversations"))
