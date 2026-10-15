@@ -125,7 +125,7 @@ impl Scope<'_> {
 #[async_trait]
 impl JournalRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn JournalScope + '_>> {
-		let tx = crate::database::native::begin(&self.store.pool).await?;
+		let tx = crate::database::native::begin_unscoped(&self.store.pool).await?;
 		Ok(Box::new(Scope {
 			store: self.store,
 			transaction: Transaction::Owned(tx),

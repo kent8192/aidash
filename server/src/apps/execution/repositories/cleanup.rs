@@ -764,12 +764,12 @@ impl CleanupRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn ErasureScope + '_>> {
 		Ok(Box::new(Erasure {
 			store: self.store,
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 	async fn failure(&self, id: Uuid, area: Option<Uuid>) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut tx = crate::database::native::begin(&self.store.pool).await?;
+			let mut tx = crate::database::native::begin_unscoped(&self.store.pool).await?;
 			{
 				let query_bind_1 = area;
 				crate::database::native::query(

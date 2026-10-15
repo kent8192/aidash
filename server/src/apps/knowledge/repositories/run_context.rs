@@ -12,7 +12,7 @@ pub(crate) struct Journal {
 impl Journal {
 	pub(crate) async fn begin(store: &Store, run: Uuid) -> NativeResult<Self> {
 		Ok(Self {
-			tx: crate::database::native::begin(&store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&store.pool).await?,
 			run,
 		})
 	}

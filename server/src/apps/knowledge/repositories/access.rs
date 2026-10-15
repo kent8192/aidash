@@ -21,7 +21,9 @@ pub(crate) enum Lease<'a> {
 impl Lease<'_> {
 	pub(crate) async fn begin(store: &Store, actor: &Actor) -> Result<Self> {
 		Ok(match actor {
-			Actor::Operator => Self::Operator(crate::database::native::begin(&store.pool).await?),
+			Actor::Operator => {
+				Self::Operator(crate::database::native::begin_unscoped(&store.pool).await?)
+			}
 			Actor::Subject(identity) => {
 				Self::Scoped(Box::new(Access::begin(store, identity).await?))
 			}

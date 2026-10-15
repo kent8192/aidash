@@ -118,7 +118,7 @@ pub(crate) async fn context(
 	let value = serde_json::to_value(&receipt)?;
 	// Persist before this function makes the text available to compaction/model
 	// construction. The Home keeps the accumulated dependencies across replays.
-	let mut tx = crate::database::native::begin(&f.store.pool).await?;
+	let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
 	crate::apps::knowledge::repositories::receiver_caches::record(&mut tx, run.id, &receipt)
 		.await?;
 	crate::database::native::query(

@@ -66,7 +66,7 @@ impl RunContext {
 			Some(scope) => scope.can_emit(&probe).await,
 			None => {
 				let mut connection =
-					crate::database::native::begin(&self.base.f.store.pool).await?;
+					crate::database::native::begin_unscoped(&self.base.f.store.pool).await?;
 				crate::authorization::remote::operator::event_visible(&mut connection, &probe).await
 			}
 		}

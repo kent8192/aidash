@@ -506,7 +506,7 @@ impl Store {
 			.await
 	}
 	pub async fn create_workspace(&self, title: &str, goal: &str) -> Result<Workspace> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let workspace = self
 			.create_workspace_in(&mut tx, Uuid::new_v4(), title, goal)
 			.await?;
@@ -569,7 +569,7 @@ impl Store {
 		Ok(WorkspaceRecord::read(&mut lease.handle(), id).await?.into())
 	}
 	pub async fn update_state(&self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let workspace = self.update_state_in(&mut tx, id, revision, state).await?;
 		tx.commit().await?;
 		Ok(workspace)
@@ -640,7 +640,7 @@ impl Store {
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let task = self
 			.create_task_in(&mut tx, workspace, input, creator, key)
 			.await?;
@@ -877,7 +877,7 @@ impl Store {
 		let task = self.task(id).await?;
 		self.require_legacy_execution(task.workspace_id).await?;
 		self.require_legacy_agent(&agent.id, &agent.version).await?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let claimed = self
 			.claim_in(&mut tx, &task, revision, owner, agent, None)
 			.await?;
@@ -1070,7 +1070,7 @@ impl Store {
 		owner: &str,
 		next: TaskStatus,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let result = self
 			.transition_in(&mut tx, id, revision, owner, next)
 			.await?;
@@ -1180,7 +1180,7 @@ impl Store {
 		run_id: Uuid,
 		inputs: TerminalRunMessageInputs<'_>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let result = self
 			.transition_remote_terminal_in(&mut tx, id, revision, owner, next, run_id, inputs)
 			.await?;
@@ -1190,7 +1190,7 @@ impl Store {
 	/// Explicit operator abandonment preserves the failed outcome and reason
 	/// while allowing the parent to finish using the remaining results.
 	pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let task = self
 			.abandon_task_in(&mut tx, id, revision, reason, "human")
 			.await?;
@@ -1318,7 +1318,7 @@ impl Store {
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let result = self
 			.complete_in(
 				&mut tx,
@@ -1597,7 +1597,7 @@ impl Store {
 		input: &ArtifactInput,
 		publication: Publication,
 	) -> Result<Artifact> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let result = self
 			.publish_artifact_in(&mut tx, task_id, owner, key, input, publication)
 			.await?;
@@ -1848,7 +1848,7 @@ impl Store {
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let message = self
 			.message_in(&mut tx, workspace, sender, content, key)
 			.await?;
@@ -1958,7 +1958,7 @@ impl Store {
 		content: &str,
 		key: &str,
 	) -> Result<Message> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let task: Task = {
 			let query_bind_1 = task_id;
 			aidash_server::database::query_as(
@@ -2014,7 +2014,7 @@ impl Store {
 		&self,
 		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let result = self.run_message_output_in(&mut tx, output).await?;
 		tx.commit().await?;
 		Ok(result)
@@ -2255,7 +2255,7 @@ impl Store {
 			.await
 	}
 	pub async fn begin_final_completion(&self, run: &Run, worker: Uuid) -> Result<bool> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let mut current: Run = {
 			let query_bind_1 = run.id;
 			aidash_server::database::query_as(
@@ -2348,7 +2348,7 @@ impl Store {
 		track_output: bool,
 	) -> Result<()> {
 		nonempty(content, "message")?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
 			&self.node_id,
@@ -2664,7 +2664,7 @@ impl Store {
 			}
 		}
 		self.require_legacy_execution(task.workspace_id).await?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		// Serialize legacy admission against scoped receiver admission. Neither
 		// mode may appear between the other's check and durable commit.
 		{
@@ -2929,7 +2929,7 @@ impl Store {
 	}
 
 	pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let (saved, closed) = match self.save_run_in(&mut tx, run, worker, kind).await {
 			// The stale response's attempt closes as discarded once the save
 			// that would have accepted it is rolled back.
@@ -3059,7 +3059,7 @@ impl Store {
 			.await
 	}
 	pub(crate) async fn cancel_execution(&self, run: &Run, worker: Uuid) -> Result<()> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let valid: Option<Uuid> = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
@@ -3217,7 +3217,7 @@ impl Store {
 	}
 
 	pub async fn control(&self, id: Uuid, action: RunControlAction) -> Result<RunInspection> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let run = self.control_in(&mut tx, id, action).await?;
 		tx.commit().await?;
 		Ok(run)
@@ -3359,7 +3359,7 @@ impl Store {
 		key: &str,
 		prompt: &str,
 	) -> Result<()> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let h = self
 			.human_request_sqlx_in(
 				&mut tx,
@@ -3488,7 +3488,7 @@ impl Store {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<Invocation> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
@@ -3506,7 +3506,7 @@ impl Store {
 		worker: Uuid,
 		calls: &[(&str, &str, &Value)],
 	) -> Result<Vec<Invocation>> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
@@ -4565,7 +4565,7 @@ impl Store {
 		recovery_reason: Option<(&'static str, Value)>,
 	) -> Result<()> {
 		let run = run.into();
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let (query_bind_4, query_bind_5, query_bind_6) = match recovery_reason {
 			Some((field, value)) => (true, format!("{{recovery,{field}}}"), value),
 			None => (false, "{recovery}".to_owned(), Value::Null),

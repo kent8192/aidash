@@ -41,7 +41,7 @@ impl Session {
 impl GenerationSettlementRepository for NativeSettlementRepository {
 	async fn begin(&self) -> Result<Box<dyn GenerationSettlementSession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 }

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 	let epoch = DateTime::<Utc>::UNIX_EPOCH;
-	let mut tx = native::begin(&store.pool).await?;
+	let mut tx = native::begin_unscoped(&store.pool).await?;
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_learning_discovery"))

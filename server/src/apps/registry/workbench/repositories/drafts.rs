@@ -73,7 +73,7 @@ impl DraftRepository for Repository {
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {
 			Ok(Scope {
-				tx: crate::database::native::begin(&self.runtime.store.pool).await?,
+				tx: crate::database::native::begin_unscoped(&self.runtime.store.pool).await?,
 				actor: self.actor.clone(),
 				node: self.runtime.config.node_id.clone(),
 			})

@@ -13,7 +13,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 ) {
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for table in ["semantic_collections", "semantic_indexes"] {
 		native::query(
 			&Query::delete()
@@ -183,7 +183,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	.await
 	.unwrap();
 	if let Some(exhausted) = exhausted_repair {
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_engine_jobs"))
@@ -330,7 +330,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 			.unwrap();
 		last_publication = Uuid::now_v7();
 		last_run = Uuid::now_v7();
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		for query in [
 			Query::insert()
 				.into_table(Alias::new("runs"))
@@ -413,7 +413,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		.await
 		.unwrap()
 		.remove(0);
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_history"))
@@ -435,7 +435,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	}
 	// Independently corrected current bodies no longer quote the source. Their
 	// historical evidence lies past two journal pages and still must be erased.
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for (unit, proof) in [
 		(
 			&units[1],
@@ -478,7 +478,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	)
 	.await
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))

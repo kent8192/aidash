@@ -178,7 +178,7 @@ impl Store {
 	/// Journal saved projection entries the journal lacks, under the lease and
 	/// without saving the Run, so imported history survives later pruning.
 	pub(crate) async fn journal_context(&self, run: &Run, worker: Uuid) -> Result<()> {
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		fence(&mut tx, run.id, worker).await?;
 		append(&mut tx, run.id, &run.context).await?;
 		tx.commit().await
@@ -198,7 +198,7 @@ impl Store {
 				"compaction attempt belongs to another Run".into(),
 			));
 		}
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		fence(&mut tx, run.id, worker).await?;
 		native::query(&abandon_open(run.id).to_string(PostgresQueryBuilder))
 			.execute(&mut *tx)
@@ -268,7 +268,7 @@ impl Store {
 				"an adopted attempt settles only with its Run save".into(),
 			));
 		}
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		fence(&mut tx, run.id, worker).await?;
 		settle(&mut tx, run.id, attempt, settlement).await?;
 		tx.commit().await
@@ -287,7 +287,7 @@ impl Store {
 				"only an adopted settlement changes the Context Projection".into(),
 			));
 		}
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		// Lock the Run before the attempt, in the order lease recovery uses.
 		fence(&mut tx, run.id, worker).await?;
 		let through: Option<i64> = native::query_scalar(

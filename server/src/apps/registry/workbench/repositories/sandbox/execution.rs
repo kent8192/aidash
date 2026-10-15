@@ -20,7 +20,7 @@ use uuid::Uuid;
 impl ExecutionRepository for Repository {
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

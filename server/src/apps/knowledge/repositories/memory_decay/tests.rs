@@ -32,7 +32,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",
@@ -1519,7 +1519,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	setup.finish(Ok(())).await.unwrap();
 
 	// Hold canonical hydration after the membership statement has completed.
-	let mut writer = native::begin(&store.pool).await.unwrap();
+	let mut writer = native::begin_unscoped(&store.pool).await.unwrap();
 	for id in ids {
 		native::query(
 			&Query::select()

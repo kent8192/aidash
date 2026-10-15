@@ -77,7 +77,7 @@ impl VectorIndex for Transport {
 					"invalid PostgreSQL vector collection".into(),
 				));
 			}
-			let mut tx = self.pool.begin().await?;
+			let mut tx = self.pool.begin_unscoped().await?;
 			native::query(
 				&Query::insert()
 					.into_table(Alias::new("semantic_vector_collections"))
@@ -132,7 +132,7 @@ impl VectorIndex for Transport {
 			let tenant = payload["tenant"]
 				.as_str()
 				.ok_or_else(|| Error::Invalid("missing vector tenant".into()))?;
-			let mut tx = self.pool.begin().await?;
+			let mut tx = self.pool.begin_unscoped().await?;
 			let width: i32 = native::query_scalar(
 				&Query::select()
 					.column(Alias::new("dimensions"))
@@ -237,7 +237,7 @@ impl VectorIndex for Transport {
 		collection: &str,
 	) -> aidash_application::Result<()> {
 		provider(config)?;
-		let mut tx = self.pool.begin().await?;
+		let mut tx = self.pool.begin_unscoped().await?;
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new("semantic_vectors"))

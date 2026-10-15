@@ -110,7 +110,7 @@ impl GenerationCompactionRepository for NativeCompactionRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationCompactionSession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 }

@@ -220,7 +220,7 @@ impl OperatorConversations for NativeOperatorConversations {
 			.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Box<dyn OperatorConversationTransaction>> {
-		let tx = crate::database::native::begin(&self.0.store.pool).await?;
+		let tx = crate::database::native::begin_unscoped(&self.0.store.pool).await?;
 		Ok(Box::new(NativeOperatorTransaction {
 			federation: self.0.clone(),
 			phase: OperatorPhase::Admission(tx),

@@ -37,7 +37,7 @@ impl SandboxRepository for Repository {
 	}
 	async fn begin(&self) -> Result<Box<dyn SandboxScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

@@ -163,7 +163,7 @@ impl TransferRepository for Repository<'_> {
 		}))
 	}
 	async fn begin_receipt(&self, id: Uuid) -> Result<Box<dyn ReceiptScope + '_>> {
-		let tx = crate::database::native::begin(&self.federation.store.pool).await?;
+		let tx = crate::database::native::begin_unscoped(&self.federation.store.pool).await?;
 		Ok(Box::new(Receipt { tx, id }))
 	}
 	async fn request(&self, node: &str, path: &str, body: &Value) -> Result<Value> {
@@ -202,7 +202,7 @@ impl TransferRepository for Repository<'_> {
 		result.map_err(Into::into)
 	}
 	async fn record_failure(&self, id: Uuid, terminal: bool) -> Result<()> {
-		let result:NativeResult<()>=async {let mut tx=crate::database::native::begin(&self.federation.store.pool).await?;
+		let result:NativeResult<()>=async {let mut tx=crate::database::native::begin_unscoped(&self.federation.store.pool).await?;
 {
 					let query_bind_1 = id;
 					let query_bind_2 = terminal;

@@ -53,7 +53,7 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	.await
 	.unwrap();
 	// Persist pending learning results to isolate replacement from model transport.
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for name in ["First pending candidate", "Second pending candidate"] {
 		native::query(
 			&Query::insert()
@@ -769,7 +769,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 		);
 	}
 	// Inject the fixture clock into both canonical bodies and independent fences.
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for unit in &mut units {
 		unit.learned_at = chrono::DateTime::from_timestamp_micros(
 			(chrono::Utc::now() - chrono::Duration::days(2)).timestamp_micros(),
@@ -797,7 +797,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 	}
 	tx.commit().await.unwrap();
 	for expected in [2, 4, 5] {
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_bank_settings"))
@@ -969,7 +969,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	.unwrap();
 	// Simulate a missing projection after valid bank admission. New banks now
 	// require an enabled matching index, while deletion must still repair gaps.
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::delete()
 			.from_table(Alias::new("semantic_points"))
@@ -1117,7 +1117,7 @@ pub(super) async fn recorded_run(
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",

@@ -130,7 +130,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 	}
 	async fn begin_preparation(&self) -> Result<Box<dyn DispatchPreparation>> {
 		Ok(Box::new(Preparation {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 	async fn record(&self, attempt: Uuid) -> Result<Option<Record>> {

@@ -874,7 +874,7 @@ async fn native_remote_fixture(
 		// Model loss of the disposable index after valid bank admission. Canonical
 		// grant dependencies must remain readable across projection reconstruction,
 		// independently of the HTTP index's maximum 1,024 projected sources.
-		let mut tx = aidash_server::database::native::begin(&a.store.pool)
+		let mut tx = aidash_server::database::native::begin_unscoped(&a.store.pool)
 			.await
 			.unwrap();
 		aidash_server::database::native::query(
@@ -2176,7 +2176,7 @@ async fn required_home_semantic_outage_is_a_typed_transient_failure_for_every_ca
 			tokio::task::yield_now().await;
 		}
 	} else {
-		let mut connection = p.a.store.pool.begin().await.unwrap();
+		let mut connection = p.a.store.pool.begin_unscoped().await.unwrap();
 		aidash_server::database::native::query(
 			&Query::delete()
 				.from_table(Alias::new("semantic_vectors"))
@@ -3811,7 +3811,7 @@ async fn operator_polling_advances_past_hidden_event_pages(
 	.fetch_one(p.a.store.pool.driver())
 	.await
 	.unwrap();
-	let mut tx = p.a.store.pool.begin().await.unwrap();
+	let mut tx = p.a.store.pool.begin_unscoped().await.unwrap();
 	p.a.store
 		.event(
 			&mut tx,
@@ -3873,7 +3873,7 @@ async fn operator_polling_advances_past_hidden_event_pages(
 
 	// A full visible page may span hidden candidate pages. Its cursor must
 	// retain visible events beyond the response limit for the next request.
-	let mut tx = p.a.store.pool.begin().await.unwrap();
+	let mut tx = p.a.store.pool.begin_unscoped().await.unwrap();
 	for index in 0..600 {
 		p.a.store
 			.event(&mut tx, None, "test.visible", json!({"index": index}))

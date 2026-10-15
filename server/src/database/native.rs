@@ -2,11 +2,13 @@
 //! SQL is compiled by Reinhardt Query at the owning repository. Projection columns
 //! are explicit for tuples; database rows never acquire an invented field order.
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use async_trait::async_trait;
 use reinhardt::db::backends::{
 	DatabaseConnection, PostgresBackend, QueryValue, TransactionExecutor,
 };
-use reinhardt::db::orm::connection::QueryRow;
+use reinhardt::db::orm::AtomicTransaction;
+use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
 use std::{marker::PhantomData, sync::Arc};
 
@@ -76,12 +78,69 @@ impl Pool {
 	pub fn driver(&self) -> &sqlx::PgPool {
 		&self.driver
 	}
-	pub async fn begin(&self) -> Result<Transaction> {
+	/// Open a transaction in `scope`. The scope is fixed for the transaction's
+	/// lifetime; savepoints inherit it.
+	pub async fn begin(&self, scope: &TenancyScope) -> Result<Transaction> {
+		let mut executor = self.connection.begin().await?;
+		super::scope::enter(executor.as_mut(), scope).await?;
+		Ok(Transaction(
+			Some(executor),
+			self.clone(),
+			Default::default(),
+			0,
+			Some(scope.clone()),
+		))
+	}
+	/// Run `work` in a transaction opened in `scope`, committing when it
+	/// succeeds. An error rolls the transaction back.
+	pub async fn scoped<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl for<'t> AsyncFnOnce(&'t mut Transaction) -> Result<T>,
+	) -> Result<T> {
+		let mut tx = self.begin(scope).await?;
+		let value = work(&mut tx).await?;
+		tx.commit().await?;
+		Ok(value)
+	}
+	/// Run `work` in a Reinhardt ORM transaction opened in `scope`.
+	pub async fn atomic<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
+	) -> Result<T> {
+		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+		lease
+			.handle()
+			.atomic(async |tx| {
+				super::scope::enter(tx, scope).await?;
+				work(tx).await
+			})
+			.await
+	}
+	/// Like [`Self::atomic`], acquiring write intent before the first read.
+	pub async fn atomic_write<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
+	) -> Result<T> {
+		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+		lease
+			.handle()
+			.atomic_write(async |tx| {
+				super::scope::enter(tx, scope).await?;
+				work(tx).await
+			})
+			.await
+	}
+	/// An unscoped transaction. Every caller moves to [`Self::begin`] (#263).
+	pub async fn begin_unscoped(&self) -> Result<Transaction> {
 		Ok(Transaction(
 			Some(self.connection.begin().await?),
 			self.clone(),
 			Default::default(),
 			0,
+			None,
 		))
 	}
 	pub async fn close(&self) {
@@ -101,6 +160,8 @@ pub struct Transaction(
 	std::collections::BTreeMap<uuid::Uuid, aidash_domain::memory::Unit>,
 	/// Savepoint rollbacks so far: each may release locks taken after its savepoint.
 	u64,
+	/// The tenancy scope the transaction was opened in.
+	Option<TenancyScope>,
 );
 // A savepoint rollback issued on the deref'd executor bypasses the lock epoch.
 impl std::ops::Deref for Transaction {
@@ -127,7 +188,12 @@ impl Transaction {
 			self.1.clone(),
 			std::mem::take(&mut self.2),
 			self.3,
+			self.4.clone(),
 		)
+	}
+	/// The tenancy scope the transaction was opened in, if it was opened with one.
+	pub(crate) fn scope(&self) -> Option<&TenancyScope> {
+		self.4.as_ref()
 	}
 	pub(crate) fn restore(&mut self, lent: Self) {
 		assert!(self.0.is_none());
@@ -229,7 +295,7 @@ impl Transaction {
 impl Transaction {
 	/// A connectionless transaction shell for adapter state tests.
 	pub(crate) fn detached(pool: Pool) -> Self {
-		Self(None, pool, Default::default(), 0)
+		Self(None, pool, Default::default(), 0, None)
 	}
 }
 impl AsMut<dyn TransactionExecutor> for Transaction {
@@ -240,13 +306,9 @@ impl AsMut<dyn TransactionExecutor> for Transaction {
 			.as_mut()
 	}
 }
-pub async fn begin(pool: &Pool) -> Result<Transaction> {
-	Ok(Transaction(
-		Some(pool.connection.begin().await?),
-		pool.clone(),
-		Default::default(),
-		0,
-	))
+/// An unscoped transaction. Every caller moves to [`Pool::begin`] (#263).
+pub async fn begin_unscoped(pool: &Pool) -> Result<Transaction> {
+	pool.begin_unscoped().await
 }
 
 pub struct Row(reinhardt::db::backends::Row);

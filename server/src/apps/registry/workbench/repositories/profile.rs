@@ -45,7 +45,7 @@ impl ProfileRepository for Repository<'_> {
 		Ok(Box::new(Scope {
 			configured: self.runtime.store.provider_credentials.is_some(),
 			node: self.runtime.config.node_id.clone(),
-			tx: crate::database::native::begin(&self.runtime.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.runtime.store.pool).await?,
 			actor: self.actor.clone(),
 		}))
 	}

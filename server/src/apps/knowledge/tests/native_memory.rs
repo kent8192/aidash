@@ -133,7 +133,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 	// Fixture clock injection cannot use production's same-revision guard.
 	record.fence.digest = aidash_domain::memory::recovery::digest(&aged).unwrap();
 	write_fixture_archive(&fence_path, &record);
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_units"))
@@ -242,7 +242,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	.unwrap();
 	let message = Uuid::now_v7();
 	let body = "撤回する元メッセージ / Primary message to withdraw";
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("messages"))
@@ -297,7 +297,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 	let archive = recovery::backup(&store, directory, participant.bank.clone())
 		.await
 		.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::delete()
 			.from_table(Alias::new("messages"))
@@ -496,7 +496,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 		"shipped restore must reach the recovery file boundary after startup migrations: {}",
 		std::fs::read_to_string(&log_path).unwrap()
 	);
-	let mut held = native::begin(&store.pool).await.unwrap();
+	let mut held = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::select()
 			.column(Alias::new("id"))
@@ -728,7 +728,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	recovery::prepare_restore(&store, directory).unwrap();
 	// Rewind only memory bodies. Current origin/control/authority/primary
 	// evidence tables and the independently retained ledger remain live.
-	let mut tx = store.pool.begin().await.unwrap();
+	let mut tx = store.pool.begin_unscoped().await.unwrap();
 	for (id, text) in [
 		(a, "東京の削除対象"),
 		(b, "Before correction"),
@@ -881,7 +881,7 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	let archive = recovery::backup(&store, directory, bank.clone())
 		.await
 		.unwrap();
-	let mut tx = store.pool.begin().await.unwrap();
+	let mut tx = store.pool.begin_unscoped().await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_units"))
@@ -1229,7 +1229,7 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 		shared_units.is_empty(),
 		"selected copies are excluded before physical purge"
 	);
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))
@@ -1575,7 +1575,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 		!entries.iter().any(|entry| entry.id == observation),
 		"stale bodies must be withheld from delivery"
 	);
-	let mut projection_tx = aidash_server::database::native::begin(&store.pool)
+	let mut projection_tx = aidash_server::database::native::begin_unscoped(&store.pool)
 		.await
 		.unwrap();
 	let stale: String = aidash_server::database::native::query_scalar(
@@ -1623,7 +1623,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	.unwrap();
 	assert!(removed[0].deleted);
 	assert!(removed[0].content.text.is_empty());
-	let mut tx = aidash_server::database::native::begin(&store.pool)
+	let mut tx = aidash_server::database::native::begin_unscoped(&store.pool)
 		.await
 		.unwrap();
 	let rows = aidash_server::database::native::query(
@@ -2161,7 +2161,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			crate::native_database::owner_pool(store.pool.driver())
 				.await
 				.into();
-		let mut tx = aidash_server::database::native::begin(&owner)
+		let mut tx = aidash_server::database::native::begin_unscoped(&owner)
 			.await
 			.unwrap();
 		let ddl = [
@@ -2687,7 +2687,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	.scalar_one(&store.pool)
 	.await
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))
@@ -2929,7 +2929,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("runs"))
@@ -3129,7 +3129,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		captured.lock().unwrap().is_empty(),
 		"uncertain effects must be rejected before extraction"
 	);
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("invocations"))
@@ -3314,7 +3314,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		let archive = memory_recovery::backup(&store, directory, participant.bank.clone())
 			.await
 			.unwrap();
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new("authorization_execution"))

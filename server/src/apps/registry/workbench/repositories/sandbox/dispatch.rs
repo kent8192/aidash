@@ -15,7 +15,7 @@ use uuid::Uuid;
 impl RealDispatchRepository for Repository {
 	async fn begin_real(&self) -> Result<Box<dyn RealDispatchScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

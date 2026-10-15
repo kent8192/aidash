@@ -7,7 +7,7 @@ use reinhardt::query::{
 };
 
 pub(crate) async fn legacy(pool: &native::Pool) -> Result<()> {
-	let mut tx = native::begin(pool).await?;
+	let mut tx = native::begin_unscoped(pool).await?;
 	let ids = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("semantic_entries"))

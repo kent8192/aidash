@@ -6,7 +6,7 @@ pub(super) async fn operator_begin(
 	store: &crate::store::Store,
 	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
 ) -> Result<crate::database::native::Transaction> {
-	let mut tx = crate::database::native::begin(&store.pool).await?;
+	let mut tx = crate::database::native::begin_unscoped(&store.pool).await?;
 	if let Some(browser) = browser {
 		browser.require_operator(&mut tx, true).await?;
 	}

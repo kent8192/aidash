@@ -267,9 +267,10 @@ impl Watch<Event> for Context {
 							.map_err(|_| Closed::Authority)?
 							.then(|| event.cloud_event().to_string()),
 						None => {
-							let mut connection = crate::database::native::begin(&self.f.store.pool)
-								.await
-								.map_err(|_| Closed::Database)?;
+							let mut connection =
+								crate::database::native::begin_unscoped(&self.f.store.pool)
+									.await
+									.map_err(|_| Closed::Database)?;
 							crate::authorization::remote::operator::event_visible(
 								&mut connection,
 								event,

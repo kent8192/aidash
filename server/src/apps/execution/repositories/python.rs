@@ -273,7 +273,7 @@ impl PythonRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn HeapMaintenance + '_>> {
 		Ok(Box::new(Maintenance {
 			store: self.store,
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 }

@@ -87,7 +87,7 @@ impl Authorization {
 			&bundle,
 			actor,
 		)?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let revision = AuthorizationBundle::replace(
 			&mut tx,
 			tenant,

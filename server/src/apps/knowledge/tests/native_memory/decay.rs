@@ -62,7 +62,7 @@ async fn id(store: &Store, bank: &Bank) -> Uuid {
 	.unwrap()
 }
 async fn clock(store: &Store, bank: &Bank, as_of: chrono::DateTime<Utc>, cursor: Option<Uuid>) {
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_bank_decay"))
@@ -146,7 +146,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 		assert_eq!(result, vec![admitted[0].clone()]);
 		// Model a later dormancy sweep between the first response and a retry.
 		// A receipt replay must neither reactivate again nor extend the anchor.
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_unit_retention"))
@@ -632,7 +632,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 		vec![ids[0]]
 	);
 	// A flag from another immutable policy version is ignored, never deleted.
-	let mut tx = native::begin(&restarted.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&restarted.pool).await.unwrap();
 	let other = EntityRef {
 		id: "p".into(),
 		version: "2.0.0".into(),

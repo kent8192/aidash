@@ -86,7 +86,8 @@ impl GenerationProvisioning for NativeProvisioning {
 		&self,
 		job: &Request,
 	) -> aidash_application::Result<Box<dyn GenerationTerminalSession>> {
-		let mut transaction = crate::database::native::begin(&self.runtime.store.pool).await?;
+		let mut transaction =
+			crate::database::native::begin_unscoped(&self.runtime.store.pool).await?;
 		Authorization::load_with_mode(&mut transaction, &job.tenant, true).await?;
 		Ok(Box::new(Terminal {
 			runtime: self.runtime.clone(),

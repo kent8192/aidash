@@ -96,7 +96,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		.unwrap();
 	// Advance only disposable history and job clocks. Canonical bodies and the
 	// independent recovery ledger still come from the real mutation path.
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for query in [
 		Query::update()
 			.table(Alias::new("memory_history"))
@@ -238,7 +238,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	let owner = crate::native_database::owner_pool(store.pool.driver()).await;
 	sqlx::query("CREATE TABLE fixture_memory_history_hold (unit_id UUID, revision BIGINT, FOREIGN KEY (unit_id, revision) REFERENCES memory_history(unit_id, revision))")
 		.execute(&owner).await.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for held in [protected, permanent] {
 		native::query(
 			&Query::insert()
@@ -273,7 +273,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		.unwrap();
 	}
 	async fn due(store: &Store) {
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_purge_jobs"))
@@ -357,7 +357,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		.unwrap()
 		.is_empty()
 	);
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::delete()
 			.from_table(Alias::new("fixture_memory_history_hold"))
@@ -509,7 +509,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 		),
 	};
 	let candidate = review_delivery::candidate(&store, &private).await;
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_candidates"))
@@ -566,7 +566,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	memory::mutate(&store, &Actor::Operator, deletion)
 		.await
 		.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))

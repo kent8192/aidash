@@ -49,9 +49,9 @@ impl MappingRepository for Repository<'_> {
 				None
 			};
 			let mut tx = if enabled {
-				crate::database::native::begin(&self.runtime.store.pool).await?
+				crate::database::native::begin_unscoped(&self.runtime.store.pool).await?
 			} else {
-				crate::database::native::begin(&self.runtime.store.control_pool).await?
+				crate::database::native::begin_unscoped(&self.runtime.store.control_pool).await?
 			};
 			if !enabled {
 				crate::transactions::authority::control(&mut tx).await?;

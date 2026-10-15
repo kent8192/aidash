@@ -47,7 +47,7 @@ pub(super) async fn erase_receiver_body(
 	store: &Store,
 	run: &aidash_domain::RunMetadata,
 ) -> Result<()> {
-	let mut tx = native::begin(&store.pool).await?;
+	let mut tx = native::begin_unscoped(&store.pool).await?;
 	let gate = super::receiver_caches::lock(&mut tx, run.id).await?;
 	if gate.as_ref().is_none_or(|gate| gate.state == "purged") {
 		return tx.rollback().await;

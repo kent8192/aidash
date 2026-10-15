@@ -90,7 +90,7 @@ pub(crate) async fn readable(tx: &mut native::Transaction, run: Uuid) -> Result<
 }
 
 pub(crate) async fn available(store: &Store, run: Uuid) -> Result<bool> {
-	let mut tx = native::begin(&store.control_pool).await?;
+	let mut tx = native::begin_unscoped(&store.control_pool).await?;
 	let result = readable(&mut tx, run).await;
 	tx.rollback().await?;
 	result
@@ -166,7 +166,7 @@ pub(crate) async fn record(
 }
 
 pub(super) async fn invalidate(store: &Store, run: Uuid) -> Result<()> {
-	let mut tx = native::begin(&store.control_pool).await?;
+	let mut tx = native::begin_unscoped(&store.control_pool).await?;
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_receiver_caches"))
@@ -199,7 +199,7 @@ pub(super) async fn purge(store: &Store, run: &RunMetadata) -> Result<()> {
 	match super::remote_memory_reads::erase_receiver_body(store, run).await {
 		Ok(()) => Ok(()),
 		Err(error) => {
-			let mut tx = native::begin(&store.control_pool).await?;
+			let mut tx = native::begin_unscoped(&store.control_pool).await?;
 			if let Some(row) = native::query(
 				&Query::select()
 					.column(ColumnRef::Asterisk)

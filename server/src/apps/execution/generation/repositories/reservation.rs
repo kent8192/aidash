@@ -124,7 +124,7 @@ impl GenerationReservationRepository for NativeReservation {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationReservationSession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 }

@@ -89,7 +89,7 @@ impl GenerationPolicies for NativePolicies {
 	) -> aidash_application::Result<Box<dyn PolicySession>> {
 		let mode = match &self.actor {
 			Actor::Operator => {
-				Mode::Operator(crate::database::native::begin(&self.store.pool).await?)
+				Mode::Operator(crate::database::native::begin_unscoped(&self.store.pool).await?)
 			}
 			Actor::Subject(identity) => Mode::Subject(Box::new(if exclusive {
 				Access::begin_exclusive(&self.store, identity).await

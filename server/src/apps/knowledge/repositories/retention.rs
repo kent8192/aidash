@@ -15,7 +15,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	// SKIP LOCKED also avoids waiting on settings readers or workspace writers.
 	// Release the discovery locks before each independently bounded pass, which
 	// reacquires and validates its own workspace/policy authority below.
-	let mut discovery = native::begin(&store.pool).await?;
+	let mut discovery = native::begin_unscoped(&store.pool).await?;
 	let due = native::query(
 		&Query::select()
 			.columns(
@@ -264,7 +264,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 		if lease.finish(result).await.is_err() {
 			// A broken bank cannot monopolize the oldest due page. Advance
 			// only the exact observed provider/revision after rolling back.
-			let mut tx = native::begin(&store.pool).await?;
+			let mut tx = native::begin_unscoped(&store.pool).await?;
 			// A reader can arrive after the failed pass releases its workspace.
 			// Never queue a settings writer behind it while postponing a retry.
 			if native::query(

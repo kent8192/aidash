@@ -997,7 +997,7 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 		.await
 		.unwrap();
 	let input: Evaluation = serde_json::from_value(evaluation()).unwrap();
-	let mut tx = store.pool.begin().await.unwrap();
+	let mut tx = store.pool.begin_unscoped().await.unwrap();
 	let decision = Authorization::evaluate_in_transaction(&mut tx, "acme", &input)
 		.await
 		.unwrap();

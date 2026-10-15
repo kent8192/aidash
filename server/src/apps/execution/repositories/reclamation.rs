@@ -39,7 +39,7 @@ impl ReclamationRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn ReclamationScope + '_>> {
 		Ok(Box::new(Scope {
 			store: self.store,
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: crate::database::native::begin_unscoped(&self.store.pool).await?,
 		}))
 	}
 	async fn retained(&self, after: Uuid) -> Result<Vec<Uuid>> {

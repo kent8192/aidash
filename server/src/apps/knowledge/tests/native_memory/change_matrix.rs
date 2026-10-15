@@ -231,7 +231,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 		.await
 		.unwrap();
 	let reader = Uuid::now_v7();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for (table, key, fixed, columns) in [
 		(
 			"runs",
@@ -688,7 +688,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	);
 
 	// Act: the live dependent expires before any sweep
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(&age(&derived[0]))
 		.execute(&mut *tx)
 		.await
@@ -716,7 +716,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	);
 
 	// Act: the root expires before any sweep
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(&age(&source))
 		.execute(&mut *tx)
 		.await

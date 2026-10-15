@@ -115,7 +115,7 @@ impl OperatorMediaRepository for OperatorMedia<'_> {
 		&self.store.node_id
 	}
 	async fn begin(&self) -> Result<Box<dyn MediaTransaction>> {
-		let tx = crate::database::native::begin(&self.store.pool).await?;
+		let tx = crate::database::native::begin_unscoped(&self.store.pool).await?;
 		Ok(Box::new(Transaction { tx }))
 	}
 }

@@ -89,7 +89,7 @@ impl HarnessManagement {
 			let exhausted = batch.len() < 500;
 			events.extend(
 				crate::authorization::remote::operator::filter_events(
-					&mut crate::database::native::begin(&f.store.pool).await?,
+					&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 					batch,
 				)
 				.await?,
@@ -226,7 +226,7 @@ impl HarnessManagement {
 			artifacts,
 		};
 		crate::authorization::remote::operator::filter_state(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			&mut state,
 		)
 		.await?;
@@ -270,7 +270,7 @@ impl HarnessManagement {
 		}
 		let run = f.store.inspect_run(id).await?;
 		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			run.workspace_id,
 		)
 		.await?;
@@ -317,7 +317,7 @@ impl HarnessManagement {
 		}
 		let existing = f.store.inspect_run(id).await?;
 		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			existing.workspace_id,
 		)
 		.await?;
@@ -397,7 +397,7 @@ impl HarnessManagement {
 		}
 		let mut cursor = q.after.max(0);
 		let mut visible = Vec::new();
-		let mut connection = crate::database::native::begin(&f.store.pool).await?;
+		let mut connection = crate::database::native::begin_unscoped(&f.store.pool).await?;
 		if let Some(workspace) = q.workspace_id
 			&& !crate::authorization::remote::operator::visible(&mut connection, workspace).await?
 		{

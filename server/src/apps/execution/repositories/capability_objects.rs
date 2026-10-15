@@ -101,7 +101,7 @@ impl Runtime {
 			else {
 				continue;
 			};
-			let mut tx = crate::database::native::begin(pool).await?;
+			let mut tx = crate::database::native::begin_unscoped(pool).await?;
 			let acquired: bool = {
 				let query_bind_1 = format!("core-object:{id}");
 				crate::database::native::query_scalar(

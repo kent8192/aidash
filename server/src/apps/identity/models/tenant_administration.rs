@@ -241,7 +241,7 @@ impl TenantAdministrator {
 		let Some((evaluation, decision)) = self.denial.lock().expect("denial lock").take() else {
 			return Ok(());
 		};
-		let mut tx = crate::database::native::begin(pool)
+		let mut tx = crate::database::native::begin_unscoped(pool)
 			.await?
 			.into_executor()?;
 		AuthorizationDecision::append(tx.as_mut(), self.tenant(), &evaluation, &decision).await?;

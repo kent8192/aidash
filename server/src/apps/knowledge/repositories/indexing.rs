@@ -114,7 +114,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 	async fn revoke(&self, workspace: Uuid, id: Uuid, authority: &Value) -> Result<()> {
 		let store = &self.store;
 		let result: crate::Result<()> = async {
-			let mut tx = crate::database::native::begin(&store.pool).await?;
+			let mut tx = crate::database::native::begin_unscoped(&store.pool).await?;
 			service::index(&mut tx, workspace, false).await?;
 			let entry: Option<Entry> = {
 				let query_bind_1 = id;

@@ -2279,7 +2279,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		store: f.store.clone(),
 		identity,
 	};
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin_unscoped().await.unwrap();
 	for _ in 0..512 {
 		f.store
 			.event(
@@ -2322,7 +2322,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
 	assert_eq!(state.0, 200, "{state:?}");
 	assert_eq!(state.1["events"], json!([]));
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin_unscoped().await.unwrap();
 	let visible = f
 		.store
 		.event(

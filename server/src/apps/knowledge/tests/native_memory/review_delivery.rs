@@ -17,7 +17,7 @@ async fn bank_id(store: &Store, bank: &Bank) -> Uuid {
 pub(super) async fn candidate(store: &Store, bank: &Bank) -> Uuid {
 	let id = Uuid::now_v7();
 	let now = chrono::Utc::now();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_candidates"))
@@ -162,7 +162,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 				.expr(Expr::value(now));
 		}
 		query.from_subquery(values.to_owned());
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(&query.to_string(PostgresQueryBuilder))
 			.execute(&mut *tx)
 			.await

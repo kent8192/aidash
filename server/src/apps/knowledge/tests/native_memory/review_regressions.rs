@@ -70,7 +70,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	.bank;
 	let later = review_delivery::candidate(&store, &later_bank).await;
 	let old = chrono::Utc::now() - chrono::Duration::days(8);
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for query in [
 		Query::update()
 			.table(Alias::new("memory_candidates"))
@@ -100,7 +100,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		native::query(&query).execute(&mut *tx).await.unwrap();
 	}
 	tx.commit().await.unwrap();
-	let mut reader = native::begin(&store.pool).await.unwrap();
+	let mut reader = native::begin_unscoped(&store.pool).await.unwrap();
 	let mut locked = Query::select();
 	if busy == "workspace" {
 		locked
@@ -385,7 +385,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	.await
 	.unwrap()
 	.bank;
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	for table in ["semantic_collections", "semantic_indexes"] {
 		native::query(
 			&Query::delete()
@@ -483,7 +483,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	.bank;
 	let message = Uuid::now_v7();
 	let body = "Primary authority to withdraw";
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("messages"))
@@ -632,7 +632,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	.unwrap();
 	let candidate = Uuid::now_v7();
 	let old = chrono::Utc::now() - chrono::Duration::days(8);
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_candidates"))
@@ -696,7 +696,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	.unwrap();
 	tx.commit().await.unwrap();
 	for _ in 0..2 {
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_bank_settings"))
@@ -846,7 +846,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	.unwrap();
 	assert!(row.try_get::<bool>("deleted").unwrap());
 	assert_eq!(row.try_get::<String>("text").unwrap(), "");
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_purge_jobs"))

@@ -61,7 +61,7 @@ impl Lease {
 				Ok(Self::Scoped(Box::new(access)))
 			}
 			Actor::Operator => {
-				let mut tx = crate::database::native::begin(&store.pool).await?;
+				let mut tx = crate::database::native::begin_unscoped(&store.pool).await?;
 				crate::authorization::remote::operator::require(&mut tx, workspace).await?;
 				let exists: Option<Uuid> = {
 					let query_bind_1 = workspace;

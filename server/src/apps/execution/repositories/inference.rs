@@ -630,7 +630,7 @@ impl crate::store::Store {
 		token: Uuid,
 		attempt: InferenceAttemptId,
 	) -> Result<()> {
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		fence(tx.as_mut(), run, token).await?;
 		let orphans = start(tx.as_mut(), &self.node_id, run, token, attempt).await?;
 		tx.commit().await?;
@@ -645,7 +645,7 @@ impl crate::store::Store {
 		attempt: InferenceAttemptId,
 		batch: &[InferenceProgress],
 	) -> Result<()> {
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		fence(tx.as_mut(), run, token).await?;
 		append(tx.as_mut(), run, attempt, batch).await?;
 		tx.commit().await
@@ -658,7 +658,7 @@ impl crate::store::Store {
 		attempt: InferenceAttemptId,
 		outcome: ProgressOutcome,
 	) -> Result<()> {
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		fence(tx.as_mut(), run, token).await?;
 		finish(tx.as_mut(), &self.node_id, run, attempt, outcome).await?;
 		tx.commit().await
@@ -668,7 +668,7 @@ impl crate::store::Store {
 	/// the same lease. A lost lease leaves it to orphan closure.
 	pub(crate) async fn discard_stale_inference(&self, run: Uuid, token: Uuid) {
 		let result = async {
-			let mut tx = native::begin(&self.pool).await?;
+			let mut tx = native::begin_unscoped(&self.pool).await?;
 			fence(tx.as_mut(), run, token).await?;
 			let closed = close_pending(
 				tx.as_mut(),
@@ -690,7 +690,7 @@ impl crate::store::Store {
 	/// One bounded pass closing attempts no worker can finish. Returns the
 	/// number of attempts closed.
 	pub async fn close_orphaned_inference(&self) -> Result<usize> {
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		let closed = close_orphans(tx.as_mut(), &self.node_id).await?;
 		tx.commit().await?;
 		record_interruptions(&closed);
@@ -699,7 +699,7 @@ impl crate::store::Store {
 
 	/// One bounded retention pass. Returns the number of attempts pruned.
 	pub async fn prune_inference_progress(&self) -> Result<u64> {
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = native::begin_unscoped(&self.pool).await?;
 		let pruned = prune(tx.as_mut()).await?;
 		tx.commit().await?;
 		Ok(pruned)

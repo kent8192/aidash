@@ -225,7 +225,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 				} else {
 					"failed"
 				};
-				let mut tx = native::begin(&store.pool).await?;
+				let mut tx = native::begin_unscoped(&store.pool).await?;
 				native::query(
 					&Query::update()
 						.table(Alias::new("memory_purge_jobs"))

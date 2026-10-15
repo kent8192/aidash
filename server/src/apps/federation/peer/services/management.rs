@@ -734,7 +734,7 @@ impl PeerManagement {
 			"event" => {
 				let event_id =
 					crate::registry::digest(&json!({"node":node,"task":task.id,"key":key()?}));
-				let mut tx = crate::database::native::begin(&f.store.pool).await?;
+				let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
 				// A deterministic UUID-sized identifier is enough for the inbox key;
 				// the full source namespace is included in the hash.
 				use sha2::{Digest, Sha256};

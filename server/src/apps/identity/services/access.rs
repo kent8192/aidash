@@ -245,7 +245,7 @@ impl Access {
 		exclusive: bool,
 	) -> Result<Self> {
 		identity.check_binding(pool).await?;
-		let mut tx = crate::database::native::begin(pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(pool).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self::from_transaction(
 			tx, pool, node, client, identity, snapshot,
@@ -369,7 +369,7 @@ impl Access {
 		Self::under_lease_on(lease, &lease.pool).await
 	}
 	pub(crate) async fn under_lease_on(lease: &Self, pool: &Pool) -> Result<Self> {
-		let tx = crate::database::native::begin(pool).await?;
+		let tx = crate::database::native::begin_unscoped(pool).await?;
 		Ok(Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
@@ -407,7 +407,7 @@ impl Access {
 		if !self.tx.is_active() {
 			self.identity.check_binding(&self.pool).await?;
 			self.tx
-				.install(crate::database::native::begin(&self.pool).await?);
+				.install(crate::database::native::begin_unscoped(&self.pool).await?);
 		}
 		Ok(())
 	}
@@ -431,7 +431,7 @@ impl Access {
 	pub async fn refresh_execution(&mut self, run_id: Uuid) -> Result<()> {
 		if !self.tx.is_active() {
 			self.tx
-				.install(crate::database::native::begin(&self.pool).await?);
+				.install(crate::database::native::begin_unscoped(&self.pool).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
 		self.tx.admissions.clear();
@@ -518,7 +518,7 @@ impl Access {
 		// its decision audit before effects so a killed worker cannot lose it.
 		if self.durable_audit {
 			let mut audit: Box<dyn TransactionExecutor> =
-				crate::database::native::begin(&self.pool)
+				crate::database::native::begin_unscoped(&self.pool)
 					.await?
 					.into_executor()?;
 			for (input, decision) in records {
@@ -584,7 +584,7 @@ impl Access {
 			if matches!(result, Err(Error::Forbidden)) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> =
-					crate::database::native::begin(&self.pool)
+					crate::database::native::begin_unscoped(&self.pool)
 						.await?
 						.into_executor()?;
 				for (input, decision) in &self.pending_decisions {

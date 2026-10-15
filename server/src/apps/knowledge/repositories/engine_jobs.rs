@@ -368,7 +368,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 }
 
 async fn process(store: &Store, id: Uuid) -> Result<bool> {
-	let mut claim_tx = native::begin(&store.pool).await?;
+	let mut claim_tx = native::begin_unscoped(&store.pool).await?;
 	let Some(row) = native::query(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -479,7 +479,7 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 			Some("engine_unavailable"),
 		),
 	};
-	let mut tx = native::begin(&store.pool).await?;
+	let mut tx = native::begin_unscoped(&store.pool).await?;
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))

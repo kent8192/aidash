@@ -630,9 +630,9 @@ pub(crate) async fn set_grant(
 		));
 	}
 	let mut tx = if input.enabled {
-		crate::database::native::begin(&f.store.pool).await?
+		crate::database::native::begin_unscoped(&f.store.pool).await?
 	} else {
-		crate::database::native::begin(&f.store.control_pool).await?
+		crate::database::native::begin_unscoped(&f.store.control_pool).await?
 	};
 	if !input.enabled {
 		crate::transactions::authority::control(&mut tx).await?;
@@ -730,7 +730,7 @@ pub(crate) async fn operator_grant(
 	tenant: &str,
 ) -> Result<(crate::database::native::Transaction, GraphOperatorGrant)> {
 	identifier(tenant)?;
-	let mut tx = crate::database::native::begin(&f.store.pool).await?;
+	let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
 	Authorization::load(&mut tx, tenant).await?;
 	let grant: GraphOperatorGrant = {
 		let query_bind_1 = node;

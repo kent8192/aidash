@@ -1677,7 +1677,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	.unwrap();
 	// Pin an already-completed learning disposition so the test isolates the
 	// admitted-unit index retry rather than another model learning invocation.
-	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&fixture.f.store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_engine_jobs"))
@@ -1743,7 +1743,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 		"a transient index failure must retain the origin until retry"
 	);
 	fixture.response_mode.store(0, Ordering::SeqCst);
-	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&fixture.f.store.pool).await.unwrap();
 	// Advance the failed model attempt beyond its durable single-call window;
 	// it remains charged while the semantic retry receives a fresh reservation.
 	native::query(
@@ -1816,7 +1816,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	.await
 	.unwrap()
 	.remove(0);
-	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&fixture.f.store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("semantic_entries"))

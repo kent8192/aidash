@@ -675,7 +675,7 @@ async fn finish(
 		{
 			return Err(Error::SemanticUnavailable);
 		}
-		let mut tx = store.pool.begin().await?;
+		let mut tx = store.pool.begin_unscoped().await?;
 		let index =
 			crate::semantic::models::SemanticIndexe::locked(&mut *tx, bank.workspace, false)
 				.await?

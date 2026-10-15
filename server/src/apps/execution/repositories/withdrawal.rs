@@ -37,7 +37,7 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		}
 		let operation = Seed { area_id: area, id };
 		let store = self.store;
-		let mut tx = crate::database::native::begin(&store.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&store.pool).await?;
 		// Keep the normal area-before-operation lock order and recheck committed
 		// state: a stale worker snapshot cannot declare a dispatched writer safe.
 		let area: Area = {

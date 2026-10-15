@@ -2048,7 +2048,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin_unscoped().await.unwrap();
 	f.store
 		.event(
 			&mut tx,

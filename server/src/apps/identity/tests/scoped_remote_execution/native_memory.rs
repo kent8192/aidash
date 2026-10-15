@@ -763,7 +763,7 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 	.collect();
 	assert_eq!(selected.len(), 1025);
 	// Model a grant's previous Runs through the same durable dependency schema.
-	let mut tx = aidash_server::database::native::begin(&p.a.store.pool)
+	let mut tx = aidash_server::database::native::begin_unscoped(&p.a.store.pool)
 		.await
 		.unwrap();
 	let mut insert = Query::insert();

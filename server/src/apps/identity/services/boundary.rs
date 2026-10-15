@@ -189,7 +189,8 @@ impl Middleware for AccessBoundary {
 				&& request.method != Method::OPTIONS
 				&& let Some(origin) = browser
 			{
-				let mut lease = crate::database::native::begin(&runtime.store.pool).await?;
+				let mut lease =
+					crate::database::native::begin_unscoped(&runtime.store.pool).await?;
 				origin.require_operator(&mut lease, true).await?;
 				Some(lease)
 			} else {

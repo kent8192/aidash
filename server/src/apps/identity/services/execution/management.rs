@@ -127,7 +127,7 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunManagement> {
 	let Actor::Subject(identity) = actor else {
 		let mut result: RunManagement = f.store.inspect_run(id).await?.into();
-		let mut tx = crate::database::native::begin(&f.store.control_pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&f.store.control_pool).await?;
 		result.memory_cleanup =
 			crate::apps::knowledge::repositories::receiver_caches::status(&mut tx, id).await?;
 		tx.rollback().await?;

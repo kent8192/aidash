@@ -315,7 +315,14 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 			0
 		}
 		Unavailable::VectorBackend => {
-			let mut connection = fixture.worker.federation.store.pool.begin().await.unwrap();
+			let mut connection = fixture
+				.worker
+				.federation
+				.store
+				.pool
+				.begin_unscoped()
+				.await
+				.unwrap();
 			aidash_server::database::native::query(
 				&reinhardt::query::Query::delete()
 					.from_table(reinhardt::query::Alias::new("semantic_vectors"))

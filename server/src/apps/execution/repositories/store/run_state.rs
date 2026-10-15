@@ -97,7 +97,7 @@ impl Store {
 		worker: Uuid,
 		seconds: i32,
 	) -> Result<Option<FailureDelivery>> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let now: DateTime<Utc> = crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
@@ -233,7 +233,7 @@ impl Store {
 			}
 		};
 		let m = &delivery.metadata;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
 		let query = Query::update()
 			.table(a("runs"))
 			.value(a("phase"), state.phase().as_str())

@@ -17,7 +17,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 	.scalar_one(&store.pool)
 	.await
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_candidates"))
@@ -137,7 +137,7 @@ pub(super) async fn retry_learning(store: &Store, bank: &Bank, proof: &Evidence)
 }
 
 async fn due(store: &Store, run: Uuid) {
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = native::begin_unscoped(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))

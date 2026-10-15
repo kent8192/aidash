@@ -416,7 +416,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let owner: native::Pool = crate::native_database::owner_pool(store.pool.driver())
 		.await
 		.into();
-	let mut tx = native::begin(&owner).await.unwrap();
+	let mut tx = native::begin_unscoped(&owner).await.unwrap();
 	for (table, column, parent, parent_column, kind, value) in [
 		(
 			"fixture_point_hold",
@@ -510,7 +510,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	);
 
 	// Advance only the persisted retry deadline, then acknowledge absent identities.
-	let mut released = native::begin(&store.pool).await.unwrap();
+	let mut released = native::begin_unscoped(&store.pool).await.unwrap();
 	for table in ["fixture_point_hold", "fixture_collection_hold"] {
 		native::query(
 			&Query::delete()

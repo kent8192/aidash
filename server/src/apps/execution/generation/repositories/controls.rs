@@ -54,9 +54,9 @@ impl GenerationControls for NativeControls {
 		_tenant: &str,
 	) -> aidash_application::Result<Box<dyn GenerationControlScope>> {
 		let mode = match &self.actor {
-			Actor::Operator => {
-				Mode::Operator(crate::database::native::begin(&self.runtime.store.pool).await?)
-			}
+			Actor::Operator => Mode::Operator(
+				crate::database::native::begin_unscoped(&self.runtime.store.pool).await?,
+			),
 			Actor::Subject(identity) => Mode::Subject(Box::new(
 				Access::begin_exclusive(&self.runtime.store, identity).await?,
 			)),

@@ -54,7 +54,8 @@ impl RunReader for Readers<'_> {
 				async {
 					let inspected = self.federation.store.inspect_run(run).await?;
 					crate::authorization::remote::operator::require(
-						&mut crate::database::native::begin(&self.federation.store.pool).await?,
+						&mut crate::database::native::begin_unscoped(&self.federation.store.pool)
+							.await?,
 						inspected.workspace_id,
 					)
 					.await

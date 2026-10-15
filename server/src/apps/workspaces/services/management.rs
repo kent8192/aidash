@@ -37,7 +37,7 @@ impl CollaborationManagement {
 		}
 		let mut page = f.store.task_page(page.offset).await?;
 		let denied = crate::authorization::remote::operator::blocked(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			&page
 				.tasks
 				.iter()
@@ -67,7 +67,7 @@ impl CollaborationManagement {
 			return scope.snapshot(id).await;
 		}
 		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			id,
 		)
 		.await?;
@@ -84,7 +84,7 @@ impl CollaborationManagement {
 			return scope.update(id, input.revision, input.state).await;
 		}
 		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			id,
 		)
 		.await?;
@@ -155,7 +155,7 @@ impl CollaborationManagement {
 		}
 		let existing = f.store.task(id).await?;
 		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut crate::database::native::begin_unscoped(&f.store.pool).await?,
 			existing.workspace_id,
 		)
 		.await?;
