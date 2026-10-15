@@ -58,7 +58,7 @@ their existing paths unchanged.
 | Operation  | Method and broker path                 | Success response limit |
 | ---------- | -------------------------------------- | ---------------------- |
 | chat       | `POST /api/v1/chat/completions`        | 1 MiB                  |
-| decision   | `POST /api/v1/systemone`               | 1 MiB                  |
+| decision   | `POST /api/v1/systemone`               | 16 MiB                 |
 | discovery  | `GET /api/v1/models/{model}/endpoints` | 2 MiB                  |
 | discovery  | `GET /api/v1/endpoints/zdr`            | 8 MiB                  |
 | embeddings | `POST /api/v1/embeddings`              | 1 MiB                  |
@@ -74,9 +74,9 @@ Provider Credential model-ID validator, including single-segment and multiple-
 segment IDs, and must exactly match the signed claim; ZDR discovery is an
 operation-wide catalog. Chat requests are limited to
 16 MiB so the application's 8 MiB raw-media allowance fits after base64 encoding
-and JSON framing. Decision requests share that limit: a System One body carries
-the fitted history, which only the provider's capacity bounds. Other requests
-remain limited to 1 MiB. Query strings,
+and JSON framing. Decision requests and responses share that limit: a System
+One exchange carries the fitted history and one answer per question, which only
+the provider's capacity bounds. Other requests remain limited to 1 MiB. Query strings,
 absolute URIs, percent-encoded paths, empty segments and
 path traversal are rejected. Violations are rejected, never rewritten.
 OpenRouter's [model fallback list](https://openrouter.ai/docs/guides/routing/model-fallbacks)

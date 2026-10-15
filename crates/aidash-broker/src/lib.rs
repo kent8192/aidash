@@ -26,6 +26,10 @@ const REQUEST_LIMIT: usize = 1024 * 1024;
 // The application's 8 MiB raw-media allowance expands to about 11 MiB in base64.
 // Leave bounded room for JSON framing and the approved text context as well.
 const CHAT_REQUEST_LIMIT: usize = 16 * 1024 * 1024;
+// A System One exchange carries the fitted history and one answer per question.
+// Only the provider's capacity bounds either, so both directions share the chat
+// request ceiling (ADR 0041).
+const DECISION_LIMIT: usize = CHAT_REQUEST_LIMIT;
 const ERROR_LIMIT: usize = 16 * 1024;
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
@@ -249,7 +253,7 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 		("POST", "chat/completions") => (Operation::Chat, 1024 * 1024),
 		("POST", "embeddings") => (Operation::Embeddings, 1024 * 1024),
 		// System One answers carry only probabilities and usage (ADR 0041).
-		("POST", "systemone") => (Operation::Decision, 1024 * 1024),
+		("POST", "systemone") => (Operation::Decision, DECISION_LIMIT),
 		("GET", "endpoints/zdr") => (Operation::Discovery, 8 * 1024 * 1024),
 		("GET", p) if p.starts_with("models/") && p.ends_with("/endpoints") => {
 			let model = p
@@ -468,10 +472,9 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		);
 	}
 	let method = request.method().clone();
-	// A System One body carries the fitted history, which only the provider's
-	// capacity bounds, so it shares the chat ceiling (ADR 0041).
 	let request_limit = match op {
-		Operation::Chat | Operation::Decision => CHAT_REQUEST_LIMIT,
+		Operation::Chat => CHAT_REQUEST_LIMIT,
+		Operation::Decision => DECISION_LIMIT,
 		_ => REQUEST_LIMIT,
 	};
 	let body = match tokio::time::timeout_at(deadline, to_bytes(request.into_body(), request_limit))

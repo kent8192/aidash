@@ -100,6 +100,8 @@ async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> 
 		"/api/v1/models/author/model/endpoints" => json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"vendor/route","context_length":131072}]}}),
 		"/api/v1/endpoints/zdr" => json!({"data":[{"model_id":"author/model","tag":"vendor/route"}]}),
 		"/api/v1/embeddings" => json!({"model":"author/model","data":[{"index":0,"embedding":[1.0,0.0]}],"usage":{"prompt_tokens":4,"total_tokens":4}}),
+		// One answer per question: a large question map yields a provider-sized answer map.
+		"/api/v1/systemone" if value.pointer("/state/large_answer") == Some(&Value::Bool(true)) => json!({"model":"typesafe/jev-1.13-20260917","answers":{"keep":{"type":"noul","noul":0.9}},"padding":"x".repeat(REQUEST_LIMIT),"usage":{"input_tokens":12,"output_tokens":3,"cost":0.000002}}),
 		"/api/v1/systemone" => json!({"model":"typesafe/jev-1.13-20260917","answers":{"keep":{"type":"noul","noul":0.9}},"usage":{"input_tokens":12,"output_tokens":3,"cost":0.000002,"untrusted":CANARY}}),
 		_ => json!({"choices":[{"finish_reason":"stop","message":{"content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"untrusted":CANARY}})
 	}).into_response()
@@ -1321,7 +1323,7 @@ async fn system_one_relays_a_zero_retention_decision_and_audits_only_numeric_usa
 }
 
 #[tokio::test]
-async fn system_one_admits_decisions_beyond_the_non_chat_bound_up_to_the_chat_bound() {
+async fn system_one_admits_decisions_and_answers_beyond_the_non_chat_bound_up_to_the_chat_bound() {
 	let f = Fixture::new().await;
 	// The Decision Gate sends whatever the provider's capacity admits.
 	let mut body = decision();
@@ -1331,6 +1333,22 @@ async fn system_one_admits_decisions_beyond_the_non_chat_bound_up_to_the_chat_bo
 		.await;
 	assert_eq!(response.status(), 200);
 	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+	// The answer map of a provider-sized decision is relayed whole, beyond 1 MiB.
+	let mut body = decision();
+	body["state"] = json!({"large_answer":true});
+	let response = f
+		.request(&decision_claims(&f), "POST", "/api/v1/systemone", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	let answered = json_body(response).await;
+	assert_eq!(answered["answers"]["keep"]["noul"], 0.9);
+	assert_eq!(answered["padding"].as_str().unwrap().len(), REQUEST_LIMIT);
+	let logs = f.logs.0.lock().unwrap().clone();
+	let audit: Value = serde_json::from_str(logs.last().unwrap()).unwrap();
+	assert_eq!(
+		(audit["operation"].clone(), audit["usage"]["cost"].clone()),
+		(json!("decision"), json!(0.000002))
+	);
 	let mut body = decision();
 	body["state"] = json!({"history":"x".repeat(CHAT_REQUEST_LIMIT)});
 	let response = f
@@ -1341,7 +1359,7 @@ async fn system_one_admits_decisions_beyond_the_non_chat_bound_up_to_the_chat_bo
 		json_body(response).await["error"]["code"],
 		"capability_claim_violation"
 	);
-	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

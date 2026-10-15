@@ -180,35 +180,21 @@ impl DecisionProvider for JevDecisionProvider {
 			cache_breakpoints: false,
 			call: Some(attempt),
 		});
-		// Resolved before the attempt is reserved, so a missing or revoked
-		// credential never charges an attempt that sends no request.
-		let access = self
-			.access
-			.resolve(
-				&scope,
-				Provider::Openrouter.base_url(),
-				&Source::Tenant {
-					provider: self.config.provider_credential.clone(),
-				},
-			)
+		let source = Source::Tenant {
+			provider: self.config.provider_credential.clone(),
+		};
+		// Checked before the attempt is reserved, so a missing or revoked
+		// credential never charges an attempt that sends no request. The check
+		// neither mints a token nor reads Key Material.
+		self.access
+			.check(&scope, Provider::Openrouter.base_url(), &source)
 			.await?;
-		let mut transport = self
-			.client
-			.post(format!(
-				"{}/systemone",
-				access.endpoint.trim_end_matches('/')
-			))
-			.header(reqwest::header::CONTENT_TYPE, "application/json")
-			.body(request.body.clone());
-		if !access.bearer.expose_secret().is_empty() {
-			transport = transport.bearer_auth(access.bearer.expose_secret());
-		}
-		let transport = transport
-			.build()
-			.map_err(|_| Error::Invalid("invalid decision HTTP request".into()))?;
 		Ok(Box::new(JevDispatch {
 			client: self.client.clone(),
-			request: transport,
+			access: self.access.clone(),
+			scope,
+			source,
+			body: request.body.clone(),
 			attempt,
 			model: self.config.model.clone(),
 			questions: request.questions.clone(),
@@ -218,7 +204,11 @@ impl DecisionProvider for JevDecisionProvider {
 
 struct JevDispatch {
 	client: reqwest::Client,
-	request: reqwest::Request,
+	access: Arc<dyn ProviderAccess>,
+	/// The Decision Attempt's call scope and the Tenant binding it uses.
+	scope: Context,
+	source: Source,
+	body: Vec<u8>,
 	/// The Decision Attempt this request is; a direct (self-hosted) call has no
 	/// broker audit, so the response is traced under it.
 	attempt: Uuid,
@@ -230,9 +220,28 @@ impl PreparedDispatch for JevDispatch {
 	async fn dispatch(
 		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
-		let response = self
+		// The call credential is obtained immediately before I/O: a broker
+		// Capability Token lives 60 s, and reserving the attempt may wait on
+		// remote owners. A failure here, after the check, leaves the reserved
+		// attempt charged, as for compaction.
+		let access = self
+			.access
+			.resolve(&self.scope, Provider::Openrouter.base_url(), &self.source)
+			.await
+			.map_err(|_| Error::External("decision provider credential unavailable".into()))?;
+		let mut request = self
 			.client
-			.execute(self.request)
+			.post(format!(
+				"{}/systemone",
+				access.endpoint.trim_end_matches('/')
+			))
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.body(self.body);
+		if !access.bearer.expose_secret().is_empty() {
+			request = request.bearer_auth(access.bearer.expose_secret());
+		}
+		let response = request
+			.send()
 			.await
 			.map_err(|_| Error::External("decision provider transport failed".into()))?;
 		if !response.status().is_success() {

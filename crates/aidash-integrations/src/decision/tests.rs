@@ -13,6 +13,7 @@ use std::sync::{
 struct AccessFixture {
 	endpoint: String,
 	available: AtomicBool,
+	checks: AtomicUsize,
 	resolutions: AtomicUsize,
 	scopes: Mutex<Vec<Context>>,
 }
@@ -21,6 +22,7 @@ impl AccessFixture {
 		Arc::new(Self {
 			endpoint: endpoint.into(),
 			available: AtomicBool::new(true),
+			checks: AtomicUsize::new(0),
 			resolutions: AtomicUsize::new(0),
 			scopes: Mutex::new(vec![]),
 		})
@@ -47,8 +49,15 @@ impl ProviderAccess for AccessFixture {
 			keyless: None,
 		})
 	}
-	async fn check(&self, _: &Context, _: &str, _: &Source) -> Result<()> {
-		unreachable!("a Decider resolves its credential when it prepares an attempt")
+	async fn check(&self, context: &Context, endpoint: &str, source: &Source) -> Result<()> {
+		assert_eq!(endpoint, Provider::Openrouter.base_url());
+		assert!(matches!(source, Source::Tenant { provider } if provider == "openrouter"));
+		assert!(context.is_decision());
+		self.checks.fetch_add(1, Ordering::SeqCst);
+		if !self.available.load(Ordering::SeqCst) {
+			return Err(Error::Invalid("PRIVATE_CREDENTIAL_BACKEND_ERROR".into()));
+		}
+		Ok(())
 	}
 }
 fn run_context() -> Context {
@@ -218,7 +227,7 @@ async fn server(router: Router) -> (String, Server) {
 }
 
 #[tokio::test]
-async fn each_prepared_attempt_resolves_the_tenant_credential_and_revocation_fails_before_it() {
+async fn each_attempt_checks_before_reservation_and_resolves_its_credential_only_to_dispatch() {
 	let received = Arc::new(Mutex::new(Vec::new()));
 	let collected = received.clone();
 	let router = Router::new().route(
@@ -261,26 +270,36 @@ async fn each_prepared_attempt_resolves_the_tenant_credential_and_revocation_fai
 	for (request, attempt) in requests.iter().zip(attempts) {
 		transports.push(client.prepare(request, attempt).await.unwrap());
 	}
-	// Preparing resolves the credential, as the Decision Attempt that the call
-	// will be reserved as, before any request.
-	assert_eq!(access.resolutions.load(Ordering::SeqCst), 2);
+	// Preparing checks the binding without minting a short-lived call credential,
+	// which a reservation wait could outlive.
+	assert_eq!(access.checks.load(Ordering::SeqCst), 2);
+	assert_eq!(access.resolutions.load(Ordering::SeqCst), 0);
 	assert!(received.lock().unwrap().is_empty());
+	for (transport, request) in transports.into_iter().zip(&requests) {
+		let answers = transport.dispatch().await.unwrap();
+		assert_eq!(answers.len(), request.questions.len());
+		assert!(answers.values().all(|p| *p == Probability::half()));
+	}
+	// Each dispatch resolves the credential once, as its Decision Attempt.
+	assert_eq!(access.resolutions.load(Ordering::SeqCst), 2);
 	for (scope, attempt) in access.scopes.lock().unwrap().iter().zip(attempts) {
 		assert!(scope.is_decision());
 		let inference = scope.inference.as_ref().unwrap();
 		assert_eq!(inference.max_output_tokens, 0);
 		assert_eq!(inference.call, Some(attempt));
 	}
-	for (transport, request) in transports.into_iter().zip(&requests) {
-		let answers = transport.dispatch().await.unwrap();
-		assert_eq!(answers.len(), request.questions.len());
-		assert!(answers.values().all(|p| *p == Probability::half()));
-	}
-	// Dispatch sends the prepared request without resolving again.
-	assert_eq!(access.resolutions.load(Ordering::SeqCst), 2);
+	// Revocation after preparation fails the dispatch before any request.
+	let late = client.prepare(&requests[2], Uuid::now_v7()).await.unwrap();
+	access.available.store(false, Ordering::SeqCst);
+	let error = late.dispatch().await.unwrap_err();
+	assert!(matches!(error, DispatchError::ProviderFailure(_)));
+	assert!(
+		!error
+			.to_string()
+			.contains("PRIVATE_CREDENTIAL_BACKEND_ERROR")
+	);
 	// A revoked or unbound credential fails preparation, so no attempt is
 	// reserved and no request is sent.
-	access.available.store(false, Ordering::SeqCst);
 	let error = client
 		.prepare(&requests[2], Uuid::now_v7())
 		.await
