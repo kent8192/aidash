@@ -31,36 +31,6 @@ async fn audit_events_are_never_visible_and_do_not_read_distribution_state() {
 	assert_eq!(scope.calls, Vec::<String>::new());
 }
 #[rstest]
-#[tokio::test]
-async fn disabled_compatibility_hides_events_before_loading_private_resources() {
-	let mut scope = published();
-	scope.denied = Some("compatibility_ready".into());
-	let visible = visible(
-		&mut scope,
-		&event("marketplace.published", json!({"key":"package"})),
-		"node",
-	)
-	.await
-	.unwrap();
-	assert!(!visible);
-	assert_eq!(scope.calls, vec!["compatibility_ready"]);
-}
-#[rstest]
-#[tokio::test]
-async fn distribution_connection_failure_is_preserved_for_the_retry_path() {
-	let mut scope = published();
-	scope.denied = Some("compatibility_external".into());
-	let result = visible(
-		&mut scope,
-		&event("marketplace.published", json!({"key":"package"})),
-		"node",
-	)
-	.await;
-	assert!(
-		matches!(result,Err(Error::External(message)) if message=="fixture connection failure")
-	);
-}
-#[rstest]
 #[case::foreign_installation(json!({"installation":"private-installation","tenant":"other","revision":1}))]
 #[case::missing_reference(json!({"tenant":"owner"}))]
 #[tokio::test]
@@ -72,7 +42,7 @@ async fn foreign_or_unbound_events_do_not_load_installation_documents(
 		.await
 		.unwrap();
 	assert!(!visible);
-	assert_eq!(scope.calls, vec!["compatibility_ready"]);
+	assert_eq!(scope.calls, Vec::<String>::new());
 }
 #[rstest]
 #[case::published("marketplace.published", true)]
@@ -181,20 +151,6 @@ async fn exact_retained_revision_remains_readable_without_following_active_alias
 		scope.calls.iter().any(|c| c == "selected_installation"),
 		!single
 	);
-}
-#[rstest]
-#[tokio::test]
-async fn disabled_gate_blocks_retained_registry_disclosure_before_catalog_read() {
-	let mut scope = published();
-	let request = input(&scope);
-	let installed = installations::install(&mut scope, &validation(), "package", &request, "node")
-		.await
-		.unwrap();
-	scope.calls.clear();
-	scope.denied = Some("compatibility_ready".into());
-	let result = registry_entries(&mut scope, vec![installed.entry], true, "node").await;
-	assert!(matches!(result, Err(Error::Forbidden)));
-	assert_eq!(scope.calls, vec!["compatibility_ready"]);
 }
 #[rstest]
 #[tokio::test]

@@ -3,6 +3,17 @@ use std::{fs, path::Path};
 use tokio::process::Command;
 
 pub fn deployment_command(database_url: &str, directory: &Path) -> Command {
+	deployment_command_excluding(database_url, directory, &[])
+}
+
+/// Like `deployment_command`, but without the `(app, migration)` files in
+/// `excluded`, so `migrate` plans the history as it was before them.
+#[allow(dead_code)] // Only the migration suite plans an older history.
+pub fn deployment_command_excluding(
+	database_url: &str,
+	directory: &Path,
+	excluded: &[(&str, &str)],
+) -> Command {
 	let server = Path::new(env!("CARGO_MANIFEST_DIR"));
 	let settings = directory.join("settings");
 	fs::create_dir_all(&settings).unwrap();
@@ -27,8 +38,18 @@ pub fn deployment_command(database_url: &str, directory: &Path) -> Command {
 		fs::create_dir_all(&target).unwrap();
 		for migration in fs::read_dir(app.path()).unwrap() {
 			let migration = migration.unwrap();
-			if migration.path().extension().is_some_and(|ext| ext == "rs") {
-				fs::copy(migration.path(), target.join(migration.file_name())).unwrap();
+			let path = migration.path();
+			if path.extension().is_some_and(|ext| ext == "rs") {
+				let name = path.file_stem().unwrap().to_string_lossy();
+				let app_name = app.file_name();
+				let app_label = app_name.to_string_lossy();
+				if excluded
+					.iter()
+					.any(|(app, file)| *app == app_label && *file == name)
+				{
+					continue;
+				}
+				fs::copy(&path, target.join(migration.file_name())).unwrap();
 			} else if migration.file_name() == "sql" && migration.path().is_dir() {
 				let sql_target = target.join("sql");
 				copy_assets(&migration.path(), &sql_target);

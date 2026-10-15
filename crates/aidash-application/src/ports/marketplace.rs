@@ -101,8 +101,8 @@ pub trait PublicationScope: DistributionWriter {
 
 #[async_trait]
 pub trait InstallationRead: DistributionScope {
-	/// Acquire the compatibility lease before selected-installation row locks.
-	async fn installation_gate(&mut self) -> Result<()>;
+	/// Acquire the distribution lease before selected-installation row locks.
+	async fn installation_lease(&mut self) -> Result<()>;
 	async fn selected_installation(&mut self, id: &str) -> Result<Option<Installation>>;
 	fn audit_installation(&mut self, installation: serde_json::Value);
 	async fn approved(
@@ -172,11 +172,6 @@ pub trait OperatorScope: StagingScope {
 	fn principal(&self) -> &aidash_domain::identity::Principal;
 	async fn load_tenant(&mut self, tenant: &str) -> Result<()>;
 	async fn distribution_lock(&mut self, exclusive: bool) -> Result<()>;
-	async fn compatibility(&mut self) -> Result<Option<aidash_domain::marketplace::Compatibility>>;
-	async fn save_compatibility(
-		&mut self,
-		state: &aidash_domain::marketplace::Compatibility,
-	) -> Result<()>;
 	async fn enable_writer(&mut self) -> Result<()>;
 	async fn installation(&mut self, id: &str) -> Result<Option<Installation>>;
 	async fn revision(&mut self, id: &str, revision: i64) -> Result<Revision>;
@@ -196,9 +191,6 @@ pub trait OperatorScope: StagingScope {
 	async fn adoption_replay(&mut self, key: &str) -> Result<Option<serde_json::Value>>;
 	async fn remember_adoption(&mut self, key: &str, record: serde_json::Value) -> Result<()>;
 	async fn raw_definition(&mut self, reference: &EntityRef) -> Result<Entry>;
-	async fn effective_legacy(&mut self, reference: &EntityRef) -> Result<Entry>;
-	async fn package_record(&mut self, reference: &EntityRef) -> Result<Option<(String, String)>>;
-	async fn legacy_config(&mut self, reference: &EntityRef) -> Result<Option<serde_json::Value>>;
 	async fn provenance(
 		&mut self,
 		entry: &Entry,
@@ -221,7 +213,6 @@ pub trait OperatorScope: StagingScope {
 /// Polling and frame handoff share current authority; the handoff caller owns its lease.
 #[async_trait]
 pub trait EventScope: InstallationRead {
-	async fn compatibility_ready(&mut self) -> Result<()>;
 	async fn workspace_allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
 	async fn workspace_event_visible(&mut self, event: &aidash_domain::Event) -> Result<bool>;
 }

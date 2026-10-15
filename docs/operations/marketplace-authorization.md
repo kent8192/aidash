@@ -2,20 +2,11 @@
 
 Issue [#74](https://github.com/kent8192/aidash/issues/74) adds tenant-owned distribution alongside the original operator Marketplace. The accepted [design contract](https://github.com/kent8192/aidash/blob/4347688473f4be3fa1a6bad5b83cc2315e07f954/docs/design/2026-09-30-marketplace-authorization-contract.md) defines the policy boundary. Application behavior is covered by the [Marketplace authorization suite](../../server/src/apps/marketplace/tests/marketplace_authorization.rs); the dashboard scenarios are in `web/tests/marketplace.spec.ts`.
 
-## Enable a compatible deployment
+## The only Marketplace
 
-Apply the additive migration with the normal application migration command. It preserves legacy `packages`, `installations`, source bytes, digests and native catalog approvals. New scoped paths start disabled. Drain and upgrade **every API instance and worker** before enabling contract 1. In the operator Marketplace settings, confirm compatibility and enable the feature, or use:
+Issue [#243](https://github.com/kent8192/aidash/issues/243) removed the original operator Marketplace: its `packages` and `installations` tables, the mutable installation overlays, legacy adoption and the deployment-wide compatibility gate. The tenant-scoped Marketplace below is the only one, and it is always available.
 
-```http
-PUT /api/marketplace/compatibility
-Content-Type: application/json
-
-{"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true}
-```
-
-Read `/api/marketplace/compatibility` for the current optimistic revision. Disabling this gate stops new scoped Marketplace requests; existing installed Runs still require live exact catalog approvals and policy. Operator approval revocation remains available while the gate is disabled.
-
-Every installed Registry document carries an `installation` marker with contract, tenant, installation and revision. Older binaries reject this unknown field. Database triggers reject old writes to projection rows, legacy overlays on these IDs and cross-tenant catalog grants. Projection references are allocated once and persisted with each revision; an existing native ID beginning with `mkt-` remains native. These fences supplement the deployment gate; they do not make a rolling downgrade safe. A migration rollback refuses to erase populated scoped versions or installation mappings. Keep a compatible binary and restore from a verified backup for disaster recovery; do not strip markers or reuse projection IDs.
+Every installed Registry document carries an `installation` marker with contract, tenant, installation and revision. Older binaries reject this unknown field. Database triggers reject old writes to projection rows, legacy overlays on these IDs and cross-tenant catalog grants. Projection references are allocated once and persisted with each revision; an existing native ID beginning with `mkt-` remains native. These fences do not make a rolling downgrade safe. A migration rollback refuses to erase populated scoped versions or installation mappings. Keep a compatible binary and restore from a verified backup for disaster recovery; do not strip markers or reuse projection IDs.
 
 ## Authority and identities
 
@@ -79,7 +70,7 @@ Operators inspect retained revisions with `GET /api/marketplace/administration?t
 
 Dependency approvals must already exist. `expected_catalog_revision` comes from `/api/authorization/{tenant}/catalog`; 0 creates the first grant. Use `enabled:false` to revoke that exact revision. Revoking the active revision does not fall back to an older approval. Ordinary discovery returns only active approved revisions. Existing Runs keep exact old references across restart and recheck approvals at subsequent boundaries. Source sharing/consent withdrawal does not disable committed local copies; recipient approval and policy control their execution.
 
-Legacy operator `GET/POST /api/marketplace` and bare-ID install endpoints retain their original behavior. They never infer tenant ownership. Adoption rejects transitive legacy dependencies whose effective content differs from their stored definition, including endpoint-only overlays. Explicit `POST /api/marketplace/adoptions` accepts `tenant`, exact legacy `source` and `idempotency_key`; it makes an independent pending tenant copy of verified legacy bytes/configuration. Later legacy overlay changes do not mutate that copy. Native catalog approvals do not approve a new projection. Legacy peer discovery and admission exclude tenant projections.
+Native catalog approvals do not approve a new projection. Peer discovery and admission exclude tenant projections.
 
 ## Transactions, disclosure and audit
 
@@ -95,7 +86,7 @@ The lock deliberately serializes Marketplace mutations for one database. It keep
 
 Browser logout is ordered against pending requests, including SSE frame delivery. Session expiry is rechecked at response handoff. A durable Run reconstructs its credential/subject authority without the originating HTTP session; logout does not silently cancel previously admitted work, while credential, identity, mapping, policy and catalog revocation still apply.
 
-Browser operators retain identity, operator-grant and session leases for administration reads, compatibility changes, activation and legacy adoption. Reads serialize into a bounded queue under those leases and recheck session expiry before commit; mutations also recheck expiry before commit; a queued request cannot outlive logout or operator-grant revocation.
+Browser operators retain identity, operator-grant and session leases for administration reads and activation. Reads serialize into a bounded queue under those leases and recheck session expiry before commit; mutations also recheck expiry before commit; a queued request cannot outlive logout or operator-grant revocation.
 
 ## Dashboard examples
 
@@ -116,13 +107,13 @@ The focused integration suite uses real disposable PostgreSQL services. Its inte
 | MKT-A06, A11, A16 | `immutable_versions_replays_and_recovery_keep_their_authority_boundaries`: renewed credentials, hidden replay results, future-version isolation, immutable storage, corruption detection, migration round trip and populated rollback refusal.                                                |
 | MKT-A07, A08, A09 | `readable_distribution_precedes_dependency_preparation_and_bindings_pin_revisions`; subject-kind installation cases; hidden typed dependencies. Missing/wrong-kind dependencies leave no partial install; dependency binding changes stage a new pending revision.                            |
 | MKT-A10           | `new_runs_select_active_revision_and_restarted_runs_keep_exact_old_reference`; exact old approval revocation and no active fallback. The existing `scoped_remote_execution` suite verifies remote protocol compatibility.                                                                     |
-| MKT-A12           | A-to-B-to-C source export, live consent and acquisition-audience withdrawal, plus committed-copy management in `live_redistribution_consent_retains_local_copies_and_export_bytes`. Known-copy lineage also has coverage in adoption tests.                                                   |
+| MKT-A12           | A-to-B-to-C source export, live consent and acquisition-audience withdrawal, plus committed-copy management in `live_redistribution_consent_retains_local_copies_and_export_bytes`.                                                                                                           |
 | MKT-A13           | Deterministic audience, dependency/catalog, consent, credential, policy and browser-logout barriers; both competing outcomes for distribution/dependency/session mutations. A buffered HTTP body does not retain authority locks; stale SSE replay cannot newly disclose a withdrawn package. |
 | MKT-A14           | `web/tests/marketplace.spec.ts` runs en-US and ja-JP browse/detail/install/pending/configuration-conflict/publish/403/context-switch workflows. Tests use mocked API responses; server boundaries are covered separately by the PostgreSQL integration suite.                                 |
-| MKT-A15           | `explicit_legacy_adoption_and_mixed_writer_fence`, existing `registry_and_execution_contracts`, `record_constraints`, and `execution_authorization` regressions.                                                                                                                              |
+| MKT-A15           | Existing `registry_and_execution_contracts`, `record_constraints`, and `execution_authorization` regressions.                                                                                                                                                                                 |
 
 Run `cargo test --locked --lib --test marketplace_authorization --test dashboard_oidc --test sse_delivery` for the scoped boundaries, `cargo clippy --locked --workspace --all-targets -- -D warnings`, and `npm run build --prefix web` (which regenerates OpenAPI/client types). From `web`, run `npx playwright test --config playwright.ui.config.ts marketplace.spec.ts` and ESLint on the changed dashboard files. OpenAPI route assertions live in `api::schema_tests`.
 
 Verified locally on 2026-09-30 after integration with the current SSE delivery service: all 21 Marketplace cases, four OIDC cases, 19 SSE cases and 155 library tests passed. The separate SSE load benchmark remains ignored by default. The earlier focused regression run also passed 80 existing policy, execution, Registry, record-constraint and scoped-remote tests. Both dashboard locale cases, API generation/TypeScript/Vite build, Clippy with warnings denied, focused ESLint, formatting and whitespace checks passed. The browser tests use API fixtures; live server authorization is exercised by the database tests. The Vite build retains its existing large-chunk warning.
 
-These checks establish local implementation behavior. The deployment gate remains disabled until an operator verifies and enables a compatible fleet; no hosted CI, deployment or release is implied by local tests.
+These checks establish local implementation behavior; no hosted CI, deployment or release is implied by local tests.

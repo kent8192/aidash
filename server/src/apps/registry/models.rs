@@ -2,10 +2,6 @@
 
 mod agent_knowledge;
 pub use agent_knowledge::AgentKnowledge;
-mod installations;
-pub use installations::Installation;
-mod packages;
-pub use packages::Package;
 mod registry;
 pub use registry::Definition;
 mod registry_agent_model_refs;

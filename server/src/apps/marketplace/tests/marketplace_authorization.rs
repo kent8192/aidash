@@ -53,20 +53,11 @@ async fn token(f: &Federation, tenant: &str, kind: &str) -> String {
 	.unwrap()
 	.token
 }
-async fn enable(app: &Router, f: &Federation) {
+fn trace_errors() {
 	let _ = tracing_subscriber::fmt()
 		.with_env_filter("aidash=error")
 		.with_test_writer()
 		.try_init();
-	let result = request(
-		app,
-		&f.config.api_token,
-		"PUT",
-		"/api/marketplace/compatibility",
-		json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true}),
-	)
-	.await;
-	assert_eq!(result.0, 200, "{result:?}");
 }
 async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
 	Authorization {
@@ -132,13 +123,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", kind).await;
 	let b = token(&f, "b", "user").await;
-	assert_eq!(
-		request(&app, &a, "GET", "/api/marketplace/packages", Value::Null)
-			.await
-			.0,
-		403
-	);
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("source-a")).await.unwrap();
 	f.registry.register(tool("source-b")).await.unwrap();
 	approve(&f, "a", &reference("source-a")).await;
@@ -410,7 +395,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
 	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
@@ -534,7 +519,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("paged-source")).await.unwrap();
 	approve(&f, "a", &reference("paged-source")).await;
 	let published = publish(&app, &a, "paged-source").await;
@@ -645,7 +630,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	let c = token(&f, "c", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("original")).await.unwrap();
 	approve(&f, "a", &reference("original")).await;
 	let original = publish(&app, &a, "original").await;
@@ -850,287 +835,9 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		200
 	);
 	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/retained","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
-	// Legacy paths remain operator-only, and unknown event families leak nothing.
-	assert_eq!(
-		request(&app, &b, "GET", "/api/marketplace", Value::Null)
-			.await
-			.0,
-		403
-	);
+	// Unknown event families leak nothing.
 	let events = request(&app, &c, "GET", "/api/events", Value::Null).await;
 	assert!(!events.1.to_string().contains(key));
-	common::cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn explicit_legacy_adoption_and_mixed_writer_fence(
-	#[future(awt)]
-	#[from(common::native_application)]
-	application_fixture: common::ApplicationFixture,
-) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
-	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
-	let legacy = aidash_server::registry::Package {
-		entity: tool("mkt-legacy"),
-		author: "mkt-legacy".into(),
-		permissions: vec![],
-		dependencies: vec![],
-	};
-	let package = f.registry.publish(legacy).await.unwrap();
-	f.registry
-		.install(
-			"mkt-legacy",
-			"1.0.0",
-			&package.digest,
-			json!({"transport":{"transport":"http","endpoint":"http://localhost:9/legacy","credential_env":null,"replay":"read_only"}}),
-		)
-		.await
-		.unwrap();
-	assert_eq!(
-		request(&app, &a, "GET", "/api/marketplace/packages", Value::Null)
-			.await
-			.1,
-		json!([])
-	);
-	let input =
-		json!({"tenant":"a","source":reference("mkt-legacy"),"idempotency_key":Uuid::new_v4()});
-	assert_eq!(
-		request(
-			&app,
-			&a,
-			"POST",
-			"/api/marketplace/adoptions",
-			input.clone()
-		)
-		.await
-		.0,
-		403
-	);
-	let adopted = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/marketplace/adoptions",
-		input.clone(),
-	)
-	.await;
-	assert_eq!(adopted.0, 200, "{adopted:?}");
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/marketplace/adoptions",
-			input
-		)
-		.await,
-		adopted
-	);
-	let id = adopted.1["id"].as_str().unwrap();
-	let installed = request(
-		&app,
-		&a,
-		"GET",
-		&format!("/api/marketplace/installations/{id}"),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(installed.1["approved"], false);
-	assert_eq!(
-		installed.1["entry"]["config"]["transport"]["endpoint"],
-		"http://localhost:9/legacy"
-	);
-	f.registry
-		.install(
-			"mkt-legacy",
-			"1.0.0",
-			&package.digest,
-			json!({"transport":{"transport":"http","endpoint":"http://localhost:9/changed","credential_env":null,"replay":"read_only"}}),
-		)
-		.await
-		.unwrap();
-	assert_eq!(
-		request(
-			&app,
-			&a,
-			"GET",
-			&format!("/api/marketplace/installations/{id}"),
-			Value::Null
-		)
-		.await
-		.1["entry"]["config"]["transport"]["endpoint"],
-		"http://localhost:9/legacy"
-	);
-	let entry = installed.1["entry"]["id"].as_str().unwrap();
-	let write = {
-		let query_bind_1 = entry;
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("installations"))
-				.columns(["id", "version", "config"].map(Alias::new))
-				.from_subquery(
-					Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(Expr::cust("'1.0.0'"))
-						.expr(Expr::cust("'{}'::jsonb"))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.driver())
-		.await
-	};
-	assert!(
-		write.is_err(),
-		"old global overlay writer accepted a tenant projection"
-	);
-	let mut replacement = installed.1["entry"].clone();
-	replacement["installation"] = json!({"contract":1,"tenant":"b","installation":id,"revision":1});
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/registry",
-			replacement
-		)
-		.await
-		.0,
-		400
-	);
-	let mut ordinary = installed.1["entry"].clone();
-	ordinary.as_object_mut().unwrap().remove("installation");
-	ordinary["id"] = json!("known-copy");
-	assert_eq!(
-		request(&app, &f.config.api_token, "POST", "/api/registry", ordinary)
-			.await
-			.0,
-		200
-	);
-	approve(&f, "a", &reference("known-copy")).await;
-	// Same-tenant known content remains linked to its source, including copies.
-	let copy = publish(&app, &a, "known-copy").await;
-	assert_ne!(copy["key"], adopted.1["package_key"]);
-	common::cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn adoption_freezes_the_effective_dependency_graph(
-	#[future(awt)]
-	#[from(common::native_application)]
-	application_fixture: common::ApplicationFixture,
-) {
-	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
-	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
-	f.registry.register(tool("legacy-tool")).await.unwrap();
-	approve(&f, "a", &reference("legacy-tool")).await;
-	for id in ["legacy-model-original", "legacy-model-overlay"] {
-		let model: Entry = serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"model","name":{"en":id},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-		f.registry.register(model).await.unwrap();
-	}
-	approve(&f, "a", &reference("legacy-model-overlay")).await;
-	let agent: Entry = serde_json::from_value(json!({"id":"legacy-agent","version":"1.0.0","kind":"agent","name":{"en":"Legacy agent"},"description":{"en":"fixture"},"config":{"model":reference("legacy-model-original"),"instructions":"Original","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"legacy-tool","version":"1.0.0"},"narrow":{}}],"remove_default":[]}})).unwrap();
-	let legacy = aidash_server::registry::Package {
-		entity: agent,
-		author: "legacy".into(),
-		permissions: vec![],
-		dependencies: vec![reference("legacy-model-original")],
-	};
-	let package = f.registry.publish(legacy).await.unwrap();
-	f.registry
-		.install(
-			"legacy-agent",
-			"1.0.0",
-			&package.digest,
-			json!({"model":reference("legacy-model-overlay")}),
-		)
-		.await
-		.unwrap();
-	let adopted = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/marketplace/adoptions",
-		json!({"tenant":"a","source":reference("legacy-agent"),"idempotency_key":Uuid::new_v4()}),
-	)
-	.await;
-	assert_eq!(adopted.0, 200, "{adopted:?}");
-	let id = adopted.1["id"].as_str().unwrap();
-	let installed = request(
-		&app,
-		&a,
-		"GET",
-		&format!("/api/marketplace/installations/{id}"),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(installed.0, 200, "{installed:?}");
-	assert_eq!(
-		installed.1["entry"]["config"]["model"],
-		json!(reference("legacy-model-overlay"))
-	);
-	assert_eq!(
-		installed.1["dependencies"],
-		json!([reference("legacy-tool"), reference("legacy-model-overlay")])
-	);
-	let key = adopted.1["package_key"].as_str().unwrap();
-	let detail = request(
-		&app,
-		&a,
-		"GET",
-		&format!("/api/marketplace/packages/{key}"),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(detail.0, 200, "{detail:?}");
-	assert_eq!(
-		detail.1["manifest"]["entity"]["config"]["model"],
-		json!(reference("legacy-model-overlay"))
-	);
-	let model = f.registry.get("legacy-tool", "1.0.0").await.unwrap();
-	let published = f
-		.registry
-		.publish(aidash_server::registry::Package {
-			entity: model,
-			author: "legacy".into(),
-			permissions: vec![],
-			dependencies: vec![],
-		})
-		.await
-		.unwrap();
-	f.registry
-		.install(
-			"legacy-tool",
-			"1.0.0",
-			&published.digest,
-			json!({"transport":{"transport":"http","endpoint":"http://localhost:9/overlaid","credential_env":null,"replay":"read_only"}}),
-		)
-		.await
-		.unwrap();
-	let changed = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/marketplace/adoptions",
-		json!({"tenant":"a","source":reference("legacy-agent"),"idempotency_key":Uuid::new_v4()}),
-	)
-	.await;
-	assert_eq!(
-		changed.0, 403,
-		"endpoint-only dependency overlays cannot be silently discarded: {changed:?}"
-	);
 	common::cleanup(f, &url, &schema).await;
 }
 
@@ -1179,7 +886,7 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("racing")).await.unwrap();
 	approve(&f, "a", &reference("racing")).await;
 	let package = publish(&app, &a, "racing").await;
@@ -1341,7 +1048,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("revocation")).await.unwrap();
 	approve(&f, "a", &reference("revocation")).await;
 	let package = publish(&app, &a, "revocation").await;
@@ -1416,7 +1123,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
 	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
@@ -1625,7 +1332,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "agent").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("policy-source")).await.unwrap();
 	approve(&f, "a", &reference("policy-source")).await;
 	let package = publish(&app, &a, "policy-source").await;
@@ -1736,7 +1443,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
 	f.registry.register(tool("dependency")).await.unwrap();
@@ -1945,7 +1652,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("handoff")).await.unwrap();
 	approve(&f, "a", &reference("handoff")).await;
 	let package = publish(&app, &a, "handoff").await;
@@ -2093,7 +1800,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	let c = token(&f, "c", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("race-root")).await.unwrap();
 	f.registry.register(tool("race-dependency")).await.unwrap();
 	for tenant in ["a", "c"] {
@@ -2325,7 +2032,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	// Replay the complete native graph; a frozen baseline is never unrecorded.
 	let replay = executor.apply_migrations(&migrations).await.unwrap();
 	assert!(replay.applied.is_empty());
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("immutable-source")).await.unwrap();
 	approve(&f, "a", &reference("immutable-source")).await;
 	f.registry.register(tool("published-later")).await.unwrap();
@@ -2544,7 +2251,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("events")).await.unwrap();
 	approve(&f, "a", &reference("events")).await;
 	let package = publish(&app, &a, "events").await;
@@ -2673,133 +2380,10 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 }
 
 #[rstest::rstest]
-#[tokio::test]
-async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
-	#[future(awt)]
-	#[from(common::native_application)]
-	application_fixture: common::ApplicationFixture,
-) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-
-	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
-	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
-	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Installed executor","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
-	for entry in [model, agent] {
-		let reference = EntityRef {
-			id: entry.id.clone(),
-			version: entry.version.clone(),
-		};
-		f.registry.register(entry).await.unwrap();
-		approve(&f, "a", &reference).await;
-	}
-	let package = publish(&app, &a, "agent").await;
-	let installed = install(&app, &a, &package, &install_input(&package)).await;
-	assert_eq!(installed.0, 200, "{installed:?}");
-	assert_eq!(
-		activate(&app, &f, "a", &installed.1, 1, 0, 0, true).await.0,
-		200
-	);
-	let entry = EntityRef {
-		id: installed.1["entry"]["id"].as_str().unwrap().into(),
-		version: "1.0.0".into(),
-	};
-	let mut authority = bundle("a", "user");
-	authority["subjects"]
-		[aidash_server::domain::qualified_agent(&f.config.node_id, &entry.id, &entry.version)] =
-		json!({"kind":"agent","roles":["manager"]});
-	policy(&f, "a", 1, authority).await;
-	let authorization = Authorization {
-		pool: f.store.pool.clone(),
-	};
-	let credential = authorization
-		.issue_credential("a", "viewer", 3600, "operator")
-		.await
-		.unwrap();
-	let peer = "aidash://marketplace-inspector";
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("peers"))
-			.columns(
-				[
-					"node_id",
-					"endpoint",
-					"credential_env",
-					"protocol_version",
-					"enabled",
-				]
-				.map(Alias::new),
-			)
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(peer))
-					.expr(Expr::value("http://127.0.0.1:9"))
-					.expr(Expr::value("AIDASH_SECRET_TEST_PEER"))
-					.expr(Expr::value(aidash_server::config::PROTOCOL_VERSION))
-					.expr(Expr::value(true))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.driver())
-	.await
-	.unwrap();
-	let mapped = request(&app,&f.config.api_token,"POST","/api/authorization/a/peer-mappings",json!({"source_node":peer,"source_tenant":"source","source_subject":"viewer","credential_id":credential.credential.id,"expected_revision":0,"enabled":true})).await;
-	assert_eq!(mapped.0, 200, "{mapped:?}");
-	let inspect = || {
-		http::Request::post("/federation/v0.1/scoped/execution/inspect")
-			.header(
-				"authorization",
-				format!(
-					"Bearer {}",
-					std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
-				),
-			)
-			.header("x-aidash-node", peer)
-			.header("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION)
-			.header("content-type", "application/json")
-			.body(bytes::Bytes::from(
-				json!({"tenant":"source","subject":"viewer","agent":entry,"requirements":{}})
-					.to_string(),
-			))
-			.unwrap()
-	};
-	assert_eq!(
-		app.clone().native_oneshot(inspect()).await.unwrap().status,
-		200
-	);
-	let disabled = request(
-		&app,
-		&f.config.api_token,
-		"PUT",
-		"/api/marketplace/compatibility",
-		json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
-	)
-	.await;
-	assert_eq!(disabled.0, 200, "{disabled:?}");
-	assert_eq!(
-		app.clone().native_oneshot(inspect()).await.unwrap().status,
-		403,
-		"an installed definition must not be disclosed while the gate is off"
-	);
-	common::cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
 #[case("install", "logout", false)]
 #[case("install", "logout", true)]
-#[case("compatibility", "logout", false)]
-#[case("compatibility", "logout", true)]
 #[case("activation", "logout", false)]
 #[case("activation", "logout", true)]
-#[case("adoption", "logout", false)]
-#[case("adoption", "logout", true)]
-#[case("compatibility", "operator_grant", false)]
-#[case("compatibility", "operator_grant", true)]
-#[case("compatibility", "expiry", false)]
 #[case("administration", "logout", false)]
 #[case("administration", "logout", true)]
 #[case("administration", "operator_grant", false)]
@@ -2821,7 +2405,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("browser-source")).await.unwrap();
 	approve(&f, "a", &reference("browser-source")).await;
 	let package = publish(&app, &a, "browser-source").await;
@@ -2976,12 +2560,6 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			install_input(&package),
 			"marketplace.installed",
 		),
-		"compatibility" => (
-			"PUT",
-			"/api/marketplace/compatibility".into(),
-			json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
-			"marketplace.compatibility_changed",
-		),
 		"administration" => {
 			let installed = install(&app, &a, &package, &install_input(&package)).await;
 			assert_eq!(installed.0, 200, "{installed:?}");
@@ -3003,24 +2581,6 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				),
 				json!({"tenant":"a","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true}),
 				"marketplace.activation_changed",
-			)
-		}
-		"adoption" => {
-			f.registry.register(tool("browser-legacy")).await.unwrap();
-			f.registry
-				.publish(aidash_server::registry::Package {
-					entity: tool("browser-legacy"),
-					author: "legacy".into(),
-					permissions: vec![],
-					dependencies: vec![],
-				})
-				.await
-				.unwrap();
-			(
-				"POST",
-				"/api/marketplace/adoptions".into(),
-				json!({"tenant":"a","source":reference("browser-legacy"),"idempotency_key":Uuid::new_v4()}),
-				"marketplace.installed",
 			)
 		}
 		_ => unreachable!(),
@@ -3248,7 +2808,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 			.unwrap()
 			.sequence;
 	}
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("cursor-source")).await.unwrap();
 	approve(&f, "a", &reference("cursor-source")).await;
 	let package = publish(&app, &a, "cursor-source").await;
@@ -3324,7 +2884,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
 	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
@@ -3388,7 +2948,7 @@ async fn installation_rejects_missing_private_knowledge(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
 	let documents = json!([{"name":"Note","media_type":"text/plain","text":"source"}]);
@@ -3460,183 +3020,6 @@ async fn installation_rejects_missing_private_knowledge(
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
-#[tokio::test]
-async fn compatibility_disable_orders_new_run_admission(
-	#[future(awt)]
-	#[from(common::native_application)]
-	application_fixture: common::ApplicationFixture,
-	#[case] admission_wins: bool,
-) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
-	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
-	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	f.registry.register(model).await.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
-	f.registry.register(agent).await.unwrap();
-	approve(&f, "a", &reference("agent")).await;
-	approve(&f, "a", &reference("model")).await;
-	let package = publish(&app, &a, "agent").await;
-	let original = install(&app, &a, &package, &install_input(&package)).await;
-	assert_eq!(original.0, 200, "{original:?}");
-	assert_eq!(
-		activate(&app, &f, "a", &original.1, 1, 0, 0, true).await.0,
-		200
-	);
-	let old_ref = EntityRef {
-		id: original.1["entry"]["id"].as_str().unwrap().into(),
-		version: "1.0.0".into(),
-	};
-	let exact_path = format!("/api/registry/{}/{}", old_ref.id, old_ref.version);
-	assert_eq!(
-		request(&app, &a, "GET", &exact_path, Value::Null).await.0,
-		200
-	);
-	let mut authority = bundle("a", "user");
-	authority["subjects"][aidash_server::domain::qualified_agent(
-		&f.config.node_id,
-		&old_ref.id,
-		&old_ref.version,
-	)] = json!({"kind":"agent","roles":["manager"]});
-	policy(&f, "a", 1, authority.clone()).await;
-	let workspace = request(
-		&app,
-		&a,
-		"POST",
-		"/api/workspaces",
-		json!({"title":"Pinned","goal":"Test pinned definitions"}),
-	)
-	.await;
-	assert_eq!(workspace.0, 200, "{workspace:?}");
-	let task_path = format!(
-		"/api/workspaces/{}/tasks",
-		workspace.1["id"].as_str().unwrap()
-	);
-	let task = request(
-		&app,
-		&a,
-		"POST",
-		&task_path,
-		json!({"title":"First","description":"Pinned old run"}),
-	)
-	.await;
-
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
-	let lock = if admission_wins {
-		"pg_advisory_xact_lock(71003201)"
-	} else {
-		"pg_advisory_xact_lock(74003201)"
-	};
-	sqlx::query(
-		&Query::select()
-			.expr(Expr::cust(lock))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *barrier)
-	.await
-	.unwrap();
-	if !admission_wins {
-		{
-			let query_bind_1 = json!({"enabled":false,"revision":3,"contract":1});
-			sqlx::query(
-				&Query::update()
-					.table(Alias::new("marketplace_gate"))
-					.value_expr(
-						Alias::new("document"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("key")))
-							.eq(Expr::cust("'v1'")),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *barrier)
-			.await
-		}
-		.unwrap();
-	}
-	let app2 = app.clone();
-	let a2 = a.clone();
-	let claim_path = format!("/api/tasks/{}/claim", task.1["id"].as_str().unwrap());
-	let claim = tokio::spawn(async move {
-		request(
-			&app2,
-			&a2,
-			"POST",
-			&claim_path,
-			json!({"revision":0,"agent":old_ref}),
-		)
-		.await
-	});
-	wait_for_lock(
-		&f,
-		&schema,
-		if admission_wins {
-			"%71003201%"
-		} else {
-			"%74003201%"
-		},
-	)
-	.await;
-	let disable = if admission_wins {
-		let app2 = app.clone();
-		let operator = f.config.api_token.clone();
-		let disable = tokio::spawn(async move {
-			request(
-				&app2,
-				&operator,
-				"PUT",
-				"/api/marketplace/compatibility",
-				json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
-			)
-			.await
-		});
-		wait_for_lock(&f, &schema, "%74003201%").await;
-		Some(disable)
-	} else {
-		None
-	};
-	barrier.commit().await.unwrap();
-	let result = tokio::time::timeout(std::time::Duration::from_secs(5), claim)
-		.await
-		.unwrap()
-		.unwrap();
-	assert_eq!(
-		result.0,
-		if admission_wins { 200 } else { 403 },
-		"{result:?}"
-	);
-	if let Some(disable) = disable {
-		assert_eq!(
-			tokio::time::timeout(std::time::Duration::from_secs(5), disable)
-				.await
-				.unwrap()
-				.unwrap()
-				.0,
-			200
-		);
-	}
-	assert_eq!(
-		f.store.runs().await.unwrap().len(),
-		usize::from(admission_wins)
-	);
-	assert_eq!(
-		request(&app, &a, "GET", &exact_path, Value::Null).await.0,
-		403
-	);
-	common::cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
 #[tokio::test]
 async fn source_and_administration_pages_preserve_candidate_progress(
 	#[future(awt)]
@@ -3647,7 +3030,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	for i in 0..5 {
 		let id = format!("page-{i}");
 		f.registry.register(tool(&id)).await.unwrap();
@@ -3733,7 +3116,7 @@ async fn owner_can_reload_and_restore_a_withdrawn_audience(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
-	enable(&app, &f).await;
+	trace_errors();
 	f.registry.register(tool("recover-audience")).await.unwrap();
 	approve(&f, "a", &reference("recover-audience")).await;
 	let package = publish(&app, &a, "recover-audience").await;

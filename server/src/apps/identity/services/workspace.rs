@@ -286,7 +286,6 @@ impl Workspaces {
 			conversations: state.conversations,
 			events: state.events,
 			peers: vec![],
-			installations: vec![],
 		})
 		.map_err(Into::into);
 		access.finish(result).await

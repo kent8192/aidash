@@ -23,32 +23,6 @@ async fn configured_host_defaults_are_pending_only_for_atomic_new_tenant_creatio
 	};
 	let bundle = json!({"tenant":"new-owner","subjects":{},"policies":[]});
 	let create = json!({"expected_revision":0,"bundle":bundle});
-	// A failed provisioning gate also rolls back the policy and its history.
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/new-owner",
-			create.clone()
-		)
-		.await
-		.0,
-		403
-	);
-	assert!(authorization.snapshot("new-owner").await.is_err());
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"PUT",
-			"/api/marketplace/compatibility",
-			json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true})
-		)
-		.await
-		.0,
-		200
-	);
 	let (status, created) = request(
 		&app,
 		&f.config.api_token,
@@ -141,18 +115,6 @@ async fn operator_host_packages_remain_pending_until_the_exact_set_is_approved(
 		.await
 		.unwrap()
 		.token;
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"PUT",
-			"/api/marketplace/compatibility",
-			json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true})
-		)
-		.await
-		.0,
-		200
-	);
 	let input = json!({"tenant":"owner","groups":["task_assign"],"idempotency_key":Uuid::new_v4()});
 	assert_eq!(
 		request(
@@ -264,18 +226,6 @@ async fn research_provider_packages_install_and_activate_like_host_packages(
 		.replace("owner", 0, bundle, "operator")
 		.await
 		.unwrap();
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"PUT",
-			"/api/marketplace/compatibility",
-			json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true})
-		)
-		.await
-		.0,
-		200
-	);
 	// Act
 	let (status, pending) = request(
 		&app,

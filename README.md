@@ -378,8 +378,6 @@ Run `scripts/test-rust.sh --partition identity` for one partition, or `python3 s
 
 Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 281 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
 
-Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
-
 Third-party attribution for the adapted context compaction code is in [LICENSE](LICENSE).
 
 HTTP request logging, admission limits, SSE capacity, and the optional Prometheus

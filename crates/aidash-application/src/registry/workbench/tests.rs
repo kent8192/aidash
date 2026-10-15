@@ -4,7 +4,6 @@ use aidash_domain::policy::{Decision, PolicyBundle};
 use aidash_domain::registry::knowledge::digest;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
-use serde_json::Value;
 use uuid::Uuid;
 #[fixture]
 fn draft() -> Draft {
@@ -45,9 +44,6 @@ impl Fake {
 impl DefinitionLookup for Fake {
 	async fn definition(&mut self, _: &str, _: &str) -> Result<Entry> {
 		panic!("authority does not read definitions")
-	}
-	async fn overrides(&mut self, _: &str, _: &str) -> Result<Option<Value>> {
-		panic!("authority does not read overrides")
 	}
 }
 #[async_trait]

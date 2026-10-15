@@ -16,11 +16,5 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::operator().with_visibility())
 			.endpoint(management::skill_import)
 			.with_route_middleware(AccessBoundary::operator().with_visibility())
-			.endpoint(management::marketplace)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
-			.endpoint(management::package_publish)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
-			.endpoint(management::package_install)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
 	})
 }

@@ -104,7 +104,6 @@ pub async fn provision(
 	}
 	scope.load_tenant(&input.tenant).await?;
 	scope.distribution_lock(true).await?;
-	gate(scope).await?;
 	scope.enable_writer().await?;
 	let replay_key = key(&(
 		"host-package-provision",

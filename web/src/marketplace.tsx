@@ -12,10 +12,7 @@ import {
   marketplaceConfigure,
   marketplaceShare,
   marketplaceConsent,
-  marketplaceCompatibility,
-  marketplaceSetCompatibility,
   marketplaceActivate,
-  marketplaceAdopt,
   authorizationCatalog,
 } from "./generated/aidash";
 import type {
@@ -58,7 +55,6 @@ import { marketplaceCopy } from "./marketplace-copy";
 import { HostPackages } from "./host-packages";
 import {
   Alert,
-  Check,
   Disclosure,
   Facts,
   Hint,
@@ -925,17 +921,9 @@ export function MarketplaceAdministration() {
   const cache = useQueryClient();
   const [tenant, setTenant] = useState("");
   const [draft, setDraft] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
   const [revisionOffsets, setRevisionOffsets] = useState([0]);
   const revisionOffset = revisionOffsets.at(-1)!;
   const [message, setMessage] = useState("");
-  const [legacyId, setLegacyId] = useState("");
-  const [legacyVersion, setLegacyVersion] = useState("1.0.0");
-  const gate = useQuery({
-    queryKey: ["marketplace", "operator", "compatibility"],
-    queryFn: () => marketplaceCompatibility(),
-    retry: false,
-  });
   const installs = useQuery({
     queryKey: ["marketplace", "operator", tenant, revisionOffset],
     queryFn: () =>
@@ -972,40 +960,6 @@ export function MarketplaceAdministration() {
   return (
     <div className="grid min-w-0 gap-6">
       {message && <Notice role="status">{message}</Notice>}
-      {gate.data && (
-        <Panel
-          title={copy.rollout}
-          action={
-            <StateBadge tone={gate.data.enabled ? "success" : "neutral"}>
-              {gate.data.enabled ? copy.enabled : copy.disabled}
-            </StateBadge>
-          }
-        >
-          <Check
-            checked={confirmed}
-            onChange={(e) => setConfirmed(e.target.checked)}
-          >
-            {copy.compatible}
-          </Check>
-          <div>
-            <Button
-              variant="outline"
-              disabled={!gate.data.enabled && !confirmed}
-              onClick={() =>
-                void run(() =>
-                  marketplaceSetCompatibility({
-                    enabled: !gate.data!.enabled,
-                    expected_revision: gate.data!.revision,
-                    compatible_instances_confirmed: confirmed,
-                  }),
-                )
-              }
-            >
-              {gate.data.enabled ? copy.disable : copy.enable}
-            </Button>
-          </div>
-        </Panel>
-      )}
       <Panel title={copy.admin}>
         <form
           className="flex flex-wrap items-end gap-2"
@@ -1115,49 +1069,6 @@ export function MarketplaceAdministration() {
             previous={copy.previous}
             forward={copy.next}
           />
-        )}
-        {tenant && (
-          <Disclosure
-            className="border-t border-border pt-3"
-            summary={copy.adoption}
-          >
-            <div className="grid max-w-xl gap-3">
-              <Hint>{copy.adoptionHelp}</Hint>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label={copy.legacyId}>
-                  <Input
-                    className="font-mono"
-                    value={legacyId}
-                    onChange={(e) => setLegacyId(e.target.value)}
-                  />
-                </Field>
-                <Field label={copy.legacyVersion}>
-                  <Input
-                    className="font-mono"
-                    value={legacyVersion}
-                    onChange={(e) => setLegacyVersion(e.target.value)}
-                  />
-                </Field>
-              </div>
-              <div>
-                <Button
-                  variant="outline"
-                  disabled={!legacyId}
-                  onClick={() =>
-                    void run(() =>
-                      marketplaceAdopt({
-                        tenant,
-                        source: { id: legacyId, version: legacyVersion },
-                        idempotency_key: crypto.randomUUID(),
-                      }),
-                    )
-                  }
-                >
-                  {copy.adopt}
-                </Button>
-              </div>
-            </div>
-          </Disclosure>
         )}
       </Panel>
     </div>
