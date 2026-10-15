@@ -3,10 +3,11 @@ use aidash_domain::policy::Resource;
 use async_trait::async_trait;
 use rstest::rstest;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 struct Fixture {
 	inherited: bool,
 	approved: BTreeSet<(String, String)>,
+	admissions: BTreeMap<(String, String), Entry>,
 	documents: Vec<Value>,
 	inactive: BTreeSet<String>,
 	denied: Option<String>,
@@ -26,6 +27,7 @@ impl Fixture {
 		Self {
 			inherited: false,
 			approved: BTreeSet::new(),
+			admissions: BTreeMap::new(),
 			documents: vec![definition("first"), definition("second")],
 			inactive: BTreeSet::new(),
 			denied: None,
@@ -49,6 +51,15 @@ impl CatalogScope for Fixture {
 		self.calls.push(format!("remember:{}", reference.id));
 		self.approved
 			.insert((reference.id.clone(), reference.version.clone()));
+	}
+	fn admitted(&self, reference: &EntityRef, action: &str) -> Option<Entry> {
+		self.admissions
+			.get(&(reference.id.clone(), action.into()))
+			.cloned()
+	}
+	fn admit(&mut self, reference: &EntityRef, action: &str, entry: &Entry) {
+		self.admissions
+			.insert((reference.id.clone(), action.into()), entry.clone());
 	}
 	async fn distribution_lock(&mut self) -> Result<()> {
 		self.calls.push("lock".into());
@@ -141,6 +152,69 @@ async fn ordinary_exact_read_locks_distribution_before_catalog_and_policy() {
 			"lock",
 			"document:first",
 			"require:first:registry.export",
+			"remember:first"
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn repeated_exact_read_reuses_its_admission_and_decides_other_actions() {
+	let mut scope = Fixture::new();
+	entry(&mut scope, &reference("first"), "registry.read")
+		.await
+		.unwrap();
+	scope.calls.clear();
+	let again = entry(&mut scope, &reference("first"), "registry.read")
+		.await
+		.unwrap();
+	assert_eq!(again.id, "first");
+	assert_eq!(scope.calls, vec!["remember:first"]);
+	scope.calls.clear();
+	entry(&mut scope, &reference("first"), "registry.export")
+		.await
+		.unwrap();
+	assert_eq!(
+		scope.calls,
+		vec![
+			"lock",
+			"document:first",
+			"require:first:registry.export",
+			"remember:first"
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn recorded_admission_cannot_bypass_the_inherited_approval_frontier() {
+	let mut scope = Fixture::new();
+	entry(&mut scope, &reference("first"), "registry.read")
+		.await
+		.unwrap();
+	scope.inherited = true;
+	scope.approved.clear();
+	scope.calls.clear();
+	let result = entry(&mut scope, &reference("first"), "registry.read").await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(scope.calls, Vec::<String>::new());
+}
+#[rstest]
+#[tokio::test]
+async fn denied_exact_read_is_never_recorded_as_an_admission() {
+	let mut scope = Fixture::new();
+	scope.denied = Some("registry.read".into());
+	let result = entry(&mut scope, &reference("first"), "registry.read").await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	scope.denied = None;
+	scope.calls.clear();
+	entry(&mut scope, &reference("first"), "registry.read")
+		.await
+		.unwrap();
+	assert_eq!(
+		scope.calls,
+		vec![
+			"lock",
+			"document:first",
+			"require:first:registry.read",
 			"remember:first"
 		]
 	);
