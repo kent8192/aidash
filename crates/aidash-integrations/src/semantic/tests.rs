@@ -137,14 +137,30 @@ async fn openrouter_withholds_output_that_violates_the_approved_contract(#[case]
 	));
 }
 
+/// How an embedding reply's body arrives.
+#[derive(Clone, Copy)]
+enum Body {
+	/// Breaks off mid-transfer.
+	Interrupted,
+	/// Completes, but is not the declared JSON.
+	Malformed,
+	/// Completes, but streams past the 1 MiB response bound.
+	Oversized,
+	/// Declares a `Content-Length` past the 1 MiB response bound.
+	DeclaredOversized,
+}
+
 /// A reply whose body breaks off mid-transfer is a transport outage that a Run
-/// retries, not the non-retried contract violation of a malformed body.
+/// retries, not the non-retried contract violation of a malformed or
+/// oversized body.
 #[rstest]
-#[case::interrupted_body(true)]
-#[case::malformed_body(false)]
+#[case::interrupted_body(Body::Interrupted)]
+#[case::malformed_body(Body::Malformed)]
+#[case::oversized_body(Body::Oversized)]
+#[case::declared_oversized_body(Body::DeclaredOversized)]
 #[tokio::test]
 async fn interrupted_response_body_is_an_outage_and_malformed_json_a_contract_violation(
-	#[case] interrupted: bool,
+	#[case] body: Body,
 ) {
 	// Arrange
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -152,13 +168,18 @@ async fn interrupted_response_body_is_an_outage_and_malformed_json_a_contract_vi
 	let app = Router::new().route(
 		"/api/v1/embeddings",
 		post(move || async move {
-			let chunks: Vec<std::result::Result<&'static str, std::io::Error>> = if interrupted {
-				vec![
-					Ok(r#"{"model":"#),
+			let chunks: Vec<std::result::Result<String, std::io::Error>> = match body {
+				Body::Interrupted => vec![
+					Ok(r#"{"model":"#.into()),
 					Err(std::io::Error::other("connection reset")),
-				]
-			} else {
-				vec![Ok(r#"{"model":"#)]
+				],
+				Body::Malformed => vec![Ok(r#"{"model":"#.into())],
+				// Chunked, so only the streamed length crosses the bound.
+				Body::Oversized => vec![Ok(" ".repeat(1_048_576)), Ok("{}".into())],
+				// A full body, so its length is declared before any chunk.
+				Body::DeclaredOversized => {
+					return axum::body::Body::from(" ".repeat(1_048_577));
+				}
 			};
 			axum::body::Body::from_stream(futures_util::stream::iter(chunks))
 		}),
@@ -168,15 +189,15 @@ async fn interrupted_response_body_is_an_outage_and_malformed_json_a_contract_vi
 	}));
 	// Act
 	let result = embed(
-		&aidash_application::provider_access::KeylessAccess,
+		&permitting(&endpoint),
 		&Context::default(),
-		&client().unwrap(),
+		&clients().unwrap(),
 		&configuration(endpoint),
 		"query",
 	)
 	.await;
 	// Assert
-	if interrupted {
+	if matches!(body, Body::Interrupted) {
 		assert!(matches!(result, Err(Error::External(_))), "{result:?}");
 	} else {
 		assert!(

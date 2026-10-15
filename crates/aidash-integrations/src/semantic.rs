@@ -102,8 +102,10 @@ pub async fn embed(
 		}));
 	}
 	// A body whose transfer fails stays an `External` outage, like a failed
-	// send; only a body that is not the declared JSON breaks the contract.
-	let body = crate::response::bytes(response, 1_048_576).await?;
+	// send; a body over the bound or not the declared JSON breaks the contract.
+	let body = crate::response::within(response, 1_048_576)
+		.await?
+		.map_err(|_| Error::RemoteSemantic(aidash_domain::semantic::Failure::ProviderContract))?;
 	let value: Value = serde_json::from_slice(&body)
 		.map_err(|_| Error::RemoteSemantic(aidash_domain::semantic::Failure::ProviderContract))?;
 	let prompt = value["usage"]["prompt_tokens"].as_u64();
