@@ -1471,6 +1471,8 @@ struct GoogleBrowser {
 async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
 	let runtime = runtime.await;
 	let (mut federation, url, database) = runtime.parts();
+	// Personal Tenants follow the Tenancy Rules, not the issuer.
+	federation.config.tenancy.personal_tenants = true;
 	federation.config.oidc = Some(OidcConfig {
 		issuer: "https://accounts.google.com".into(),
 		client_id: "aidash".into(),
@@ -1820,7 +1822,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	#[from(google_browser)]
 	fixture: GoogleBrowser,
 ) {
-	// Arrange: an Operator already created data in the reserved tenant namespace.
+	// Arrange: an Operator already created a Tenant named after the identity.
 	let tenant = format!("personal-{}", fixture.identity.simple());
 	let policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
@@ -1846,8 +1848,15 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 		Value::Null,
 	)
 	.await;
-	// Assert: fail closed, without introducing authority or rewriting the policy.
-	assert_eq!(status, 409, "{response}");
+	// Assert: the Personal Tenant gets an assigned name, so the existing
+	// Tenant gains no authority and keeps its policy.
+	assert_eq!(status, 200, "{response}");
+	assert_eq!(
+		response["mappings"].as_array().unwrap().len(),
+		1,
+		"{response}"
+	);
+	assert_ne!(response["mappings"][0]["tenant"], tenant.as_str());
 	for table in ["dashboard_mappings", "authorization_credentials"] {
 		let count = Query::select()
 			.expr(Expr::cust("count(*)"))
@@ -2207,7 +2216,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": actions,
-			"resources": {"kinds": ["registration", "mapping", "subject"]},
+			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
 		}]
 	}))

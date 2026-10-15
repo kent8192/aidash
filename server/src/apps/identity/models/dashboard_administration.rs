@@ -69,6 +69,36 @@ impl DashboardRegistrationRequest {
 			.map(Self::contract))
 	}
 
+	/// The identity's latest request of any kind, including those made with an
+	/// Invitation, for Display Attribute retention.
+	async fn latest_of_any<E: OrmExecutor>(
+		db: &mut E,
+		identity: Uuid,
+	) -> Result<Option<Registration>> {
+		Ok(Self::objects()
+			.filter(Self::field_identity_id().eq(identity))
+			.order_by(&["-created_at", "-id"])
+			.limit(1)
+			.all_with_db(db)
+			.await?
+			.pop()
+			.map(Self::contract))
+	}
+
+	/// Whether the identity has any unexpired pending request.
+	async fn pending_of_any<E: OrmExecutor>(
+		db: &mut E,
+		identity: Uuid,
+		now: DateTime<Utc>,
+	) -> Result<bool> {
+		Ok(Self::objects()
+			.filter(Self::field_identity_id().eq(identity))
+			.filter(Self::field_status().eq("pending"))
+			.filter(Self::field_expires_at().gt(now))
+			.exists_with_db(db)
+			.await?)
+	}
+
 	/// The External Identity a Registration Request belongs to; it never changes.
 	pub(crate) async fn identity_of<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Option<Uuid>> {
 		Ok(Self::objects()
@@ -646,13 +676,12 @@ impl DashboardIdentity {
 			return Ok(true);
 		}
 		let now = database_time(db).await?;
-		let latest = DashboardRegistrationRequest::latest(db, row.id).await?;
-		if latest
-			.as_ref()
-			.is_some_and(|request| request.status == "pending" && request.expires_at > now)
-		{
+		// Every pending request retains them, including one made with an
+		// Invitation, which its Tenant's administrators recognize the person by.
+		if DashboardRegistrationRequest::pending_of_any(db, row.id, now).await? {
 			return Ok(true);
 		}
+		let latest = DashboardRegistrationRequest::latest_of_any(db, row.id).await?;
 		// A request ends at its decision, or at its deadline when it expired.
 		let ended = latest.map(|request| match request.status.as_str() {
 			"pending" | "expired" => request.expires_at,

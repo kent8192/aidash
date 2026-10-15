@@ -944,3 +944,68 @@ async fn invitations_follow_the_rules(#[from(common::runtime)] runtime: common::
 	assert_eq!(status, 403, "{body}");
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_pending_invitation_request_keeps_the_display_attributes_its_administrators_need(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let (_, created) = d
+		.as_person(
+			&alice,
+			"POST",
+			"/api/tenants",
+			None,
+			json!({"label":"Team"}),
+		)
+		.await;
+	let tenant = created["name"].as_str().unwrap().to_owned();
+	let context = d.context(&alice, &tenant).await;
+	let (_, invitation) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			Some(&context),
+			json!({}),
+		)
+		.await;
+	let (status, _) = d
+		.as_person(
+			&bob,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200);
+
+	// A retention pass without sign-in configuration counts no session or
+	// recent sign-in: only authority or a pending request can retain.
+	let mut unconfigured = d.federation.clone();
+	unconfigured.config.oidc = None;
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	stop.send(true).unwrap();
+	aidash_server::dashboard_auth::enforce_display_retention(unconfigured, stopping)
+		.await
+		.unwrap();
+
+	let (_, pending) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/tenants/{tenant}/registrations"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		pending[0]["identity"]["verified_email"], "bob@example.com",
+		"{pending}"
+	);
+	d.finish().await;
+}

@@ -2090,7 +2090,7 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
-			"resources": {"kinds": ["registration", "mapping", "subject"]},
+			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
 		}]
 	})

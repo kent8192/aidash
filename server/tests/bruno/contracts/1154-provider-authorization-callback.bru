@@ -1,7 +1,7 @@
 meta {
-  name: 1125 provider-authorization-callback - Callback without a browser binding is rejected
+  name: 1154 provider-authorization-callback - Tampered browser binding cannot complete an authorization
   type: http
-  seq: 1125
+  seq: 1154
 }
 
 get {
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Cookie: aidash-provider-authorization=tampered; __Host-aidash-provider-authorization=tampered
 }
 
 tests {

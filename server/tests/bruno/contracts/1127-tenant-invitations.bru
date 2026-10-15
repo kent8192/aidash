@@ -1,11 +1,11 @@
 meta {
-  name: 1128 run-evidence - Anonymous request is rejected
+  name: 1127 tenant-invitations - Anonymous request is rejected
   type: http
-  seq: 1128
+  seq: 1127
 }
 
 get {
-  url: {{base_url}}/api/runs/11111111-1111-4111-8111-111111111111/evidence/__bruno_missing__
+  url: {{base_url}}/api/tenants/{{tenant}}/invitations
   body: none
   auth: none
 }

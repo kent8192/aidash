@@ -1,11 +1,11 @@
 meta {
-  name: 1129 run-evidence - Typed resource IDs reject invalid UUIDs
+  name: 1129 tenant-invitations - Unknown Tenant has no Invitations
   type: http
   seq: 1129
 }
 
 get {
-  url: {{base_url}}/api/runs/not-a-uuid/evidence/__bruno_missing__
+  url: {{base_url}}/api/tenants/bruno-missing-tenant/invitations
   body: none
   auth: none
 }
@@ -16,6 +16,6 @@ headers {
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
 }

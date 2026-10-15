@@ -155,7 +155,7 @@ pub(super) fn migration() -> Migration {
 		// Tenant creation by the Deployment Administrator bearer token and
 		// Invitation issuance concern no External Identity. The pinned typed
 		// AlterColumn renders no NOT NULL change for PostgreSQL, so this one
-		// statement is a documented RunSQL exception.
+		// statement is a documented RunSQL exception (kent8192/reinhardt-web#6803).
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0020_history_identity_nullable.sql").to_owned(),
 			reverse_sql: Some(

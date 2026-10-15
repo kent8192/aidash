@@ -1,0 +1,21 @@
+meta {
+  name: 1118 tenants-list - Operator lists every Tenant root record
+  type: http
+  seq: 1118
+}
+
+get {
+  url: {{base_url}}/api/tenants
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{operator_token}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Operator lists every Tenant root record contract", function () { expect(res.getBody()).to.be.an("array");expect(res.getBody().map(tenant => tenant.name)).to.include(bru.getEnvVar("tenant")); });
+}

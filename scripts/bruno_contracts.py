@@ -640,6 +640,17 @@ def render():
                 media="application/x-www-form-urlencoded",
             )
             continue
+        if path in ("/auth/invitations/inspect", "/auth/invitations/redeem"):
+            # Opening and redeeming a link need a browser session; the JSON
+            # body is parsed first, so these scenarios send a valid one.
+            link = json.dumps({"tenant": "{{tenant}}", "secret": "bruno-unknown-secret"})
+            add(endpoint, "No opaque session cannot open an Invitation", 401,
+                body=link, immutable=True)
+            add(endpoint, "Forged opaque session cannot open an Invitation", 401,
+                headers={"Cookie": "aidash-session=forged"}, body=link, immutable=True)
+            add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                body="{", immutable=True)
+            continue
         if path.startswith("/auth/"):
             for label, headers in [
                 ("No opaque session", {}),
@@ -714,7 +725,48 @@ def render():
                     headers=PEER,
                 )
             continue
+        if path == "/api/tenants" and method == "POST":
+            # The creation API authenticates itself, after parsing the body.
+            label = json.dumps({"label": "Bruno contract"})
+            add(endpoint, "Anonymous request cannot create a Tenant", 401,
+                body=label, immutable=True)
+            add(endpoint, "Subject Credential never creates a Tenant", 403,
+                headers=SUBJECT, body=label, immutable=True)
+            add(endpoint, "Blank Tenant label is rejected", 400,
+                headers=OPERATOR, body=json.dumps({"label": "   "}), immutable=True)
+            add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                headers=OPERATOR, body="{", immutable=True)
+            continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
+        if route["source"] == "server/src/apps/identity/views/tenants.rs":
+            if method == "GET":
+                add(endpoint, "Subject Credential cannot list Tenants", 403, headers=SUBJECT)
+                add(endpoint, "Operator lists every Tenant root record", 200, headers=OPERATOR,
+                    checks='expect(res.getBody()).to.be.an("array");expect(res.getBody().map(tenant => tenant.name)).to.include(bru.getEnvVar("tenant"));')
+            else:
+                body = json.dumps({"label": "Renamed"})
+                add(endpoint, "Operator bearer never relabels a Tenant", 403,
+                    headers=OPERATOR, body=body, immutable=True)
+                add(endpoint, "Subject Credential bearer never relabels a Tenant", 403,
+                    headers=SUBJECT, body=body, immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=OPERATOR, body="{", immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/invitations.rs":
+            # Only a browser Mapping or a Deployment Administrator administers Invitations.
+            body = "{}" if route["json"] else None
+            add(endpoint, "Subject Credential bearer never administers Invitations", 403,
+                headers=SUBJECT, body=body, immutable=method != "GET")
+            add(endpoint, "Unknown Tenant has no Invitations", 404,
+                path=path.replace("{tenant}", "bruno-missing-tenant"), headers=OPERATOR,
+                body=body, immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=OPERATOR, body="{", immutable=True)
+            if route["uuid_parameters"]:
+                add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
+                    path=path.replace("{id}", "not-a-uuid"), headers=OPERATOR, immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
             uri = path.replace("{provider}", "openrouter")
             body = (

@@ -1,18 +1,17 @@
 meta {
-  name: 1126 provider-authorization-callback - Tampered browser binding cannot complete an authorization
+  name: 1116 tenants-list - Anonymous request is rejected
   type: http
-  seq: 1126
+  seq: 1116
 }
 
 get {
-  url: {{base_url}}/auth/provider-authorizations/openrouter/callback?state=invalid&code=invalid
+  url: {{base_url}}/api/tenants
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Cookie: aidash-provider-authorization=tampered; __Host-aidash-provider-authorization=tampered
 }
 
 tests {

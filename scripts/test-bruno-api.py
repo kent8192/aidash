@@ -373,6 +373,23 @@ def node(binary, environment, log):
                     child.wait(timeout=10)
 
 
+def create_tenant(base, operator, label):
+    """Create the journey's Tenant; Aidash assigns its name (ADR 0050)."""
+    request = urllib.request.Request(
+        base + "/api/tenants",
+        data=json.dumps({"label": label}).encode(),
+        headers={
+            "Authorization": "Bearer " + operator,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status != 201:
+            raise RuntimeError("the Tenant creation API did not create a Tenant")
+        return json.load(response)["name"]
+
+
 def wait_for_health(child, base, log, environment):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -774,7 +791,7 @@ def main():
             variables = {
                 "base_url": base,
                 "node_id": node_id,
-                "tenant": "bruno-" + run_id,
+                "tenant": create_tenant(base, operator, "bruno-" + run_id),
                 "issuer": provider.issuer,
                 "operator_token": operator,
                 "peer_node": peer_node,
