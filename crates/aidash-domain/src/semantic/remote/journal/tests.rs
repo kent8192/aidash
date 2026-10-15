@@ -95,37 +95,52 @@ fn a_pending_operation_can_start_its_first_attempt() {
 }
 #[rstest::rstest]
 fn transient_exhaustion_is_durable_and_permanent_failures_do_not_consume_retries() {
-	let r = retry(5, Failure::Unavailable);
+	let r = retry(&failed(5, None), Failure::Unavailable);
 	assert_eq!(r.failure, Failure::RetriesExhausted);
 	assert_eq!(r.state, "PAUSED");
 	assert_eq!(r.failures, 6);
 	assert!(r.delay.is_none());
-	let r = retry(3, Failure::Invalidated);
+	let r = retry(&failed(3, None), Failure::Invalidated);
 	assert_eq!(r.failure, Failure::Invalidated);
 	assert_eq!(r.state, "INVALIDATED");
 	assert_eq!(r.failures, 3);
 	assert!(r.delay.is_none());
 }
+/// An operation that last failed with `error`, after `failures` outage retries.
+fn failed(failures: i32, error: Option<&str>) -> Record {
+	let mut r = record("ACTIVE");
+	r.failures = failures;
+	r.error = error.map(str::to_owned);
+	r
+}
+/// The first wait on a live attempt is a second; a repeated one backs off,
+/// because each fresh claim repeats the charged workspace embedding.
 #[rstest::rstest]
-fn a_pending_failure_waits_without_consuming_an_outage_retry() {
+#[case(None, 1)]
+#[case(Some("unavailable"), 1)]
+#[case(Some("pending"), PENDING_REPLAY_SECONDS)]
+fn a_pending_failure_waits_without_consuming_an_outage_retry(
+	#[case] previous: Option<&str>,
+	#[case] seconds: i64,
+) {
 	// Arrange
 	let now = Utc::now();
 	// Act
-	let r = retry(5, Failure::Pending);
+	let r = retry(&failed(5, previous), Failure::Pending);
 	// Assert
 	assert_eq!(r.failure, Failure::Pending);
 	assert_eq!(r.state, "WAITING");
 	assert_eq!(r.failures, 5);
-	assert_eq!(r.delay, Some(1));
+	assert_eq!(r.delay, Some(seconds));
 	let mut waiting = record(r.state);
 	waiting.failures = r.failures;
-	waiting.next_attempt = Some(now + Duration::seconds(r.delay.unwrap()));
+	waiting.next_attempt = Some(now + Duration::seconds(seconds));
 	assert!(matches!(
-		claim_plan(&waiting, now),
+		claim_plan(&waiting, now + Duration::seconds(seconds - 1)),
 		ClaimPlan::Rejected(Failure::Pending)
 	));
 	assert!(matches!(
-		claim_plan(&waiting, now + Duration::seconds(1)),
+		claim_plan(&waiting, now + Duration::seconds(seconds)),
 		ClaimPlan::Fresh
 	));
 }

@@ -907,9 +907,17 @@ async fn native_finalization_failures_rollback_dependencies_and_receipt(
 
 /// A native memory model attempt still inside its call deadline leaves the
 /// operation waiting as `Pending`. It neither pauses the operation nor spends
-/// one of its outage retries, however long the call deadline is (#233).
+/// one of its outage retries, however long the call deadline is (#233). Each
+/// fresh claim repeats the charged workspace embedding, so a repeated wait
+/// backs off to `PENDING_REPLAY_SECONDS`.
+#[rstest]
+#[case(None, 1)]
+#[case(Some("pending"), aidash_domain::semantic::PENDING_REPLAY_SECONDS)]
 #[tokio::test]
-async fn a_live_native_memory_attempt_waits_without_spending_an_outage_retry() {
+async fn a_live_native_memory_attempt_waits_without_spending_an_outage_retry(
+	#[case] previous: Option<&str>,
+	#[case] seconds: i64,
+) {
 	// Arrange
 	let mut native = NativeFixture::new();
 	native.fault = "pending";
@@ -922,6 +930,7 @@ async fn a_live_native_memory_attempt_waits_without_spending_an_outage_retry() {
 		let mut record = repo.journal.record.lock().unwrap();
 		record.digest = op.digest().unwrap();
 		record.binding = json!({"operation":op,"semantic":native.binding});
+		record.error = previous.map(str::to_owned);
 	}
 	// Act
 	let result = search(&repo, "aidash://receiver", op).await;
@@ -936,8 +945,8 @@ async fn a_live_native_memory_attempt_waits_without_spending_an_outage_retry() {
 	assert_eq!(record.error.as_deref(), Some("pending"));
 	assert_eq!(
 		record.next_attempt,
-		Some(Utc.timestamp_opt(1, 0).unwrap()),
-		"the operation is claimable again a second later"
+		Some(Utc.timestamp_opt(seconds, 0).unwrap()),
+		"the operation is claimable again after {seconds} s"
 	);
 }
 

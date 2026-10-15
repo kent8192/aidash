@@ -1,13 +1,9 @@
 //! Durable worker recovery. Retrying an outbox never repeats a failed tool.
 use aidash_application::{Result, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
-use aidash_domain::semantic::Failure as SemanticFailure;
+use aidash_domain::semantic::{Failure as SemanticFailure, PENDING_REPLAY_SECONDS};
 use aidash_domain::{FailureTarget, RetryState, RunControl, RunState, WaitingState};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-
-/// Delay between repeated replays of a semantic operation that is still
-/// `Pending`. None of them spends an outage retry (#233).
-const PENDING_REPLAY_SECONDS: i64 = 30;
 
 /// Returns whether a generic worker-retry metric should be incremented.
 /// Every write is fenced by the original worker token in the repository.

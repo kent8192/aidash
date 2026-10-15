@@ -42,6 +42,11 @@ pub enum Failure {
 	Stale,
 }
 
+/// Delay between repeated replays of a semantic operation that is still
+/// `Pending`. Each replay repeats the charged workspace embedding, so only the
+/// first one comes after a second. None of them spends an outage retry (#233).
+pub const PENDING_REPLAY_SECONDS: i64 = 30;
+
 impl Failure {
 	pub fn transient(self) -> bool {
 		matches!(self, Self::Unavailable)
