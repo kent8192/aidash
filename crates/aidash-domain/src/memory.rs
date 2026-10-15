@@ -1,6 +1,6 @@
 //! Native Hindsight contracts. Memory content is a typed unit, never an arbitrary JSON bank.
 //!
-//! The upstream MIT notice is in `memory/LICENSE.hindsight`.
+//! The upstream MIT notice is in `third_party/hindsight/LICENSE`; see `THIRD_PARTY_NOTICES.md`.
 use crate::{Error, Result, registry::EntityRef};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
