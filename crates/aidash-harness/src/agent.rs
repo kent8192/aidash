@@ -12,7 +12,7 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolContract, ToolIdentity, ToolUseMode, Yield},
+	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -749,6 +749,44 @@ impl<'a> Executor<'a> {
 			.await?;
 		Err(Error::Forbidden)
 	}
+	/// Revoked Research evidence never reaches a model provider again, not even
+	/// inside an Execution Summary (ADR 0046). Once the Run's evidence is
+	/// revoked, every research result in the projection becomes a placeholder,
+	/// and an Execution Summary that absorbed any is discarded: its range is
+	/// restored from the Context Journal and redacted the same way. Unlike a
+	/// revoked summary source this never pauses, because revoked evidence is
+	/// never readable again and the Run continues without research. The
+	/// Context Journal keeps what the model already read.
+	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
+		use aidash_domain::research::revocation;
+		if !run.context.research_revoked {
+			let may_carry = run.context.execution_summary.is_some()
+				|| run
+					.context
+					.history
+					.iter()
+					.any(|entry| revocation::carries_research(&entry.event));
+			let store = self.environment.store();
+			if !may_carry || !store.research_revoked(run).await? {
+				return Ok(());
+			}
+			if let Some(summary) = run.context.execution_summary.as_deref() {
+				let source = summary.source.clone();
+				let journal = store
+					.context_journal(run.id, source.from_seq, source.through_seq)
+					.await?;
+				if journal.iter().any(|entry| {
+					source.absorbs(entry.seq) && revocation::carries_research(&entry.event)
+				}) {
+					aidash_application::context::restore_summarized(&mut run.context, journal)?;
+					aidash_application::context::record_stage("summary", "research_revoked");
+				}
+			}
+			run.context.research_revoked = true;
+		}
+		revocation::redact(&mut run.context.history);
+		Ok(())
+	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
 	async fn ordered_skill_context(
@@ -1004,13 +1042,7 @@ impl<'a> Executor<'a> {
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
-				// Revoked Research evidence never reaches a model provider again;
-				// the Context Journal keeps what the model already read (ADR 0046).
-				if tools.values().any(|tool| yields_research(&tool.contract()))
-					&& store.research_revoked(run).await?
-				{
-					redact_revoked_research(&mut run.context, &tools);
-				}
+				self.apply_research_revocation(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
@@ -3022,26 +3054,6 @@ fn summarizable(event: &ContextEvent, tools: &Tools) -> bool {
 		Some(ResultFitting::Observation) => false,
 		Some(ResultFitting::WorkspaceRecord) => message_read_target(&contract, call).is_some(),
 		_ => true,
-	}
-}
-/// Whether a tool returns Research evidence, by its declared behavior.
-fn yields_research(contract: &ToolContract) -> bool {
-	[Yield::Search, Yield::Fetch, Yield::Citations]
-		.into_iter()
-		.any(|kind| contract.behavior.yields(kind))
-}
-/// Replace every research result with a placeholder once the Run's evidence
-/// is revoked. A Model Turn keeps its call, so its `tool_call_id` still pairs.
-fn redact_revoked_research(context: &mut Context, tools: &Tools) {
-	for entry in &mut context.history {
-		if let ContextEvent::Tool { call, result } = &mut entry.event
-			&& tools
-				.get(&call.name)
-				.is_some_and(|tool| yields_research(&tool.contract()))
-			&& !ContextEvent::is_revoked_result(result)
-		{
-			*result = ContextEvent::revoked_result(&call.id);
-		}
 	}
 }
 /// Sources whose current authority the summarized text depends on.

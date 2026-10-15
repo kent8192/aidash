@@ -119,11 +119,14 @@ async fn a_subject_without_permission_learns_nothing() {
 
 #[tokio::test]
 async fn a_deployment_administrator_needs_no_tenant_policy() {
-	let runs = Runs::new(Decider::DeploymentAdministrator, false);
+	let runs = Runs::new(Decider::DeploymentAdministrator { identity: None }, false);
 	let revoked = revoke(&runs, runs.run, "agreement ended", Utc::now())
 		.await
 		.unwrap();
-	assert_eq!(revoked.revoked_by, Decider::DeploymentAdministrator);
+	assert_eq!(
+		revoked.revoked_by,
+		Decider::DeploymentAdministrator { identity: None }
+	);
 	assert!(matches!(
 		revoke(&runs, Uuid::new_v4(), "reason", Utc::now()).await,
 		Err(Error::NotFound(_))

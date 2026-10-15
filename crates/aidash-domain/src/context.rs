@@ -54,6 +54,11 @@ pub struct Context {
 	/// one is readable again.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub revoked_summary_dependencies: Option<summary::SummaryDependencies>,
+	/// The Run's Research evidence was revoked (ADR 0046). Its research results
+	/// are placeholders here and no Execution Summary holds them; the Context
+	/// Journal keeps the originals.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub research_revoked: bool,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
@@ -99,6 +104,8 @@ struct StoredContext {
 	execution_summary: Option<Box<summary::ExecutionSummary>>,
 	#[serde(default)]
 	revoked_summary_dependencies: Option<summary::SummaryDependencies>,
+	#[serde(default)]
+	research_revoked: bool,
 	#[serde(default, rename = "summary")]
 	legacy_summary: Option<String>,
 	run_message_summary: String,
@@ -193,6 +200,7 @@ impl<'de> Deserialize<'de> for Context {
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
 			revoked_summary_dependencies: stored.revoked_summary_dependencies,
+			research_revoked: stored.research_revoked,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
 			media_inferred_seq: stored.media_inferred_seq,

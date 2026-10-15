@@ -3,7 +3,11 @@
 //! identities, retrieval times and digests remain. The record of who revoked
 //! it, when and why outlives the Run and holds no source content.
 use super::{Failure, Operation};
-use crate::{Error, Result, retention::Decider};
+use crate::{
+	Error, Result,
+	context::{ContextEvent, HistoryEntry},
+	retention::Decider,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -63,12 +67,35 @@ pub fn tombstone(operation: Operation) -> Value {
 }
 
 /// The research operation of a stored tool result, recognized by the shared
-/// result envelope rather than by a tool name.
+/// result envelope rather than by a tool name, so a result is recognized even
+/// after its tool is no longer bound or loaded.
 pub fn result_operation(result: &Value) -> Option<Operation> {
 	if result["version"] != json!(1) || !result["limits"].is_object() {
 		return None;
 	}
 	Operation::parse(result["operation"].as_str()?)
+}
+
+/// Whether `event` is a research result a model request would still carry.
+/// A placeholder is not one, so redaction is idempotent.
+pub fn carries_research(event: &ContextEvent) -> bool {
+	matches!(event, ContextEvent::Tool { result, .. } if result_operation(result).is_some())
+}
+
+/// Replace every research result in `history` with the revoked placeholder,
+/// keeping each call so its `tool_call_id` still pairs. Returns whether
+/// anything was replaced.
+pub fn redact(history: &mut [HistoryEntry]) -> bool {
+	let mut redacted = false;
+	for entry in history {
+		if carries_research(&entry.event)
+			&& let ContextEvent::Tool { call, result } = &mut entry.event
+		{
+			*result = ContextEvent::revoked_result(&call.id);
+			redacted = true;
+		}
+	}
+	redacted
 }
 
 #[cfg(test)]

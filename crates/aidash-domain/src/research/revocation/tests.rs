@@ -40,3 +40,42 @@ fn research_results_are_recognized_by_their_envelope() {
 		None
 	);
 }
+
+fn tool(seq: u64, id: &str, result: Value) -> HistoryEntry {
+	HistoryEntry {
+		seq,
+		event: ContextEvent::Tool {
+			call: crate::provider::ToolCall {
+				id: id.into(),
+				name: "renamed_alias".into(),
+				arguments: json!({}),
+			},
+			result,
+		},
+	}
+}
+
+#[rstest]
+fn redaction_replaces_every_research_result_whatever_its_tool_alias() {
+	let page = super::super::envelope(Operation::Fetch, "ok", json!({"text": "secret"}), false);
+	let failed = super::super::failure(Operation::Search, Failure::SnapshotLimit);
+	let other = json!({"status": "ok", "data": {"text": "workspace note"}});
+	let mut history = vec![
+		tool(1, "read", page),
+		tool(2, "search", failed),
+		tool(3, "note", other.clone()),
+	];
+	assert!(redact(&mut history));
+	for (entry, id) in history.iter().zip(["read", "search"]) {
+		let ContextEvent::Tool { result, .. } = &entry.event else {
+			unreachable!()
+		};
+		assert_eq!(result, &ContextEvent::revoked_result(id));
+		assert!(!carries_research(&entry.event));
+	}
+	let ContextEvent::Tool { result, .. } = &history[2].event else {
+		unreachable!()
+	};
+	assert_eq!(result, &other);
+	assert!(!redact(&mut history), "a second pass changes nothing");
+}

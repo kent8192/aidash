@@ -40,7 +40,7 @@ impl RetentionScope for Scope<'_> {
 	async fn require(&mut self, _: &str, action: &str) -> Result<()> {
 		assert_eq!(action, "retention.update");
 		match (&self.tenants.decider, self.tenants.permitted) {
-			(Decider::DeploymentAdministrator, _) | (_, true) => Ok(()),
+			(Decider::DeploymentAdministrator { .. }, _) | (_, true) => Ok(()),
 			_ => Err(Error::Forbidden),
 		}
 	}
@@ -122,7 +122,7 @@ async fn a_permitted_subject_shortens_its_tenants_periods_with_history() {
 
 #[tokio::test]
 async fn clearing_the_periods_applies_the_deployments_again() {
-	let tenants = Tenants::new(Decider::DeploymentAdministrator, false);
+	let tenants = Tenants::new(Decider::DeploymentAdministrator { identity: None }, false);
 	update(&tenants, "acme", Some(shorter())).await.unwrap();
 	let cleared = update(&tenants, "acme", None).await.unwrap();
 	assert_eq!(cleared.tenant_rules, None);

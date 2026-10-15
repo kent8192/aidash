@@ -23,7 +23,7 @@ pub async fn revoke(
 			Decider::Subject { .. } => scope.require(run, REVOKE).await?,
 			// A Deployment Administrator reads no content to revoke; only the
 			// Run's existence is checked.
-			Decider::DeploymentAdministrator => {
+			Decider::DeploymentAdministrator { .. } => {
 				if !scope.run_exists(run).await? {
 					return Err(Error::NotFound("run unavailable".into()));
 				}
