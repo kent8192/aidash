@@ -26,6 +26,8 @@ NOTICES = """# Third-party notices
 
 - `src/adapted.rs`: adapted code (lineage)
 """
+# The third-party inventory the fixtures must carry.
+REQUIRED = {"upstream": ("src/adapted.rs",)}
 # The smallest repository that the guard accepts.
 ACCEPTED = {
     "LICENSE": (ROOT / "LICENSE").read_text(),
@@ -104,6 +106,14 @@ REJECTED = {
         {"web/license.md": "MIT\n"},
         "web/license.md: license files belong only in the root LICENSE or third_party/",
     ),
+    "a case-variant suffixed license file": (
+        {"License-MIT": "MIT License\n"},
+        "License-MIT: license files belong only in the root LICENSE or third_party/",
+    ),
+    "a lowercase suffixed license file": (
+        {"docs/license-MIT": "MIT License\n"},
+        "docs/license-MIT: license files belong only in the root LICENSE or third_party/",
+    ),
     "a changed root notice": (
         {"LICENSE": "MIT License\n"},
         "the root LICENSE differs from the interim notice; licensing changes belong to #255",
@@ -123,6 +133,15 @@ REJECTED = {
     "a stale adapted path": (
         {"src/adapted.rs": None},
         "THIRD_PARTY_NOTICES.md: lists src/adapted.rs, which is not a tracked file",
+    ),
+    "a required project removed with its notice": (
+        {"third_party/upstream/LICENSE": None,
+         "THIRD_PARTY_NOTICES.md": "# Third-party notices\n\n- `src/adapted.rs`: adapted code (lineage)\n"},
+        "third_party/upstream/LICENSE is missing for the required project upstream",
+    ),
+    "an adapted file dropped from the notices": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES.replace("- `src/adapted.rs`: adapted code (lineage)\n", "")},
+        "THIRD_PARTY_NOTICES.md does not list src/adapted.rs, adapted from upstream",
     ),
     "a stale notice link": (
         {"third_party/upstream/LICENSE": None, "third_party/upstream/NOTICE": "upstream\n"},
@@ -146,7 +165,7 @@ def repository(directory, changes=None):
 def errors_for(changes=None):
     with tempfile.TemporaryDirectory() as directory:
         root = repository(directory, changes)
-        return LICENSES.violations(root, LICENSES.tracked_files(root))
+        return LICENSES.violations(root, LICENSES.tracked_files(root), REQUIRED)
 
 
 class LicenseDeclarationTests(unittest.TestCase):
@@ -162,13 +181,15 @@ class LicenseDeclarationTests(unittest.TestCase):
                 self.assertIn(expected, errors_for(changes))
 
     def test_command_exits_nonzero_on_a_rejected_fixture(self):
-        for changes, status in ((None, 0), ({"crates/other/LICENSE": "MIT License\n"}, 1)):
-            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
-                root = repository(directory, changes)
-                result = subprocess.run(
-                    [sys.executable, str(SCRIPT), str(root)], capture_output=True, text=True,
-                )
-                self.assertEqual(result.returncode, status, result.stderr)
+        # The command checks the pinned inventory, which only this repository carries.
+        with tempfile.TemporaryDirectory() as directory:
+            rejected = repository(directory, {"crates/other/LICENSE": "MIT License\n"})
+            for root, status in ((ROOT, 0), (rejected, 1)):
+                with self.subTest(status=status):
+                    result = subprocess.run(
+                        [sys.executable, str(SCRIPT), str(root)], capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, status, result.stderr)
 
 
 if __name__ == "__main__":
