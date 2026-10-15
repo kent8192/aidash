@@ -204,22 +204,42 @@ async fn attempts_of(
 	.await
 }
 
+/// The Run's current decision policy for the hook its journal serves, read again
+/// inside every reservation transaction after the Run row is locked.
+#[async_trait::async_trait]
+pub trait CurrentAllowance: Send + Sync {
+	/// `None` when the current policy no longer allows a Decider for the hook.
+	async fn current(
+		&self,
+		tx: &mut native::Transaction,
+		run: &Run,
+	) -> Result<Option<ExecutionAllowance>>;
+}
+
 /// Decision Evidence and Decision Attempts of one leased Run and its admitted Decider.
 pub struct RunDecisionJournal<'a> {
 	store: &'a Store,
 	run: Run,
 	allowance: ExecutionAllowance,
+	current: &'a dyn CurrentAllowance,
 }
 
 impl<'a> RunDecisionJournal<'a> {
 	/// `run` is the leased Run whose context an applied decision replaces;
-	/// `allowance` names the admitted Decider pin and its per-Run call limit.
-	pub fn new(store: &'a Store, run: Run, allowance: ExecutionAllowance) -> Result<Self> {
+	/// `allowance` names the admitted Decider pin and its per-Run call limit,
+	/// and `current` supplies the policy each charge is checked against again.
+	pub fn new(
+		store: &'a Store,
+		run: Run,
+		allowance: ExecutionAllowance,
+		current: &'a dyn CurrentAllowance,
+	) -> Result<Self> {
 		allowance.decider.validate()?;
 		Ok(Self {
 			store,
 			run,
 			allowance,
+			current,
 		})
 	}
 
@@ -324,8 +344,14 @@ impl<'a> RunDecisionJournal<'a> {
 		.await?;
 		let consumed = u64::try_from(consumed)
 			.map_err(|_| Error::Invalid("negative decision call count".into()))?;
-		if self.allowance.remaining(&self.allowance, consumed)? == 0 {
-			// A Decider whose call limit is spent is unavailable; the Run pauses.
+		// The stricter of the admitted and current limits applies, and a current
+		// policy that names another pin is an error rather than a silent switch.
+		let remaining = match self.current.current(&mut tx, &self.run).await? {
+			Some(current) => self.allowance.remaining(&current, consumed)?,
+			None => 0,
+		};
+		if remaining == 0 {
+			// A Decider whose call limit is spent or revoked is unavailable; the Run pauses.
 			return Err(Error::Context(Failure::PruneUnavailable));
 		}
 		let owner_receipts = BTreeMap::from([(self.owner(), Uuid::new_v4())]);
@@ -389,43 +415,51 @@ impl<'a> RunDecisionJournal<'a> {
 		let answers = answers.map(serde_json::to_value).transpose()?;
 		let status = status_label(status)?;
 		let mut tx = native::begin(&self.store.pool).await?;
-		let updated = native::query(
-			&Query::update()
-				.table(Alias::new(ATTEMPTS))
-				.value(Alias::new("status"), status.as_str())
-				.value(Alias::new("answers"), answers.clone())
-				.value_expr(Alias::new("finished_at"), Expr::current_timestamp())
+		let saved = native::query(
+			&Query::select()
+				.columns(ATTEMPT_COLUMNS.map(Alias::new))
+				.from(Alias::new(ATTEMPTS))
 				.and_where(Expr::col("id").eq(Expr::value(record.attempt)))
 				.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
-				.and_where(Expr::col("status").eq(Expr::value(PENDING)))
+				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut *tx)
-		.await?;
-		if updated.rows_affected() == 0 {
-			let saved = native::query(
-				&Query::select()
-					.columns(["status", "answers"].map(Alias::new))
-					.from(Alias::new(ATTEMPTS))
-					.and_where(Expr::col("id").eq(Expr::value(record.attempt)))
-					.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut *tx)
-			.await?
-			.ok_or_else(|| Error::NotFound("Decision Attempt was never charged".into()))?;
-			let same = saved.try_get::<String>("status")? == status
-				&& saved.try_get::<Option<Value>>("answers")? == answers;
-			if !same {
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or_else(|| Error::NotFound("Decision Attempt was never charged".into()))?;
+		let (charged, saved_status, saved_answers) = stored_record(&saved)?;
+		// Only the exact permit the attempt was charged with may record its result,
+		// so the answers above were checked against the stored questions.
+		if charged != *permit {
+			return Err(Error::Conflict(
+				"Decision Attempt permit differs from its charge".into(),
+			));
+		}
+		if saved_status != PENDING {
+			if saved_status != status || saved_answers != answers {
 				return Err(Error::Conflict(
 					"Decision Attempt already finished differently".into(),
 				));
 			}
+			return tx.commit().await;
 		}
+		native::query(
+			&Query::update()
+				.table(Alias::new(ATTEMPTS))
+				.value(Alias::new("status"), status.as_str())
+				.value(Alias::new("answers"), answers)
+				.value_expr(Alias::new("finished_at"), Expr::current_timestamp())
+				.and_where(Expr::col("id").eq(Expr::value(record.attempt)))
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
 		tx.commit().await
 	}
 
-	/// Every attempt the evidence names must be one this Run charged for the decision.
+	/// Every attempt the evidence names must be one this Run charged for the
+	/// decision, and the evidence must carry the answers each one durably recorded.
 	async fn check_attempts(
 		&self,
 		tx: &mut native::Transaction,
@@ -447,8 +481,11 @@ impl<'a> RunDecisionJournal<'a> {
 				|| record.decider != evidence.decider
 				|| record.state_digest != evidence.state_digest
 				|| attempt.status == AttemptStatus::Answered
-					&& saved.status != AttemptStatus::Answered
-			{
+					&& saved.answers.as_ref().is_none_or(|answers| {
+						answers.iter().any(|(question, answer)| {
+							evidence.answers.get(question) != Some(answer)
+						})
+					}) {
 				return Err(Error::Invalid(
 					"decision evidence differs from its charged attempts".into(),
 				));

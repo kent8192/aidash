@@ -21,8 +21,11 @@ use aidash_domain::{
 	registry::{Entry, bindings::QualifiedRef, rules::digest},
 };
 use aidash_server::{
-	apps::execution::repositories::decisions::RunDecisionJournal, domain::Run,
-	federation::Federation, store::Store,
+	apps::execution::repositories::decisions::{CurrentAllowance, RunDecisionJournal},
+	database::native,
+	domain::Run,
+	federation::Federation,
+	store::Store,
 };
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -34,7 +37,10 @@ use reinhardt::query::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{
+	Mutex,
+	atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use uuid::Uuid;
 
 const IMPLEMENTATION: &str = "node-decision-adapter:fixture";
@@ -89,6 +95,28 @@ fn allowance(decider: &BoundDecider, max_calls_per_run: u64) -> ExecutionAllowan
 	ExecutionAllowance {
 		decider: decider.pin.clone(),
 		max_calls_per_run,
+	}
+}
+
+/// The Run's current decision policy; a test lowers, revokes or repins it
+/// between reservations.
+struct Policy(Mutex<Option<ExecutionAllowance>>);
+impl Policy {
+	fn new(allowance: ExecutionAllowance) -> Self {
+		Self(Mutex::new(Some(allowance)))
+	}
+	fn set(&self, allowance: Option<ExecutionAllowance>) {
+		*self.0.lock().unwrap() = allowance;
+	}
+}
+#[async_trait]
+impl CurrentAllowance for Policy {
+	async fn current(
+		&self,
+		_: &mut native::Transaction,
+		_: &Run,
+	) -> aidash_server::Result<Option<ExecutionAllowance>> {
+		Ok(self.0.lock().unwrap().clone())
 	}
 }
 
@@ -223,6 +251,7 @@ fn budget(projection: &RequestProjection) -> RequestBudget<'_> {
 		tools: &[],
 		max_output_tokens: 0,
 		projection,
+		estimate: Default::default(),
 	}
 }
 
@@ -266,7 +295,9 @@ async fn decide(
 	provider: &Provider,
 ) -> (aidash_application::Result<CompactionResult>, Context) {
 	let decider = bound(&store.node_id, mode);
-	let journal = RunDecisionJournal::new(store, run.clone(), allowance(&decider, 10)).unwrap();
+	let policy = Policy::new(allowance(&decider, 10));
+	let journal =
+		RunDecisionJournal::new(store, run.clone(), allowance(&decider, 10), &policy).unwrap();
 	let mut context = run.context.clone();
 	let boundary = boundary(store, run, worker, &context);
 	let definition = definition(mode);
@@ -424,6 +455,24 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	assert!(rejected.is_err());
 	assert_eq!(unchanged.history.len(), run.context.history.len());
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	// Evidence whose answers differ from the charged result is never committed.
+	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let policy = Policy::new(allowance(&decider, 10));
+	let journal =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
+	let (_, mut tampered) = evidence_rows(&f.store, run.id).await.remove(0);
+	assert!(
+		tampered
+			.attempts
+			.iter()
+			.all(|attempt| attempt.status == AttemptStatus::Answered)
+	);
+	*tampered.answers.values_mut().next().unwrap() = Probability::new(1.0).unwrap();
+	assert!(matches!(
+		journal.commit(&tampered, None, None).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+	));
+	assert_eq!(evidence_rows(&f.store, run.id).await.len(), 1);
 	// Act: the same decision resumes once applying is permitted again.
 	authority
 		.forbid_after_dispatch
@@ -451,8 +500,8 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		.await
 		.unwrap()
 		.expect("leased Run");
-	let decider = bound(&f.store.node_id, Mode::Enforce);
-	let journal = RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10)).unwrap();
+	let journal =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
 	let boundary = boundary(&f.store, &run, worker, &run.context);
 	assert!(matches!(
 		journal.recover(rows[1].1.id, &boundary).await,
@@ -535,7 +584,9 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
 	let decider = bound(&f.store.node_id, Mode::Enforce);
-	let journal = RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 2)).unwrap();
+	let policy = Policy::new(allowance(&decider, 2));
+	let journal =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 2), &policy).unwrap();
 	let mut first = record(
 		&f.store,
 		&run,
@@ -575,12 +626,37 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 		journal.reserve(&overlapping).await,
 		Err(aidash_application::Error::Conflict(_))
 	));
-	// Answers become the only reusable recovery source.
 	let answers: BTreeMap<_, _> = first
 		.questions
 		.iter()
 		.map(|q| (q.clone(), Probability::new(0.25).unwrap()))
 		.collect();
+	// A mixed-up permit never records a result for the charged attempt.
+	let mut mixed = permit.clone();
+	for receipt in mixed.owner_receipts.values_mut() {
+		*receipt = Uuid::new_v4();
+	}
+	assert!(matches!(
+		journal
+			.finish_attempt(&mixed, Some(&answers), AttemptStatus::Answered)
+			.await,
+		Err(aidash_application::Error::Conflict(_))
+	));
+	let mut narrowed = permit.clone();
+	narrowed.record.questions.truncate(1);
+	let narrowed_answers =
+		BTreeMap::from([(first.questions[0].clone(), Probability::new(0.25).unwrap())]);
+	assert!(matches!(
+		journal
+			.finish_attempt(&narrowed, Some(&narrowed_answers), AttemptStatus::Answered)
+			.await,
+		Err(aidash_application::Error::Conflict(_))
+	));
+	let Reservation::Recovered(still) = journal.reserve(&first).await.unwrap() else {
+		panic!("a charged attempt is recovered");
+	};
+	assert_eq!(still.status, AttemptStatus::Uncertain);
+	// Answers become the only reusable recovery source.
 	journal
 		.finish_attempt(&permit, Some(&answers), AttemptStatus::Answered)
 		.await
@@ -624,6 +700,67 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn every_charge_rechecks_the_current_allowance(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (run, worker) = leased(&f, &app, &token).await;
+	let decider = bound(&f.store.node_id, Mode::Enforce);
+	let policy = Policy::new(allowance(&decider, 10));
+	let journal =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
+	let charge = |question: &str| {
+		let mut charged = record(&f.store, &run, worker, &decider, &[question], 'a');
+		charged.decision = Uuid::new_v4();
+		charged
+	};
+	// Arrange: one attempt is charged under the admitted limit.
+	assert!(matches!(
+		journal.reserve(&charge("q1_call")).await.unwrap(),
+		Reservation::Fresh(_)
+	));
+	// Act + Assert: a current limit lowered below the calls made is already spent.
+	policy.set(Some(allowance(&decider, 1)));
+	assert!(matches!(
+		journal.reserve(&charge("q2_call")).await,
+		Err(aidash_application::Error::Context(
+			Failure::PruneUnavailable
+		))
+	));
+	// A Decider the current policy no longer allows is unavailable.
+	policy.set(None);
+	assert!(matches!(
+		journal.reserve(&charge("q3_call")).await,
+		Err(aidash_application::Error::Context(
+			Failure::PruneUnavailable
+		))
+	));
+	// A current policy that pins another Decider never charges the admitted one.
+	let mut repinned = allowance(&decider, 10);
+	repinned.decider.provider_implementation = "node-decision-adapter:other".into();
+	policy.set(Some(repinned));
+	assert!(matches!(
+		journal.reserve(&charge("q4_call")).await,
+		Err(aidash_application::Error::Invalid(_))
+	));
+	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
+	// Restoring the policy charges again.
+	policy.set(Some(allowance(&decider, 10)));
+	assert!(matches!(
+		journal.reserve(&charge("q5_call")).await.unwrap(),
+		Reservation::Fresh(_)
+	));
+	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 2);
+	f.store.release_lease(run.id, worker).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_original_fence(
 	#[future(awt)]
 	#[from(native_application)]
@@ -634,7 +771,9 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
 	let decider = bound(&f.store.node_id, Mode::Enforce);
-	let journal = RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10)).unwrap();
+	let policy = Policy::new(allowance(&decider, 10));
+	let journal =
+		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
 	let mut charged = record(&f.store, &run, worker, &decider, &["q1_call"], 'e');
 	charged.decision = Uuid::new_v4();
 	let mut stranger = charged.clone();
@@ -662,7 +801,8 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 		.unwrap()
 		.expect("leased Run");
 	let journal =
-		RunDecisionJournal::new(&f.store, leased.clone(), allowance(&decider, 10)).unwrap();
+		RunDecisionJournal::new(&f.store, leased.clone(), allowance(&decider, 10), &policy)
+			.unwrap();
 	let mut resumed = charged.clone();
 	resumed.boundary.worker = successor;
 	resumed.boundary.run_revision = leased.revision;

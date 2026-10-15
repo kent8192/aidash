@@ -86,11 +86,16 @@ for it. Its boundary maps `run_revision` to `runs.revision` and `input_revision`
 `runs.observed_input_seq`; reserving, recovering and committing lock the Run row and
 require the current lease and both revisions. A Decision Attempt is charged once, as a
 `pending` row keyed by its stable identity, together with a receipt for the Run's own
-per-Run call limit (`ExecutionAllowance::max_calls_per_run`). Reserving the same
+per-Run call limit (`ExecutionAllowance::max_calls_per_run`). Every reservation reads
+the Run's current policy again through `CurrentAllowance` inside its transaction and
+charges against the stricter of the admitted and current limits. Reserving the same
 attempt again returns it as recovered, a changed charge or an overlapping question
-plan is a conflict, and a spent limit stops with `PruneUnavailable` before anything is
-charged. Recovery reports a `pending` row as uncertain and keeps its original worker
-fence. A late result is still recorded after the lease moved.
+plan is a conflict, a current policy that pins another Decider is invalid, and a spent
+limit or a Decider the current policy no longer allows stops with `PruneUnavailable`
+before anything is charged. Recovery reports a `pending` row as uncertain and keeps
+its original worker fence. Only the exact permit an attempt was charged with records
+its result, and a late result is still recorded after the lease moved. Committed
+evidence must carry the answers each of its answered attempts recorded.
 
 An applied decision saves the Run's context through the same lease-fenced save as an
 adopted Summary Stage (`context.compacted`), which ends the step, and writes its
