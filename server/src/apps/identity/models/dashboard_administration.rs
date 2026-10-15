@@ -11,14 +11,17 @@ use crate::apps::identity::serializers::oidc::{
 };
 use crate::apps::identity::services::dashboard_rules;
 use crate::authorization::Snapshot;
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::identity::tenant_administration;
+use aidash_domain::tenancy::TenantName;
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::query::FieldAssignment;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SimpleExpr,
@@ -76,8 +79,11 @@ impl DashboardRegistrationRequest {
 			.map(|registration| registration.identity_id()))
 	}
 
-	pub(crate) async fn submit(db: DatabaseConnection, identity: Uuid) -> Result<Registration> {
-		db.atomic(async |tx| {
+	/// Reads the identity's Mappings in every Tenant to decide whether an
+	/// approved request is still in force.
+	pub(crate) async fn submit(db: &Pool, identity: Uuid) -> Result<Registration> {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
+		db.atomic(&scope, async |tx| {
 			// One identity lock serializes duplicate submissions without extending
 			// the original seven-day deadline.
 			let identities = DashboardIdentity::objects()
@@ -131,8 +137,8 @@ impl DashboardRegistrationRequest {
 		.await
 	}
 
-	pub(crate) async fn pending(db: DatabaseConnection) -> Result<Vec<Registration>> {
-		db.atomic(async |tx| {
+	pub(crate) async fn pending(db: &Pool) -> Result<Vec<Registration>> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			Ok(Self::objects()
 				.filter(Self::field_status().eq("pending"))
@@ -152,7 +158,7 @@ impl DashboardRegistrationRequest {
 	/// the bound GCIP Tenant; it creates the subject with `groups` or re-approves
 	/// the subject that External Identity was previously mapped to.
 	pub(crate) async fn approve(
-		db: DatabaseConnection,
+		db: &Pool,
 		id: Uuid,
 		input: Approval,
 		groups: BTreeSet<String>,
@@ -160,7 +166,8 @@ impl DashboardRegistrationRequest {
 		token_hash: Vec<u8>,
 		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<ApprovedMapping> {
-		db.atomic(async |tx| {
+		let scope = TenancyScope::Tenant(TenantName::new(input.tenant.clone())?);
+		db.atomic(&scope, async |tx| {
 			let administrator = actor.tenant_administrator();
 			// Authority, including its exclusive policy lock, precedes every
 			// identity lock, as at execution boundaries.
@@ -384,75 +391,85 @@ impl DashboardRegistrationRequest {
 		.await
 	}
 
+	/// A Tenant Administrator rejects in its Tenant's scope. A Deployment
+	/// Administrator's decision records no Tenant, so it writes in Deployment
+	/// Scope. Display retention, which depends on every Tenant's Mappings, runs
+	/// after the decision commits.
 	pub(crate) async fn reject(
-		db: DatabaseConnection,
+		db: &Pool,
 		id: Uuid,
 		actor: &AdministrationActor,
 		idle_seconds: Option<i64>,
 	) -> Result<Registration> {
-		db.atomic(async |tx| {
-			let administrator = actor.tenant_administrator();
-			let snapshot = match administrator {
-				Some(administrator) => Some(administrator.lock(tx, false).await?),
-				None => None,
-			};
-			let preliminary = Self::objects()
-				.filter(Self::field_id().eq(id))
-				.all_with_db(tx)
-				.await?
-				.pop()
-				.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
-			if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
-				let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
-				visible_to(administrator, &candidate)?;
-				administrator
-					.require(
+		let scope = match actor.tenant_administrator() {
+			Some(administrator) => TenancyScope::tenant(administrator.tenant())?,
+			None => TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministration),
+		};
+		let (registration, identity) = db
+			.atomic(&scope, async |tx| {
+				let administrator = actor.tenant_administrator();
+				let snapshot = match administrator {
+					Some(administrator) => Some(administrator.lock(tx, false).await?),
+					None => None,
+				};
+				let preliminary = Self::objects()
+					.filter(Self::field_id().eq(id))
+					.all_with_db(tx)
+					.await?
+					.pop()
+					.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
+				if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
+					let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
+					visible_to(administrator, &candidate)?;
+					administrator
+						.require(
+							tx,
+							snapshot,
+							tenant_administration::REGISTRATION_REJECT,
+							&id.to_string(),
+							json!({"identity_id": candidate.id}),
+						)
+						.await?;
+				}
+				DashboardIdentity::objects()
+					.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
+					.select_for_update()
+					.all_with_executor(tx)
+					.await
+					.map_err(FrameworkError::from)?;
+				let mut row = Self::objects()
+					.filter(Self::field_id().eq(id))
+					.select_for_update()
+					.all_with_executor(tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.pop()
+					.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
+				let now = database_time(tx).await?;
+				dashboard_rules::require_pending(&row.status, row.expires_at, now)?;
+				row.status = "rejected".into();
+				row.decided_at = Some(now);
+				row.decision_actor = Some(actor.decision_actor());
+				Self::objects().update_with_conn(tx, &row).await?;
+				actor
+					.record(
 						tx,
-						snapshot,
-						tenant_administration::REGISTRATION_REJECT,
-						&id.to_string(),
-						json!({"identity_id": candidate.id}),
+						AdministrationEvent {
+							action: tenant_administration::REGISTRATION_REJECT,
+							identity: row.identity_id(),
+							registration: Some(id),
+							mapping: None,
+							tenant: administrator.map(TenantAdministrator::tenant),
+							subject: None,
+						},
 					)
 					.await?;
-			}
-			DashboardIdentity::objects()
-				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?;
-			let mut row = Self::objects()
-				.filter(Self::field_id().eq(id))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
-			let now = database_time(tx).await?;
-			dashboard_rules::require_pending(&row.status, row.expires_at, now)?;
-			row.status = "rejected".into();
-			row.decided_at = Some(now);
-			row.decision_actor = Some(actor.decision_actor());
-			Self::objects().update_with_conn(tx, &row).await?;
-			DashboardIdentity::clear_display_without_basis(tx, row.identity_id(), idle_seconds)
-				.await?;
-			actor
-				.record(
-					tx,
-					AdministrationEvent {
-						action: tenant_administration::REGISTRATION_REJECT,
-						identity: row.identity_id(),
-						registration: Some(id),
-						mapping: None,
-						tenant: administrator.map(TenantAdministrator::tenant),
-						subject: None,
-					},
-				)
-				.await?;
-			Ok(row.contract())
-		})
-		.await
+				let identity = row.identity_id();
+				Ok((row.contract(), identity))
+			})
+			.await?;
+		DashboardIdentity::enforce_identity_retention(db, identity, idle_seconds).await?;
+		Ok(registration)
 	}
 }
 
@@ -591,11 +608,12 @@ impl DashboardIdentity {
 	/// locking every mapped External Identity on each pass. `idle_seconds` follows
 	/// [`Self::clear_display_without_basis`].
 	pub(crate) async fn enforce_display_retention(
-		db: DatabaseConnection,
+		db: &Pool,
 		idle_seconds: Option<i64>,
 	) -> Result<()> {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::Retention);
 		let candidates = db
-			.atomic(async |tx| {
+			.atomic(&scope, async |tx| {
 				let now = database_time(tx).await?;
 				let mut authorized: BTreeSet<Uuid> = DashboardMapping::objects()
 					.filter(DashboardMapping::field_enabled().eq(true))
@@ -648,12 +666,14 @@ impl DashboardIdentity {
 	}
 
 	/// Applies [`Self::enforce_display_retention`] to one External Identity.
+	/// Retention reads the identity's Mappings in every Tenant.
 	pub(crate) async fn enforce_identity_retention(
-		db: DatabaseConnection,
+		db: &Pool,
 		identity: Uuid,
 		idle_seconds: Option<i64>,
 	) -> Result<()> {
-		db.atomic(async |tx| {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::Retention);
+		db.atomic(&scope, async |tx| {
 			Self::objects()
 				.filter(Self::field_id().eq(identity))
 				.select_for_update()
@@ -679,12 +699,8 @@ impl DashboardIdentity {
 	}
 
 	/// Performs an Operator's Display Erasure, keeping the first erasure's trace.
-	pub(crate) async fn erase_display(
-		db: DatabaseConnection,
-		id: Uuid,
-		actor: String,
-	) -> Result<IdentityView> {
-		db.atomic(async |tx| {
+	pub(crate) async fn erase_display(db: &Pool, id: Uuid, actor: String) -> Result<IdentityView> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let mut row = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.select_for_update()
@@ -775,6 +791,15 @@ impl DashboardMapping {
 			.pop())
 	}
 
+	/// The Tenant of a Mapping, found in a read-only Deployment Scope.
+	pub(crate) async fn tenant_of(db: &Pool, id: Uuid) -> Result<Option<String>> {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		db.atomic(&scope, async |tx| {
+			Ok(Self::find(tx, id).await?.map(|mapping| mapping.tenant))
+		})
+		.await
+	}
+
 	pub(crate) async fn page<E: OrmExecutor>(db: &mut E, offset: u64) -> Result<Vec<AdminMapping>> {
 		Ok(Self::objects()
 			.all()
@@ -797,13 +822,24 @@ impl DashboardMapping {
 
 	/// A Tenant Administrator disables only another External Identity's Mapping
 	/// in its own Tenant.
+	///
+	/// The change runs in the Mapping's Tenant scope. A Deployment
+	/// Administrator names only the Mapping, so a read-only lookup finds its
+	/// Tenant first, and the change rechecks it.
 	pub(crate) async fn disable(
-		db: DatabaseConnection,
+		db: &Pool,
 		id: Uuid,
 		revision: i64,
 		actor: &AdministrationActor,
 	) -> Result<()> {
-		db.atomic(async |tx| {
+		let tenant = match actor.tenant_administrator() {
+			Some(administrator) => administrator.tenant().to_owned(),
+			None => Self::tenant_of(db, id)
+				.await?
+				.ok_or_else(|| Error::Conflict("mapping revision changed".into()))?,
+		};
+		let scope = TenancyScope::tenant(&tenant)?;
+		db.atomic(&scope, async |tx| {
 			if let Some(administrator) = actor.tenant_administrator() {
 				// Each administrator holds a shared lock on its own credential, so
 				// two administrators disabling each other's Mappings would deadlock
@@ -829,6 +865,7 @@ impl DashboardMapping {
 			}
 			let mapping = Self::objects()
 				.filter(Self::field_id().eq(id))
+				.filter(Self::field_tenant().eq(tenant.clone()))
 				.filter(Self::field_enabled().eq(true))
 				.filter(Self::field_revision().eq(revision))
 				.all_with_db(tx)
@@ -908,12 +945,12 @@ impl DashboardOperatorGrant {
 	}
 
 	pub(crate) async fn change_enabled(
-		db: DatabaseConnection,
+		db: &Pool,
 		identity: Uuid,
 		enabled: bool,
 		revision: i64,
 	) -> Result<AdminOperatorGrant> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let identity = DashboardIdentity::objects()
 				.filter(DashboardIdentity::field_id().eq(identity))
 				.select_for_update()

@@ -8,6 +8,14 @@ let contextGeneration = 0;
 let activeConnection: ConnectionProfile | null = null;
 let lifetime = new AbortController();
 
+/** The context selector for a Mapping names its Tenant, so the server looks
+ * the Mapping up within that Tenant only (ADR 0047). */
+export function mappingContext(mapping: {
+  tenant: string;
+  id: string;
+}): string {
+  return `mapping:${mapping.tenant}:${mapping.id}`;
+}
 export function dashboardContext(): string | null {
   return sessionStorage.getItem(CONTEXT_KEY);
 }

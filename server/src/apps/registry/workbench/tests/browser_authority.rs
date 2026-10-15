@@ -97,7 +97,9 @@ async fn browser_workbench(
 	headers.insert("x-aidash-csrf", "browser-authority-csrf".parse().unwrap());
 	headers.insert(
 		"x-aidash-context",
-		format!("mapping:{}", mapping.id).parse().unwrap(),
+		format!("mapping:{}:{}", mapping.tenant, mapping.id)
+			.parse()
+			.unwrap(),
 	);
 	(wb, headers, session)
 }

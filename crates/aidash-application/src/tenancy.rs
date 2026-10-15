@@ -77,16 +77,26 @@ pub enum DeploymentScopeReason {
 	MemoryRecovery,
 	/// Recovering the credential store across Tenants.
 	CredentialStoreRecovery,
+	/// Listing Provider Credentials whose stored Key Material needs reconciling.
+	CredentialReconcile,
 	/// A Deployment Administrator's lists across Tenants.
 	DeploymentAdministratorList,
 	/// A Deployment Administrator's rows without a Tenant in Tenant-owned
 	/// tables, such as a decision on an unaddressed Registration Request.
 	DeploymentAdministration,
-	/// Listing the Tenants an External Identity is mapped into.
+	/// Reading the Mappings an External Identity holds in every Tenant, at
+	/// sign-in, when switching Tenants and when it asks to join one. It writes
+	/// only Deployment-wide sign-in and registration rows.
 	IdentityTenants,
+	/// Revalidating External Identities that have work in any Tenant, and
+	/// stopping a disabled identity's Runs in every Tenant.
+	IdentityStatus,
 	/// Resolving an inbound peer's local Tenant, until #241 gives every Node a
 	/// Tenant.
 	FederationInbound,
+	/// Finding the Tenant of a Run from its execution grant, until #265 records
+	/// the Tenant on the Run.
+	RunTenant,
 	/// The activity observer, which writes this label by hand.
 	ActivityObserver,
 	/// Test fixtures that span Tenants.
@@ -109,10 +119,13 @@ impl DeploymentScopeReason {
 			Self::BuiltInSeeding => "built-in-seeding",
 			Self::MemoryRecovery => "memory-recovery",
 			Self::CredentialStoreRecovery => "credential-store-recovery",
+			Self::CredentialReconcile => "credential-reconcile",
 			Self::DeploymentAdministratorList => "deployment-administrator-list",
 			Self::DeploymentAdministration => "deployment-administration",
 			Self::IdentityTenants => "identity-tenants",
+			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
+			Self::RunTenant => "run-tenant",
 			Self::ActivityObserver => "activity-observer",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
@@ -131,13 +144,16 @@ impl DeploymentScopeReason {
 			| Self::BuiltInSeeding
 			| Self::MemoryRecovery
 			| Self::CredentialStoreRecovery
-			| Self::DeploymentAdministration => true,
+			| Self::DeploymentAdministration
+			| Self::IdentityTenants
+			| Self::IdentityStatus => true,
 			Self::GenerationReconcile
 			| Self::SemanticIndexing
 			| Self::TransactionRecovery
+			| Self::CredentialReconcile
 			| Self::DeploymentAdministratorList
-			| Self::IdentityTenants
 			| Self::FederationInbound
+			| Self::RunTenant
 			| Self::ActivityObserver => false,
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => true,
@@ -151,7 +167,10 @@ mod tests {
 
 	#[test]
 	fn only_reasons_that_read_are_read_only() {
-		assert!(TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants).read_only());
+		assert!(
+			TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList)
+				.read_only()
+		);
 		assert!(!TenancyScope::Deployment(DeploymentScopeReason::Retention).read_only());
 		assert!(!TenancyScope::tenant("acme").unwrap().read_only());
 		assert!(!TenancyScope::NoTenant.read_only());
@@ -171,10 +190,13 @@ mod tests {
 			DeploymentScopeReason::BuiltInSeeding,
 			DeploymentScopeReason::MemoryRecovery,
 			DeploymentScopeReason::CredentialStoreRecovery,
+			DeploymentScopeReason::CredentialReconcile,
 			DeploymentScopeReason::DeploymentAdministratorList,
 			DeploymentScopeReason::DeploymentAdministration,
 			DeploymentScopeReason::IdentityTenants,
+			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
+			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::ActivityObserver,
 		];
 		let labels = reasons

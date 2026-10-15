@@ -554,7 +554,11 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			.to_string()
 			.contains(&credential_id.to_string())
 	);
-	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	let (status, session) = call(
 		&app,
 		"GET",
@@ -1645,7 +1649,11 @@ async fn google_session_provisions_private_access_without_registration(
 		}
 	};
 	let personal = &session["mappings"][0];
-	let context = format!("mapping:{}", personal["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		personal["tenant"].as_str().unwrap(),
+		personal["id"].as_str().unwrap()
+	);
 	let (status, selected) = call(
 		&fixture.app,
 		"GET",
@@ -1732,7 +1740,11 @@ async fn google_session_provisions_private_access_without_registration(
 	)
 	.await;
 	assert_eq!(status, 200, "{shared}");
-	let shared_context = format!("mapping:{}", shared["id"].as_str().unwrap());
+	let shared_context = format!(
+		"mapping:{}:{}",
+		shared["tenant"].as_str().unwrap(),
+		shared["id"].as_str().unwrap()
+	);
 	let (status, shared_workspace) = call(
 		&fixture.app,
 		"POST",
@@ -1897,7 +1909,7 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 	let mapping = &session["mappings"][0];
 	let mapping_id = mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap();
 	let tenant = mapping["tenant"].as_str().unwrap();
-	let context = format!("mapping:{mapping_id}");
+	let context = format!("mapping:{tenant}:{mapping_id}");
 	let credential_query = Query::select()
 		.column(Alias::new("credential_id"))
 		.from(Alias::new("dashboard_mappings"))
@@ -2221,8 +2233,16 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	google_identity(&fixture.federation, "carol", "carol-session").await;
 	let alice = operator_mapped(app, "alice-session", "acme", "root").await;
 	let bob = operator_mapped(app, "bob-session", "acme", "bob").await;
-	let alice_context = format!("mapping:{}", alice["id"].as_str().unwrap());
-	let bob_context = format!("mapping:{}", bob["id"].as_str().unwrap());
+	let alice_context = format!(
+		"mapping:{}:{}",
+		alice["tenant"].as_str().unwrap(),
+		alice["id"].as_str().unwrap()
+	);
+	let bob_context = format!(
+		"mapping:{}:{}",
+		bob["tenant"].as_str().unwrap(),
+		bob["id"].as_str().unwrap()
+	);
 	// Carol's request is generic: it is addressed to no Tenant.
 	let (status, carol) = browser_call(
 		app,

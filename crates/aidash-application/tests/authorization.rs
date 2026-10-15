@@ -1,3 +1,4 @@
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Error, Result,
 	authorization::{Authorization, Snapshot},
@@ -49,7 +50,8 @@ fn evaluation() -> Evaluation {
 
 #[async_trait]
 impl AuthorizationStore for Store {
-	async fn begin(&self) -> Result<Box<dyn AuthorizationTransaction>> {
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn AuthorizationTransaction>> {
+		assert_eq!(scope, &TenancyScope::tenant("acme").unwrap());
 		self.state.lock().unwrap().begun += 1;
 		Ok(Box::new(Transaction {
 			state: self.state.clone(),
@@ -187,7 +189,10 @@ async fn borrowed_authorization_leaves_commit_to_the_protected_effect(
 		state: state.clone(),
 		fail_audit: false,
 	};
-	let mut transaction = store.begin().await.unwrap();
+	let mut transaction = store
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
 	let mut input = evaluation();
 	input.action = action.into();
 

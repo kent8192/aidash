@@ -179,6 +179,11 @@ impl Drop for PublicationView<'_> {
 }
 
 impl Access {
+	/// The scope of every transaction this authority opens: its subject's Tenant.
+	pub(crate) fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
+		self.identity.tenancy()
+	}
+
 	/// Native ports may update transport facts only after completing current authority checks.
 	pub(crate) fn environment_mut(&mut self) -> &mut Value {
 		&mut self.environment
@@ -245,7 +250,7 @@ impl Access {
 		exclusive: bool,
 	) -> Result<Self> {
 		identity.check_binding(pool).await?;
-		let mut tx = crate::database::native::begin_unscoped(pool).await?;
+		let mut tx = pool.begin(&identity.tenancy()?).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self::from_transaction(
 			tx, pool, node, client, identity, snapshot,
@@ -260,6 +265,12 @@ impl Access {
 		identity: &SubjectIdentity,
 		snapshot: Snapshot,
 	) -> Self {
+		debug_assert!(
+			tx.scope()
+				.is_none_or(|scope| scope.tenant_name().map(|name| name.as_str())
+					== Some(identity.tenant.as_str())),
+			"an authority transaction is opened in its subject's Tenant scope"
+		);
 		Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
@@ -369,7 +380,7 @@ impl Access {
 		Self::under_lease_on(lease, &lease.pool).await
 	}
 	pub(crate) async fn under_lease_on(lease: &Self, pool: &Pool) -> Result<Self> {
-		let tx = crate::database::native::begin_unscoped(pool).await?;
+		let tx = pool.begin(&lease.identity.tenancy()?).await?;
 		Ok(Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
@@ -407,7 +418,7 @@ impl Access {
 		if !self.tx.is_active() {
 			self.identity.check_binding(&self.pool).await?;
 			self.tx
-				.install(crate::database::native::begin_unscoped(&self.pool).await?);
+				.install(self.pool.begin(&self.identity.tenancy()?).await?);
 		}
 		Ok(())
 	}
@@ -431,7 +442,7 @@ impl Access {
 	pub async fn refresh_execution(&mut self, run_id: Uuid) -> Result<()> {
 		if !self.tx.is_active() {
 			self.tx
-				.install(crate::database::native::begin_unscoped(&self.pool).await?);
+				.install(self.pool.begin(&self.identity.tenancy()?).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
 		self.tx.admissions.clear();
@@ -517,10 +528,11 @@ impl Access {
 		// commits. Keep authority locked for that entire boundary, and commit
 		// its decision audit before effects so a killed worker cannot lose it.
 		if self.durable_audit {
-			let mut audit: Box<dyn TransactionExecutor> =
-				crate::database::native::begin_unscoped(&self.pool)
-					.await?
-					.into_executor()?;
+			let mut audit: Box<dyn TransactionExecutor> = self
+				.pool
+				.begin(&self.identity.tenancy()?)
+				.await?
+				.into_executor()?;
 			for (input, decision) in records {
 				AuthorizationDecision::append(
 					audit.as_mut(),
@@ -583,10 +595,11 @@ impl Access {
 			}
 			if matches!(result, Err(Error::Forbidden)) {
 				// Denials survive rollback with the evaluated policy revision.
-				let mut audit: Box<dyn TransactionExecutor> =
-					crate::database::native::begin_unscoped(&self.pool)
-						.await?
-						.into_executor()?;
+				let mut audit: Box<dyn TransactionExecutor> = self
+					.pool
+					.begin(&self.identity.tenancy()?)
+					.await?
+					.into_executor()?;
 				for (input, decision) in &self.pending_decisions {
 					AuthorizationDecision::append(
 						audit.as_mut(),

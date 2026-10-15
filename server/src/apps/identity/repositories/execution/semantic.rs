@@ -53,8 +53,9 @@ impl RunSemanticRepository for ContextRepository<'_> {
 		budget: usize,
 	) -> Result<Option<Value>> {
 		let federation = self.remote.ok_or(Error::Forbidden)?;
+		let tenancy = self.access.read().await.tenancy()?;
 		crate::apps::identity::services::peer::semantic::context(
-			federation, self.run, task, inputs, query, budget,
+			federation, self.run, &tenancy, task, inputs, query, budget,
 		)
 		.await
 		.map_err(Into::into)

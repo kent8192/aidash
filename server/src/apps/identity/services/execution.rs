@@ -625,7 +625,9 @@ impl Guard {
 		store: &Store,
 	) -> Result<aidash_domain::context::sources::RetrievalScope> {
 		if let Some(federation) = &self.remote {
-			let description = super::peer::semantic::admission(federation, &self.run).await?;
+			let tenancy = self.access.read().await.tenancy()?;
+			let description =
+				super::peer::semantic::admission(federation, &self.run, &tenancy).await?;
 			let (index_revision, participant_revision) = match &description.semantic {
 				aidash_domain::semantic::remote::Binding::Disabled { .. } => (None, None),
 				aidash_domain::semantic::remote::Binding::RequiredHome {

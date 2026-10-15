@@ -9,6 +9,7 @@ use crate::{
 	federation::Federation,
 	registry::Entry,
 };
+use aidash_application::tenancy::TenancyScope;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -587,7 +588,7 @@ pub(crate) async fn list_grants(
 	tenant: String,
 	QueryParams(page): QueryParams<GrantPage>,
 ) -> Result<Vec<GraphOperatorGrant>> {
-	identifier(&tenant)?;
+	let scope = TenancyScope::tenant(&tenant)?;
 	if !(1..=200).contains(&page.limit) {
 		return Err(Error::Invalid("invalid grant page".into()));
 	}
@@ -604,7 +605,7 @@ pub(crate) async fn list_grants(
 				.offset(page.offset)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&scope))
 		.await?
 	};
 	Ok(grants)
@@ -629,10 +630,11 @@ pub(crate) async fn set_grant(
 			"revocation requires an existing grant".into(),
 		));
 	}
+	let scope = TenancyScope::tenant(&tenant)?;
 	let mut tx = if input.enabled {
-		crate::database::native::begin_unscoped(&f.store.pool).await?
+		f.store.pool.begin(&scope).await?
 	} else {
-		crate::database::native::begin_unscoped(&f.store.control_pool).await?
+		f.store.control_pool.begin(&scope).await?
 	};
 	if !input.enabled {
 		crate::transactions::authority::control(&mut tx).await?;
@@ -729,8 +731,7 @@ pub(crate) async fn operator_grant(
 	operator: Uuid,
 	tenant: &str,
 ) -> Result<(crate::database::native::Transaction, GraphOperatorGrant)> {
-	identifier(tenant)?;
-	let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
+	let mut tx = f.store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 	Authorization::load(&mut tx, tenant).await?;
 	let grant: GraphOperatorGrant = {
 		let query_bind_1 = node;

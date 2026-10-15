@@ -3,6 +3,9 @@ use crate::apps::identity::models::{
 	AuthorizationBundle, AuthorizationCredential, DashboardSession,
 };
 use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+use aidash_domain::identity::credentials;
+use aidash_domain::tenancy::TenantName;
 use chrono::{DateTime, Utc};
 use reinhardt::DiError;
 use reinhardt::DiResult;
@@ -61,22 +64,19 @@ impl Authorization {
 		lifetime: i64,
 		actor: &str,
 	) -> Result<IssuedCredential> {
-		super::policy::identifier(tenant)?;
+		let name = TenantName::new(tenant)?;
 		super::policy::identifier(actor)?;
 		if !(1..=2_592_000).contains(&lifetime) {
 			return Err(Error::Invalid(
 				"credential lifetime must be 1..2592000 seconds".into(),
 			));
 		}
-		let token = format!(
-			"aidash_subject_{}{}",
-			Uuid::new_v4().simple(),
-			Uuid::new_v4().simple()
-		);
-		let lease = self.native_connection()?;
-		let credential = lease
-			.handle()
-			.atomic(async |tx| {
+		// The token names its Tenant, so presenting it never reads across
+		// Tenants (ADR 0047).
+		let token = credentials::subject_token(&name);
+		let credential = self
+			.pool
+			.atomic(&TenancyScope::Tenant(name), async |tx| {
 				let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant, false).await?;
 				if !enabled(&snapshot, subject) {
 					return Err(Error::Invalid(
@@ -95,24 +95,30 @@ impl Authorization {
 		self.credentials_page(tenant, 0).await
 	}
 	pub async fn credentials_page(&self, tenant: &str, offset: u64) -> Result<Vec<Credential>> {
-		let lease = self.native_connection()?;
-		AuthorizationCredential::visible_page(&mut lease.handle(), tenant, offset).await
+		self.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AuthorizationCredential::visible_page(tx, tenant, offset).await
+			})
+			.await
 	}
 
 	pub async fn revoke_credential(&self, tenant: &str, id: Uuid) -> Result<Credential> {
-		let lease = self.native_connection()?;
-		AuthorizationCredential::revoke(lease.handle(), tenant, id).await
+		AuthorizationCredential::revoke(&self.pool, tenant, id).await
 	}
 
 	pub async fn authenticate(&self, token: &str) -> Result<Actor> {
-		if token.len() > 256 || !token.starts_with("aidash_subject_") {
+		let name = credentials::subject_tenant(token).ok_or(Error::Unauthorized)?;
+		let (credential_id, tenant, subject) = self
+			.pool
+			.atomic(&TenancyScope::Tenant(name.clone()), async |tx| {
+				AuthorizationCredential::authenticate(tx, digest(token)).await
+			})
+			.await?;
+		// The digest covers the Tenant name, so a credential found under another
+		// Tenant means the token was not issued as presented.
+		if tenant != name.as_str() {
 			return Err(Error::Unauthorized);
 		}
-		let lease = self.native_connection()?;
-		let (credential_id, tenant, subject) = lease
-			.handle()
-			.atomic(async |tx| AuthorizationCredential::authenticate(tx, digest(token)).await)
-			.await?;
 		Ok(Actor::Subject(SubjectIdentity {
 			http_session: None,
 			credential_id,
@@ -123,6 +129,11 @@ impl Authorization {
 }
 
 impl SubjectIdentity {
+	/// The scope of every transaction that acts for this subject.
+	pub(crate) fn tenancy(&self) -> Result<TenancyScope> {
+		Ok(TenancyScope::tenant(&self.tenant)?)
+	}
+
 	/// Persist missing-Binding disablement before taking any execution lease.
 	pub(crate) async fn check_binding(&self, pool: &crate::database::native::Pool) -> Result<()> {
 		let col = |table: &str, name: &str| Expr::col((Alias::new(table), Alias::new(name)));
@@ -141,9 +152,13 @@ impl SubjectIdentity {
 			)
 			.and_where(col("m", "credential_id").eq(Expr::value(self.credential_id)))
 			.to_string(PostgresQueryBuilder);
-		let row: Option<(Uuid, String, String)> = crate::database::native::query_as(&query)
-			.columns(&["id", "issuer", "gcip_tenant"])
-			.fetch_optional(pool)
+		let row: Option<(Uuid, String, String)> = pool
+			.scoped(&self.tenancy()?, async |tx| {
+				crate::database::native::query_as(&query)
+					.columns(&["id", "issuer", "gcip_tenant"])
+					.fetch_optional(&mut **tx)
+					.await
+			})
 			.await?;
 		let Some((id, issuer, gcip_tenant)) = row else {
 			return Ok(());
@@ -160,21 +175,18 @@ impl SubjectIdentity {
 		if allowed {
 			return Ok(());
 		}
-		let lease =
-			reinhardt::db::orm::connection::DatabaseConnectionLease::register(pool.connection())?;
-		if crate::apps::identity::models::DashboardIdentity::disable_if_current(
-			lease.handle(),
-			id,
-			None,
-		)
-		.await?
+		if crate::apps::identity::models::DashboardIdentity::disable_if_current(pool, id, None)
+			.await?
 		{
-			let mut db = lease.handle();
-			let runs = crate::apps::identity::models::DashboardExecutionOrigin::status_waiting(
-				&mut db, id,
-			)
+			// The identity's Runs may belong to any Tenant.
+			let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityStatus);
+			pool.atomic(&scope, async |tx| {
+				let runs =
+					crate::apps::identity::models::DashboardExecutionOrigin::status_waiting(tx, id)
+						.await?;
+				crate::apps::execution::models::Run::mark_identity_disabled(tx, runs).await
+			})
 			.await?;
-			crate::apps::execution::models::Run::mark_identity_disabled(&mut db, runs).await?;
 		}
 		Err(Error::Forbidden)
 	}

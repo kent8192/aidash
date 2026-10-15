@@ -164,7 +164,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
-	table("identity", "provider_authorizations", Pending(264)),
+	// pending OAuth flows bound to a browser, like sign-in state
+	table("identity", "provider_authorizations", DeploymentWide),
 	table("identity", "provider_credential_bindings", Pending(264)),
 	table("identity", "provider_credentials", Pending(264)),
 	table("identity", "run_provider_credentials", Pending(264)),

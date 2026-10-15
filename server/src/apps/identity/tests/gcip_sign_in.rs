@@ -1262,7 +1262,11 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 	let code = approved.status();
 	let mapping: Value = approved.json().await.unwrap();
 	assert_eq!(code, 200, "{mapping}");
-	let selector = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let selector = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	assert_eq!(
 		browser()
 			.get(app.url("/api/session"))
@@ -1659,15 +1663,23 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 		.lock(reinhardt::query::LockType::Update)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();
+	let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
 	let pass = tokio::spawn({
 		let f = f.clone();
 		async move { sweep(&f).await }
 	});
+	// The sweep runs in Deployment Scope, which renames its application_name,
+	// so find it by the lock it waits for.
 	let waiters = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(Alias::new("pg_stat_activity"))
-		.and_where(Expr::col(Alias::new("application_name")).eq(Expr::value(&schema)))
-		.and_where(Expr::col(Alias::new("wait_event_type")).eq(Expr::value("Lock")))
+		.and_where(Expr::cust_with_values(
+			"? = ANY(pg_blocking_pids(pid))",
+			[holder],
+		))
 		.and_where(Expr::col(Alias::new("query")).like("%dashboard_identities%"))
 		.to_string(PostgresQueryBuilder);
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -1749,7 +1761,11 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		.unwrap();
 	assert_eq!(approved.status(), 200);
 	let mapping: Value = approved.json().await.unwrap();
-	let selector = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let selector = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	let identity = registration["identity_id"].as_str().unwrap();
 	let path = format!("/api/dashboard/identities/{identity}");
 	assert_eq!(
@@ -2052,7 +2068,11 @@ async fn mapped_browser(
 		.unwrap();
 	assert_eq!(approved.status(), 200);
 	let mapping: Value = approved.json().await.unwrap();
-	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	(
 		Browser {
 			cookie,
@@ -2316,7 +2336,11 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 	let carol = Browser {
 		cookie,
 		csrf,
-		context: format!("mapping:{}", carol_mapping["id"].as_str().unwrap()),
+		context: format!(
+			"mapping:{}:{}",
+			carol_mapping["tenant"].as_str().unwrap(),
+			carol_mapping["id"].as_str().unwrap()
+		),
 	};
 	assert_eq!(
 		carol

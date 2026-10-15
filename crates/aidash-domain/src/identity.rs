@@ -8,6 +8,8 @@ pub enum Principal {
 
 pub mod catalog;
 
+pub mod credentials;
+
 pub mod execution;
 
 pub mod authority;

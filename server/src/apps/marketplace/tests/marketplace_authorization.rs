@@ -2632,7 +2632,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				if operator {
 					"operator".into()
 				} else {
-					format!("mapping:{mapping}")
+					format!("mapping:a:{mapping}")
 				},
 			)
 			.header("content-type", "application/json")

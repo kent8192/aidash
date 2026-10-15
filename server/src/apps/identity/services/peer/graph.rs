@@ -89,10 +89,12 @@ pub(crate) async fn expand(
 		}
 		Actor::Operator => {
 			let id = origin.ok_or(Error::Forbidden)?.identity_id;
-			if input.options.target_tenant.is_none() {
+			let Some(tenant) = input.options.target_tenant.as_deref() else {
 				return Err(Error::Invalid("target tenant required".into()));
-			}
-			let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
+			};
+			// A Deployment Administrator browses one Tenant's graph in its scope.
+			let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+			let mut tx = f.store.pool.begin(&scope).await?;
 			source_peer_lease(&mut tx, &input.node_id).await?;
 			let result = remote_page(&f, &input, GraphViewer::Operator { id }).await;
 			if result.is_ok() {

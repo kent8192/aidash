@@ -2175,9 +2175,9 @@ pub(crate) fn dashboard_logout(
 }
 
 pub(crate) fn dashboard_login(
-	connection: reinhardt::db::orm::DatabaseConnection,
+	pool: crate::database::native::Pool,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(connection)
+	crate::apps::identity::repositories::dashboard::Login(pool)
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(

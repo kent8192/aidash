@@ -127,7 +127,7 @@ async fn settings(tx: &mut native::Transaction) -> (String, String, String, Stri
 	("deployment", "", true, "off")
 )]
 #[case::deployment_read(
-	TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants),
+	TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList),
 	("deployment", "", true, "on")
 )]
 #[tokio::test]
@@ -232,11 +232,9 @@ async fn scoped_work_returns_its_error_and_orm_work_carries_the_scope(
 		.await;
 	let orm = pool
 		.atomic(&scope, async |tx| {
-			Ok(
-				native::query_scalar::<String>("SELECT current_setting('aidash.tenant', true)")
-					.scalar_one(tx)
-					.await?,
-			)
+			native::query_scalar::<String>("SELECT current_setting('aidash.tenant', true)")
+				.scalar_one(tx)
+				.await
 		})
 		.await
 		.unwrap();

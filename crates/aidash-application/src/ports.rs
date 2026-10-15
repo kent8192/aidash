@@ -1,4 +1,5 @@
 //! Ports describe atomic business operations, not database query syntax.
+use crate::tenancy::TenancyScope;
 use crate::{Result, authorization::Snapshot};
 use aidash_domain::policy::{Decision, Evaluation, PolicyBundle};
 use async_trait::async_trait;
@@ -32,7 +33,7 @@ pub trait AuthorizationTransaction: AuthorizationScope {
 
 #[async_trait]
 pub trait AuthorizationStore: Send + Sync {
-	async fn begin(&self) -> Result<Box<dyn AuthorizationTransaction>>;
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn AuthorizationTransaction>>;
 }
 
 #[async_trait]

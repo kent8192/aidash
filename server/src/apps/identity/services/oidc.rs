@@ -21,6 +21,7 @@ use crate::{
 	federation::Federation,
 };
 
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{Duration, Utc};
 use openidconnect::{
 	ClientId, ClientSecret, CsrfToken, Nonce, PkceCodeChallenge, RedirectUrl,
@@ -185,12 +186,9 @@ pub async fn enforce_display_retention(
 			.config
 			.dashboard_session()
 			.map(|config| config.session_idle_seconds);
-		let pass = match f.store.orm_connection() {
-			Ok(lease) => DashboardIdentity::enforce_display_retention(lease.handle(), idle_seconds)
-				.await
-				.err(),
-			Err(error) => Some(error),
-		};
+		let pass = DashboardIdentity::enforce_display_retention(&f.store.pool, idle_seconds)
+			.await
+			.err();
 		if let Some(error) = pass {
 			tracing::warn!(%error, "display retention pass failed; retrying after interval");
 		}
@@ -210,8 +208,13 @@ async fn session_record_from_headers(
 	let config = required_config(f)?;
 	let secret =
 		cookie_value(headers, &cookie_name(SESSION_COOKIE, config)).ok_or(Error::Unauthorized)?;
-	let lease = f.store.orm_connection()?;
-	let session = DashboardSession::from_token(&mut lease.handle(), digest(secret)).await?;
+	let session = f
+		.store
+		.pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			DashboardSession::from_token(tx, digest(secret)).await
+		})
+		.await?;
 	if session.desktop
 		|| session.revoked_at.is_some()
 		|| session.expires_at <= Utc::now()
@@ -244,12 +247,20 @@ pub(crate) async fn validate_session_identity(
 	f: &Federation,
 	session: BrowserSession,
 ) -> Result<BrowserSession> {
-	let lease = f.store.orm_connection()?;
-	let identity = DashboardIdentity::find(&mut lease.handle(), session.identity_id()).await?;
+	let pool = &f.store.pool;
+	let identity = pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			DashboardIdentity::find(tx, session.identity_id()).await
+		})
+		.await?;
 	account_valid(f, identity).await?;
 	// Revalidation may revoke the session. Reread it by id: a concurrent desktop
 	// refresh rotates its access-token hash, which is not a revocation.
-	let current = DashboardSession::find(&mut lease.handle(), session.id).await?;
+	let current = pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			DashboardSession::find(tx, session.id).await
+		})
+		.await?;
 	if current.revoked_at.is_some() {
 		return Err(Error::Unauthorized);
 	}
@@ -309,12 +320,14 @@ pub async fn actor_from_headers(
 		.get("x-aidash-context")
 		.and_then(|value| value.to_str().ok())
 		.ok_or(Error::Forbidden)?;
-	let lease = f.store.orm_connection()?;
-	let mut connection = lease.handle();
+	let pool = &f.store.pool;
 	if selector == "operator" {
-		if !DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
-			.await?
-		{
+		let granted = pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardOperatorGrant::enabled_for_identity(tx, session.identity_id()).await
+			})
+			.await?;
+		if !granted {
 			return Err(Error::Forbidden);
 		}
 		return Ok((
@@ -326,15 +339,20 @@ pub async fn actor_from_headers(
 			},
 		));
 	}
-	let id = selector
-		.strip_prefix("mapping:")
-		.ok_or(Error::Forbidden)?
-		.parse::<Uuid>()
-		.map_err(|_| Error::Forbidden)?;
-	let mapping = DashboardMapping::find(&mut connection, id)
+	// The selector names the Mapping's Tenant, so the lookup runs in that
+	// Tenant's scope and never reads across Tenants (ADR 0047).
+	let (tenant, id) = aidash_domain::identity::credentials::parse_mapping_selector(selector)
+		.ok_or(Error::Forbidden)?;
+	let mapping = pool
+		.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+			DashboardMapping::find(tx, id).await
+		})
 		.await?
 		.ok_or(Error::Forbidden)?;
-	if mapping.identity_id() != session.identity_id() || !mapping.enabled {
+	if mapping.identity_id() != session.identity_id()
+		|| !mapping.enabled
+		|| mapping.tenant != tenant.as_str()
+	{
 		return Err(Error::Forbidden);
 	}
 	let identity = SubjectIdentity {
@@ -442,13 +460,16 @@ impl DashboardSessions {
 			.started_at(None)
 			.gcip_tenant(None)
 			.finish();
-		let lease = f.store.orm_connection()?;
-		reservation.reserve(lease.handle()).await?;
+		let pool = &f.store.pool;
+		reservation.reserve(pool).await?;
 		let metadata = match provider_metadata(config).await {
 			Ok(metadata) => metadata,
 			Err(error) => {
-				if let Err(cleanup_error) =
-					DashboardLoginTransaction::release(&mut lease.handle(), state_hash).await
+				if let Err(cleanup_error) = pool
+					.atomic(&TenancyScope::NoTenant, async |tx| {
+						DashboardLoginTransaction::release(tx, state_hash).await
+					})
+					.await
 				{
 					tracing::warn!(%cleanup_error, "failed to release pending OIDC login reservation");
 				}
@@ -483,9 +504,8 @@ impl DashboardSessions {
 		let config = f.config.oidc.as_ref().ok_or(Error::Unauthorized)?;
 		let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 			.ok_or(Error::Unauthorized)?;
-		let lease = f.store.orm_connection()?;
-		let transaction =
-			DashboardLoginTransaction::consume(lease.handle(), digest(&query.state)).await?;
+		let pool = &f.store.pool;
+		let transaction = DashboardLoginTransaction::consume(pool, digest(&query.state)).await?;
 		if transaction.expires_at <= Utc::now()
 			|| transaction.browser_hash != digest(browser)
 			|| transaction.callback_uri != format!("{}/auth/callback", config.public_origin)
@@ -497,7 +517,7 @@ impl DashboardSessions {
 			exchange_identity(config, metadata, &transaction, query.code).await?;
 		let identity = crate::bootstrap::dashboard_authority(&f)
 			.admit_login(
-				&mut crate::bootstrap::dashboard_login(lease.handle()),
+				&mut crate::bootstrap::dashboard_login(pool.clone()),
 				&sign_in,
 			)
 			.await?;
@@ -505,7 +525,7 @@ impl DashboardSessions {
 		let csrf = random_secret();
 		let previous = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config)).map(digest);
 		DashboardSession::start(
-			lease.handle(),
+			pool,
 			identity.id,
 			(digest(&secret), digest(&csrf)),
 			provider_sid,
@@ -538,48 +558,54 @@ impl DashboardSessions {
 	pub(crate) async fn session_info(&self, headers: HeaderMap) -> Result<Response> {
 		let f = self.runtime.clone();
 		let session = session_from_headers(&f, &headers).await?;
-		let lease = f.store.orm_connection()?;
-		let mut connection = lease.handle();
-		let external = DashboardIdentity::find(&mut connection, session.identity_id()).await?;
+		let pool = &f.store.pool;
+		let external = pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardIdentity::find(tx, session.identity_id()).await
+			})
+			.await?;
 		let policy = f.config.dashboard_policy();
 		// Existing Google sessions receive the same one-time provisioning as a
 		// fresh verified callback, without changing pending shared enrollment.
 		let personal = if policy.as_ref().is_some_and(|policy| policy.google) {
-			crate::apps::identity::repositories::personal_tenant::provision(
-				lease.handle(),
-				external.id,
-			)
-			.await?;
+			crate::apps::identity::repositories::personal_tenant::provision(pool, external.id)
+				.await?;
 			Some(
 				aidash_domain::identity::personal_tenant::PersonalTenant::for_identity(external.id),
 			)
 		} else {
 			None
 		};
-		let mappings = DashboardMapping::enabled_for_identity(&mut connection, external.id).await?;
-		let mappings = mappings
-			.into_iter()
-			.filter(|mapping| {
-				identity::require_dashboard_mapping(
-					policy.as_ref(),
-					&external.issuer,
-					&external.gcip_tenant,
-					&mapping.tenant,
+		// The identity's Mappings in every Tenant, which the Tenant switcher lists.
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
+		let (mappings, active, operator) = pool
+			.atomic(&scope, async |tx| {
+				let mappings = DashboardMapping::enabled_for_identity(tx, external.id)
+					.await?
+					.into_iter()
+					.filter(|mapping| {
+						identity::require_dashboard_mapping(
+							policy.as_ref(),
+							&external.issuer,
+							&external.gcip_tenant,
+							&mapping.tenant,
+						)
+						.is_ok()
+					})
+					.collect::<Vec<_>>();
+				let active = AuthorizationCredential::active_ids(
+					tx,
+					mappings
+						.iter()
+						.map(|mapping| mapping.credential_id)
+						.collect(),
 				)
-				.is_ok()
-			})
-			.collect::<Vec<_>>();
-		let active = AuthorizationCredential::active_ids(
-			&mut connection,
-			mappings
-				.iter()
-				.map(|mapping| mapping.credential_id)
-				.collect(),
-		)
-		.await?;
-		let operator =
-			DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
 				.await?;
+				let operator =
+					DashboardOperatorGrant::enabled_for_identity(tx, session.identity_id()).await?;
+				Ok((mappings, active, operator))
+			})
+			.await?;
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
@@ -606,19 +632,20 @@ impl DashboardSessions {
 		let f = self.runtime.clone();
 		let idle_seconds = required_config(&f)?.session_idle_seconds;
 		let session = session_from_headers(&f, &headers).await?;
-		let lease = f.store.orm_connection()?;
+		let pool = &f.store.pool;
 		DashboardIdentity::enforce_identity_retention(
-			lease.handle(),
+			pool,
 			session.identity_id(),
 			Some(idle_seconds),
 		)
 		.await?;
-		let mut connection = lease.handle();
-		let mut response = Response::ok().with_json(
-			&(DashboardRegistrationRequest::latest(&mut connection, session.identity_id())
-				.await?
-				.map(Registration::with_effective_status)),
-		)?;
+		let latest = pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardRegistrationRequest::latest(tx, session.identity_id()).await
+			})
+			.await?;
+		let mut response =
+			Response::ok().with_json(&(latest.map(Registration::with_effective_status)))?;
 		no_store(&mut response);
 		Ok(response)
 	}
@@ -629,16 +656,19 @@ impl DashboardSessions {
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
-		let lease = f.store.orm_connection()?;
-		DashboardRegistrationRequest::submit(lease.handle(), session.identity_id()).await
+		DashboardRegistrationRequest::submit(&f.store.pool, session.identity_id()).await
 	}
 	pub(crate) async fn admin_registrations(&self) -> Result<Vec<Registration>> {
-		let lease = self.runtime.store.orm_connection()?;
-		DashboardRegistrationRequest::pending(lease.handle()).await
+		DashboardRegistrationRequest::pending(&self.runtime.store.pool).await
 	}
 	pub(crate) async fn admin_identity(&self, id: Uuid) -> Result<IdentityView> {
-		let lease = self.runtime.store.orm_connection()?;
-		Ok(DashboardIdentity::find(&mut lease.handle(), id)
+		Ok(self
+			.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardIdentity::find(tx, id).await
+			})
 			.await?
 			.contract())
 	}
@@ -652,12 +682,23 @@ impl DashboardSessions {
 		&self,
 		page: AdminIdentityPage,
 	) -> Result<Vec<IdentityView>> {
-		let lease = self.runtime.store.orm_connection()?;
-		DashboardIdentity::page(&mut lease.handle(), page.offset).await
+		self.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardIdentity::page(tx, page.offset).await
+			})
+			.await
 	}
 	pub(crate) async fn admin_mappings(&self, page: AdminMappingPage) -> Result<Vec<AdminMapping>> {
-		let lease = self.runtime.store.orm_connection()?;
-		DashboardMapping::page(&mut lease.handle(), page.offset).await
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		self.runtime
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
+				DashboardMapping::page(tx, page.offset).await
+			})
+			.await
 	}
 	pub(crate) async fn admin_approve(
 		&self,
@@ -666,9 +707,8 @@ impl DashboardSessions {
 		input: Approval,
 	) -> Result<ApprovedMapping> {
 		validate(&input)?;
-		let lease = self.runtime.store.orm_connection()?;
 		DashboardRegistrationRequest::approve(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			input,
 			Default::default(),
@@ -689,9 +729,8 @@ impl DashboardSessions {
 			.config
 			.dashboard_session()
 			.map(|config| config.session_idle_seconds);
-		let lease = self.runtime.store.orm_connection()?;
 		DashboardRegistrationRequest::reject(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			&operator_actor(actor),
 			idle_seconds,
@@ -703,9 +742,12 @@ impl DashboardSessions {
 		actor: Option<BrowserOrigin>,
 		id: Uuid,
 	) -> Result<IdentityView> {
-		let lease = self.runtime.store.orm_connection()?;
-		DashboardIdentity::erase_display(lease.handle(), id, operator_actor(actor).decision_actor())
-			.await
+		DashboardIdentity::erase_display(
+			&self.runtime.store.pool,
+			id,
+			operator_actor(actor).decision_actor(),
+		)
+		.await
 	}
 	pub(crate) async fn admin_operator_grant(
 		&self,
@@ -713,9 +755,8 @@ impl DashboardSessions {
 		input: OperatorGrantInput,
 	) -> Result<AdminOperatorGrant> {
 		validate(&input)?;
-		let lease = self.runtime.store.orm_connection()?;
 		DashboardOperatorGrant::change_enabled(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			input.enabled,
 			input.expected_revision,
@@ -723,8 +764,13 @@ impl DashboardSessions {
 		.await
 	}
 	pub(crate) async fn admin_operator_grants(&self) -> Result<Vec<AdminOperatorGrant>> {
-		let lease = self.runtime.store.orm_connection()?;
-		DashboardOperatorGrant::list(&mut lease.handle()).await
+		self.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardOperatorGrant::list(tx).await
+			})
+			.await
 	}
 	pub(crate) async fn admin_disable_mapping(
 		&self,
@@ -733,9 +779,8 @@ impl DashboardSessions {
 		input: MappingRevision,
 	) -> Result<http::StatusCode> {
 		validate(&input)?;
-		let lease = self.runtime.store.orm_connection()?;
 		DashboardMapping::disable(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			input.expected_revision,
 			&operator_actor(actor),
@@ -756,8 +801,7 @@ impl DashboardSessions {
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
-		let lease = f.store.orm_connection()?;
-		DashboardSession::revoke(lease.handle(), session.id, false).await?;
+		DashboardSession::revoke(&f.store.pool, session.id, false).await?;
 		let mut response = Response::new(http::StatusCode::NO_CONTENT);
 		clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
 		clear_cookie(&mut response, CSRF_COOKIE, config, false)?;
@@ -771,8 +815,7 @@ impl DashboardSessions {
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
-		let lease = f.store.orm_connection()?;
-		DashboardSession::record_activity(lease.handle(), session.id).await?;
+		DashboardSession::record_activity(&f.store.pool, session.id).await?;
 		Ok(http::StatusCode::NO_CONTENT)
 	}
 	pub(crate) async fn logout_all(&self, headers: HeaderMap) -> Result<Response> {
@@ -788,8 +831,7 @@ impl DashboardSessions {
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
-		let lease = f.store.orm_connection()?;
-		DashboardSession::revoke(lease.handle(), session.identity_id(), true).await?;
+		DashboardSession::revoke(&f.store.pool, session.identity_id(), true).await?;
 		let mut response = Response::new(http::StatusCode::NO_CONTENT);
 		clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
 		clear_cookie(&mut response, CSRF_COOKIE, config, false)?;

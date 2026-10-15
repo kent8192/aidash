@@ -8,6 +8,7 @@ use crate::{
 use aidash_application::ports::catalog::{
 	CatalogAdministrationRead, CatalogAdministrator, CatalogMutation,
 };
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::{Principal, catalog::Binding};
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -289,7 +290,7 @@ async fn bindings(pool: &Pool, tenant: &str) -> Result<Vec<Binding>> {
 				.order_by(Alias::new("entry_version"), Order::Asc)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(pool)
+		.fetch_all(pool.in_scope(&TenancyScope::tenant(tenant)?))
 		.await?
 	};
 	Ok(rows.into_iter().map(Into::into).collect())

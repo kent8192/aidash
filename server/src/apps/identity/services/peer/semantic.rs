@@ -5,15 +5,18 @@ use crate::{
 	federation::Federation,
 	semantic::remote::{Failure, Operation, journal},
 };
+use aidash_application::tenancy::TenancyScope;
 
 use reinhardt::query::{Alias, Expr, OnConflict, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// The receiver's pinned admission Description for a remote Run.
+/// `tenancy` is the receiver's mapped Tenant of the Run.
 pub(crate) async fn admission(
 	f: &Federation,
 	run: &crate::domain::Run,
+	tenancy: &TenancyScope,
 ) -> Result<crate::authorization::remote::Description> {
 	let description: Value = {
 		let query_bind_1 = run.id;
@@ -31,7 +34,7 @@ pub(crate) async fn admission(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(&f.store.pool)
+		.scalar_optional(f.store.pool.in_scope(tenancy))
 		.await?
 	}
 	.ok_or(Error::Forbidden)?;
@@ -41,12 +44,13 @@ pub(crate) async fn admission(
 pub(crate) async fn context(
 	f: &Federation,
 	run: &crate::domain::Run,
+	tenancy: &TenancyScope,
 	task: &crate::domain::Task,
 	inputs: &[(InputRead, String)],
 	query: &str,
 	budget: usize,
 ) -> Result<Option<Value>> {
-	let description = admission(f, run).await?;
+	let description = admission(f, run, tenancy).await?;
 	if description.semantic.disabled() {
 		return Ok(None);
 	}
@@ -118,7 +122,7 @@ pub(crate) async fn context(
 	let value = serde_json::to_value(&receipt)?;
 	// Persist before this function makes the text available to compaction/model
 	// construction. The Home keeps the accumulated dependencies across replays.
-	let mut tx = crate::database::native::begin_unscoped(&f.store.pool).await?;
+	let mut tx = f.store.pool.begin(tenancy).await?;
 	crate::apps::knowledge::repositories::receiver_caches::record(&mut tx, run.id, &receipt)
 		.await?;
 	crate::database::native::query(

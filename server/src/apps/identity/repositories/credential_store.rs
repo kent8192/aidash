@@ -1,6 +1,7 @@
 //! Community Provider Credential Store: independent transactions and pinned AEAD reads.
 mod crypto;
 use super::super::models::credential_store::{RegisteredKey, Resource, Version};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result, provider_access::KeyMaterialReader, provider_credentials::Store,
 };
@@ -38,6 +39,12 @@ fn db_error(_: impl std::fmt::Display) -> Error {
 fn invalid(reason: &str) -> Error {
 	Error::Invalid(reason.into())
 }
+/// Recovery reads and removes every Tenant's versions that no configured
+/// Master Key can open.
+fn recovery() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::CredentialStoreRecovery)
+}
+
 async fn lock(tx: &mut dyn TransactionExecutor, identity: &str) -> Result<()> {
 	let (sql, values) = Query::select()
 		.expr(SimpleExpr::FunctionCall(
@@ -128,7 +135,8 @@ impl PostgresStore {
 		retired: Vec<SecretString>,
 	) -> Result<Self> {
 		let store = Self::from_keys(pool, current, retired)?;
-		let mut tx = store.begin().await?;
+		// The key registry is Deployment-wide.
+		let mut tx = store.begin(&TenancyScope::NoTenant).await?;
 		let registered = RegisteredKey::objects()
 			.all()
 			.all_with_executor(tx.as_mut())
@@ -148,7 +156,7 @@ impl PostgresStore {
 		Ok(())
 	}
 	pub(crate) async fn recovery_inventory(&self) -> Result<RecoveryInventory> {
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin(&recovery()).await?;
 		// Recovery inspects references only, never encrypted version payloads.
 		let (sql, values) = Query::select()
 			.columns(["resource", "version", "key_id"].map(Alias::new))
@@ -187,7 +195,7 @@ impl PostgresStore {
 		Ok(RecoveryInventory { versions, keys })
 	}
 	pub(crate) async fn remove_unavailable(&self, inventory: &RecoveryInventory) -> Result<()> {
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin(&recovery()).await?;
 		for (resource, version) in &inventory.versions {
 			let rows = Version::objects()
 				.filter(Version::field_resource().eq(resource))
@@ -212,11 +220,19 @@ impl PostgresStore {
 		}
 		tx.commit().await.map_err(db_error)
 	}
-	async fn begin(&self) -> Result<Box<dyn TransactionExecutor>> {
-		self.pool.connection().begin().await.map_err(db_error)
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn TransactionExecutor>> {
+		self.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)
+			.map_err(db_error)
+	}
+	/// Key Material of one Tenant.
+	async fn begin_tenant(&self, tenant: &str) -> Result<Box<dyn TransactionExecutor>> {
+		self.begin(&TenancyScope::tenant(tenant)?).await
 	}
 	async fn verify_registry(&self) -> Result<()> {
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin(&TenancyScope::NoTenant).await?;
 		// Serialize the empty-registry decision as well as concurrent first boot/rotation.
 		lock(
 			tx.as_mut(),
@@ -316,7 +332,10 @@ impl PostgresStore {
 		if pinned != resource {
 			return Err("resource mismatch".into());
 		}
-		let mut tx = self.begin().await.map_err(|_| ReadFailure::Unavailable)?;
+		let mut tx = self
+			.begin_tenant(tenant)
+			.await
+			.map_err(|_| ReadFailure::Unavailable)?;
 		let rows = Version::objects()
 			.filter(Version::field_resource().eq(resource))
 			.filter(Version::field_version().eq(n))
@@ -386,10 +405,9 @@ impl Store for PostgresStore {
 		format!("aidash-store/provider-credentials/{id}")
 	}
 	async fn create(&self, tenant: &str, id: Uuid) -> Result<()> {
-		aidash_domain::policy::identifier(tenant)?;
 		let resource = self.resource(id);
 		resource_id(&resource)?;
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin_tenant(tenant).await?;
 		let row = Resource::build()
 			.resource(resource)
 			.tenant(tenant.to_owned())
@@ -409,7 +427,7 @@ impl Store for PostgresStore {
 		key_material: &SecretString,
 	) -> Result<String> {
 		resource_id(resource)?;
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin_tenant(tenant).await?;
 		let rows = Resource::objects()
 			.filter(Resource::field_resource().eq(resource))
 			.select_for_update()
@@ -456,9 +474,9 @@ impl Store for PostgresStore {
 		tx.commit().await.map_err(db_error)?;
 		Ok(format!("{resource}/versions/{n}"))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, tenant: &str, resource: &str) -> Result<Vec<String>> {
 		resource_id(resource)?;
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin_tenant(tenant).await?;
 		let rows = Version::objects()
 			.filter(Version::field_resource().eq(resource))
 			.order_by(&["version"])
@@ -471,9 +489,9 @@ impl Store for PostgresStore {
 			.map(|v| format!("{resource}/versions/{}", v.version))
 			.collect())
 	}
-	async fn disable(&self, version: &str) -> Result<()> {
+	async fn disable(&self, tenant: &str, version: &str) -> Result<()> {
 		let (resource, n) = version_id(version)?;
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin_tenant(tenant).await?;
 		let rows = Version::objects()
 			.filter(Version::field_resource().eq(resource))
 			.filter(Version::field_version().eq(n))
@@ -493,15 +511,15 @@ impl Store for PostgresStore {
 		}
 		tx.commit().await.map_err(db_error)
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, tenant: &str, version: &str) -> Result<()> {
 		let (resource, n) = version_id(version)?;
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin_tenant(tenant).await?;
 		delete_version(tx.as_mut(), resource, n).await?;
 		tx.commit().await.map_err(db_error)
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, tenant: &str, resource: &str) -> Result<()> {
 		resource_id(resource)?;
-		let mut tx = self.begin().await?;
+		let mut tx = self.begin_tenant(tenant).await?;
 		Resource::objects()
 			.delete_with_executor(tx.as_mut(), resource.to_owned())
 			.await

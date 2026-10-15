@@ -88,7 +88,7 @@ impl Pool {
 			self.clone(),
 			Default::default(),
 			0,
-			Some(scope.clone()),
+			Some(Box::new(scope.clone())),
 		))
 	}
 	/// Run `work` in a transaction opened in `scope`, committing when it
@@ -133,6 +133,11 @@ impl Pool {
 			})
 			.await
 	}
+	/// An executor that runs each statement in its own transaction opened in
+	/// `scope`, for a single statement that needs no surrounding transaction.
+	pub fn in_scope<'a>(&'a self, scope: &'a TenancyScope) -> InScope<'a> {
+		InScope { pool: self, scope }
+	}
 	/// An unscoped transaction. Every caller moves to [`Self::begin`] (#263).
 	pub async fn begin_unscoped(&self) -> Result<Transaction> {
 		Ok(Transaction(
@@ -160,8 +165,9 @@ pub struct Transaction(
 	std::collections::BTreeMap<uuid::Uuid, aidash_domain::memory::Unit>,
 	/// Savepoint rollbacks so far: each may release locks taken after its savepoint.
 	u64,
-	/// The tenancy scope the transaction was opened in.
-	Option<TenancyScope>,
+	/// The tenancy scope the transaction was opened in, boxed so the scope
+	/// does not grow every value that holds a transaction.
+	Option<Box<TenancyScope>>,
 );
 // A savepoint rollback issued on the deref'd executor bypasses the lock epoch.
 impl std::ops::Deref for Transaction {
@@ -193,7 +199,7 @@ impl Transaction {
 	}
 	/// The tenancy scope the transaction was opened in, if it was opened with one.
 	pub(crate) fn scope(&self) -> Option<&TenancyScope> {
-		self.4.as_ref()
+		self.4.as_deref()
 	}
 	pub(crate) fn restore(&mut self, lent: Self) {
 		assert!(self.0.is_none());
@@ -513,6 +519,33 @@ impl<T: TransactionExecutor + ?Sized> Executor for &mut T {
 				.await?
 				.rows_affected,
 		))
+	}
+}
+
+/// One statement in its own transaction opened in a tenancy scope.
+pub struct InScope<'a> {
+	pool: &'a Pool,
+	scope: &'a TenancyScope,
+}
+#[async_trait]
+impl Executor for InScope<'_> {
+	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
+		let mut tx = self.pool.begin(self.scope).await?;
+		let rows = Executor::rows(&mut tx, sql, params).await?;
+		tx.commit().await?;
+		Ok(rows)
+	}
+	async fn optional(self, sql: &str, params: Vec<QueryValue>) -> Result<Option<Row>> {
+		let mut tx = self.pool.begin(self.scope).await?;
+		let row = Executor::optional(&mut tx, sql, params).await?;
+		tx.commit().await?;
+		Ok(row)
+	}
+	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution> {
+		let mut tx = self.pool.begin(self.scope).await?;
+		let execution = Executor::execute(&mut tx, sql, params).await?;
+		tx.commit().await?;
+		Ok(execution)
 	}
 }
 

@@ -30,7 +30,7 @@ impl Access {
 		self.track_registry(&local).await?;
 		// This independent commit precedes invocation/context persistence, so a
 		// killed worker cannot retain metadata without its visibility dependency.
-		let mut tx = crate::database::native::begin_unscoped(&self.pool).await?;
+		let mut tx = self.pool.begin(&self.tenancy()?).await?;
 		for agent in agents.iter().filter(|agent| agent.node_id != self.node_id) {
 			let metadata = serde_json::to_value(&agent.entity)?;
 			{

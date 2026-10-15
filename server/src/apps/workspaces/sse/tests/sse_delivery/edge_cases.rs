@@ -453,7 +453,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.unwrap();
 		"operator".to_owned()
 	} else {
-		format!("mapping:{mapping}")
+		format!("mapping:acme:{mapping}")
 	};
 	let mut responses = Vec::new();
 	for (workspace, after) in [(fixture.workspaces[0], 0), (fixture.workspaces[1], -1)] {

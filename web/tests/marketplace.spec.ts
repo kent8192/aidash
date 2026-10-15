@@ -314,7 +314,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       const path = url.pathname;
       const secondContext =
         route.request().headers()["x-aidash-context"] ===
-        "mapping:second-mapping";
+        "mapping:b:second-mapping";
       const access = {
         kind: "subject",
         tenant: secondContext ? "b" : "a",
@@ -564,7 +564,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
           : "Choose the authority for this tab",
         exact: true,
       })
-      .selectOption("mapping:second-mapping");
+      .selectOption("mapping:b:second-mapping");
     await expect(
       page.getByText(
         ja

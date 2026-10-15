@@ -182,7 +182,7 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
       name: "Choose the authority for this tab",
       exact: true,
     })
-    .selectOption("mapping:alice");
+    .selectOption("mapping:acme:alice");
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
   ).toBeVisible();

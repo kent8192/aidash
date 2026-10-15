@@ -2,6 +2,7 @@
 use crate::{
 	Result as NativeResult, authorization::access::Access, federation::Federation, store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::authorization::peer::{
@@ -615,6 +616,12 @@ impl PeerAdmissionScope for Owned {
 			.map_err(Into::into)
 	}
 }
+/// Inbound peer requests name a record, not a Tenant. Until #241 gives every
+/// Node a Tenant, they find it across Tenants.
+fn inbound() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::FederationInbound)
+}
+
 #[async_trait]
 impl PeerAdmissionRecords for Records<'_> {
 	async fn record(&self, id: Uuid) -> Result<Option<State>> {
@@ -637,7 +644,7 @@ impl PeerAdmissionRecords for Records<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&store.pool)
+				.fetch_optional(store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(row.map(Into::into))
@@ -665,7 +672,7 @@ impl PeerAdmissionRecords for Records<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.scalar_one(&f_store.pool)
+				.scalar_one(f_store.pool.in_scope(&inbound()))
 				.await?
 			})
 		}
@@ -711,15 +718,17 @@ impl PeerAdmissionRepository for Repository<'_> {
 	}
 	async fn verify_record(&self, id: Uuid, source: &str) -> Result<Option<State>> {
 		let f = self.runtime;
-		let connection = f.store.orm_connection()?;
-		crate::apps::federation::peer::models::AuthorizationRemoteAdmission::by_id(
-			&mut connection.handle(),
-			id,
-			source,
-		)
-		.await
-		.map(|row| row.map(Into::into))
-		.map_err(Into::into)
+		f.store
+			.pool
+			.atomic(&inbound(), async |tx| {
+				crate::apps::federation::peer::models::AuthorizationRemoteAdmission::by_id(
+					tx, id, source,
+				)
+				.await
+			})
+			.await
+			.map(|row| row.map(Into::into))
+			.map_err(Into::into)
 	}
 	async fn status_record(&self, source: &str, grant: Uuid) -> Result<Option<State>> {
 		let result: NativeResult<Option<State>> = async {
@@ -742,7 +751,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(row.map(Into::into))
@@ -770,7 +779,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(raw.map(crate::domain::run_state::RawRun::inspect))
@@ -800,7 +809,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(row.map(Into::into))
