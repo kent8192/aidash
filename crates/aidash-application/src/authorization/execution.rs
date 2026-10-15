@@ -88,19 +88,36 @@ pub async fn refresh_worker(
 	workspace_read(scope, run).await
 }
 
+/// Where a task's delegation chain came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inherited {
+	/// The task has no origin; the admitting subject starts the chain.
+	None,
+	/// A Run on this node created the task.
+	Local,
+	/// The task is the output of a remote grant: it arrived through Federation.
+	Remote,
+}
+
 pub async fn inherit_task(scope: &mut dyn ExecutionGrantSession, task: Uuid) -> Result<bool> {
-	let origin = match scope.local_origin(task).await? {
-		Some(origin) => Some(origin),
-		None => scope.remote_origin(task).await?,
+	Ok(inherit(scope, task).await? != Inherited::None)
+}
+
+/// Adopts the task's origin chain, as [`inherit_task`], and reports where it
+/// came from.
+pub async fn inherit(scope: &mut dyn ExecutionGrantSession, task: Uuid) -> Result<Inherited> {
+	let (origin, inherited) = match scope.local_origin(task).await? {
+		Some(origin) => (Some(origin), Inherited::Local),
+		None => (scope.remote_origin(task).await?, Inherited::Remote),
 	};
 	if let Some(origin) = origin {
 		if !origin.compatible(&scope.identity(), scope.subjects()) {
 			return Err(Error::Forbidden);
 		}
 		scope.set_subjects(origin.subject_chain);
-		Ok(true)
+		Ok(inherited)
 	} else {
-		Ok(false)
+		Ok(Inherited::None)
 	}
 }
 

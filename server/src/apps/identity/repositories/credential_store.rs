@@ -71,9 +71,12 @@ async fn delete_version(
 		.map_err(db_error)?;
 	Ok(())
 }
+/// Key Material and Plan Tokens share the Store under their own namespaces
+/// (ADR 0008); each resource is named by its record's version 7 UUID.
 fn resource_id(resource: &str) -> Result<()> {
 	let id = resource
 		.strip_prefix("aidash-store/provider-credentials/")
+		.or_else(|| resource.strip_prefix("aidash-store/plan-connections/"))
 		.and_then(|s| Uuid::parse_str(s).ok())
 		.filter(|id| id.get_version_num() == 7);
 	if id.is_none() {
@@ -94,6 +97,23 @@ fn version_id(value: &str) -> Result<(&str, i64)> {
 	Ok((resource, n))
 }
 impl PostgresStore {
+	/// Registers one empty resource of either namespace for `tenant`.
+	async fn create_resource(&self, tenant: &str, resource: String) -> Result<()> {
+		aidash_domain::policy::identifier(tenant)?;
+		resource_id(&resource)?;
+		let mut tx = self.begin().await?;
+		let row = Resource::build()
+			.resource(resource)
+			.tenant(tenant.to_owned())
+			.next_version(1)
+			.created_at(Utc::now())
+			.finish();
+		Resource::objects()
+			.insert_with_executor(tx.as_mut(), &row)
+			.await
+			.map_err(db_error)?;
+		tx.commit().await.map_err(db_error)
+	}
 	pub async fn new(
 		pool: crate::database::native::Pool,
 		current: SecretString,
@@ -163,7 +183,8 @@ impl PostgresStore {
 			let key_id: String = row.get("key_id").map_err(db_error)?;
 			if !self.keys.contains_key(&key_id) {
 				let resource: String = row.get("resource").map_err(db_error)?;
-				// Each supported namespace gets its own lifecycle adapter; #159 adds Plan Tokens.
+				// Each namespace has its own lifecycle adapter: Provider Credentials
+				// are revoked and Plan Connections ask for reconnection.
 				resource_id(&resource)?;
 				versions.push((resource, row.get("version").map_err(db_error)?));
 			}
@@ -386,21 +407,10 @@ impl Store for PostgresStore {
 		format!("aidash-store/provider-credentials/{id}")
 	}
 	async fn create(&self, tenant: &str, id: Uuid) -> Result<()> {
-		aidash_domain::policy::identifier(tenant)?;
-		let resource = self.resource(id);
-		resource_id(&resource)?;
-		let mut tx = self.begin().await?;
-		let row = Resource::build()
-			.resource(resource)
-			.tenant(tenant.to_owned())
-			.next_version(1)
-			.created_at(Utc::now())
-			.finish();
-		Resource::objects()
-			.insert_with_executor(tx.as_mut(), &row)
-			.await
-			.map_err(db_error)?;
-		tx.commit().await.map_err(db_error)
+		self.create_resource(tenant, self.resource(id)).await
+	}
+	async fn create_plan(&self, tenant: &str, id: Uuid) -> Result<()> {
+		self.create_resource(tenant, self.plan_resource(id)).await
 	}
 	async fn add_version(
 		&self,

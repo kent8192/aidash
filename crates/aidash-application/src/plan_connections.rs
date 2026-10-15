@@ -137,7 +137,9 @@ pub trait Authorization: Send + Sync {
 #[async_trait]
 pub trait Scope: Send {
 	async fn owned(&mut self, provider: Provider) -> Result<Option<PlanConnection>>;
-	/// External Identities with an active Mapping to the owner.
+	/// External Identities that are not disabled and hold an enabled Mapping to
+	/// the owner. Identity Disablement therefore pauses a connection (zero)
+	/// without deleting it.
 	async fn mapped_identities(&mut self) -> Result<usize>;
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn save(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
@@ -149,6 +151,9 @@ pub trait Repository: Send + Sync {
 	async fn begin(&self, owner: &Owner) -> Result<Box<dyn Scope>>;
 	/// The owner of one connection, read without the lock to pick a scope.
 	async fn owner_of(&self, id: Uuid) -> Result<Option<Owner>>;
+	/// The owners of every Plan Connection in one Tenant, read without locks
+	/// to pick scopes.
+	async fn owners(&self, tenant: &str) -> Result<Vec<Owner>>;
 }
 
 /// What a pending authorization contributes to its completion.
@@ -575,6 +580,63 @@ impl Service {
 		self.revoke_row(&row).await;
 		self.delete_tokens(&row).await?;
 		scope.delete(&row, "plan_connection.retired", actor).await?;
+		scope.commit().await
+	}
+
+	/// Ends every Plan Connection in one Tenant, as recording a Tenant
+	/// Deletion requires before any purge (#239).
+	pub async fn retire_tenant(&self, tenant: &str, actor: &str) -> Result<()> {
+		for owner in self.repository.owners(tenant).await? {
+			self.retire(&owner, actor).await?;
+		}
+		Ok(())
+	}
+
+	/// Whether the connection admission pinned may serve a call now. Unlike
+	/// [`Self::bearer`] it neither reads Plan Tokens nor refreshes them.
+	pub async fn usable(&self, id: Uuid) -> Result<()> {
+		let owner = self
+			.repository
+			.owner_of(id)
+			.await?
+			.ok_or(Error::Plan(Failure::NotConnected))?;
+		let mut scope = self.repository.begin(&owner).await?;
+		let row = scope
+			.owned(Provider::Chatgpt)
+			.await?
+			.filter(|row| row.id == id)
+			.ok_or(Error::Plan(Failure::NotConnected))?;
+		let mapped = scope.mapped_identities().await?;
+		scope.commit().await?;
+		if mapped != 1 {
+			return Err(Error::Plan(Failure::NotConnected));
+		}
+		row.require_usable(Utc::now())
+			.map(drop)
+			.map_err(Error::Plan)
+	}
+
+	/// Records that a connection's pinned Plan Tokens became unreadable with a
+	/// lost Master Key. They cannot be revoked at OpenAI any more, so the
+	/// owner must connect again; the Store removes the versions itself.
+	pub async fn mark_unreadable(&self, id: Uuid, actor: &str) -> Result<()> {
+		let Some(owner) = self.repository.owner_of(id).await? else {
+			return Ok(());
+		};
+		let mut scope = self.repository.begin(&owner).await?;
+		let Some(mut row) = scope
+			.owned(Provider::Chatgpt)
+			.await?
+			.filter(|row| row.id == id && row.pinned_version.is_some())
+		else {
+			return scope.commit().await;
+		};
+		row.state = State::NeedsReconnection;
+		row.pinned_version = None;
+		row.revision += 1;
+		scope
+			.save(&row, "plan_connection.needs_reconnection", actor)
+			.await?;
 		scope.commit().await
 	}
 

@@ -100,6 +100,15 @@ impl TenantAdministrations {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let policy = Some(administrator.policy().clone());
+		// A previous owner's connection must be gone before the subject is
+		// mapped again; approval refuses while one remains (ADR 0007).
+		super::plan_connections::retire_unmapped(
+			&self.runtime,
+			&tenant,
+			&input.subject,
+			&AdministrationActor::TenantAdministrator(administrator.clone()).decision_actor(),
+		)
+		.await?;
 		let lease = self.runtime.store.orm_connection()?;
 		let result = DashboardRegistrationRequest::approve(
 			lease.handle(),
@@ -165,16 +174,17 @@ impl TenantAdministrations {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let lease = self.runtime.store.orm_connection()?;
-		let result = DashboardMapping::disable(
-			lease.handle(),
+		let actor = AdministrationActor::TenantAdministrator(administrator.clone());
+		let result =
+			DashboardMapping::disable(lease.handle(), id, input.expected_revision, &actor).await;
+		self.finish(&administrator, result).await?;
+		super::plan_connections::retire_disabled_mapping(
+			&self.runtime,
 			id,
-			input.expected_revision,
-			&AdministrationActor::TenantAdministrator(administrator.clone()),
+			&actor.decision_actor(),
 		)
 		.await;
-		self.finish(&administrator, result)
-			.await
-			.map(|()| http::StatusCode::NO_CONTENT)
+		Ok(http::StatusCode::NO_CONTENT)
 	}
 
 	pub(crate) async fn update_memberships(

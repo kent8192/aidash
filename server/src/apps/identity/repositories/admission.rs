@@ -243,6 +243,22 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn admit_plan_connections(
+		&mut self,
+		grant: &ExecutionGrant,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		federated: bool,
+	) -> Result<()> {
+		super::plan_connections::admit(
+			&mut **self.access.tx,
+			&self.f.store,
+			grant,
+			snapshot,
+			federated,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn dashboard_origin(&mut self, credential: Uuid) -> Result<Option<(Uuid, Uuid)>> {
 		let result: NativeResult<Option<(Uuid, Uuid)>> = async {
 			let access = &mut *self.access;

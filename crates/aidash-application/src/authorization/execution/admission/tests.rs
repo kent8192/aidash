@@ -20,6 +20,8 @@ struct Scope {
 	deny: Option<&'static str>,
 	active: bool,
 	origin: Option<TaskOrigin>,
+	remote: Option<TaskOrigin>,
+	plan_admissions: Vec<bool>,
 	mapping: bool,
 	grants: Vec<ExecutionGrant>,
 	claim_args: Option<(i64, String)>,
@@ -28,7 +30,7 @@ struct Scope {
 impl Scope {
 	fn new() -> Self {
 		let subject = qualified_agent("aidash://node", "agent", "1.0.0");
-		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,mapping:false,grants:vec![],claim_args:None,bound_origin:None}
+		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());
@@ -72,7 +74,7 @@ impl ExecutionGrantSession for Scope {
 	}
 	async fn remote_origin(&mut self, _: Uuid) -> Result<Option<TaskOrigin>> {
 		self.call("remote_origin")?;
-		Ok(None)
+		Ok(self.remote.clone())
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.call("workspace")?;
@@ -164,6 +166,17 @@ impl ExecutionAdmissionSession for Scope {
 	async fn persist_grant(&mut self, g: &ExecutionGrant) -> Result<()> {
 		self.call("grant")?;
 		self.grants.push(g.clone());
+		Ok(())
+	}
+	async fn admit_plan_connections(
+		&mut self,
+		g: &ExecutionGrant,
+		_: &aidash_domain::registry::bindings::BindingSnapshot,
+		federated: bool,
+	) -> Result<()> {
+		assert_eq!(self.grants.last(), Some(g));
+		self.call("plan")?;
+		self.plan_admissions.push(federated);
 		Ok(())
 	}
 	async fn dashboard_origin(&mut self, credential: Uuid) -> Result<Option<(Uuid, Uuid)>> {
@@ -259,7 +272,9 @@ async fn admitted_task_retains_credential_chain_revision_and_browser_origin(
 	);
 	let position = |name: &str| s.calls.iter().position(|call| call == name).unwrap();
 	assert!(position("prepare_thread") < position("claim"));
-	assert!(position("grant") < position("admit_thread"));
+	assert!(position("grant") < position("plan"));
+	assert!(position("plan") < position("admit_thread"));
+	assert_eq!(s.plan_admissions, [false]);
 	assert_eq!(
 		s.calls
 			.iter()
@@ -320,6 +335,7 @@ async fn denied_admission_never_claims_or_binds_a_run(#[case] denial: &'static s
 #[case("claim")]
 #[case("run")]
 #[case("grant")]
+#[case("plan")]
 #[case("mapping")]
 #[case("admit_thread")]
 #[tokio::test]
@@ -394,4 +410,20 @@ async fn local_delegation_is_audited_only_after_admission_and_grant_binding() {
 	assert_eq!(s.calls[s.calls.len() - 2..], ["delegation", "event"]);
 	assert_eq!(s.grants.len(), 1);
 	assert!(s.calls.contains(&"task.delegate".into()));
+}
+
+/// A task that is the output of a remote grant arrived through Federation, so
+/// its Run never uses a Plan Connection (ADR 0007).
+#[tokio::test]
+async fn remote_origins_are_reported_to_plan_admission() {
+	let mut s = Scope::new();
+	s.remote = Some(TaskOrigin {
+		tenant: "tenant".into(),
+		root_subject: "root".into(),
+		subject_chain: vec!["root".into()],
+	});
+	admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
+		.await
+		.unwrap();
+	assert_eq!(s.plan_admissions, [true]);
 }

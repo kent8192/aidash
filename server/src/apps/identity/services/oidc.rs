@@ -666,13 +666,23 @@ impl DashboardSessions {
 		input: Approval,
 	) -> Result<ApprovedMapping> {
 		validate(&input)?;
+		let actor = operator_actor(actor);
+		// A previous owner's connection must be gone before the subject is
+		// mapped again; approval refuses while one remains (ADR 0007).
+		crate::apps::identity::services::plan_connections::retire_unmapped(
+			&self.runtime,
+			&input.tenant,
+			&input.subject,
+			&actor.decision_actor(),
+		)
+		.await?;
 		let lease = self.runtime.store.orm_connection()?;
 		DashboardRegistrationRequest::approve(
 			lease.handle(),
 			id,
 			input,
 			Default::default(),
-			&operator_actor(actor),
+			&actor,
 			digest(&random_secret()),
 			self.runtime.config.dashboard_policy(),
 		)
@@ -734,13 +744,14 @@ impl DashboardSessions {
 	) -> Result<http::StatusCode> {
 		validate(&input)?;
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardMapping::disable(
-			lease.handle(),
+		let actor = operator_actor(actor);
+		DashboardMapping::disable(lease.handle(), id, input.expected_revision, &actor).await?;
+		crate::apps::identity::services::plan_connections::retire_disabled_mapping(
+			&self.runtime,
 			id,
-			input.expected_revision,
-			&operator_actor(actor),
+			&actor.decision_actor(),
 		)
-		.await?;
+		.await;
 		Ok(http::StatusCode::NO_CONTENT)
 	}
 	pub(crate) async fn logout(&self, headers: HeaderMap) -> Result<Response> {

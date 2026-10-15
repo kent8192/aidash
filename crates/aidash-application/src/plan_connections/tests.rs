@@ -48,6 +48,20 @@ impl Repository for Repo {
 			subject: row.subject.clone(),
 		}))
 	}
+	async fn owners(&self, tenant: &str) -> Result<Vec<Owner>> {
+		Ok(self
+			.0
+			.lock()
+			.await
+			.rows
+			.values()
+			.filter(|row| row.tenant == tenant)
+			.map(|row| Owner {
+				tenant: row.tenant.clone(),
+				subject: row.subject.clone(),
+			})
+			.collect())
+	}
 }
 #[async_trait]
 impl Scope for Lease {
@@ -920,6 +934,80 @@ async fn owners_who_lose_access_lose_their_connection() {
 			.events
 			.contains(&"plan_connection.retired".to_owned())
 	);
+}
+
+#[tokio::test]
+async fn deleting_a_tenant_retires_every_connection_in_it() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	fixture
+		.service
+		.retire_tenant("other", "tenant-deletion")
+		.await
+		.unwrap();
+	assert_eq!(fixture.repo.0.lock().await.rows.len(), 1);
+	fixture
+		.service
+		.retire_tenant(TENANT, "tenant-deletion")
+		.await
+		.unwrap();
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	assert_eq!(fixture.authorization.calls.lock().unwrap().revoked.len(), 1);
+}
+
+#[tokio::test]
+async fn usability_checks_read_no_tokens() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	fixture.service.usable(id).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	// An expired access token is refreshed by a call, not by a check.
+	fixture.service.usable(id).await.unwrap();
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
+	fixture.repo.0.lock().await.mapped = 0;
+	assert!(matches!(
+		fixture.service.usable(id).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	fixture.repo.0.lock().await.mapped = 1;
+	set_row(&fixture, |row| row.state = State::Ineligible).await;
+	assert!(matches!(
+		fixture.service.usable(id).await,
+		Err(Error::Plan(Failure::Ineligible))
+	));
+	assert!(matches!(
+		fixture.service.usable(Uuid::now_v7()).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+}
+
+#[tokio::test]
+async fn unreadable_tokens_ask_for_reconnection() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	fixture
+		.service
+		.mark_unreadable(id, "provider-credential-store-recovery")
+		.await
+		.unwrap();
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(row.pinned_version.is_none());
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NeedsReconnection))
+	));
+	// A second recovery run changes nothing.
+	let revision = row.revision;
+	fixture
+		.service
+		.mark_unreadable(id, "provider-credential-store-recovery")
+		.await
+		.unwrap();
+	assert_eq!(only_row(&fixture).await.revision, revision);
 }
 
 #[tokio::test]
