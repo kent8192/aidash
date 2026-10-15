@@ -800,6 +800,7 @@ pub fn media_request_headroom(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	};
 	request
 		.ensure_fits_with_parts(headroom, parts)
@@ -827,6 +828,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			estimate: Default::default(),
 		}
 		.estimated_total_tokens()
 	};
@@ -857,6 +859,7 @@ pub fn check_model_media_headroom(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	};
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {

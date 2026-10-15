@@ -15,24 +15,76 @@ use uuid::Uuid;
 #[path = "visibility.rs"]
 mod visibility;
 
-pub(crate) struct AccessTransaction(Option<crate::database::native::Transaction>);
+/// Every input of one catalog admission decision: who decides, under which policy
+/// revision and inherited fence, with which evaluation context and audit mode, for
+/// which definition. A decision first made unaudited or with deferred audit is never
+/// reused where it must be recorded durably.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CatalogAdmission {
+	tenant: String,
+	subject: String,
+	revision: i64,
+	inherited_lease: bool,
+	audit: bool,
+	durable_audit: bool,
+	authority: String,
+	id: String,
+	version: String,
+	action: String,
+}
+
+#[derive(Default)]
+pub(crate) struct AccessTransaction {
+	transaction: Option<crate::database::native::Transaction>,
+	/// Admissions proven on this physical transaction. Their distribution, catalog and
+	/// policy locks last exactly as long, so the record ends with the transaction or
+	/// with a savepoint rollback that may have released them (its lock epoch).
+	admissions: std::collections::BTreeMap<CatalogAdmission, crate::registry::Entry>,
+	admissions_epoch: u64,
+}
 
 impl AccessTransaction {
 	fn new(transaction: crate::database::native::Transaction) -> Self {
-		Self(Some(transaction))
+		Self {
+			transaction: Some(transaction),
+			admissions: Default::default(),
+			admissions_epoch: 0,
+		}
 	}
 
 	pub(crate) fn is_active(&self) -> bool {
-		self.0.is_some()
+		self.transaction.is_some()
 	}
 
 	fn install(&mut self, transaction: crate::database::native::Transaction) {
-		debug_assert!(self.0.is_none());
-		self.0 = Some(transaction);
+		debug_assert!(self.transaction.is_none());
+		self.admissions.clear();
+		self.transaction = Some(transaction);
 	}
 
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {
-		self.0.take()
+		self.admissions.clear();
+		self.transaction.take()
+	}
+
+	pub(crate) fn admitted(&self, admission: &CatalogAdmission) -> Option<crate::registry::Entry> {
+		let transaction = self.transaction.as_ref()?;
+		if transaction.lock_epoch() != self.admissions_epoch {
+			return None;
+		}
+		self.admissions.get(admission).cloned()
+	}
+
+	pub(crate) fn admit(&mut self, admission: CatalogAdmission, entry: crate::registry::Entry) {
+		let Some(transaction) = &self.transaction else {
+			return;
+		};
+		let epoch = transaction.lock_epoch();
+		if epoch != self.admissions_epoch {
+			self.admissions.clear();
+			self.admissions_epoch = epoch;
+		}
+		self.admissions.insert(admission, entry);
 	}
 }
 
@@ -40,7 +92,7 @@ impl Deref for AccessTransaction {
 	type Target = crate::database::native::Transaction;
 
 	fn deref(&self) -> &Self::Target {
-		self.0
+		self.transaction
 			.as_ref()
 			.expect("authorization transaction is suspended")
 	}
@@ -48,7 +100,7 @@ impl Deref for AccessTransaction {
 
 impl DerefMut for AccessTransaction {
 	fn deref_mut(&mut self) -> &mut Self::Target {
-		self.0
+		self.transaction
 			.as_mut()
 			.expect("authorization transaction is suspended")
 	}
@@ -142,6 +194,24 @@ impl Access {
 		crate::registry::digest(
 			&json!({"subjects":self.subjects,"context":self.context,"environment":self.environment}),
 		)
+	}
+	pub(crate) fn catalog_admission(
+		&self,
+		reference: &crate::registry::EntityRef,
+		action: &str,
+	) -> CatalogAdmission {
+		CatalogAdmission {
+			tenant: self.identity.tenant.clone(),
+			subject: self.identity.subject.clone(),
+			revision: self.snapshot.revision,
+			inherited_lease: self.inherited_lease,
+			audit: self.audit,
+			durable_audit: self.durable_audit,
+			authority: self.authority_context(),
+			id: reference.id.clone(),
+			version: reference.version.clone(),
+			action: action.into(),
+		}
 	}
 	pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
 		Self::begin_with_lock(store, identity, false).await
@@ -364,6 +434,7 @@ impl Access {
 				.install(crate::database::native::begin(&self.pool).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
+		self.tx.admissions.clear();
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
 		self.checking_reads.clear();

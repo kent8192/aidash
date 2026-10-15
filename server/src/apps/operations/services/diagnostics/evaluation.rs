@@ -9,7 +9,8 @@ use reinhardt::query::{
 };
 
 /// Every Usage Record column the evaluator reports, excluding the lease token
-/// and the reserved cache identity.
+/// and the reserved cache identity. The estimation error of an attempt is
+/// `estimated_tokens - output_reservation - input_tokens`.
 const USAGE_COLUMNS: &[&str] = &[
 	"attempt_id",
 	"run_id",
@@ -28,6 +29,11 @@ const USAGE_COLUMNS: &[&str] = &[
 	"estimator",
 	"estimator_version",
 	"estimate_confidence",
+	"upstream_model",
+	"byte_basis",
+	"output_reservation",
+	"estimate_ratio_ppm",
+	"calibration_sample",
 	"outcome",
 	"rejection_class",
 	"created_at",

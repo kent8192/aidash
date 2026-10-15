@@ -447,6 +447,8 @@ impl DefinitionValidation {
 			&specifications,
 			private_context,
 			&registration_projection(version),
+			// Registration measures the conservative byte estimate (ADR 0017).
+			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)
 		.map_err(Into::into)
 	}
@@ -535,6 +537,8 @@ impl DefinitionValidation {
 			&exposed,
 			private_context,
 			&registration_projection(version),
+			// Registration measures the conservative byte estimate (ADR 0017).
+			aidash_domain::provider::estimate::EstimateSnapshot::default(),
 		)?
 		.checked_sub(reserve)
 		.filter(|remaining| *remaining >= aidash_domain::context::MIN_CONTEXT_RESERVE)

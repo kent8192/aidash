@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub mod estimate;
 pub mod usage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -53,6 +54,11 @@ pub struct ModelRequest {
 	/// request metadata and inference digests keep their bytes.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub disable_provider_transforms: bool,
+	/// The Run step's Estimate Snapshot (ADR 0017). Requests built outside a
+	/// Run step keep the conservative byte estimate. Never serialized, so the
+	/// request metadata and inference digest keep their bytes.
+	#[serde(skip)]
+	pub estimate: estimate::EstimateSnapshot,
 }
 
 /// Model-visible context in the shape fixed by the Run's Projection Version.
@@ -394,13 +400,28 @@ impl ModelRequest {
 		}
 	}
 
-	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
-	/// completion tokens and framing separately, in the same unit at every gate.
+	/// The Request Estimate under this request's Estimate Snapshot. It is
+	/// never above the byte estimate and never a provider tokenizer count.
+	/// Completion tokens and framing are reserved in the same unit at every gate.
 	pub fn estimated_total_tokens(&self) -> usize {
-		self.estimated_total_tokens_with_parts(&self.content_parts)
+		self.estimate.tokens(&self.byte_estimate())
 	}
 
 	pub fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
+		self.estimate.tokens(&self.byte_estimate_with_parts(parts))
+	}
+
+	/// The labeled Request Estimate recorded with the Inference Attempt.
+	pub fn request_estimate(&self) -> usage::RequestEstimate {
+		self.estimate.request_estimate(&self.byte_estimate())
+	}
+
+	/// Conservative UTF-8 byte estimate, split by unit.
+	pub fn byte_estimate(&self) -> estimate::ByteEstimate {
+		self.byte_estimate_with_parts(&self.content_parts)
+	}
+
+	pub fn byte_estimate_with_parts(&self, parts: &[ContentPart]) -> estimate::ByteEstimate {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the transmitted array framing, excluding only encoded media
 		// payload bytes, and reserve a bounded media estimate.
@@ -412,12 +433,12 @@ impl ModelRequest {
 		} else {
 			0
 		};
-		body.to_string()
-			.len()
-			.saturating_add(salt)
-			.saturating_add(Self::media_tokens(parts))
-			.saturating_add(self.max_output_tokens as usize)
-			.saturating_add(1024)
+		estimate::ByteEstimate {
+			basis: body.to_string().len().saturating_add(salt),
+			media: Self::media_tokens(parts),
+			output: self.max_output_tokens as usize,
+			framing: estimate::FRAMING_RESERVE,
+		}
 	}
 
 	pub fn validate(&self) -> Result<()> {
@@ -459,8 +480,9 @@ impl ModelRequest {
 	fn check_estimate(window: usize, max_output_tokens: u32, estimated: usize) -> Result<()> {
 		if estimated > window {
 			return Err(Error::Invalid(format!(
-				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve 1024",
-				max_output_tokens
+				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve {}",
+				max_output_tokens,
+				estimate::FRAMING_RESERVE
 			)));
 		}
 		Ok(())
