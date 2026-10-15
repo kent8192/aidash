@@ -606,59 +606,76 @@ impl completion::CompletionChecks for Environment<'_> {
 			"timeout_seconds": timeout_seconds,
 			"expected_revision": request.revision,
 		});
-		match worker
-			.check(store, run, input, &request.key.to_string())
-			.await
-		{
-			Ok(result) => {
-				let operation_id = result["operation_id"]
-					.as_str()
-					.and_then(|id| id.parse().ok())
-					.ok_or_else(|| {
-						aidash_application::Error::Invalid("Check result has no operation".into())
-					})?;
-				Ok(completion::CheckStart::Started {
-					operation_id,
-					timeout_seconds,
-				})
-			}
-			// The content moved after it was read. An idempotency conflict means the
-			// same attempt was started at another revision before a process cut;
-			// the saved attempt count gives the next start a fresh key.
-			Err(crate::Error::Conflict(reason))
-				if ["AREA_REVISION_CHANGED", "AREA_BUSY", "IDEMPOTENCY_CONFLICT"]
-					.iter()
-					.any(|code| reason.starts_with(code)) =>
-			{
-				Ok(completion::CheckStart::Stale)
-			}
-			Err(crate::Error::Forbidden | crate::Error::Unauthorized) => Ok(
-				completion::CheckStart::Denied("the shell capability is not authorized".into()),
-			),
-			Err(
-				crate::Error::Invalid(reason)
-				| crate::Error::Conflict(reason)
-				| crate::Error::NotFound(reason),
-			) => Ok(completion::CheckStart::Unavailable(reason)),
-			Err(error) => Err(error.into()),
-		}
+		check_started(
+			worker
+				.check(store, run, input, &request.key.to_string())
+				.await,
+			timeout_seconds,
+		)
 	}
 	async fn status(&self, run: &Run, operation: Uuid) -> Result<completion::CheckStatus> {
 		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
-		let result = match worker
-			.check_status(&self.federation.store, run, operation)
-			.await
-		{
-			Ok(result) => result,
-			Err(crate::Error::NotFound(reason)) => {
-				return Ok(completion::CheckStatus::Unavailable(reason));
-			}
-			// Revoked authority stops the Run as it does any other step.
-			Err(error) => return Err(error.into()),
-		};
-		Ok(completion::CheckStatus::of(&result))
+		check_polled(
+			worker
+				.check_status(&self.federation.store, run, operation)
+				.await,
+		)
 	}
 }
+
+/// What starting a Check means to the Completion Gate.
+fn check_started(
+	result: crate::Result<serde_json::Value>,
+	timeout_seconds: u64,
+) -> Result<completion::CheckStart> {
+	match result {
+		Ok(result) => {
+			let operation_id = result["operation_id"]
+				.as_str()
+				.and_then(|id| id.parse().ok())
+				.ok_or_else(|| {
+					aidash_application::Error::Invalid("Check result has no operation".into())
+				})?;
+			Ok(completion::CheckStart::Started {
+				operation_id,
+				timeout_seconds,
+			})
+		}
+		// The content moved after it was read. An idempotency conflict means the
+		// same attempt was started at another revision before a process cut;
+		// the saved attempt count gives the next start a fresh key.
+		Err(crate::Error::Conflict(reason))
+			if ["AREA_REVISION_CHANGED", "AREA_BUSY", "IDEMPOTENCY_CONFLICT"]
+				.iter()
+				.any(|code| reason.starts_with(code)) =>
+		{
+			Ok(completion::CheckStart::Stale)
+		}
+		Err(crate::Error::Forbidden | crate::Error::Unauthorized) => Ok(
+			completion::CheckStart::Denied("the shell capability is not authorized".into()),
+		),
+		Err(
+			crate::Error::Invalid(reason)
+			| crate::Error::Conflict(reason)
+			| crate::Error::NotFound(reason),
+		) => Ok(completion::CheckStart::Unavailable(reason)),
+		Err(error) => Err(error.into()),
+	}
+}
+
+/// What a polled Check means to the Completion Gate.
+fn check_polled(result: crate::Result<serde_json::Value>) -> Result<completion::CheckStatus> {
+	match result {
+		Ok(result) => Ok(completion::CheckStatus::of(&result)),
+		Err(crate::Error::NotFound(reason)) => Ok(completion::CheckStatus::Unavailable(reason)),
+		// Revoked authority stops the Run as it does any other step.
+		Err(error) => Err(error.into()),
+	}
+}
+
+#[cfg(test)]
+#[path = "../tests/agent_completion_checks.rs"]
+mod completion_check_tests;
 
 pub(crate) struct Environment<'a> {
 	federation: &'a Federation,

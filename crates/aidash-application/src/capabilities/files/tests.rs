@@ -15,6 +15,8 @@ struct Scope {
 	changed: Option<String>,
 	/// Inputs of Completion Gate Checks admitted to the operation journal.
 	verified: Vec<Value>,
+	/// `(kind, cancel, input)` of every operation control request.
+	polled: Vec<(String, bool, Value)>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
@@ -101,12 +103,17 @@ impl FileScopePort for Scope {
 		input: Value,
 		_key: &str,
 	) -> Result<Value> {
-		assert!(
-			matches!(action, Action::Verify),
-			"unexpected execute effect"
-		);
-		self.verified.push(input);
-		Ok(json!({"operation_id": Uuid::nil(), "status": "prepared"}))
+		match action {
+			Action::Verify => {
+				self.verified.push(input);
+				Ok(json!({"operation_id": Uuid::nil(), "status": "prepared"}))
+			}
+			Action::Control { kind, cancel } => {
+				self.polled.push((kind.to_owned(), cancel, input));
+				Ok(json!({"status": "running"}))
+			}
+			_ => panic!("unexpected execute effect"),
+		}
 	}
 	async fn output(&mut self, _area: &Area, _id: Uuid) -> Result<Option<(String, i64, String)>> {
 		panic!("unexpected output effect")
@@ -208,6 +215,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			deny_pinned: None,
 			changed: None,
 			verified: vec![],
+			polled: vec![],
 		},
 		area,
 		file,
@@ -533,6 +541,27 @@ async fn a_completion_check_rechecks_the_bound_shell_before_any_effect(#[case] w
 	} else {
 		assert!(matches!(result, Err(Error::Forbidden)));
 	}
+	assert!(scope.verified.is_empty());
+}
+
+/// Polling a Check reads its operation as a `verification`, never as the
+/// model's shell, and never cancels it.
+#[tokio::test]
+async fn a_completion_check_is_polled_as_a_verification_operation() {
+	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
+	let operation = Uuid::from_u128(7);
+	let result = verification(&mut scope, &run, operation, "poll")
+		.await
+		.unwrap();
+	assert_eq!(result["status"], "running");
+	assert_eq!(
+		scope.polled,
+		[(
+			aidash_domain::capabilities::operations::VERIFICATION.to_owned(),
+			false,
+			json!({"operation_id": operation}),
+		)]
+	);
 	assert!(scope.verified.is_empty());
 }
 
