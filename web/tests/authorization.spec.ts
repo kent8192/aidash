@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { createTenant } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -11,7 +12,11 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   browser,
 }) => {
   test.setTimeout(90000);
-  const tenant = `policy-${randomUUID()}`;
+  const tenant = await createTenant(
+    request,
+    "acceptance-access-token",
+    `policy-${randomUUID()}`,
+  );
   const base = `/api/authorization/${tenant}`;
   const headers = { authorization: "Bearer acceptance-access-token" };
   const api = async (path: string, data?: unknown) => {
@@ -79,7 +84,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   await page.getByLabel("テナント", { exact: true }).fill(tenant);
   await page.getByRole("button", { name: "開く", exact: true }).click();
   await page
-    .getByRole("button", { name: "権限ポリシーを作成", exact: true })
+    .getByRole("button", { name: "権限ポリシーを編集", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("ポリシー定義（JSON）").fill(JSON.stringify(policy));
@@ -125,7 +130,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   await page
     .getByRole("button", { name: "権限ポリシーを編集", exact: true })
     .click();
-  await api(base, { expected_revision: 1, bundle: policy });
+  await api(base, { expected_revision: 2, bundle: policy });
   await dialog
     .getByRole("button", { name: "ポリシーを確認", exact: true })
     .click();
@@ -135,7 +140,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   await expect(dialog.getByRole("alert")).toContainText(
     "リビジョンが更新されています",
   );
-  expect((await api(base)).revision).toBe(2);
+  expect((await api(base)).revision).toBe(3);
   await dialog.getByRole("button", { name: "編集に戻る", exact: true }).click();
   await expect(dialog.getByLabel("ポリシー定義（JSON）")).toHaveValue(
     /team-read/,
@@ -331,7 +336,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   await page.getByLabel("テナント", { exact: true }).fill(`${tenant}-other`);
   await page.getByRole("button", { name: "開く", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "権限ポリシーを作成", exact: true }),
+    page.getByText("この名前のテナントはありません。", { exact: false }),
   ).toBeVisible();
   await expect(page.locator(".auth-decision")).toHaveCount(0);
   await expect(page.locator(".auth-history")).toHaveCount(0);
@@ -342,7 +347,11 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
   page,
   request,
 }) => {
-  const tenant = `peer-${randomUUID()}`;
+  const tenant = await createTenant(
+    request,
+    "acceptance-access-token",
+    `peer-${randomUUID()}`,
+  );
   const base = `/api/authorization/${tenant}`;
   const headers = { authorization: "Bearer acceptance-access-token" };
   const api = async (path: string, data?: unknown) => {
@@ -357,7 +366,7 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
   const peer = state.peers.find((value: { enabled: boolean }) => value.enabled);
   expect(peer, "fixture requires a configured peer").toBeTruthy();
   await api(base, {
-    expected_revision: 0,
+    expected_revision: 1,
     bundle: { tenant, subjects: { bridge: { kind: "user" } }, policies: [] },
   });
   const first = await api(`${base}/credentials`, { subject: "bridge" });

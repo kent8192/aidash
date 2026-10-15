@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, authenticatedFetch } from "./transport";
 import { Panel, useI18n } from "./ui";
 import { Alert, Hint, Pager } from "./components/patterns";
+import { TenantInvitations, TenantLabelForm } from "./tenancy";
 
 type Registration = {
   id: string;
@@ -13,6 +14,8 @@ type Registration = {
   status: string;
   created_at: string;
   expires_at: string;
+  /** The Tenant the request is addressed to; absent when only Deployment Administrators decide it. */
+  tenant?: string | null;
 };
 type Identity = {
   id: string;
@@ -131,6 +134,11 @@ export function DashboardIdentityAdministration() {
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
+                {request.tenant && (
+                  <p className="truncate font-mono text-[11px] text-faint">
+                    {english ? "Addressed to" : "申請先"}: {request.tenant}
+                  </p>
+                )}
                 <small className="text-[11px] text-faint">
                   {english ? "Expires" : "期限"}:{" "}
                   <span className="font-mono tabular">
@@ -142,7 +150,8 @@ export function DashboardIdentityAdministration() {
                 <label className={field}>
                   {english ? "Tenant" : "テナント"}
                   <Input
-                    value={tenant}
+                    value={request.tenant ?? tenant}
+                    disabled={Boolean(request.tenant)}
                     onChange={(event) => setTenant(event.target.value)}
                   />
                 </label>
@@ -156,7 +165,7 @@ export function DashboardIdentityAdministration() {
                 <div className="flex gap-2 sm:col-span-2">
                   <Button
                     size="sm"
-                    disabled={busy || !tenant || !subject}
+                    disabled={busy || !(request.tenant ?? tenant) || !subject}
                     onClick={() => {
                       void act(() =>
                         apiFetch(
@@ -164,7 +173,10 @@ export function DashboardIdentityAdministration() {
                           {
                             method: "POST",
                             headers: { "content-type": "application/json" },
-                            body: JSON.stringify({ tenant, subject }),
+                            body: JSON.stringify({
+                              tenant: request.tenant ?? tenant,
+                              subject,
+                            }),
                           },
                         ),
                       );
@@ -360,6 +372,7 @@ export function DashboardIdentityAdministration() {
 
 type TenantAdministration = {
   tenant: string;
+  label: string | null;
   actions: string[];
   assignable_groups: string[];
   policy_revision: number | null;
@@ -373,6 +386,8 @@ type TenantRegistration = {
   id: string;
   identity: TenantIdentity;
   expires_at: string;
+  /** The Assignable Groups the request's Invitation proposed. */
+  proposed_groups: string[];
 };
 type TenantMapping = {
   id: string;
@@ -500,15 +515,34 @@ export function TenantIdentityAdministration({
   return (
     <Panel
       title={
-        english ? `Tenant administration: ${tenant}` : `テナント管理: ${tenant}`
+        english
+          ? `Tenant administration: ${overview.data.label ?? tenant}`
+          : `テナント管理: ${overview.data.label ?? tenant}`
       }
     >
       <Hint>
         {english
-          ? "Manage the people mapped into this Tenant. Where the Tenant has its own sign-in pool, approve requests from it into new user subjects. You can assign only groups marked as assignable."
-          : "このテナントに mapping された人を管理します。テナント専用のサインインプールがある場合は、そこからのリクエストを新しい user subject として承認します。付与できるのは、割り当て可能な group だけです。"}
+          ? "Manage the people mapped into this Tenant. Invite people with a link, then approve their requests into new user subjects. You can assign only groups marked as assignable."
+          : "このテナントに mapping された人を管理します。招待リンクで人を招き、届いた申請を新しい user subject として承認します。付与できるのは、割り当て可能な group だけです。"}
       </Hint>
       {error && <Alert>{error}</Alert>}
+      <p className="font-mono text-[11px] text-faint">{tenant}</p>
+      {can("tenant.update") && (
+        <TenantLabelForm
+          key={overview.data.label ?? ""}
+          tenant={tenant}
+          label={overview.data.label}
+        />
+      )}
+      {(can("invitation.create") || can("invitation.read")) && (
+        <TenantInvitations
+          tenant={tenant}
+          assignable={assignable}
+          canCreate={can("invitation.create")}
+          canRead={can("invitation.read")}
+          canRevoke={can("invitation.revoke")}
+        />
+      )}
       {can("registration.read") && (
         <>
           <h3 className={heading}>
@@ -548,7 +582,7 @@ export function TenantIdentityAdministration({
                       </label>
                       <GroupChoice
                         groups={assignable}
-                        selected={groups[request.id] ?? []}
+                        selected={groups[request.id] ?? request.proposed_groups}
                         disabled={busy}
                         change={(next) =>
                           setGroups({ ...groups, [request.id]: next })
@@ -570,7 +604,9 @@ export function TenantIdentityAdministration({
                                 headers: { "content-type": "application/json" },
                                 body: JSON.stringify({
                                   subject: subjects[request.id],
-                                  groups: groups[request.id] ?? [],
+                                  groups:
+                                    groups[request.id] ??
+                                    request.proposed_groups,
                                 }),
                               },
                             ),

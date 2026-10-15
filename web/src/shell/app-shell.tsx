@@ -279,6 +279,10 @@ export function AppShell({
       closeMenus();
       account.chooseContext(value);
     },
+    tenantCreated: (created) => {
+      closeMenus();
+      account.tenantCreated(created);
+    },
   };
   const listProps = {
     data,

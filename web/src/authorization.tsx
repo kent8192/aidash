@@ -60,6 +60,7 @@ import {
   RowList,
 } from "./components/patterns";
 import { cn } from "./lib/utils";
+import { CreateTenantForm } from "./tenancy";
 
 const PAGE_SIZE = 25;
 
@@ -96,6 +97,9 @@ export function AuthorizationPage({ entries }: { entries: Entry[] }) {
     <div className="authorization-page grid min-w-0 gap-6">
       <div className="grid min-w-0 gap-3">
         <Hint>{t("authorizationHelp")}</Hint>
+        <div className="w-full max-w-sm">
+          <CreateTenantForm onCreated={(created) => setTenant(created.name)} />
+        </div>
         <form
           className="flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
@@ -239,43 +243,27 @@ function TenantAuthorization({
           </Alert>
         )}
       </div>
-      {(current || missing) && (
+      {missing && <Hint>{t("authMissingPolicy")}</Hint>}
+      {current && (
         <Panel
           title={t("authPolicyBundle")}
           action={
             <Button
-              variant={current ? "outline" : "default"}
+              variant="outline"
               size="sm"
               onClick={() => {
                 setError("");
-                setEditor(
-                  current ?? {
-                    revision: 0,
-                    bundle: {
-                      tenant,
-                      subjects: {},
-                      groups: {},
-                      roles: {},
-                      policies: [],
-                    },
-                  },
-                );
+                setEditor(current);
               }}
             >
-              {t(current ? "authEditPolicy" : "authCreatePolicy")}
+              {t("authEditPolicy")}
             </Button>
           }
         >
-          {current ? (
-            <>
-              <BundleSummary snapshot={current} />
-              <Disclosure summary={t("authCurrentDocument")}>
-                <JsonView value={current.bundle} />
-              </Disclosure>
-            </>
-          ) : (
-            <Hint>{t("authMissingPolicy")}</Hint>
-          )}
+          <BundleSummary snapshot={current} />
+          <Disclosure summary={t("authCurrentDocument")}>
+            <JsonView value={current.bundle} />
+          </Disclosure>
         </Panel>
       )}
       {current && (
@@ -467,10 +455,7 @@ function TenantAuthorization({
         </>
       )}
       {editor && (
-        <Modal
-          title={t(editor.revision ? "authEditPolicy" : "authCreatePolicy")}
-          close={close}
-        >
+        <Modal title={t("authEditPolicy")} close={close}>
           <PolicyEditor
             snapshot={editor}
             busy={busy}

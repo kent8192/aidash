@@ -82,6 +82,12 @@ import { authCopy, shellCopy } from "./shell/copy";
 import { takeEmailHint } from "./gcip-email-hint";
 import { markEnrollIntent } from "./gcip-intent";
 import { desktopAvailable } from "./desktop";
+import {
+  CreateTenantForm,
+  InvitationLanding,
+  invitationTenant,
+  type CreatedTenant,
+} from "./tenancy";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
 // Move any discovery email handoff out of sessionStorage immediately.
@@ -136,9 +142,12 @@ type BrowserSession = {
   id: string;
   operator: boolean;
   personal_account?: boolean;
+  /** Whether the Tenancy Rules let this identity create Tenants now. */
+  tenant_creation?: boolean;
   mappings: {
     id: string;
     tenant: string;
+    label?: string | null;
     subject: string;
     personal?: boolean;
     credential_active?: boolean;
@@ -177,6 +186,10 @@ function App() {
       <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
         {window.location.pathname === "/sign-in" ? (
           <SignInEntry locale={locale} setLocale={setLocale} />
+        ) : invitationTenant(window.location.pathname) ? (
+          <InvitationLanding
+            tenant={invitationTenant(window.location.pathname) ?? ""}
+          />
         ) : (
           <ConnectionGate english={locale === "en-US"}>
             <Dashboard
@@ -397,6 +410,16 @@ function Dashboard({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
+  };
+  // A new Tenant's Creator works in it right away through its first Mapping.
+  const tenantCreated = async (created: CreatedTenant) => {
+    const response = await sessionFetch("/auth/session", {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const current = (await response.json()) as BrowserSession;
+    setBrowserSession(current);
+    if (created.mapping_id) chooseContext(`mapping:${created.mapping_id}`);
   };
   const disconnect = () => {
     void logOut(false);
@@ -645,7 +668,7 @@ function Dashboard({
                     className="justify-start font-mono text-xs"
                     onClick={() => chooseContext(`mapping:${mapping.id}`)}
                   >
-                    {mapping.tenant} / {mapping.subject}
+                    {mapping.label ?? mapping.tenant} / {mapping.subject}
                   </Button>
                 ))}
                 {browserSession.operator && (
@@ -660,6 +683,11 @@ function Dashboard({
                   </Button>
                 )}
               </div>
+            )}
+            {browserSession.tenant_creation && (
+              <CreateTenantForm
+                onCreated={(created) => void tenantCreated(created)}
+              />
             )}
             {browserSession.mappings.length === 0 &&
               !browserSession.operator && (
@@ -822,6 +850,8 @@ function Dashboard({
             mappings: browserSession?.mappings ?? [],
             operatorAllowed: browserSession?.operator ?? false,
             personalAccount: browserSession?.personal_account ?? false,
+            tenantCreation: browserSession?.tenant_creation ?? false,
+            tenantCreated: (created) => void tenantCreated(created),
             sharedAccess: {
               status: registration.data?.status,
               loading: registration.isPending,

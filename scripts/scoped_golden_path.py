@@ -230,13 +230,15 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
     def peer(base, other, endpoint):
         api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
 
-    def policy(base, tenant, subject):
+    def policy(base, label, subject):
+        # Aidash assigns Tenant names; the fixture's names become labels.
+        tenant = api_request(base, "/api/tenants", {"label": label})["name"]
         bundle = {"tenant": tenant, "subjects": {subject: {"kind": "user"}, executor: {"kind": "agent"}}, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-        api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 0, "bundle": bundle})
+        api_request(base, f"/api/authorization/{tenant}", {"expected_revision": 1, "bundle": bundle})
         credential = api_request(base, f"/api/authorization/{tenant}/credentials", {"subject": subject, "expires_in_seconds": 3600})
         subject_tokens.append(credential["token"])
         tokens.append(credential["token"])
-        return credential
+        return tenant, credential
 
     def catalog(entry, enabled, revision):
         return api_request(base_b, f"/api/authorization/{receiver_tenant}/catalog", {"entry": entry, "enabled": enabled, "expected_revision": revision})
@@ -244,9 +246,9 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
     try:
         peer(base_a, node_b, receiver.url)
         peer(base_b, node_a, home.url)
-        source = policy(base_a, source_tenant, "alice")
-        mapped = policy(base_b, receiver_tenant, "remote-alice")
-        outsider = policy(base_a, "golden-outsider", "alice")
+        source_tenant, source = policy(base_a, source_tenant, "alice")
+        receiver_tenant, mapped = policy(base_b, receiver_tenant, "remote-alice")
+        _, outsider = policy(base_a, "golden-outsider", "alice")
         token = source["token"]
         api_request(base_b, f"/api/authorization/{receiver_tenant}/peer-mappings", {"source_node": node_a, "source_tenant": source_tenant, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
         entries = [
