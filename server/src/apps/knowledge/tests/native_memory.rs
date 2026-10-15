@@ -1962,7 +1962,8 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 
 /// Missing vector points and an unreachable embedding provider are outages a
 /// Run retries (#233), so native recall types them `Unavailable` instead of the
-/// non-retried `SemanticUnavailable`.
+/// non-retried `SemanticUnavailable`. Replaying the failed embedding before its
+/// attempt's deadline waits as `Pending` rather than failing the Run.
 #[rstest]
 #[case::missing_points(true)]
 #[case::provider_down(false)]
@@ -2040,25 +2041,21 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	} else {
 		drop(server);
 	}
-	// Act
-	let result = memory::operate(
-		&store,
-		&Actor::Operator,
-		memory::Operation {
-			operation_id: Uuid::now_v7(),
-			provider: reference("p"),
-			bank,
-			action: memory::Action::Recall {
-				query: RecallQuery {
-					text: "subway".into(),
-					time: None,
-					kinds: vec![],
-					max_tokens: 8192,
-				},
+	let recall = memory::Operation {
+		operation_id: Uuid::now_v7(),
+		provider: reference("p"),
+		bank,
+		action: memory::Action::Recall {
+			query: RecallQuery {
+				text: "subway".into(),
+				time: None,
+				kinds: vec![],
+				max_tokens: 8192,
 			},
 		},
-	)
-	.await;
+	};
+	// Act
+	let result = memory::operate(&store, &Actor::Operator, recall.clone()).await;
 	// Assert
 	assert!(
 		matches!(
@@ -2069,6 +2066,51 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 		),
 		"{result:?}"
 	);
+	if !missing_points {
+		// Act: the Run's retry replays the operation while the failed
+		// attempt is still inside its call deadline.
+		let replayed = memory::operate(&store, &Actor::Operator, recall.clone()).await;
+		// Assert
+		assert!(
+			matches!(
+				replayed,
+				Err(aidash_server::Error::RemoteSemantic(
+					aidash_domain::semantic::Failure::Pending
+				))
+			),
+			"{replayed:?}"
+		);
+		// Past the deadline the replay makes the second and last attempt the
+		// policy allows (`max_retries: 2`); the next one finds the ledger spent
+		// and pauses the Run instead of failing its Task.
+		for expected in [
+			aidash_domain::semantic::Failure::Unavailable,
+			aidash_domain::semantic::Failure::RetriesExhausted,
+		] {
+			aidash_server::database::native::query(
+				&Query::update()
+					.table(Alias::new("memory_model_attempts"))
+					.value(
+						Alias::new("created_at"),
+						chrono::Utc::now() - chrono::Duration::hours(1),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&store.pool)
+			.await
+			.unwrap();
+			// Act
+			let replayed = memory::operate(&store, &Actor::Operator, recall.clone()).await;
+			// Assert
+			assert!(
+				matches!(
+					replayed,
+					Err(aidash_server::Error::RemoteSemantic(reason)) if reason == expected
+				),
+				"{replayed:?}"
+			);
+		}
+	}
 }
 
 #[rstest]

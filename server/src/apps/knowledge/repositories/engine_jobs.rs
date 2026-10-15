@@ -469,7 +469,11 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 		Err(Error::Forbidden | Error::Conflict(_)) => {
 			("blocked", Some("authority_or_source_changed"))
 		}
-		Err(Error::Invalid(_)) => ("failed", Some("invalid_or_exhausted_work")),
+		// A model call whose retry ledger is spent cannot succeed on a later claim.
+		Err(
+			Error::Invalid(_)
+			| Error::RemoteSemantic(crate::semantic::remote::Failure::RetriesExhausted),
+		) => ("failed", Some("invalid_or_exhausted_work")),
 		Err(_) => (
 			if attempts + 1 >= limit {
 				"failed"
