@@ -28,6 +28,7 @@ struct State {
 	document: Option<Value>,
 	approved: bool,
 	enabled: bool,
+	bound: bool,
 	denied: Option<String>,
 	exhausted: Option<Uuid>,
 	fail: Option<String>,
@@ -68,6 +69,7 @@ fn world() -> World {
 		),
 		approved: true,
 		enabled: true,
+		bound: true,
 		denied: None,
 		exhausted: None,
 		fail: None,
@@ -217,6 +219,16 @@ impl ApprovedCompactionTransport for Transport {
 		}
 		Ok(130)
 	}
+	async fn check_credential(&self) -> Result<()> {
+		let mut state = self.0.0.lock().unwrap();
+		state.events.push("provider.credential".into());
+		if !state.bound {
+			return Err(Error::Invalid(
+				"Provider Credential binding is missing".into(),
+			));
+		}
+		Ok(())
+	}
 	async fn ask(
 		&self,
 		attempt: Uuid,
@@ -359,6 +371,7 @@ async fn prepared_transport_is_returned_after_every_ancestor_is_durable(world: W
 			"registry.read",
 			"compaction.invoke",
 			"provider.check",
+			"provider.credential",
 		] {
 			assert!(
 				state
@@ -396,6 +409,7 @@ async fn ordinary_agents_keep_their_separate_transport_without_charges(world: Wo
 #[case("compaction.invoke")]
 #[case("wrong_kind")]
 #[case("oversized")]
+#[case("unbound")]
 #[tokio::test]
 async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 	world: World,
@@ -425,6 +439,7 @@ async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 			"registry.read" | "compaction.invoke" => state.denied = Some(reason.into()),
 			"wrong_kind" => state.document.as_mut().unwrap()["kind"] = json!("model"),
 			"oversized" => {}
+			"unbound" => state.bound = false,
 			_ => panic!("unknown denial fixture"),
 		}
 	}
@@ -441,6 +456,10 @@ async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 	} else if reason == "oversized" {
 		assert!(
 			matches!(result,Err(Error::Invalid(message)) if message=="compaction request exceeds approved bounds")
+		);
+	} else if reason == "unbound" {
+		assert!(
+			matches!(result,Err(Error::Invalid(message)) if message=="Provider Credential binding is missing")
 		);
 	} else {
 		assert!(matches!(result, Err(Error::Forbidden)));

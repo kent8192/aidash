@@ -76,6 +76,8 @@ pub async fn reserve(
 	}
 	let transport = provider.approved(serde_json::from_value(entry.config)?)?;
 	let bytes = transport.check_request(state, questions)?;
+	// A missing or revoked binding sends no request, so it must not charge one.
+	transport.check_credential().await?;
 	let attempt = Attempt {
 		id: Uuid::new_v4(),
 		run: context.run,

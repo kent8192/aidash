@@ -56,6 +56,9 @@ impl aidash_application::ports::generation::compaction::ApprovedCompactionTransp
 	) -> aidash_application::Result<usize> {
 		self.0.check_request(state, questions)
 	}
+	async fn check_credential(&self) -> aidash_application::Result<()> {
+		self.0.check_credential().await
+	}
 	async fn ask(
 		&self,
 		attempt: uuid::Uuid,

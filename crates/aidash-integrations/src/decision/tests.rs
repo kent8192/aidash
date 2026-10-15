@@ -156,7 +156,8 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 			&questions,
 			&serde_json::to_vec(&good).unwrap()
 		)
-		.unwrap()["q0"],
+		.unwrap()
+		.answers["q0"],
 		Probability::half()
 	);
 	for wrong in [
@@ -184,7 +185,9 @@ fn responses_require_exact_models_question_coverage_types_and_probabilities() {
 	);
 
 	assert_eq!(
-		validate_response("typesafe/jev-1.13", &questions, wire.as_bytes()).unwrap()["q0"]
+		validate_response("typesafe/jev-1.13", &questions, wire.as_bytes())
+			.unwrap()
+			.answers["q0"]
 			.value()
 			.to_bits(),
 		exact.to_bits()
@@ -420,4 +423,44 @@ async fn prepared_body_cannot_change_the_model_or_question_map() {
 	body["model"] = "jev-latest".into();
 	request.body = serde_json::to_vec(&body).unwrap();
 	assert!(client.prepare(&request, Uuid::now_v7()).await.is_err());
+}
+#[test]
+fn answered_responses_report_the_served_model_and_numeric_usage_for_the_attempt_trace() {
+	let questions = questions(1);
+	let answers = json!({"q0":{"type":"noul","noul":0.5}});
+	let answered = validate_response(
+		"typesafe/jev-1.13",
+		&questions,
+		&serde_json::to_vec(&json!({
+			"model":"typesafe/jev-1.13-20260917","answers":answers,
+			"usage":{"input_tokens":12,"cost":0.000002}
+		}))
+		.unwrap(),
+	)
+	.unwrap();
+	assert_eq!(
+		(
+			answered.served.as_str(),
+			answered.input_tokens,
+			answered.cost_usd
+		),
+		("typesafe/jev-1.13-20260917", Some(12), Some(0.000002))
+	);
+	// Malformed or missing usage never rejects otherwise valid answers.
+	for usage in [
+		json!(null),
+		json!("free"),
+		json!({"input_tokens":"12","cost":[]}),
+	] {
+		let answered = validate_response(
+			"typesafe/jev-1.13",
+			&questions,
+			&serde_json::to_vec(
+				&json!({"model":"typesafe/jev-1.13","answers":answers,"usage":usage}),
+			)
+			.unwrap(),
+		)
+		.unwrap();
+		assert_eq!((answered.input_tokens, answered.cost_usd), (None, None));
+	}
 }

@@ -209,6 +209,7 @@ impl DecisionProvider for JevDecisionProvider {
 		Ok(Box::new(JevDispatch {
 			client: self.client.clone(),
 			request: transport,
+			attempt,
 			model: self.config.model.clone(),
 			questions: request.questions.clone(),
 		}))
@@ -218,6 +219,9 @@ impl DecisionProvider for JevDecisionProvider {
 struct JevDispatch {
 	client: reqwest::Client,
 	request: reqwest::Request,
+	/// The Decision Attempt this request is; a direct (self-hosted) call has no
+	/// broker audit, so the response is traced under it.
+	attempt: Uuid,
 	model: String,
 	questions: Questions,
 }
@@ -244,20 +248,36 @@ impl PreparedDispatch for JevDispatch {
 			.bytes()
 			.await
 			.map_err(|_| Error::External("decision response unavailable".into()))?;
-		validate_response(&self.model, &self.questions, &body)
-			.map_err(|_| DispatchError::InvalidAnswers)
+		let answered = validate_response(&self.model, &self.questions, &body)
+			.map_err(|_| DispatchError::InvalidAnswers)?;
+		// Until Decision Evidence keeps it (#108), cost is observable only here.
+		tracing::info!(
+			decision_attempt = %self.attempt,
+			served_model = answered.served.as_str(),
+			input_tokens = answered.input_tokens,
+			cost_usd = answered.cost_usd,
+			"Jev Decision Attempt answered"
+		);
+		Ok(answered.answers)
 	}
 }
 
-fn validate_response(
-	model: &str,
-	questions: &Questions,
-	body: &[u8],
-) -> Result<BTreeMap<String, Probability>> {
+/// Validated answers and the numeric usage the provider reported with them.
+#[derive(Debug)]
+struct Answered {
+	answers: BTreeMap<String, Probability>,
+	served: String,
+	input_tokens: Option<u64>,
+	cost_usd: Option<f64>,
+}
+
+fn validate_response(model: &str, questions: &Questions, body: &[u8]) -> Result<Answered> {
 	#[derive(serde::Deserialize)]
 	struct Response {
 		model: Option<String>,
 		answers: Option<AnswerMap>,
+		// Read leniently: malformed usage never rejects valid answers.
+		usage: Option<Value>,
 	}
 	#[derive(serde::Deserialize)]
 	struct Answer {
@@ -294,15 +314,12 @@ fn validate_response(
 	}
 	let response: Response = serde_json::from_slice(body)
 		.map_err(|_| Error::External("invalid decision response JSON".into()))?;
-	if !response
+	let served = response
 		.model
-		.as_deref()
-		.is_some_and(|served| served_by(model, served))
-	{
-		return Err(Error::External(
-			"decision response model differs from the pinned version".into(),
-		));
-	}
+		.filter(|served| served_by(model, served))
+		.ok_or_else(|| {
+			Error::External("decision response model differs from the pinned version".into())
+		})?;
 	let answers = response
 		.answers
 		.ok_or_else(|| Error::External("decision response has no answer map".into()))?
@@ -333,7 +350,13 @@ fn validate_response(
 		);
 	}
 	validate_answers(questions, &validated)?;
-	Ok(validated)
+	let usage = response.usage.unwrap_or_default();
+	Ok(Answered {
+		answers: validated,
+		served,
+		input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+		cost_usd: usage.get("cost").and_then(Value::as_f64),
+	})
 }
 
 #[cfg(test)]

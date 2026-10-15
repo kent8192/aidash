@@ -1321,6 +1321,30 @@ async fn system_one_relays_a_zero_retention_decision_and_audits_only_numeric_usa
 }
 
 #[tokio::test]
+async fn system_one_admits_decisions_beyond_the_non_chat_bound_up_to_the_chat_bound() {
+	let f = Fixture::new().await;
+	// The Decision Gate sends whatever the provider's capacity admits.
+	let mut body = decision();
+	body["state"] = json!({"history":"x".repeat(REQUEST_LIMIT)});
+	let response = f
+		.request(&decision_claims(&f), "POST", "/api/v1/systemone", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+	let mut body = decision();
+	body["state"] = json!({"history":"x".repeat(CHAT_REQUEST_LIMIT)});
+	let response = f
+		.request(&decision_claims(&f), "POST", "/api/v1/systemone", body)
+		.await;
+	assert_eq!(response.status(), 403);
+	assert_eq!(
+		json_body(response).await["error"]["code"],
+		"capability_claim_violation"
+	);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn system_one_requires_a_decision_token_and_an_exact_body() {
 	let f = Fixture::new().await;
 	// An inference token never reaches System One, and a decision token never reaches chat.

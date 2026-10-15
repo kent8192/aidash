@@ -468,10 +468,11 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		);
 	}
 	let method = request.method().clone();
-	let request_limit = if op == Operation::Chat {
-		CHAT_REQUEST_LIMIT
-	} else {
-		REQUEST_LIMIT
+	// A System One body carries the fitted history, which only the provider's
+	// capacity bounds, so it shares the chat ceiling (ADR 0041).
+	let request_limit = match op {
+		Operation::Chat | Operation::Decision => CHAT_REQUEST_LIMIT,
+		_ => REQUEST_LIMIT,
 	};
 	let body = match tokio::time::timeout_at(deadline, to_bytes(request.into_body(), request_limit))
 		.await
