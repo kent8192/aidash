@@ -54,6 +54,21 @@ pub struct InferenceUsage {
 	pub estimator_version: i32,
 	#[field(field_type = "text")]
 	pub estimate_confidence: String,
+	/// The upstream model slug, the calibration key; NULL before #179.
+	#[field(field_type = "text", null = true)]
+	pub upstream_model: Option<String>,
+	/// Serialized request body plus cache-salt reserve, in bytes.
+	#[field(null = true)]
+	pub byte_basis: Option<i64>,
+	/// The output reservation inside `estimated_tokens`.
+	#[field(null = true)]
+	pub output_reservation: Option<i64>,
+	/// The Estimate Snapshot's ratio in parts per million; NULL for bytes.
+	#[field(null = true)]
+	pub estimate_ratio_ppm: Option<i64>,
+	/// A complete outcome becomes a Deployment-wide calibration sample.
+	#[field]
+	pub calibration_sample: bool,
 	/// The Stable Prefix cache identity of a salted request; NULL for Legacy.
 	#[field(field_type = "text", null = true)]
 	pub cache_identity: Option<String>,
@@ -100,6 +115,11 @@ impl InferenceUsage {
 			.estimator(dispatch.estimate.estimator.clone())
 			.estimator_version(i32::try_from(dispatch.estimate.version).unwrap_or(i32::MAX))
 			.estimate_confidence(dispatch.estimate.confidence.as_str().to_owned())
+			.upstream_model(Some(dispatch.upstream_model.clone()))
+			.byte_basis(stored(Some(dispatch.estimate.byte_basis)))
+			.output_reservation(stored(Some(dispatch.estimate.output_reservation)))
+			.estimate_ratio_ppm(dispatch.estimate.ratio_ppm.map(i64::from))
+			.calibration_sample(dispatch.calibration_sample)
 			.cache_identity(dispatch.cache_identity.clone())
 			.outcome(DISPATCHED.to_owned())
 			.rejection_class(None)
@@ -148,6 +168,8 @@ impl InferenceUsage {
 	}
 
 	/// Complete a still-dispatched record once. Returns whether it was written.
+	/// A complete outcome of a calibration-sample attempt also records its
+	/// Deployment-wide sample in the same transaction (ADR 0017).
 	pub(crate) async fn complete(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
@@ -187,10 +209,45 @@ impl InferenceUsage {
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
 			.build(PostgresQueryBuilder);
-		Ok(tx
+		let written = tx
 			.execute(&sql, convert_values(values))
 			.await?
 			.rows_affected
-			== 1)
+			== 1;
+		if written && matches!(outcome, UsageOutcome::Completed(_)) {
+			Self::record_calibration_sample(tx, attempt).await?;
+		}
+		Ok(written)
+	}
+
+	async fn record_calibration_sample(
+		tx: &mut dyn TransactionExecutor,
+		attempt: Uuid,
+	) -> Result<()> {
+		let records = Self::objects()
+			.filter(Self::field_attempt_id().eq(attempt))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?;
+		let Some(record) = records.first().filter(|record| record.calibration_sample) else {
+			return Ok(());
+		};
+		if let (Some(model), Some(byte_basis), Some(prompt_tokens)) = (
+			&record.upstream_model,
+			record.byte_basis,
+			record.input_tokens,
+		) && byte_basis > 0
+			&& prompt_tokens > 0
+		{
+			super::estimate_calibration::EstimateCalibrationSample::record(
+				tx,
+				model,
+				record.projection_version,
+				byte_basis,
+				prompt_tokens,
+			)
+			.await?;
+		}
+		Ok(())
 	}
 }

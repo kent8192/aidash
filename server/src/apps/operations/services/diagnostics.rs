@@ -1,5 +1,6 @@
 //! Read-only query documents consumed by deployment acceptance runners.
 mod acceptance;
+mod calibration;
 mod evaluation;
 mod remote_memory;
 
@@ -16,7 +17,7 @@ impl CapabilityCommand for Diagnostics {
 			.about("Export read-only Reinhardt Query diagnostics without connecting to services")
 			.arg(
 				clap::Arg::new("profile")
-					.value_parser(["acceptance", "evaluation", "remote-memory"])
+					.value_parser(["acceptance", "calibration", "evaluation", "remote-memory"])
 					.required(true),
 			)
 	}
@@ -30,6 +31,7 @@ impl CapabilityCommand for Diagnostics {
 	) -> CommandResult<()> {
 		let document = match matches.get_one::<String>("profile").map(String::as_str) {
 			Some("acceptance") => acceptance::document(),
+			Some("calibration") => calibration::document(),
 			Some("evaluation") => evaluation::document(),
 			Some("remote-memory") => remote_memory::document(),
 			_ => {
@@ -56,6 +58,30 @@ mod tests {
 		] {
 			assert_eq!(document["pgroonga_ready"], query);
 		}
+	}
+
+	#[test]
+	fn calibration_pools_select_only_aggregates() {
+		// Act
+		let query = super::calibration::pools();
+		// Assert
+		assert!(query.starts_with("SELECT row_to_json(\"e\")"), "{query}");
+		assert!(
+			query.contains("FROM \"estimate_calibration_samples\""),
+			"{query}"
+		);
+		assert!(query.contains("PERCENTILE_DISC(0.99)"), "{query}");
+		assert!(
+			query.contains("GROUP BY \"upstream_model\", \"projection_version\""),
+			"{query}"
+		);
+		for identifier in ["run_id", "tenant", "attempt_id", "\"id\""] {
+			assert!(!query.contains(identifier), "{identifier} in {query}");
+		}
+		assert_eq!(
+			super::calibration::document()["calibration_pools"],
+			serde_json::json!(query)
+		);
 	}
 
 	#[test]

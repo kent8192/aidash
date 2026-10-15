@@ -616,6 +616,7 @@ impl HarnessManagement {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;
