@@ -172,6 +172,10 @@ pub struct UsageDispatch {
 	/// The Run's pinned Projection Version, as [`crate::projection::ProjectionVersion::number`].
 	pub projection_version: u8,
 	pub estimate: RequestEstimate,
+	/// The request's Stable Prefix cache identity
+	/// ([`crate::provider::ModelRequest::cache_identity`]); `None` for an
+	/// unsalted request, which has no Cache Scope.
+	pub cache_identity: Option<String>,
 }
 
 /// Terminal outcome of a dispatched Inference Attempt. Interrupted, timed-out

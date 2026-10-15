@@ -253,6 +253,17 @@ impl ModelProvider for OpenRouterProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			// A Run's pinned version was checked at registration and Run
+			// creation; a request forced past them still never reaches the
+			// provider, and never falls back to Legacy (ADR 0015). Legacy is
+			// the baseline every model renders, including auxiliary requests.
+			let version = request.context.projection_version();
+			if !version.is_legacy() && !self.config.supports_projection(version) {
+				return Err(Error::UnsupportedProjection {
+					model: self.config.model_id.clone(),
+					version,
+				});
+			}
 			// Unsupported routes never receive `cache_control` (ADR 0019).
 			if request.cache_breakpoints && !self.config.accepts_cache_breakpoints() {
 				return Err(Error::Invalid(format!(
