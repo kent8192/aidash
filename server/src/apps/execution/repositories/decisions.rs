@@ -186,6 +186,8 @@ async fn ensure_open(tx: &mut native::Transaction, run: Uuid, decision: Uuid) ->
 	}
 }
 
+/// The decision's charged attempts, locked until the transaction ends so a
+/// concurrent `finish_attempt` is ordered before or after this read.
 async fn attempts_of(
 	tx: &mut native::Transaction,
 	run: Uuid,
@@ -199,6 +201,7 @@ async fn attempts_of(
 			.and_where(Expr::col("decision_id").eq(Expr::value(decision)))
 			.order_by(Alias::new("created_at"), Order::Asc)
 			.order_by(Alias::new("id"), Order::Asc)
+			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_all(&mut **tx)
@@ -468,8 +471,8 @@ impl<'a> RunDecisionJournal<'a> {
 		tx.commit().await
 	}
 
-	/// Every attempt the evidence names must be one this Run charged for the
-	/// decision, with its durable status and the answers it durably recorded.
+	/// The evidence must name exactly the attempts this Run charged for the
+	/// decision, each with its durable status and the answers it durably recorded.
 	async fn check_attempts(
 		&self,
 		tx: &mut native::Transaction,
@@ -480,6 +483,12 @@ impl<'a> RunDecisionJournal<'a> {
 			.iter()
 			.map(|row| recovered(row).map(|prior| (prior.permit.record.attempt, prior)))
 			.collect::<Result<_>>()?;
+		let named: BTreeSet<_> = evidence.attempts.iter().map(|attempt| attempt.id).collect();
+		if named.len() != evidence.attempts.len() || !named.iter().eq(charged.keys()) {
+			return Err(Error::Invalid(
+				"decision evidence differs from its charged attempts".into(),
+			));
+		}
 		for attempt in &evidence.attempts {
 			let saved = charged.get(&attempt.id).ok_or_else(|| {
 				Error::Invalid("decision evidence names an uncharged attempt".into())
@@ -543,8 +552,22 @@ impl<'a> RunDecisionJournal<'a> {
 				&& rules::digest(&state.state) == state.digest
 				&& state.expires_at == *expires_at
 				&& state.expires_at == *deadline => {}
-			(None, StateReference::Disabled, StateRetentionWitness::Disabled)
-			| (None, StateReference::Expired { .. }, StateRetentionWitness::Enabled { .. }) => {}
+			(
+				None,
+				StateReference::Expired {
+					id,
+					digest,
+					expired_at,
+				},
+				StateRetentionWitness::Enabled {
+					id: witness,
+					expires_at: deadline,
+				},
+			) if !id.is_nil()
+				&& id == witness
+				&& *digest == evidence.state_digest
+				&& expired_at == deadline => {}
+			(None, StateReference::Disabled, StateRetentionWitness::Disabled) => {}
 			_ => {
 				return Err(Error::Invalid(
 					"retained decision state differs from its evidence".into(),

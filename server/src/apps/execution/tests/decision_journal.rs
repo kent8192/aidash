@@ -490,6 +490,28 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		journal.commit(&relabeled, None, None).await,
 		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
 	));
+	// Evidence must name every charged attempt.
+	let (_, mut omitting) = evidence_rows(&f.store, run.id).await.remove(0);
+	omitting.attempts.clear();
+	assert!(matches!(
+		journal.commit(&omitting, None, None).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+	));
+	// An expired marker must match its retention witness.
+	let (_, mut marked) = evidence_rows(&f.store, run.id).await.remove(0);
+	marked.state = StateReference::Expired {
+		id: Uuid::new_v4(),
+		digest: marked.state_digest.clone(),
+		expired_at: Utc::now(),
+	};
+	marked.state_retention = StateRetentionWitness::Enabled {
+		id: Uuid::new_v4(),
+		expires_at: Utc::now() + Duration::days(1),
+	};
+	assert!(matches!(
+		journal.commit(&marked, None, None).await,
+		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
+	));
 	assert_eq!(evidence_rows(&f.store, run.id).await.len(), 1);
 	// Act: the same decision resumes once applying is permitted again.
 	authority

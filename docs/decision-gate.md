@@ -96,15 +96,16 @@ limit or a Decider the current policy no longer allows stops with `PruneUnavaila
 before anything is charged. Recovery reports a `pending` row as uncertain and keeps
 its original worker fence. Only the exact permit an attempt was charged with records
 its result, and a late result is still recorded after the lease moved. Committed
-evidence must report each attempt with its durable status and carry the answers each
-answered attempt recorded.
+evidence must name exactly the attempts charged for its decision, locked for the commit,
+each with its durable status, and carry the answers each answered attempt recorded.
 
 An applied decision saves the Run's context through the same lease-fenced save as an
 adopted Summary Stage (`context.compacted`), which ends the step, and writes its
 Decision Evidence in that transaction. Shadow and rejected decisions never touch the
 Run. Applying context or retaining state rechecks the current policy inside the commit
 transaction and is forbidden once that policy no longer names the admitted pin;
-evidence without either effect is still recorded. Retained state must match its digest.
+evidence without either effect is still recorded. Retained state must match its digest,
+and an expired marker must match its retention witness and the evidence's state digest.
 A decision has at most one applied or shadow snapshot; each retry of a rejected
 decision appends another. Retained state whose deadline passed before the commit keeps
 only its expired marker, and `Store::expire_decision_states` later deletes due state and
