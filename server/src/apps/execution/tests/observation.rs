@@ -231,6 +231,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.content(json!("record query regression").into())
 		.created_by("reviewer")
 		.idempotency_key("review-artifact")
+		.run_id(None)
 		.finish();
 	let artifact_id = Artifact::objects()
 		.create_with_conn(&mut db, &artifact)

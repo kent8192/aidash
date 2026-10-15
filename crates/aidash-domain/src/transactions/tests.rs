@@ -7,7 +7,7 @@ fn manifest() -> Manifest {
 	serde_json::from_str(GOLDEN).unwrap()
 }
 fn check(manifest: &Manifest) -> crate::Result<()> {
-	manifest.validate_with(|_| Ok(()))
+	manifest.validate()
 }
 #[rstest]
 fn manifest_encoding_and_digest_preserve_the_original_wire_bytes(manifest: Manifest) {
@@ -125,26 +125,6 @@ fn manifests_keep_the_original_completeness_and_size_gate(
 	assert!(
 		matches!(check(&manifest),Err(Error::Invalid(message)) if message=="transaction needs mutations, its coordinator as a participant, and a manifest within 512 KiB")
 	);
-}
-#[rstest]
-fn injected_registry_validation_keeps_the_full_definition_and_its_error_identity(
-	mut manifest: Manifest,
-) {
-	let entry:Entry=serde_json::from_value(json!({"id":"provider","version":"1.0.0","kind":"tool","name":{},"description":{},"config":{"saved":"definition"}})).unwrap();
-	manifest.participants[0].mutations = vec![Mutation::RegistryRegister {
-		entry: Box::new(entry.clone()),
-	}];
-	let mut calls = 0;
-	let result: crate::Result<()> = manifest.validate_with(|saved| {
-		calls += 1;
-		assert_eq!(
-			serde_json::to_value(saved).unwrap(),
-			serde_json::to_value(&entry).unwrap()
-		);
-		Err(Error::Conflict("validator fault".into()))
-	});
-	assert_eq!(calls, 1);
-	assert_eq!(result, Err(Error::Conflict("validator fault".into())));
 }
 #[rstest]
 #[case::commit(CoordinatorDecision::Commit)]

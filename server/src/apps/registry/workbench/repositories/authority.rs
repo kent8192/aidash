@@ -17,7 +17,6 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
-use serde_json::Value;
 use uuid::Uuid;
 pub(crate) fn principal(actor: &Actor) -> Principal {
 	match actor {
@@ -56,9 +55,6 @@ impl DefinitionLookup for Scope<'_> {
 
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		NativeScope(self.tx).definition(id, version).await
-	}
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
-		NativeScope(self.tx).overrides(id, version).await
 	}
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		NativeScope(self.tx).executor_kind(id, version).await

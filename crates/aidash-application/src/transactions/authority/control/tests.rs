@@ -431,7 +431,7 @@ impl AuthorityRepository for Repository {
 		&self.node
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
-		manifest.validate_with::<Error>(|_| Ok(()))
+		manifest.validate::<Error>()
 	}
 	async fn origin(&self, _: Uuid) -> Result<Option<Origin>> {
 		Ok(self.state.lock().unwrap().origin.clone())

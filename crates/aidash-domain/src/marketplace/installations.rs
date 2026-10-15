@@ -64,9 +64,6 @@ pub fn same(
 		&& key(&current.bindings) == key(&bindings)
 }
 
-pub fn compatible(state: &Compatibility) -> bool {
-	state.enabled && state.contract == 1
-}
 /// Revocation retains the selected pointer, preventing fallback to an older grant.
 pub fn activation(mut installation: Installation, revision: i64, enabled: bool) -> Installation {
 	if enabled {

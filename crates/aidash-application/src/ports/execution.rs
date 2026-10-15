@@ -139,6 +139,22 @@ pub trait ExecutionStore: Send + Sync {
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
 		Ok(false)
 	}
+	/// Persist a newly pinned Estimate Snapshot without ending the worker's
+	/// lease, before the step relies on it, so a resumed step reuses it.
+	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.estimate_pinned").await
+	}
+	/// The newest calibration samples of one key, newest first, at most
+	/// [`aidash_domain::provider::estimate::CALIBRATION_WINDOW`]. Samples are
+	/// Deployment-wide and carry no Run, Tenant or attempt identifiers. A
+	/// store without samples leaves every key on the byte estimate.
+	async fn calibration_samples(
+		&self,
+		_upstream_model: &str,
+		_projection_version: u8,
+	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
+		Ok(Vec::new())
+	}
 	/// The cited Evidence fragments this Run's evidence store does not hold.
 	/// A store without research evidence fails closed: nothing is known.
 	async fn unknown_evidence(

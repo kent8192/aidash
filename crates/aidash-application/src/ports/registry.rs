@@ -1,10 +1,6 @@
 //! Registry scopes keep reference reads, immutable writes and events atomic.
 use crate::Result;
-use aidash_domain::{
-	capabilities::CoreCapabilities,
-	provider::ToolSpec,
-	registry::{Entry, PackageRecord},
-};
+use aidash_domain::{capabilities::CoreCapabilities, provider::ToolSpec, registry::Entry};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -38,7 +34,6 @@ pub trait DefinitionLookup: Send {
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
 		Err(crate::Error::Forbidden)
 	}
-	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>>;
 	/// Exact installed references must be active and individually approved for
 	/// new registration/admission. A default adapter never invents that authority.
 	async fn binding_installation(
@@ -80,29 +75,6 @@ pub trait DefinitionWriter: DefinitionLookup {
 pub trait RegistrationScope: DefinitionWriter {
 	async fn assign_id(&mut self, entry: &mut Entry, key: Option<Uuid>) -> Result<()>;
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()>;
-}
-
-/// Implementations must retain definition locks and immutable digest comparisons.
-#[async_trait]
-pub trait PackageScope: DefinitionLookup {
-	fn registry_node(&self) -> &str;
-	async fn publish(
-		&mut self,
-		id: &str,
-		version: &str,
-		manifest: Value,
-		digest: &str,
-		source: &str,
-	) -> Result<(PackageRecord, bool)>;
-	async fn install(&mut self, entry: &Entry, digest: &str, config: Value) -> Result<bool>;
-	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()>;
-}
-
-/// Manifest bytes are checked against both the advertised digest and decoded value.
-pub struct PackageSnapshot {
-	pub manifest: Value,
-	pub source: String,
-	pub digest: String,
 }
 
 /// A definition's private reference text stays separate from discoverable metadata.

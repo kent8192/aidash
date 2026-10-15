@@ -202,6 +202,11 @@ pub struct Artifact {
 	pub created_by: String,
 	pub idempotency_key: String,
 	pub created_at: DateTime<Utc>,
+	/// The Run that published this Artifact on this Node. Only the Run's own
+	/// publication writes it; Artifacts that people or other Nodes deliver have
+	/// none. Source citations in its content resolve only against this Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub run_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -354,6 +359,11 @@ pub struct Message {
 	pub content: String,
 	pub idempotency_key: Option<String>,
 	pub created_at: DateTime<Utc>,
+	/// The Run that published this message on this Node. Only the Run's own
+	/// publication writes it; messages that people or other Nodes deliver have
+	/// none. Source citations in its content resolve only against this Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub run_id: Option<Uuid>,
 }
 
 // A required JSON content field may contain null, but may not be absent.

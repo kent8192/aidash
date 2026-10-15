@@ -162,6 +162,14 @@ pub trait EvidenceStore: Send + Sync {
 	) -> Result<Vec<EvidenceFragment>>;
 }
 
+/// Whether the current reader may read a Run now, decided exactly as Run
+/// inspection decides it for that reader. A Run that does not exist is not
+/// readable.
+#[async_trait]
+pub trait RunReader: Send + Sync {
+	async fn readable(&self, run: Uuid) -> Result<bool>;
+}
+
 /// One Web disclosure: Run-derived content leaving the Node through a provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebDisclosure {

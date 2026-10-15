@@ -178,35 +178,6 @@ pub async fn configure(
 	crate::http::response(service.configure(actor, id, input).await)
 }
 
-#[get(
-	"/api/marketplace/compatibility",
-	name = "marketplace-compatibility",
-	auth = "protected"
-)]
-pub async fn compatibility(
-	#[inject] service: Depends<MarketplaceManagement>,
-	#[inject] actor: Actor,
-) -> ViewResult<Response> {
-	crate::http::json(service.compatibility(actor).await)
-}
-
-#[put(
-	"/api/marketplace/compatibility",
-	name = "marketplace-set-compatibility",
-	auth = "protected"
-)]
-pub async fn set_compatibility(
-	#[inject] service: Depends<MarketplaceManagement>,
-	#[inject] actor: Actor,
-	#[inject] browser: Option<BrowserOrigin>,
-	Json(input): Json<CompatibilityInput>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(service.set_compatibility(actor, browser, input).await)
-}
-
 #[post(
 	"/api/marketplace/installations/{id}/activation",
 	name = "marketplace-activate",
@@ -223,23 +194,6 @@ pub async fn activate(
 		return Ok(error.http_response());
 	}
 	crate::http::json(service.activate(actor, browser, id, input).await)
-}
-
-#[post(
-	"/api/marketplace/adoptions",
-	name = "marketplace-adopt",
-	auth = "protected"
-)]
-pub async fn adopt(
-	#[inject] service: Depends<MarketplaceManagement>,
-	#[inject] actor: Actor,
-	#[inject] browser: Option<BrowserOrigin>,
-	Json(input): Json<Adopt>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(service.adopt(actor, browser, input).await)
 }
 
 #[post(

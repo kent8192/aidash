@@ -174,12 +174,23 @@ impl RunDetailsScope for Scope {
 			vec!["image/png".into()],
 		])
 	}
-	async fn finish(mut self: Box<Self>, result: Result<RunDetails>) -> Result<RunDetails> {
+	async fn finish(self: Box<Self>, result: Result<RunDetails>) -> Result<RunDetails> {
+		(*self).close(result)
+	}
+	async fn finish_visible(
+		self: Box<Self>,
+		result: Result<aidash_domain::RunInspection>,
+	) -> Result<aidash_domain::RunInspection> {
+		(*self).close(result)
+	}
+}
+impl Scope {
+	fn close<T>(mut self, result: Result<T>) -> Result<T> {
 		match result {
-			Ok(details) => {
+			Ok(value) => {
 				self.state.lock().unwrap().record("commit")?;
 				self.finished = true;
-				Ok(details)
+				Ok(value)
 			}
 			Err(error) => {
 				self.state.lock().unwrap().calls.push("rollback".into());
@@ -369,4 +380,48 @@ async fn dropping_an_incomplete_projection_releases_its_disclosure_scope(reposit
 			.map(String::as_str),
 		Some("rollback")
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn visibility_alone_decides_like_inspection_without_reading_diagnostics(
+	repository: Repository,
+) {
+	let run = visible(&repository, id(1)).await.unwrap();
+	assert_eq!(run.id, id(1));
+	assert_eq!(
+		repository.0.lock().unwrap().calls,
+		vec![
+			"begin",
+			"run",
+			"workspace",
+			"workspace.read",
+			"visible",
+			"commit"
+		]
+	);
+}
+#[rstest]
+#[case::missing("missing")]
+#[case::invisible("invisible")]
+#[case::workspace_denied("denied")]
+#[tokio::test]
+async fn visibility_alone_refuses_what_inspection_refuses(
+	repository: Repository,
+	#[case] reason: &str,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		match reason {
+			"missing" => state.raw = None,
+			"invisible" => state.visible = false,
+			_ => state.deny = true,
+		}
+	}
+	assert!(matches!(
+		visible(&repository, id(1)).await,
+		Err(Error::Forbidden)
+	));
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
+	assert!(!state.calls.contains(&"invocations".into()));
 }

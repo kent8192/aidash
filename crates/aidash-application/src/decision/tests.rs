@@ -11,9 +11,8 @@ fn config(mode: Mode) -> DeciderConfig {
 		answer_type: AnswerType::Noul,
 		description: "Keep needed history".into(),
 		provider_contract: PROVIDER.into(),
-		endpoint: "https://example.test/systemone".into(),
-		model: "jev-1.13.0".into(),
-		credential_env: "AIDASH_SECRET_JEV".into(),
+		provider_credential: "openrouter".into(),
+		model: "typesafe/jev-1.13".into(),
 		builder: BUILDER.into(),
 		option_source: OPTION_SOURCE.into(),
 		rule: RULE.into(),
@@ -420,6 +419,7 @@ impl DecisionJournal for Fixture {
 		Ok(())
 	}
 }
+#[async_trait]
 impl DecisionProvider for Fixture {
 	fn implementation_id(&self) -> &str {
 		&self.provider_implementation
@@ -450,7 +450,11 @@ impl DecisionProvider for Fixture {
 			})
 			.collect())
 	}
-	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>> {
+	async fn prepare(
+		&self,
+		request: &PreparedRequest,
+		_: Uuid,
+	) -> Result<Box<dyn PreparedDispatch + '_>> {
 		if self.fail_prepare {
 			return Err(Error::Invalid("credential unavailable".into()));
 		}
@@ -540,6 +544,7 @@ async fn evaluate(
 		tools: &[],
 		max_output_tokens: 0,
 		projection: &aidash_domain::context::RequestProjection::Legacy,
+		estimate: Default::default(),
 	};
 	let mut boundary = Boundary {
 		node: "aidash://execution".into(),
@@ -570,7 +575,7 @@ async fn evaluate(
 		restrictions: fixture.binding_restrictions.clone(),
 	};
 	if fixture.corrupt_bound_config {
-		bound.config.model = "jev-1.14.0".into();
+		bound.config.model = "typesafe/jev-1.14".into();
 	}
 	let input = Evaluation {
 		boundary: &boundary,
@@ -1165,7 +1170,7 @@ async fn replay_rejects_models_that_differ_from_the_pinned_configuration(#[case]
 	let mut recovered: Evidence =
 		serde_json::from_value(serde_json::to_value(evidence).unwrap()).unwrap();
 	assert_eq!(recovered.replay().unwrap(), recovered.branches);
-	recovered.model = "jev-1.14.0".into();
+	recovered.model = "typesafe/jev-1.14".into();
 	validate_model(&recovered.model).unwrap();
 	assert!(
 		recovered.replay().is_err(),

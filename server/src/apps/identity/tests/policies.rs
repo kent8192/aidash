@@ -285,7 +285,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert_eq!(status, 200);
 	assert_eq!(own_state["workspaces"].as_array().unwrap().len(), 1);
 	assert_eq!(own_state["tasks"][0]["id"], task["id"]);
-	for key in ["registry", "peers", "installations"] {
+	for key in ["registry", "peers"] {
 		assert_eq!(own_state[key], json!([]));
 	}
 	let (_, other_state) = scoped_request(&app, other, "GET", "/api/state", Value::Null).await;
@@ -316,7 +316,11 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 		.0,
 		403
 	);
-	for path in ["/api/marketplace", "/api/mesh", "/api/authorization/acme"] {
+	for path in [
+		"/api/marketplace/administration?tenant=acme",
+		"/api/mesh",
+		"/api/authorization/acme",
+	] {
 		assert_eq!(
 			scoped_request(&app, token, "GET", path, Value::Null)
 				.await

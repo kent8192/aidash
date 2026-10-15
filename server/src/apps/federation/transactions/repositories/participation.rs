@@ -45,6 +45,17 @@ impl Transaction {
 			Self::Admitted(access) => access.tx.as_mut(),
 		}
 	}
+	/// An admitted rollback goes through the native transaction, whose lock epoch
+	/// ends the catalog admissions that the released locks proved.
+	async fn rollback_to_savepoint(
+		&mut self,
+		name: &str,
+	) -> reinhardt::db::backends::error::Result<()> {
+		match self {
+			Self::Standalone(tx) => tx.rollback_to_savepoint(name).await,
+			Self::Admitted(access) => access.tx.rollback_to_savepoint(name).await,
+		}
+	}
 }
 
 struct Scope {
@@ -144,15 +155,17 @@ impl ParticipantScope for Scope {
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
 			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&self.runtime.store.node_id,
 			manifest,
 		)
 		.await?;
-		tx.rollback_to_savepoint("participant_validation")
+		self.transaction
+			.rollback_to_savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
-		tx.release_savepoint("participant_validation")
+		self.transaction
+			.executor()
+			.release_savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
 		Ok(())
@@ -163,7 +176,6 @@ impl ParticipantScope for Scope {
 		let mut scope = crate::bootstrap::transaction_mutation_scope(tx);
 		let applied = aidash_application::transactions::mutation::apply(
 			&mut scope,
-			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&self.runtime.store.node_id,
 			manifest,
 		)

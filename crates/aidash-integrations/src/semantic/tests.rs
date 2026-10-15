@@ -18,6 +18,14 @@ impl aidash_application::provider_access::ProviderAccess for FixtureAccess {
 			keyless: None,
 		})
 	}
+	async fn check(
+		&self,
+		_: &Context,
+		_: &str,
+		_: &aidash_application::provider_access::Source,
+	) -> Result<()> {
+		unreachable!("embedding never preflights a credential")
+	}
 }
 
 /// Keyless access that permits this fixture's loopback origin (ADR 0036).

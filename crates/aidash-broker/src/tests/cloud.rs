@@ -267,6 +267,7 @@ impl Cloud {
 			cost: json!({}),
 			projection_versions: vec![],
 			cache_mode: None,
+			request_estimator: None,
 		}
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {
@@ -280,6 +281,7 @@ impl Cloud {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			estimate: Default::default(),
 		}
 	}
 	fn scoped(&self, operation: CallOperation) -> Context {
@@ -289,6 +291,7 @@ impl Cloud {
 			operations: vec![operation],
 			max_output_tokens: 10,
 			cache_breakpoints: false,
+			call: None,
 		});
 		context
 	}

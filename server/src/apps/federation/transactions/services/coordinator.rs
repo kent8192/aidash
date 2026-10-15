@@ -27,7 +27,6 @@ pub(super) async fn submit_bound(
 	let origin = origin.map(Into::into);
 	aidash_application::transactions::admission::submit(
 		&crate::bootstrap::transaction_admission_repository(f),
-		&crate::bootstrap::registry_validation_for(&f.store),
 		manifest,
 		origin.as_ref(),
 	)
@@ -44,7 +43,6 @@ pub(crate) async fn submit_in(
 	let origin = origin.map(Into::into);
 	aidash_application::transactions::admission::submit_in(
 		&mut crate::bootstrap::transaction_admission_scope(f, tx),
-		&crate::bootstrap::registry_validation_for(&f.store),
 		manifest,
 		origin.as_ref(),
 	)

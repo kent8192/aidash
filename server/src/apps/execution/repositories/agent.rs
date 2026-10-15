@@ -54,6 +54,19 @@ impl ExecutionStore for Store {
 		*run = Store::save_run(self, run, token, "run.sources_observed").await?;
 		Ok(())
 	}
+	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(self, run, token, "run.estimate_pinned").await?;
+		Ok(())
+	}
+	async fn calibration_samples(
+		&self,
+		upstream_model: &str,
+		projection_version: u8,
+	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
+		Store::calibration_samples(self, upstream_model, projection_version)
+			.await
+			.map_err(Into::into)
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		Store::save_run(self, run, token, event)
 			.await
@@ -614,9 +627,8 @@ impl ExecutionEnvironment for Environment<'_> {
 			if let Some(authority) = &self.authority {
 				Box::new(authority.guard.compactor(self.federation))
 			} else {
-				Box::new(crate::context::jev::JevClient::from_env(
-					self.federation.client.clone(),
-				)?)
+				// An ordinary Run has no approved compactor, so it is not pruned (ADR 0041).
+				Box::new(crate::context::jev::Unapproved)
 			};
 		Ok(Box::new(Classifier(classifier)))
 	}

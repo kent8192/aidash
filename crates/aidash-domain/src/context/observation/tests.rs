@@ -42,6 +42,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 				created_by: "subject".into(),
 				idempotency_key: "artifact".into(),
 				created_at: now,
+				run_id: None,
 			})
 			.collect(),
 		events: (0..rows)
@@ -63,6 +64,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 				content: "\0".repeat(512),
 				idempotency_key: None,
 				created_at: now,
+				run_id: None,
 			})
 			.collect(),
 	}

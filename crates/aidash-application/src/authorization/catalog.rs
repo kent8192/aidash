@@ -12,6 +12,12 @@ pub async fn entry(
 	{
 		return Err(Error::Forbidden);
 	}
+	// The distribution, catalog and policy locks taken by the first admission keep it
+	// current for the rest of the scope's transaction; repeating it re-proves nothing.
+	if let Some(entry) = scope.admitted(reference, action) {
+		scope.remember(reference);
+		return Ok(entry);
+	}
 	if !scope.inherited_lease() {
 		scope.distribution_lock().await?;
 	}
@@ -24,6 +30,7 @@ pub async fn entry(
 	}
 	scope.require(&scope.resource(&entry), action).await?;
 	scope.remember(reference);
+	scope.admit(reference, action, &entry);
 	Ok(entry)
 }
 pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<Entry>> {
