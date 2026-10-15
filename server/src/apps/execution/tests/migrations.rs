@@ -1075,13 +1075,17 @@ async fn assert_baseline_seed_data(connection: &BackendConnection) {
 	let gate = connection
 		.fetch_all(
 			&Query::select()
-				.expr(Expr::cust("to_regclass('public.marketplace_gate') IS NULL"))
+				.expr_as(
+					Expr::cust("to_regclass('public.marketplace_gate') IS NULL"),
+					Alias::new("absent"),
+				)
 				.to_string(PostgresQueryBuilder),
 			vec![],
 		)
 		.await
 		.unwrap();
 	assert_eq!(gate.len(), 1);
+	assert!(gate[0].get::<bool>("absent").unwrap());
 }
 
 #[rstest]
