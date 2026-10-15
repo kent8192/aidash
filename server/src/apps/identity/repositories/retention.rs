@@ -5,7 +5,7 @@ use crate::apps::identity::models::{TenantRetentionRule, TenantRetentionRuleHist
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::store::Store;
 use aidash_application::{
-	Error, Result,
+	Result,
 	ports::retention::{RetentionRepository, RetentionScope},
 };
 use aidash_domain::retention::{self, Decider, RetentionChange, RetentionRules, SnapshotPeriods};
@@ -37,7 +37,7 @@ pub(crate) struct TenantRetention<'a> {
 }
 
 enum Transaction {
-	Subject(NativeAccess),
+	Subject(Box<NativeAccess>),
 	Administrator(Box<dyn TransactionExecutor>),
 }
 
@@ -235,7 +235,9 @@ impl RetentionRepository for TenantRetention<'_> {
 					tenant: identity.tenant.clone(),
 					subject: identity.subject.clone(),
 				},
-				Transaction::Subject(native(NativeAccess::begin(self.store, identity).await)?),
+				Transaction::Subject(Box::new(native(
+					NativeAccess::begin(self.store, identity).await,
+				)?)),
 			),
 			Actor::Operator => (
 				Decider::DeploymentAdministrator {

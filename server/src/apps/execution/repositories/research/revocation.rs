@@ -147,7 +147,7 @@ pub(crate) struct Revocations<'a> {
 
 enum Transaction {
 	Subject {
-		access: NativeAccess,
+		access: Box<NativeAccess>,
 		identity: SubjectIdentity,
 	},
 	Administrator(Box<dyn TransactionExecutor>),
@@ -168,7 +168,7 @@ impl Revocations<'_> {
 					subject: identity.subject.clone(),
 				},
 				Transaction::Subject {
-					access: NativeAccess::begin(&self.federation.store, identity).await?,
+					access: Box::new(NativeAccess::begin(&self.federation.store, identity).await?),
 					identity: identity.clone(),
 				},
 			),
