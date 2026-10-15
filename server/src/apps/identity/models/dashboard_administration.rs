@@ -4,7 +4,7 @@ use super::tenant_administration::AdministrationEvent;
 use super::{
 	AdministrationActor, AuthorizationBundle, AuthorizationCredential, DashboardIdentity,
 	DashboardMapping, DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
-	TenantAdministrator,
+	PersonalTenantLink, TenantAdministrator,
 };
 use crate::apps::identity::serializers::oidc::{
 	AdminMapping, AdminOperatorGrant, Approval, ApprovedMapping, IdentityView, Registration,
@@ -18,7 +18,7 @@ use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::query::FieldAssignment;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SimpleExpr,
@@ -30,7 +30,7 @@ use uuid::Uuid;
 /// A sign-in retains its Display Attributes while its session is being started.
 const RECENT_SIGN_IN: Duration = Duration::minutes(10);
 
-pub(super) async fn database_time<E: TransactionExecutor + ?Sized>(
+pub(crate) async fn database_time<E: TransactionExecutor + ?Sized>(
 	tx: &mut E,
 ) -> Result<DateTime<Utc>> {
 	let (sql, values) = Query::select()
@@ -49,15 +49,18 @@ impl DashboardRegistrationRequest {
 			created_at: self.created_at,
 			expires_at: self.expires_at,
 			decided_at: self.decided_at,
+			tenant: self.tenant,
 		}
 	}
 
+	/// The identity's latest request not made with an Invitation.
 	pub(crate) async fn latest<E: OrmExecutor>(
 		db: &mut E,
 		identity: Uuid,
 	) -> Result<Option<Registration>> {
 		Ok(Self::objects()
 			.filter(Self::field_identity_id().eq(identity))
+			.filter(Self::field_invitation_id().is_null())
 			.order_by(&["-created_at", "-id"])
 			.limit(1)
 			.all_with_db(db)
@@ -76,7 +79,60 @@ impl DashboardRegistrationRequest {
 			.map(|registration| registration.identity_id()))
 	}
 
-	pub(crate) async fn submit(db: DatabaseConnection, identity: Uuid) -> Result<Registration> {
+	/// Opens a Registration Request addressed to `tenant` through an
+	/// Invitation. An identity has at most one pending request per Tenant, so a
+	/// second one fails without spending the Invitation.
+	pub(crate) async fn open_addressed(
+		tx: &mut AtomicTransaction,
+		identity: Uuid,
+		tenant: &str,
+		invitation: Option<Uuid>,
+	) -> Result<Self> {
+		// The identity lock serializes requests, as `submit` does.
+		DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_id().eq(identity))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or(Error::Unauthorized)?;
+		let now = database_time(tx).await?;
+		if Self::objects()
+			.filter(Self::field_identity_id().eq(identity))
+			.filter(Self::field_tenant().eq(Some(tenant.to_owned())))
+			.filter(Self::field_status().eq("pending"))
+			.filter(Self::field_expires_at().gt(now))
+			.exists_with_db(tx)
+			.await?
+		{
+			return Err(Error::Conflict(
+				"a request to this Tenant is already pending".into(),
+			));
+		}
+		let registration = Self::build()
+			.id(Uuid::new_v4())
+			.identity_id(identity)
+			.status("pending".to_owned())
+			.created_at(now)
+			.expires_at(now + Duration::days(7))
+			.decided_at(None)
+			.decided_by(None)
+			.decision_actor(None)
+			.tenant(Some(tenant.to_owned()))
+			.invitation_id(invitation)
+			.finish();
+		Ok(Self::objects().create_with_conn(tx, &registration).await?)
+	}
+
+	/// Opens or returns the identity's own request, made without an
+	/// Invitation. A Tenant Binding addresses it to the bound Tenant; otherwise
+	/// it is addressed to no Tenant and only Deployment Administrators decide it.
+	pub(crate) async fn submit(
+		db: DatabaseConnection,
+		identity: Uuid,
+		tenant: Option<String>,
+	) -> Result<Registration> {
 		db.atomic(async |tx| {
 			// One identity lock serializes duplicate submissions without extending
 			// the original seven-day deadline.
@@ -99,16 +155,23 @@ impl DashboardRegistrationRequest {
 			// A replacement request retains the latest authenticated display
 			// attributes. Expiry without resubmission is erased by the sweeper.
 			if let Some(previous) = Self::latest(tx, identity).await? {
-				// Direct Google accounts retain private authority while requesting
+				// A Personal Tenant's owner keeps that authority while requesting
 				// additional shared membership. Each approval remains immutable and
-				// a new request still requires explicit Operator approval.
-				let active_mapping = !identities.iter().any(DashboardIdentity::direct_google)
-					&& previous.status == "approved"
+				// a new request still requires an explicit approval.
+				let personal = PersonalTenantLink::objects()
+					.filter(PersonalTenantLink::field_identity_id().eq(identity))
+					.all_with_db(tx)
+					.await?
+					.pop()
+					.map(|link| link.tenant);
+				let active_mapping = previous.status == "approved"
 					&& DashboardMapping::objects()
 						.filter(DashboardMapping::field_identity_id().eq(identity))
 						.filter(DashboardMapping::field_enabled().eq(true))
-						.exists_with_db(tx)
-						.await?;
+						.all_with_db(tx)
+						.await?
+						.into_iter()
+						.any(|mapping| Some(&mapping.tenant) != personal.as_ref());
 				if dashboard_rules::reuse_registration(&previous, now, active_mapping)? {
 					return Ok(previous);
 				}
@@ -122,6 +185,8 @@ impl DashboardRegistrationRequest {
 				.decided_at(None)
 				.decided_by(None)
 				.decision_actor(None)
+				.tenant(tenant.clone())
+				.invitation_id(None)
 				.finish();
 			Ok(Self::objects()
 				.create_with_conn(tx, &registration)
@@ -176,7 +241,7 @@ impl DashboardRegistrationRequest {
 				.ok_or_else(|| Error::NotFound("registration".into()))?;
 			let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
 			if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
-				visible_to(administrator, &candidate)?;
+				visible_to(administrator, &preliminary, &candidate)?;
 				administrator
 					.require(
 						tx,
@@ -213,7 +278,11 @@ impl DashboardRegistrationRequest {
 							Expr::col(Alias::new("tenant"))
 								.eq(reinhardt::query::Expr::value(input.tenant.clone())),
 						)
-						.lock(LockType::Share)
+						.lock(if input.groups.is_some() {
+							LockType::Update
+						} else {
+							LockType::Share
+						})
 						.build(PostgresQueryBuilder);
 					let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
 						.await?
@@ -247,6 +316,49 @@ impl DashboardRegistrationRequest {
 			dashboard_rules::require_pending(&registration.status, registration.expires_at, now)?;
 			if identity.disabled_at.is_some() {
 				return Err(Error::Forbidden);
+			}
+			if registration
+				.tenant
+				.as_ref()
+				.is_some_and(|addressed| addressed != &input.tenant)
+			{
+				return Err(Error::Invalid(
+					"the request is addressed to another Tenant".into(),
+				));
+			}
+			if administrator.is_none()
+				&& !snapshot.bundle.subjects.contains_key(&input.subject)
+				&& let Some(groups) = &input.groups
+			{
+				// A Deployment Administrator may already replace the whole
+				// policy, so its new subject is not limited to Assignable Groups.
+				if let Some(group) = groups
+					.iter()
+					.find(|group| !snapshot.bundle.groups.contains_key(*group))
+				{
+					return Err(Error::Invalid(format!("unknown group: {group}")));
+				}
+				aidash_domain::policy::identifier(&input.subject)?;
+				snapshot.bundle.subjects.insert(
+					input.subject.clone(),
+					aidash_domain::policy::Subject {
+						kind: aidash_domain::policy::SubjectKind::User,
+						groups: groups.clone(),
+						roles: Default::default(),
+						attributes: json!({}),
+						enabled: true,
+						delegated_by: None,
+					},
+				);
+				snapshot.bundle.validate()?;
+				snapshot.revision = AuthorizationBundle::replace(
+					tx,
+					&input.tenant,
+					snapshot.revision,
+					serde_json::to_value(&snapshot.bundle)?,
+					"operator",
+				)
+				.await?;
 			}
 			crate::authorization::identity::require_dashboard_mapping(
 				policy.as_ref(),
@@ -366,11 +478,12 @@ impl DashboardRegistrationRequest {
 					tx,
 					AdministrationEvent {
 						action: tenant_administration::REGISTRATION_APPROVE,
-						identity: identity_id,
+						identity: Some(identity_id),
 						registration: Some(id),
 						mapping: Some(mapping_id),
 						tenant: Some(&input.tenant),
 						subject: Some(&input.subject),
+						invitation: None,
 					},
 				)
 				.await?;
@@ -404,7 +517,7 @@ impl DashboardRegistrationRequest {
 				.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
 			if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
 				let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
-				visible_to(administrator, &candidate)?;
+				visible_to(administrator, &preliminary, &candidate)?;
 				administrator
 					.require(
 						tx,
@@ -442,11 +555,12 @@ impl DashboardRegistrationRequest {
 					tx,
 					AdministrationEvent {
 						action: tenant_administration::REGISTRATION_REJECT,
-						identity: row.identity_id(),
+						identity: Some(row.identity_id()),
 						registration: Some(id),
 						mapping: None,
 						tenant: administrator.map(TenantAdministrator::tenant),
 						subject: None,
+						invitation: None,
 					},
 				)
 				.await?;
@@ -461,9 +575,10 @@ impl DashboardRegistrationRequest {
 /// Identity.
 pub(super) fn visible_to(
 	administrator: &TenantAdministrator,
+	registration: &DashboardRegistrationRequest,
 	identity: &DashboardIdentity,
 ) -> Result<()> {
-	if !administrator.sees(identity) || identity.id == administrator.identity_id {
+	if !administrator.sees(registration, identity) || identity.id == administrator.identity_id {
 		return Err(Error::NotFound("registration".into()));
 	}
 	Ok(())
@@ -826,6 +941,9 @@ impl DashboardMapping {
 						json!({"identity_id": target.identity_id(), "subject": target.subject}),
 					)
 					.await?;
+				administrator
+					.require_remaining_administrator(tx, &snapshot.bundle, Some(id))
+					.await?;
 			}
 			let mapping = Self::objects()
 				.filter(Self::field_id().eq(id))
@@ -873,11 +991,12 @@ impl DashboardMapping {
 					tx,
 					AdministrationEvent {
 						action: tenant_administration::MAPPING_DISABLE,
-						identity: mapping.identity_id(),
+						identity: Some(mapping.identity_id()),
 						registration: None,
 						mapping: Some(id),
 						tenant: Some(&mapping.tenant),
 						subject: Some(&mapping.subject),
+						invitation: None,
 					},
 				)
 				.await?;

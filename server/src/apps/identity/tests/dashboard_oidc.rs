@@ -234,6 +234,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]
 	}))
 	.unwrap();
+	common::tenant_root_in(federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: federation.store.pool.clone(),
 	}
@@ -1563,6 +1564,7 @@ async fn google_session_provisions_private_access_without_registration(
 		"actions":["*"],"resources":{"kinds":["*"]}}]
 	}))
 	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -1827,6 +1829,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	let authorization = Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	};
+	common::tenant_root_in(fixture.federation.store.pool.driver(), &tenant).await;
 	let before = authorization
 		.replace(&tenant, 0, policy, "operator")
 		.await
@@ -2209,6 +2212,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		}]
 	}))
 	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -2788,3 +2792,6 @@ fn negative_status_state(
 ) -> NegativeStatusState {
 	NegativeStatusState { checks, release }
 }
+
+#[path = "dashboard_oidc/tenancy.rs"]
+mod tenancy;

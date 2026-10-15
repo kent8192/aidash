@@ -2213,7 +2213,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		gcip: None,
 		registry,
 		config: Config {
-			default_host_packages: vec![],
+			tenancy: Default::default(),
 			node_id: store.node_id.clone(),
 			endpoint: "http://127.0.0.1:1".into(),
 			database_url: database.url.clone(),

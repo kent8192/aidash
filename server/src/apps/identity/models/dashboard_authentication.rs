@@ -106,12 +106,6 @@ impl DashboardLoginTransaction {
 }
 
 impl DashboardIdentity {
-	/// A direct Google identity (not federated through a GCIP Tenant) owns a
-	/// personal Tenant and may request additional shared Tenant membership.
-	pub(crate) fn direct_google(&self) -> bool {
-		self.issuer == crate::config::GOOGLE_OIDC_ISSUER && self.gcip_tenant.is_empty()
-	}
-
 	pub(crate) async fn register(
 		db: DatabaseConnection,
 		issuer: &str,

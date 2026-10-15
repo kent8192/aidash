@@ -180,6 +180,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		.unwrap();
 	let mut other = policy.clone();
 	other["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	assert_eq!(
 		request(
 			&app,

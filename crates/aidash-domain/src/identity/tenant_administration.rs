@@ -11,15 +11,34 @@ pub const REGISTRATION_REJECT: &str = "registration.reject";
 pub const MAPPING_READ: &str = "mapping.read";
 pub const MAPPING_DISABLE: &str = "mapping.disable";
 pub const SUBJECT_GROUP_UPDATE: &str = "subject.group.update";
+pub const INVITATION_CREATE: &str = "invitation.create";
+pub const INVITATION_READ: &str = "invitation.read";
+pub const INVITATION_REVOKE: &str = "invitation.revoke";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 6] = [
+pub const ACTIONS: [&str; 9] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
 	MAPPING_READ,
 	MAPPING_DISABLE,
 	SUBJECT_GROUP_UPDATE,
+	INVITATION_CREATE,
+	INVITATION_READ,
+	INVITATION_REVOKE,
+];
+
+/// The actions an administrator needs to keep a Tenant running: deciding
+/// requests, managing Mappings and groups, and inviting people. The
+/// last-administrator check requires one other subject holding all of them.
+pub const ADMINISTRATION_ACTIONS: [&str; 7] = [
+	REGISTRATION_READ,
+	REGISTRATION_APPROVE,
+	REGISTRATION_REJECT,
+	MAPPING_READ,
+	MAPPING_DISABLE,
+	SUBJECT_GROUP_UPDATE,
+	INVITATION_CREATE,
 ];
 
 /// Resource ID used when a capability or collection, not one item, is checked.
@@ -30,6 +49,7 @@ pub fn resource_kind(action: &str) -> &'static str {
 	match action {
 		REGISTRATION_READ | REGISTRATION_APPROVE | REGISTRATION_REJECT => "registration",
 		MAPPING_READ | MAPPING_DISABLE => "mapping",
+		INVITATION_CREATE | INVITATION_READ | INVITATION_REVOKE => "invitation",
 		_ => "subject",
 	}
 }

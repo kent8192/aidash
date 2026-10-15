@@ -114,6 +114,7 @@ impl KeyValidator for Validator {
 }
 
 async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
+	endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
 	assert_json(f.operator.post(&format!("/api/authorization/{tenant}"), &json!({
 		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(&f.runtime.config.node_id,"environment-agent","1.0.0"):{"kind":"agent"}},
 		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}
@@ -178,6 +179,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 			"resources":{"kinds":["provider_credential"],"ids":&ids[200..]}
 		}]
 	});
+	endpoint_fixtures::tenant_root(&f.runtime, "alpha").await;
 	assert_json(
 		f.operator
 			.post(
@@ -328,6 +330,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert_eq!(disabled.status_code(), 404);
 	for tenant in ["alpha", "beta"] {
 		let bundle = json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
+		endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
 		assert_json(
 			f.operator
 				.post(
@@ -2769,6 +2772,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	use reinhardt::{db::orm::Model, query::TableConstraint};
 	let mut f = endpoint.await;
 	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
+	endpoint_fixtures::tenant_root(&f.runtime, "alpha").await;
 	assert_json(
 		f.operator
 			.post(
@@ -2999,6 +3003,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 	}
 	let f = endpoint.await;
 	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-create","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create"],"resources":{"kinds":["provider_credential"]}}]});
+	endpoint_fixtures::tenant_root(&f.runtime, "alpha").await;
 	assert_json(
 		f.operator
 			.post(

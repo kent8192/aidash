@@ -136,6 +136,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 		.unwrap();
 	let mut tokens = vec![];
 	for tenant in ["acme", "other"] {
+		crate::endpoint::tenant_root(&app.runtime, tenant).await;
 		assert_eq!(
 			request(
 				&app,
@@ -398,6 +399,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, Store, Value, Value) {
 	let app = Arc::new(endpoint);
 	let store = app.runtime.store.clone();
+	crate::endpoint::tenant_root(&app.runtime, "acme").await;
 	assert_eq!(
 		request(
 			&app,
@@ -863,6 +865,7 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = Arc::new(endpoint.await);
+	crate::endpoint::tenant_root(&app.runtime, "acme").await;
 	let mut policy = bundle();
 	let update = json!({"expected_revision":0,"bundle":policy});
 	assert_eq!(
@@ -992,6 +995,7 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 		pool: store.pool.clone(),
 	};
 	let policy: PolicyBundle = serde_json::from_value(bundle()).unwrap();
+	crate::endpoint::tenant_root_in(store.pool.driver(), "acme").await;
 	service
 		.replace("acme", 0, policy.clone(), "operator")
 		.await

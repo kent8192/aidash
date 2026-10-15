@@ -542,20 +542,22 @@ impl DashboardSessions {
 		let mut connection = lease.handle();
 		let external = DashboardIdentity::find(&mut connection, session.identity_id()).await?;
 		let policy = f.config.dashboard_policy();
-		// Existing Google sessions receive the same one-time provisioning as a
-		// fresh verified callback, without changing pending shared enrollment.
-		let personal = if policy.as_ref().is_some_and(|policy| policy.google) {
+		// Existing sessions receive the same one-time provisioning as a fresh
+		// verified callback, without changing pending shared enrollment.
+		let pool = (!external.gcip_tenant.is_empty()).then_some(external.gcip_tenant.as_str());
+		if policy
+			.as_ref()
+			.is_some_and(|policy| policy.provisions_personal(pool))
+		{
 			crate::apps::identity::repositories::personal_tenant::provision(
 				lease.handle(),
 				external.id,
 			)
 			.await?;
-			Some(
-				aidash_domain::identity::personal_tenant::PersonalTenant::for_identity(external.id),
-			)
-		} else {
-			None
-		};
+		}
+		let personal =
+			crate::apps::identity::repositories::personal_tenant::of(lease.handle(), external.id)
+				.await?;
 		let mappings = DashboardMapping::enabled_for_identity(&mut connection, external.id).await?;
 		let mappings = mappings
 			.into_iter()
@@ -580,19 +582,33 @@ impl DashboardSessions {
 		let operator =
 			DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
 				.await?;
+		let labels = crate::apps::identity::repositories::tenants::labels(
+			&mut connection,
+			mappings
+				.iter()
+				.map(|mapping| mapping.tenant.clone())
+				.collect(),
+		)
+		.await?;
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
-				personal_account: external.direct_google(),
+				personal_account: personal.is_some(),
+				tenant_creation: crate::apps::identity::services::tenants::creation_offered(
+					&f,
+					pool,
+					external.disabled_at.is_some(),
+				),
+				invitations: f.config.tenancy.invitations,
 				operator,
 				mappings: mappings
 					.into_iter()
 					.map(|row| MappingView {
 						id: row.id,
-						personal: personal
-							.as_ref()
-							.is_some_and(|personal| personal.contains(&row.tenant, &row.subject)),
+						personal: personal.as_deref() == Some(row.tenant.as_str())
+							&& row.subject == aidash_domain::identity::tenancy::OWNER,
 						credential_active: active.contains(&row.credential_id),
+						label: labels.get(&row.tenant).cloned().flatten(),
 						tenant: row.tenant,
 						subject: row.subject,
 					})
@@ -630,7 +646,15 @@ impl DashboardSessions {
 			return Err(Error::Forbidden);
 		}
 		let lease = f.store.orm_connection()?;
-		DashboardRegistrationRequest::submit(lease.handle(), session.identity_id()).await
+		// A Tenant Binding addresses the request to its Tenant; otherwise only
+		// Deployment Administrators decide it.
+		let identity = DashboardIdentity::find(&mut lease.handle(), session.identity_id()).await?;
+		let tenant = f
+			.config
+			.gcip
+			.as_ref()
+			.and_then(|gcip| gcip.tenant_bindings.get(&identity.gcip_tenant).cloned());
+		DashboardRegistrationRequest::submit(lease.handle(), session.identity_id(), tenant).await
 	}
 	pub(crate) async fn admin_registrations(&self) -> Result<Vec<Registration>> {
 		let lease = self.runtime.store.orm_connection()?;

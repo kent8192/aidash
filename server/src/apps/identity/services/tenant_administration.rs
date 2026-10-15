@@ -107,6 +107,7 @@ impl TenantAdministrations {
 			Approval {
 				tenant,
 				subject: input.subject,
+				groups: None,
 			},
 			input.groups,
 			&AdministrationActor::TenantAdministrator(administrator.clone()),

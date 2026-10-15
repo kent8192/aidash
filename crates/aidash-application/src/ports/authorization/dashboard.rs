@@ -12,9 +12,25 @@ pub struct AccountPolicy {
 	pub google: bool,
 	pub tenant_bindings: Option<BTreeMap<String, String>>,
 	pub gcip_providers: BTreeMap<String, Vec<String>>,
+	/// The Tenancy Rule that creates a Personal Tenant at sign-in.
+	pub personal_tenants: bool,
 }
 
 impl AccountPolicy {
+	/// Whether an identity of `gcip_tenant` is outside every Tenant Binding, so
+	/// the Tenancy Rules cover it. A bound identity may only ever be mapped into
+	/// its bound Tenant.
+	pub fn unbound(&self, gcip_tenant: Option<&str>) -> bool {
+		match (&self.tenant_bindings, gcip_tenant) {
+			(Some(bindings), Some(pool)) => !bindings.contains_key(pool),
+			(Some(_), None) => false,
+			(None, _) => true,
+		}
+	}
+	/// Whether signing in creates a Personal Tenant for an identity of `gcip_tenant`.
+	pub fn provisions_personal(&self, gcip_tenant: Option<&str>) -> bool {
+		self.personal_tenants && self.unbound(gcip_tenant)
+	}
 	pub fn providers_for(&self, tenant: &str) -> Vec<String> {
 		self.gcip_providers
 			.get(tenant)
@@ -83,7 +99,7 @@ pub trait AccountStatus: Send + Sync {
 pub trait LoginAccounts: Send {
 	async fn find(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Option<Account>>;
 	async fn register(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Account>;
-	/// Create private Subject authority once; never restore withdrawn authority.
+	/// Create a Personal Tenant once; never restore withdrawn authority.
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()>;
 }
 

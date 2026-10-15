@@ -31,6 +31,9 @@ fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
 }
 async fn policy(f: &Federation, tenant: &str, revision: i64, value: Value) {
+	if revision == 0 {
+		common::tenant_root(f, tenant).await;
+	}
 	Authorization {
 		pool: f.store.pool.clone(),
 	}

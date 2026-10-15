@@ -1019,6 +1019,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
 	.unwrap();
+	common::tenant_root_in(f.store.pool.driver(), "acme").await;
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -1228,6 +1229,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 			json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[]}),
 		)
 		.unwrap();
+		common::tenant_root_in(f.store.pool.driver(), tenant).await;
 		aidash_server::authorization::Authorization {
 			pool: f.store.pool.clone(),
 		}
@@ -1718,6 +1720,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
 	.unwrap();
+	common::tenant_root_in(f.store.pool.driver(), "acme").await;
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -2094,6 +2097,9 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 }
 
 async fn replace_policy(f: &Federation, tenant: &str, revision: i64, policy: Value) {
+	if revision == 0 {
+		common::tenant_root(f, tenant).await;
+	}
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}

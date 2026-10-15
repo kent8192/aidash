@@ -562,6 +562,7 @@ fn sse_fixture(
 		let (f, url, schema) = application_fixture.runtime.parts();
 		let app = application_fixture.application.clone();
 		let operator = &f.config.api_token;
+		common::tenant_root(&f, "acme").await;
 		let (status, value) = request(
 			&app,
 			operator,

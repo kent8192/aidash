@@ -4,6 +4,8 @@ use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::query::QueryStatementBuilder as _;
 #[path = "postgres.rs"]
 mod postgres;
+#[path = "tenant_roots.rs"]
+mod tenant_roots;
 use futures_util::{
 	FutureExt,
 	future::{BoxFuture, Shared},
@@ -12,6 +14,8 @@ use postgres::PostgresFuture;
 pub(super) use postgres::postgres_container;
 #[allow(unused_imports)] // Only fault-injection suites change the schema.
 pub use postgres::{ADMIN, OWNER, admin_pool, owner_pool, with_login};
+#[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
+pub use tenant_roots::tenant_root_in;
 pub type DatabaseFuture = Shared<BoxFuture<'static, DatabaseFixture>>;
 use reinhardt::test::fixtures::temp_dir;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};

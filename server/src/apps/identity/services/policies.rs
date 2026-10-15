@@ -113,15 +113,10 @@ impl PolicyAdministration {
 		input: AuthorizationUpdate,
 	) -> Result<(reinhardt::StatusCode, PolicyReplacement)> {
 		let f = self.runtime.clone();
-		let (snapshot, pending_host_packages) = control_service(f.clone())
-			.replace_with_host_defaults(
-				&f.store,
-				&f.config.default_host_packages,
-				&tenant,
-				input.expected_revision,
-				input.bundle,
-				"operator",
-			)
+		// A Tenant without a root record is refused with 404: only the Tenant
+		// creation API makes Tenants (ADR 0050).
+		let snapshot = control_service(f.clone())
+			.replace(&tenant, input.expected_revision, input.bundle, "operator")
 			.await?;
 		let pending_transactions =
 			crate::transactions::authority::pending(&f, &tenant, None).await?;
@@ -134,7 +129,6 @@ impl PolicyAdministration {
 			status,
 			PolicyReplacement {
 				snapshot,
-				pending_host_packages,
 				pending_transactions,
 			},
 		))

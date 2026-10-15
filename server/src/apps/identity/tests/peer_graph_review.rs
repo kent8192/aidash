@@ -355,6 +355,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	let other_scope = admitted_run(&f, &task, credential, "acme", SOURCE, Uuid::new_v4()).await;
 	let mut other_policy = common::policy(&f.config.node_id);
 	other_policy["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	let (status, value) = request(
 		&app,
 		&f.config.api_token,

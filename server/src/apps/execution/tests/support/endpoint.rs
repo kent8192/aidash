@@ -6,6 +6,8 @@ use futures_util::{
 };
 #[path = "settings.rs"]
 mod settings;
+#[path = "tenant_roots.rs"]
+mod tenant_roots;
 use aidash_server::{bootstrap, federation::Federation};
 use reinhardt::InjectionContext;
 use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
@@ -15,6 +17,8 @@ use rstest::fixture;
 use serde_json::{Value, json};
 pub use settings::settings_for;
 use std::sync::Arc;
+#[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
+pub use tenant_roots::{tenant_root, tenant_root_in};
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
 #[derive(Clone)]
@@ -197,6 +201,7 @@ pub async fn subject(
 	name: &str,
 	client: Arc<APIClient>,
 ) -> Arc<APIClient> {
+	tenant_root(&fixture.runtime, "endpoint").await;
 	let body = json!({"expected_revision":0,"bundle":{"tenant":"endpoint","subjects":{name:{"kind":"user"}},"policies":[{"id":"test-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}});
 	assert_json(
 		fixture

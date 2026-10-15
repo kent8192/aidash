@@ -1,0 +1,41 @@
+//! The Tenant creation API and Tenant labels.
+use crate::apps::identity::oidc::BrowserOrigin;
+use crate::apps::identity::serializers::tenants::{LabelUpdate, TenantCreation};
+use crate::apps::identity::services::tenants::Tenants;
+use crate::authorization::identity::Actor;
+use crate::http::json::Json;
+use reinhardt::{Depends, Path, Request, Response, StatusCode, get, http::ViewResult, post, put};
+
+/// Creates a Tenant under an assigned name. Its own authentication accepts the
+/// Deployment Administrator bearer token and browser sessions without a Mapping.
+#[post("/api/tenants", name = "tenants-create", auth = "public")]
+pub async fn create(
+	#[inject] service: Depends<Tenants>,
+	request: Request,
+	Json(input): Json<TenantCreation>,
+) -> ViewResult<Response> {
+	crate::http::json_status(
+		service.create(request.headers, input).await,
+		StatusCode::CREATED,
+	)
+}
+
+#[get("/api/tenants", name = "tenants-list", auth = "protected")]
+pub async fn list(#[inject] service: Depends<Tenants>) -> ViewResult<Response> {
+	crate::http::json(service.list().await)
+}
+
+#[put(
+	"/api/tenants/{tenant}/label",
+	name = "tenants-label",
+	auth = "protected"
+)]
+pub async fn relabel(
+	#[inject] service: Depends<Tenants>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Json(input): Json<LabelUpdate>,
+) -> ViewResult<Response> {
+	crate::http::json(service.relabel(actor, origin, tenant, input).await)
+}

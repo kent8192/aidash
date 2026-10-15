@@ -244,6 +244,7 @@ fn authorization_runtime(
 			"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[]
 		}))
 		.unwrap();
+		common::tenant_root_in(f.store.pool.driver(), "alpha").await;
 		Authorization {
 			pool: f.store.pool.clone(),
 		}

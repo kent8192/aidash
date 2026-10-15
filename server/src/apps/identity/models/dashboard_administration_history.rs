@@ -14,11 +14,13 @@ pub struct DashboardAdministrationHistory {
 	pub id: uuid::Uuid,
 	#[field]
 	pub occurred_at: DateTime<Utc>,
-	/// `registration.approve`, `registration.reject` or `mapping.disable`.
+	/// `registration.approve`, `registration.reject`, `mapping.disable`,
+	/// `subject.group.update`, `tenant.create`, `tenant.update` or `invitation.*`.
 	#[field(field_type = "text")]
 	pub action: String,
-	#[field]
-	pub identity_id: uuid::Uuid,
+	/// The External Identity the event concerns, if any.
+	#[field(null = true)]
+	pub identity_id: Option<uuid::Uuid>,
 	#[field(null = true)]
 	pub registration_id: Option<uuid::Uuid>,
 	#[field(null = true)]
@@ -36,4 +38,7 @@ pub struct DashboardAdministrationHistory {
 	/// The Mapping a Tenant Administrator acted through.
 	#[field(null = true)]
 	pub actor_mapping_id: Option<uuid::Uuid>,
+	/// The Invitation an `invitation.*` event concerns.
+	#[field(null = true)]
+	pub invitation_id: Option<uuid::Uuid>,
 }
