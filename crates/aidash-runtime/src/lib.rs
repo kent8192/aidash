@@ -111,4 +111,6 @@ pub mod transfer;
 pub mod sandbox;
 pub mod transactions;
 
+pub mod child;
+
 pub mod dashboard;

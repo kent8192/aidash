@@ -1,19 +1,10 @@
 use super::*;
-use crate::{
-	ports::{Credentials, registry::CoreToolCatalog},
-	registry::DefinitionValidation,
-};
+use crate::{ports::registry::CoreToolCatalog, registry::DefinitionValidation};
 use aidash_domain::{capabilities::CoreCapabilities, provider::ToolSpec, registry::Entry};
 use rstest::{fixture, rstest};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 
-struct ReceiverOnlySecrets;
-impl Credentials for ReceiverOnlySecrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("source inspection must not resolve receiver credentials")
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
@@ -22,7 +13,7 @@ impl CoreToolCatalog for CoreContracts {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(ReceiverOnlySecrets), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 #[fixture]
 fn inspection() -> Inspection {

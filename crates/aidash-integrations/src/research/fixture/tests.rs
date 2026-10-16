@@ -39,3 +39,18 @@ async fn pages_are_served_only_from_the_corpus() {
 		Err(Failure::NonPublicDestination)
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn the_fixture_pdf_matches_what_page_reading_extracts_from_it() {
+	let fixture = FixtureResearch::default();
+	let url = Url::parse("https://research-fixture.example/annual-report.pdf").unwrap();
+	let page = fixture.fetch(&url).await.unwrap();
+	assert!(page.validate().is_ok());
+	assert_eq!(page.media_type, "application/pdf");
+	assert_eq!(page.original.as_deref(), Some(ANNUAL_REPORT_PDF));
+	let extracted = crate::research::pdf::extract(ANNUAL_REPORT_PDF).unwrap();
+	assert_eq!(page.lines, extracted.lines);
+	assert_eq!(page.page_count, Some(extracted.page_count));
+	assert_eq!(page.pages_without_text, extracted.pages_without_text);
+}

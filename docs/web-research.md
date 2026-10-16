@@ -47,7 +47,11 @@ not exposed to remote Runs).
   fragment** with an `evidence_ref`; a budget smaller than the next character
   still delivers that one character. Continue with `document_id` and the
   returned `next_cursor`; continuing reads the retained snapshot and never
-  fetches again.
+  fetches again. A PDF snapshot's lines carry their physical page, so its
+  passages report `pages`. Pages that carry no text are listed under
+  `pages_without_text` with `page_images` `available` (the original is
+  retained) or `original_not_retained`; a PDF whose pages all lack text
+  delivers no passage (`status: "empty"`).
 - **`find`** returns lines of a retained snapshot that contain `query`. Matching
   folds case (and `ß` to `ss`) unless `case_sensitive` is set. Every match is an
   Evidence fragment. Nothing leaves the Node.
@@ -248,7 +252,39 @@ and 443 for `https`. It decodes a page with its byte order mark, its declared
 `charset` or, for HTML, a `<meta>` declaration, and otherwise as UTF-8 or
 windows-1252; an encoding the Encoding Standard does not support returns
 `unsupported_media`. It strips markup, drops script, style and template content
-and never executes page content. PDF and other media return `unsupported_media`.
+and never executes page content. Other media return `unsupported_media`; PDFs
+are described below.
+
+### PDF pages
+
+The page provider also reads `application/pdf`, and `application/octet-stream`
+when the body starts with `%PDF-`, up to 16 MiB. Aidash never parses a PDF in
+the server process: it starts the `aidash` binary again as a child
+(`aidash __research-pdf extract`) that reads the PDF on standard input and
+answers on standard output. The child inherits no environment, so it holds no
+Deployment secret, and runs under operating-system limits: 20 s of CPU time, a
+1 GiB address space on Linux, a wall-clock deadline shared with the read, and a
+bounded reply. Decompression is bounded by that address space rather than by a
+per-stream budget, because the parser (`hayro`) has none. A child that fails for
+any reason is killed and leaves the page unreadable (`extraction_failed`). The
+parser reads page content streams and the fonts they use; it never interprets
+annotations, forms, scripts or attachments.
+
+- Lines follow content-stream order, one visual line each, with the page's
+  physical 1-based number; a page boundary always ends a line. Page labels are
+  not used. The first 500 pages are read.
+- A page whose text has fewer than 16 non-whitespace characters carries no
+  text and is listed in `pages_without_text`.
+- A PDF that needs a password returns `encrypted_document`; one whose
+  permissions forbid extracting its text returns `extraction_not_permitted`.
+- When some page carries no text, the snapshot keeps the original PDF apart from
+  its text, so that the Run's model can view that page as an image (ADR 0053).
+  A Run keeps at most 64 MiB of originals; beyond that a snapshot records only
+  the original's digest and size. Originals are snapshot contents: the
+  Retention Rules purge them and an Evidence Revocation removes them.
+
+On macOS the first PDF a server process reads can take about 30 s while the
+system assesses the unsigned binary; Linux has no such delay.
 
 ## Implementing another provider
 

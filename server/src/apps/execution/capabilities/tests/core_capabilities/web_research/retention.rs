@@ -358,3 +358,125 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	assert_eq!(status, 200, "every subject of the Tenant reads the periods");
 	r.close().await;
 }
+
+const REPORT: &str = "https://research-fixture.example/annual-report.pdf";
+
+/// The fixture PDF, whose second page carries no text (ADR 0053).
+fn report() -> &'static [u8] {
+	aidash_integrations::research::fixture::ANNUAL_REPORT_PDF
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_retained_original_goes_with_its_snapshot_contents(
+	#[future]
+	#[with(Default::default(), citing_router_for(REPORT))]
+	research_fixture: Research,
+) {
+	// Arrange: a completed Run read a PDF whose second page carries no text.
+	let r = research_fixture.await;
+	let (run, _) = r.cited().await;
+	assert_eq!(
+		r.column(
+			"research_snapshots",
+			"jsonb_build_array(page_count, pages_without_text, original_retained, original_bytes)",
+			run.id
+		)
+		.await,
+		[json!([3, [2], true, report().len()])]
+	);
+	assert_eq!(
+		r.column(
+			"research_originals",
+			"to_jsonb(octet_length(bytes))",
+			run.id
+		)
+		.await,
+		[json!(report().len())]
+	);
+
+	// Act: the Tenant shortens its periods and the sweep purges the snapshot.
+	let shorter =
+		json!({"rules":{"document_snapshots":{"after_run_seconds":0,"max_age_seconds":3600}}});
+	let (status, rules) = request(
+		&r.c.app,
+		&r.c.token,
+		"PUT",
+		"/api/tenants/acme/retention",
+		shorter,
+	)
+	.await;
+	assert_eq!(status, 200, "{rules}");
+	assert_eq!(
+		aidash_server::research::sweep_retention(&r.c.f.store)
+			.await
+			.unwrap(),
+		1
+	);
+
+	// Assert: the original went with the contents; its digest stays.
+	assert!(
+		r.column("research_originals", "to_jsonb(snapshot_id)", run.id)
+			.await
+			.is_empty()
+	);
+	assert_eq!(
+		r.column(
+			"research_snapshots",
+			"jsonb_build_array(original_retained, original_digest LIKE 'sha256:%', purge_reason)",
+			run.id
+		)
+		.await,
+		[json!([false, true, "retention"])]
+	);
+	r.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_evidence_revocation_removes_retained_originals(
+	#[future]
+	#[with(Default::default(), citing_router_for(REPORT))]
+	research_fixture: Research,
+) {
+	// Arrange: a completed Run read a PDF and retained its original.
+	let r = research_fixture.await;
+	let (run, _) = r.cited().await;
+	assert_eq!(
+		r.column(
+			"research_originals",
+			"to_jsonb(octet_length(bytes))",
+			run.id
+		)
+		.await,
+		[json!(report().len())]
+	);
+
+	// Act
+	let (status, record) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/runs/{}/research-revocation", run.id),
+		json!({"reason":"The rights holder asked us to remove the report."}),
+	)
+	.await;
+
+	// Assert
+	assert_eq!(status, 200, "{record}");
+	assert!(
+		r.column("research_originals", "to_jsonb(snapshot_id)", run.id)
+			.await
+			.is_empty()
+	);
+	assert_eq!(
+		r.column(
+			"research_snapshots",
+			"jsonb_build_array(original_retained, original_digest LIKE 'sha256:%', purge_reason)",
+			run.id
+		)
+		.await,
+		[json!([false, true, "revocation"])]
+	);
+	r.close().await;
+}

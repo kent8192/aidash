@@ -344,6 +344,11 @@ const PAGE: &str = "https://research-fixture.example/strasse";
 /// The first model request reads the fixture page's first line; once a
 /// delivered fragment is in the conversation, the answer cites it.
 fn citing_router() -> Arc<Router> {
+	citing_router_for(PAGE)
+}
+
+/// [`citing_router`] for another fixture page.
+fn citing_router_for(page: &'static str) -> Arc<Router> {
 	let provider = reinhardt::test::stub::StubRouter::new()
 		.route(
 			"/v1/chat/completions",
@@ -361,7 +366,7 @@ fn citing_router() -> Arc<Router> {
 						None => (
 							"tool_calls",
 							json!({"role":"assistant","content":null,"tool_calls":[{"id":"fetch-1","type":"function","function":{
-								"name":"research_fetch","arguments":json!({"url":PAGE,"max_bytes":5}).to_string()
+								"name":"research_fetch","arguments":json!({"url":page,"max_bytes":5}).to_string()
 							}}]}),
 						),
 					};

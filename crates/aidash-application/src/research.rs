@@ -30,6 +30,11 @@ pub mod reading;
 
 /// Instruction returned with a pending Web disclosure approval.
 pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision; after approval, repeat this exact call.";
+/// Instruction returned with the pages of a document that carry no text.
+pub const VIEW_INSTRUCTION: &str = "These pages carry no text. View one as an image with the view operation, if it is bound; a model without image input cannot read them.";
+/// Instruction returned when those pages cannot be viewed.
+pub const NOT_RETAINED_INSTRUCTION: &str =
+	"These pages carry no text, and the document is not retained, so they cannot be viewed.";
 
 /// The Agent-facing definition of a research operation, identical for every
 /// provider package so that providers can replace each other.
@@ -514,6 +519,10 @@ impl Research<'_> {
 		max_bytes: usize,
 	) -> Result<Value> {
 		let operation = Operation::Fetch;
+		if snapshot.lines.is_empty() {
+			// Every page of the document carries no text: nothing is delivered.
+			return Ok(textless_result(snapshot));
+		}
 		let mut budget = max_bytes;
 		let (delivery, fragment) = loop {
 			let Ok(delivery) = document::deliver(&snapshot.lines, position, budget) else {
@@ -695,11 +704,58 @@ fn fetch_result(snapshot: &DocumentSnapshot, mut fragment: Value, next: Option<P
 	fragment["requested_url"] = json!(snapshot.requested_url);
 	fragment["media_type"] = json!(snapshot.media_type);
 	fragment["next_cursor"] = json!(cursor);
+	if let Some(count) = snapshot.page_count {
+		fragment["page_count"] = json!(count);
+	}
+	if let Some(pages) = pages_without_text(snapshot) {
+		fragment["pages_without_text"] = pages;
+	}
 	envelope(
 		Operation::Fetch,
 		if partial { "partial" } else { "ok" },
 		fragment,
 		partial,
+	)
+}
+
+/// The pages of a snapshot that carry no text, and whether their images can be
+/// viewed from the retained original (ADR 0053).
+fn pages_without_text(snapshot: &DocumentSnapshot) -> Option<Value> {
+	if snapshot.pages_without_text.is_empty() {
+		return None;
+	}
+	let viewable = snapshot.purged.is_none()
+		&& snapshot
+			.original
+			.as_ref()
+			.is_some_and(|original| original.retained);
+	Some(json!({
+		"pages": snapshot.pages_without_text,
+		"page_images": if viewable { "available" } else { "original_not_retained" },
+		"instruction": if viewable { VIEW_INSTRUCTION } else { NOT_RETAINED_INSTRUCTION },
+	}))
+}
+
+/// The result of reading a document whose pages all carry no text.
+fn textless_result(snapshot: &DocumentSnapshot) -> Value {
+	envelope(
+		Operation::Fetch,
+		"empty",
+		json!({
+			"source_id": snapshot.source_id,
+			"document_id": snapshot.id,
+			"url": snapshot.url,
+			"requested_url": snapshot.requested_url,
+			"title": snapshot.title,
+			"media_type": snapshot.media_type,
+			"fetched_at": snapshot.fetched_at,
+			"text_digest": snapshot.text_digest,
+			"completeness": snapshot.completeness.as_str(),
+			"page_count": snapshot.page_count,
+			"pages_without_text": pages_without_text(snapshot),
+			"next_cursor": null,
+		}),
+		false,
 	)
 }
 

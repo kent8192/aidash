@@ -491,6 +491,9 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 			text: "Alpha".into(),
 			page: None,
 		}],
+		page_count: None,
+		pages_without_text: Vec::new(),
+		original: None,
 	};
 	let snapshot = evidence
 		.record_snapshot(run.id, created, &page.url, &page, &limits)
@@ -546,6 +549,109 @@ async fn a_dispatched_read_holds_a_snapshot_slot_until_it_settles(
 	assert_eq!(
 		evidence.reserve(run.id, &read("f3")).await.unwrap(),
 		Reserved::Reserved { source: None }
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapshots(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let run = leased_run(&store, &agent(&store).await).await;
+	let evidence = aidash_server::research::evidence_store(store.clone());
+	let original = aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec();
+	// Room for one original only (ADR 0053).
+	let limits = Limits {
+		original_bytes: original.len() as u64 + 1,
+		..Limits::default()
+	};
+	let mut snapshots = Vec::new();
+	for (key, address) in [
+		("f1", "https://example.com/first.pdf"),
+		("f2", "https://example.com/second.pdf"),
+	] {
+		let Reserved::Reserved {
+			source: Some(source),
+		} = evidence
+			.reserve(
+				run.id,
+				&Reservation {
+					key: key.into(),
+					operation: Operation::Fetch,
+					provider: "research.page@1".into(),
+					destination: "example.com".into(),
+					attribution: None,
+					limits,
+					budget: None,
+					source_url: Some(address.into()),
+				},
+			)
+			.await
+			.unwrap()
+		else {
+			panic!("the reservation creates the Source record");
+		};
+		let page = ExtractedPage {
+			url: address.into(),
+			title: Some("Annual report".into()),
+			media_type: "application/pdf".into(),
+			fetched_at: chrono::Utc::now(),
+			raw_digest: "sha256:raw".into(),
+			completeness: Completeness::Complete,
+			lines: vec![Line {
+				text: "Annual report: revenue grew by twelve percent.".into(),
+				page: Some(1),
+			}],
+			page_count: Some(3),
+			pages_without_text: vec![2],
+			original: Some(original.clone()),
+		};
+		snapshots.push(
+			evidence
+				.record_snapshot(run.id, source, address, &page, &limits)
+				.await
+				.unwrap()
+				.unwrap(),
+		);
+	}
+	let retained = snapshots
+		.iter()
+		.map(|snapshot| snapshot.original.as_ref().unwrap().retained)
+		.collect::<Vec<_>>();
+	assert_eq!(retained, [true, false]);
+	for snapshot in &snapshots {
+		let stored = evidence
+			.snapshot(run.id, snapshot.id)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(stored.page_count, Some(3));
+		assert_eq!(stored.pages_without_text, vec![2]);
+		assert_eq!(stored.original, snapshot.original);
+		assert_eq!(
+			stored.original.as_ref().unwrap().bytes,
+			original.len() as u64
+		);
+	}
+	assert_eq!(
+		evidence.original(run.id, snapshots[0].id).await.unwrap(),
+		Some(original.clone())
+	);
+	assert_eq!(
+		evidence.original(run.id, snapshots[1].id).await.unwrap(),
+		None
+	);
+	// Another Run never reads it.
+	assert_eq!(
+		evidence
+			.original(Uuid::new_v4(), snapshots[0].id)
+			.await
+			.unwrap(),
+		None
 	);
 	cleanup(store, &url, &schema).await;
 }

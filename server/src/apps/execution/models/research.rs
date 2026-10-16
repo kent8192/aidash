@@ -8,8 +8,8 @@ use aidash_domain::research::{
 	citations::EvidenceRef,
 	document::{Completeness, Line},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Purge, PurgeReason,
-		SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Original, Purge,
+		PurgeReason, SourceRecord,
 	},
 	revocation::{EvidenceRevocation, Removed},
 };
@@ -130,6 +130,35 @@ pub struct ResearchSnapshot {
 	/// `retention` or `revocation`, set together with `purged_at`.
 	#[field(field_type = "text", null = true)]
 	pub purge_reason: Option<String>,
+	/// The page count of a paginated source such as a PDF.
+	#[field(null = true)]
+	pub page_count: Option<i32>,
+	/// 1-based pages that carry no text (ADR 0053).
+	#[field]
+	pub pages_without_text: Json<Value>,
+	/// Digest and size of the original, recorded when some page carries no text.
+	#[field(field_type = "text", null = true)]
+	pub original_digest: Option<String>,
+	#[field(null = true)]
+	pub original_bytes: Option<i64>,
+	/// Whether `research_originals` still holds the original.
+	#[field]
+	pub original_retained: bool,
+}
+
+/// The original of a snapshot with pages that carry no text (ADR 0053). It is
+/// kept apart from the snapshot so that reading a snapshot never loads it.
+#[model(app_label = "execution", table_name = "research_originals")]
+#[derive(Serialize, Deserialize)]
+pub struct ResearchOriginal {
+	#[field(primary_key = true, field_type = "uuid")]
+	pub snapshot_id: Uuid,
+	#[field]
+	pub run_id: Uuid,
+	#[field]
+	pub bytes: Vec<u8>,
+	#[field(auto_now_add = true)]
+	pub created_at: DateTime<Utc>,
 }
 
 #[model(app_label = "execution", table_name = "research_fragments")]
@@ -476,6 +505,30 @@ impl ResearchSnapshot {
 			.text_bytes(i64::try_from(bytes).unwrap_or(i64::MAX))
 			.purged_at(None)
 			.purge_reason(None)
+			.page_count(
+				snapshot
+					.page_count
+					.map(|count| i32::try_from(count).unwrap_or(i32::MAX)),
+			)
+			.pages_without_text(Json(serde_json::to_value(&snapshot.pages_without_text)?))
+			.original_digest(
+				snapshot
+					.original
+					.as_ref()
+					.map(|original| original.digest.clone()),
+			)
+			.original_bytes(
+				snapshot
+					.original
+					.as_ref()
+					.map(|original| i64::try_from(original.bytes).unwrap_or(i64::MAX)),
+			)
+			.original_retained(
+				snapshot
+					.original
+					.as_ref()
+					.is_some_and(|original| original.retained),
+			)
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -514,6 +567,18 @@ impl ResearchSnapshot {
 						Completeness::TextLimit
 					},
 					lines: serde_json::from_value::<Vec<Line>>(record.lines.0)?,
+					page_count: record
+						.page_count
+						.and_then(|count| u32::try_from(count).ok()),
+					pages_without_text: serde_json::from_value(record.pages_without_text.0)?,
+					original: record.original_digest.map(|digest| Original {
+						digest,
+						bytes: record
+							.original_bytes
+							.and_then(|bytes| u64::try_from(bytes).ok())
+							.unwrap_or(0),
+						retained: record.original_retained,
+					}),
 					purged: match (record.purged_at, record.purge_reason.as_deref()) {
 						(Some(at), Some(reason)) => Some(Purge {
 							at,
@@ -709,9 +774,96 @@ impl ResearchSnapshot {
 			.table(Alias::new(Self::table_name()))
 			.value_expr(Alias::new("lines"), Expr::cust("'[]'::jsonb"))
 			.value(Alias::new("text_bytes"), 0_i64)
+			.value(Alias::new("original_retained"), false)
 			.value(Alias::new("purged_at"), at)
 			.value(Alias::new("purge_reason"), reason.as_str());
 		update
+	}
+}
+
+impl ResearchOriginal {
+	/// Bytes of originals `run` retains; call under the Run's lock.
+	pub(crate) async fn held(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u64> {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Func::coalesce(vec![
+					Func::sum(Expr::cust("octet_length(bytes)").into()).into(),
+					Expr::value(0_i64).into(),
+				]),
+				Alias::new("held"),
+			)
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one(&sql, convert_values(values)).await?;
+		let data = QueryRow::from_backend_row(row).data;
+		Ok(data["held"]
+			.as_i64()
+			.or_else(|| data["held"].as_str().and_then(|text| text.parse().ok()))
+			.and_then(|held| u64::try_from(held).ok())
+			.unwrap_or(u64::MAX))
+	}
+
+	/// Retain the original of the recorded snapshot `snapshot` of `run`.
+	pub(crate) async fn record(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		snapshot: Uuid,
+		bytes: &[u8],
+	) -> Result<()> {
+		let record = Self::build()
+			.snapshot_id(snapshot)
+			.run_id(run)
+			.bytes(bytes.to_vec())
+			.finish();
+		Self::objects()
+			.insert_with_executor(tx, &record)
+			.await
+			.map_err(FrameworkError::from)?;
+		Ok(())
+	}
+
+	/// The retained original of snapshot `snapshot` of `run`.
+	pub(crate) async fn get(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		snapshot: Uuid,
+	) -> Result<Option<Vec<u8>>> {
+		Ok(Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_snapshot_id().eq(snapshot))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.map(|record| record.bytes))
+	}
+
+	/// Remove the originals of the snapshots `ids`, as their contents go.
+	pub(crate) async fn purge(tx: &mut dyn TransactionExecutor, ids: &[Uuid]) -> Result<u64> {
+		if ids.is_empty() {
+			return Ok(0);
+		}
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(Self::table_name()))
+			.and_where(Expr::col("snapshot_id").is_in(ids.iter().map(|id| Expr::value(*id))))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected)
+	}
+
+	/// Remove every original of `run` for an Evidence Revocation.
+	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u64> {
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected)
 	}
 }
 

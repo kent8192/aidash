@@ -43,23 +43,13 @@ pub fn validate_real_rule(
 	let cfg = descriptor
 		.transport
 		.ok_or_else(|| Error::Invalid("real tests require an integration transport".into()))?;
+	// A production Tool carries no Deployment secret (#296), so a test
+	// credential, which only the Deployment's settings name, is always separate.
 	let isolated = match cfg {
-		ToolConfig::Http {
-			endpoint,
-			replay: _,
-			credential_env,
-		} => {
+		ToolConfig::Http { endpoint, .. } => {
 			let production = url::Url::parse(&endpoint)
 				.map_err(|_| Error::Invalid("invalid production endpoint".into()))?;
-			rule.read_only_verified
-				&& production != url
-				&& match credential_env {
-					Some(production) => rule
-						.credential_env
-						.as_ref()
-						.is_some_and(|test| test != &production),
-					None => true,
-				}
+			rule.read_only_verified && production != url
 		}
 		_ => false,
 	};

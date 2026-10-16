@@ -1,7 +1,7 @@
 //! PostgreSQL Research evidence for the host-owned research use cases.
 use crate::apps::execution::models::research::{
-	ResearchAttempt, ResearchFragment, ResearchRevocation, ResearchSnapshot, ResearchSource, lock,
-	revoked_result,
+	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchRevocation, ResearchSnapshot,
+	ResearchSource, lock, revoked_result,
 };
 use crate::store::Store;
 use crate::{authorization::identity::Actor, federation::Federation};
@@ -14,14 +14,15 @@ use aidash_domain::research::{
 	citations::EvidenceRef,
 	document::{ExtractedPage, Passage, text_digest},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, RunUsage,
-		SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, Original,
+		RunUsage, SourceRecord,
 	},
 	search::SourceCandidate,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub(crate) mod retention;
@@ -251,6 +252,17 @@ impl EvidenceStore for Evidence {
 					.await?
 					.ok_or_else(|| crate::Error::NotFound("source unavailable".into()))?
 					.id;
+				// An original is retained only within the Run's limit; beyond it
+				// the snapshot records its digest alone (ADR 0053).
+				let retained = match &page.original {
+					Some(bytes) => {
+						ResearchOriginal::held(tx.as_mut(), run)
+							.await?
+							.saturating_add(bytes.len() as u64)
+							<= limits.original_bytes
+					}
+					None => false,
+				};
 				let snapshot = DocumentSnapshot {
 					id: Uuid::now_v7(),
 					run_id: run,
@@ -264,9 +276,19 @@ impl EvidenceStore for Evidence {
 					text_digest: text_digest(&page.lines),
 					completeness: page.completeness,
 					lines: page.lines.clone(),
+					page_count: page.page_count,
+					pages_without_text: page.pages_without_text.clone(),
+					original: page.original.as_ref().map(|bytes| Original {
+						digest: format!("sha256:{:x}", Sha256::digest(bytes)),
+						bytes: bytes.len() as u64,
+						retained,
+					}),
 					purged: None,
 				};
 				ResearchSnapshot::record(tx.as_mut(), &snapshot).await?;
+				if let Some(bytes) = page.original.as_deref().filter(|_| retained) {
+					ResearchOriginal::record(tx.as_mut(), run, snapshot.id, bytes).await?;
+				}
 				tx.commit().await?;
 				Ok(Ok(snapshot))
 			}
@@ -280,6 +302,17 @@ impl EvidenceStore for Evidence {
 				let snapshot = ResearchSnapshot::get(tx.as_mut(), run, id).await?;
 				tx.commit().await?;
 				Ok(snapshot)
+			}
+			.await,
+		)
+	}
+	async fn original(&self, run: Uuid, snapshot: Uuid) -> Result<Option<Vec<u8>>> {
+		native(
+			async {
+				let mut tx = self.store.database().begin().await?;
+				let original = ResearchOriginal::get(tx.as_mut(), run, snapshot).await?;
+				tx.commit().await?;
+				Ok(original)
 			}
 			.await,
 		)
