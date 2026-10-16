@@ -1,5 +1,6 @@
 use super::*;
 use rstest::rstest;
+use serde_json::json;
 use std::collections::BTreeSet;
 
 #[rstest]
@@ -38,6 +39,15 @@ fn research_results_are_recognized_by_their_envelope() {
 	assert_eq!(result_operation(&json!({"operation": "fetch"})), None);
 	assert_eq!(
 		result_operation(&json!({"version": 1, "operation": "lookup", "limits": {}})),
+		None
+	);
+	// Another tool's result with the same generic fields is not research.
+	assert_eq!(
+		result_operation(&json!({
+			"version": 1,
+			"operation": "search",
+			"limits": {"max_bytes": 32768, "truncated": false},
+		})),
 		None
 	);
 }

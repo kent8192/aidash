@@ -10,10 +10,11 @@ use aidash_application::{
 use aidash_domain::retention::{MAX_PERIOD_SECONDS, RetentionRules, SnapshotPeriods};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{QueryRow, execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, Func, JoinType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, TableRef,
+	QueryStatementBuilder, SelectStatement, TableRef,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -69,93 +70,119 @@ struct Candidate {
 /// A Run's phase once it has ended; terminal Runs never change phase again.
 const ENDED: &str = "r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED')";
 
+fn snapshot(column: &str) -> (Alias, Alias) {
+	(Alias::new("s"), Alias::new(column))
+}
+
+/// Unpurged snapshots with their Run's end and their Tenant's stored periods.
+fn retained() -> SelectStatement {
+	let mut query = Query::select();
+	query
+		.column(snapshot("id"))
+		.column(snapshot("fetched_at"))
+		// A terminal Run is saved for the last time when it ends.
+		.expr_as(
+			Expr::cust(format!("CASE WHEN {ENDED} THEN r.updated_at END")),
+			Alias::new("run_ended_at"),
+		)
+		.column((Alias::new("t"), Alias::new("snapshot_after_run_seconds")))
+		.column((Alias::new("t"), Alias::new("snapshot_max_age_seconds")))
+		.from_as(
+			Alias::new(<ResearchSnapshot as reinhardt::db::orm::Model>::table_name()),
+			Alias::new("s"),
+		)
+		.join(
+			JoinType::InnerJoin,
+			TableRef::table_alias(Alias::new("runs"), Alias::new("r")),
+			Expr::col((Alias::new("r"), Alias::new("id"))).equals(snapshot("run_id")),
+		)
+		.join(
+			JoinType::LeftJoin,
+			TableRef::table_alias(Alias::new("authorization_workspaces"), Alias::new("w")),
+			Expr::col((Alias::new("w"), Alias::new("workspace_id")))
+				.equals((Alias::new("r"), Alias::new("workspace_id"))),
+		)
+		.join(
+			JoinType::LeftJoin,
+			TableRef::table_alias(Alias::new("tenant_retention_rules"), Alias::new("t")),
+			Expr::col((Alias::new("t"), Alias::new("tenant")))
+				.equals((Alias::new("w"), Alias::new("tenant"))),
+		)
+		.and_where(Expr::col(snapshot("purged_at")).is_null());
+	query
+}
+
+async fn fetch_retained(
+	tx: &mut dyn TransactionExecutor,
+	query: &SelectStatement,
+) -> crate::Result<Vec<RetainedSnapshot>> {
+	let (sql, values) = query.build(PostgresQueryBuilder);
+	let rows = tx.fetch_all(&sql, convert_values(values)).await?;
+	rows.into_iter()
+		.map(|row| {
+			let candidate: Candidate =
+				serde_json::from_value(QueryRow::from_backend_row(row).data)?;
+			let period =
+				|seconds: Option<i64>| seconds.and_then(|seconds| u32::try_from(seconds).ok());
+			Ok(RetainedSnapshot {
+				id: candidate.id,
+				fetched_at: candidate.fetched_at,
+				run_ended_at: candidate.run_ended_at,
+				tenant_rules: period(candidate.snapshot_after_run_seconds)
+					.zip(period(candidate.snapshot_max_age_seconds))
+					.map(|(after_run_seconds, max_age_seconds)| RetentionRules {
+						document_snapshots: SnapshotPeriods {
+							after_run_seconds,
+							max_age_seconds,
+						},
+					}),
+			})
+		})
+		.collect()
+}
+
 #[async_trait]
 impl SnapshotRetention for Snapshots {
 	async fn candidates(
 		&self,
 		after: Option<Uuid>,
 		retrieved_before: DateTime<Utc>,
+		ended_before: DateTime<Utc>,
 		limit: u32,
 	) -> Result<Vec<RetainedSnapshot>> {
-		let snapshot = |column: &str| (Alias::new("s"), Alias::new(column));
-		let mut query = Query::select();
+		let mut query = retained();
 		query
-			.column(snapshot("id"))
-			.column(snapshot("fetched_at"))
-			// A terminal Run is saved for the last time when it ends.
-			.expr_as(
-				Expr::cust(format!("CASE WHEN {ENDED} THEN r.updated_at END")),
-				Alias::new("run_ended_at"),
-			)
-			.column((Alias::new("t"), Alias::new("snapshot_after_run_seconds")))
-			.column((Alias::new("t"), Alias::new("snapshot_max_age_seconds")))
-			.from_as(
-				Alias::new(<ResearchSnapshot as reinhardt::db::orm::Model>::table_name()),
-				Alias::new("s"),
-			)
-			.join(
-				JoinType::InnerJoin,
-				TableRef::table_alias(Alias::new("runs"), Alias::new("r")),
-				Expr::col((Alias::new("r"), Alias::new("id"))).equals(snapshot("run_id")),
-			)
-			.join(
-				JoinType::LeftJoin,
-				TableRef::table_alias(Alias::new("authorization_workspaces"), Alias::new("w")),
-				Expr::col((Alias::new("w"), Alias::new("workspace_id")))
-					.equals((Alias::new("r"), Alias::new("workspace_id"))),
-			)
-			.join(
-				JoinType::LeftJoin,
-				TableRef::table_alias(Alias::new("tenant_retention_rules"), Alias::new("t")),
-				Expr::col((Alias::new("t"), Alias::new("tenant")))
-					.equals((Alias::new("w"), Alias::new("tenant"))),
-			)
-			.and_where(Expr::col(snapshot("purged_at")).is_null())
+			// A Run that ended within the shortest post-run period, or a
+			// snapshot younger than the shortest maximum age, keeps its basis.
 			.and_where(
-				Expr::cust(ENDED).or(Expr::col(snapshot("fetched_at")).lt(Expr::value(retrieved_before))),
+				Expr::cust(ENDED)
+					.and(Expr::col((Alias::new("r"), Alias::new("updated_at"))).lt(Expr::value(ended_before)))
+					.or(Expr::col(snapshot("fetched_at")).lt(Expr::value(retrieved_before))),
 			)
 			.order_by(snapshot("id"), Order::Asc)
 			.limit(u64::from(limit));
 		if let Some(after) = after {
 			query.and_where(Expr::col(snapshot("id")).gt(Expr::value(after)));
 		}
-		let (sql, values) = query.build(PostgresQueryBuilder);
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				let rows = tx.fetch_all(&sql, convert_values(values)).await?;
+				let candidates = fetch_retained(tx.as_mut(), &query).await?;
 				tx.commit().await?;
-				rows.into_iter()
-					.map(|row| {
-						let candidate: Candidate =
-							serde_json::from_value(QueryRow::from_backend_row(row).data)?;
-						let period = |seconds: Option<i64>| {
-							seconds.and_then(|seconds| u32::try_from(seconds).ok())
-						};
-						Ok(RetainedSnapshot {
-							id: candidate.id,
-							fetched_at: candidate.fetched_at,
-							run_ended_at: candidate.run_ended_at,
-							tenant_rules: period(candidate.snapshot_after_run_seconds)
-								.zip(period(candidate.snapshot_max_age_seconds))
-								.map(|(after_run_seconds, max_age_seconds)| RetentionRules {
-									document_snapshots: SnapshotPeriods {
-										after_run_seconds,
-										max_age_seconds,
-									},
-								}),
-						})
-					})
-					.collect()
+				Ok(candidates)
 			}
 			.await,
 		)
 	}
-	async fn shortest_tenant_max_age(&self) -> Result<Option<u32>> {
+	async fn shortest_tenant_periods(&self) -> Result<Option<SnapshotPeriods>> {
 		let (sql, values) = Query::select()
 			.expr_as(
+				Func::min(Expr::col(Alias::new("snapshot_after_run_seconds")).into()),
+				Alias::new("after_run"),
+			)
+			.expr_as(
 				Func::min(Expr::col(Alias::new("snapshot_max_age_seconds")).into()),
-				Alias::new("shortest"),
+				Alias::new("max_age"),
 			)
 			.from(Alias::new("tenant_retention_rules"))
 			.build(PostgresQueryBuilder);
@@ -164,20 +191,69 @@ impl SnapshotRetention for Snapshots {
 				let mut tx = self.store.database().begin().await?;
 				let row = tx.fetch_one(&sql, convert_values(values)).await?;
 				tx.commit().await?;
-				let shortest = &QueryRow::from_backend_row(row).data["shortest"];
-				Ok(shortest
-					.as_i64()
-					.or_else(|| shortest.as_str().and_then(|text| text.parse().ok()))
-					.and_then(|seconds| u32::try_from(seconds).ok()))
+				let data = QueryRow::from_backend_row(row).data;
+				let seconds = |value: &serde_json::Value| {
+					value
+						.as_i64()
+						.or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+						.and_then(|seconds| u32::try_from(seconds).ok())
+				};
+				Ok(seconds(&data["after_run"])
+					.zip(seconds(&data["max_age"]))
+					.map(|(after_run_seconds, max_age_seconds)| SnapshotPeriods {
+						after_run_seconds,
+						max_age_seconds,
+					}))
 			}
 			.await,
 		)
 	}
-	async fn purge(&self, ids: &[Uuid], at: DateTime<Utc>) -> Result<u64> {
+	async fn purge(
+		&self,
+		ids: &[Uuid],
+		expired: &(dyn for<'a> Fn(&'a RetainedSnapshot) -> bool + Sync),
+		at: DateTime<Utc>,
+	) -> Result<u64> {
+		if ids.is_empty() {
+			return Ok(0);
+		}
+		let mut query = retained();
+		query
+			.expr_as(
+				Expr::col((Alias::new("w"), Alias::new("tenant"))),
+				Alias::new("tenant"),
+			)
+			.and_where(Expr::col(snapshot("id")).is_in(ids.iter().map(|id| Expr::value(*id))));
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				let purged = ResearchSnapshot::purge(tx.as_mut(), ids, at).await?;
+				// A change of a Tenant's periods holds its lock exclusively, so
+				// the periods read below stay current until the purge commits.
+				let (sql, values) = query.build(PostgresQueryBuilder);
+				let tenants = tx
+					.fetch_all(&sql, convert_values(values))
+					.await?
+					.into_iter()
+					.filter_map(|row| {
+						QueryRow::from_backend_row(row).data["tenant"]
+							.as_str()
+							.map(str::to_owned)
+					})
+					.collect::<std::collections::BTreeSet<_>>();
+				for tenant in &tenants {
+					crate::apps::identity::repositories::retention::share_rules_lock(
+						tx.as_mut(),
+						tenant,
+					)
+					.await?;
+				}
+				let still = fetch_retained(tx.as_mut(), &query)
+					.await?
+					.into_iter()
+					.filter(|candidate| expired(candidate))
+					.map(|candidate| candidate.id)
+					.collect::<Vec<_>>();
+				let purged = ResearchSnapshot::purge(tx.as_mut(), &still, at).await?;
 				tx.commit().await?;
 				Ok(purged)
 			}

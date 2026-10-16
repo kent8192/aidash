@@ -299,6 +299,13 @@ impl EvidenceStore for Evidence {
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
 				}
+				// The caller read the snapshot earlier; a retention purge that
+				// committed since must not leave its contents in a fragment.
+				if let Err(unreadable) =
+					ResearchSnapshot::hold(tx.as_mut(), run, document.id).await?
+				{
+					return Ok(Err(unreadable));
+				}
 				ResearchFragment::record(tx.as_mut(), &fragment).await?;
 				tx.commit().await?;
 				Ok(Ok(fragment))

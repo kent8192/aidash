@@ -184,9 +184,15 @@ impl Failure {
 	}
 }
 
+/// Names the research result contract in every result, so a stored result is
+/// recognized as research by this field alone, never by fields an unrelated
+/// tool may also return.
+pub const RESULT_CONTRACT: &str = "aidash.research/1";
+
 /// The result envelope shared by every research operation.
 pub fn envelope(operation: Operation, status: &str, data: Value, truncated: bool) -> Value {
 	json!({
+		"contract": RESULT_CONTRACT,
 		"version": 1,
 		"operation": operation.as_str(),
 		"status": status,
@@ -198,6 +204,7 @@ pub fn envelope(operation: Operation, status: &str, data: Value, truncated: bool
 /// A recoverable research error returned to the model as an ordinary result.
 pub fn failure(operation: Operation, failure: Failure) -> Value {
 	json!({
+		"contract": RESULT_CONTRACT,
 		"version": 1,
 		"operation": operation.as_str(),
 		"status": if failure.uncertain() { "uncertain" } else { "error" },

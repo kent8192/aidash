@@ -14,7 +14,7 @@ use aidash_domain::research::{
 	revocation::EvidenceRevocation,
 	search::{ProviderResults, SearchQuery, SourceCandidate},
 };
-use aidash_domain::retention::{Decider, RetentionRules};
+use aidash_domain::retention::{Decider, RetentionRules, SnapshotPeriods};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -95,6 +95,9 @@ pub enum Reserved {
 	SourceLimit,
 	SnapshotLimit,
 	BudgetExhausted,
+	/// The Run's evidence was revoked; checked under the same lock as the
+	/// revocation, so nothing is dispatched after it commits.
+	Revoked,
 }
 
 /// Run-scoped Research evidence. Every read is limited to the given Run; an
@@ -287,16 +290,25 @@ pub struct RetainedSnapshot {
 #[async_trait]
 pub trait SnapshotRetention: Send + Sync {
 	/// Up to `limit` unpurged snapshots after `after` in identifier order whose
-	/// Run has ended or that were retrieved before `retrieved_before`. Others
-	/// cannot have lost their basis yet.
+	/// Run ended before `ended_before` or that were retrieved before
+	/// `retrieved_before`. Others cannot have lost their basis yet.
 	async fn candidates(
 		&self,
 		after: Option<Uuid>,
 		retrieved_before: DateTime<Utc>,
+		ended_before: DateTime<Utc>,
 		limit: u32,
 	) -> Result<Vec<RetainedSnapshot>>;
-	/// The shortest maximum age any Tenant stores, if any Tenant stores one.
-	async fn shortest_tenant_max_age(&self) -> Result<Option<u32>>;
-	/// Purge the contents of `ids` that are still unpurged; returns how many.
-	async fn purge(&self, ids: &[Uuid], at: DateTime<Utc>) -> Result<u64>;
+	/// The shortest of each period any Tenant stores, if any Tenant stores
+	/// periods.
+	async fn shortest_tenant_periods(&self) -> Result<Option<SnapshotPeriods>>;
+	/// Purge the contents of those `ids` still unpurged that `expired` holds
+	/// for once they are read again with their Tenant's current periods, which
+	/// no change can replace until the purge commits. Returns how many.
+	async fn purge(
+		&self,
+		ids: &[Uuid],
+		expired: &(dyn for<'a> Fn(&'a RetainedSnapshot) -> bool + Sync),
+		at: DateTime<Utc>,
+	) -> Result<u64>;
 }

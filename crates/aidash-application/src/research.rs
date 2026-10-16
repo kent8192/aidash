@@ -375,7 +375,9 @@ impl Research<'_> {
 			Ok(page) => page,
 			Err(error) => return self.settle_failure(call, operation, error, true).await,
 		};
-		if page.validate().is_err() {
+		// The maximum age counts from `fetched_at`, so a provider must not
+		// date a page after its own retrieval.
+		if page.validate().is_err() || page.fetched_at > Utc::now() {
 			return self
 				.settle_failure(call, operation, Failure::ProviderResponseInvalid, true)
 				.await;
@@ -637,6 +639,7 @@ impl Research<'_> {
 			Reserved::SourceLimit => Err(failure(operation, Failure::SourceLimit)),
 			Reserved::SnapshotLimit => Err(failure(operation, Failure::SnapshotLimit)),
 			Reserved::BudgetExhausted => Err(failure(operation, Failure::BudgetExhausted)),
+			Reserved::Revoked => Err(failure(operation, Failure::EvidenceRevoked)),
 		})
 	}
 

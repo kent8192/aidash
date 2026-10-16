@@ -133,6 +133,9 @@ struct State {
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
 	/// The Run's Research evidence was revoked.
 	research_revoked: bool,
+	/// Revoked only once this many revocation checks have answered.
+	research_revoked_after: Option<usize>,
+	research_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	/// Serve a model version that opts into the calibrated estimator.
@@ -330,7 +333,15 @@ impl ExecutionStore for Backend {
 	}
 	async fn research_revoked(&self, _: &Run) -> Result<bool> {
 		self.record("store.research_revoked");
-		Ok(self.0.research_revoked)
+		let checks = self
+			.0
+			.research_checks
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(self.0.research_revoked
+			|| self
+				.0
+				.research_revoked_after
+				.is_some_and(|after| checks >= after))
 	}
 	async fn unknown_evidence(
 		&self,
@@ -1285,6 +1296,8 @@ fn fixture() -> Fixture {
 		explicit_cache_model: false,
 		known_evidence: vec![],
 		research_revoked: false,
+		research_revoked_after: None,
+		research_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		calibrated_model: false,
 		calibration: Mutex::new(vec![]),

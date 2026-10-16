@@ -255,6 +255,7 @@ async fn each_user_input_gets_its_own_correction(mut fixture: Fixture) {
 
 fn research_result(text: &str) -> Value {
 	json!({
+		"contract": "aidash.research/1",
 		"version": 1,
 		"operation": "fetch",
 		"status": "ok",
@@ -312,6 +313,36 @@ async fn revoked_research_results_never_reach_a_model_request_again(fixture: Fix
 		ContextEvent::Tool { call, result }
 			if call.id == "call-page" && ContextEvent::is_revoked_result(result)
 	)));
+	assert!(fixture.run.context.research_revoked);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_revocation_committed_while_the_request_is_built_never_reaches_the_provider(
+	fixture: Fixture,
+) {
+	// Arrange: the revocation lands after the check at the start of the step.
+	let mut fixture = thinking(fixture);
+	research_history(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.research_revoked_after = Some(1);
+
+	// Act
+	let _ = advance_sources(&mut fixture).await;
+	let sent = fixture.backend.0.requests.lock().unwrap().len();
+	let _ = advance_sources(&mut fixture).await;
+
+	// Assert: nothing went out in the step that saw the revocation late; the
+	// next step was built from the redacted projection.
+	assert_eq!(sent, 0);
+	assert!(fixture.run.context.research_revoked);
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked passage"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
 	assert!(fixture.run.context.research_revoked);
 }
 

@@ -4,7 +4,7 @@
 use crate::{Error, Result};
 use aidash_application::ports::research::{Reservation, Reserved};
 use aidash_domain::research::{
-	Operation,
+	Failure, Operation,
 	citations::EvidenceRef,
 	document::{Completeness, Line},
 	evidence::{
@@ -20,8 +20,8 @@ use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Json, Model, QueryRow};
 use reinhardt::model;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, Func, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
+	Alias, Expr, ExprTrait, Func, IntoIden, LockType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -299,6 +299,11 @@ impl ResearchAttempt {
 		reservation: &Reservation,
 	) -> Result<Reserved> {
 		lock(tx, &format!("research-run:{run}")).await?;
+		// The revocation holds the same lock, so a revoked Run dispatches
+		// nothing more even when it was revoked after the caller's own check.
+		if ResearchRevocation::exists(tx, run).await? {
+			return Ok(Reserved::Revoked);
+		}
 		if let Some(attribution) = &reservation.attribution {
 			lock(tx, &format!("research-account:{}", attribution.account_id)).await?;
 		}
@@ -619,6 +624,35 @@ impl ResearchFragment {
 }
 
 impl ResearchSnapshot {
+	/// Hold snapshot `id` of `run` against a concurrent purge until the
+	/// transaction ends. `Err` is why it can no longer be read: a fragment cut
+	/// from contents purged meanwhile would outlive them.
+	pub(crate) async fn hold(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		id: Uuid,
+	) -> Result<std::result::Result<(), Failure>> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("purge_reason"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.lock(LockType::Share)
+			.build(PostgresQueryBuilder);
+		let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+			return Ok(Err(Failure::UnknownDocument));
+		};
+		Ok(
+			match QueryRow::from_backend_row(row).data["purge_reason"].as_str() {
+				None => Ok(()),
+				Some(reason) if reason == PurgeReason::Revocation.as_str() => {
+					Err(Failure::EvidenceRevoked)
+				}
+				Some(_) => Err(Failure::SnapshotPurged),
+			},
+		)
+	}
+
 	/// Remove the contents of the snapshots `ids` still retained, keeping
 	/// their identity, retrieval time and digests. Returns how many lost them.
 	pub(crate) async fn purge(

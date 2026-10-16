@@ -26,6 +26,29 @@ use uuid::Uuid;
 /// Advisory lock namespace serializing changes of one Tenant's periods.
 const LOCK_NAMESPACE: i64 = 71_003_238;
 
+/// Hold `tenant`'s periods unchanged until the transaction ends: a change
+/// takes the same lock exclusively. The retention sweep purges under it, so
+/// it never purges by periods a Tenant has just lengthened or cleared.
+pub(crate) async fn share_rules_lock(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> crate::Result<()> {
+	let (sql, values) = Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pg_advisory_xact_lock_shared".into_iden(),
+			vec![SimpleExpr::FunctionCall(
+				"hashtextextended".into_iden(),
+				vec![
+					Expr::value(tenant).into(),
+					Expr::value(LOCK_NAMESPACE).into(),
+				],
+			)],
+		))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
+
 pub(crate) struct TenantRetention<'a> {
 	pub store: &'a Store,
 	pub actor: &'a Actor,

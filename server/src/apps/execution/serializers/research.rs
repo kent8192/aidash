@@ -157,6 +157,25 @@ fn history_limit() -> u32 {
 pub struct RetentionInput {
 	/// The Tenant's periods, none longer than the Deployment's; null clears
 	/// them so the Deployment's periods apply again. A change applies to
-	/// content already kept at the next hourly sweep.
+	/// content already kept at the next hourly sweep. The field is required:
+	/// only an explicit null clears, never an omitted field.
+	#[serde(deserialize_with = "nullable_rules")]
+	#[schemars(required, schema_with = "nullable_rules_schema")]
 	pub rules: Option<aidash_domain::retention::RetentionRules>,
 }
+
+// Presence is required, while null is the explicit clear. Schemars' `required`
+// alone unwraps Option and would remove null from the SDK.
+fn nullable_rules_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+	<Option<aidash_domain::retention::RetentionRules> as JsonSchema>::json_schema(generator)
+}
+fn nullable_rules<'de, D: serde::Deserializer<'de>>(
+	deserializer: D,
+) -> Result<Option<aidash_domain::retention::RetentionRules>, D::Error> {
+	<Option<aidash_domain::retention::RetentionRules> as serde::Deserialize>::deserialize(
+		deserializer,
+	)
+}
+
+#[cfg(test)]
+mod tests;

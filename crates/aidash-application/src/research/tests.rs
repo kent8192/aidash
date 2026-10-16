@@ -20,7 +20,7 @@ use std::{
 	collections::{BTreeMap, BTreeSet},
 	sync::{
 		Mutex,
-		atomic::{AtomicUsize, Ordering},
+		atomic::{AtomicBool, AtomicUsize, Ordering},
 	},
 };
 
@@ -32,6 +32,12 @@ struct Memory {
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
 	revoked: Mutex<BTreeSet<Uuid>>,
+	/// A revocation that commits just before the next reservation.
+	revoke_at_reserve: AtomicBool,
+	/// A retention purge that commits just before the next fragment.
+	purge_at_fragment: AtomicBool,
+	/// A revocation that commits just after the next snapshot read.
+	revoke_after_snapshot_read: AtomicBool,
 }
 
 impl Memory {
@@ -125,6 +131,12 @@ impl EvidenceStore for Memory {
 		Ok(*self.spend.lock().unwrap())
 	}
 	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved> {
+		if self.revoke_at_reserve.swap(false, Ordering::SeqCst) {
+			self.revoke(run);
+		}
+		if self.is_revoked(run) {
+			return Ok(Reserved::Revoked);
+		}
 		let mut attempts = self.attempts.lock().unwrap();
 		if attempts.contains_key(&(run, reservation.key.clone())) {
 			return Ok(Reserved::Duplicate);
@@ -297,13 +309,20 @@ impl EvidenceStore for Memory {
 		Ok(Ok(snapshot))
 	}
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>> {
-		Ok(self
+		let snapshot = self
 			.snapshots
 			.lock()
 			.unwrap()
 			.iter()
 			.find(|snapshot| snapshot.id == id && snapshot.run_id == run)
-			.cloned())
+			.cloned();
+		if self
+			.revoke_after_snapshot_read
+			.swap(false, Ordering::SeqCst)
+		{
+			self.revoke(run);
+		}
+		Ok(snapshot)
 	}
 	async fn record_fragment(
 		&self,
@@ -313,6 +332,22 @@ impl EvidenceStore for Memory {
 	) -> Result<std::result::Result<EvidenceFragment, Failure>> {
 		if self.is_revoked(run) {
 			return Ok(Err(Failure::EvidenceRevoked));
+		}
+		if self.purge_at_fragment.swap(false, Ordering::SeqCst) {
+			self.purge_snapshot(document.id);
+		}
+		// The stored snapshot, not the caller's earlier copy, decides.
+		let stored = self
+			.snapshots
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|snapshot| snapshot.id == document.id && snapshot.run_id == run)
+			.map(DocumentSnapshot::readable);
+		match stored {
+			None => return Ok(Err(Failure::UnknownDocument)),
+			Some(Err(unreadable)) => return Ok(Err(unreadable)),
+			Some(Ok(())) => {}
 		}
 		let fragment = EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), document, passage);
 		self.fragments.lock().unwrap().push(fragment.clone());
@@ -500,7 +535,12 @@ impl PageProvider for Pages {
 			url: url.to_string(),
 			title: Some("Source".into()),
 			media_type: "text/plain".into(),
-			fetched_at: Utc::now(),
+			// A faulty provider dates its page after the retrieval.
+			fetched_at: if url.host_str() == Some("future.example.com") {
+				Utc::now() + Duration::days(1)
+			} else {
+				Utc::now()
+			},
 			raw_digest: "sha256:raw".into(),
 			completeness: Completeness::Complete,
 			lines: self.lines.clone(),
@@ -1808,6 +1848,114 @@ async fn a_revocation_during_the_evidence_read_withholds_the_evidence() {
 		2,
 		"readability is decided again after the evidence read"
 	);
+}
+
+#[tokio::test]
+async fn evidence_revoked_during_the_read_is_withheld() {
+	// Arrange: the revocation commits after the fragment and snapshot reads.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	store
+		.revoke_after_snapshot_read
+		.store(true, Ordering::SeqCst);
+
+	// Act
+	let error = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+}
+
+#[tokio::test]
+async fn a_page_dated_after_its_retrieval_is_never_retained() {
+	let store = Memory::default();
+	let (gate, pages) = (Gate::permitting(), Pages::new());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let fetched = research
+		.fetch(
+			&call(Uuid::new_v4(), "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://future.example.com/page","max_bytes":5}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		fetched["error"]["code"], "provider_response_invalid",
+		"{fetched}"
+	);
+	assert!(store.snapshots.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_revocation_committed_before_the_reservation_dispatches_nothing() {
+	// Arrange: the Run passes its first revocation check, then is revoked.
+	let store = Memory::default();
+	let (gate, pages) = (Gate::permitting(), Pages::new());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	store.revoke_at_reserve.store(true, Ordering::SeqCst);
+
+	// Act
+	let fetched = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source","max_bytes":5}),
+		)
+		.await
+		.unwrap();
+
+	// Assert: the locked reservation refused; no attempt, no page read.
+	assert_eq!(fetched["error"]["code"], "evidence_revoked", "{fetched}");
+	assert!(store.attempts.lock().unwrap().is_empty());
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_snapshot_purged_before_its_fragment_is_never_delivered() {
+	// Arrange: a retained snapshot, purged after the read that loads it.
+	let store = Memory::default();
+	let (gate, pages) = (Gate::permitting(), Pages::new());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let fetched = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source","max_bytes":5}),
+		)
+		.await
+		.unwrap();
+	let fragments = store.fragments.lock().unwrap().len();
+	store.purge_at_fragment.store(true, Ordering::SeqCst);
+
+	// Act
+	let found = research
+		.find(
+			&call(run, "k2", "research.page@1"),
+			&json!({"document_id":fetched["data"]["document_id"],"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+
+	// Assert: no text and no new fragment.
+	assert_eq!(found["error"]["code"], "snapshot_purged", "{found}");
+	assert_eq!(store.fragments.lock().unwrap().len(), fragments);
 }
 
 #[tokio::test]
