@@ -27,12 +27,15 @@ use std::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// Issue #243's migrations. Historical rollback tests run on the history before
-/// them, because reversing an earlier migration from the current head would
-/// reach objects those migrations removed or replaced.
+/// Issue #243's migrations and the registry migrations that depend on them.
+/// Historical rollback tests run on the history before them, because reversing
+/// an earlier migration from the current head would reach objects those
+/// migrations removed or replaced. A later registry migration left out of this
+/// list loses its dependency in that history and can run before registry/0001.
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0026_remove_legacy_installations"),
 	("registry", "0027_remove_legacy_installations_state"),
+	("registry", "0028_tool_transport_secrets"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
