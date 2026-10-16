@@ -1,4 +1,5 @@
-//! Registry reads and immutable inserts on a caller-owned SQLx transaction.
+//! One Tenant's Registry reads and immutable inserts on a caller-owned SQLx
+//! transaction.
 use crate::Error;
 use aidash_application::{
 	Result,
@@ -11,7 +12,11 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::Value;
-pub(crate) struct SqlScope<'a>(pub(crate) &'a mut crate::database::native::Transaction);
+pub(crate) struct SqlScope<'a>(
+	pub(crate) &'a mut crate::database::native::Transaction,
+	/// The Tenant whose Registry this scope reads and writes.
+	pub(crate) &'a str,
+);
 #[async_trait]
 impl DefinitionLookup for SqlScope<'_> {
 	async fn foreign_agent(
@@ -27,6 +32,7 @@ impl DefinitionLookup for SqlScope<'_> {
 		let query = Query::select()
 			.column(Alias::new("metadata"))
 			.from(Alias::new("registry"))
+			.and_where(Expr::col("tenant").eq(Expr::value(self.1)))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("version").eq(Expr::value(version)))
 			.to_string(PostgresQueryBuilder);
@@ -50,6 +56,7 @@ impl DefinitionLookup for SqlScope<'_> {
 		let query = Query::select()
 			.column(Alias::new("kind"))
 			.from(Alias::new("registry"))
+			.and_where(Expr::col("tenant").eq(Expr::value(self.1)))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("version").eq(Expr::value(version)))
 			.to_string(PostgresQueryBuilder);
@@ -61,15 +68,17 @@ impl DefinitionLookup for SqlScope<'_> {
 #[async_trait]
 impl DefinitionWriter for SqlScope<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
-		insert(self.0, entry).await.map_err(Into::into)
+		insert(self.0, self.1, entry).await.map_err(Into::into)
 	}
 }
 async fn insert(
 	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
 	entry: &Entry,
 ) -> crate::Result<bool> {
 	let value = serde_json::to_value(entry)?;
 	let inserted = {
+		let query_bind_0 = tenant;
 		let query_bind_1 = &entry.id;
 		let query_bind_2 = &entry.version;
 		let query_bind_3 = &entry.kind;
@@ -78,6 +87,7 @@ async fn insert(
 			&Query::insert()
 				.into_table(Alias::new("registry"))
 				.columns([
+					Alias::new("tenant"),
 					Alias::new("id"),
 					Alias::new("version"),
 					Alias::new("kind"),
@@ -85,6 +95,10 @@ async fn insert(
 				])
 				.from_subquery(
 					Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_0.to_owned()).into()],
+						))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -104,7 +118,7 @@ async fn insert(
 						.to_owned(),
 				)
 				.on_conflict(
-					OnConflict::columns(["id", "version"])
+					OnConflict::columns(["tenant", "id", "version"])
 						.do_nothing()
 						.to_owned(),
 				)
@@ -116,6 +130,7 @@ async fn insert(
 	.rows_affected()
 		!= 0;
 	let stored: Value = {
+		let query_bind_0 = tenant;
 		let query_bind_1 = &entry.id;
 		let query_bind_2 = &entry.version;
 		crate::database::native::query_scalar(
@@ -125,8 +140,9 @@ async fn insert(
 				))))
 				.from(Alias::new("registry"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(id = ? AND version = ?)".to_owned(),
+					"(tenant = ? AND id = ? AND version = ?)".to_owned(),
 					vec![
+						Expr::value(query_bind_0.to_owned()).into(),
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),
 					],

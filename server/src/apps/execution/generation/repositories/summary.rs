@@ -53,6 +53,8 @@ impl GenerationSummarySession for Session {
 			&Query::insert()
 				.into_table(Alias::new("generation_summary_usage"))
 				.columns([
+					// The request's Tenant owns the provider definition.
+					Alias::new("tenant"),
 					Alias::new("request_id"),
 					Alias::new("attempt_id"),
 					Alias::new("run_id"),
@@ -62,7 +64,11 @@ impl GenerationSummarySession for Session {
 					Alias::new("request_bytes"),
 				])
 				.values_panic([
-					Expr::value(id),
+					SimpleExpr::CustomWithExpr(
+						"(SELECT tenant FROM generation_requests WHERE id = ?)".to_owned(),
+						vec![Expr::value(id).into()],
+					),
+					Expr::value(id).into(),
 					Expr::value(attempt.id),
 					Expr::value(attempt.run),
 					Expr::value(attempt.provider.id.clone()),

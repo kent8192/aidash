@@ -5,8 +5,9 @@ use aidash_application::ports::registry::DefinitionLookup as _;
 use reinhardt::db::backends::TransactionExecutor;
 pub(crate) async fn definition(
 	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
 	id: &str,
 	version: &str,
 ) -> Result<Entry> {
-	Ok(NativeScope(tx).definition(id, version).await?)
+	Ok(NativeScope(tx, tenant).definition(id, version).await?)
 }

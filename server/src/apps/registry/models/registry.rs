@@ -17,4 +17,7 @@ pub struct Definition {
 	pub kind: DefinitionKind,
 	#[field]
 	pub metadata: Json<Value>,
+	/// The Tenant that owns this definition (ADR 0033).
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
 }

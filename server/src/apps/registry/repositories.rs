@@ -23,6 +23,7 @@ pub(crate) mod sql;
 pub struct Registry {
 	pub db: DatabaseConnection,
 	_lease: DatabaseConnectionLease,
+	pool: crate::database::native::Pool,
 	node_id: String,
 	provider_credentials: bool,
 }
@@ -34,14 +35,39 @@ impl Registry {
 	pub(crate) fn validation(&self) -> aidash_application::registry::DefinitionValidation {
 		crate::bootstrap::registry_validation().with_provider_credentials(self.provider_credentials)
 	}
+	fn scope<'a, E: OrmExecutor>(&'a self, db: &'a mut E, tenant: &'a str) -> OrmScope<'a, E> {
+		OrmScope {
+			db,
+			node: &self.node_id,
+			tenant,
+			principal: "",
+		}
+	}
+	/// Materializes the built-in definitions in every existing Tenant's
+	/// Registry (ADR 0033). Byte-identical rows are left as they are.
 	pub async fn seed_system(&self) -> Result<()> {
+		use reinhardt::query::{Alias, Order, PostgresQueryBuilder, Query, QueryStatementBuilder};
+		// A Tenant exists once its policy bundle does.
+		let tenants: Vec<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("authorization_bundles"))
+				.order_by(Alias::new("tenant"), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&self.pool)
+		.await?;
+		for tenant in tenants {
+			self.seed_tenant(&tenant).await?;
+		}
+		Ok(())
+	}
+	/// Materializes the built-in definitions in one Tenant's Registry.
+	pub async fn seed_tenant(&self, tenant: &str) -> Result<()> {
 		self.db
 			.atomic(async |tx| {
 				Ok(aidash_application::registry::system::seed(
-					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
-					},
+					&mut self.scope(tx, tenant),
 					&self.validation(),
 					&self.node_id,
 				)
@@ -50,72 +76,59 @@ impl Registry {
 			.await
 	}
 	pub fn new(pool: impl Into<crate::database::native::Pool>, node_id: &str) -> Result<Self> {
-		let lease = DatabaseConnectionLease::register(pool.into().connection())?;
+		let pool = pool.into();
+		let lease = DatabaseConnectionLease::register(pool.connection())?;
 		Ok(Self {
 			db: lease.handle(),
 			_lease: lease,
+			pool,
 			node_id: node_id.into(),
 			provider_credentials: false,
 		})
 	}
-	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
+	pub async fn get(&self, tenant: &str, id: &str, version: &str) -> Result<Entry> {
 		let mut db = self.db;
-		Ok(OrmScope {
-			db: &mut db,
-			node: &self.node_id,
-		}
-		.definition(id, version)
-		.await?)
+		Ok(self.scope(&mut db, tenant).definition(id, version).await?)
 	}
 	pub(crate) async fn get_for_run(
 		&self,
+		tenant: &str,
 		run: impl Into<aidash_domain::RunMetadata>,
 		id: &str,
 		version: &str,
 	) -> Result<Entry> {
 		let mut db = self.db;
 		Ok(aidash_application::registry::get_for_run(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
+			&mut self.scope(&mut db, tenant),
 			run,
 			id,
 			version,
 		)
 		.await?)
 	}
-	pub async fn list(&self, search: &Search) -> Result<Vec<Entry>> {
+	pub async fn list(&self, tenant: &str, search: &Search) -> Result<Vec<Entry>> {
 		let mut db = self.db;
-		Ok(aidash_application::registry::list(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
-			search,
-		)
-		.await?)
+		Ok(aidash_application::registry::list(&mut self.scope(&mut db, tenant), search).await?)
 	}
-	pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
+	pub async fn legacy_agents(
+		&self,
+		tenant: &str,
+		search: &Search,
+		offset: u64,
+	) -> Result<AgentPage> {
 		let mut db = self.db;
 		Ok(aidash_application::registry::legacy_agents(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
+			&mut self.scope(&mut db, tenant),
 			search,
 			offset,
 		)
 		.await?)
 	}
-	pub async fn register(&self, entry: Entry) -> Result<Entry> {
+	pub async fn register(&self, tenant: &str, entry: Entry) -> Result<Entry> {
 		self.db
 			.atomic(async |tx| {
 				Ok(aidash_application::registry::register(
-					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
-					},
+					&mut self.scope(tx, tenant),
 					&self.validation(),
 					entry,
 					None,
@@ -128,6 +141,8 @@ impl Registry {
 	}
 	pub(crate) async fn register_with_event(
 		&self,
+		tenant: &str,
+		principal: &str,
 		entry: Entry,
 		key: Option<Uuid>,
 	) -> Result<Entry> {
@@ -135,8 +150,8 @@ impl Registry {
 			.atomic(async |tx| {
 				Ok(aidash_application::registry::register(
 					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
+						principal,
+						..self.scope(tx, tenant)
 					},
 					&self.validation(),
 					entry,
@@ -148,15 +163,19 @@ impl Registry {
 			})
 			.await
 	}
-	pub async fn validate_references(&self, entry: &Entry) -> Result<()> {
+	pub async fn validate_references(&self, tenant: &str, entry: &Entry) -> Result<()> {
 		let mut db = self.db;
-		validate_references_with(&mut db, entry, &self.node_id, &self.validation()).await
+		validate_references_with(&mut db, tenant, entry, &self.node_id, &self.validation()).await
 	}
 }
 
+/// One Tenant's Registry on a framework connection or transaction.
 pub(crate) struct OrmScope<'a, E: OrmExecutor> {
 	db: &'a mut E,
 	node: &'a str,
+	tenant: &'a str,
+	/// The principal whose idempotency keys a tracked registration reserves.
+	principal: &'a str,
 }
 #[async_trait]
 impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
@@ -174,7 +193,10 @@ impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
 	}
 	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
 		Ok(serde_json::from_value(
-			records::definition(self.db, id, version).await?.metadata.0,
+			records::definition(self.db, self.tenant, id, version)
+				.await?
+				.metadata
+				.0,
 		)?)
 	}
 	async fn binding_installation(
@@ -189,7 +211,7 @@ impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
 #[async_trait]
 impl<E: OrmExecutor> DefinitionWriter for OrmScope<'_, E> {
 	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
-		records::insert_definition(self.db, entry)
+		records::insert_definition(self.db, self.tenant, entry)
 			.await
 			.map_err(Into::into)
 	}
@@ -201,7 +223,7 @@ impl<E: OrmExecutor + TransactionExecutor> RegistrationScope for OrmScope<'_, E>
 		entry: &mut Entry,
 		key: Option<Uuid>,
 	) -> aidash_application::Result<()> {
-		records::assign_id(self.db, entry, key)
+		records::assign_id(self.db, self.tenant, self.principal, entry, key)
 			.await
 			.map_err(Into::into)
 	}
@@ -220,7 +242,7 @@ impl RegistryRead for OrmScope<'_, DatabaseConnection> {
 		offset: usize,
 		limit: Option<usize>,
 	) -> aidash_application::Result<Vec<DefinitionDocument>> {
-		Ok(records::definitions(*self.db, kind, offset, limit)
+		Ok(records::definitions(*self.db, self.tenant, kind, offset, limit)
 			.await?
 			.into_iter()
 			.map(|row| DefinitionDocument {
@@ -231,12 +253,22 @@ impl RegistryRead for OrmScope<'_, DatabaseConnection> {
 			.collect())
 	}
 	async fn generated(&mut self, id: &str, version: &str) -> aidash_application::Result<bool> {
-		crate::apps::execution::generation::models::is_generated_agent(*self.db, id, version)
+		crate::apps::execution::generation::models::is_generated_agent(
+			*self.db,
+			self.tenant,
+			id,
+			version,
+		)
 			.await
 			.map_err(Into::into)
 	}
 }
-pub(crate) struct NativeScope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
+/// One Tenant's Registry on a caller-owned transaction.
+pub(crate) struct NativeScope<'a>(
+	pub(crate) &'a mut dyn TransactionExecutor,
+	/// The Tenant whose Registry this scope reads and writes.
+	pub(crate) &'a str,
+);
 #[async_trait]
 impl DefinitionLookup for NativeScope<'_> {
 	async fn foreign_agent(
@@ -259,7 +291,7 @@ impl DefinitionLookup for NativeScope<'_> {
 
 	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
 		Ok(serde_json::from_value(
-			transaction_records::definition(self.0, id, version)
+			transaction_records::definition(self.0, self.1, id, version)
 				.await?
 				.metadata
 				.into_inner(),
@@ -269,7 +301,7 @@ impl DefinitionLookup for NativeScope<'_> {
 #[async_trait]
 impl DefinitionWriter for NativeScope<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
-		transaction_records::insert_definition(self.0, entry)
+		transaction_records::insert_definition(self.0, self.1, entry)
 			.await
 			.map_err(Into::into)
 	}
@@ -277,12 +309,18 @@ impl DefinitionWriter for NativeScope<'_> {
 
 pub(crate) async fn validate_references_with<E: OrmExecutor>(
 	db: &mut E,
+	tenant: &str,
 	entry: &Entry,
 	node: &str,
 	validation: &aidash_application::registry::DefinitionValidation,
 ) -> Result<()> {
 	Ok(aidash_application::registry::validate_references(
-		&mut OrmScope { db, node },
+		&mut OrmScope {
+			db,
+			node,
+			tenant,
+			principal: "",
+		},
 		validation,
 		entry,
 		node,
@@ -291,12 +329,13 @@ pub(crate) async fn validate_references_with<E: OrmExecutor>(
 }
 pub(crate) async fn register_in(
 	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
 	entry: &Entry,
 	node: &str,
 	validation: &aidash_application::registry::DefinitionValidation,
 ) -> Result<bool> {
 	Ok(aidash_application::registry::register_definition(
-		&mut sql::SqlScope(tx),
+		&mut sql::SqlScope(tx, tenant),
 		validation,
 		entry,
 		node,
@@ -308,7 +347,9 @@ use aidash_application::ports::registry::{PrivateKnowledgeRead, PrivateKnowledge
 #[async_trait]
 impl<E: OrmExecutor> PrivateKnowledgeRead for OrmScope<'_, E> {
 	async fn documents(&mut self, entry: &Entry) -> aidash_application::Result<Option<Value>> {
-		records::documents(self.db, entry).await.map_err(Into::into)
+		records::documents(self.db, self.tenant, entry)
+			.await
+			.map_err(Into::into)
 	}
 }
 #[async_trait]
@@ -318,7 +359,7 @@ impl PrivateKnowledgeScope for OrmScope<'_, AtomicTransaction> {
 		entry: &Entry,
 		documents: Value,
 	) -> aidash_application::Result<()> {
-		records::insert_documents(self.db, entry, documents)
+		records::insert_documents(self.db, self.tenant, entry, documents)
 			.await
 			.map_err(Into::into)
 	}
@@ -326,15 +367,14 @@ impl PrivateKnowledgeScope for OrmScope<'_, AtomicTransaction> {
 impl Registry {
 	pub(crate) async fn register_personal(
 		&self,
+		tenant: &str,
+		principal: &str,
 		draft: aidash_application::registry::personal::PersonalDraft,
 		key: Uuid,
 	) -> Result<Entry> {
 		let mut db = self.db;
 		let registration = aidash_application::registry::personal::prepare(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
+			&mut self.scope(&mut db, tenant),
 			&self.validation(),
 			draft,
 			&self.node_id,
@@ -344,8 +384,8 @@ impl Registry {
 			.atomic(async |tx| {
 				Ok(aidash_application::registry::personal::register(
 					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
+						principal,
+						..self.scope(tx, tenant)
 					},
 					&self.validation(),
 					registration,
@@ -357,7 +397,11 @@ impl Registry {
 			.await
 	}
 }
-pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
+pub(crate) async fn private_documents(
+	db: &DatabaseConnection,
+	tenant: &str,
+	entry: &Entry,
+) -> Result<Value> {
 	let mut connection = *db;
 	if entry.kind == "agent" {
 		let input: aidash_domain::registry::bindings::AgentBindings =
@@ -379,9 +423,13 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 			if binding.target.registry_node != node {
 				return Err(crate::Error::Forbidden);
 			}
-			let source =
-				records::definition(&mut connection, &binding.target.id, &binding.target.version)
-					.await?;
+			let source = records::definition(
+				&mut connection,
+				tenant,
+				&binding.target.id,
+				&binding.target.version,
+			)
+			.await?;
 			let source: Entry = serde_json::from_value(source.metadata.into_inner())?;
 			if source.config.get("schema_version").is_none() {
 				continue;
@@ -398,6 +446,8 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 				&mut OrmScope {
 					db: &mut connection,
 					node,
+					tenant,
+					principal: "",
 				},
 				&source,
 			)
@@ -418,6 +468,8 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 		&mut OrmScope {
 			db: &mut connection,
 			node: "",
+			tenant,
+			principal: "",
 		},
 		entry,
 	)

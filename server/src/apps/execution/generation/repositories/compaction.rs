@@ -156,6 +156,8 @@ impl GenerationCompactionSession for Session {
 				&reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("generation_compaction_usage"))
 					.columns([
+						// The request's Tenant owns the provider definition.
+						reinhardt::query::Alias::new("tenant"),
 						reinhardt::query::Alias::new("request_id"),
 						reinhardt::query::Alias::new("attempt_id"),
 						reinhardt::query::Alias::new("run_id"),
@@ -166,6 +168,10 @@ impl GenerationCompactionSession for Session {
 					])
 					.from_subquery(
 						reinhardt::query::Query::select()
+							.expr(SimpleExpr::CustomWithExpr(
+								"(SELECT tenant FROM generation_requests WHERE id = ?)".to_owned(),
+								vec![Expr::value(query_bind_1.to_owned()).into()],
+							))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],

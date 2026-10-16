@@ -14,22 +14,24 @@ use reinhardt::db::orm::{Model, OrmExecutor};
 
 pub(crate) async fn snapshot(
 	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
 	node: &str,
 	agent: &aidash_domain::registry::Entry,
 	remote: bool,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	snapshot_mode(tx, node, agent, remote, true, configured).await
+	snapshot_mode(tx, tenant, node, agent, remote, true, configured).await
 }
 async fn snapshot_mode(
 	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
 	node: &str,
 	agent: &aidash_domain::registry::Entry,
 	remote: bool,
 	foreign: bool,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	let mut definitions = super::sql::SqlScope(tx);
+	let mut definitions = super::sql::SqlScope(tx, tenant);
 	let mut catalog = aidash_application::registry::bindings::catalog::LocalCatalog(
 		aidash_application::registry::bindings::catalog::LookupCatalog {
 			definitions: &mut definitions,
@@ -186,7 +188,17 @@ pub(crate) async fn authorized(
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
-	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
+	let tenant = access.identity.tenant.clone();
+	let snapshot = snapshot_mode(
+		&mut access.tx,
+		&tenant,
+		&node,
+		entry,
+		remote,
+		false,
+		configured,
+	)
+	.await?;
 	for definition in &snapshot.definitions {
 		if definition.identity.registry_node != node {
 			return Err(Error::Forbidden);
@@ -211,22 +223,25 @@ pub(crate) async fn authorized(
 /// Resolve a preview/template closure in an existing framework transaction.
 pub(crate) async fn preview(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
 	configured: bool,
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	preview_mode(tx, node, entry, false, configured).await
+	preview_mode(tx, tenant, node, entry, false, configured).await
 }
 pub(crate) async fn preview_remote(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
 	configured: bool,
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	preview_mode(tx, node, entry, true, configured).await
+	preview_mode(tx, tenant, node, entry, true, configured).await
 }
 async fn preview_mode(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
 	remote: bool,
@@ -235,7 +250,7 @@ async fn preview_mode(
 	aidash_application::registry::bindings::resolve(
 		&mut aidash_application::registry::bindings::catalog::LocalCatalog(
 			aidash_application::registry::bindings::catalog::LookupCatalog {
-				definitions: &mut super::NativeScope(tx),
+				definitions: &mut super::NativeScope(tx, tenant),
 				node,
 			},
 		),
@@ -289,6 +304,7 @@ pub(crate) async fn require_operation(
 /// System visibility verifies the exact Node-owned bytes and grants no resource permission.
 pub(crate) async fn system_definition(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
 	node: &str,
 	reference: &aidash_domain::registry::EntityRef,
 ) -> crate::Result<aidash_domain::registry::Entry> {
@@ -301,6 +317,7 @@ pub(crate) async fn system_definition(
 	.ok_or(crate::Error::Forbidden)?;
 	let saved = crate::apps::registry::models::transaction_records::definition(
 		tx,
+		tenant,
 		&reference.id,
 		&reference.version,
 	)

@@ -21,4 +21,6 @@ pub struct RegistryAgentResourceRef {
 	pub reference_key: String,
 	#[field(field_type = "text")]
 	pub reference_version: String,
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
 }

@@ -29,6 +29,8 @@ enum Mode {
 struct Session {
 	configured: bool,
 	node: String,
+	/// The Tenant whose policies and Registry this session reads.
+	tenant: String,
 	mode: Mode,
 }
 impl Session {
@@ -84,7 +86,7 @@ impl GenerationPolicies for NativePolicies {
 	}
 	async fn begin(
 		&self,
-		_: &str,
+		tenant: &str,
 		exclusive: bool,
 	) -> aidash_application::Result<Box<dyn PolicySession>> {
 		let mode = match &self.actor {
@@ -101,6 +103,7 @@ impl GenerationPolicies for NativePolicies {
 			configured: self.store.provider_credentials.is_some(),
 			mode,
 			node: self.store.node_id.clone(),
+			tenant: tenant.into(),
 		}))
 	}
 }
@@ -111,9 +114,11 @@ impl PolicySession for Session {
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let node = self.node.clone();
+		let tenant = self.tenant.clone();
 		let configured = self.configured;
 		crate::apps::registry::repositories::bindings::preview(
 			&mut **self.tx(),
+			&tenant,
 			&node,
 			entry,
 			configured,
@@ -191,6 +196,7 @@ impl PolicySession for Session {
 			let node = self.node.clone();
 			let entry = crate::apps::registry::repositories::bindings::system_definition(
 				&mut **self.tx(),
+				tenant,
 				&node,
 				reference,
 			)

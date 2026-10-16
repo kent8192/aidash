@@ -14,4 +14,9 @@ pub struct RegistryRequest {
 	pub request: Json<Value>,
 	#[field(field_type = "text")]
 	pub entity_id: String,
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
+	/// The authenticated principal that reserved the key.
+	#[field(primary_key = true, field_type = "text")]
+	pub principal: String,
 }

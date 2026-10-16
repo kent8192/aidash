@@ -15,4 +15,6 @@ pub struct AgentKnowledge {
 	pub agent_version: String,
 	#[field]
 	pub documents: Json<Value>,
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
 }

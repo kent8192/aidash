@@ -24,6 +24,9 @@ pub struct GenerationCompactionUsage {
 	pub questions: i32,
 	#[field]
 	pub created_at: DateTime<Utc>,
+	/// The Tenant whose Registry holds the referenced definition.
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 impl GenerationCompactionUsage {}

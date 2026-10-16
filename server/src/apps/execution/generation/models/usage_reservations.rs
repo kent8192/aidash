@@ -8,7 +8,7 @@ use crate::registry::EntityRef;
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::{Model, execution::convert_values};
+use reinhardt::db::orm::{Model, QueryRow, execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
@@ -214,11 +214,26 @@ impl GenerationEmbeddingUsage {
 		request: Uuid,
 		attempt: &EmbeddingAttempt<'_>,
 	) -> Result<()> {
-		Definition::read_in(tx, &attempt.provider.id, &attempt.provider.version).await?;
+		let (sql, values) = Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("generation_requests"))
+			.and_where(Expr::col("id").eq(Expr::value(request)))
+			.build(PostgresQueryBuilder);
+		let tenant: String = QueryRow::from_backend_row(
+			tx.fetch_optional(&sql, convert_values(values))
+				.await?
+				.ok_or_else(|| Error::NotFound("generation request".into()))?,
+		)
+		.data["tenant"]
+			.as_str()
+			.ok_or_else(|| Error::NotFound("generation request".into()))?
+			.to_owned();
+		Definition::read_in(tx, &tenant, &attempt.provider.id, &attempt.provider.version).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
 			.columns(
 				[
+					"tenant",
 					"request_id",
 					"attempt_id",
 					"workspace_id",
@@ -233,6 +248,7 @@ impl GenerationEmbeddingUsage {
 				.map(Alias::new),
 			)
 			.values_panic([
+				IntoValue::into_value(tenant),
 				IntoValue::into_value(request),
 				IntoValue::into_value(attempt.id),
 				IntoValue::into_value(attempt.workspace),

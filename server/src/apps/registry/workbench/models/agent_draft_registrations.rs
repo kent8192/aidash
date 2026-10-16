@@ -27,6 +27,8 @@ pub struct AgentDraftRegistration {
 	pub behavioral_tested: bool,
 	#[field(auto_now_add = true)]
 	pub registered_at: DateTime<Utc>,
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 impl AgentDraftRegistration {}

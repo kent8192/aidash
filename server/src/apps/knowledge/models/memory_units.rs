@@ -97,4 +97,7 @@ pub struct MemoryRunBinding {
 	pub provider_version: String,
 	#[field]
 	pub participant_revision: i64,
+	/// The Tenant whose Registry holds the referenced provider.
+	#[field(field_type = "text")]
+	pub tenant: String,
 }

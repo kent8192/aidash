@@ -103,8 +103,10 @@ impl GenerationPublication for NativePublication<'_> {
 		Ok(())
 	}
 	async fn register(&mut self, entry: &Entry) -> aidash_application::Result<()> {
+		let tenant = self.access.identity.tenant.clone();
 		crate::registry::register_in(
 			&mut self.access.tx,
+			&tenant,
 			entry,
 			&self.runtime.config.node_id,
 			&crate::bootstrap::registry_validation_for(&self.runtime.store),

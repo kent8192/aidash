@@ -18,4 +18,6 @@ pub struct RegistryAgentModelRef {
 	pub model_version: String,
 	#[field(field_type = "text")]
 	pub model_kind: String,
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
 }

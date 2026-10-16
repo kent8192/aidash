@@ -176,6 +176,9 @@ pub struct MemoryModelOperation {
 	pub cost_micros: i64,
 	#[field]
 	pub created_at: DateTime<Utc>,
+	/// The Tenant whose Registry holds the referenced provider.
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 #[model(app_label = "knowledge", table_name = "memory_model_attempts")]
@@ -310,6 +313,9 @@ pub struct MemoryBankSettings {
 	pub revision: i64,
 	#[field]
 	pub next_maintenance: DateTime<Utc>,
+	/// The Tenant whose Registry holds the referenced provider.
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 #[model(app_label = "knowledge", table_name = "memory_engine_jobs")]
@@ -343,6 +349,9 @@ pub struct MemoryEngineJob {
 	pub created_at: DateTime<Utc>,
 	#[field]
 	pub updated_at: DateTime<Utc>,
+	/// The Tenant whose Registry holds the referenced provider.
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 #[model(app_label = "knowledge", table_name = "memory_learning_discovery")]

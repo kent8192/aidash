@@ -74,6 +74,9 @@ pub struct InstalledRevision {
 	pub revision: i64,
 	#[field(field_type = "text")]
 	pub installation: String,
+	/// The Tenant whose Registry holds the referenced definition.
+	#[field(field_type = "text")]
+	pub tenant: String,
 }
 
 #[model(app_label = "marketplace", table_name = "marketplace_requests")]
