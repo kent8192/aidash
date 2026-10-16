@@ -555,6 +555,22 @@ impl<'a> RunDecisionJournal<'a> {
 			}
 			answered.extend(saved.answers.iter().flatten().map(|(q, a)| (q.clone(), *a)));
 		}
+		// The charged decision UUID commits to its inputs, so evidence that
+		// names other sources or another window under it is not this decision.
+		if let Some(first) = evidence.attempts.first()
+			&& aidash_application::decision::decision_identity(
+				&evidence.boundary,
+				&evidence.decider,
+				&charged[&first.id].permit.record.binding_restrictions,
+				&evidence.state_digest,
+				&evidence.sources,
+				evidence.fit.window,
+			) != evidence.id
+		{
+			return Err(Error::Invalid(
+				"decision evidence differs from its decision identity".into(),
+			));
+		}
 		// Charged plans never overlap, so the union is exact; an answer no
 		// answered attempt recorded is never evidence of a provider call.
 		if evidence.answers != answered {

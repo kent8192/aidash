@@ -283,12 +283,12 @@ impl Evidence {
 	/// candidate exists, so it cannot replay. It still keeps every invariant
 	/// that holds for a rejection at any stage: a reason other than fitting, a
 	/// supported contract, the pinned Decider and model, a consistent retained
-	/// state reference and fit counts of the context that did not fit. An
-	/// `insufficient` rejection only follows a complete evaluation, so it
-	/// replays in full. Only a `forbidden` one may also follow branch
-	/// selection; every other rejection stopped before it, so it reports no
-	/// branch and the unchanged context, and without candidates nothing was
-	/// asked, answered or charged.
+	/// state reference and fit counts of the context that did not fit. A
+	/// rejection that followed a complete evaluation (`insufficient`, or
+	/// `forbidden` with selected branches) replays in full. Every other one
+	/// stopped before branch selection, so it reports no branch and the
+	/// unchanged context, and without candidates nothing was asked, answered
+	/// or charged.
 	pub fn validate_rejection(&self) -> Result<()> {
 		if self.outcome != Outcome::Rejected || self.reason == Reason::Fits {
 			return Err(Error::Invalid(
@@ -297,19 +297,19 @@ impl Evidence {
 		}
 		// Only a complete evaluation finds the proposed context too large, so
 		// that rejection must replay in full, fit metrics included.
-		if self.reason == Reason::Insufficient {
+		if self.reason == Reason::Insufficient
+			|| self.reason == Reason::Forbidden && !self.branches.is_empty()
+		{
 			return self.replay().map(|_| ());
 		}
 		self.validate_identity()?;
-		let selected = self.reason == Reason::Forbidden && !self.branches.is_empty();
 		if self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)
 			|| self.fit.truncated > self.fit.retained
 			|| self.fit.before <= self.fit.window
-			|| !selected
-				&& (!self.branches.is_empty()
-					|| self.fit.proposed != self.fit.before
-					|| self.fit.dropped != 0
-					|| self.fit.truncated != 0)
+			|| !self.branches.is_empty()
+			|| self.fit.proposed != self.fit.before
+			|| self.fit.dropped != 0
+			|| self.fit.truncated != 0
 			|| self.reason == Reason::NoCandidates
 				&& (!self.questions.is_empty()
 					|| !self.answers.is_empty()

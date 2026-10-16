@@ -331,6 +331,18 @@ async fn decide(
 	(result, context)
 }
 
+/// Whether `message` refuses evidence as inconsistent with its charged
+/// attempts, its replay or its answers, whichever check finds it first.
+fn inconsistent(message: &str) -> bool {
+	[
+		"charged attempts",
+		"historical",
+		"decision answers must cover",
+	]
+	.iter()
+	.any(|reason| message.contains(reason))
+}
+
 async fn evidence_rows(store: &Store, run: Uuid) -> Vec<(String, Evidence)> {
 	let rows = sqlx::query(
 		&Query::select()
@@ -482,24 +494,24 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	*tampered.answers.values_mut().next().unwrap() = Probability::new(1.0).unwrap();
 	assert!(matches!(
 		journal.commit(&tampered, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+		Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
 	));
 	// So is evidence that reports a durably answered attempt with another status.
 	let (_, mut relabeled) = evidence_rows(&f.store, run.id).await.remove(0);
 	relabeled.attempts[0].status = AttemptStatus::Uncertain;
 	assert!(matches!(
 		journal.commit(&relabeled, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+		Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
 	));
 	// Evidence must name every charged attempt.
 	let (_, mut omitting) = evidence_rows(&f.store, run.id).await.remove(0);
 	omitting.attempts.clear();
 	assert!(matches!(
 		journal.commit(&omitting, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+		Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
 	));
-	// A rejection skips replay, yet it still carries only what its charges recorded:
-	// no unbacked answer, no other input or mode.
+	// This rejection selected branches, so it replays in full; it also carries
+	// only what its charges recorded: no unbacked answer, no other input or mode.
 	let (_, saved) = evidence_rows(&f.store, run.id).await.remove(0);
 	let mut unbacked = saved.clone();
 	unbacked
@@ -516,7 +528,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	for differing in [unbacked, other_input, other_mode, uncatalogued] {
 		assert!(matches!(
 			journal.commit(&differing, None, None).await,
-			Err(aidash_application::Error::Invalid(message)) if message.contains("charged attempts")
+			Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
 		));
 	}
 	// Nor does it skip the invariants every rejection keeps: no fitting reason,
@@ -544,9 +556,11 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 	}
 	let mut anonymous = saved.clone();
 	anonymous.id = Uuid::nil();
+	// Its replay or the identity check refuses it, whichever runs first.
 	assert!(matches!(
 		journal.commit(&anonymous, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("decision identity")
+		Err(aidash_application::Error::Invalid(message))
+			if message.contains("decision identity") || message.contains("unsupported or incomplete")
 	));
 	// An expired marker must match its retention witness, which the rejection
 	// invariants already check.
