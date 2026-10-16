@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 mod dispatch;
 mod state;
+pub use dispatch::decision_identity;
 pub use state::{BuiltState, build_compaction_state};
 
 /// Digest the complete inference input before redacting its classification view.
