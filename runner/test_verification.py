@@ -149,6 +149,22 @@ class DeadlineTest(unittest.TestCase):
             self.assertTrue(self.watch(root, {"deadline": time.monotonic() - 1, "cancelled": False}, connections=1))
             self.assertTrue((root / "deadline.expired").exists())
 
+    def test_a_stream_closing_after_the_deadline_records_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, CONTROL=root / "control.json", REQUEST=root / "request.json",
+                                EXPIRED=root / "deadline.expired"):
+                collector.save(collector.REQUEST, {"kind": "verify"})
+                collector.save(collector.CONTROL, {"deadline": time.monotonic() + 60, "cancelled": False})
+                collector.expire_if_late()
+                self.assertFalse((root / "deadline.expired").exists())
+                collector.save(collector.CONTROL, {"deadline": time.monotonic() - 1, "cancelled": True})
+                collector.expire_if_late()
+                self.assertFalse((root / "deadline.expired").exists())
+                collector.save(collector.CONTROL, {"deadline": time.monotonic() - 1, "cancelled": False})
+                collector.expire_if_late()
+                self.assertTrue((root / "deadline.expired").exists())
+
     def test_a_command_that_exited_before_its_deadline_did_not_time_out(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

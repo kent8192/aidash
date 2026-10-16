@@ -221,24 +221,40 @@ def prepared():
                       "started_at": state.get("started_at")}))
 
 
+def deadline_state():
+    """The command's liveness deadline, or None when none can expire: before
+    the request is published, after a cancellation, or for a Python session."""
+    try:
+        state = json.loads(CONTROL.read_bytes())
+        kind = json.loads(REQUEST.read_bytes())["kind"]
+    except FileNotFoundError:
+        return None
+    return None if state["cancelled"] or kind == "python" else state["deadline"]
+
+
 def expire_if_running():
     """Record an expired deadline once it has passed while the command's output
     stream is still open, whether or not a liveness probe arrived after it. The
     execution container's PID 1 holds that stream until the command and its
     background jobs exit. Returns whether the deadline is decided."""
-    try:
-        state = json.loads(CONTROL.read_bytes())
-        kind = json.loads(REQUEST.read_bytes())["kind"]
-    except FileNotFoundError:
+    if not CONTROL.exists() or not REQUEST.exists():
         return False
-    # A Python session has no liveness deadline to expire.
-    if state["cancelled"] or kind == "python" or EXPIRED.exists():
+    deadline = deadline_state()
+    if deadline is None or EXPIRED.exists():
         return True
-    if time.monotonic() < state["deadline"]:
+    if time.monotonic() < deadline:
         return False
     if append_output(b"")["connections"] > 0:
         EXPIRED.touch()
     return True
+
+
+def expire_if_late():
+    """Record an expired deadline when the command's output stream closes after
+    it, which the watcher's sampling could miss."""
+    deadline = deadline_state()
+    if deadline is not None and time.monotonic() >= deadline:
+        EXPIRED.touch()
 
 
 def watch_deadline():
@@ -254,6 +270,9 @@ class Output(socketserver.BaseRequestHandler):
             while data := self.request.recv(65536):
                 append_output(data)
         finally:
+            # The stream closes when the command exits: an exit after the
+            # deadline timed out, whenever the watcher last looked.
+            expire_if_late()
             append_output(b"", connections=-1)
 
 
