@@ -59,6 +59,7 @@ impl ExecutionRecoveryStore for RecoveryRepository {
 pub(crate) mod agent;
 pub(crate) mod bindings;
 pub(crate) mod context_journal;
+pub mod decisions;
 pub(crate) mod inference;
 pub(crate) mod task_evidence;
 

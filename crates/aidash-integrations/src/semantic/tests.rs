@@ -144,3 +144,78 @@ async fn openrouter_withholds_output_that_violates_the_approved_contract(#[case]
 		))
 	));
 }
+
+/// How an embedding reply's body arrives.
+#[derive(Clone, Copy)]
+enum Body {
+	/// Breaks off mid-transfer.
+	Interrupted,
+	/// Completes, but is not the declared JSON.
+	Malformed,
+	/// Completes, but streams past the 1 MiB response bound.
+	Oversized,
+	/// Declares a `Content-Length` past the 1 MiB response bound.
+	DeclaredOversized,
+}
+
+/// A reply whose body breaks off mid-transfer is a transport outage that a Run
+/// retries, not the non-retried contract violation of a malformed or
+/// oversized body.
+#[rstest]
+#[case::interrupted_body(Body::Interrupted)]
+#[case::malformed_body(Body::Malformed)]
+#[case::oversized_body(Body::Oversized)]
+#[case::declared_oversized_body(Body::DeclaredOversized)]
+#[tokio::test]
+async fn interrupted_response_body_is_an_outage_and_malformed_json_a_contract_violation(
+	#[case] body: Body,
+) {
+	// Arrange
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/api/v1/embeddings",
+		post(move || async move {
+			let chunks: Vec<std::result::Result<String, std::io::Error>> = match body {
+				Body::Interrupted => vec![
+					Ok(r#"{"model":"#.into()),
+					Err(std::io::Error::other("connection reset")),
+				],
+				Body::Malformed => vec![Ok(r#"{"model":"#.into())],
+				// Chunked, so only the streamed length crosses the bound.
+				Body::Oversized => vec![Ok(" ".repeat(1_048_576)), Ok("{}".into())],
+				// A full body, so its length is declared before any chunk.
+				Body::DeclaredOversized => {
+					return axum::body::Body::from(" ".repeat(1_048_577));
+				}
+			};
+			axum::body::Body::from_stream(futures_util::stream::iter(chunks))
+		}),
+	);
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	// Act
+	let result = embed(
+		&permitting(&endpoint),
+		&Context::default(),
+		&clients().unwrap(),
+		&configuration(endpoint),
+		"query",
+	)
+	.await;
+	// Assert
+	if matches!(body, Body::Interrupted) {
+		assert!(matches!(result, Err(Error::External(_))), "{result:?}");
+	} else {
+		assert!(
+			matches!(
+				result,
+				Err(Error::RemoteSemantic(
+					aidash_domain::semantic::Failure::ProviderContract
+				))
+			),
+			"{result:?}"
+		);
+	}
+}
