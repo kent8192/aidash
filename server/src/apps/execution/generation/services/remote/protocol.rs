@@ -26,7 +26,12 @@ pub(crate) async fn verify(f: Federation, headers: HeaderMap, input: Input) -> R
 	protocol::verify(
 		&crate::bootstrap::generation_protocol_authority(&f),
 		&crate::bootstrap::generation_protocol_repository(&f.store),
-		&crate::bootstrap::generation_dispatch_repository(&f.store),
+		&crate::bootstrap::generation_dispatch_repository(
+			&f.store,
+			f.store
+				.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
+				.await?,
+		),
 		source,
 		input,
 	)
@@ -40,7 +45,12 @@ pub(crate) async fn finalize(
 ) -> Result<bool> {
 	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 	protocol::finalize(
-		&crate::bootstrap::generation_settlement_repository(&f.store),
+		&crate::bootstrap::generation_settlement_repository(
+			&f.store,
+			f.store
+				.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
+				.await?,
+		),
 		source,
 		input,
 	)
@@ -85,7 +95,10 @@ pub(crate) async fn admit(
 	let input = protocol::admit(
 		&crate::bootstrap::generation_protocol_authority(f),
 		&crate::bootstrap::generation_protocol_repository(&f.store),
-		&crate::bootstrap::generation_dispatch_repository(&f.store),
+		&crate::bootstrap::generation_dispatch_repository(
+			&f.store,
+			f.store.run_tenancy(run.id).await?,
+		),
 		&crate::bootstrap::generation_dispatch_settlement(f),
 		protocol::Admission {
 			run,

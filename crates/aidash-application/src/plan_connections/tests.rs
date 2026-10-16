@@ -153,7 +153,7 @@ impl Store for FakeStore {
 		versions.insert(n, key.expose_secret().to_owned());
 		Ok(format!("{resource}/versions/{n}"))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		Ok(self
 			.0
 			.lock()
@@ -167,10 +167,10 @@ impl Store for FakeStore {
 			})
 			.unwrap_or_default())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, version: &str) -> Result<()> {
 		if self.1.lock().unwrap().destroy {
 			return Err(Error::External("store unavailable".into()));
 		}
@@ -180,7 +180,7 @@ impl Store for FakeStore {
 		}
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		if self.1.lock().unwrap().delete {
 			return Err(Error::External("store unavailable".into()));
 		}

@@ -7,6 +7,7 @@ use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
 use crate::authorization::{Authorization, identity::Actor};
 use crate::store::Store;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::memory::*;
 use rstest::rstest;
 use serde_json::json;
@@ -45,6 +46,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 	let actor = authorization.authenticate(&credential.token).await.unwrap();
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			bank.workspace,
 			&aidash_domain::NewTask {
 				title: "Reader".into(),
@@ -64,7 +66,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",
@@ -133,8 +135,8 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 	(run, actor)
 }
 
-async fn cause(store: &Store, actor: &Actor, run: Uuid) -> Option<Failure> {
-	let mut lease = Lease::begin(store, actor).await.unwrap();
+async fn cause(store: &Store, actor: &Actor, workspace: Uuid, run: Uuid) -> Option<Failure> {
+	let mut lease = Lease::begin(store, actor, workspace).await.unwrap();
 	let result = invalidity(&mut lease, run).await;
 	lease.finish(result).await.unwrap()
 }
@@ -183,7 +185,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	.await
 	.unwrap();
 	let (run, actor) = reader(&store, &bank, id).await;
-	assert_eq!(cause(&store, &actor, run).await, None);
+	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
 
 	// Act
 	let corrected = |edit: fn(&mut Content)| {
@@ -234,7 +236,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 					.and_where(Expr::col("id").eq(Expr::value(bank.participant.unwrap())))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap();
 		}
@@ -260,7 +262,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 
 	// Assert
 	assert_eq!(
-		cause(&store, &actor, run).await,
+		cause(&store, &actor, bank.workspace, run).await,
 		expected,
 		"{change} must report its own cause"
 	);

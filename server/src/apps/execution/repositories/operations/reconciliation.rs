@@ -9,6 +9,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::capabilities::reconciliation::{
@@ -101,7 +102,9 @@ impl OperationReconciliationRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&self.store.pool)
+				.fetch_one(self.store.pool.in_scope(&TenancyScope::Deployment(
+					DeploymentScopeReason::CapabilityMaintenance,
+				)))
 				.await?
 			};
 			Ok(domain(&snapshot))
@@ -131,7 +134,10 @@ impl OperationReconciliationRepository for Repository<'_> {
 	}
 	async fn withdraw(&self, snapshot: &Snapshot) -> Result<()> {
 		aidash_application::capabilities::withdrawal::withdraw(
-			&crate::bootstrap::operation_withdrawal_repository(self.store),
+			&crate::bootstrap::operation_withdrawal_repository(
+				self.store,
+				crate::database::scope::recorded(&snapshot.tenant)?,
+			),
 			snapshot.area_id,
 			snapshot.id,
 		)

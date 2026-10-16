@@ -15,6 +15,7 @@ use crate::{
 	registry::{EntityRef, Entry},
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	ports::capabilities::transfer::{Limits, ReceiptScope, TransferRepository, TransferScope},
@@ -37,6 +38,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// The transfer loop reaches every Tenant's outbound transfer records.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Repository<'a> {
 	pub(crate) federation: &'a Federation,
 }
@@ -140,7 +145,7 @@ impl TransferRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			}
 			.ok_or_else(|| NativeError::NotFound("transfer unavailable".into()))
@@ -163,7 +168,7 @@ impl TransferRepository for Repository<'_> {
 		}))
 	}
 	async fn begin_receipt(&self, id: Uuid) -> Result<Box<dyn ReceiptScope + '_>> {
-		let tx = crate::database::native::begin(&self.federation.store.pool).await?;
+		let tx = self.federation.store.pool.begin(&MAINTENANCE).await?;
 		Ok(Box::new(Receipt { tx, id }))
 	}
 	async fn request(&self, node: &str, path: &str, body: &Value) -> Result<Value> {
@@ -194,7 +199,7 @@ impl TransferRepository for Repository<'_> {
 					.limit(8)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_all(&f.store.pool)
+			.scalar_all(f.store.pool.in_scope(&MAINTENANCE))
 			.await?;
 			Ok(ids)
 		}
@@ -202,7 +207,7 @@ impl TransferRepository for Repository<'_> {
 		result.map_err(Into::into)
 	}
 	async fn record_failure(&self, id: Uuid, terminal: bool) -> Result<()> {
-		let result:NativeResult<()>=async {let mut tx=crate::database::native::begin(&self.federation.store.pool).await?;
+		let result:NativeResult<()>=async {let mut tx=self.federation.store.pool.begin(&MAINTENANCE).await?;
 {
 					let query_bind_1 = id;
 					let query_bind_2 = terminal;

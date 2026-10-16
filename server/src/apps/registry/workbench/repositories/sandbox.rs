@@ -37,16 +37,13 @@ impl SandboxRepository for Repository {
 	}
 	async fn begin(&self) -> Result<Box<dyn SandboxScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))
 	}
 	async fn purge(&self) -> Result<u64> {
-		let lease = self.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| AgentTestSession::purge(tx).await)
+		crate::apps::registry::workbench::services::test::purge_expired(&self.store.pool)
 			.await
 			.map_err(Into::into)
 	}

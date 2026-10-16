@@ -186,13 +186,13 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 			| Action::Jobs { .. }
 			| Action::Usage { .. }
 	) {
-		let mut lease = Lease::begin(store, actor).await?;
+		let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
 		let result = operate_in(store, &mut lease, input, None).await;
 		return lease.finish(result).await;
 	}
 	// Establish the empty bank before the independently committed model ledger
 	// can reference it. No source knowledge is admitted by this initialization.
-	let mut initialization = Lease::begin(store, actor).await?;
+	let mut initialization = Lease::begin(store, actor, input.bank.workspace).await?;
 	let initialized = async {
 		if matches!(
 			input.action,
@@ -232,7 +232,7 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 	}
 	.await;
 	initialization.finish(initialized).await?;
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
 	let result = operate_in(store, &mut lease, input, None).await;
 	lease.finish(result).await
 }
@@ -715,7 +715,7 @@ pub(crate) async fn bank_provider(
 	Ok(())
 }
 pub async fn mutate(store: &Store, actor: &Actor, mutation: Mutation) -> Result<Vec<Unit>> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, mutation.bank.workspace).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, mutation.bank.workspace, true).await?;
 		scope(store, &mut lease, &mutation.bank, "memory.write").await?;
@@ -764,7 +764,7 @@ async fn validate_direct_mutation(
 	Ok(())
 }
 pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<Unit>> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
 	let result = async {
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
 		bank_provider(&mut lease, &input.bank, &input.provider).await?;
@@ -795,7 +795,7 @@ pub async fn upgrade_participant(
 	let id = bank
 		.participant
 		.ok_or_else(|| Error::Invalid("shared memory has no Agent participant".into()))?;
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, bank.workspace).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 		scope(store, &mut lease, &bank, "memory.participant.manage").await?;
@@ -872,7 +872,7 @@ pub async fn create_participant(
 	workspace: Uuid,
 	input: CreateParticipant,
 ) -> Result<Participant> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, workspace, true).await?;
 		lease
@@ -974,7 +974,7 @@ impl NativeMemory {
 		participant: Uuid,
 		input: UpgradeParticipant,
 	) -> Result<Participant> {
-		let mut lease = Lease::begin(&self.runtime.store, &actor).await?;
+		let mut lease = Lease::begin(&self.runtime.store, &actor, workspace).await?;
 		let found = async {
 			let row = native::query(
 				&Query::select()
@@ -1064,7 +1064,7 @@ pub async fn task_assignment(
 	workspace: Uuid,
 	task: Uuid,
 ) -> Result<TaskAssignment> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = async {
 		lease.workspace(workspace, "workspace.read").await?;
 		let record: crate::domain::Task = crate::database::query_as(
@@ -1143,7 +1143,7 @@ pub async fn participants(
 	workspace: Uuid,
 	after: Option<Uuid>,
 ) -> Result<ParticipantPage> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = async {
 		lease.workspace(workspace, "workspace.read").await?;
 		let mut query = Query::select();
@@ -1202,7 +1202,7 @@ pub async fn assign_participant(
 	task: Uuid,
 	input: AssignmentChange,
 ) -> Result<Option<AssignedParticipant>> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = async {
 		super::super::repositories::candidates::human(&mut lease)?;
 		repository::lock_workspace(&mut lease, workspace, true).await?;

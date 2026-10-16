@@ -2,7 +2,7 @@
 
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{DatabaseConnection, TransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model as ModelTrait;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::macros::Model;
@@ -73,9 +73,13 @@ impl AtomicGate {
 
 	/// Retain a shared row lock until the protected operation releases its lease.
 	pub(crate) async fn read_lease(
-		db: &DatabaseConnection,
+		db: &crate::database::native::Pool,
 	) -> Result<(Box<dyn TransactionExecutor>, i64)> {
-		let mut tx = db.begin().await?;
+		// The gate is Deployment-wide.
+		let mut tx = db
+			.begin(&aidash_application::tenancy::TenancyScope::NoTenant)
+			.await?
+			.into_executor()?;
 		// The ORM's select_for_update cannot express FOR SHARE NOWAIT in alpha.16.
 		let (sql, values) = Query::select()
 			.expr_as(

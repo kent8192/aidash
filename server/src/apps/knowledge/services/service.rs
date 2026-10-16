@@ -9,7 +9,10 @@ pub(crate) use crate::apps::knowledge::repositories::storage::{history, index, s
 
 pub async fn configure(store: &Store, workspace: Uuid, input: ConfigureIndex) -> Result<Index> {
 	aidash_application::semantic::mutations::configure(
-		&crate::bootstrap::semantic_configuration_repository(store),
+		&crate::bootstrap::semantic_configuration_repository(
+			store,
+			store.workspace_tenancy(workspace).await?,
+		),
 		workspace,
 		input.expected_revision,
 		input.spec.into(),
@@ -19,7 +22,7 @@ pub async fn configure(store: &Store, workspace: Uuid, input: ConfigureIndex) ->
 	.map_err(Into::into)
 }
 pub async fn get_index(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Index> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = aidash_application::semantic::mutations::get_index(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,
@@ -31,7 +34,7 @@ pub async fn get_index(store: &Store, actor: &Actor, workspace: Uuid) -> Result<
 }
 pub async fn put(store: &Store, actor: &Actor, workspace: Uuid, input: PutEntry) -> Result<Entry> {
 	input.validate()?;
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = async {
 		let input = input.into();
 		aidash_application::semantic::mutations::validate_public_put(&input)?;
@@ -49,7 +52,7 @@ pub async fn put(store: &Store, actor: &Actor, workspace: Uuid, input: PutEntry)
 }
 
 pub async fn entries(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Vec<Entry>> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = aidash_application::semantic::mutations::entries(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,
@@ -68,7 +71,7 @@ pub async fn change(
 	delete: bool,
 ) -> Result<Entry> {
 	aidash_domain::semantic::mutations::validate_revision(revision, "invalid source revision")?;
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = aidash_application::semantic::mutations::change(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,
@@ -87,7 +90,7 @@ pub async fn search(
 	workspace: Uuid,
 	input: Search,
 ) -> Result<SearchResult> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	lease.durable();
 	let result = search_in(store, &mut lease, workspace, input, None, None).await;
 	lease.finish(result).await
@@ -115,7 +118,7 @@ pub(crate) async fn search_in(
 pub(crate) use aidash_domain::semantic::indexing::content_digest;
 
 pub async fn history_list(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Vec<History>> {
-	let mut lease = Lease::begin(store, actor).await?;
+	let mut lease = Lease::begin(store, actor, workspace).await?;
 	let result = aidash_application::semantic::mutations::history(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,

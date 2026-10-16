@@ -17,6 +17,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	ports::capabilities::references::{Limits, Mounts, ReferenceRepository, ReferenceScope},
@@ -34,6 +35,10 @@ use reinhardt::query::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Reconciling references reaches every Tenant's capability records.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
 }
@@ -118,7 +123,7 @@ impl ReferenceRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&self.store.pool)
+				.fetch_one(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(domain(snapshot))
@@ -166,7 +171,7 @@ impl ReferenceRepository for Repository<'_> {
 						.limit(8)
 						.to_string(PostgresQueryBuilder),
 				)
-				.scalar_all(&self.store.pool)
+				.scalar_all(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(ids)
@@ -195,7 +200,7 @@ impl ReferenceRepository for Repository<'_> {
 						.to_string(PostgresQueryBuilder),
 				)
 				.columns(&["id", "data"])
-				.fetch_all(&self.store.pool)
+				.fetch_all(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(receipts)
@@ -224,7 +229,7 @@ impl ReferenceRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(&self.store.pool)
+				.execute(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(())

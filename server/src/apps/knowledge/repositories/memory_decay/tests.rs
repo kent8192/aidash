@@ -5,6 +5,7 @@ use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
 use crate::apps::registry::models::Definition;
 use crate::authorization::identity::Actor;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::db::orm::Model;
 use reinhardt::query::QueryStatementBuilder;
 use rstest::rstest;
@@ -13,6 +14,7 @@ use serde_json::json;
 async fn run(store: &Store, bank: &Bank) -> Uuid {
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			bank.workspace,
 			&aidash_domain::NewTask {
 				title: "Local Delivery".into(),
@@ -32,7 +34,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
 			"runs",
@@ -103,7 +105,7 @@ async fn deliveries(store: &Store, id: Uuid) -> Option<i64> {
 			.and_where(Expr::col("unit_id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_optional(&store.pool)
+	.scalar_optional(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap()
 }
@@ -170,7 +172,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace("Other", "Independent workspace lock")
+		.create_workspace(&TEST_FIXTURE, "Other", "Independent workspace lock")
 		.await
 		.unwrap();
 	AuthorizationWorkspace::objects()
@@ -245,7 +247,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	};
 	let before: Option<(bool, Option<DateTime<Utc>>)> = native::query_as(&retention())
 		.columns(&["pinned", "reactivated_at"])
-		.fetch_optional(&store.pool)
+		.fetch_optional(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	assert!(before.is_none());
@@ -258,10 +260,10 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	};
 	let projected_before: (i64, Uuid) = native::query_as(&projection())
 		.columns(&["revision", "point_id"])
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
-	let mut baseline = Lease::without_subject(&store).await.unwrap();
+	let mut baseline = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let unit_before = units::load(&mut baseline, losing_id, false)
 		.await
 		.unwrap()
@@ -282,13 +284,13 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		.await
 		.unwrap();
 	baseline.finish(Ok(())).await.unwrap();
-	let mut winner = Lease::without_subject(&store).await.unwrap();
+	let mut winner = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	competing_receipt_request(&store, &mut winner, &requests[0], winner_kind, &bounds)
 		.await
 		.unwrap();
 	let (send, receive) = tokio::sync::oneshot::channel();
 	let contender = async {
-		let mut lease = Lease::without_subject(&store).await.unwrap();
+		let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 		let pid: i32 = native::query_scalar(
 			&Query::select()
 				.expr(SimpleExpr::FunctionCall(
@@ -317,7 +319,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 						.and_where(Expr::col("pid").eq(pid))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&store.pool)
+				.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 				.await
 				.unwrap();
 				if row
@@ -348,15 +350,15 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	let (result, ()) = tokio::join!(contender, release);
 	let after: Option<(bool, Option<DateTime<Utc>>)> = native::query_as(&retention())
 		.columns(&["pinned", "reactivated_at"])
-		.fetch_optional(&store.pool)
+		.fetch_optional(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	let projected_after: (i64, Uuid) = native::query_as(&projection())
 		.columns(&["revision", "point_id"])
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let unit_after = units::load(&mut lease, losing_id, false)
 		.await
 		.unwrap()
@@ -459,12 +461,12 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	.unwrap();
 	let first = run(&store, &bank).await;
 	for _ in 0..2 {
-		let mut lease = Lease::without_subject(&store).await.unwrap();
+		let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 		let result = super::super::memory_reads::record(&mut lease, first, &admitted).await;
 		lease.finish(result).await.unwrap();
 	}
 	assert_eq!(deliveries(&store, id).await, Some(1));
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_unit_retention"))
@@ -504,7 +506,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	.unwrap();
 	// A correction invalidates the old revision journal. The failed new Delivery
 	// rolls back its Usage/reactivation update together with the attempted read.
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	assert!(
 		super::super::memory_reads::record(&mut lease, first, &corrected)
 			.await
@@ -513,7 +515,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	lease.finish(Ok(())).await.unwrap();
 	assert_eq!(deliveries(&store, id).await, Some(1));
 	let second = run(&store, &bank).await;
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -537,7 +539,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	assert_eq!(deliveries(&store, id).await, Some(2));
 	// Rolling back the enclosing completed-Delivery transaction rolls back Usage too.
 	let third = run(&store, &bank).await;
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	super::super::memory_reads::record(&mut lease, third, &corrected)
 		.await
 		.unwrap();
@@ -763,7 +765,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	)
 	.await
 	.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -806,7 +808,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	)
 	.await;
 	lease.finish(result).await.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	assert!(super::live_support(&mut lease, &admitted[0]).await.unwrap());
 	let current_policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	assert_eq!(
@@ -885,7 +887,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		.await
 		.unwrap();
 	}
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -961,7 +963,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 	disabled.id = "disabled".into();
 	disabled.config["policy"]["decay"] = json!(null);
 	registry.register(disabled).await.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	bank_settings::set(&mut lease, &bank, &reference("disabled"), 1)
 		.await
 		.unwrap();
@@ -1057,7 +1059,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	.await
 	.unwrap();
 	let old: DateTime<Utc> = "2024-01-01T00:00:00Z".parse().unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1113,14 +1115,14 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 			.and_where(Expr::col("unit_id").eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	for (as_of, expected_dormant) in [
 		(reactivated_at + Duration::minutes(30), false),
 		(reactivated_at + Duration::days(4), true),
 	] {
-		let mut lease = Lease::without_subject(&store).await.unwrap();
+		let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 		assert_eq!(super::page(&mut lease, bank_id, as_of).await.unwrap(), 1);
 		let flag: Option<serde_json::Value> = native::query_scalar(
 			&Query::select()
@@ -1196,7 +1198,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	.unwrap();
 	let anchor = Utc::now().trunc_subsecs(6);
 	let as_of = anchor + Duration::hours(25) + Duration::nanoseconds(123);
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1226,7 +1228,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	assert_eq!(persisted, as_of.trunc_subsecs(6));
 	lease.finish(Ok(())).await.unwrap();
 	for replay in [false, true] {
-		let mut lease = Lease::without_subject(&store).await.unwrap();
+		let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 		if replay {
 			native::query(
 				&Query::update()
@@ -1334,7 +1336,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		body.kind = Kind::Observation;
 		body.evidence = vec![source.evidence()];
 		// Derived Units enter through the trusted engine repository boundary.
-		let mut lease = Lease::without_subject(&store).await.unwrap();
+		let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 		let result = repository::mutate(
 			&mut lease,
 			&mutation(
@@ -1364,7 +1366,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	.await
 	.unwrap()
 	.remove(0);
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1429,7 +1431,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		.update_with_conn(&mut database.lease.handle(), &definition)
 		.await
 		.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let scores = super::scores(
 		&mut lease,
@@ -1505,7 +1507,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 			.remove(0),
 		);
 	}
-	let mut setup = Lease::without_subject(&store).await.unwrap();
+	let mut setup = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut setup, &bank, false)
 		.await
 		.unwrap()
@@ -1526,7 +1528,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	setup.finish(Ok(())).await.unwrap();
 
 	// Hold canonical hydration after the membership statement has completed.
-	let mut writer = native::begin(&store.pool).await.unwrap();
+	let mut writer = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for id in ids {
 		native::query(
 			&Query::select()
@@ -1543,7 +1545,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	let (send, receive) = tokio::sync::oneshot::channel();
 	let max_graph_visits = bounds.max_graph_visits;
 	let reader = async {
-		let mut lease = Lease::without_subject(&store).await.unwrap();
+		let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 		let pid: i32 = native::query_scalar(
 			&Query::select()
 				.expr(SimpleExpr::FunctionCall(
@@ -1571,7 +1573,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 						.and_where(Expr::col("pid").eq(pid))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&store.pool)
+				.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 				.await
 				.unwrap();
 				if row
@@ -1606,7 +1608,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	let ((active, dormant), ()) = tokio::join!(reader, mutation);
 	assert_eq!(active, vec![admitted[0].clone()]);
 	assert_eq!(dormant, vec![admitted[1].clone()]);
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let (active, dormant) =
 		repository::recall_including_dormant(&mut lease, &bank, 1, max_graph_visits)
 			.await
@@ -1694,7 +1696,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		);
 	}
 	crate::semantic::worker::sweep(&store).await.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1726,7 +1728,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		.update_with_conn(&mut database.lease.handle(), &definition)
 		.await
 		.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let models = Models::resolve(
 		&store,
@@ -1835,7 +1837,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 		banks.push(bank);
 	}
 	crate::semantic::worker::sweep(&store).await.unwrap();
-	let mut lease = Lease::without_subject(&store).await.unwrap();
+	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let models = Models::resolve(
 		&store,

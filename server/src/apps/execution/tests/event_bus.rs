@@ -1,4 +1,5 @@
 //! Durable event delivery through native PostgreSQL, real JetStream and HTTP replay.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/endpoint.rs"]
 mod endpoint;
 #[path = "support/event_bus.rs"]
@@ -6,6 +7,7 @@ mod fixtures;
 #[path = "support/native_database.rs"]
 mod native_database;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::execution::models::{Event, Inbox};
 use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use endpoint::assert_json;
@@ -24,10 +26,18 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 	let fixture = event_bus.await;
 	let store = &fixture.app.runtime.store;
 	let large = store
-		.emit(None, "large", json!({"text":"x".repeat(2_000_000)}))
+		.emit(
+			&TEST_FIXTURE,
+			None,
+			"large",
+			json!({"text":"x".repeat(2_000_000)}),
+		)
 		.await
 		.unwrap();
-	let small = store.emit(None, "small", json!({"ok":true})).await.unwrap();
+	let small = store
+		.emit(&TEST_FIXTURE, None, "small", json!({"ok":true}))
+		.await
+		.unwrap();
 	// Act
 	assert_eq!(
 		fixture
@@ -110,7 +120,7 @@ async fn consumer_commits_one_receipt_per_event_and_acknowledges_duplicates_and_
 		.app
 		.runtime
 		.store
-		.emit(None, "wake", json!({"step":1}))
+		.emit(&TEST_FIXTURE, None, "wake", json!({"step":1}))
 		.await
 		.unwrap();
 	let wake = fixture.app.runtime.notify.notified();

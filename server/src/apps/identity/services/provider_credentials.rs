@@ -129,7 +129,15 @@ impl Management {
 					models::AuthorizationDecision, repositories::NativePolicyScope,
 				};
 				use aidash_application::ports::AuthorizationScope;
-				let mut tx = self.runtime.store.control_pool.connection().begin().await?;
+				// A Deployment Administrator acts on this one Tenant, in its scope.
+				let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+				let mut tx = self
+					.runtime
+					.store
+					.control_pool
+					.begin(&scope)
+					.await?
+					.into_executor()?;
 				let snapshot = NativePolicyScope(tx.as_mut()).load(tenant).await?;
 				let evaluation = Evaluation {
 					subject: "deployment_administrator".into(),

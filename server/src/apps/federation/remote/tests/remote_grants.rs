@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{domain::qualified_agent, federation::Peer};

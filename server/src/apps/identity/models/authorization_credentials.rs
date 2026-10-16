@@ -27,9 +27,11 @@ pub struct AuthorizationCredential {
 }
 
 use crate::apps::identity::serializers::identity::Credential;
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor};
 
 impl AuthorizationCredential {
 	pub(crate) fn contract(self) -> Credential {
@@ -81,12 +83,8 @@ impl AuthorizationCredential {
 			.collect())
 	}
 
-	pub(crate) async fn revoke(
-		db: DatabaseConnection,
-		tenant: &str,
-		id: Uuid,
-	) -> Result<Credential> {
-		db.atomic(async |tx| {
+	pub(crate) async fn revoke(db: &Pool, tenant: &str, id: Uuid) -> Result<Credential> {
+		db.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
 			super::authority::authority_control(tx).await?;
 			let row = Self::objects()
 				.filter(Self::field_id().eq(id))

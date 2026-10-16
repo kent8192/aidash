@@ -16,7 +16,10 @@ impl Authorization {
 		actor: &str,
 	) -> Result<Binding> {
 		aidash_domain::identity::catalog::validate_revision(expected_revision)?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self
+			.pool
+			.begin(&aidash_application::tenancy::TenancyScope::tenant(tenant)?)
+			.await?;
 		let binding = aidash_application::authorization::catalog::set_catalog(
 			&mut crate::bootstrap::catalog_administrator_scope(
 				&mut tx,

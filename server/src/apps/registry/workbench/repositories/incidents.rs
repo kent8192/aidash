@@ -41,7 +41,12 @@ impl IncidentRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn IncidentScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin(&self.runtime.store.pool).await?,
+			tx: self
+				.runtime
+				.store
+				.pool
+				.begin(&self.actor.tenancy()?)
+				.await?,
 			actor: self.actor.clone(),
 		}))
 	}
@@ -149,7 +154,12 @@ impl IncidentScope for Scope {
 impl IncidentRetentionRepository for RetentionRepository<'_> {
 	async fn begin(&self) -> Result<Box<dyn IncidentRetentionScope + '_>> {
 		Ok(Box::new(RetentionScope {
-			tx: crate::database::native::begin(self.pool).await?,
+			tx: self
+				.pool
+				.begin(&aidash_application::tenancy::TenancyScope::Deployment(
+					aidash_application::tenancy::DeploymentScopeReason::Retention,
+				))
+				.await?,
 		}))
 	}
 }

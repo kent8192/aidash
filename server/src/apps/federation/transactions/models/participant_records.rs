@@ -2,9 +2,11 @@
 use super::{AtomicHistory, AtomicParticipant, AtomicPeerTrust};
 use crate::apps::federation::transactions::serializers::contracts::Manifest;
 use crate::apps::federation::transactions::services::states::AtomicParticipantPhase;
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{DatabaseConnection, IsolationLevel, TransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
@@ -15,10 +17,12 @@ use serde_json::json;
 use uuid::Uuid;
 
 impl AtomicParticipant {
-	pub(crate) async fn begin(db: &DatabaseConnection) -> Result<Box<dyn TransactionExecutor>> {
-		Ok(db
-			.begin_with_isolation(IsolationLevel::Serializable)
-			.await?)
+	/// Participant records are cross-node transaction plumbing, which is
+	/// Deployment-wide.
+	pub(crate) async fn begin(db: &Pool) -> Result<Box<dyn TransactionExecutor>> {
+		db.begin_serializable(&TenancyScope::NoTenant)
+			.await?
+			.into_executor()
 	}
 
 	pub(crate) async fn lock(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<Option<Self>> {

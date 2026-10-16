@@ -1,5 +1,6 @@
 //! Deliberately opt-in, fixed-duration acceptance; failures retain raw evidence.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::Expr;
 use sqlx::Executor;
 
@@ -68,6 +69,7 @@ async fn prime(fixture: &Fixture, received: &mut mpsc::UnboundedReceiver<Receive
 			.f
 			.store
 			.emit(
+				&TEST_FIXTURE,
 				Some(*workspace),
 				"workspace.updated",
 				json!({"id":workspace,"warmup":true}),

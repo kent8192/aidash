@@ -1,5 +1,6 @@
 use crate::native_database::{DatabaseFixture, database};
 use crate::run_fixtures::run;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	apps::execution::models::{Run, RunInput, states::RunPhase},
 	store::Store,
@@ -137,7 +138,10 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 
 	// A retry postpones only undelivered inputs belonging to the selected run.
 	let before = Utc::now();
-	store.defer_run_message_delivery(next.id).await.unwrap();
+	store
+		.defer_run_message_delivery(&TEST_FIXTURE, next.id)
+		.await
+		.unwrap();
 	assert!(
 		store
 			.pending_terminal_run_message()
@@ -153,7 +157,10 @@ async fn terminal_delivery_selects_only_due_remote_inputs(
 	let deadline = postponed.delivery_retry_at.unwrap();
 	assert!(deadline >= before + Duration::seconds(4));
 	assert!(deadline <= Utc::now() + Duration::seconds(6));
-	store.defer_run_message_delivery(first.id).await.unwrap();
+	store
+		.defer_run_message_delivery(&TEST_FIXTURE, first.id)
+		.await
+		.unwrap();
 	let already_delivered = RunInput::objects()
 		.filter(RunInput::field_run_id().eq(first.id))
 		.get_with_db(&mut db)

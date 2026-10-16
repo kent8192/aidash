@@ -300,7 +300,11 @@ impl Models {
 		}
 		let digest =
 			aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(request)?);
-		let mut tx = native::begin(&self.store.control_pool).await?;
+		let mut tx = self
+			.store
+			.control_pool
+			.begin(&crate::database::scope::recorded(&self.bank.tenant)?)
+			.await?;
 		// A ledger gate is independent of source row leases, preventing a nested
 		// lock upgrade while serializing the per-bank storage capacity check.
 		let gate = i64::from_be_bytes(self.bank_id.as_bytes()[..8].try_into().unwrap()) ^ 125_0015;
@@ -524,7 +528,11 @@ impl Models {
 		if output.usage.tokens > reservation.tokens || output.usage.cost_micros > reservation.cost {
 			return Err(Error::SemanticUnavailable);
 		}
-		let mut tx = native::begin(&self.store.control_pool).await?;
+		let mut tx = self
+			.store
+			.control_pool
+			.begin(&crate::database::scope::recorded(&self.bank.tenant)?)
+			.await?;
 		// Keep lock order identical to prepare. Only a known successful response
 		// releases unused allowance; incomplete and crashed attempts stay charged.
 		let op = native::query(

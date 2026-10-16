@@ -45,8 +45,13 @@ pub(crate) async fn search(
 	operation: Operation,
 ) -> Result<Receipt> {
 	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
+	// The remote grant this Home issued names the Tenant of the search.
+	let scope = f
+		.store
+		.remote_tenancy(operation.admission_id, operation.grant_id)
+		.await?;
 	aidash_application::authorization::source::search::search(
-		&crate::bootstrap::source_semantic_search_repository(&f),
+		&crate::bootstrap::source_semantic_search_repository(&f, scope),
 		node,
 		operation,
 	)
