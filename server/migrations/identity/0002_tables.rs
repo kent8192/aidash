@@ -138,10 +138,10 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::CreateTable {
-			name: "authorization_graph_operator_grants".to_owned(),
+			name: "authorization_peer_graph_grants".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
-				ColumnDefinition::new("source_operator", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("source_identity", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
@@ -150,7 +150,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
 			],
 			constraints: vec![Constraint::Check {
-				name: "authorization_graph_operator_grants_revision_check".to_owned(),
+				name: "authorization_peer_graph_grants_revision_check".to_owned(),
 				expression: r#"(revision > 0)"#.to_owned(),
 			}],
 			without_rowid: None,
@@ -384,7 +384,7 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::CreateTable {
-			name: "dashboard_operator_grants".to_owned(),
+			name: "dashboard_deployment_administrator_grants".to_owned(),
 			columns: vec![
 				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("enabled", FieldType::Boolean)

@@ -1,6 +1,6 @@
 // reinhardt-migration-source: 1
 // Run-scoped Research evidence: provider attempts attributed to the Search
-// service operator, Source records, Document snapshots and Evidence fragments.
+// service Deployment Administrator, Source records, Document snapshots and Evidence fragments.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0020_research_evidence", "execution")

@@ -8,7 +8,7 @@ resources. Python handles read-only adoption, reviewed plans, App registration,
 private secret handoff and certificate renewal. No command merges a release PR
 or approves a production deployment.
 
-| Checklist | Automated work                                                                                                              | Operator input or acceptance still needed                                                                   |
+| Checklist | Automated work                                                                                                              | Manual input or acceptance still needed                                                                     |
 | --------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | 1         | Four disabled workflow flags; existing CI validates the delivery tools                                                      | Review/merge this implementation into main and the default develop branch; synchronize their history        |
 | 2         | Five Environments, exact branch policies, narrow App-bound checks; manifest/key handoff                                     | Review GitHub App Create/Install consent, select only Aidash; human production reviewer                     |
@@ -33,9 +33,9 @@ python3 infra/delivery/control/setup.py inventory
 python3 infra/delivery/control/setup.py verify
 ```
 
-Save operator inputs as private JSON (`*.tfvars.json` is a valid Terraform input
+Save your inputs as private JSON (`*.tfvars.json` is a valid Terraform input
 format). Copy [account.example.tfvars.json](account.example.tfvars.json) and
-[secrets.example.tfvars.json](secrets.example.tfvars.json) into the ignored operator
+[secrets.example.tfvars.json](secrets.example.tfvars.json) into the ignored private input
 directory and fill them locally. Their permissions must be 0600. Secret values
 are accepted only for fixed protected destinations and are passed to `gh` stdin;
 Terraform never manages GitHub secret payloads. Empty placeholder secrets are

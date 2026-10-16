@@ -22,7 +22,7 @@ fn input(remote: &EndpointFixture) -> Value {
 async fn register(local: &EndpointFixture, input: &Value, status: u16) -> Value {
 	assert_json(
 		local
-			.operator
+			.deployment_administrator
 			.post("/api/peers", input, "json")
 			.await
 			.unwrap(),
@@ -180,8 +180,12 @@ async fn concurrent_registration_cannot_reuse_one_credential_for_two_node_identi
 	let second_input = input(&second);
 	// Act
 	let (first_response, second_response) = tokio::join!(
-		local.operator.post("/api/peers", &first_input, "json"),
-		local.operator.post("/api/peers", &second_input, "json"),
+		local
+			.deployment_administrator
+			.post("/api/peers", &first_input, "json"),
+		local
+			.deployment_administrator
+			.post("/api/peers", &second_input, "json"),
 	);
 	let first_response = first_response.unwrap();
 	let second_response = second_response.unwrap();

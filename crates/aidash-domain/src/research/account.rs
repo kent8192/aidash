@@ -1,4 +1,4 @@
-//! The Search service operator's account terms. Every search attempt is
+//! The Search account holder's account terms. Every search attempt is
 //! attributed to this account and priced before dispatch.
 use crate::{Error, Result};
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 /// charges within the monthly limit, so their sum stays representable too.
 pub const MAX_MICRO_USD: u64 = i64::MAX as u64;
 
-/// Operator-attested terms for one paid search account. This record is an
+/// Deployment Administrator-attested terms for one paid search account. This record is an
 /// admission prerequisite, not proof that an agreement has been executed.
-/// The operator checks and records the actual agreement.
+/// A Deployment Administrator checks and records the actual agreement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AccountProfile {
@@ -83,7 +83,7 @@ impl AccountProfile {
 	}
 }
 
-/// The charge one attempt attributes to the Search service operator.
+/// The charge one attempt attributes to the Search account holder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CostAttribution {
 	pub account_id: String,

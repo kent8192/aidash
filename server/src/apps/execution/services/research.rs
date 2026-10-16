@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
-/// Path of the Search service operator's Brave account profile (JSON).
+/// Path of the Search account holder's Brave account profile (JSON).
 pub const BRAVE_PROFILE_ENV: &str = "AIDASH_RESEARCH_BRAVE_PROFILE";
 /// `enabled` admits the public page reading provider.
 pub const PAGE_READING_ENV: &str = "AIDASH_RESEARCH_PAGE_READING";

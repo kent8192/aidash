@@ -925,7 +925,12 @@ export function MarketplaceAdministration() {
   const revisionOffset = revisionOffsets.at(-1)!;
   const [message, setMessage] = useState("");
   const installs = useQuery({
-    queryKey: ["marketplace", "operator", tenant, revisionOffset],
+    queryKey: [
+      "marketplace",
+      "deployment_administrator",
+      tenant,
+      revisionOffset,
+    ],
     queryFn: () =>
       pageOf<MarketplaceInstallationRevision>(
         `/api/marketplace/administration?tenant=${encodeURIComponent(tenant)}&offset=${revisionOffset}&limit=50`,
@@ -968,7 +973,11 @@ export function MarketplaceAdministration() {
             setTenant(draft.trim());
             setRevisionOffsets([0]);
             void cache.invalidateQueries({
-              queryKey: ["marketplace", "operator", draft.trim()],
+              queryKey: [
+                "marketplace",
+                "deployment_administrator",
+                draft.trim(),
+              ],
             });
           }}
         >

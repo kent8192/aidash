@@ -93,7 +93,7 @@ function fixture(reference = false) {
     updated_at: task.created_at,
   }));
   const data = {
-    access: { kind: "operator" },
+    access: { kind: "deployment_administrator" },
     node,
     workspaces,
     tasks,

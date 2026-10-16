@@ -41,8 +41,8 @@ def ensure_authorized_domain(output, enabled=True, api=None):
 
     Identity Platform's Config has no etag. The shared controller lock serializes
     our read/modify/write operations; unrelated domains are read on each call and
-    only authorizedDomains is patched. Operators must use that same lock when
-    changing this field. Fixed environments remain Terraform-managed.
+    only authorizedDomains is patched. Anyone changing this field by hand must use that
+    same lock. Fixed environments remain Terraform-managed.
     """
     hostname = (output or {}).get("hostname", "")
     if not hostname.endswith(".preview.aidash.run"):

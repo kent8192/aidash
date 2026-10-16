@@ -44,7 +44,7 @@ Source directory B:
 Each source and implementation was opened together in the same comparison input.
 All five full views use a 1280 × 800 CSS viewport and 1280 × 800 image pixels at
 device scale factor 1. No density scaling or browser chrome was included.
-The implementation state is an authorized operator in Product Lab, English,
+The implementation state is an authorized Deployment Administrator in Product Lab, English,
 dark graph theme, structured layout, default type/relation filters and a 24-hour
 activity window. Records differ from the design examples: this is a comparison
 of layout and interaction hierarchy, not a pixel-diff of identical database data.

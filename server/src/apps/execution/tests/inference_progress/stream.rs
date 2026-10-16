@@ -336,7 +336,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 	let attempt = c.start(worker).await;
 	let mut stream = fixture.stream(None, None).await;
 	assert_eq!(stream.frame().await.id, Some(1));
-	let operator = &c.f.config.api_token;
+	let deployment_administrator = &c.f.config.api_token;
 
 	// Act
 	match revocation {
@@ -345,7 +345,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 			denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[c.run.workspace_id]}}));
 			let (status, value) = request(
 				&c.app,
-				operator,
+				deployment_administrator,
 				"POST",
 				"/api/authorization/acme",
 				json!({"expected_revision":1,"bundle":denied}),
@@ -356,7 +356,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 		Revocation::Credential => {
 			let (status, credentials) = request(
 				&c.app,
-				operator,
+				deployment_administrator,
 				"GET",
 				"/api/authorization/acme/credentials",
 				json!(null),
@@ -370,7 +370,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 			for credential in listed {
 				let (status, value) = request(
 					&c.app,
-					operator,
+					deployment_administrator,
 					"POST",
 					&format!(
 						"/api/authorization/acme/credentials/{}/revoke",

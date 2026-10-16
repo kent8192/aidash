@@ -1694,7 +1694,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 				Expr::value(json!({
 					"credential": null,
 					"tenant": "",
-					"subject": "operator",
+					"subject": "without_subject",
 					"subjects": [],
 				}))
 				.into(),
@@ -1706,9 +1706,9 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	for invalid in [
 		json!({}),
 		json!([]),
-		json!({"credential":null,"tenant":"","subject":"operator","subjects":[7]}),
-		json!({"credential":"not-a-uuid","tenant":"","subject":"operator","subjects":[]}),
-		json!({"credential":null,"tenant":7,"subject":"operator","subjects":[]}),
+		json!({"credential":null,"tenant":"","subject":"without_subject","subjects":[7]}),
+		json!({"credential":"not-a-uuid","tenant":"","subject":"without_subject","subjects":[]}),
+		json!({"credential":null,"tenant":7,"subject":"without_subject","subjects":[]}),
 	] {
 		check_rejected(
 			update(

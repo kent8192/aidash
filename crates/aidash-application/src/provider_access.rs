@@ -124,7 +124,7 @@ impl KeylessAccess {
 		}
 	}
 	/// Permit the origin of `url` for this access and every clone of it, as an
-	/// Operator would permit a private model server. Test fixtures start after
+	/// Deployment Administrator would permit a private model server. Test fixtures start after
 	/// the runtime that holds this access, so they cannot be listed up front.
 	#[cfg(any(test, feature = "test-support"))]
 	pub fn permit_origin_of(&self, url: &str) -> Result<()> {

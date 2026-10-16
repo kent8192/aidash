@@ -365,7 +365,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 				"acme",
 				snapshot.revision,
 				serde_json::from_value(bundle).unwrap(),
-				"operator",
+				"deployment_administrator",
 			)
 			.await
 			.unwrap();
@@ -1261,7 +1261,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 		};
 		let unit = memory::list(
 			&fixture.f.store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			memory::ReadBank {
 				provider: provider.clone(),
 				bank: private,
@@ -1535,7 +1535,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 			};
 			memory::mutate(
 				&fixture.f.store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				Mutation {
 					operation_id: Uuid::now_v7(),
 					provider: aidash_server::registry::EntityRef {
@@ -1708,7 +1708,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 					.expr(Expr::value(
 						json!({"kind":"learn","run":run.id,"revision":run.revision}),
 					))
-					.expr(Expr::value(json!({"kind":"operator"})))
+					.expr(Expr::value(json!({"kind":"deployment_administrator"})))
 					.expr(Expr::value("complete"))
 					.expr(Expr::value(1_i32))
 					.expr(Expr::value(chrono::Utc::now()))
@@ -1786,7 +1786,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	};
 	let learned = aidash_server::semantic::native_memory::list(
 		&fixture.f.store,
-		&aidash_server::authorization::identity::Actor::Operator,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		read,
 	)
 	.await
@@ -1802,7 +1802,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	unrelated.links.clear();
 	let other = aidash_server::semantic::native_memory::mutate(
 		&fixture.f.store,
-		&aidash_server::authorization::identity::Actor::Operator,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		aidash_domain::memory::Mutation {
 			operation_id: Uuid::now_v7(),
 			provider: provider.clone(),
@@ -1834,7 +1834,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	assert_eq!(status().await.unwrap(), "COMPLETED");
 	aidash_server::semantic::native_memory::mutate(
 		&fixture.f.store,
-		&aidash_server::authorization::identity::Actor::Operator,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		aidash_domain::memory::Mutation {
 			operation_id: Uuid::now_v7(),
 			provider: provider.clone(),

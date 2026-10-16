@@ -74,7 +74,7 @@ struct Repository {
 impl Repository {
 	fn new() -> Self {
 		Self {
-			principal: Principal::Operator,
+			principal: Principal::DeploymentAdministrator,
 			state: Arc::new(Mutex::new(State {
 				document: bundle(),
 				approved: crate::test_support::builtin_entries("aidash://local")
@@ -410,7 +410,7 @@ async fn unchanged_disable_survives_revoked_catalog_and_invalid_authorization_do
 			"bundle:tenant",
 			"previous:tenant:policy:7",
 			"cas:tenant:policy:7",
-			"history:tenant:policy:8:operator",
+			"history:tenant:policy:8:deployment_administrator",
 			"load:tenant:policy:false",
 			"finish"
 		]
@@ -531,7 +531,7 @@ async fn stale_revision_does_not_append_history(spec: Spec, validation: Definiti
 }
 #[rstest]
 #[case::subject(true)]
-#[case::operator(false)]
+#[case::deployment_administrator(false)]
 #[tokio::test]
 async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(
 	spec: Spec,

@@ -190,13 +190,13 @@ async fn subject_context_cannot_be_overridden_after_the_authorized_inspection(
 #[case(None, Some("reader"), false, false)]
 #[case(None, None, true, false)]
 #[tokio::test]
-async fn operator_context_requires_the_complete_identity_pair(
+async fn deployment_administrator_context_requires_the_complete_identity_pair(
 	#[case] tenant: Option<&str>,
 	#[case] selected_subject: Option<&str>,
 	#[case] workspace: bool,
 	#[case] context: bool,
 ) {
-	let sources = Sources::new(Principal::Operator);
+	let sources = Sources::new(Principal::DeploymentAdministrator);
 	let mut input = query();
 	input.tenant = tenant.map(str::to_owned);
 	input.subject = selected_subject.map(str::to_owned);

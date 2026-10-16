@@ -71,7 +71,7 @@ class ProductionAuthorizationTests(unittest.TestCase):
             "base": {"ref": "main"},
             "head": {"repo": {"full_name": CONFIG["repository"]}, "sha": SOURCE, "ref": "release/20261012T000000Z-" + SOURCE[:12]},
             "user": {"login": "release-bot[bot]"},
-            "merged_by": {"login": "operator", "type": "User"},
+            "merged_by": {"login": "maintainer", "type": "User"},
         }
         prefix = "repos/" + CONFIG["repository"]
         self.api = {
@@ -79,7 +79,7 @@ class ProductionAuthorizationTests(unittest.TestCase):
             # Commit-associated PRs use pull-request-simple and omit merged_by.
             prefix + f"/commits/{MAIN}/pulls?per_page=100": [{"number": 9, "body": self.pr["body"]}],
             prefix + "/pulls/9": self.pr,
-            prefix + "/collaborators/operator/permission": {"permission": "write"},
+            prefix + "/collaborators/maintainer/permission": {"permission": "write"},
             prefix + f"/git/commits/{MAIN}": {"tree": {"sha": "tree"}, "parents": [{"sha": BASE}]},
             prefix + f"/git/commits/{SOURCE}": {"tree": {"sha": "tree"}},
             prefix + f"/compare/{BASE}...{SOURCE}": {"status": "ahead"},

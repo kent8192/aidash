@@ -1,4 +1,4 @@
-//! Operator-owned profiles are exposed to subjects only after current draft-test authority and rule matching.
+//! Deployment Administrator-owned profiles are exposed to subjects only after current draft-test authority and rule matching.
 use crate::{
 	Error, Result,
 	ports::registry::workbench::profile::{ProfileConfiguration, ProfileRepository},
@@ -54,7 +54,7 @@ pub fn validate_real_rule(
 		_ => false,
 	};
 	if !isolated {
-		return Err(Error::Invalid("real tests require an operator-verified read-only HTTP test endpoint and separate test credentials".into()));
+		return Err(Error::Invalid("real tests require a Deployment Administrator-verified read-only HTTP test endpoint and separate test credentials".into()));
 	}
 	Ok(())
 }
@@ -64,7 +64,7 @@ pub async fn list(
 ) -> Result<Vec<ProfileSummary>> {
 	let mut draft_tools = None;
 	let tenant = match repository.principal() {
-		Principal::Operator => query
+		Principal::DeploymentAdministrator => query
 			.tenant
 			.ok_or_else(|| Error::Invalid("tenant is required".into()))?,
 		Principal::Subject { tenant, .. } => {
@@ -120,7 +120,7 @@ pub async fn put(
 	id: String,
 	input: ProfileInput,
 ) -> Result<TestProfile> {
-	if repository.principal() != Principal::Operator {
+	if repository.principal() != Principal::DeploymentAdministrator {
 		return Err(Error::Forbidden);
 	}
 	if tenant.trim().is_empty() || id.trim().is_empty() || id.len() > 100 || input.rules.len() > 32

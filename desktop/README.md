@@ -57,7 +57,7 @@ through the browser on a `mandatory` Tenant, or use the web app, to enroll.
 Configure the self-hosted backend's existing Google client, client secret and registered
 `/auth/callback` URI as described in the root README. No new Google client secret
 is distributed with the desktop client. Servers must advertise
-`desktop_protocol: 1` at `/auth/config`; an older server produces upgrade guidance.
+`desktop_protocol: 2` at `/auth/config`; an older server produces upgrade guidance.
 
 The native process binds a temporary random `127.0.0.1` port, prepares state and
 S256 PKCE, and opens the selected server's sign-in page in the system browser.

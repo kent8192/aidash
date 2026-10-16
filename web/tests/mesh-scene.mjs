@@ -185,7 +185,7 @@ export function meshScene(now = Date.now()) {
   };
   return {
     data: {
-      access: { kind: "operator" },
+      access: { kind: "deployment_administrator" },
       node: {
         id: home,
         endpoint: "http://localhost",

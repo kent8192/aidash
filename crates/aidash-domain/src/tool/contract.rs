@@ -147,7 +147,7 @@ pub struct ToolBehavior {
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	pub yields: Vec<Yield>,
 	/// The provider sends Run-derived content outside the Node only after a
-	/// Web disclosure approval; the operator waits on it like any approval.
+	/// Web disclosure approval; the Run waits on it like any approval.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub disclosure_approval: bool,
 }

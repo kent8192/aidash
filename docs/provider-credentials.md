@@ -41,7 +41,7 @@ Key Material.
 A model or embedding configuration without `provider_credential` is a Keyless
 endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
 and Aidash promises nothing about what it retains (ADR 0036). It may connect
-only to public addresses unless the Deployment's Operators list its exact
+only to public addresses unless the Deployment Administrators list its exact
 origin in `[keyless_endpoints] permitted_private_origins` (Helm:
 `keylessEndpoints.permittedPrivateOrigins`; environment:
 `AIDASH_KEYLESS_PRIVATE_ORIGINS`, comma-separated). An origin is
@@ -103,7 +103,7 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
    with `provider_authorization=connected|unbound|reconnected|denied|failed`
    (and the parameters below) added to its query, before any fragment. The
    dashboard reopens the Tenant the authorization started for, including an
-   operator's selected Tenant, and shows the outcome only there.
+   Deployment Administrator's selected Tenant, and shows the outcome only there.
    A connection reports `connected` only when the new Provider Credential is
    bound afterwards; when another active binding wins (for example a
    concurrent connection) or the actor may not update the binding, the key is
@@ -250,7 +250,7 @@ Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
 callback; these are the Provider Credential management permissions. Resources
 carry the provider attribute and UUID or Provider Catalog ID respectively.
 Authenticated Subjects may operate only within their Tenant; authenticated
-operators retain explicit policy decision audits. Responses use
+Deployment Administrators retain explicit policy decision audits. Responses use
 `Cache-Control: no-store`.
 
 Tenant settings show Provider connections (Connect, Reconnect), metadata,
