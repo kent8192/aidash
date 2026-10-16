@@ -637,9 +637,12 @@ impl TenantAdministrator {
 	}
 
 	/// Replaces a user subject's Assignable Group memberships, never its own.
+	/// `actor` is this administrator, which records a change in the
+	/// administration history.
 	pub(crate) async fn update_memberships(
 		&self,
 		db: DatabaseConnection,
+		actor: &AdministrationActor,
 		subject: String,
 		input: MembershipUpdate,
 	) -> Result<Membership> {
@@ -665,6 +668,20 @@ impl TenantAdministrator {
 				self.require_remaining_administrator(tx, &snapshot.bundle, None)
 					.await?;
 				snapshot.revision = self.save_policy(tx, &snapshot).await?;
+				actor
+					.record(
+						tx,
+						AdministrationEvent {
+							action: rules::SUBJECT_GROUP_UPDATE,
+							identity: None,
+							registration: None,
+							mapping: None,
+							tenant: Some(self.tenant()),
+							subject: Some(&subject),
+							invitation: None,
+						},
+					)
+					.await?;
 			}
 			Ok(Membership {
 				groups: rules::memberships(&snapshot.bundle, &subject),

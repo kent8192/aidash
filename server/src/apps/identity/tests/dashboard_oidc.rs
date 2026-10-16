@@ -2409,6 +2409,20 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		.await
 		.unwrap();
 	assert!(recorded >= 1, "{recorded}");
+	// The group change is recorded with its subject and acting administrator.
+	let group_changes = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_administration_history"))
+		.and_where(Expr::cust(
+			"action = 'subject.group.update' AND tenant = 'acme' AND subject = 'bob' \
+			 AND actor_kind = 'tenant_administrator' AND actor_identity_id IS NOT NULL",
+		))
+		.to_string(PostgresQueryBuilder);
+	let group_changes: i64 = sqlx::query_scalar(&group_changes)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(group_changes, 1);
 	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
 }
 

@@ -199,7 +199,12 @@ impl TenantAdministrations {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let lease = self.runtime.store.orm_connection()?;
 		let result = administrator
-			.update_memberships(lease.handle(), subject, input)
+			.update_memberships(
+				lease.handle(),
+				&AdministrationActor::TenantAdministrator(administrator.clone()),
+				subject,
+				input,
+			)
 			.await;
 		self.finish(&administrator, result).await
 	}
