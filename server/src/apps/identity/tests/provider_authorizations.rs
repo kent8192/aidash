@@ -2,6 +2,7 @@
 //! in-process fake OpenRouter enforces PKCE, single-use codes and code expiry;
 //! the HTTP adapter itself is exercised against a fake endpoint in
 //! `aidash-integrations`.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_application::{
@@ -106,7 +107,7 @@ impl Store for MemoryStore {
 		entry.push(key.expose_secret().to_owned());
 		Ok(format!("{resource}/versions/{}", entry.len()))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		Ok((1..=self
 			.versions
 			.lock()
@@ -116,13 +117,13 @@ impl Store for MemoryStore {
 			.map(|n| format!("{resource}/versions/{n}"))
 			.collect())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, _: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		self.versions.lock().unwrap().remove(resource);
 		Ok(())
 	}
@@ -914,7 +915,11 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 	let status = mapping.status();
 	let mapping: Value = serde_json::from_slice(mapping.body()).unwrap();
 	assert_eq!(status, 200, "{mapping}");
-	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 
 	// Without provider_credential.create the start is refused and reserves nothing.
 	let denied = start_request(&fixture, "browser-a", &context, json!({}), None).await;

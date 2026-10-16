@@ -1,4 +1,5 @@
 //! Lifecycle scopes retain budget, authority, retirement, history and outbox atomicity.
+use crate::tenancy::TenancyScope;
 use crate::{Result, authorization::Snapshot};
 use aidash_domain::{
 	generation::{
@@ -63,6 +64,6 @@ pub trait GenerationControlScope: GenerationLifecycleScope {
 #[async_trait]
 pub trait GenerationControls: Send + Sync {
 	fn principal(&self) -> &Principal;
-	async fn begin(&self, tenant: &str) -> Result<Box<dyn GenerationControlScope>>;
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn GenerationControlScope>>;
 	fn notify(&self);
 }

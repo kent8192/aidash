@@ -456,7 +456,7 @@ impl Service {
 		};
 		if let Err(error) = inserted {
 			// The resource holds no tokens yet.
-			self.delete_resource(&resource).await;
+			self.delete_resource(&row.tenant, &resource).await;
 			return Err(error);
 		}
 		Ok(true)
@@ -517,11 +517,11 @@ impl Service {
 			Err(error) => Err(error),
 		};
 		if let Err(error) = saved {
-			self.destroy_quietly(&version).await;
+			self.destroy_quietly(&row.tenant, &version).await;
 			return Err(error);
 		}
 		for version in stale {
-			self.destroy_quietly(&version).await;
+			self.destroy_quietly(&row.tenant, &version).await;
 		}
 		Ok(if first {
 			Outcome::Connected
@@ -535,7 +535,7 @@ impl Service {
 	/// destroy. Read under the owner's scope, before the new version is added.
 	async fn stale_versions(&self, row: &PlanConnection) -> Vec<String> {
 		self.store
-			.versions(&row.secret_resource)
+			.versions(&row.tenant, &row.secret_resource)
 			.await
 			.unwrap_or_else(|_| row.pinned_version.iter().cloned().collect())
 	}
@@ -704,7 +704,7 @@ impl Service {
 			return Err(self.abandon_rotation(&spent, &issued, error).await);
 		}
 		for version in stale {
-			self.destroy_quietly(&version).await;
+			self.destroy_quietly(&row.tenant, &version).await;
 		}
 		Ok(issued.access_token)
 	}
@@ -826,10 +826,13 @@ impl Service {
 		// which must survive this cleanup. A failed cleanup commits nothing,
 		// so the call that next finds the connection retries the transition;
 		// the pinned version goes last, so until then it stays readable.
-		let mut versions = self.store.versions(&row.secret_resource).await?;
+		let mut versions = self
+			.store
+			.versions(&row.tenant, &row.secret_resource)
+			.await?;
 		versions.sort_by_key(|version| Some(version) == pinned.as_ref());
 		for version in versions {
-			gone(self.store.destroy(&version).await)?;
+			gone(self.store.destroy(&row.tenant, &version).await)?;
 		}
 		scope.save(&row, event, SYSTEM_ACTOR).await?;
 		scope.commit().await
@@ -858,24 +861,24 @@ impl Service {
 	/// Deletes every Plan Token version and the resource. A resource that is
 	/// already gone counts as deleted, so a retried cleanup completes.
 	async fn delete_tokens(&self, row: &PlanConnection) -> Result<()> {
-		let versions = match self.store.versions(&row.secret_resource).await {
+		let versions = match self.store.versions(&row.tenant, &row.secret_resource).await {
 			Err(Error::NotFound(_)) => Vec::new(),
 			versions => versions?,
 		};
 		for version in versions {
-			gone(self.store.destroy(&version).await)?;
+			gone(self.store.destroy(&row.tenant, &version).await)?;
 		}
-		gone(self.store.delete(&row.secret_resource).await)
+		gone(self.store.delete(&row.tenant, &row.secret_resource).await)
 	}
 
-	async fn destroy_quietly(&self, version: &str) {
-		if self.store.destroy(version).await.is_err() {
+	async fn destroy_quietly(&self, tenant: &str, version: &str) {
+		if self.store.destroy(tenant, version).await.is_err() {
 			tracing::warn!("Plan Token version cleanup failed");
 		}
 	}
 
-	async fn delete_resource(&self, resource: &str) {
-		if self.store.delete(resource).await.is_err() {
+	async fn delete_resource(&self, tenant: &str, resource: &str) {
+		if self.store.delete(tenant, resource).await.is_err() {
 			tracing::warn!("Plan Token resource cleanup failed");
 		}
 	}

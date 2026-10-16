@@ -22,11 +22,15 @@ impl ExecutionRecoveryStore for RecoveryRepository {
 			Ok(id) => id,
 			Err(_) => return Ok(None),
 		};
-		self.store.run(id).await.map(Some).map_err(Into::into)
+		self.store
+			.run(&worker::claimed(), id)
+			.await
+			.map(Some)
+			.map_err(Into::into)
 	}
 	async fn save(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		self.store
-			.save_run(run, token, event)
+			.save_run(&worker::claimed(), run, token, event)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

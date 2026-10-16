@@ -1,4 +1,5 @@
 use super::*;
+use crate::tenancy::TenancyScope;
 use crate::{
 	authorization::Snapshot, generation::test_support,
 	ports::generation::lifecycle::GenerationControlScope,
@@ -149,7 +150,8 @@ impl GenerationControls for Repository {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
-	async fn begin(&self, _tenant: &str) -> Result<Box<dyn GenerationControlScope>> {
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn GenerationControlScope>> {
+		assert!(scope.tenant_name().is_some());
 		let mut state = self.state.lock().unwrap();
 		state.calls.push("begin".into());
 		state.active += 1;

@@ -1,5 +1,6 @@
 //! Native settlement retains attempt serialization and atomic bounded refunds.
 use crate::store::Store;
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::generation::settlement::{
@@ -22,6 +23,8 @@ use uuid::Uuid;
 
 pub(crate) struct NativeSettlementRepository {
 	pub store: Store,
+	/// The Tenant scope of the requests this repository settles.
+	pub scope: TenancyScope,
 }
 pub(crate) struct NativeSettlementScope<'a> {
 	pub transaction: &'a mut crate::database::native::Transaction,
@@ -41,7 +44,7 @@ impl Session {
 impl GenerationSettlementRepository for NativeSettlementRepository {
 	async fn begin(&self) -> Result<Box<dyn GenerationSettlementSession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: self.store.pool.begin(&self.scope).await?,
 		}))
 	}
 }

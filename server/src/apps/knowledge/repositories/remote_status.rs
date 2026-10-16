@@ -152,7 +152,7 @@ impl StatusScope for Scope<'_> {
 			let store = self.store.ok_or_else(|| {
 				NativeError::Invalid("semantic status storage unavailable".into())
 			})?;
-			let run = store.run(id).await?;
+			let run = store.run(&self.access.tenancy()?, id).await?;
 			self.access.run_visible(&run).await
 		}
 		.await;
@@ -190,6 +190,8 @@ impl StatusScope for Scope<'_> {
 }
 pub(crate) struct Repository<'a> {
 	pub store: &'a Store,
+	/// The Tenant of the remote grant whose status is read.
+	pub scope: aidash_application::tenancy::TenancyScope,
 }
 #[async_trait]
 impl StatusRepository for Repository<'_> {
@@ -211,7 +213,7 @@ impl StatusRepository for Repository<'_> {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&self.store.pool)
+				.fetch_optional(self.store.pool.in_scope(&self.scope))
 				.await?
 			})
 		}

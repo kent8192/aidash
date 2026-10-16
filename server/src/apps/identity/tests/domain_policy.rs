@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use aidash_server::apps::identity::services::policy::{Evaluation, PolicyBundle};
 use serde_json::{Value, json};
 

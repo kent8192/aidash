@@ -14,6 +14,7 @@ use crate::{
 	domain::Run,
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	ports::capabilities::python::{
@@ -31,6 +32,10 @@ use reinhardt::query::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// The capability worker reaches every Tenant's operations and work areas.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) access: &'a mut Access,
@@ -213,7 +218,7 @@ impl PythonRepository for Repository<'_> {
 						.limit(32)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&store.pool)
+				.fetch_all(store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(rows)
@@ -240,7 +245,7 @@ impl PythonRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&store.pool)
+				.fetch_one(store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(row)
@@ -273,7 +278,7 @@ impl PythonRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn HeapMaintenance + '_>> {
 		Ok(Box::new(Maintenance {
 			store: self.store,
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: self.store.pool.begin(&MAINTENANCE).await?,
 		}))
 	}
 }

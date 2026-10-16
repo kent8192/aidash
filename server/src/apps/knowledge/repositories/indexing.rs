@@ -7,6 +7,7 @@ use crate::apps::knowledge::{
 	},
 };
 use crate::{Error, store::Store, transactions::gate::ReadLease};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{Result, ports::semantic::*};
 use aidash_domain::semantic::indexing::{IndexingEntry, IndexingPlan};
 use async_trait::async_trait;
@@ -17,6 +18,12 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// Finding the entries that are due for indexing reads every Tenant's entries.
+const INDEXING: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::SemanticIndexing);
+/// Revoking entries and cleaning up retired points writes every Tenant's rows.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
 pub(crate) struct NativeIndexing {
 	pub store: Store,
@@ -85,7 +92,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 				.limit(32)
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_all(&store.pool)
+		.scalar_all(store.pool.in_scope(&INDEXING))
 		.await?;
 		Ok(ids)
 	}
@@ -101,20 +108,24 @@ impl SemanticIndexingRepository for NativeIndexing {
 		)
 		.columns(&["workspace_id", "authority"])
 		.bind(id)
-		.fetch_optional(&store.pool)
+		.fetch_optional(store.pool.in_scope(&INDEXING))
 		.await?)
 	}
-	async fn restore(&self, authority: &Value) -> Result<Box<dyn SemanticIndexingSession>> {
+	async fn restore(
+		&self,
+		workspace: Uuid,
+		authority: &Value,
+	) -> Result<Box<dyn SemanticIndexingSession>> {
 		Ok(Box::new(Session {
 			store: self.store.clone(),
-			lease: Lease::restore(&self.store, authority.clone()).await?,
+			lease: Lease::restore(&self.store, authority.clone(), workspace).await?,
 			entry: None,
 		}))
 	}
 	async fn revoke(&self, workspace: Uuid, id: Uuid, authority: &Value) -> Result<()> {
 		let store = &self.store;
 		let result: crate::Result<()> = async {
-			let mut tx = crate::database::native::begin(&store.pool).await?;
+			let mut tx = store.pool.begin(&MAINTENANCE).await?;
 			service::index(&mut tx, workspace, false).await?;
 			let entry: Option<Entry> = {
 				let query_bind_1 = id;
@@ -178,17 +189,25 @@ impl SemanticIndexingRepository for NativeIndexing {
 		result.map_err(Into::into)
 	}
 	async fn cleanup_due(&self) -> Result<CleanupBatch> {
-		let database = self.store.database();
-		let points = SemanticPoint::cleanup_due(&database).await?;
-		let collections = SemanticCollection::cleanup_due(&database).await?;
-		Ok(CleanupBatch {
-			points,
-			collections,
-		})
+		self.store
+			.pool
+			.scoped(&MAINTENANCE, async |tx| {
+				Ok(CleanupBatch {
+					points: SemanticPoint::cleanup_due(&mut **tx).await?,
+					collections: SemanticCollection::cleanup_due(&mut **tx).await?,
+				})
+			})
+			.await
+			.map_err(Into::into)
 	}
 	async fn begin_cleanup(&self) -> Result<Box<dyn SemanticCleanupSession>> {
 		Ok(Box::new(Cleanup {
-			transaction: self.store.database().begin().await.map_err(Error::from)?,
+			transaction: self
+				.store
+				.pool
+				.begin(&MAINTENANCE)
+				.await
+				.and_then(crate::database::native::Transaction::into_executor)?,
 		}))
 	}
 }

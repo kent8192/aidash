@@ -126,7 +126,12 @@ impl StreamAuthorityStore for Authority<'_> {
 					.bind(self.workspaces.identity.credential_id)
 					.bind(&self.workspaces.identity.tenant)
 					.bind(&self.workspaces.identity.subject)
-					.fetch_optional(&self.workspaces.store.pool)
+					.fetch_optional(
+						self.workspaces
+							.store
+							.pool
+							.in_scope(&self.workspaces.identity.tenancy()?),
+					)
 					.await?;
 			if let Some(current) = &current
 				&& current.mapping_id.is_some()

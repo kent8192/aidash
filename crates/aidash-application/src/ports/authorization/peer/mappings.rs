@@ -1,5 +1,6 @@
 //! Mapping writes own their transaction; inbound reads hold the resolved credential and policy lease.
 use crate::Result;
+use crate::tenancy::TenancyScope;
 use aidash_domain::identity::peer_mapping::{Mapping, PeerMappingInput};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -28,7 +29,7 @@ pub trait MappingRepository: Send + Sync {
 	type Access: MappingAccess;
 	fn node_id(&self) -> &str;
 	async fn enabled_peer(&self, node: &str) -> Result<()>;
-	async fn begin_write(&self, enabled: bool) -> Result<Self::Write>;
+	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Self::Write>;
 	async fn resolved(&self, node: &str, tenant: &str, subject: &str) -> Result<Option<Mapping>>;
 	async fn credential_subject(&self, mapping: &Mapping) -> Result<Option<String>>;
 	async fn begin_access(

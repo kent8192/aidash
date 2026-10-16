@@ -83,8 +83,12 @@ impl ReadJournalScope for Reads<'_> {
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut tx: Box<dyn TransactionExecutor> =
-				Box::new(crate::database::native::begin(self.access.journal_pool()).await?);
+			let mut tx: Box<dyn TransactionExecutor> = Box::new(
+				self.access
+					.journal_pool()
+					.begin(&self.access.tenancy()?)
+					.await?,
+			);
 			if let ReadMembership::RemoteGrant(scope) = membership {
 				AuthorizationRemoteGrantRead::record_sources(
 					tx.as_mut(),
@@ -145,7 +149,7 @@ impl ReadJournalScope for Reads<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(self.access.journal_pool())
+				.execute(self.access.journal_pool().in_scope(&self.access.tenancy()?))
 				.await?
 			};
 			Ok(())

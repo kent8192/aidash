@@ -97,6 +97,7 @@ impl SkillHeadroom for Headroom<'_> {
 		let result: NativeResult<Option<Value>> = async {
 			let store = self.store;
 			let run = RunId { id };
+			let scope = store.run_tenancy(run.id).await?;
 
 			let data: Option<Value> = {
 				let query_bind_1 = run.id;
@@ -113,7 +114,7 @@ impl SkillHeadroom for Headroom<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.scalar_optional(&store.pool)
+				.scalar_optional(store.pool.in_scope(&scope))
 				.await?
 			};
 			Ok(data)
@@ -126,6 +127,7 @@ impl SkillHeadroom for Headroom<'_> {
 /// Skill context it keys is rechecked against current authority.
 pub(crate) async fn revision(store: &Store, run: Uuid) -> Result<Option<i64>> {
 	let revision: NativeResult<Option<i64>> = async {
+		let scope = store.run_tenancy(run).await?;
 		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("revision"))
@@ -134,7 +136,7 @@ pub(crate) async fn revision(store: &Store, run: Uuid) -> Result<Option<i64>> {
 				.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("skills")))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(&store.pool)
+		.scalar_optional(store.pool.in_scope(&scope))
 		.await
 	}
 	.await;

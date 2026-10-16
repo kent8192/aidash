@@ -78,7 +78,10 @@ impl RemoteCompactionAuthority for NativeRemoteCompaction<'_> {
 		aidash_application::generation::protocol::admit(
 			&crate::bootstrap::generation_protocol_authority(federation),
 			&crate::bootstrap::generation_protocol_repository(&federation.store),
-			&crate::bootstrap::generation_dispatch_repository(&federation.store),
+			&crate::bootstrap::generation_dispatch_repository(
+				&federation.store,
+				federation.store.run_tenancy(run.id).await?,
+			),
 			&crate::bootstrap::generation_dispatch_settlement(federation),
 			aidash_application::generation::protocol::Admission {
 				run,
@@ -92,7 +95,13 @@ impl RemoteCompactionAuthority for NativeRemoteCompaction<'_> {
 	}
 	async fn settle(&mut self, input: &Input) -> Result<()> {
 		aidash_application::generation::dispatch::finish(
-			&crate::bootstrap::generation_dispatch_repository(&self.federation.store),
+			&crate::bootstrap::generation_dispatch_repository(
+				&self.federation.store,
+				self.federation
+					.store
+					.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
+					.await?,
+			),
 			&crate::bootstrap::generation_dispatch_settlement(&self.federation),
 			input,
 			Finalization::Settled { reported: None },

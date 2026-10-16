@@ -1,6 +1,8 @@
 //! Native Deployment Administrator staging and exact review selection on disposable services.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::authorization::{Authorization, policy::PolicyBundle};
 use common::request;
 use futures_util::FutureExt;
@@ -78,7 +80,7 @@ async fn configured_host_defaults_are_pending_only_for_atomic_new_tenant_creatio
 		.order_by(Alias::new("key"), reinhardt::query::Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	let retained: Vec<serde_json::Value> = aidash_server::database::native::query_scalar(&sql)
-		.scalar_all(&f.store.pool)
+		.scalar_all(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 	assert_eq!(retained.len(), 2);

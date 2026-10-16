@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::harness::Harness;
 use common::*;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
@@ -194,7 +196,7 @@ async fn cancel_stalled_inference(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "THINKING");
 
 	let mut workers = JoinSet::new();
@@ -234,12 +236,18 @@ async fn cancel_stalled_inference(
 
 	// Finish the existing durable cancellation path without another inference.
 	for _ in 0..3 {
-		if f.store.run(run.id).await.unwrap().phase().as_str() == "CANCELLED" {
+		if f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "CANCELLED"
+		{
 			break;
 		}
 		assert!(harness.worker_once().await.unwrap());
 	}
-	let cancelled = f.store.run(run.id).await.unwrap();
+	let cancelled = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(cancelled.phase().as_str(), "CANCELLED");
 	assert_eq!(cancelled.control.as_str(), "CANCELLED");
 	assert!(cancelled.recovery.retry.is_none());
@@ -248,10 +256,19 @@ async fn cancel_stalled_inference(
 		aidash_server::domain::RunState::Cancelled(_)
 	));
 	assert_eq!(
-		f.store.task(run.task_id).await.unwrap().status.as_str(),
+		f.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"CANCELLED"
 	);
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	assert!(snapshot.artifacts.is_empty());
 	assert!(!snapshot.events.iter().any(|e| e.kind == "model.completed"));
 	assert!(!harness.worker_once().await.unwrap());
@@ -281,7 +298,7 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "THINKING");
 	let worker = uuid::Uuid::new_v4();
 	let mut leased = f
@@ -291,7 +308,11 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 		.unwrap()
 		.unwrap();
 	f.store
-		.control(run.id, aidash_server::domain::RunControlAction::Cancel)
+		.control(
+			&TEST_FIXTURE,
+			run.id,
+			aidash_server::domain::RunControlAction::Cancel,
+		)
 		.await
 		.unwrap();
 
@@ -299,13 +320,20 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 		"response":{"text":"must not be published","tool_calls":[]},
 		"cursor":0
 	}))));
-	let saved = f.store.save_run(&leased, worker, "model.completed").await;
+	let saved = f
+		.store
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
+		.await;
 	assert!(matches!(saved, Err(aidash_server::Error::Conflict(_))));
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.control.as_str(), "CANCELLED");
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert!(json!(current.state)["data"].get("response").is_none());
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	assert!(
 		!snapshot
 			.events
@@ -341,7 +369,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "THINKING");
 	let control_application_name: String = sqlx::query_scalar(
 		&Query::select()
@@ -361,10 +389,15 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 				.cond_where(
 					reinhardt::query::Condition::all()
 						.add(
-							Expr::col(Alias::new("application_name"))
+							// A Deployment Scope relabels application_name; the
+							// database names this test's backends either way.
+							Expr::col(Alias::new("datname"))
 								.eq(Expr::value(query_bind_1.to_owned())),
 						)
-						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
+						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction")))
+						// Scoped probes, such as the interruption poll, idle only
+						// between their own statements; a held lease idles longer.
+						.add(Expr::cust("state_change < now() - interval '200 milliseconds'")),
 				)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -379,6 +412,8 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 		.await
 		.expect("worker must reach the provider")
 		.unwrap();
+	// Let any transaction held across the provider call idle past the probe window.
+	tokio::time::sleep(Duration::from_millis(400)).await;
 	let idle_transactions_during_inference: i64 = {
 		let query_bind_1 = &schema;
 		sqlx::query_scalar(
@@ -388,10 +423,15 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 				.cond_where(
 					reinhardt::query::Condition::all()
 						.add(
-							Expr::col(Alias::new("application_name"))
+							// A Deployment Scope relabels application_name; the
+							// database names this test's backends either way.
+							Expr::col(Alias::new("datname"))
 								.eq(Expr::value(query_bind_1.to_owned())),
 						)
-						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
+						.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction")))
+						// Scoped probes, such as the interruption poll, idle only
+						// between their own statements; a held lease idles longer.
+						.add(Expr::cust("state_change < now() - interval '200 milliseconds'")),
 				)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -437,11 +477,15 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 			.unwrap()
 	);
 	server.tasks.join_next().await.unwrap().unwrap();
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.control.as_str(), "PAUSED");
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert!(json!(current.state)["data"].get("response").is_none());
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	assert!(
 		!snapshot
 			.events
@@ -477,7 +521,7 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
 	workers.spawn(async move { worker.worker_once().await });
@@ -508,11 +552,15 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 			.unwrap()
 	);
 	server.tasks.join_next().await.unwrap().unwrap();
-	let current = f.store.run(run.id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.control.as_str(), "PAUSED");
 	assert_eq!(current.phase().as_str(), "THINKING");
 	assert!(json!(current.state)["data"].get("response").is_none());
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	assert!(
 		!snapshot
 			.events
@@ -547,7 +595,7 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
 	workers.spawn(async move { worker.worker_once().await });
@@ -587,8 +635,12 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 	let worker_result = joined
 		.map_err(|error| error.to_string())
 		.and_then(|result| result.map_err(|error| error.to_string()));
-	let current = f.store.run(run.id).await.unwrap();
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 	assert!(
 		!exited_while_reserved,
@@ -633,7 +685,7 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
 	workers.spawn(async move { worker.worker_once().await });
@@ -660,8 +712,12 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 		.map_err(|error| error.to_string())
 		.and_then(|result| result.map_err(|error| error.to_string()));
 	server.tasks.join_next().await.unwrap().unwrap();
-	let current = f.store.run(run.id).await.unwrap();
-	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 	assert_eq!(worker_result, Ok(true));
 	assert_eq!(current.phase().as_str(), "THINKING");
