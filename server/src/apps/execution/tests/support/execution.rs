@@ -67,7 +67,7 @@ pub fn execution(
 			(
 				"tool",
 				"http",
-				json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"idempotent"}}),
+				json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 			),
 			(
 				"agent",

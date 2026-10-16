@@ -117,7 +117,7 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 	entry(
 		id,
 		"tool",
-		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":alias,"tier":"integration","transport":{"transport":"http","endpoint":"https://production.example/rpc","credential_env":null,"replay":"unsafe"}}),
+		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":alias,"tier":"integration","transport":{"transport":"http","endpoint":"https://production.example/rpc","replay":"unsafe"}}),
 	)
 }
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {

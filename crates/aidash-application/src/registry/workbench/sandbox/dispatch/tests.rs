@@ -104,7 +104,6 @@ fn pin(repository: &Repository) -> ProfilePin {
 }
 fn bound_tool() -> Entry {
 	let mut tool = crate::test_support::http_tool("aidash://local", "tool", "plugin_0");
-	tool.config["transport"]["credential_env"] = json!("PRODUCTION_TOOL");
 	tool.schema = json!({"type":"object","required":["action","resource"]});
 	tool
 }
