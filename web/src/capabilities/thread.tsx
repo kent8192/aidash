@@ -896,6 +896,14 @@ export function ThreadCapabilities({
   const steered = activeRunId && steering.canRead ? urlIntents(prompt) : [];
   const intents = [...new Set([...queued, ...steered])];
   const selectedPages = readPages.filter((page) => intents.includes(page));
+  // An action whose Agent cannot read a selected page is disabled rather
+  // than sending the text without it.
+  const queueReadsSelection = selectedPages.every((page) =>
+    queued.includes(page),
+  );
+  const steerReadsSelection = selectedPages.every((page) =>
+    steered.includes(page),
+  );
   if (!area && agents.length === 0 && !query.isError) return null;
   return (
     <section className={panelClass}>
@@ -949,11 +957,18 @@ export function ThreadCapabilities({
           {requested.join(", ")}
         </Hint>
       )}
+      {(!queueReadsSelection || (activeRunId && !steerReadsSelection)) && (
+        <Hint role="status">
+          {ja
+            ? "選んだページを読めない Agent への送信はできません。そのページの選択を外すと送れます。"
+            : "An action whose Agent cannot read a selected page is unavailable; clear that page to use it."}
+        </Hint>
+      )}
       <div className={inlineFormClass}>
         <Button
           variant="outline"
           type="button"
-          disabled={busy || !prompt.trim() || !target}
+          disabled={busy || !prompt.trim() || !target || !queueReadsSelection}
           onClick={() =>
             void act(async () => {
               if (area) {
@@ -991,7 +1006,7 @@ export function ThreadCapabilities({
             <Button
               variant="outline"
               type="button"
-              disabled={busy || !prompt.trim()}
+              disabled={busy || !prompt.trim() || !steerReadsSelection}
               onClick={() =>
                 void act(async () => {
                   const expectedRunId = session.data!.active_run_id!;

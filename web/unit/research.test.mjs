@@ -203,6 +203,10 @@ test("addresses the host would refuse are not offered", () => {
 
 test("prices read as dollars and Run grant scopes say what they cover", () => {
   assert.equal(dollars(5000), "$0.0050");
+  // A nonzero price never reads as zero.
+  assert.equal(dollars(49), "$0.000049");
+  assert.equal(dollars(12_345), "$0.012345");
+  assert.equal(dollars(0), "$0.0000");
   assert.match(
     runGrantScope(
       {

@@ -175,9 +175,11 @@ export function urlIntents(text: string): string[] {
   return found;
 }
 
-/** A recorded price in micro-USD as dollars, e.g. `$0.0050`. */
+/** A recorded price in micro-USD as dollars, e.g. `$0.0050`: at least four
+ *  decimals and as many more, up to six, as the amount needs, so a nonzero
+ *  price never reads as zero. */
 export function dollars(microUsd: number): string {
-  return `$${(microUsd / 1_000_000).toFixed(4)}`;
+  return `$${(microUsd / 1_000_000).toFixed(6).replace(/(\.\d{4}\d*?)0+$/, "$1")}`;
 }
 
 /**
