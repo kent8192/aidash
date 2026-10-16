@@ -910,6 +910,16 @@ async fn a_reconnection_completed_after_a_disconnect_is_refused() {
 }
 
 #[tokio::test]
+async fn a_disconnect_without_a_connection_still_ends_pending_attempts() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	assert!(matches!(
+		fixture.service.disconnect(&owner(), 1, "alice").await,
+		Err(Error::NotFound(_))
+	));
+	assert_eq!(fixture.repo.0.lock().await.cancelled_attempts, 1);
+}
+
+#[tokio::test]
 async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();

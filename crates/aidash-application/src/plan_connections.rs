@@ -582,13 +582,18 @@ impl Service {
 		actor: &str,
 	) -> Result<Disconnection> {
 		let mut scope = self.repository.begin(owner).await?;
-		let row = scope
-			.owned(Provider::Chatgpt)
-			.await?
-			.ok_or_else(|| Error::NotFound("Plan Connection not found".into()))?;
+		let Some(row) = scope.owned(Provider::Chatgpt).await? else {
+			// Nothing is connected yet, but a pending first-time attempt
+			// still ends, so its callback cannot connect what the owner
+			// asked to end.
+			scope.cancel_attempts(Provider::Chatgpt).await?;
+			scope.commit().await?;
+			return Err(Error::NotFound("Plan Connection not found".into()));
+		};
 		row.check_revision(expected_revision)?;
 		// Pending attempts end with the disconnect, in its transaction, so a
-		// refused disconnect leaves them for their callbacks.
+		// disconnect refused for a stale revision leaves them for their
+		// callbacks.
 		scope.cancel_attempts(Provider::Chatgpt).await?;
 		let revoked = self.revoke_row(&row).await;
 		// The row is the only pointer to the tokens: delete them first, so a
