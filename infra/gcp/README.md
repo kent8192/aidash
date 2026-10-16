@@ -147,7 +147,7 @@ Provisioning is intentionally disabled until these account-specific inputs are
 configured. The project is never inferred from a developer's `gcloud` default.
 
 1. Choose a billing-enabled **Aidash GCP project** and globally unique bucket
-   names. Use an operator identity allowed to enable APIs, create the bootstrap
+   names. Use an identity allowed to enable APIs, create the bootstrap
    resources and grant their IAM roles. Authenticate Terraform using ADC, for
    example `gcloud auth application-default login`. Select `develop_branch`.
 2. Publish the reviewed implementation to protected `main` and the configured
@@ -196,7 +196,7 @@ configured. The project is never inferred from a developer's `gcloud` default.
    consent-screen test users; never share production runtime secrets with PRs.
    Google login authenticates identity; existing Aidash registration approval,
    member mapping and workspace permissions still control access. Set up the
-   initial operator/invited users using the deployed Google integration's
+   initial Deployment Administrator and invited users using the deployed Google integration's
    existing registration/bootstrap procedure.
 7. Set the following GitHub repository variables and secrets through Settings
    or `gh variable set` / `gh secret set` with file input. Keep secret values out
@@ -318,7 +318,7 @@ installs the `app` chart. Readiness requires the server Deployment's
 a ready Runner and the public HTTPS node identity. The controller verifies the rollout/source, publishes the edge LoadBalancer IP
 in DNS, opens admission, then verifies public HTTPS and node identity before
 marking ready and queuing notifications. A timeout leaves the
-generation failed for operator inspection, without replaying unknown work.
+generation failed for manual inspection, without replaying unknown work.
 
 ## Idle stop, updates and failure recovery
 
@@ -511,7 +511,7 @@ permission. Environment automation consumes their IDs and removes
 only service/signing bindings on disable or retirement. Keep the bootstrap
 environment set to preserve immutable KMS names. See the
 [broker deployment guide](../../crates/aidash-broker/README.md) for the input
-contract and operator-only import steps for any pre-merge draft deployment.
+contract and manual import steps for any pre-merge draft deployment.
 
 ### Deploy pipeline boundary
 
@@ -595,7 +595,7 @@ not alerted on. The deny policy covers deletion and disabling of broker accounts
 **Deferred.** A separately deployed credential enclave that the deploy identity
 cannot reach is deferred, for Enterprise or for growth in key count. Building the
 broker in the trusted pipeline, so its digest lands in `release.json` like the
-other images, is also deferred; today the broker image is built by an operator.
+other images, is also deferred; today the broker image is built manually.
 
 #### Protected deploy Environments
 
@@ -633,7 +633,7 @@ changes are gated by review of the pull request to `main`.
    `docs/operations/release-deployment.md`); it disables administrator bypass on
    each.
 3. **Apply bootstrap** with the new inputs in `bootstrap/terraform.tfvars`:
-   `security_alert_emails` (required once `byok_broker_environments` is set). The operator needs deny-policy
+   `security_alert_emails` (required once `byok_broker_environments` is set). Whoever applies it needs deny-policy
    (`roles/iam.denyAdmin`), tag administration (`roles/resourcemanager.tagAdmin`
    plus tag user on the service accounts), alert-policy and notification-channel
    administration and Service Usage on both projects. Review the plan: it adds the
