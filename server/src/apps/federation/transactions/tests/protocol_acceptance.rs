@@ -114,7 +114,7 @@ fn node(
 			server: Some(peer.server),
 			client: peer.client,
 			application: peer.application,
-			_runtime: peer.runtime,
+			runtime: peer.runtime,
 			_capacity: None,
 		}
 	}
@@ -188,7 +188,7 @@ struct Node {
 	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
 	reservation: Reservation,
 	application: common::TestApplication,
-	_runtime: common::RuntimeFixture,
+	runtime: common::RuntimeFixture,
 	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Node {
@@ -208,20 +208,61 @@ impl Node {
 			);
 		}
 	}
+	/// Name this Node's database in step failures, which list sessions by database.
+	fn stage(&self, action: &str, step: &str) -> String {
+		format!(
+			"{action} {} (database {}): {step}",
+			self.f.config.node_id, self.runtime.schema
+		)
+	}
+	/// Stop serving and close both pools. Each step is bounded because a pool
+	/// close waits for every checked-out connection to return (#308).
+	async fn close(&mut self, action: &str) {
+		let environment = self.runtime.environment();
+		environment
+			.bounded(self.stage(action, "stop the HTTP server"), self.stop())
+			.await;
+		environment
+			.bounded(
+				self.stage(action, "close the pool"),
+				self.f.store.pool.close(),
+			)
+			.await;
+		environment
+			.bounded(
+				self.stage(action, "close the control pool"),
+				self.f.store.control_pool.close(),
+			)
+			.await;
+	}
 	async fn restart(&mut self) {
 		// Act: close and reconnect the participant pools, then rebind its stable origin.
-		self.stop().await;
-		self.f.store.pool.close().await;
-		self.f.store.control_pool.close().await;
-		let store = common::native_store(&self.f.config.database_url, &self.f.config.node_id).await;
+		self.close("restart").await;
+		let environment = self.runtime.environment();
+		let store = environment
+			.bounded(
+				self.stage("restart", "reconnect the store"),
+				common::native_store(&self.f.config.database_url, &self.f.config.node_id),
+			)
+			.await;
 		self.f = Federation {
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			store,
 			notify: Arc::new(tokio::sync::Notify::new()),
 			..self.f.clone()
 		};
-		self.application = common::application(self.f.clone()).await;
-		self.serve(self.application.native_router()).await;
+		self.application = environment
+			.bounded(
+				self.stage("restart", "rebuild the application"),
+				common::application(self.f.clone()),
+			)
+			.await;
+		environment
+			.bounded(
+				self.stage("restart", "serve the stable origin"),
+				self.serve(self.application.native_router()),
+			)
+			.await;
 	}
 	async fn serve(&mut self, router: Arc<reinhardt::ServerRouter>) {
 		// Act: replace the live participant routes while preserving its advertised port.
@@ -279,9 +320,7 @@ impl Node {
 		self.request(reqwest::Method::GET, path, None).await
 	}
 	async fn cleanup(mut self) {
-		self.stop().await;
-		self.f.store.pool.close().await;
-		self.f.store.control_pool.close().await;
+		self.close("clean up").await;
 	}
 }
 impl Drop for Node {
@@ -1130,20 +1169,37 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future(awt)] pair: Pair) {
 	let (mut a, mut b, manifest, wa, wb) = pair;
+	let environment = a.runtime.environment();
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	let mut transitions = 0;
 	loop {
+		// Restarts bound their own steps; name the protocol steps between them (#308).
 		a.restart().await;
 		b.restart().await;
-		let state = coordinator::advance(&a.f, manifest.id).await.unwrap();
 		transitions += 1;
+		let state = environment
+			.bounded(
+				format!("transition {transitions}: advance"),
+				coordinator::advance(&a.f, manifest.id),
+			)
+			.await
+			.unwrap();
 		if !state.visible {
 			// No node may expose a new value before the global visibility decision.
 			for (node, workspace) in [(&a, wa), (&b, wb)] {
-				let (status, value) = node.get(&format!("/api/workspaces/{workspace}")).await;
+				let (status, value) = environment
+					.bounded(
+						format!(
+							"transition {transitions}: read {} workspace",
+							node.f.config.node_id
+						),
+						node.get(&format!("/api/workspaces/{workspace}")),
+					)
+					.await;
 				assert!(
 					status == 503 || (status == 200 && value["workspace"]["revision"] == 0),
 					"{status}: {value}"
@@ -1186,6 +1242,7 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	#[future(awt)] pair: Pair,
