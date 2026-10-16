@@ -135,7 +135,7 @@ const queryClient = new QueryClient({
 type Search = { channel?: string; focus?: string; view?: string };
 type BrowserSession = {
   id: string;
-  operator: boolean;
+  deployment_administrator: boolean;
   personal_account?: boolean;
   mappings: {
     id: string;
@@ -150,8 +150,8 @@ function sessionContext(session: BrowserSession, selected: string | null) {
   // An inactive credential fails with 401 and ends the browser session, so
   // neither a saved selection nor the default may use it.
   if (
-    selected === "operator"
-      ? session.operator
+    selected === "deployment_administrator"
+      ? session.deployment_administrator
       : session.mappings.some(
           (mapping) =>
             selected === `mapping:${mapping.id}` &&
@@ -282,16 +282,17 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 5000,
   });
-  const operator = session.data?.access.kind === "operator";
+  const deploymentAdministrator =
+    session.data?.access.kind === "deployment_administrator";
   const subjectTenant =
     session.data?.access.kind === "subject" ? session.data.access.tenant : null;
-  // Capability approvals are addressed to tenant subjects, never to Operators.
+  // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   const [queueOpen, setQueueOpen] = useState(false);
   const mesh = useQuery({
     queryKey: ["mesh"],
     queryFn: () => getMesh(),
-    enabled: connected && operator,
+    enabled: connected && deploymentAdministrator,
     refetchInterval: 3000,
   });
   const discovery = useQuery({
@@ -638,7 +639,7 @@ function Dashboard({
         ) : (
           <>
             {(browserSession.mappings.length > 0 ||
-              browserSession.operator) && (
+              browserSession.deployment_administrator) && (
               <div className="grid gap-1.5">
                 {browserSession.mappings.map((mapping) => (
                   <Button
@@ -652,21 +653,21 @@ function Dashboard({
                     {mapping.tenant} / {mapping.subject}
                   </Button>
                 ))}
-                {browserSession.operator && (
+                {browserSession.deployment_administrator && (
                   <Button
                     variant="outline"
                     size="lg"
                     type="button"
                     className="justify-start font-mono text-xs"
-                    onClick={() => chooseContext("operator")}
+                    onClick={() => chooseContext("deployment_administrator")}
                   >
-                    {auth.operator}
+                    {auth.deploymentAdministrator}
                   </Button>
                 )}
               </div>
             )}
             {browserSession.mappings.length === 0 &&
-              !browserSession.operator && (
+              !browserSession.deployment_administrator && (
                 <div className="grid gap-3">
                   {(registrationError || registration.isError) && (
                     <Alert>
@@ -740,7 +741,7 @@ function Dashboard({
   const runs = data
     ? [
         ...data.runs.map((run) => ({ run, node: data.node.id })),
-        ...(operator
+        ...(deploymentAdministrator
           ? (remote?.nodes.flatMap((node) =>
               node.runs.map((run) => ({ run, node: node.node_id })),
             ) ?? [])
@@ -753,7 +754,7 @@ function Dashboard({
           request,
           node: data.node.id,
         })),
-        ...(operator
+        ...(deploymentAdministrator
           ? (remote?.nodes.flatMap((node) =>
               node.human_requests.map((request) => ({
                 request,
@@ -794,7 +795,7 @@ function Dashboard({
       <NotificationProvider
         key={`${browserSessionId}:${context}`}
         data={data}
-        remote={operator ? remote : undefined}
+        remote={deploymentAdministrator ? remote : undefined}
         approvals={inbox.pending}
         locale={locale}
         theme={theme}
@@ -805,7 +806,7 @@ function Dashboard({
           settings={route.settings}
           data={data}
           channel={currentChannel}
-          operator={operator}
+          deploymentAdministrator={deploymentAdministrator}
           streamStatus={streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
           inbox={inbox}
@@ -827,10 +828,11 @@ function Dashboard({
             name:
               session.data?.access.kind === "subject"
                 ? session.data.access.subject
-                : auth.operator,
+                : auth.deploymentAdministrator,
             context,
             mappings: browserSession?.mappings ?? [],
-            operatorAllowed: browserSession?.operator ?? false,
+            deploymentAdministratorAllowed:
+              browserSession?.deployment_administrator ?? false,
             personalAccount: browserSession?.personal_account ?? false,
             sharedAccess: {
               status: registration.data?.status,
@@ -862,7 +864,7 @@ function Dashboard({
           {((error && !selection) ||
             state.isError ||
             (data &&
-              operator &&
+              deploymentAdministrator &&
               (mesh.isError || (remote?.errors.length ?? 0) > 0))) && (
             <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
               {error && !selection && <Alert>{error}</Alert>}
@@ -894,7 +896,7 @@ function Dashboard({
                 </Alert>
               )}
               {data &&
-                operator &&
+                deploymentAdministrator &&
                 (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
                   <Notice tone="warning" role="status">
                     <p>{t("remoteUnavailable")}</p>
@@ -978,7 +980,7 @@ function Dashboard({
                     ) : (
                       <TrustTools
                         entries={data.registry}
-                        operator={operator}
+                        deploymentAdministrator={deploymentAdministrator}
                         tenant={subjectTenant}
                         initiallyOpen={route.integration === "authorization"}
                       />
@@ -1009,7 +1011,7 @@ function Dashboard({
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
               <TrustTools
                 entries={[]}
-                operator={operator}
+                deploymentAdministrator={deploymentAdministrator}
                 tenant={subjectTenant}
                 initiallyOpen={route.integration === "authorization"}
               />
@@ -1027,7 +1029,7 @@ function Dashboard({
             data={data}
             stateError={state.isError ? state.error.message : undefined}
             nodeId={session.data.node_id}
-            operator={operator}
+            deploymentAdministrator={deploymentAdministrator}
             workspace={currentChannel || undefined}
             close={() => go("collaboration", { focus: "" })}
           />

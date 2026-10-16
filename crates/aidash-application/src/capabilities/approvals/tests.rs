@@ -311,7 +311,7 @@ async fn the_record_keeps_the_thread_and_what_the_approver_saw_and_who_decided_w
 	let request = DisclosureRequest {
 		area: Some(area),
 		attribution: Some(aidash_domain::research::account::CostAttribution {
-			account_id: "operator-account".into(),
+			account_id: "research-account".into(),
 			price_micro_usd: 5_000,
 		}),
 		query: Some(json!({"query":"rust release","language":"en"})),
@@ -334,7 +334,7 @@ async fn the_record_keeps_the_thread_and_what_the_approver_saw_and_who_decided_w
 	assert_eq!(record.area_id, Some(area));
 	assert_eq!(
 		record.data["attribution"],
-		json!({"account_id":"operator-account","price_micro_usd":5000})
+		json!({"account_id":"research-account","price_micro_usd":5000})
 	);
 	assert_eq!(record.data["query"]["query"], "rust release");
 	assert_eq!(record.data["operation"], "search");

@@ -1,6 +1,6 @@
 //! Installation administration is not a mapped tenant reader at another node.
 //! Content in a workspace bound to required Home retrieval requires a Subject
-//! view. Operator APIs retain content-free stop controls and infrastructure data.
+//! view. Deployment Administrator APIs retain content-free stop controls and infrastructure data.
 use crate::database::native::Transaction;
 use crate::{Error, Result, domain::Event};
 use reinhardt::query::{Alias, Expr, JoinType, PostgresQueryBuilder, Query, SimpleExpr};

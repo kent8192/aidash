@@ -242,7 +242,7 @@ pub async fn drive(repository: &dyn ReferenceRepository, id: Uuid) -> Result<()>
             match scope.verified_health().await {
                 Ok(health)=>health,
                 Err(_)=>{
-                    // Keep the original and retry after an operator repairs the
+                    // Keep the original and retry after whoever runs the Deployment repairs the
                     // deployment; never start a parser under different limits.
                     record.data["extraction_state"]=json!("runtime_unavailable");
                     return scope.update(&mut record).await;

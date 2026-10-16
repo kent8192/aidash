@@ -1,4 +1,4 @@
-//! Export the disabled-by-default runtime profile for operator configuration.
+//! Export the disabled-by-default runtime profile for the Node's configuration.
 use async_trait::async_trait;
 use reinhardt::commands::{BaseCommand, CommandContext, CommandError, CommandResult};
 

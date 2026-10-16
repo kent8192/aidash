@@ -10,14 +10,14 @@ mail delivery, recovery objectives or hosted CI success.
 
 Complete these steps in order. The Cloudflare sending domain already reports
 **Configured**; its API credential and incoming forwarding aliases still need
-operator setup and delivery verification.
+manual setup and delivery verification.
 
 Use [delivery setup automation](../../infra/delivery/README.md) for the commands,
 private input templates and existing-resource adoption. These tools cover the
 Terraform and credential handoff portions below; acceptance and approvals remain
-explicit operator actions.
+explicit manual actions.
 
-| Step | Automated setup                                                                                                                                                                                                                     | Operator completion evidence                                                                                                                                   |
+| Step | Automated setup                                                                                                                                                                                                                     | Manual completion evidence                                                                                                                                     |
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1    | Four workflow enablement variables remain false                                                                                                                                                                                     | Review/merge the privileged code into main and default develop; synchronize main history into develop                                                          |
 | 2    | Five protected Environments, exact branch policies, additive CI/App checks; release App manifest and protected key handoff                                                                                                          | Owner Create/Install consent for only Aidash; live reviewer/branch protections; enable the App staging check only after bootstrap main merge                   |
@@ -207,7 +207,7 @@ Random hosts require managed GCIP tenant bindings and `auth_helper: firebase`.
 Configure OAuth callbacks on the fixed `<project>.firebaseapp.com` helper,
 not wildcard preview callbacks. The lifecycle controller manages concrete
 preview hosts in GCIP `authorizedDomains`, preserving unrelated entries.
-Operators must coordinate writes to that field with the lifecycle lock because
+Whoever runs the Deployment must coordinate writes to that field with the lifecycle lock because
 the API has no etag. Keep host-only `__Host-` session cookies, exact Origin/CSRF
 checks and explicit member/workspace authorization; the random URL does not grant
 access. Never widen cookie Domain or authenticated CORS to the parent domain.
@@ -293,7 +293,7 @@ main/source tree equality and unchanged promoted image digests.
 Plan a maintenance window. Deployment closes admission, stops server/worker
 writers and verifies active work before applying migrations and restarting.
 Unknown or active execution must defer the update; production has no force,
-Spot, stop or destroy path. Failed updates remain sealed until an operator
+Spot, stop or destroy path. Failed updates remain sealed until someone
 reconciles them using the explicit recovery path above. A receipt-storage
 failure after readiness does not mean the deployment or migrations failed.
 Restore or roll back only after database, Runner and migration compatibility
@@ -319,6 +319,6 @@ actionlint .github/workflows/release-pr.yml .github/workflows/gcp-environments.y
 git diff --check
 ```
 
-Record actual command results, tested Git SHA, manifests/digests, operator and
+Record actual command results, tested Git SHA, manifests/digests, the person running it and
 private evidence location. These commands are instructions, not a claim that
 tests, hosted CI, infrastructure, mail forwarding or restore drills have passed.

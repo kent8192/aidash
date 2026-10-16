@@ -798,9 +798,9 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 	let now = Utc::now();
 	let mut provider = Search::new("brave", "api.search.brave.com");
 	provider.account = Some(AccountProfile {
-		account_id: "operator-account".into(),
+		account_id: "deployment-administrator-account".into(),
 		agreement_reference: "contract".into(),
-		verified_by: "operator".into(),
+		verified_by: "deployment_administrator".into(),
 		verified_at: now - Duration::days(1),
 		review_after: now + Duration::days(1),
 		storage_permitted: true,
@@ -829,7 +829,7 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 	let (reservation, _) = attempts.values().next().unwrap();
 	assert_eq!(
 		reservation.attribution.as_ref().unwrap().account_id,
-		"operator-account"
+		"deployment-administrator-account"
 	);
 	let exhausted = research
 		.search(
@@ -844,7 +844,8 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 }
 
 #[tokio::test]
-async fn an_approver_sees_the_operator_price_and_the_validated_query_as_they_stood_when_asked() {
+async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_they_stood_when_asked()
+ {
 	// Arrange
 	let (store, gate) = (Memory::default(), Gate::default());
 	let research = Research {
@@ -855,9 +856,9 @@ async fn an_approver_sees_the_operator_price_and_the_validated_query_as_they_sto
 	let now = Utc::now();
 	let mut provider = Search::new("brave", "api.search.brave.com");
 	provider.account = Some(AccountProfile {
-		account_id: "operator-account".into(),
+		account_id: "research-account".into(),
 		agreement_reference: "contract".into(),
-		verified_by: "operator".into(),
+		verified_by: "deployment_administrator".into(),
 		verified_at: now - Duration::days(1),
 		review_after: now + Duration::days(1),
 		storage_permitted: true,
@@ -901,7 +902,7 @@ async fn an_approver_sees_the_operator_price_and_the_validated_query_as_they_sto
 	assert_eq!(
 		search.attribution,
 		Some(aidash_domain::research::account::CostAttribution {
-			account_id: "operator-account".into(),
+			account_id: "research-account".into(),
 			price_micro_usd: 5_000,
 		})
 	);
@@ -909,7 +910,7 @@ async fn an_approver_sees_the_operator_price_and_the_validated_query_as_they_sto
 	assert_eq!(query["query"], "rust");
 	assert_eq!(query["language"], "en");
 	assert_eq!(query["count"], 3);
-	// A page read has neither an operator account nor a query.
+	// A page read has neither a Research account nor a query.
 	assert_eq!(requests[1].attribution, None);
 	assert_eq!(requests[1].query, None);
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);

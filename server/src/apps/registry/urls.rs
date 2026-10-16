@@ -7,14 +7,14 @@ pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
 			.endpoint(personal_agents::create)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
+			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::registry_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::registry_get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::registry_create)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
+			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::skill_import)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
+			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 	})
 }

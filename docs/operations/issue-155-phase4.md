@@ -90,7 +90,7 @@ whenever a new background producer is added.
 
 ## GKE drill (2026-10-10)
 
-With the user's authorization, an operator-run drill used the branch's
+With the user's authorization, a manual drill used the branch's
 `infra/gcp/environments` Terraform (separate `terraform/drill-155` state prefix) in
 the configured project, amd64 release images built by Cloud Build into the private
 registry, and the real `infra/gcp/control/kube.py` helpers with both charts. The

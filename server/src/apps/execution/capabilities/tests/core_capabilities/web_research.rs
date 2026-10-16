@@ -559,7 +559,7 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 	assert_eq!(card["targets"], json!(["example.com"]));
 	assert_eq!(card["area_id"], area["id"]);
 	assert_eq!(card["viewer_is_approver"], true);
-	assert!(card.get("operator_account").is_none(), "{card}");
+	assert!(card.get("account_id").is_none(), "{card}");
 	r.close().await;
 }
 
@@ -871,10 +871,13 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 			{"text":"Omega line","page":2}
 		])
 	);
-	let (status, operator) =
+	let (status, deployment_administrator) =
 		request(&r.c.app, &r.c.f.config.api_token, "GET", &path, json!(null)).await;
-	assert_eq!(status, 200, "an Operator reads what run_get discloses");
-	assert_eq!(operator["text"], "Alpha");
+	assert_eq!(
+		status, 200,
+		"a Deployment Administrator reads what run_get discloses"
+	);
+	assert_eq!(deployment_administrator["text"], "Alpha");
 
 	// Everyone else gets one identical absence, whatever the reason. Bob is
 	// a member of the Tenant whose policy no longer lets him read Runs.
@@ -944,7 +947,7 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 		Value::Null,
 	)
 	.await;
-	let (operator_status, _) = request(
+	let (deployment_administrator_status, _) = request(
 		&r.c.app,
 		&r.c.f.config.api_token,
 		"GET",
@@ -992,7 +995,7 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 	);
 	assert_eq!(providers["limits"]["search_attempts"], 20);
 	assert_eq!(
-		operator_status, 403,
+		deployment_administrator_status, 403,
 		"Deployment Administrators read no Tenant's research setup"
 	);
 	r.close().await;

@@ -78,10 +78,11 @@ const destinations = [
   { section: "creator", icon: PencilRuler, key: "3" },
   { section: "trust", icon: ShieldHalf, key: "4" },
 ] as const;
-/** Settings views limited to operators; the server still enforces access. */
-const operatorSettings: Partial<Record<SettingsSection, true>> = {
-  deployment: true,
-};
+/** Settings views limited to Deployment Administrators; the server still enforces access. */
+const deploymentAdministratorSettings: Partial<Record<SettingsSection, true>> =
+  {
+    deployment: true,
+  };
 const settingsIcons: Record<
   (typeof visibleSettingsSections)[number],
   typeof Server
@@ -137,12 +138,12 @@ const RailButton = forwardRef<
 RailButton.displayName = "RailButton";
 
 function SettingsLinks({
-  operator,
+  deploymentAdministrator,
   current,
   select,
   prepare,
 }: {
-  operator: boolean;
+  deploymentAdministrator: boolean;
   current?: SettingsSection;
   select: (settings: SettingsSection) => void;
   prepare: () => void;
@@ -152,7 +153,10 @@ function SettingsLinks({
   return (
     <div className="grid gap-px">
       {visibleSettingsSections
-        .filter((value) => operator || !operatorSettings[value])
+        .filter(
+          (value) =>
+            deploymentAdministrator || !deploymentAdministratorSettings[value],
+        )
         .map((value) => {
           const Icon = settingsIcons[value];
           return (
@@ -183,7 +187,7 @@ export function AppShell({
   settings,
   data,
   channel,
-  operator,
+  deploymentAdministrator,
   streamStatus,
   decisions,
   inbox,
@@ -201,7 +205,7 @@ export function AppShell({
   settings: SettingsSection;
   data?: State;
   channel: string;
-  operator: boolean;
+  deploymentAdministrator: boolean;
   streamStatus: "live" | "reconnecting";
   decisions: PendingDecision[];
   inbox: ApprovalInbox;
@@ -391,7 +395,7 @@ export function AppShell({
                 </span>
               </div>
               <SettingsLinks
-                operator={operator}
+                deploymentAdministrator={deploymentAdministrator}
                 current={section === "settings" ? settings : undefined}
                 select={(value) => navigate("settings", { settings: value })}
                 prepare={prepare}
@@ -604,7 +608,7 @@ export function AppShell({
           <div className="grid gap-1 border-t border-border pt-2">
             <p className="px-2 text-[11px] text-faint">{collab.settings}</p>
             <SettingsLinks
-              operator={operator}
+              deploymentAdministrator={deploymentAdministrator}
               current={section === "settings" ? settings : undefined}
               select={(value) => navigate("settings", { settings: value })}
               prepare={prepare}

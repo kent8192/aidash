@@ -111,7 +111,7 @@ pub(crate) async fn check(
 			.await;
 			return result;
 		}
-		// Operator views use the same physical transaction too: a queued source
+		// Deployment Administrator views use the same physical transaction too: a queued source
 		// writer must never sit between the reader and a second publisher lease.
 		let snapshot = identity.lock_with_mode(lease.tx(), false).await?;
 		if saved
@@ -151,11 +151,14 @@ pub(crate) async fn check(
 		audit?;
 		result
 	} else {
-		if saved.subject != "operator" || !saved.tenant.is_empty() || !saved.subjects.is_empty() {
+		if saved.subject != super::access::WITHOUT_SUBJECT
+			|| !saved.tenant.is_empty()
+			|| !saved.subjects.is_empty()
+		{
 			return Err(Error::Forbidden);
 		}
 		Box::pin(check_source(
-			&mut Lease::BorrowedOperator(lease.tx()),
+			&mut Lease::BorrowedWithoutSubject(lease.tx()),
 			&destination,
 			source_id,
 			source_revision,

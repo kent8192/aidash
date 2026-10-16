@@ -1,6 +1,6 @@
 //! A deterministic research provider over an in-memory corpus. It implements
 //! the same search and page contracts as the Brave and page packages, so it
-//! replaces them in acceptance tests without any operator change. It never
+//! replaces them in acceptance tests without any configuration change. It never
 //! sends anything outside the Node.
 use super::admit_public_url;
 use crate::research::Failure;

@@ -73,14 +73,14 @@ async fn configured_timeouts_round_trip_through_the_registry_api(
 		}
 		// Act
 		let created = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post("/api/registry", &entry, "json")
 				.await
 				.unwrap(),
 			200,
 		);
 		let found = assert_json(
-			app.operator
+			app.deployment_administrator
 				.get(&format!("/api/registry/{id}/1.0.0"))
 				.await
 				.unwrap(),
@@ -131,7 +131,7 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 		let entry: Entry = serde_json::from_value(value).unwrap();
 		// Act
 		let response = app
-			.operator
+			.deployment_administrator
 			.post("/api/registry", &entry, "json")
 			.await
 			.unwrap();
@@ -284,21 +284,21 @@ async fn projection_versions_persist_and_gate_agent_registration(
 	native_model["config"]["projection_versions"] = json!(["legacy", "native"]);
 	// Act
 	let created = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/registry", &declared, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/registry", &timeout_model, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	let accepted = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				"/api/registry",
 				&agent_on("ordered-agent", "ordered-model", "ordered"),
@@ -309,7 +309,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		200,
 	);
 	let undeclared = app
-		.operator
+		.deployment_administrator
 		.post(
 			"/api/registry",
 			&agent_on("undeclared-agent", "timeout-model", "ordered"),
@@ -318,7 +318,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		.await
 		.unwrap();
 	let undeclared_native = app
-		.operator
+		.deployment_administrator
 		.post(
 			"/api/registry",
 			&agent_on("undeclared-native-agent", "ordered-model", "native"),
@@ -327,14 +327,14 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		.await
 		.unwrap();
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/registry", &native_model, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	let native = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				"/api/registry",
 				&agent_on("native-agent", "native-model", "native"),

@@ -132,7 +132,7 @@ impl ProfileRepository for Repository {
 		let mut s = self.state.lock().unwrap();
 		assert!(!s.active);
 		s.calls.push("page");
-		if self.principal != Principal::Operator {
+		if self.principal != Principal::DeploymentAdministrator {
 			assert!(s.committed);
 		}
 		let mut foreign = rule();
@@ -220,15 +220,15 @@ impl ProfileDraftScope for Scope<'_> {
 }
 #[rstest]
 #[case("subject")]
-#[case("operator")]
+#[case("deployment_administrator")]
 #[tokio::test]
-async fn profile_listing_retains_subject_rule_matching_and_operator_visibility(
+async fn profile_listing_retains_subject_rule_matching_and_deployment_administrator_visibility(
 	#[case] actor: &str,
 ) {
 	let principal = if actor == "subject" {
 		subject()
 	} else {
-		Principal::Operator
+		Principal::DeploymentAdministrator
 	};
 	let r = Repository::new(principal);
 	let rows = list(
@@ -283,7 +283,7 @@ async fn subject_profiles_are_not_read_without_current_draft_test_authority(#[ca
 }
 #[rstest]
 #[tokio::test]
-async fn profile_writes_remain_operator_only_before_external_reads() {
+async fn profile_writes_remain_deployment_administrator_only_before_external_reads() {
 	let r = Repository::new(subject());
 	let config = Configuration::new();
 	assert!(matches!(
@@ -301,7 +301,7 @@ async fn profile_writes_remain_operator_only_before_external_reads() {
 #[case("large_resource")]
 #[tokio::test]
 async fn rule_identity_and_allowlist_bounds_gate_atomic_save(#[case] boundary: &str) {
-	let r = Repository::new(Principal::Operator);
+	let r = Repository::new(Principal::DeploymentAdministrator);
 	let config = Configuration::new();
 	let mut input = input();
 	match boundary {
@@ -327,7 +327,7 @@ async fn validated_profiles_forward_the_original_atomic_revision_fence(
 	#[case] expected: i64,
 	#[case] success: bool,
 ) {
-	let r = Repository::new(Principal::Operator);
+	let r = Repository::new(Principal::DeploymentAdministrator);
 	let config = Configuration::new();
 	let mut input = input();
 	input.expected_revision = expected;

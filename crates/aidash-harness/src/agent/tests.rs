@@ -35,7 +35,7 @@ use std::time::Duration;
 enum Step {
 	Offer(InferenceProgress),
 	Sleep(Duration),
-	/// Accept a new Run input, as an operator correction would.
+	/// Accept a new Run input, as a human correction would.
 	Input(&'static str),
 	Interrupt(InferenceInterruption),
 	Fail(Error),

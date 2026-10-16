@@ -20,7 +20,7 @@ pub async fn read(
 	}
 	let actor = repository.principal();
 	let tenant = match &actor {
-		Principal::Operator => query.tenant.clone(),
+		Principal::DeploymentAdministrator => query.tenant.clone(),
 		Principal::Subject { tenant, .. } => {
 			if query.tenant.as_ref().is_some_and(|t| t != tenant) {
 				return Err(Error::Forbidden);
@@ -66,7 +66,7 @@ pub async fn read(
 		}
 	}
 	let may_read_catalog_history = match (&actor, &tenant) {
-		(Principal::Operator, _) => true,
+		(Principal::DeploymentAdministrator, _) => true,
 		(Principal::Subject { subject, .. }, Some(tenant)) => {
 			scope
 				.evaluate(

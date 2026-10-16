@@ -407,7 +407,7 @@ test("an Agent's bound research operations show their availability, the Run's us
   ]);
   // Nothing names an environment variable or who must act.
   await expect(panel).not.toContainText("AIDASH_");
-  await expect(panel).not.toContainText("Operator");
+  await expect(panel).not.toContainText("Deployment Administrator");
   await expect(
     panel.getByText(
       "This Run: searches 3/20 · page readings 1/50 · sources 4/100 · snapshots 1/50 · estimated research cost $0.0150 (an estimate, not an invoice; the Research account holder pays)",

@@ -198,7 +198,7 @@ pub enum DisclosureState {
 	Approved {
 		approval_id: Uuid,
 	},
-	/// An eligible person must decide first. The operator waits on this approval.
+	/// An eligible person must decide first. The Run waits on this approval.
 	Pending {
 		approval_id: Uuid,
 		expires_at: Option<DateTime<Utc>>,

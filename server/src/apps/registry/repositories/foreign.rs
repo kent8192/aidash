@@ -1,4 +1,4 @@
-//! Operator imports use enabled peer records and bounded authenticated replies.
+//! Deployment Administrator imports use enabled peer records and bounded authenticated replies.
 use crate::{Error, Result};
 use aidash_application::ports::federation::PeerTransport;
 use aidash_domain::{

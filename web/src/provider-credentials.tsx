@@ -42,8 +42,8 @@ const keySettingsPattern = /^https:\/\/openrouter\.ai\/keys\/[0-9a-f]{64}$/;
 const tenantKey = "aidash-provider-authorization-tenant";
 
 /**
- * The Tenant an operator returns to from Provider Authorization: the callback
- * reloads the dashboard, and the operator's Tenant is otherwise page state.
+ * The Tenant a Deployment Administrator returns to from Provider Authorization: the callback
+ * reloads the dashboard, and the Deployment Administrator's Tenant is otherwise page state.
  */
 function returningTenant(): string {
   return sessionStorage.getItem("aidash-provider-authorization")
@@ -118,13 +118,13 @@ export function ProviderCredentialsPage({
 }) {
   const { t } = useI18n();
   const [selected, select] = useState(() =>
-    access.kind === "operator" ? returningTenant() : "",
+    access.kind === "deployment_administrator" ? returningTenant() : "",
   );
   const tenant = access.kind === "subject" ? access.tenant : selected;
   return (
     <div className="grid max-w-5xl min-w-0 gap-6">
       <Notice>{t("providerCredentialsHelp")}</Notice>
-      {access.kind === "operator" && (
+      {access.kind === "deployment_administrator" && (
         <form
           className="flex min-w-0 flex-wrap items-end gap-2"
           onSubmit={(event) => {

@@ -23,10 +23,10 @@ use uuid::Uuid;
 /// Who decided a Registration Request or disabled a Mapping.
 #[derive(Clone)]
 pub(crate) enum AdministrationActor {
-	/// The deployment's operator bearer token.
-	OperatorBearer,
-	/// A browser session holding an enabled operator grant.
-	Operator {
+	/// The deployment's Deployment Administrator bearer token.
+	DeploymentAdministratorBearer,
+	/// A browser session holding an enabled Deployment Administrator grant.
+	DeploymentAdministrator {
 		identity: Uuid,
 	},
 	TenantAdministrator(Arc<TenantAdministrator>),
@@ -46,8 +46,8 @@ impl AdministrationActor {
 	/// Retains the existing `decision_actor` format of Registration Requests.
 	pub(crate) fn decision_actor(&self) -> String {
 		match self {
-			Self::OperatorBearer => "operator-bearer".into(),
-			Self::Operator { identity } => format!("oidc:{identity}"),
+			Self::DeploymentAdministratorBearer => "deployment-administrator-bearer".into(),
+			Self::DeploymentAdministrator { identity } => format!("oidc:{identity}"),
 			Self::TenantAdministrator(administrator) => {
 				format!("oidc:{}", administrator.identity_id)
 			}
@@ -67,8 +67,10 @@ impl AdministrationActor {
 		event: AdministrationEvent<'_>,
 	) -> Result<()> {
 		let (kind, identity, mapping) = match self {
-			Self::OperatorBearer => ("operator", None, None),
-			Self::Operator { identity } => ("operator", Some(*identity), None),
+			Self::DeploymentAdministratorBearer => ("deployment_administrator", None, None),
+			Self::DeploymentAdministrator { identity } => {
+				("deployment_administrator", Some(*identity), None)
+			}
 			Self::TenantAdministrator(administrator) => (
 				"tenant_administrator",
 				Some(administrator.identity_id),
@@ -136,7 +138,7 @@ impl TenantAdministrator {
 
 	/// Whether a Registration Request from `identity` is addressed to this
 	/// Tenant: the identity belongs to the configured issuer's GCIP Tenant bound
-	/// to it. Without a Tenant Binding no request is, so only Operators decide
+	/// to it. Without a Tenant Binding no request is, so only Deployment Administrators decide
 	/// them. Identities left by a previous issuer or Tenant Binding stay hidden.
 	pub(crate) fn sees(&self, identity: &DashboardIdentity) -> bool {
 		self.pool.as_deref().is_some_and(|pool| {

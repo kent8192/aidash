@@ -137,7 +137,7 @@ impl Broker {
 			|| actual.allow_rollup
 		{
 			return Err(Error::Invalid(
-				"activation stream configuration mismatch; operator repair required".into(),
+				"activation stream configuration mismatch; manual repair required".into(),
 			));
 		}
 		let config = pull::Config {
@@ -180,7 +180,7 @@ impl Broker {
 				|| actual.headers_only
 			{
 				return Err(Error::Invalid(
-					"activation consumer configuration mismatch; operator repair required".into(),
+					"activation consumer configuration mismatch; manual repair required".into(),
 				));
 			}
 			worker.then_some(consumer)

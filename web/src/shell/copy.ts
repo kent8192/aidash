@@ -88,7 +88,7 @@ export const authCopy = {
     setup:
       "管理者が Aidash の OIDC 接続を設定してください。API の Bearer 認証は引き続き利用できます。",
     choose: "このタブで使う権限を選択してください",
-    operator: "operator",
+    deploymentAdministrator: "デプロイメント管理者",
     request: "登録を申請",
     pending: "登録申請は承認待ちです。",
     sharedRequest: "共有テナントへの参加を申請",
@@ -108,7 +108,7 @@ export const authCopy = {
     setup:
       "Ask an administrator to configure OIDC for Aidash. Bearer API access remains available.",
     choose: "Choose the authority for this tab",
-    operator: "operator",
+    deploymentAdministrator: "Deployment Administrator",
     request: "Request access",
     pending: "Your registration is awaiting approval.",
     sharedRequest: "Request access to shared tenant",

@@ -11,7 +11,7 @@ another without any change to the Harness or the Agent definition.
 The Harness has no research tool names and the Agent configuration has no
 research flags. It reacts only to declared tool behavior:
 
-| Declared behavior            | Operator effect                                                              |
+| Declared behavior            | Harness effect                                                               |
 | ---------------------------- | ---------------------------------------------------------------------------- |
 | `yields: [Search]`           | None; Source records are discovery hints and cannot be cited                 |
 | `yields: [Fetch, Citations]` | The Run's final answer has its Source citations checked                      |
@@ -132,7 +132,7 @@ Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
 
 The reader needs exactly the authority of `GET /api/runs/{run}`, evaluated at
 each read. A Subject needs `workspace.read` and the Run's visibility; an
-Operator needs the Workspace's operator visibility. Each of these returns the
+Deployment Administrator needs the Workspace's Deployment Administrator visibility. Each of these returns the
 same `404 {"error":"evidence unavailable"}`, so a response never reveals
 whether a Run or its evidence exists:
 
@@ -304,7 +304,7 @@ The Brave key is a **tool secret**: the profile's `credential_env` names an
 {
   "account_id": "brave-account",
   "agreement_reference": "contract-2026-10",
-  "verified_by": "operator",
+  "verified_by": "deployment_administrator",
   "verified_at": "2026-10-01T00:00:00Z",
   "review_after": "2027-01-01T00:00:00Z",
   "storage_permitted": true,

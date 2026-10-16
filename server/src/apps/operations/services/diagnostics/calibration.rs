@@ -1,5 +1,5 @@
 //! Read-only Reinhardt Query diagnostics for Request Estimate calibration
-//! (ADR 0017). Operators see Deployment-wide aggregates per calibration key;
+//! (ADR 0017). Deployment Administrators see Deployment-wide aggregates per calibration key;
 //! samples carry no Run, Tenant or attempt identifier, and none is selected.
 use aidash_domain::provider::estimate::{CALIBRATION_MINIMUM, PPM};
 use reinhardt::query::{
