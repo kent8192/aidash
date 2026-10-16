@@ -21,8 +21,8 @@ use aidash_domain::{
 };
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, LockType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
+	Alias, Expr, ExprTrait, IntoIden, LockType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -194,6 +194,27 @@ async fn fence(tx: &mut native::Transaction, boundary: &Boundary) -> Result<()> 
 		));
 	}
 	Ok(())
+}
+
+/// The worker's lease on the Run is live by the clock now. `fence` compares
+/// with `CURRENT_TIMESTAMP`, which stays at the transaction's start.
+async fn lease_held_now(tx: &mut native::Transaction, boundary: &Boundary) -> Result<()> {
+	native::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(boundary.run)))
+			.and_where(Expr::col("lease_owner").eq(Expr::value(boundary.worker)))
+			.and_where(Expr::col("lease_until").gt(SimpleExpr::FunctionCall(
+				"clock_timestamp".into_iden(),
+				vec![],
+			)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **tx)
+	.await?
+	.map(|_| ())
+	.ok_or_else(|| Error::Conflict("worker lease lost".into()))
 }
 
 /// An applied or shadow decision is final and is never overwritten.
@@ -434,6 +455,9 @@ impl<'a> RunDecisionJournal<'a> {
 		)
 		.execute(&mut *tx)
 		.await?;
+		// The scans above can outlast the lease that `fence` saw, and no
+		// successor can claim the Run while this transaction holds its row.
+		lease_held_now(&mut tx, &record.boundary).await?;
 		tx.commit().await?;
 		Ok(Reservation::Fresh(DispatchPermit {
 			record: record.clone(),

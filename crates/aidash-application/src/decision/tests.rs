@@ -824,11 +824,25 @@ async fn early_rejections_carry_no_branch_results_or_unasked_questions() {
 	proposed.fit.proposed = proposed.fit.window;
 	let mut relabeled = failed.clone();
 	relabeled.reason = Reason::NoCandidates;
+	// Candidates an early rejection reports are still the builder's.
+	assert!(!failed.candidates.is_empty());
+	let mut misplaced = failed.clone();
+	misplaced.candidates[0].history_index = misplaced.history_length;
+	let mut renamed = failed.clone();
+	renamed.candidates[0].id = "other".into();
+	let mut shared = failed.clone();
+	shared.candidates[0].keep_result = shared.candidates[0].keep_call.clone();
+	let mut unasked = failed.clone();
+	unasked.questions.pop_first();
 	for (case, corrupt) in [
 		("premature branches", premature),
 		("dropped history", shrunk),
 		("proposed context", proposed),
 		("asked without candidates", relabeled),
+		("candidate outside the history", misplaced),
+		("candidate under another ID", renamed),
+		("candidate questions shared", shared),
+		("question without its candidate", unasked),
 	] {
 		assert!(corrupt.validate_rejection().is_err(), "{case}");
 	}

@@ -288,7 +288,7 @@ impl Evidence {
 	/// `forbidden` with selected branches) replays in full. Every other one
 	/// stopped before branch selection, so it reports no branch and the
 	/// unchanged context, and without candidates nothing was asked, answered
-	/// or charged.
+	/// or charged. Candidates it does report are as the builder made them.
 	pub fn validate_rejection(&self) -> Result<()> {
 		if self.outcome != Outcome::Rejected || self.reason == Reason::Fits {
 			return Err(Error::Invalid(
@@ -319,7 +319,37 @@ impl Evidence {
 				"corrupt historical application outcome".into(),
 			));
 		}
+		self.validate_candidates()?;
 		self.validate_contract()
+	}
+	/// Each candidate names an event of the history under the ID its boundary
+	/// derives, with a call and a result question of its own, and every
+	/// question belongs to a candidate. The builder makes candidates and
+	/// questions together, so this holds before any branch is selected.
+	fn validate_candidates(&self) -> Result<()> {
+		let mut question_ids = std::collections::BTreeSet::new();
+		for candidate in &self.candidates {
+			if candidate.history_index >= self.history_length
+				|| candidate.id != self.boundary.candidate_id(candidate.history_index)
+				|| candidate.description.trim().is_empty()
+				|| !question_ids.insert(&candidate.keep_call)
+				|| !question_ids.insert(&candidate.keep_result)
+			{
+				return Err(Error::Invalid(
+					"corrupt historical decision candidate".into(),
+				));
+			}
+		}
+		if question_ids.len() != self.questions.len()
+			|| question_ids
+				.iter()
+				.any(|question| !self.questions.contains_key(*question))
+		{
+			return Err(Error::Invalid(
+				"historical decision questions differ from its candidates".into(),
+			));
+		}
+		Ok(())
 	}
 	fn validate_identity(&self) -> Result<()> {
 		self.boundary.validate()?;
