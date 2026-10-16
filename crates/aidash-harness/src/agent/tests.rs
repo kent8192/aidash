@@ -3474,6 +3474,38 @@ async fn url_intents_of_summarized_run_messages_are_carried_forward(mut fixture:
 	);
 }
 
+#[rstest]
+#[tokio::test]
+async fn url_intents_of_run_messages_taken_in_by_media_intake_are_carried_forward(
+	mut fixture: Fixture,
+) {
+	// Arrange: a media-intake turn, which offers no tools, already took in
+	// the run message that asked for a page; the summary does not cover it.
+	fixture.run.state = RunState::Thinking(ThinkingState {
+		media_intake_through_seq: Some(2),
+		..ThinkingState::default()
+	});
+	run_message(&mut fixture);
+	fixture.run.observed_input_seq = 2;
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents =
+		vec![aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		}];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: the page is still requested in the next actionable step.
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert!(state.get("run_messages").is_none(), "{state}");
+	assert_eq!(
+		state["url_intents"]["pages"],
+		json!(["https://example.org/rollback"])
+	);
+}
+
 /// A tool whose results the test scripts in call order; counts real invocations.
 struct Scripted {
 	specification: ToolSpec,

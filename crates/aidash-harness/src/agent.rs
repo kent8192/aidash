@@ -1162,10 +1162,11 @@ impl<'a> Executor<'a> {
 					.filter(|intent| intent.input_key.is_none())
 					.flat_map(|intent| intent.pages.iter().cloned())
 					.collect();
-				// A run message folded into the run-message summary is on no
+				// A run message folded into the run-message summary, or taken in
+				// by an earlier media-intake turn that offered no tools, is on no
 				// page again, so the pages it asked for are carried forward like
 				// the Task's own.
-				for input in inputs.iter().filter(|input| input.seq <= summary_seq) {
+				for input in inputs.iter().filter(|input| input.seq <= intake_seq) {
 					let key = input.idempotency_key.as_str();
 					for intent in url_intents
 						.iter()
