@@ -11,12 +11,12 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0028_plan_connection_models", "registry")
+	Migration::new("0029_plan_connection_models", "registry")
 		.database_only(true)
-		.add_dependency("registry", "0027_remove_legacy_installations_state")
+		.add_dependency("registry", "0028_tool_transport_secrets")
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0028_plan_connection_models.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0028_plan_connection_models.sql").into()),
+			sql: include_str!("sql/forward/0029_plan_connection_models.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0029_plan_connection_models.sql").into()),
 		})
 		.atomic(true)
 }

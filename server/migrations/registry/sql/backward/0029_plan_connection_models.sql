@@ -10,7 +10,7 @@ BEGIN
    WHERE kind = 'model'
      AND (metadata #>> '{config,provider}' = 'chatgpt' OR metadata->'config' ? 'plan_connection');
   IF definition_count > 0 THEN
-    RAISE EXCEPTION 'registry 0028_plan_connection_models cannot be reversed: % Definitions use a Plan Connection', definition_count
+    RAISE EXCEPTION 'registry 0029_plan_connection_models cannot be reversed: % Definitions use a Plan Connection', definition_count
       USING ERRCODE = '55000',
             HINT = 'Earlier binaries cannot read these records; delete the chatgpt model Definitions or restore the pre-upgrade database backup instead of reversing this migration.';
   END IF;

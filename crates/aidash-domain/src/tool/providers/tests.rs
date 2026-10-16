@@ -34,7 +34,6 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 			lifecycle: None,
 			transport: Some(ToolConfig::Http {
 				endpoint: "https://example.invalid".into(),
-				credential_env: None,
 				replay: replay.into(),
 			}),
 		};
@@ -80,7 +79,6 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 		lifecycle: None,
 		transport: Some(ToolConfig::Http {
 			endpoint: "https://example.invalid".into(),
-			credential_env: None,
 			replay: "read_only".into(),
 		}),
 	})
@@ -127,8 +125,23 @@ fn only_implicit_defaults_can_be_excluded_remotely() {
 }
 
 #[test]
+fn stored_tool_transports_that_name_a_deployment_secret_no_longer_decode() {
+	// Dispatch decodes the stored descriptor first, so such a Tool is refused
+	// before anything could resolve the secret (#296).
+	for transport in [
+		json!({"transport":"http","endpoint":"https://example.invalid","credential_env":"AIDASH_SECRET_BRAVE_SEARCH","replay":"read_only"}),
+		json!({"transport":"mcp","endpoint":"https://example.invalid","credential_env":null,"tool_name":"lookup","replay":"read_only"}),
+	] {
+		assert!(serde_json::from_value::<ToolConfig>(transport.clone()).is_err());
+		let descriptor = json!({"registry_node":"aidash://node-a","provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":transport});
+		assert!(serde_json::from_value::<ToolDescriptor>(descriptor).is_err());
+	}
+}
+
+#[test]
 fn legacy_transport_tags_do_not_accept_descriptor_fields_or_convert_descriptors() {
-	let legacy = json!({"transport":"http","endpoint":"https://example.invalid","credential_env":null,"replay":"read_only"});
+	let legacy =
+		json!({"transport":"http","endpoint":"https://example.invalid","replay":"read_only"});
 	assert!(matches!(
 		crate::tool::legacy_config(&legacy).unwrap(),
 		Some(ToolConfig::Http { .. })

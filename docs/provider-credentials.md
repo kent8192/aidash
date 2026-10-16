@@ -16,8 +16,9 @@ removed from model and embedding configurations in #158: `provider_access`
 has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
 Every model-provider key therefore comes from a Provider Credential Store, on
-Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
-store references keep their `AIDASH_SECRET_*` configuration.
+Cloud and self-hosted nodes alike. Peer, sandbox, runner and vector store
+references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
+transports can no longer name one (#296).
 
 Jev also runs through OpenRouter, at `POST {base}/systemone` with
 `provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
@@ -174,8 +175,8 @@ Both kinds require the separate `provider_credentials.fingerprint_key` setting.
 It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
 random raw string of at least 32 bytes, through `{ env = "..." }` or
 `{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
-`AIDASH_SECRET_*` environment names are rejected because Registry configurations
-can resolve that namespace. Names that skill imports pass to the `gh` CLI, such
+`AIDASH_SECRET_*` environment names are rejected because that namespace holds
+Deployment secrets such as Peer Credentials. Names that skill imports pass to the `gh` CLI, such
 as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
 because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
 Fingerprints use independent derived Tenant keys,
