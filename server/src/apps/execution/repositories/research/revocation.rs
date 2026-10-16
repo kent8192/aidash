@@ -6,10 +6,7 @@ use crate::apps::execution::models::research::{
 	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchRevocation, ResearchSnapshot,
 	ResearchSource, lock, revoke_invocations,
 };
-use crate::authorization::{
-	access::NativeAccess,
-	identity::{Actor, SubjectIdentity},
-};
+use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
 use crate::store::Store;
 use aidash_application::{
@@ -35,16 +32,52 @@ use uuid::Uuid;
 /// The resource identifier of a Tenant's revocation records.
 const RECORDS: &str = "revocations";
 
-/// One Run's Context Journal through the store.
+/// One Run's Context Journal, read through the revocation's own transaction.
+/// That transaction already holds a connection and the Run's row, so a read
+/// from the pool would need a second connection, which a small or busy pool
+/// may never free while the revocation waits.
 struct StoredJournal<'a> {
-	store: &'a Store,
+	tx: tokio::sync::Mutex<&'a mut dyn TransactionExecutor>,
 	run: Uuid,
 }
 
 #[async_trait]
 impl Journal for StoredJournal<'_> {
 	async fn entries(&self, from: u64, through: u64) -> Result<Vec<HistoryEntry>> {
-		native(self.store.context_journal(self.run, from, through).await)
+		let bound = |value: u64| {
+			i64::try_from(value)
+				.map_err(|_| Error::Invalid("context journal value is out of range".into()))
+		};
+		let (sql, values) = Query::select()
+			.columns(["seq", "event"].map(Alias::new))
+			.from(Alias::new(
+				crate::apps::execution::repositories::context_journal::EVENTS,
+			))
+			.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+			.and_where(Expr::col("seq").gte(Expr::value(bound(from)?)))
+			.and_where(Expr::col("seq").lte(Expr::value(bound(through)?)))
+			.order_by(Alias::new("seq"), Order::Asc)
+			.build(PostgresQueryBuilder);
+		let rows = native(
+			self.tx
+				.lock()
+				.await
+				.fetch_all(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from),
+		)?;
+		rows.into_iter()
+			.map(|row| {
+				let data = QueryRow::from_backend_row(row).data;
+				let seq = data["seq"]
+					.as_u64()
+					.ok_or_else(|| Error::Invalid("context journal sequence is negative".into()))?;
+				Ok(HistoryEntry {
+					seq,
+					event: serde_json::from_value(data["event"].clone())?,
+				})
+			})
+			.collect()
 	}
 }
 
@@ -57,11 +90,7 @@ impl Journal for StoredJournal<'_> {
 /// locked is skipped rather than waited on, for the same reasons; the caller
 /// retries it once its own transaction has committed.
 /// `updated_at`, which dates the end of a terminal Run, is kept.
-pub(crate) async fn scrub_projection(
-	tx: &mut dyn TransactionExecutor,
-	store: &Store,
-	run: Uuid,
-) -> Result<bool> {
+pub(crate) async fn scrub_projection(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<bool> {
 	let (sql, values) = Query::select()
 		.column(Alias::new("context"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
@@ -79,7 +108,11 @@ pub(crate) async fn scrub_projection(
 	};
 	let mut context: Context =
 		serde_json::from_value(QueryRow::from_backend_row(row).data["context"].clone())?;
-	revoke_projection(&mut context, &StoredJournal { store, run }).await?;
+	let journal = StoredJournal {
+		tx: tokio::sync::Mutex::new(&mut *tx),
+		run,
+	};
+	revoke_projection(&mut context, &journal).await?;
 	let (sql, values) = Query::update()
 		.table(Alias::new("runs"))
 		.value(Alias::new("context"), serde_json::to_value(&context)?)
@@ -116,7 +149,7 @@ async fn scrub_retrying(store: &Store, run: Uuid) -> Result<bool> {
 			tokio::time::sleep(LOCKED_SCRUB_PAUSE).await;
 		}
 		let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
-		let done = scrub_projection(tx.as_mut(), store, run).await?;
+		let done = scrub_projection(tx.as_mut(), run).await?;
 		native(tx.commit().await.map_err(crate::Error::from))?;
 		if done {
 			return Ok(true);
@@ -178,7 +211,7 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		after = Some(last);
 		for run in &runs {
 			let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
-			let done = scrub_projection(tx.as_mut(), store, *run).await?;
+			let done = scrub_projection(tx.as_mut(), *run).await?;
 			native(tx.commit().await.map_err(crate::Error::from))?;
 			if done {
 				scrubbed += 1;
@@ -205,10 +238,7 @@ pub(crate) struct Revocations<'a> {
 }
 
 enum Transaction {
-	Subject {
-		access: Box<NativeAccess>,
-		identity: SubjectIdentity,
-	},
+	Subject { access: Box<NativeAccess> },
 	Administrator(Box<dyn TransactionExecutor>),
 }
 
@@ -231,7 +261,6 @@ impl Revocations<'_> {
 				},
 				Transaction::Subject {
 					access: Box::new(NativeAccess::begin(&self.federation.store, identity).await?),
-					identity: identity.clone(),
 				},
 			),
 			Actor::DeploymentAdministrator => (
@@ -297,9 +326,29 @@ impl Scope<'_> {
 		native(access.require(&resource, action).await)
 	}
 
-	/// Close the Run's Web disclosure approvals still waiting for a decision,
-	/// so a Run waiting on one continues, and without research.
+	/// Remove the exact content from every Web disclosure approval of the Run,
+	/// whatever its state, since the approval list shows it to the requester
+	/// and approver; then close those still waiting for a decision, so a Run
+	/// waiting on one continues, and without research.
 	async fn close_disclosures(&mut self, run: Uuid) -> Result<u32> {
+		let (sql, values) = Query::update()
+			.table(Alias::new("core_records"))
+			.value_expr(Alias::new("data"), Expr::cust("data - 'content'"))
+			.and_where(Expr::col("kind").eq(Expr::value(
+				aidash_application::capabilities::approvals::DISCLOSURE,
+			)))
+			.and_where(Expr::cust("(data -> 'content') IS NOT NULL"))
+			.and_where(Expr::cust_with_values(
+				"(data->>'run_id') = ?",
+				[run.to_string()],
+			))
+			.build(PostgresQueryBuilder);
+		native(
+			self.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from),
+		)?;
 		let (sql, values) = Query::update()
 			.table(Alias::new("core_records"))
 			.value(Alias::new("state"), "closed")
@@ -344,13 +393,16 @@ impl RevocationScope for Scope<'_> {
 		.is_some())
 	}
 	async fn require(&mut self, run: Uuid, action: &str) -> Result<()> {
-		let Transaction::Subject { identity, .. } = &self.tx else {
+		let Transaction::Subject { access, .. } = &mut self.tx else {
 			return Ok(());
 		};
-		// The subject must see the Run exactly as `GET /api/runs/{id}` decides;
-		// an invisible and a missing Run are the same refusal.
-		match aidash_application::authorization::run_details::visible(
-			&crate::bootstrap::run_details_repository(self.federation, identity),
+		// The subject must see the Run exactly as `GET /api/runs/{id}` decides,
+		// in this transaction, so the dependency locks that decision takes
+		// also cover the revocation; an invisible and a missing Run are the
+		// same refusal.
+		match crate::apps::identity::repositories::execution::details::visible_within(
+			self.federation,
+			access,
 			run,
 		)
 		.await
@@ -403,8 +455,7 @@ impl RevocationScope for Scope<'_> {
 		let sources = native(ResearchSource::revoke(tx, run).await)?;
 		let attempts = native(ResearchAttempt::revoke(tx, run).await)?;
 		let invocations = native(revoke_invocations(tx, Some(run)).await)?;
-		let store = self.federation.store.clone();
-		if !scrub_projection(self.executor(), &store, run).await? {
+		if !scrub_projection(self.executor(), run).await? {
 			self.locked = Some(run);
 		}
 		self.close_disclosures(run).await?;
