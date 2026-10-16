@@ -426,15 +426,25 @@ impl Models {
 				return Ok(Prepared::Cached(serde_json::from_value(output)?));
 			}
 			// At most one live call. An expired attempt remains fully charged.
+			// Until its deadline passes the attempt may still answer, so a Run
+			// replaying it waits as `Pending`, which spends none of its outage
+			// retries (#233); only the next failed attempt counts as one.
 			if last.try_get::<chrono::DateTime<Utc>>("created_at")?
 				+ Duration::seconds(i64::from(self.policy.bounds.max_call_seconds) + 1)
 				> Utc::now()
 			{
-				return Err(Error::SemanticUnavailable);
+				return Err(Error::RemoteSemantic(
+					crate::semantic::remote::Failure::Pending,
+				));
 			}
 		}
+		// Every earlier attempt failed or expired, so the operation's own retry
+		// ledger ends the outage retries: a Run pauses as `RetriesExhausted`
+		// instead of failing its Task (#233).
 		if attempts.len() >= self.policy.bounds.max_retries {
-			return Err(Error::Invalid("memory model retry limit exhausted".into()));
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::RetriesExhausted,
+			));
 		}
 		let calls = op
 			.try_get::<i64>("calls")?
@@ -772,7 +782,15 @@ impl Models {
 			.embed(&config, text),
 		)
 		.await
-		.map_err(|_| Error::SemanticUnavailable)??;
+		// A provider deadline or transport failure is the outage a Run retries
+		// (#233), the same as a semantic search embedding.
+		.map_err(|_| Error::RemoteSemantic(crate::semantic::remote::Failure::Unavailable))?
+		.map_err(|error| match error {
+			aidash_application::Error::External(_) => {
+				Error::RemoteSemantic(crate::semantic::remote::Failure::Unavailable)
+			}
+			error => error.into(),
+		})?;
 		if let Some(local) = local {
 			local.settle(output.tokens).await?;
 		}
