@@ -6,6 +6,7 @@ import {
   researchFailure,
   researchBindings,
   runGrantScope,
+  snapshotReadsPages,
   urlIntents,
 } from "../src/research.ts";
 
@@ -290,4 +291,33 @@ test("research failures read in plain words without amounts", () => {
     null,
     "only research tool results are explained",
   );
+});
+
+test("a Run reads pages only through a fetch Binding it was admitted with", () => {
+  const resolved = (provider, operation, excluded_reason = null) => ({
+    definition: tool(`${provider}.${operation}`, provider, operation),
+    excluded_reason,
+  });
+  const snapshot = (bindings, remote = false) => ({ remote, bindings });
+  assert.equal(
+    snapshotReadsPages(snapshot([resolved("research.page@1", "fetch")])),
+    true,
+  );
+  // Excluded at admission: a Catalog Approval granted later does not count.
+  assert.equal(
+    snapshotReadsPages(
+      snapshot([resolved("research.page@1", "fetch", "catalog_approval")]),
+    ),
+    false,
+  );
+  assert.equal(
+    snapshotReadsPages(snapshot([resolved("research.fixture@1", "search")])),
+    false,
+  );
+  assert.equal(
+    snapshotReadsPages(snapshot([resolved("research.page@1", "fetch")], true)),
+    false,
+  );
+  assert.equal(snapshotReadsPages(undefined), false);
+  assert.equal(snapshotReadsPages(null), false);
 });

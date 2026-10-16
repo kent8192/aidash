@@ -40,7 +40,7 @@ import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
-import { urlIntents } from "../research";
+import { snapshotReadsPages, urlIntents } from "../research";
 import type { RunInspection } from "../generated/models";
 type Session = {
   active_run_id: string | null;
@@ -890,10 +890,16 @@ export function ThreadCapabilities({
       e.version === activeRun.data?.agent_version,
   );
   const steering = useResearch(pinned, data);
+  // The server records a steering URL intent only when the Run was admitted
+  // with Page reading, so a definition approved since then does not count.
+  const activeContext = activeRun.data?.context;
+  const steerReads =
+    steering.canRead &&
+    (!activeContext || snapshotReadsPages(activeContext.binding_snapshot));
   // A URL intent is offered only when an Agent it would reach can read pages
   // on this Node, and each action sends only the pages its Agent can read.
   const queued = research.canRead ? urlIntents(prompt) : [];
-  const steered = activeRunId && steering.canRead ? urlIntents(prompt) : [];
+  const steered = activeRunId && steerReads ? urlIntents(prompt) : [];
   const intents = [...new Set([...queued, ...steered])];
   const selectedPages = readPages.filter((page) => intents.includes(page));
   // An action whose Agent cannot read a selected page is disabled rather

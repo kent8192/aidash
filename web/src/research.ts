@@ -128,6 +128,31 @@ export function researchBindings(
   );
 }
 
+/**
+ * Whether a Run's binding snapshot reads pages, as the server decides before
+ * it records URL intents for the Run: a tool Binding the Run was admitted
+ * with, not excluded then, whose descriptor names a `research.` provider's
+ * `fetch` operation. A later Catalog Approval does not change the snapshot,
+ * and a remote Run never reads pages.
+ */
+export function snapshotReadsPages(snapshot: unknown): boolean {
+  const item = record(snapshot);
+  if (!item || item.remote !== false || !Array.isArray(item.bindings))
+    return false;
+  return item.bindings.some((binding) => {
+    const resolved = record(binding);
+    const definition = record(resolved?.definition);
+    const config = record(definition?.config);
+    return (
+      resolved?.excluded_reason == null &&
+      definition?.kind === "tool" &&
+      typeof config?.provider === "string" &&
+      config.provider.startsWith("research.") &&
+      config.operation === "fetch"
+    );
+  });
+}
+
 const CLOSING: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 
 /**
