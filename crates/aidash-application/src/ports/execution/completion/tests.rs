@@ -16,13 +16,14 @@ fn finished_checks_pass_only_on_a_confirmed_zero_exit(
 		exit_code,
 		diagnostics,
 		runtime_millis,
+		deadline_expired,
 	} = CheckStatus::of(&result)
 	else {
 		panic!("expected a finished Check");
 	};
 	assert_eq!(Some((passed, exit_code)), expected);
 	assert_eq!(diagnostics, result["output"].as_str().unwrap());
-	assert_eq!(runtime_millis, None);
+	assert_eq!((runtime_millis, deadline_expired), (None, None));
 }
 
 /// A silent nonzero exit stores the runner's execution log as its error, which
@@ -33,23 +34,35 @@ fn finished_checks_pass_only_on_a_confirmed_zero_exit(
 #[case::log_word(json!({"code":"FAILED","message":"FAILED: 2 tests","retryable":false}))]
 fn a_silent_failure_is_finished_with_its_log(#[case] error: serde_json::Value) {
 	let result = json!({"status":"failed","termination_confirmed":true,"exit_code":1,
-		"output":"","error":error,"runtime_millis":1500});
+		"output":"","error":error,"runtime_millis":1500,"deadline_expired":false});
 	let CheckStatus::Finished {
 		passed,
 		exit_code,
 		diagnostics,
 		runtime_millis,
+		deadline_expired,
 	} = CheckStatus::of(&result)
 	else {
 		panic!("expected a finished Check");
 	};
 	assert_eq!((passed, exit_code), (false, Some(1)));
 	assert_eq!(diagnostics, error["message"].as_str().unwrap());
-	assert_eq!(runtime_millis, Some(1500));
+	assert_eq!(
+		(runtime_millis, deadline_expired),
+		(Some(1500), Some(false))
+	);
+}
+
+/// Its timeout has not begun while the operation is dispatched, its sandbox
+/// created or its inputs uploaded.
+#[rstest]
+#[case::prepared(json!({"status":"prepared"}))]
+#[case::submitted(json!({"status":"submitted"}))]
+fn checks_that_have_not_run_yet_are_starting(#[case] result: serde_json::Value) {
+	assert!(matches!(CheckStatus::of(&result), CheckStatus::Starting));
 }
 
 #[rstest]
-#[case::submitted(json!({"status":"submitted"}))]
 #[case::running(json!({"status":"running","output":"compiling"}))]
 // A terminal state the runner has not confirmed stopped is still running.
 #[case::unconfirmed(json!({"status":"completed","termination_confirmed":false,"exit_code":0}))]

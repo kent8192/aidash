@@ -38,4 +38,9 @@ pub struct OperationResult {
 	/// runner measured it. Absent for every other operation.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub runtime_millis: Option<u64>,
+	/// Whether a Completion Gate Check's deadline, rather than its command,
+	/// ended it, as the runner observed. Absent when the runner could not
+	/// tell, and for every other operation.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deadline_expired: Option<bool>,
 }

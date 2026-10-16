@@ -580,10 +580,11 @@ async fn a_completion_check_dispatches_the_verify_kind_under_shell_authority(
 /// under a second still spends verification time. It ends when the runner saw
 /// the command stop; harvesting its output is not charged.
 #[rstest]
-#[case::fractional(1000.25, None, 1004.75, 4500)]
-#[case::sub_second(1000.0, None, 1000.4, 400)]
-#[case::instant(1000.0, None, 1000.0, 0)]
-#[case::slow_harvest(1000.0, Some(1000.4), 1045.0, 400)]
+#[case::fractional(1000.25, None, 1004.75, 4500, None)]
+#[case::sub_second(1000.0, None, 1000.4, 400, None)]
+#[case::instant(1000.0, None, 1000.0, 0, None)]
+#[case::slow_harvest(1000.0, Some(1000.4), 1045.0, 400, Some(false))]
+#[case::deadline(1000.0, Some(1003.0), 1003.2, 3000, Some(true))]
 #[tokio::test]
 async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	repository: Repository,
@@ -591,6 +592,7 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	#[case] terminated_at: Option<f64>,
 	#[case] finished_at: f64,
 	#[case] runtime_millis: u64,
+	#[case] deadline_expired: Option<bool>,
 ) {
 	let output = format!("{}test result: FAILED", "x".repeat(MAX_DIAGNOSTIC_BYTES));
 	{
@@ -603,6 +605,9 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 			"files":[{"path":"target/debug/app","object_id":"build","digest":"d","size":1}]});
 		if let Some(terminated_at) = terminated_at {
 			trace.observed["terminated_at"] = json!(terminated_at);
+		}
+		if let Some(expired) = deadline_expired {
+			trace.observed["deadline_expired"] = json!(expired);
 		}
 	}
 	run(&repository).await.unwrap();
@@ -621,6 +626,11 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	assert_eq!(
 		saved.result["runtime_millis"], runtime_millis,
 		"the runner's own runtime"
+	);
+	assert_eq!(
+		saved.result["deadline_expired"].as_bool(),
+		deadline_expired,
+		"the runner's word on the deadline"
 	);
 	let preview = saved.result["preview"].as_str().unwrap();
 	assert_eq!(preview.len(), MAX_DIAGNOSTIC_BYTES);

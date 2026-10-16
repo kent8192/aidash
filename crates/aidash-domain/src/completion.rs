@@ -276,27 +276,37 @@ pub struct PendingCheck {
 	pub attempt: u32,
 	pub timeout_seconds: u64,
 	pub started_at: DateTime<Utc>,
+	/// When the gate first saw the command running. Until then the operation
+	/// is still being dispatched, its sandbox created or its inputs uploaded,
+	/// and its timeout has not begun.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub running_since: Option<DateTime<Utc>>,
 }
 
 impl PendingCheck {
-	/// Record the finished operation. A Check that ran for its whole timeout
-	/// without passing timed out. The runner's measure of the command's
-	/// runtime decides that, in milliseconds, and the Run spends it with every
-	/// started second charged whole: the time until the harness harvested the
-	/// result also counts its polling and any worker downtime, so it is only
-	/// the fallback when the runner reported none.
+	/// Record the finished operation. A Check that did not pass timed out when
+	/// the runner reports that its deadline, not the command, ended it. The
+	/// runner's measure of the command's runtime, in milliseconds, is what the
+	/// Run spends, with every started second charged whole: the time until the
+	/// harness harvested the result also counts its polling and any worker
+	/// downtime, so it is only the fallback when the runner reported none.
+	/// Without the runner's word on the deadline, a runtime that reached the
+	/// timeout counts as timed out.
 	pub fn finish(
 		self,
 		passed: bool,
 		exit_code: Option<i64>,
 		diagnostics: &str,
 		runtime_millis: Option<u64>,
+		deadline_expired: Option<bool>,
 		now: DateTime<Utc>,
 	) -> VerificationEvidence {
 		let millis = runtime_millis.unwrap_or_else(|| self.unmeasured_millis(now));
+		let timed_out =
+			deadline_expired.unwrap_or_else(|| millis >= self.timeout_seconds.saturating_mul(1000));
 		let outcome = if passed {
 			CheckOutcome::Passed
-		} else if millis >= self.timeout_seconds.saturating_mul(1000) {
+		} else if timed_out {
 			CheckOutcome::TimedOut
 		} else {
 			CheckOutcome::Failed
@@ -341,8 +351,15 @@ impl PendingCheck {
 		}
 	}
 	/// Whether the operation is overdue even allowing the runner's own grace.
+	/// A running command's timeout counts from when it was seen running; an
+	/// operation that has not started yet is allowed [`CHECK_START_SECONDS`]
+	/// on top, for dispatch, sandbox creation and input upload.
 	pub fn overdue(&self, now: DateTime<Utc>) -> bool {
-		elapsed(self.started_at, now) > self.timeout_seconds.saturating_add(CHECK_GRACE_SECONDS)
+		let allowed = self.timeout_seconds.saturating_add(CHECK_GRACE_SECONDS);
+		match self.running_since {
+			Some(since) => elapsed(since, now) > allowed,
+			None => elapsed(self.started_at, now) > allowed.saturating_add(CHECK_START_SECONDS),
+		}
 	}
 }
 
@@ -370,6 +387,11 @@ impl CheckSubject {
 
 /// Time the runner may take beyond a Check's timeout to confirm it stopped.
 pub const CHECK_GRACE_SECONDS: u64 = 120;
+
+/// Time a Check may take to start running: dispatch, sandbox creation and
+/// uploading its inputs. The runner gives up on sandbox creation and startup
+/// well before this on its own.
+pub const CHECK_START_SECONDS: u64 = 600;
 
 fn elapsed(from: DateTime<Utc>, to: DateTime<Utc>) -> u64 {
 	u64::try_from((to - from).num_seconds()).unwrap_or(0)

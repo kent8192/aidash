@@ -168,6 +168,11 @@ async fn reconcile(
 				operation.revision = area.revision;
 				operation.state = observed["status"].as_str().unwrap().into();
 				operation.result = json!({"preview":bounded_tail(&text, MAX_DIAGNOSTIC_BYTES),"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
+				// Whether the Check's deadline stopped the command decides a
+				// timeout; the runtime below is only a bound for charging.
+				if let Some(expired) = observed["deadline_expired"].as_bool() {
+					operation.result["deadline_expired"] = json!(expired);
+				}
 				// The runner's own measure of the command, unlike the time until
 				// the Completion Gate harvests this result: it ends when the
 				// runner saw the command stop, before it collected the output.

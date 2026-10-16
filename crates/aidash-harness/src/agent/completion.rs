@@ -81,10 +81,15 @@ impl Executor<'_> {
 		};
 		// A started Check is harvested first. Its evidence belongs to the
 		// content it ran on, whatever the candidate is now.
-		if let Some(pending) = progress.pending.take() {
+		if let Some(mut pending) = progress.pending.take() {
 			let status = checks.status(run, pending.operation_id).await?;
+			// The Check's timeout begins when its command runs, not when it
+			// was requested: dispatch and input upload come first.
+			if matches!(status, CheckStatus::Running) && pending.running_since.is_none() {
+				pending.running_since = Some(now);
+			}
 			match status {
-				CheckStatus::Running if !pending.overdue(now) => {
+				CheckStatus::Starting | CheckStatus::Running if !pending.overdue(now) => {
 					progress.pending = Some(pending);
 					return self
 						.wait(run, token, progress, "run.completion_check_running")
@@ -94,10 +99,15 @@ impl Executor<'_> {
 				// content to settle would never end: a person decides now. The
 				// operation stays pending, so after the review, even a retry,
 				// the gate looks at it again instead of waiting on the Area.
-				CheckStatus::Running => {
+				CheckStatus::Starting | CheckStatus::Running => {
 					let reason = ReviewReason::Unavailable {
 						check: pending.subject.check.clone(),
-						detail: OVERDUE.into(),
+						detail: if pending.running_since.is_some() {
+							OVERDUE
+						} else {
+							NOT_STARTED
+						}
+						.into(),
 					};
 					progress.pending = Some(pending);
 					return self.review(run, token, home, guard, progress, reason).await;
@@ -107,11 +117,13 @@ impl Executor<'_> {
 					exit_code,
 					diagnostics,
 					runtime_millis,
+					deadline_expired,
 				} => progress.record(pending.finish(
 					passed,
 					exit_code,
 					&diagnostics,
 					runtime_millis,
+					deadline_expired,
 					now,
 				)),
 				CheckStatus::Unavailable(detail) => {
@@ -193,6 +205,7 @@ impl Executor<'_> {
 								attempt,
 								timeout_seconds,
 								started_at: now,
+								running_since: None,
 							});
 							return self
 								.wait(run, token, progress, "run.completion_check_started")
@@ -361,3 +374,4 @@ pub(super) fn answer_review(run: &mut Run, request: Uuid, response: Option<&Valu
 
 const UNAVAILABLE: &str = "Completion Checks cannot run on this node";
 const OVERDUE: &str = "the Check did not stop within its timeout";
+const NOT_STARTED: &str = "the Check did not start running";

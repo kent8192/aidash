@@ -117,12 +117,14 @@ impl CompletionChecks for FakeChecks {
 				exit_code: Some(0),
 				diagnostics: "test result: ok".into(),
 				runtime_millis: Some(1000),
+				deadline_expired: Some(false),
 			},
 			Outcome::Fail(output) => CheckStatus::Finished {
 				passed: false,
 				exit_code: Some(101),
 				diagnostics: (*output).into(),
 				runtime_millis: Some(1000),
+				deadline_expired: Some(false),
 			},
 			Outcome::Lost => CheckStatus::Unavailable("runner lost the operation".into()),
 		})
@@ -372,6 +374,8 @@ async fn an_overdue_check_pauses_for_review_while_it_keeps_the_area_busy(mut fix
 	advance_sources(&mut fixture).await.unwrap();
 	let pending = fixture.run.context.completion.pending.as_mut().unwrap();
 	pending.started_at -= chrono::Duration::seconds(3600);
+	// Its command has been seen running for that hour too.
+	pending.running_since = Some(pending.started_at);
 	checks(&fixture).busy.store(true, Ordering::SeqCst);
 	settle(&mut fixture).await;
 	assert!(

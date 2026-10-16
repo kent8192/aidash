@@ -26,6 +26,10 @@ OUTPUT_LIMIT = int(os.environ["AIDASH_OUTPUT_BYTES"])
 # Completion Check's failure summary comes at the end of a long run.
 OUTPUT_TAIL = Path("/tmp/output.tail")
 TAIL_LIMIT = 16384
+# Present once the liveness deadline expired while the command still ran. Only
+# that failing probe stops a command at its deadline, so this, not the measured
+# runtime, says whether a Check timed out.
+EXPIRED = Path("/tmp/deadline.expired")
 
 
 def save(path, value):
@@ -198,7 +202,8 @@ def logs(limit):
             data = output.read(min(limit, OUTPUT_LIMIT))
         cut = state["total"] > OUTPUT_LIMIT
     print(json.dumps({"stdout": base64.b64encode(data).decode(), "bytes": state["stored"],
-                      "truncated": cut or ("final" in sys.argv and state["connections"] > 0)}))
+                      "truncated": cut or ("final" in sys.argv and state["connections"] > 0),
+                      "deadline_expired": EXPIRED.exists()}))
 
 
 class Output(socketserver.BaseRequestHandler):
@@ -222,6 +227,10 @@ class Health(BaseHTTPRequestHandler):
         try:
             state = json.loads(CONTROL.read_bytes())
             healthy = not state["cancelled"] and time.monotonic() < state["deadline"]
+            if not healthy and not state["cancelled"]:
+                # Kubelet probes only a running container, so the command was
+                # still running when its deadline passed.
+                EXPIRED.touch()
         except FileNotFoundError:
             healthy = time.monotonic() < self.server.startup_deadline
         self.send_response(200 if healthy else 503)

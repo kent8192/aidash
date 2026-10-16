@@ -14,11 +14,16 @@ BEGIN
  IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND metadata->'config' ? 'completion') THEN
   RAISE EXCEPTION 'registry 0028_completion_policy cannot be reversed: Agent definitions declare completion';
  END IF;
- IF to_regclass('public.runs') IS NOT NULL AND EXISTS(SELECT 1 FROM public.runs
-   WHERE context ? 'completion'
-   OR jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && exists(@.config.completion))')
-   OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && exists(@.config.completion))')) THEN
-  RAISE EXCEPTION 'registry 0028_completion_policy cannot be reversed: Runs store Completion Gate progress or pin Agent definitions declaring completion';
+ -- PL/pgSQL plans a condition whole, so a query naming a missing public.runs
+ -- fails even behind a false to_regclass test. The nested IF is planned only
+ -- once the table is known to exist.
+ IF to_regclass('public.runs') IS NOT NULL THEN
+  IF EXISTS(SELECT 1 FROM public.runs
+    WHERE context ? 'completion'
+    OR jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && exists(@.config.completion))')
+    OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && exists(@.config.completion))')) THEN
+   RAISE EXCEPTION 'registry 0028_completion_policy cannot be reversed: Runs store Completion Gate progress or pin Agent definitions declaring completion';
+  END IF;
  END IF;
 END
 $$;

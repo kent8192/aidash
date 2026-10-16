@@ -58,7 +58,9 @@ def termination_time(terminated, started_at, observed):
     polls, so `observed` can trail the stop, for example after a restart.
     Kubernetes records `finishedAt` in whole seconds, so the stop came before
     `finishedAt` + 1: cap the observation there. A missing or unparseable
-    `finishedAt`, or one the clocks put before the start, leaves `observed`."""
+    `finishedAt`, or one the clocks put before the start, leaves `observed`.
+    This is an upper bound for charging only; whether the Check timed out is
+    the collector's `deadline_expired`."""
     try:
         finished = datetime.fromisoformat(terminated["finishedAt"].replace("Z", "+00:00")).timestamp()
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -806,9 +808,15 @@ class Runner:
                                         break
                     elif prepared["digest"] != record["request"]["digest"]:
                         raise RuntimeError("running input identity changed")
-                    self.update(operation, executed=True)
+                    # The collector starts the command's deadline inside
+                    # hydrate, just before it publishes the command, so the
+                    # charged start is taken before the request and kept
+                    # across a restart: a Check is never measured from after
+                    # its command began. The watchdog below counts from when
+                    # hydrate returned, after the deadline was set.
+                    self.update(operation, executed=True, started_at=record.get("started_at") or time.time())
                     self.exec_collector(operation, ["hydrate"], json.dumps(payload).encode(), timeout=120)
-                    self.update(operation, status="running", started_at=time.time())
+                    self.update(operation, status="running", running_at=time.time())
                     hydrated = True
                 current = self.get(operation)
                 if current["cancel_requested"] and "running" in collector:
@@ -852,7 +860,8 @@ class Runner:
                     self.update(operation, status="cancelled" if current["cancel_requested"] else
                                 ("completed" if terminal["exitCode"] == 0 else "failed"),
                                 finished_at=time.time(), stdout=captured["stdout"],
-                                truncated=captured["truncated"], files=exported["files"], error=diagnostic)
+                                truncated=captured["truncated"], files=exported["files"], error=diagnostic,
+                                deadline_expired=captured.get("deadline_expired"))
                     # Retain the terminal journal and files before collecting Kubernetes resources.
                     self.kube(["delete", "pod", self.pod_name(operation), "--wait=false"], check=False)
                     break
@@ -865,7 +874,8 @@ class Runner:
                     preview_at = time.monotonic()
                 if not hydrated and time.monotonic() > startup_deadline:
                     raise RuntimeError("sandbox startup not confirmed")
-                if hydrated and time.time() > self.get(operation).get("started_at", time.time()) + record["request"]["seconds"] + 30:
+                running_at = self.get(operation).get("running_at") or self.get(operation).get("started_at", time.time())
+                if hydrated and time.time() > running_at + record["request"]["seconds"] + 30:
                     raise RuntimeError("sandbox termination not confirmed after deadline")
                 time.sleep(0.25)
         except Exception as error:

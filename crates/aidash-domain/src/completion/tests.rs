@@ -408,34 +408,43 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		attempt: 1,
 		timeout_seconds: 60,
 		started_at: at(0),
+		running_since: None,
 	};
 	assert_eq!(
 		pending
 			.clone()
-			.finish(true, Some(0), "ok", None, at(5))
+			.finish(true, Some(0), "ok", None, None, at(5))
 			.outcome,
 		CheckOutcome::Passed
 	);
 	assert_eq!(
 		pending
 			.clone()
-			.finish(false, Some(1), "failed", None, at(5))
+			.finish(false, Some(1), "failed", None, None, at(5))
 			.outcome,
 		CheckOutcome::Failed
 	);
 	assert_eq!(
 		pending
 			.clone()
-			.finish(false, None, "", None, at(60))
+			.finish(false, None, "", None, None, at(60))
 			.outcome,
 		CheckOutcome::TimedOut
 	);
-	assert!(!pending.overdue(at(180)));
-	assert!(pending.overdue(at(181)));
+	// A Check that has not started yet also gets its start allowance; once
+	// seen running, its timeout counts from then.
+	assert!(!pending.overdue(at(780)));
+	assert!(pending.overdue(at(781)));
+	let running = PendingCheck {
+		running_since: Some(at(500)),
+		..pending.clone()
+	};
+	assert!(!running.overdue(at(680)));
+	assert!(running.overdue(at(681)));
 	let long = "é".repeat(MAX_DIAGNOSTIC_BYTES);
 	let recorded = pending
 		.clone()
-		.finish(false, Some(1), &long, None, at(5))
+		.finish(false, Some(1), &long, None, None, at(5))
 		.diagnostics;
 	assert!(recorded.len() <= MAX_DIAGNOSTIC_BYTES);
 	assert!(long.ends_with(&recorded));
@@ -444,7 +453,7 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		timeout_seconds: 3,
 		..pending.clone()
 	}
-	.finish(false, Some(1), "failed", Some(1000), at(5));
+	.finish(false, Some(1), "failed", Some(1000), None, at(5));
 	assert_eq!((quick.outcome, quick.seconds), (CheckOutcome::Failed, 1));
 	// Classification uses the exact runtime; only the charge is rounded up.
 	let short = PendingCheck {
@@ -453,16 +462,18 @@ fn pending_checks_time_out_and_keys_are_stable() {
 	};
 	let early = short
 		.clone()
-		.finish(false, Some(1), "failed", Some(200), at(5));
+		.finish(false, Some(1), "failed", Some(200), None, at(5));
 	assert_eq!((early.outcome, early.seconds), (CheckOutcome::Failed, 1));
-	let expired = short.finish(false, None, "", Some(1000), at(5));
+	let expired = short
+		.clone()
+		.finish(false, None, "", Some(1000), None, at(5));
 	assert_eq!(
 		(expired.outcome, expired.seconds),
 		(CheckOutcome::TimedOut, 1)
 	);
 	let killed = pending
 		.clone()
-		.finish(false, None, "", Some(60_000), at(900));
+		.finish(false, None, "", Some(60_000), None, at(900));
 	assert_eq!(
 		(killed.outcome, killed.seconds),
 		(CheckOutcome::TimedOut, 60)
@@ -474,7 +485,9 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		(lost.outcome, lost.seconds),
 		(CheckOutcome::Unavailable, 60)
 	);
-	let unreported = pending.clone().finish(false, None, "", None, at(3600));
+	let unreported = pending
+		.clone()
+		.finish(false, None, "", None, None, at(3600));
 	assert_eq!(
 		(unreported.outcome, unreported.seconds),
 		(CheckOutcome::TimedOut, 60)
@@ -486,11 +499,26 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		Some(1),
 		"failed",
 		None,
+		None,
 		at(0) + chrono::Duration::milliseconds(300),
 	);
 	assert_eq!(
 		(instant.outcome, instant.seconds),
 		(CheckOutcome::Failed, 1)
+	);
+	// The runner's word on its deadline decides over the measured runtime,
+	// which is only a conservative bound for charging.
+	let bounded = short
+		.clone()
+		.finish(false, Some(1), "failed", Some(1100), Some(false), at(5));
+	assert_eq!(
+		(bounded.outcome, bounded.seconds),
+		(CheckOutcome::Failed, 2)
+	);
+	let deadline = short.finish(false, None, "", Some(900), Some(true), at(5));
+	assert_eq!(
+		(deadline.outcome, deadline.seconds),
+		(CheckOutcome::TimedOut, 1)
 	);
 
 	let run = Uuid::now_v7();

@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -102,6 +103,49 @@ class OutputTailTest(unittest.TestCase):
                                 OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
                 collector.append_output(b"ok\n")
                 self.assertEqual(self.logs("tail"), (b"ok\n", False))
+
+
+class DeadlineTest(unittest.TestCase):
+    """Whether a Check timed out is what its liveness deadline did, not its runtime."""
+
+    def probe(self, root, control):
+        handler = object.__new__(collector.Health)
+        handler.server = Mock(startup_deadline=0)
+        handler.send_response = Mock()
+        handler.end_headers = Mock()
+        with patch.multiple(collector, CONTROL=root / "control.json", EXPIRED=root / "deadline.expired"):
+            collector.save(collector.CONTROL, control)
+            handler.do_GET()
+        return handler.send_response.call_args.args[0]
+
+    def test_a_deadline_that_expires_while_running_is_recorded(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.assertEqual(self.probe(root, {"deadline": time.monotonic() + 60, "cancelled": False}), 200)
+            self.assertFalse((root / "deadline.expired").exists())
+            self.assertEqual(self.probe(root, {"deadline": time.monotonic() - 1, "cancelled": False}), 503)
+            self.assertTrue((root / "deadline.expired").exists())
+
+    def test_a_cancellation_is_not_a_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.assertEqual(self.probe(root, {"cancelled": True, "deadline": 0}), 503)
+            self.assertFalse((root / "deadline.expired").exists())
+
+    def test_final_logs_report_the_deadline(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", EXPIRED=root / "deadline.expired"):
+                collector.append_output(b"slow\n")
+                for expired in (False, True):
+                    if expired:
+                        (root / "deadline.expired").touch()
+                    stdout = io.StringIO()
+                    with patch.object(collector.sys, "argv", ["collector.py", "logs", "1000", "final", "tail"]), \
+                            contextlib.redirect_stdout(stdout):
+                        collector.logs(1000)
+                    self.assertEqual(json.loads(stdout.getvalue())["deadline_expired"], expired)
 
 
 if __name__ == "__main__":

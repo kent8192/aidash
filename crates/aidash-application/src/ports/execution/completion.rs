@@ -54,6 +54,9 @@ pub enum CheckStart {
 }
 
 pub enum CheckStatus {
+	/// Not running yet: being dispatched, its sandbox created or its inputs
+	/// uploaded.
+	Starting,
 	Running,
 	Finished {
 		passed: bool,
@@ -63,6 +66,9 @@ pub enum CheckStatus {
 		/// How long the command ran, in milliseconds, as the runner measured
 		/// it; `None` when the runner did not report it.
 		runtime_millis: Option<u64>,
+		/// Whether the runner's deadline, rather than the command itself,
+		/// ended it; `None` when the runner could not tell.
+		deadline_expired: Option<bool>,
 	},
 	/// The operation's outcome is unknown or was lost.
 	Unavailable(String),
@@ -107,6 +113,7 @@ impl CheckStatus {
 					}
 					.to_owned(),
 					runtime_millis: result["runtime_millis"].as_u64(),
+					deadline_expired: result["deadline_expired"].as_bool(),
 				}
 			}
 			"cancelled" => Self::Unavailable("the Check was cancelled".into()),
@@ -114,6 +121,7 @@ impl CheckStatus {
 				"the Check's outcome is unknown: {}",
 				result["error"]
 			)),
+			"prepared" | "submitted" => Self::Starting,
 			_ => Self::Running,
 		}
 	}
