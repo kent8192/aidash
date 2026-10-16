@@ -24,7 +24,7 @@ export async function installBearerDashboard(
     selectedContext !== undefined
       ? selectedContext
       : subject
-        ? "mapping:fixture-mapping"
+        ? `mapping:${subject.tenant}:fixture-mapping`
         : "deployment_administrator";
   await page.addInitScript(
     ({ sessionId, context }) => {

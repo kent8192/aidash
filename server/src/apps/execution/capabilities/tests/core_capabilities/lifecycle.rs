@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 pub(super) async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, minimum: i64) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
@@ -224,7 +225,12 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 ) {
 	use reinhardt::query::{Alias, ColumnRef, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
-	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let workspace =
+		c.f.store
+			.task(&TEST_FIXTURE, c.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let root = source(&c, workspace, "Delete a thread with many areas").await;
 	let (status, thread) = request(
 		&c.app,
@@ -262,7 +268,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(c.f.store.pool.driver())
+		.fetch_one(c.f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -385,7 +391,12 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 ) {
 	use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
-	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let workspace =
+		c.f.store
+			.task(&TEST_FIXTURE, c.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let root = source(&c, workspace, "Serialize run creation with deletion").await;
 	let (status, thread) = request(
 		&c.app,
@@ -479,7 +490,12 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 #[tokio::test]
 async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture: CoreFixture) {
 	let c = Box::pin(capability_fixture).await;
-	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let workspace =
+		c.f.store
+			.task(&TEST_FIXTURE, c.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let root = source(&c, workspace, "Bound thread run queue admission").await;
 	let (status, thread) = request(
 		&c.app,
@@ -541,7 +557,12 @@ async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_th
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = Box::pin(capability_fixture).await;
-	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let workspace =
+		c.f.store
+			.task(&TEST_FIXTURE, c.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let root = source(&c, workspace, "This thread will be deleted").await;
 	let (status, thread) = request(
 		&c.app,

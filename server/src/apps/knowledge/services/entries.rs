@@ -91,6 +91,13 @@ impl SemanticEntries {
 		service::history_list(&f.store, &actor, workspace).await
 	}
 	pub async fn cleanup(&self, workspace: Uuid) -> Result<CleanupStatus> {
-		cleanup::status(&self.runtime.store.database(), workspace).await
+		let store = &self.runtime.store;
+		let scope = store.workspace_tenancy(workspace).await?;
+		store
+			.pool
+			.scoped(&scope, async |tx| {
+				cleanup::status(&mut **tx, workspace).await
+			})
+			.await
 	}
 }

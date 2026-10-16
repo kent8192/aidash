@@ -1,6 +1,7 @@
 //! Housekeeping scans and acknowledgements retain the existing PostgreSQL predicates.
 use super::reconciliation::Repository;
 use crate::Result as NativeResult;
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{Result, ports::capabilities::processing::OperationProcessingRepository};
 use aidash_domain::capabilities::operations::processing::Receipt;
 use async_trait::async_trait;
@@ -10,6 +11,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// The capability worker reaches every Tenant's operations and work areas.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 #[async_trait]
 impl OperationProcessingRepository for Repository<'_> {
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
@@ -28,7 +33,7 @@ impl OperationProcessingRepository for Repository<'_> {
 					.limit(16)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_all(&self.store.pool)
+			.scalar_all(self.store.pool.in_scope(&MAINTENANCE))
 			.await?;
 			Ok(ids)
 		}
@@ -57,7 +62,7 @@ impl OperationProcessingRepository for Repository<'_> {
 						.to_string(PostgresQueryBuilder),
 				)
 				.columns(&["id", "digest", "runner_instance"])
-				.fetch_all(&self.store.pool)
+				.fetch_all(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(rows)
@@ -96,7 +101,7 @@ impl OperationProcessingRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(&self.store.pool)
+				.execute(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(())
@@ -131,7 +136,7 @@ impl OperationProcessingRepository for Repository<'_> {
 						]))
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(&self.store.pool)
+				.execute(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(())

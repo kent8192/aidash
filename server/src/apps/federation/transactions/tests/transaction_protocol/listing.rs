@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[rstest::rstest]
@@ -42,8 +43,16 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 	.await
 	.unwrap();
 	for (index, workspace) in [
-		a.f.store.task(task_a).await.unwrap().workspace_id,
-		b.f.store.task(task_b).await.unwrap().workspace_id,
+		a.f.store
+			.task(&TEST_FIXTURE, task_a)
+			.await
+			.unwrap()
+			.workspace_id,
+		b.f.store
+			.task(&TEST_FIXTURE, task_b)
+			.await
+			.unwrap()
+			.workspace_id,
 	]
 	.into_iter()
 	.enumerate()

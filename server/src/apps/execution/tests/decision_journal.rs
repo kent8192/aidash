@@ -1,6 +1,7 @@
 //! Decision Evidence and Decision Attempts persist behind the portable gate:
 //! charged attempts are recovered, never charged twice, and an applied decision
 //! commits its context and evidence atomically under the Run's lease.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/legacy.rs"]
 mod common;
 
@@ -10,6 +11,7 @@ use aidash_application::{
 		Approval, DecisionAuthority, DecisionJournal, DecisionProvider, Disclosure, DispatchError,
 		DispatchRecord, PreparedDispatch, PreparedRequest, Reservation, RetainedState,
 	},
+	tenancy::TEST_FIXTURE,
 };
 use aidash_domain::{
 	context::{Context, ContextEvent, RequestBudget, RequestProjection, recovery::Failure},
@@ -247,7 +249,7 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 	}
 	let run = f
 		.store
-		.save_run(&run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
 		.await
 		.unwrap();
 	(run, worker)
@@ -434,7 +436,7 @@ async fn an_applied_decision_commits_its_context_and_evidence_atomically(
 	// Assert: the decision applied, and the saved Run holds the same context.
 	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
 	assert!(context.history.len() < run.context.history.len());
-	let saved = f.store.run(run.id).await.unwrap();
+	let saved = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		serde_json::to_value(&saved.context.history).unwrap(),
 		serde_json::to_value(&context.history).unwrap()
@@ -629,7 +631,10 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		journal.recover(rows[1].1.id, &boundary).await,
 		Err(aidash_application::Error::Conflict(_))
 	));
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -654,7 +659,10 @@ async fn retained_state_expires_to_its_marker(
 	// Arrange: a Shadow decision keeps its state and leaves the Run unchanged.
 	let (result, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
 	assert!(matches!(result.unwrap(), CompactionResult::Shadow(_)));
-	assert_eq!(f.store.run(run.id).await.unwrap().revision, run.revision);
+	assert_eq!(
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().revision,
+		run.revision
+	);
 	assert_eq!(count(&f.store, "decision_states", run.id).await, 1);
 	let (_, retained) = evidence_rows(&f.store, run.id).await.remove(0);
 	let StateReference::Retained {
@@ -713,7 +721,10 @@ async fn retained_state_expires_to_its_marker(
 	);
 	assert_eq!(evidence.state_retention, retained.state_retention);
 	assert_eq!(evidence.replay().unwrap(), evidence.branches);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -867,7 +878,10 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 		))
 	));
 	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 2);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -928,7 +942,10 @@ async fn every_charge_rechecks_the_current_allowance(
 		Reservation::Fresh(_)
 	));
 	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 2);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -962,7 +979,10 @@ async fn a_decider_revoked_before_the_commit_never_retains_state(
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
 	assert_eq!(count(&f.store, "decision_evidence", run.id).await, 0);
-	assert_eq!(f.store.run(run.id).await.unwrap().revision, run.revision);
+	assert_eq!(
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().revision,
+		run.revision
+	);
 	// Evidence without an effect is still recorded from the charged answers.
 	let authority = Authority {
 		retain_state: false,
@@ -973,7 +993,10 @@ async fn a_decider_revoked_before_the_commit_never_retains_state(
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 	assert_eq!(count(&f.store, "decision_evidence", run.id).await, 1);
 	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1016,7 +1039,10 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 		panic!("a new attempt is charged");
 	};
 	// Act: the lease moves to another worker before the attempt finishes.
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	let successor = Uuid::new_v4();
 	let leased = f
 		.store
@@ -1064,6 +1090,9 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 			.await,
 		Err(aidash_application::Error::NotFound(_))
 	));
-	f.store.release_lease(run.id, successor).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, successor)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }

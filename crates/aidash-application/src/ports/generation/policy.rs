@@ -1,5 +1,6 @@
 //! A policy scope owns one transaction through its authorization and history.
 use crate::Result;
+use crate::tenancy::TenancyScope;
 use aidash_domain::{
 	generation::policy::{Policy, Spec},
 	identity::Principal,
@@ -43,5 +44,5 @@ pub trait PolicySession: Send {
 pub trait GenerationPolicies: Send + Sync {
 	fn principal(&self) -> &Principal;
 	async fn ids(&self, tenant: &str) -> Result<Vec<String>>;
-	async fn begin(&self, tenant: &str, exclusive: bool) -> Result<Box<dyn PolicySession>>;
+	async fn begin(&self, scope: &TenancyScope, exclusive: bool) -> Result<Box<dyn PolicySession>>;
 }

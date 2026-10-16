@@ -1,5 +1,6 @@
 //! Peer observations isolate the home node and bound durable journal payloads.
 use crate::isolated;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 use crate::endpoint::{EndpointFixture, assert_json, endpoint};
 use aidash_server::apps::execution::models::{HumanRequest, Invocation};
@@ -39,7 +40,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 	let workspace = app
 		.runtime
 		.store
-		.create_workspace("Journal", "Bounded observation")
+		.create_workspace(&TEST_FIXTURE, "Journal", "Bounded observation")
 		.await
 		.unwrap();
 	crate::endpoint::register_fixture_agent(&app, "agent").await;
@@ -50,6 +51,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 			.runtime
 			.store
 			.create_task(
+				&TEST_FIXTURE,
 				workspace.id,
 				&NewTask {
 					title: home.into(),
@@ -66,7 +68,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		let run = app
 			.runtime
 			.store
-			.accept_run(&task, home, "agent", "1.0.0")
+			.accept_run(&TEST_FIXTURE, &task, home, "agent", "1.0.0")
 			.await
 			.unwrap();
 		if count > 1 {

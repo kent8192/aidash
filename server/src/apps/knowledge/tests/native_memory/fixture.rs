@@ -1,5 +1,6 @@
 //! Shared native-memory fixture; integration and repository tests use the same ownership.
 use super::DatabaseFixture;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
 	apps::identity::models::{AuthorizationBundle, AuthorizationWorkspace},
@@ -216,7 +217,7 @@ pub(super) async fn setup_endpoint_policy(
 		registry.register(entry(kind, id, config)).await.unwrap();
 	}
 	let workspace = store
-		.create_workspace("Memory", "Keep current evidence")
+		.create_workspace(&TEST_FIXTURE, "Memory", "Keep current evidence")
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();

@@ -2,16 +2,18 @@
 use super::{Binding, Operation};
 pub(crate) use crate::apps::knowledge::repositories::remote_journal::Record;
 use crate::{Result, store::Store};
+use aidash_application::tenancy::TenancyScope;
 #[cfg(test)]
 pub(crate) use aidash_domain::semantic::remote::journal::retry_delay;
 use uuid::Uuid;
 pub(crate) async fn prepare(
 	store: &Store,
+	scope: &TenancyScope,
 	operation: &Operation,
 	binding: &Binding,
 ) -> Result<Record> {
 	aidash_application::semantic::remote_journal::prepare(
-		&crate::bootstrap::semantic_journal_repository(store),
+		&crate::bootstrap::semantic_journal_repository(store, scope.clone()),
 		operation,
 		binding,
 	)
@@ -21,11 +23,12 @@ pub(crate) async fn prepare(
 }
 pub(crate) async fn bound(
 	store: &Store,
+	scope: &TenancyScope,
 	operation: &Operation,
 	binding: &Binding,
 ) -> Result<Record> {
 	aidash_application::semantic::remote_journal::bound(
-		&crate::bootstrap::semantic_journal_repository(store),
+		&crate::bootstrap::semantic_journal_repository(store, scope.clone()),
 		operation,
 		binding,
 	)

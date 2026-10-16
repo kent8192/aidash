@@ -264,7 +264,11 @@ pub async fn message_keyed(
 			// Historical recovery is an accepted input, so keep its home fence.
 		} else {
 			if !home.local() {
-				match f.store.run_input_sequence(id, &key, content).await {
+				match f
+					.store
+					.run_input_sequence(&identity.tenancy()?, id, &key, content)
+					.await
+				{
 					Ok(_) => {
 						// The admission may have committed even if its client observed
 						// a late database error. Keep the fence and recover its sequence.

@@ -1,6 +1,7 @@
 //! Real PostgreSQL regression: MMR reads the current vector generation and only reorders
 //! already authorized candidates.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 /// Paraphrases share one direction; the manager fact is orthogonal to it.
 fn embedding(text: &str) -> [f32; 3] {
@@ -67,7 +68,7 @@ async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32
 						.and_where(Expr::col("id").eq(Expr::value(unit.id)))
 						.to_string(PostgresQueryBuilder),
 				)
-				.scalar_one(&store.pool)
+				.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 				.await
 				.unwrap();
 				assert_ne!(state, "ERROR", "native vector indexing failed");

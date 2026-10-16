@@ -10,6 +10,7 @@ use crate::{Error, Result, database::native, store::Store};
 use aidash_application::ports::decision::{
 	DecisionJournal, DispatchPermit, DispatchRecord, RecoveredAttempt, Reservation, RetainedState,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{
 	Run,
 	context::{Context, recovery::Failure},
@@ -305,6 +306,12 @@ impl<'a> RunDecisionJournal<'a> {
 		format!("{}/runs/{}", self.store.node_id, self.run.id)
 	}
 
+	/// A transaction in the Run's Tenant (#263).
+	async fn begin(&self) -> Result<native::Transaction> {
+		let scope = self.store.run_tenancy(self.run.id).await?;
+		self.store.pool.begin(&scope).await
+	}
+
 	fn check_boundary(&self, boundary: &Boundary) -> Result<()> {
 		boundary.validate()?;
 		if boundary.run != self.run.id || boundary.node != self.store.node_id {
@@ -351,7 +358,7 @@ impl<'a> RunDecisionJournal<'a> {
 		boundary: &Boundary,
 	) -> Result<Vec<RecoveredAttempt>> {
 		self.check_boundary(boundary)?;
-		let mut tx = native::begin(&self.store.pool).await?;
+		let mut tx = self.begin().await?;
 		fence(&mut tx, boundary).await?;
 		ensure_open(&mut tx, self.run.id, decision).await?;
 		let attempts = attempts_of(&mut tx, self.run.id, decision)
@@ -365,7 +372,7 @@ impl<'a> RunDecisionJournal<'a> {
 
 	async fn reserve_attempt(&self, record: &DispatchRecord) -> Result<Reservation> {
 		self.check_record(record)?;
-		let mut tx = native::begin(&self.store.pool).await?;
+		let mut tx = self.begin().await?;
 		fence(&mut tx, &record.boundary).await?;
 		ensure_open(&mut tx, self.run.id, record.decision).await?;
 		let decision_attempts = attempts_of(&mut tx, self.run.id, record.decision).await?;
@@ -490,7 +497,7 @@ impl<'a> RunDecisionJournal<'a> {
 		}
 		let answers = answers.map(serde_json::to_value).transpose()?;
 		let status = status_label(status)?;
-		let mut tx = native::begin(&self.store.pool).await?;
+		let mut tx = self.begin().await?;
 		let saved = native::query(
 			&Query::select()
 				.columns(ATTEMPT_COLUMNS.map(Alias::new))
@@ -680,7 +687,7 @@ impl<'a> RunDecisionJournal<'a> {
 			}
 		}
 		let mut stored = evidence.clone();
-		let mut tx = native::begin(&self.store.pool).await?;
+		let mut tx = self.begin().await?;
 		fence(&mut tx, &evidence.boundary).await?;
 		ensure_open(&mut tx, self.run.id, evidence.id).await?;
 		self.check_attempts(&mut tx, evidence).await?;
@@ -790,7 +797,7 @@ impl<'a> RunDecisionJournal<'a> {
 		{
 			return Err(Error::Invalid("decision outcome is out of bounds".into()));
 		}
-		let mut tx = native::begin(&self.store.pool).await?;
+		let mut tx = self.begin().await?;
 		let decided: Option<Uuid> = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
@@ -839,7 +846,11 @@ impl Store {
 	/// Delete retained classification state whose deadline is at or before `now`,
 	/// leaving the matching expired marker in its evidence in the same transaction.
 	pub async fn expire_decision_states(&self, now: DateTime<Utc>) -> Result<usize> {
-		let mut tx = native::begin(&self.pool).await?;
+		// Retention cleanup is Deployment-wide; it is not limited to one Run.
+		let mut tx = self
+			.pool
+			.begin(&TenancyScope::Deployment(DeploymentScopeReason::Retention))
+			.await?;
 		let due = native::query(
 			&Query::select()
 				.columns(["id", "evidence_id", "run_id", "digest"].map(Alias::new))

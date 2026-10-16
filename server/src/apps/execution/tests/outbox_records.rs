@@ -47,12 +47,9 @@ async fn concurrent_publishers_claim_disjoint_bounded_batches(
 ) {
 	// Arrange
 	let fixture = queued_events.await;
-	let connection = fixture.database.lease.handle();
+	let pool = fixture.database.pool().await;
 	// Act
-	let (first, second) = tokio::join!(
-		Event::claim_outbox(connection),
-		Event::claim_outbox(connection)
-	);
+	let (first, second) = tokio::join!(Event::claim_outbox(&pool), Event::claim_outbox(&pool));
 	let first = first.unwrap();
 	let second = second.unwrap();
 	// Assert
@@ -64,7 +61,7 @@ async fn concurrent_publishers_claim_disjoint_bounded_batches(
 	let ids: BTreeSet<_> = first.iter().chain(&second).map(|event| event.id).collect();
 	assert_eq!(ids.len(), first.len() + second.len());
 	assert_eq!(ids, fixture.events.iter().map(|event| event.id).collect());
-	assert!(Event::claim_outbox(connection).await.unwrap().is_empty());
+	assert!(Event::claim_outbox(&pool).await.unwrap().is_empty());
 }
 
 #[rstest]
@@ -72,6 +69,7 @@ async fn concurrent_publishers_claim_disjoint_bounded_batches(
 async fn a_locked_event_does_not_stall_the_next_publisher(#[future] queued_events: QueuedEvents) {
 	// Arrange
 	let fixture = queued_events.await;
+	let pool = fixture.database.pool().await;
 	let connection = fixture.database.lease.handle();
 	let locked_id = fixture.events[0].id;
 	connection
@@ -83,11 +81,10 @@ async fn a_locked_event_does_not_stall_the_next_publisher(#[future] queued_event
 				.await
 				.unwrap();
 			// Act
-			let claimed =
-				tokio::time::timeout(Timeout::from_secs(3), Event::claim_outbox(connection))
-					.await
-					.expect("SKIP LOCKED must not wait for this transaction")
-					.unwrap();
+			let claimed = tokio::time::timeout(Timeout::from_secs(3), Event::claim_outbox(&pool))
+				.await
+				.expect("SKIP LOCKED must not wait for this transaction")
+				.unwrap();
 			// Assert
 			assert_eq!(claimed.len(), 2);
 			assert!(claimed.iter().all(|event| event.id != locked_id));
@@ -95,7 +92,7 @@ async fn a_locked_event_does_not_stall_the_next_publisher(#[future] queued_event
 		})
 		.await
 		.unwrap();
-	let remaining = Event::claim_outbox(connection).await.unwrap();
+	let remaining = Event::claim_outbox(&pool).await.unwrap();
 	assert_eq!(
 		remaining.iter().map(|event| event.id).collect::<Vec<_>>(),
 		[locked_id]
@@ -111,20 +108,17 @@ async fn retry_retains_payload_and_fences_late_publication_results(
 ) {
 	// Arrange
 	let fixture = queued_events.await;
+	let pool = fixture.database.pool().await;
 	let mut connection = fixture.database.lease.handle();
-	let first = Event::claim_outbox(connection)
-		.await
-		.unwrap()
-		.pop()
-		.unwrap();
+	let first = Event::claim_outbox(&pool).await.unwrap().pop().unwrap();
 	// Act
 	assert!(
 		first
-			.finish_publication(connection, Some("broker unavailable".into()))
+			.finish_publication(&pool, Some("broker unavailable".into()))
 			.await
 			.unwrap()
 	);
-	assert!(Event::claim_outbox(connection).await.unwrap().is_empty());
+	assert!(Event::claim_outbox(&pool).await.unwrap().is_empty());
 	let saved = Event::objects()
 		.filter(Event::field_id().eq(first.id))
 		.get_with_db(&mut connection)
@@ -144,16 +138,12 @@ async fn retry_retains_payload_and_fences_late_publication_results(
 		)
 		.await
 		.unwrap();
-	let retry = Event::claim_outbox(connection)
-		.await
-		.unwrap()
-		.pop()
-		.unwrap();
-	assert!(!first.finish_publication(connection, None).await.unwrap());
-	assert!(retry.finish_publication(connection, None).await.unwrap());
+	let retry = Event::claim_outbox(&pool).await.unwrap().pop().unwrap();
+	assert!(!first.finish_publication(&pool, None).await.unwrap());
+	assert!(retry.finish_publication(&pool, None).await.unwrap());
 	assert!(
 		!first
-			.finish_publication(connection, Some("stale failure".into()))
+			.finish_publication(&pool, Some("stale failure".into()))
 			.await
 			.unwrap()
 	);
@@ -166,7 +156,7 @@ async fn retry_retains_payload_and_fences_late_publication_results(
 	assert!(saved.published_at.is_some());
 	assert_eq!(saved.publish_error, None);
 	assert_eq!(saved.data, first.data);
-	assert!(Event::claim_outbox(connection).await.unwrap().is_empty());
+	assert!(Event::claim_outbox(&pool).await.unwrap().is_empty());
 }
 
 #[rstest]
@@ -177,18 +167,16 @@ async fn concurrent_duplicate_receipts_have_one_durable_winner(
 	// Arrange
 	let database = database.await;
 	let mut connection = database.lease.handle();
+	let pool = database.pool().await;
 	let id = Uuid::new_v4();
 	// Act
-	let (first, second) = tokio::join!(
-		Inbox::receive(connection, id),
-		Inbox::receive(connection, id)
-	);
+	let (first, second) = tokio::join!(Inbox::receive(&pool, id), Inbox::receive(&pool, id));
 	// Assert
 	assert_eq!(
 		usize::from(first.unwrap()) + usize::from(second.unwrap()),
 		1
 	);
-	assert!(!Inbox::receive(connection, id).await.unwrap());
+	assert!(!Inbox::receive(&pool, id).await.unwrap());
 	let inbox = Inbox::objects()
 		.all()
 		.all_with_db(&mut connection)

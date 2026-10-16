@@ -36,7 +36,11 @@ impl Models {
 		&self,
 		units: impl Iterator<Item = &'a Unit> + Send,
 	) -> Result<()> {
-		let mut lease = Lease::without_subject(&self.store).await?;
+		let mut lease = Lease::within(
+			&self.store,
+			&crate::database::scope::recorded(&self.bank.tenant)?,
+		)
+		.await?;
 		let result = async {
 			let mut runs = BTreeSet::new();
 			for unit in units {
@@ -96,7 +100,11 @@ impl Models {
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&self.store.control_pool)
+		.fetch_one(
+			self.store
+				.control_pool
+				.in_scope(&self.store.run_tenancy(run).await?),
+		)
 		.await?;
 		if record.home_node != self.bank.home || record.workspace_id != self.bank.workspace {
 			return Err(Error::Forbidden);
@@ -206,6 +214,7 @@ impl Models {
 		crate::generation::embedding::reserve_many(
 			&mut accesses,
 			&self.store,
+			crate::database::scope::recorded(&self.bank.tenant)?,
 			self.bank.workspace,
 			config,
 			text,

@@ -38,7 +38,13 @@ impl PermissionRepository for Repository<'_> {
 		Ok(Box::new(Scope {
 			policy: self.runtime.config.dashboard_policy(),
 			node: self.runtime.config.node_id.clone(),
-			tx: Box::new(crate::database::native::begin(&self.runtime.store.pool).await?),
+			tx: Box::new(
+				self.runtime
+					.store
+					.pool
+					.begin(&self.actor.tenancy()?)
+					.await?,
+			),
 			actor: self.actor.clone(),
 		}))
 	}

@@ -10,6 +10,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::capabilities::outbound::{
@@ -24,6 +25,10 @@ use reinhardt::query::{
 };
 use serde_json::json;
 use uuid::Uuid;
+
+/// The outbound loop reaches every Tenant's capability operations.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
 }
@@ -70,7 +75,7 @@ impl OutboundRepository for Repository<'_> {
 					.limit(8)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_all(&self.store.pool)
+			.scalar_all(self.store.pool.in_scope(&MAINTENANCE))
 			.await?;
 			Ok(ids)
 		}
@@ -93,7 +98,7 @@ impl OutboundRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&self.store.pool)
+				.fetch_one(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(domain(snapshot))
@@ -141,7 +146,7 @@ impl OutboundRepository for Repository<'_> {
 						.and_where(Expr::col(Alias::new("state")).is_in(["approved", "attempted"]))
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(&self.store.pool)
+				.execute(self.store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(())
