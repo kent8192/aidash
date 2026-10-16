@@ -59,7 +59,7 @@ fn tool(seq: u64, id: &str, result: Value) -> HistoryEntry {
 			call: crate::provider::ToolCall {
 				id: id.into(),
 				name: "renamed_alias".into(),
-				arguments: json!({}),
+				arguments: json!({"query": "a disclosed query"}),
 			},
 			result,
 		},
@@ -83,20 +83,35 @@ fn redaction_replaces_every_research_result_whatever_its_tool_alias() {
 		if id == "note" {
 			continue;
 		}
-		let ContextEvent::Tool { result, .. } = &entry.event else {
+		let ContextEvent::Tool { call, result } = &entry.event else {
 			unreachable!()
 		};
 		assert_eq!(result, &ContextEvent::revoked_result(id));
+		// The arguments named what was disclosed, so they go too.
+		assert_eq!(call.arguments, ContextEvent::revoked_arguments());
 		assert!(!carries_research(&entry.event));
 	}
-	let ContextEvent::Tool { result, .. } = &history[2].event else {
+	let ContextEvent::Tool { call, result } = &history[2].event else {
 		unreachable!()
 	};
 	assert_eq!(result, &other);
+	assert_eq!(call.arguments, json!({"query": "a disclosed query"}));
 	assert!(
 		!redact(&mut history, &BTreeSet::from([4])),
 		"a second pass changes nothing"
 	);
+}
+
+/// A result revoked before arguments were redacted still gets them redacted.
+#[rstest]
+fn an_already_revoked_result_has_its_arguments_redacted() {
+	let mut history = vec![tool(1, "read", ContextEvent::revoked_result("read"))];
+	assert!(redact(&mut history, &BTreeSet::new()));
+	let ContextEvent::Tool { call, .. } = &history[0].event else {
+		unreachable!()
+	};
+	assert_eq!(call.arguments, ContextEvent::revoked_arguments());
+	assert!(!redact(&mut history, &BTreeSet::new()));
 }
 
 #[rstest]

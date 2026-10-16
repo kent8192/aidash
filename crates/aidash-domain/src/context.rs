@@ -786,6 +786,12 @@ impl ContextEvent {
 	pub fn is_revoked_result(result: &Value) -> bool {
 		result["revoked"] == json!(true) && result["invocation"].is_string()
 	}
+
+	/// What replaces a revoked research call's arguments, which name the
+	/// query or address that was disclosed.
+	pub fn revoked_arguments() -> Value {
+		json!({"revoked": true})
+	}
 }
 
 impl ContextEvent {

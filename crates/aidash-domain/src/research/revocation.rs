@@ -85,18 +85,26 @@ pub fn carries_research(event: &ContextEvent) -> bool {
 }
 
 /// Replace every research result in `history` with the revoked placeholder,
-/// keeping each call so its `tool_call_id` still pairs. `originals` names the
-/// entries whose original, as journaled, is a research result although the
-/// projection no longer shows its envelope, such as a result compaction cut
-/// to a string. Returns whether anything was replaced.
+/// and its call's arguments, which name the query or address disclosed, with
+/// theirs, keeping each call's id so its `tool_call_id` still pairs.
+/// `originals` names the entries whose original, as journaled, is a research
+/// result although the projection no longer shows its envelope, such as a
+/// result compaction cut to a string. Returns whether anything was replaced.
 pub fn redact(history: &mut [HistoryEntry], originals: &BTreeSet<u64>) -> bool {
 	let mut redacted = false;
 	for entry in history {
-		if (carries_research(&entry.event) || originals.contains(&entry.seq))
-			&& !matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_revoked_result(result))
-			&& let ContextEvent::Tool { call, result } = &mut entry.event
-		{
+		let research = carries_research(&entry.event) || originals.contains(&entry.seq);
+		let ContextEvent::Tool { call, result } = &mut entry.event else {
+			continue;
+		};
+		// Only a revoked research result is ever this placeholder.
+		let revoked = ContextEvent::is_revoked_result(result);
+		if research && !revoked {
 			*result = ContextEvent::revoked_result(&call.id);
+			redacted = true;
+		}
+		if (research || revoked) && call.arguments != ContextEvent::revoked_arguments() {
+			call.arguments = ContextEvent::revoked_arguments();
 			redacted = true;
 		}
 	}

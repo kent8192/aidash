@@ -950,9 +950,14 @@ pub(crate) async fn revoke_invocations(
 	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
 		let tombstone = revoked_result(operation);
 		let mut update = Query::update();
+		// The input names the query or address that was disclosed.
 		update
 			.table(Alias::new("invocations"))
 			.value(Alias::new("result"), tombstone.clone())
+			.value(
+				Alias::new("input"),
+				aidash_domain::context::ContextEvent::revoked_arguments(),
+			)
 			.and_where(Expr::cust("(result->>'version') = '1'"))
 			.and_where(Expr::cust("jsonb_typeof(result->'limits') = 'object'"))
 			.and_where(Expr::cust_with_values(
