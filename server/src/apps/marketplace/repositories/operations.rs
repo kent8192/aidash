@@ -1,10 +1,10 @@
-//! Operator persistence uses the same protected transaction and immutable staging adapter.
+//! Deployment Administrator persistence uses the same protected transaction and immutable staging adapter.
 use super::{
 	installations::NativeStaging,
 	storage::{get, put},
 };
 use aidash_application::ports::{
-	marketplace::{OperatorScope, StagingScope},
+	marketplace::{DeploymentAdministratorScope, StagingScope},
 	registry::PrivateKnowledgeRead,
 };
 use aidash_domain::{
@@ -20,18 +20,18 @@ use reinhardt::query::{
 use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
-pub(crate) struct NativeOperator<'a> {
+pub(crate) struct NativeDeploymentAdministrator<'a> {
 	pub(crate) staging: NativeStaging<'a>,
 	pub(crate) principal: Principal,
 }
 #[async_trait]
-impl PrivateKnowledgeRead for NativeOperator<'_> {
+impl PrivateKnowledgeRead for NativeDeploymentAdministrator<'_> {
 	async fn documents(&mut self, entry: &Entry) -> aidash_application::Result<Option<Value>> {
 		self.staging.documents(entry).await
 	}
 }
 #[async_trait]
-impl StagingScope for NativeOperator<'_> {
+impl StagingScope for NativeDeploymentAdministrator<'_> {
 	fn actor(&self) -> &str {
 		self.staging.actor()
 	}
@@ -81,7 +81,7 @@ impl StagingScope for NativeOperator<'_> {
 	}
 }
 #[async_trait]
-impl OperatorScope for NativeOperator<'_> {
+impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
@@ -133,7 +133,7 @@ impl OperatorScope for NativeOperator<'_> {
 			reference,
 			expected_revision,
 			enabled,
-			"operator",
+			"deployment_administrator",
 		)
 		.await
 		.map(|_| ())

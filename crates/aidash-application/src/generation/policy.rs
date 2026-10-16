@@ -23,7 +23,7 @@ fn same_tenant(principal: &Principal, tenant: &str) -> Result<()> {
 }
 fn actor(principal: &Principal) -> &str {
 	match principal {
-		Principal::Operator => "operator",
+		Principal::DeploymentAdministrator => "deployment_administrator",
 		Principal::Subject { subject, .. } => subject,
 	}
 }
@@ -68,7 +68,7 @@ pub async fn list(repository: &dyn GenerationPolicies, tenant: &str) -> Result<V
 	let result = async {
 		let mut result = vec![];
 		for id in ids {
-			if matches!(repository.principal(), Principal::Operator)
+			if matches!(repository.principal(), Principal::DeploymentAdministrator)
 				|| scope.decide(&id, "generation.read").await?
 			{
 				result.push(scope.load(tenant, &id, false).await?);

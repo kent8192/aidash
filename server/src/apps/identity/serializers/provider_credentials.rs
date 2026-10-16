@@ -41,7 +41,7 @@ fn page_limit() -> usize {
 	50
 }
 
-/// References private operator keys outside the Registry secret namespace.
+/// References privately supplied keys outside the Registry secret namespace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeySource {

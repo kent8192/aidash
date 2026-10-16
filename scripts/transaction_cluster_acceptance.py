@@ -442,7 +442,7 @@ class Cluster:
                 for local, remote in [(0, 1), (1, 0)]:
                     assert self.api(local, "/api/transactions/trust", {"node_id": f"aidash://tx-{remote:02}", "enabled": False})[0] == 200
                 # Fault injection uses generated SeaQuery DML and the same narrow
-                # authority control used by the operator recovery route.
+                # authority control used by the Deployment Administrator recovery route.
                 self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", "tx_0",
                     "-qAt", "-v", "ON_ERROR_STOP=1", "-f", "-", value="BEGIN;\n" +
                     self.queries["tx_authority_control"] + ";\n" + self.queries["tx_disable_peer"] + ";\nCOMMIT;\n")

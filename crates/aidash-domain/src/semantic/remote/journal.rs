@@ -1,5 +1,5 @@
 //! Durable semantic retry planning never treats an expired dispatch lease as an unsent request.
-use super::super::Failure;
+use super::super::{Failure, PENDING_REPLAY_SECONDS};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -76,8 +76,22 @@ pub struct Retry {
 	pub failure: Failure,
 	pub state: &'static str,
 }
-pub fn retry(failures: i32, failure: Failure) -> Retry {
-	let failures = failures + i32::from(failure.transient());
+pub fn retry(record: &Record, failure: Failure) -> Retry {
+	// An earlier call may still answer, such as a native memory model attempt
+	// inside its call deadline. The operation waits and spends none of its
+	// outage retries (#233). Every fresh claim repeats the charged workspace
+	// embedding, so, as a worker does, only the first wait is a second and a
+	// repeated one is `PENDING_REPLAY_SECONDS`.
+	if failure == Failure::Pending {
+		let repeated = reason(record.error.as_deref()) == Failure::Pending;
+		return Retry {
+			failures: record.failures,
+			delay: Some(if repeated { PENDING_REPLAY_SECONDS } else { 1 }),
+			failure,
+			state: "WAITING",
+		};
+	}
+	let failures = record.failures + i32::from(failure.transient());
 	let delay = failure.transient().then(|| retry_delay(failures)).flatten();
 	let failure = if failure.transient() && delay.is_none() {
 		Failure::RetriesExhausted

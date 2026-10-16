@@ -104,9 +104,9 @@ class SetupTests(unittest.TestCase):
             with self.assertRaises(setup.Refused):
                 setup.plan_changes({"resource_changes": [change]})
 
-    def test_private_operator_files_are_not_world_readable_and_refuse_symlinks(self):
+    def test_private_input_files_are_not_world_readable_and_refuse_symlinks(self):
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "operator.json"
+            path = Path(directory) / "inputs.json"
             setup.private_json(path, {"private": "input"})
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             link = Path(directory) / "link.json"
@@ -175,7 +175,7 @@ class SetupTests(unittest.TestCase):
             with self.assertRaises(setup.Refused):
                 setup.compose(values)
 
-    def test_composition_preserves_bootstrap_brokers_and_operator_enablement(self):
+    def test_composition_preserves_bootstrap_brokers_and_explicit_enablement(self):
         def brokers(tier, output):
             identity = "production" if tier == "production" else "test"
             output["configuration"]["value"].update(byok_project_id="aidash-byok", broker_service_accounts={identity: f"aidash-{identity}-broker@{tier}"})

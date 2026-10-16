@@ -1,15 +1,9 @@
 use super::*;
-use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::ports::registry::CoreToolCatalog;
 use aidash_domain::{
 	capabilities::CoreCapabilities, provider::ToolSpec, tool::providers::requires_runner,
 };
 use std::sync::Arc;
-struct Credential;
-impl Credentials for Credential {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("declarations must not load secrets")
-	}
-}
 struct Provider {
 	runner: bool,
 }
@@ -51,12 +45,17 @@ impl CoreToolCatalog for Provider {
 	}
 }
 fn validation(runner: bool) -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(Credential), Arc::new(Provider { runner }))
+	DefinitionValidation::new(Arc::new(Provider { runner }))
 }
 #[test]
-fn six_operator_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
+fn six_host_and_research_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
 	let validation = validation(true);
-	let groups = declarations(&Principal::Operator, &validation, "aidash://node").unwrap();
+	let groups = declarations(
+		&Principal::DeploymentAdministrator,
+		&validation,
+		"aidash://node",
+	)
+	.unwrap();
 	assert_eq!(groups.len(), HOST_GROUPS.len() + RESEARCH_GROUPS.len());
 	for group in groups.into_iter().take(HOST_GROUPS.len()) {
 		assert_eq!(group.bundle.kind, "bundle");
@@ -83,7 +82,7 @@ fn missing_runner_excludes_sandbox_defaults_without_fallback_and_other_owners_ca
 		.map(|(name, _)| name.to_string())
 		.collect::<Vec<_>>();
 	let plan = configured_defaults(
-		&Principal::Operator,
+		&Principal::DeploymentAdministrator,
 		&validation,
 		&validation,
 		"aidash://node",
@@ -103,8 +102,8 @@ fn missing_runner_excludes_sandbox_defaults_without_fallback_and_other_owners_ca
 	assert!(
 		declarations(
 			&Principal::Subject {
-				tenant: "operator".into(),
-				subject: "operator".into()
+				tenant: "deployment_administrator".into(),
+				subject: "deployment_administrator".into()
 			},
 			&validation,
 			"aidash://node"
@@ -113,7 +112,7 @@ fn missing_runner_excludes_sandbox_defaults_without_fallback_and_other_owners_ca
 	);
 	assert!(
 		configured_defaults(
-			&Principal::Operator,
+			&Principal::DeploymentAdministrator,
 			&validation,
 			&validation,
 			"aidash://node",
@@ -127,7 +126,12 @@ fn missing_runner_excludes_sandbox_defaults_without_fallback_and_other_owners_ca
 fn research_groups_declare_interchangeable_provider_operations() {
 	use aidash_domain::tool::{Yield, providers::research_operation};
 	let validation = validation(true);
-	let groups = declarations(&Principal::Operator, &validation, "aidash://node").unwrap();
+	let groups = declarations(
+		&Principal::DeploymentAdministrator,
+		&validation,
+		"aidash://node",
+	)
+	.unwrap();
 	let research = groups
 		.iter()
 		.filter(|group| RESEARCH_GROUPS.iter().any(|(name, _)| *name == group.name))

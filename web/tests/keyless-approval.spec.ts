@@ -43,7 +43,7 @@ const snapshot = {
   },
 };
 const state = () => ({
-  access: { kind: "operator" },
+  access: { kind: "deployment_administrator" },
   node: {
     id: "aidash://node",
     endpoint: "http://localhost",
@@ -82,14 +82,17 @@ test("Catalog Approval says that a Keyless definition carries no data retention 
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({
-        json: { access: { kind: "operator" }, node_id: "aidash://node" },
+        json: {
+          access: { kind: "deployment_administrator" },
+          node_id: "aidash://node",
+        },
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/state")
       return route.fulfill({
         json: {
-          access: { kind: "operator" },
+          access: { kind: "deployment_administrator" },
           node: {
             id: "aidash://node",
             endpoint: "http://localhost",
@@ -190,7 +193,10 @@ test("approving a Keyless definition resets the choice instead of showing anothe
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({
-        json: { access: { kind: "operator" }, node_id: "aidash://node" },
+        json: {
+          access: { kind: "deployment_administrator" },
+          node_id: "aidash://node",
+        },
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
@@ -248,7 +254,10 @@ test("an approved Keyless row keeps its warning when the Registry state is unava
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({
-        json: { access: { kind: "operator" }, node_id: "aidash://node" },
+        json: {
+          access: { kind: "deployment_administrator" },
+          node_id: "aidash://node",
+        },
       });
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });

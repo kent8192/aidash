@@ -18,7 +18,7 @@ use tokio::sync::{Notify, mpsc};
 use upstream_fixtures::upstream;
 
 /// The legacy provider with only its fixture's own origin permitted for
-/// Keyless calls, as an Operator would permit a private model server (ADR 0036).
+/// Keyless calls, as a Deployment Administrator would permit a private model server (ADR 0036).
 pub fn fixture_provider(
 	client: reqwest::Client,
 	config: aidash_server::registry::ModelConfig,

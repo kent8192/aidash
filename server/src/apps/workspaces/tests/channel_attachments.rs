@@ -34,7 +34,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		token: alice,
 		workspace,
 	} = Box::pin(scoped_channel).await;
-	let operator = app.runtime.config.api_token.clone();
+	let deployment_administrator = app.runtime.config.api_token.clone();
 	let key = Uuid::new_v4();
 	let (status, file) = upload(&app, &alice, &workspace, key, b"Source evidence").await;
 	assert_eq!(status, 200, "{file}");
@@ -58,7 +58,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	}));
 	let (status, changed) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy.clone()}),
@@ -67,7 +67,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	assert_eq!(status, 200, "{changed}");
 	let (status, credential) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme/credentials",
 		json!({"subject":"bob"}),
@@ -134,7 +134,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		.unwrap()["actions"] = json!(["message.read"]);
 	let (status, changed) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":2,"bundle":policy.clone()}),
@@ -179,7 +179,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	}));
 	let changed = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":3,"bundle":policy}),

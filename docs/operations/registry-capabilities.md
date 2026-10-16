@@ -14,9 +14,9 @@ Node startup seeds 22 builtin declarations at exact immutable versions (`aidash.
 
 ## Pending Host packages
 
-Configure `node.default_host_packages` with unique group names in the normal Node settings, for example `default_host_packages = ["shell", "python", "task_assign"]`. The operator's new-tenant policy request (`POST /api/authorization/{tenant}` with `expected_revision: 0`) stages the configured available groups in the same transaction as the new policy. Its response includes `pending_host_packages`, including unavailable reasons. If staging fails, neither the tenant policy nor any package is committed. Policy updates and startup never provision packages. An empty list preserves creation without package staging.
+Configure `node.default_host_packages` with unique group names in the normal Node settings, for example `default_host_packages = ["shell", "python", "task_assign"]`. The Deployment Administrator's new-tenant policy request (`POST /api/authorization/{tenant}` with `expected_revision: 0`) stages the configured available groups in the same transaction as the new policy. Its response includes `pending_host_packages`, including unavailable reasons. If staging fails, neither the tenant policy nor any package is committed. Policy updates and startup never provision packages. An empty list preserves creation without package staging.
 
-An authenticated operator can request the exact generated groups with `POST /api/marketplace/host-packages`:
+An authenticated Deployment Administrator can request the exact generated groups with `POST /api/marketplace/host-packages`:
 
 ```json
 {
@@ -33,11 +33,11 @@ An authenticated operator can request the exact generated groups with `POST /api
 }
 ```
 
-The response contains `installations` with exact immutable entry IDs, revision digests, dependency bindings and pending pointers, plus an `unavailable` map. Shell and Python include their poll/cancel operations. All persisted members share the operator transaction. An unavailable runner creates no sandbox revision and selects no fallback. Reusing the key preserves the receipt; retrying provisioning after a runner becomes available requires a new key. Existing installations and grants are not rewritten or activated.
+The response contains `installations` with exact immutable entry IDs, revision digests, dependency bindings and pending pointers, plus an `unavailable` map. Shell and Python include their poll/cancel operations. All persisted members share the Deployment Administrator transaction. An unavailable runner creates no sandbox revision and selects no fallback. Reusing the key preserves the receipt; retrying provisioning after a runner becomes available requires a new key. Existing installations and grants are not rewritten or activated.
 
 ## Research provider packages
 
-Web research providers are packages of the same operator workflow. Their
+Web research providers are packages of the same Deployment Administrator workflow. Their
 groups are `research_brave` (`research.brave@1`: `search`), `research_page`
 (`research.page@1`: `fetch`, `find`) and `research_fixture`
 (`research.fixture@1`: `search`, `fetch`, `find`). Request them by name in
@@ -56,7 +56,7 @@ for the contract, evidence store, citation checks and disclosure approval.
 
 In Marketplace administration, select a tenant and prepare the desired Host groups. Inspect each pending definition and its dependency bindings, select every member to be approved and use **Approve and activate selected set**. The displayed selection retains the reviewed digest and approval revisions. If it becomes stale, reload the approval selection and review it again. Preparing or reloading a set grants no approval.
 
-`POST /api/marketplace/approval-sets` requires the existing operator catalog-administration authority. Its input names the tenant and an exact array of installations (`installation`, `revision`, `digest`, `expected_activation_revision`) and approvals (`reference`, `expected_catalog_revision`). Include every pending member whose approval is being requested. Dependencies outside the selection must already be active and approved. The operation never adds unreviewed approvals.
+`POST /api/marketplace/approval-sets` requires the existing Deployment Administrator catalog-administration authority. Its input names the tenant and an exact array of installations (`installation`, `revision`, `digest`, `expected_activation_revision`) and approvals (`reference`, `expected_catalog_revision`). Include every pending member whose approval is being requested. Dependencies outside the selection must already be active and approved. The operation never adds unreviewed approvals.
 
 Every digest, revision, provider, dependency kind and lifecycle member is checked before approval writes. Conflicting or stale selections fail the entire transaction. Successful activation updates all selected catalog approvals and pointers together. The same request cannot reactivate a set using stale pointer revisions. Individual approval/activation remains available through the existing API.
 
@@ -380,7 +380,7 @@ excluded on a remote executor. Calling a Home command directly does not restore
 an excluded operation or broaden that contract.
 
 Scoped Home Human requests are stored on the existing remote execution binding.
-Operator delegations keep their bounded journal on the existing task delegation,
+Deployment Administrator delegations keep their bounded journal on the existing task delegation,
 and mirror each request under the receiver's real Run for Mesh inspection and
 answer controls. Receiver answers are first committed at Home. Neither route
 creates a shadow Run at Home. Lost replies replay the same request only for identical input.
@@ -398,7 +398,7 @@ this same durable continuation and requires an explicit reconciled result.
 
 ## Public foreign Agent Tools
 
-An operator's `integration.agent@1` descriptor may target an enabled protocol
+A Deployment Administrator's `integration.agent@1` descriptor may target an enabled protocol
 `0.2` peer. Registration and admission authenticate
 `GET /federation/v0.1/discover/{id}/{version}/bindings` and retain the receiver's
 complete immutable Agent, model, cluster, bundle and Tool definitions. The parent
@@ -407,10 +407,10 @@ model request. Live peer and receiver authority is checked again before model
 assembly and each Tool effect. Missing peers, unavailable Providers and changed
 closures fail without replacing any qualified reference.
 
-This public protocol exports one receiver's operator-owned closure. Tenant
+This public protocol exports one receiver's Deployment Administrator-owned closure. Tenant
 installations, generated Agents, Memory/Source/Skill context and nested foreign
 references cannot be exported through it. Tenant admission never borrows an
-operator peer credential; scoped federation continues to require its retained
+Node's Peer Credential; scoped federation continues to require its retained
 subject and mapping grants. Explicit unsupported dependencies are rejected.
 
 Agent Tool delegation stores `delegations.binding_snapshot` in the same
@@ -423,7 +423,7 @@ unscoped reservations without importing legacy capability fields.
 
 ## Workbench test connections
 
-External HTTP/MCP test connections require an operator-owned profile whose
+External HTTP/MCP test connections require a Deployment Administrator-owned profile whose
 `read_only_verified` field is true. Set it only after independently checking the
 exact connection's supported operations and read-only contract. A publisher's
 `transport.replay` claim does not establish this guarantee. Unattested external

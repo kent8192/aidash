@@ -3,7 +3,7 @@
 
 Never reuses an existing cluster or changes the user's default kubeconfig. The
 generated profile enables admission only in this explicit test installation.
-Production operators must separately provision equivalent isolation and storage.
+Production Deployments must separately provision equivalent isolation and storage.
 """
 import argparse
 import bz2

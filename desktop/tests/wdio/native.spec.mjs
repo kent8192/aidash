@@ -51,7 +51,7 @@ async function add(name, origin) {
 }
 async function authorize() {
   await button("Sign in with Google");
-  await button("operator");
+  await button("Deployment Administrator");
   // The navigation rail names its destinations through aria-label only.
   await $('button[aria-label="Graph View"]').waitForExist();
 }
@@ -149,7 +149,7 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       assert(!second.streams.includes(new URL(origins[0]).port));
       const oldStreams = (await status(0)).streams.length;
       await select(`First · ${origins[0]}`);
-      await button("operator");
+      await button("Deployment Administrator");
       await browser.waitUntil(
         async () => (await status(0)).streams.length > oldStreams,
       );
@@ -184,19 +184,19 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
     });
   } else if (phase === "restore") {
     it("restores both OS-stored logins in a new native process and revokes them on logout", async () => {
-      await button("operator");
+      await button("Deployment Administrator");
       const first = await status(0);
       assert.equal(first.logins, 1);
       assert(first.renewals >= 1);
       await select(`Second · ${origins[1]}`);
-      await button("operator");
+      await button("Deployment Administrator");
       const second = await status(1);
       assert.equal(second.logins, 1);
       assert(second.renewals >= 1);
       await logout();
       assert.equal((await status(1)).active, false);
       await select(`First · ${origins[0]}`);
-      await button("operator");
+      await button("Deployment Administrator");
       await logout();
       assert.equal((await status(0)).active, false);
     });

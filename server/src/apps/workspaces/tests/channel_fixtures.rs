@@ -26,7 +26,7 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 				"actions":["*"],"resources":{"kinds":["*"]}}]
 		});
 		assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme",
 					&json!({"expected_revision":0,"bundle":policy}),
@@ -37,7 +37,7 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 			200,
 		);
 		let issued = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme/credentials",
 					&json!({"subject":"alice"}),

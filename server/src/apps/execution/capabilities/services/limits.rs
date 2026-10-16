@@ -1,4 +1,4 @@
-//! Operator-lowered content budgets, bounded by the published wire contracts.
+//! Node-lowered content budgets, bounded by the published wire contracts.
 
 impl Default for ContentLimits {
 	fn default() -> Self {

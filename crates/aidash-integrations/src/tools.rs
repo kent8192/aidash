@@ -1,10 +1,6 @@
 //! HTTP and MCP transports for validated application tools.
 use aidash_application::execution::bounded_utf8_end;
-use aidash_application::{
-	Error, Result,
-	ports::{Credentials, tools::ToolTransport},
-	tools::required,
-};
+use aidash_application::{Error, Result, ports::tools::ToolTransport, tools::required};
 use aidash_domain::tool::ToolConfig;
 use async_trait::async_trait;
 use rmcp::{
@@ -15,7 +11,6 @@ use rmcp::{
 	},
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
 mod mcp;
 
 /// Total budget for a native `http_get`, covering DNS resolution and the request.
@@ -37,7 +32,6 @@ where
 
 pub struct HttpTools {
 	pub client: reqwest::Client,
-	pub credentials: Arc<dyn Credentials>,
 }
 #[async_trait]
 impl ToolTransport for HttpTools {
@@ -77,20 +71,15 @@ impl ToolTransport for HttpTools {
 					.map_err(crate::http_error)?;
 				web_fetch_response(response, &url).await
 			}
-			ToolConfig::Http {
-				endpoint,
-				credential_env,
-				..
-			} => {
-				let mut req = self
+			ToolConfig::Http { endpoint, .. } => {
+				let response = self
 					.client
 					.post(endpoint)
 					.header("idempotency-key", key)
-					.json(&input);
-				if let Some(name) = credential_env {
-					req = req.bearer_auth(self.credentials.resolve(name)?);
-				}
-				let response = req.send().await.map_err(crate::http_error)?;
+					.json(&input)
+					.send()
+					.await
+					.map_err(crate::http_error)?;
 				if !response.status().is_success() {
 					return Err(Error::External(format!(
 						"HTTP tool returned {}",
@@ -101,16 +90,12 @@ impl ToolTransport for HttpTools {
 			}
 			ToolConfig::Mcp {
 				endpoint,
-				credential_env,
 				tool_name,
 				idempotency_argument,
 				..
 			} => {
-				let mut transport_config =
+				let transport_config =
 					StreamableHttpClientTransportConfig::with_uri(endpoint.clone());
-				if let Some(name) = credential_env {
-					transport_config.auth_header = Some(self.credentials.resolve(name)?);
-				}
 				let transport = StreamableHttpClientTransport::with_client(
 					mcp::BoundedClient(self.client.clone()),
 					transport_config,

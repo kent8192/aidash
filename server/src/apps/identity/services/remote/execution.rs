@@ -98,7 +98,7 @@ pub(crate) async fn activation_binding(
 ) -> Result<Uuid> {
 	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 	aidash_application::authorization::home::activation_binding(
-		&crate::bootstrap::home_execution_repository(&f, Actor::Operator),
+		&crate::bootstrap::peer_home_execution_repository(&f),
 		node,
 		input.grant_id,
 	)

@@ -103,8 +103,8 @@ class CertificateTests(unittest.TestCase):
     def test_fresh_secret_is_issued_once_and_reused_without_another_version(self):
         cloud = SecretManager()
         with patch("tls.run", side_effect=cloud.run), patch("tls.issue_certificate", return_value=self.bundles["healthy"]) as issue:
-            self.assertEqual(tls.renew(CONFIG, "operator@example.test", TOKEN), "renewed")
-            self.assertEqual(tls.renew(CONFIG, "operator@example.test", TOKEN), "current")
+            self.assertEqual(tls.renew(CONFIG, "maintainer@example.test", TOKEN), "renewed")
+            self.assertEqual(tls.renew(CONFIG, "maintainer@example.test", TOKEN), "current")
         self.assertEqual(issue.call_count, 1)
         self.assertEqual([json.loads(value) for value in cloud.payloads], [self.bundles["healthy"]])
         argv = json.dumps(cloud.commands)
@@ -118,23 +118,23 @@ class CertificateTests(unittest.TestCase):
             with self.subTest(revoked=revoked):
                 cloud = SecretManager(previous, revoked)
                 with patch("tls.run", side_effect=cloud.run), patch("tls.issue_certificate", return_value=self.bundles["healthy"]):
-                    self.assertEqual(tls.renew(CONFIG, "operator@example.test", TOKEN), "renewed")
+                    self.assertEqual(tls.renew(CONFIG, "maintainer@example.test", TOKEN), "renewed")
                 self.assertEqual(len(cloud.payloads), 1)
         for invalid in [self.bundles["wrong"], dict(self.bundles["healthy"], private_key_pem=self.bundles["wrong"]["private_key_pem"]), self.bundles["due"]]:
             with self.subTest(invalid=invalid["certificate_pem"][:20]):
                 cloud = SecretManager()
                 with patch("tls.run", side_effect=cloud.run), patch("tls.issue_certificate", return_value=invalid), self.assertRaises(Refused):
-                    tls.renew(CONFIG, "operator@example.test", TOKEN)
+                    tls.renew(CONFIG, "maintainer@example.test", TOKEN)
                 self.assertEqual(cloud.payloads, [])
 
     def test_wrong_existing_domain_and_untrusted_target_fail_before_issuance(self):
         cloud = SecretManager(self.bundles["wrong"])
         with patch("tls.run", side_effect=cloud.run), patch("tls.issue_certificate") as issue:
             with self.assertRaisesRegex(Refused, "domain"):
-                tls.renew(CONFIG, "operator@example.test", TOKEN)
+                tls.renew(CONFIG, "maintainer@example.test", TOKEN)
             for changes in [{"domain": "other.example"}, {"deployment_tier": "production"}, {"preview_tls_secret": "../runtime"}]:
                 with self.subTest(changes=changes), self.assertRaises(Refused):
-                    tls.renew(dict(CONFIG, **changes), "operator@example.test", TOKEN)
+                    tls.renew(dict(CONFIG, **changes), "maintainer@example.test", TOKEN)
         issue.assert_not_called()
         self.assertEqual(cloud.payloads, [])
 
@@ -146,7 +146,7 @@ class CertificateTests(unittest.TestCase):
             return self.bundles["healthy"]
 
         with patch("tls.run", side_effect=cloud.run), patch("tls.issue_certificate", side_effect=issue):
-            self.assertEqual(tls.renew(CONFIG, "operator@example.test", TOKEN), "superseded")
+            self.assertEqual(tls.renew(CONFIG, "maintainer@example.test", TOKEN), "superseded")
         self.assertEqual(cloud.payloads, [])
 
     def test_certbot_receives_only_private_ephemeral_dns_credentials_and_pinned_image(self):
@@ -178,7 +178,7 @@ class CertificateTests(unittest.TestCase):
 
         states = []
         with patch("tls.run", side_effect=docker):
-            self.assertEqual(tls.issue_certificate("operator@example.test", TOKEN, None, states.append), self.bundles["healthy"])
+            self.assertEqual(tls.issue_certificate("maintainer@example.test", TOKEN, None, states.append), self.bundles["healthy"])
         self.assertEqual(states, [ACCOUNT])
         self.assertFalse(observed["directory"].exists())
 
@@ -214,10 +214,10 @@ class CertificateTests(unittest.TestCase):
 
         with patch("tls.run", side_effect=command):
             with self.assertRaises(RuntimeError):
-                tls.renew(CONFIG, "operator@example.test", TOKEN)
+                tls.renew(CONFIG, "maintainer@example.test", TOKEN)
             self.assertEqual(cloud.payloads, [])
             self.assertEqual(cloud.account_state, ACCOUNT)
-            self.assertEqual(tls.renew(CONFIG, "operator@example.test", TOKEN), "renewed")
+            self.assertEqual(tls.renew(CONFIG, "maintainer@example.test", TOKEN), "renewed")
         self.assertEqual(len(cloud.account_payloads), 1)
         self.assertEqual(stopped, ["f" * 64, "f" * 64])
         self.assertTrue(all(not path.exists() for path in attempts))
@@ -232,7 +232,7 @@ class CertificateTests(unittest.TestCase):
     def test_cli_never_prints_pem_token_or_private_failure_output(self):
         cloud = SecretManager()
         output = io.StringIO()
-        env = {"AIDASH_GCP_CONFIG": json.dumps(CONFIG), "AIDASH_ACME_EMAIL": "operator@example.test", "CLOUDFLARE_CERTIFICATE_DNS_TOKEN": TOKEN}
+        env = {"AIDASH_GCP_CONFIG": json.dumps(CONFIG), "AIDASH_ACME_EMAIL": "maintainer@example.test", "CLOUDFLARE_CERTIFICATE_DNS_TOKEN": TOKEN}
         with patch.dict(os.environ, env), patch.object(sys, "argv", ["tls.py", "renew"]), patch("tls.run", side_effect=cloud.run), patch("tls.issue_certificate", return_value=self.bundles["healthy"]), redirect_stdout(output):
             tls.main()
         self.assertIn("renewed", output.getvalue())

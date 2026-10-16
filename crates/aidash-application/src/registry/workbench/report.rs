@@ -45,7 +45,7 @@ pub async fn assemble(
 				workspace_id: query.workspace_id,
 			})
 		}
-		Principal::Operator => match (query.tenant, query.subject) {
+		Principal::DeploymentAdministrator => match (query.tenant, query.subject) {
 			(Some(tenant), Some(subject)) => Some(PermissionInput {
 				tenant,
 				subject,
