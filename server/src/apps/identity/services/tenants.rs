@@ -18,6 +18,7 @@ use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
 use crate::http::validate;
 use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::identity::tenancy::{self, TENANT_UPDATE};
 use aidash_domain::policy::Resource;
 use http::{HeaderMap, Method};
@@ -83,13 +84,14 @@ impl Tenants {
 			.get("x-aidash-context")
 			.and_then(|value| value.to_str().ok());
 		if context == Some("deployment_administrator") {
-			let lease = f.store.orm_connection()?;
-			if !DashboardDeploymentAdministratorGrant::enabled_for_identity(
-				&mut lease.handle(),
-				identity,
-			)
-			.await?
-			{
+			let granted = f
+				.store
+				.pool
+				.atomic(&TenancyScope::NoTenant, async |tx| {
+					DashboardDeploymentAdministratorGrant::enabled_for_identity(tx, identity).await
+				})
+				.await?;
+			if !granted {
 				return Err(Error::Forbidden);
 			}
 			return Ok(Creator::DeploymentAdministrator(Some(identity)));
@@ -106,10 +108,11 @@ impl Tenants {
 		let label = tenancy::label(&input.label)?;
 		let creator = self.creator(&headers).await?;
 		let f = self.runtime.clone();
-		let lease = f.store.orm_connection()?;
-		let created = lease
-			.handle()
-			.atomic(async |tx| {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::TenantCreation);
+		let created = f
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
 				if let Creator::Identity(identity) = creator {
 					tenants::lock_creator(tx, identity).await?;
 					// Locked as Personal Tenant provisioning locks it: a
@@ -149,10 +152,12 @@ impl Tenants {
 		if !matches!(actor, Actor::DeploymentAdministrator) {
 			return Err(Error::Forbidden);
 		}
-		let lease = self.runtime.store.orm_connection()?;
-		let tenants = lease
-			.handle()
-			.atomic(async |tx| tenants::list(tx, page.offset).await)
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		let tenants = self
+			.runtime
+			.store
+			.pool
+			.atomic(&scope, async |tx| tenants::list(tx, page.offset).await)
 			.await?;
 		Ok(tenants.into_iter().map(Into::into).collect())
 	}

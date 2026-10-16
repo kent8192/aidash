@@ -1,5 +1,6 @@
 //! Two live Nodes exercise canonical native context and both allowance owners.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 async fn first_native_context(p: &Pair) -> Value {
 	for _ in 0..4 {
@@ -27,7 +28,7 @@ async fn first_native_context(p: &Pair) -> Value {
 			.and_where(reinhardt::query::Expr::col("deliveries").gt(0_i64))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.scalar_one(&p.a.store.pool)
+	.scalar_one(p.a.store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -46,7 +47,12 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 ) {
 	let p = scoped_pair;
 	let fixture = p.native.as_ref().unwrap();
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let route = format!("/api/workspaces/{workspace}/memory/units/mutate");
 	let mut evidence = vec![];
 	for name in ["First exact-bound support", "Second exact-bound support"] {
@@ -421,7 +427,12 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 	.await
 	.unwrap();
 	assert_eq!(recorded, 2);
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let (status, index) = request(
 		&p.aa,
 		&p.token,
@@ -578,7 +589,12 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 			"{usage:?}"
 		);
 	}
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let (status,body) = request(&p.aa,&p.token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),
 		json!({"operation_id":Uuid::now_v7(),"provider":p.native.as_ref().unwrap()["provider"],"bank":banks[1]["bank"],
 			"changes":[{"operation":"delete","id":p.native.as_ref().unwrap()["shared"],"expected_revision":1}]})).await;
@@ -763,9 +779,7 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 	.collect();
 	assert_eq!(selected.len(), 1025);
 	// Model a grant's previous Runs through the same durable dependency schema.
-	let mut tx = aidash_server::database::native::begin(&p.a.store.pool)
-		.await
-		.unwrap();
+	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut insert = Query::insert();
 	insert
 		.into_table(Alias::new("memory_remote_reads"))

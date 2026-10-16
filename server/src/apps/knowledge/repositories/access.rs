@@ -8,6 +8,7 @@ use crate::authorization::{
 	identity::{Actor, SubjectIdentity},
 };
 use crate::{Error, Result, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use serde_json::Value;
 
 use uuid::Uuid;
@@ -24,28 +25,36 @@ pub(crate) enum Lease<'a> {
 	Inherited(&'a mut Access),
 }
 impl Lease<'_> {
-	pub(crate) async fn begin(store: &Store, actor: &Actor) -> Result<Self> {
+	/// Begin as `actor`. A Subject works in its own Tenant; a Deployment
+	/// Administrator works in the Tenant of `workspace`.
+	pub(crate) async fn begin(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Self> {
 		match actor {
-			Actor::DeploymentAdministrator => Self::without_subject(store).await,
+			Actor::DeploymentAdministrator => {
+				Self::within(store, &store.workspace_tenancy(workspace).await?).await
+			}
 			Actor::Subject(identity) => Ok(Self::Scoped(Box::new(
 				Access::begin(store, identity).await?,
 			))),
 		}
 	}
-	/// Begin Aidash's own work, which acts for no Subject.
-	pub(crate) async fn without_subject(store: &Store) -> Result<Self> {
-		Ok(Self::WithoutSubject(
-			crate::database::native::begin(&store.pool).await?,
-		))
+	/// Begin work in `scope` without a Subject's authority, such as a worker's
+	/// work for its Run.
+	pub(crate) async fn within(store: &Store, scope: &TenancyScope) -> Result<Self> {
+		Ok(Self::WithoutSubject(store.pool.begin(scope).await?))
 	}
-	pub(crate) async fn restore(store: &Store, authority: Value) -> Result<Self> {
+	/// Begin system work that reaches every Tenant's knowledge for `reason`.
+	pub(crate) async fn deployment(store: &Store, reason: DeploymentScopeReason) -> Result<Self> {
+		Self::within(store, &TenancyScope::Deployment(reason)).await
+	}
+	/// Restore the authority saved with work on `workspace`.
+	pub(crate) async fn restore(store: &Store, authority: Value, workspace: Uuid) -> Result<Self> {
 		let authority: SavedAuthority = serde_json::from_value(authority)?;
 		match authority.credential {
 			None if authority.subject == WITHOUT_SUBJECT
 				&& authority.tenant.is_empty()
 				&& authority.subjects.is_empty() =>
 			{
-				Self::without_subject(store).await
+				Self::within(store, &store.workspace_tenancy(workspace).await?).await
 			}
 			Some(credential_id) => {
 				let mut access = Access::begin(

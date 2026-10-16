@@ -226,6 +226,9 @@ export function TenantInvitations({
   const [groups, setGroups] = useState<string[]>(
     assignable.includes("members") ? ["members"] : [],
   );
+  // The policy can change while the page is open; a group that is no longer
+  // assignable has no checkbox to clear, so it is never sent.
+  const proposed = groups.filter((group) => assignable.includes(group));
   const [lifetime, setLifetime] = useState(604_800);
   const [issued, setIssued] = useState<IssuedInvitation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -318,7 +321,7 @@ export function TenantInvitations({
                       method: "POST",
                       headers: { "content-type": "application/json" },
                       body: JSON.stringify({
-                        groups,
+                        groups: proposed,
                         expires_in_seconds: lifetime,
                       }),
                     }),

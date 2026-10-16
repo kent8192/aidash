@@ -1,5 +1,6 @@
 //! Foreign lifecycle queries retain database-time retry CAS and original visibility boundaries.
 use crate::{federation::Federation, transactions::gate::ReadLease};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::generation::{
@@ -26,6 +27,12 @@ impl ForeignGenerationVisibility for Visibility {
 		self.0.suspend().await.map_err(Into::into)
 	}
 }
+/// Foreign generation maintenance reconciles intents and requests of every
+/// Tenant.
+fn reconcile() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::GenerationReconcile)
+}
+
 #[async_trait]
 impl ForeignGenerationMaintenance for NativeMaintenance {
 	fn now(&self) -> DateTime<Utc> {
@@ -42,7 +49,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 			.table(Alias::new("generation_remote_intents")).value_expr(Alias::new("cancel_retry_at"), Expr::cust("CLOCK_TIMESTAMP() + INTERVAL '30 seconds'"))
 			.and_where(SimpleExpr::CustomWithExpr("(id=? AND cancelled AND NOT cancel_delivered AND (cancel_retry_at IS NULL OR cancel_retry_at<=CLOCK_TIMESTAMP()))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 			.to_string(PostgresQueryBuilder))
-	.execute(&f.store.pool)
+	.execute(f.store.pool.in_scope(&reconcile()))
 	.await? }
 	.rows_affected();
 		Ok(reserved)
@@ -72,7 +79,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.in_scope(&reconcile()))
 			.await?
 		};
 		Ok(())
@@ -88,7 +95,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 			.limit(16)
 			.to_string(PostgresQueryBuilder),
 	).columns(&["id", "binding"])
-	.fetch_all(&f.store.pool)
+	.fetch_all(f.store.pool.in_scope(&reconcile()))
 	.await?;
 		Ok(pending)
 	}
@@ -96,7 +103,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 		let f = &self.federation;
 		let jobs:Vec<Request>=crate::database::query_as(&Query::select().column(reinhardt::query::ColumnRef::table_asterisk("g")).from_as(Alias::new("generation_requests"),Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("r")), Expr::cust("r.id=g.admission_id AND r.home_node=g.home_node"))
     .and_where(Expr::cust("g.home_node<>'' AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))
-    .order_by((Alias::new("g"),Alias::new("created_at")),reinhardt::query::Order::Asc).limit(16).to_string(PostgresQueryBuilder)).fetch_all(&f.store.pool).await?;
+    .order_by((Alias::new("g"),Alias::new("created_at")),reinhardt::query::Order::Asc).limit(16).to_string(PostgresQueryBuilder)).fetch_all(f.store.pool.in_scope(&reconcile())).await?;
 		Ok(jobs)
 	}
 	async fn cancel_job(&self, source: &str, id: Uuid) -> Result<Option<Request>> {
@@ -117,13 +124,13 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&f.store.pool)
+			.fetch_optional(f.store.pool.in_scope(&reconcile()))
 			.await?
 		};
 		Ok(job)
 	}
 	async fn run_phase(&self, id: Uuid) -> Result<RunPhase> {
-		Ok(self.federation.store.run(id).await?.phase())
+		Ok(self.federation.store.run(&reconcile(), id).await?.phase())
 	}
 	async fn begin_terminal(&self, job: &Request) -> Result<Box<dyn GenerationTerminalSession>> {
 		crate::bootstrap::generation_provisioning_repository(&self.federation)

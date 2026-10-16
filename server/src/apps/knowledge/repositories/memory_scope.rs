@@ -158,7 +158,7 @@ impl Scope<'_, '_> {
 		}
 		let transport = crate::bootstrap::semantic_transport(self.store);
 		if !transport
-			.present(&spec.vector, &index.collection, &points)
+			.present(&spec.vector, &index.collection, &index.tenant, &points)
 			.await?
 		{
 			// Indexed points are missing from the vector backend: an outage of

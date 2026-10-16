@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use futures_util::FutureExt;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
@@ -16,6 +18,9 @@ use uuid::Uuid;
 // Advisory locks are database-wide while the shared test service isolates
 // schemas. Serialize fixtures so intentional barriers cannot block another test
 // holding a different half of the lock order; requests inside each test race.
+// Every test carries the whole-test backstop: besides #284's barrier test,
+// `browse_pages_hidden_versions_before_returning_a_visible_package` hung for 6 h
+// while its fixture resolved, before it took this lock.
 static FIXTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn reference(id: &str) -> EntityRef {
@@ -110,6 +115,7 @@ fn deny(mut value: Value, actions: Value) -> Value {
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("user")]
 #[case("agent")]
 #[case("node")]
@@ -387,6 +393,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	#[future(awt)]
@@ -511,6 +518,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	#[future(awt)]
@@ -621,6 +629,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	#[future(awt)]
@@ -844,6 +853,8 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	common::cleanup(f, &url, &schema).await;
 }
 
+/// Finds the waiter by its database: a Deployment Scope relabels
+/// `application_name` for the transaction's duration.
 async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	for _ in 0..500 {
@@ -855,8 +866,7 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 					.expr(Expr::cust("count(*)"))
 					.from(Alias::new("pg_stat_activity"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(application_name=? AND wait_event_type='Lock' AND query LIKE ?)"
-							.to_owned(),
+						"(datname=? AND wait_event_type='Lock' AND query LIKE ?)".to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),
@@ -877,6 +887,7 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn audience_revocation_and_install_commit_have_a_durable_order(
 	#[future(awt)]
@@ -886,6 +897,9 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
 	let (f, url, schema) = application_fixture.runtime.parts();
+	// Requests released by a barrier can wait on locks or pool connections, so
+	// every later await fails with its name and the database activity (#284).
+	let environment = application_fixture.runtime.environment();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
@@ -946,33 +960,61 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		tokio::spawn(
 			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
 		);
-	wait_for_lock(&f, &schema, "%74003201%").await;
-	barrier.commit().await.unwrap();
-	assert_eq!(blocked.await.unwrap().0, 403);
-	assert_eq!(
-		request(
-			&app,
-			&b,
-			"GET",
-			"/api/marketplace/installations",
-			Value::Null
+	let stage = |step: &str| format!("audience revocation (database {schema}): {step}");
+	// The barrier probe needs a pool connection too, so it is bounded as well.
+	environment
+		.bounded(
+			stage("reach the revoking distribution barrier"),
+			wait_for_lock(&f, &schema, "%74003201%"),
+		)
+		.await;
+	environment
+		.bounded(
+			stage("commit the revoking distribution barrier"),
+			barrier.commit(),
 		)
 		.await
-		.1,
+		.unwrap();
+	assert_eq!(
+		environment
+			.bounded(stage("finish the blocked install"), blocked)
+			.await
+			.unwrap()
+			.0,
+		403
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("list installations after revocation"),
+				request(
+					&app,
+					&b,
+					"GET",
+					"/api/marketplace/installations",
+					Value::Null
+				)
+			)
+			.await
+			.1,
 		json!([])
 	);
 	// Installation wins: block its final success-event insertion after all
 	// protected reads/writes, then queue a revoker on the distribution lock.
 	assert_eq!(
-		request(
-			&app,
-			&a,
-			"PUT",
-			&audience_path,
-			json!({"expected_revision":3,"tenants":["a","b"]})
-		)
-		.await
-		.0,
+		environment
+			.bounded(
+				stage("restore the audience"),
+				request(
+					&app,
+					&a,
+					"PUT",
+					&audience_path,
+					json!({"expected_revision":3,"tenants":["a","b"]})
+				)
+			)
+			.await
+			.0,
 		200
 	);
 	let mut barrier = f.store.pool.driver().begin().await.unwrap();
@@ -989,7 +1031,12 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		tokio::spawn(
 			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
 		);
-	wait_for_lock(&f, &schema, "%71003201%").await;
+	environment
+		.bounded(
+			stage("reach the event barrier"),
+			wait_for_lock(&f, &schema, "%71003201%"),
+		)
+		.await;
 	let (app2, a2) = (app.clone(), a.clone());
 	let revoked = tokio::spawn(async move {
 		request(
@@ -1001,42 +1048,71 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		)
 		.await
 	});
-	wait_for_lock(&f, &schema, "%74003201%").await;
-	barrier.commit().await.unwrap();
-	let installed = allowed.await.unwrap();
-	assert_eq!(installed.0, 200, "{installed:?}");
-	assert_eq!(revoked.await.unwrap().0, 200);
-	assert_eq!(
-		request(
-			&app,
-			&b,
-			"GET",
-			&format!("/api/marketplace/packages/{key}"),
-			Value::Null
+	environment
+		.bounded(
+			stage("queue the revocation on the distribution lock"),
+			wait_for_lock(&f, &schema, "%74003201%"),
 		)
+		.await;
+	environment
+		.bounded(stage("commit the event barrier"), barrier.commit())
 		.await
-		.0,
+		.unwrap();
+	let installed = environment
+		.bounded(stage("finish the allowed install"), allowed)
+		.await
+		.unwrap();
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(
+		environment
+			.bounded(stage("finish the queued revocation"), revoked)
+			.await
+			.unwrap()
+			.0,
+		200
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("read the revoked package"),
+				request(
+					&app,
+					&b,
+					"GET",
+					&format!("/api/marketplace/packages/{key}"),
+					Value::Null
+				)
+			)
+			.await
+			.0,
 		403
 	);
 	assert_eq!(
-		request(
-			&app,
-			&b,
-			"GET",
-			"/api/marketplace/installations",
-			Value::Null
-		)
-		.await
-		.1
-		.as_array()
-		.unwrap()
-		.len(),
+		environment
+			.bounded(
+				stage("list installations after the install commit"),
+				request(
+					&app,
+					&b,
+					"GET",
+					"/api/marketplace/installations",
+					Value::Null
+				)
+			)
+			.await
+			.1
+			.as_array()
+			.unwrap()
+			.len(),
 		1
 	);
-	common::cleanup(f, &url, &schema).await;
+	environment
+		.bounded(stage("clean up"), common::cleanup(f, &url, &schema))
+		.await;
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("credential")]
 #[case("policy")]
 #[tokio::test]
@@ -1106,7 +1182,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	);
 	assert!(
 		!f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -1116,6 +1192,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_reference(
 	#[future(awt)]
@@ -1181,7 +1258,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	)
 	.await;
 	assert_eq!(claimed.0, 200, "{claimed:?}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.agent_id, old_ref.id);
 	let installed_id = original.1["installation"]["id"].as_str().unwrap();
 	let changed=request(&app,&a,"POST",&format!("/api/marketplace/installations/{installed_id}"),json!({"expected_revision":1,"config":{"instructions":"Replacement instructions"},"idempotency_key":Uuid::new_v4()})).await;
@@ -1279,7 +1356,10 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.0,
 		200
 	);
-	assert_eq!(f.store.run(run.id).await.unwrap().agent_id, old_ref.id);
+	assert_eq!(
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().agent_id,
+		old_ref.id
+	);
 	assert_eq!(
 		f.registry
 			.get(&old_ref.id, &old_ref.version)
@@ -1298,7 +1378,12 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.unwrap()
 	);
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"THINKING"
 	);
 	assert_eq!(
@@ -1316,16 +1401,18 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 			.await
 			.unwrap()
 		);
-		if f.store.run(run.id).await.unwrap().control == aidash_server::domain::RunControl::Paused {
+		if f.store.run(&TEST_FIXTURE, run.id).await.unwrap().control
+			== aidash_server::domain::RunControl::Paused
+		{
 			break;
 		}
 	}
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(paused.control, aidash_server::domain::RunControl::Paused);
 	assert_eq!(paused.agent_id, old_ref.id);
 	let active = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -1336,6 +1423,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries(
 	#[future(awt)]
@@ -1447,6 +1535,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_revisions(
 	#[future(awt)]
@@ -1653,6 +1742,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_replay(
 	#[future(awt)]
@@ -1780,7 +1870,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 		.0,
 		403
 	);
-	let events = f.store.events(0, None, 1000).await.unwrap();
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
 	let audit = events
 		.iter()
 		.find(|e| {
@@ -1796,6 +1886,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("dependency", false)]
 #[case("dependency", true)]
 #[case("consent", false)]
@@ -2007,7 +2098,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 	);
 	let successes = f
 		.store
-		.events(0, None, 1000)
+		.events(&TEST_FIXTURE, 0, None, 1000)
 		.await
 		.unwrap()
 		.into_iter()
@@ -2024,6 +2115,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries(
 	#[future(awt)]
@@ -2083,7 +2175,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	);
 	assert_eq!(
 		f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -2262,6 +2354,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	#[future(awt)]
@@ -2280,7 +2373,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	assert_eq!(installed.0, 200, "{installed:?}");
 	let after = f
 		.store
-		.events(0, None, 1000)
+		.events(&TEST_FIXTURE, 0, None, 1000)
 		.await
 		.unwrap()
 		.last()
@@ -2300,7 +2393,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		store: f.store.clone(),
 		identity,
 	};
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for _ in 0..512 {
 		f.store
 			.event(
@@ -2343,7 +2436,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
 	assert_eq!(state.0, 200, "{state:?}");
 	assert_eq!(state.1["events"], json!([]));
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let visible = f
 		.store
 		.event(
@@ -2401,6 +2494,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("install", "logout", false)]
 #[case("install", "logout", true)]
 #[case("activation", "logout", false)]
@@ -2608,7 +2702,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	};
 	let before = f
 		.store
-		.events(0, None, 1000)
+		.events(&TEST_FIXTURE, 0, None, 1000)
 		.await
 		.unwrap()
 		.iter()
@@ -2653,7 +2747,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				if deployment_administrator {
 					"deployment_administrator".into()
 				} else {
-					format!("mapping:{mapping}")
+					format!("mapping:a:{mapping}")
 				},
 			)
 			.header("content-type", "application/json")
@@ -2775,7 +2869,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	assert_eq!(
 		f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -2797,6 +2891,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	#[future(awt)]
@@ -2824,7 +2919,12 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	for i in 0..501 {
 		after = f
 			.store
-			.emit(Some(ws), "workspace.updated", json!({"id":ws,"number":i}))
+			.emit(
+				&TEST_FIXTURE,
+				Some(ws),
+				"workspace.updated",
+				json!({"id":ws,"number":i}),
+			)
 			.await
 			.unwrap()
 			.sequence;
@@ -2835,7 +2935,12 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	let package = publish(&app, &a, "cursor-source").await;
 	let newest = f
 		.store
-		.emit(Some(ws), "workspace.updated", json!({"id":ws,"number":502}))
+		.emit(
+			&TEST_FIXTURE,
+			Some(ws),
+			"workspace.updated",
+			json!({"id":ws,"number":502}),
+		)
 		.await
 		.unwrap();
 	let result = tokio::time::timeout(
@@ -2895,6 +3000,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	#[future(awt)]
@@ -2957,6 +3063,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn installation_rejects_missing_private_knowledge(
 	#[future(awt)]
@@ -3041,6 +3148,7 @@ async fn installation_rejects_missing_private_knowledge(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn source_and_administration_pages_preserve_candidate_progress(
 	#[future(awt)]
@@ -3126,6 +3234,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn owner_can_reload_and_restore_a_withdrawn_audience(
 	#[future(awt)]

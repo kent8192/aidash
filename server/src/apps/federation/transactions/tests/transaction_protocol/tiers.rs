@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 #[rstest::rstest]
 #[tokio::test]
@@ -16,7 +17,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		workspaces.push(
 			node.f
 				.store
-				.create_workspace("Atomic tier", "Independent participant")
+				.create_workspace(&TEST_FIXTURE, "Atomic tier", "Independent participant")
 				.await
 				.unwrap()
 				.id,
@@ -94,7 +95,12 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		);
 		for (node, workspace) in nodes.iter().zip(&workspaces) {
 			assert_eq!(
-				node.f.store.workspace(*workspace).await.unwrap().revision,
+				node.f
+					.store
+					.workspace(&TEST_FIXTURE, *workspace)
+					.await
+					.unwrap()
+					.revision,
 				if abort { 0 } else { repetition + 1 }
 			);
 			assert_eq!(

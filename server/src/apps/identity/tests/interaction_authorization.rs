@@ -1,5 +1,7 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::domain::{Run, qualified_agent};
 use common::*;
 use serde_json::{Value, json};
@@ -37,7 +39,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -164,13 +166,14 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
 	let human = f
 		.store
 		.human_request(
+			&TEST_FIXTURE,
 			&run,
 			"APPROVAL_REQUIRED",
 			"private approval prompt",
@@ -367,7 +370,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	assert_eq!(answered, 1);
 	let second = f
 		.store
-		.human_request(&run, "QUESTION", "another private prompt", "question-2")
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"another private prompt",
+			"question-2",
+		)
 		.await
 		.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-interaction","effect":"deny","subjects":{"ids":["alice"]},"actions":["human.answer","run.message","task.abandon"],"resources":{"kinds":["*"]}}));
@@ -498,17 +507,18 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	.worker_once()
 	.await
 	.unwrap();
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(paused.control.as_str(), "PAUSED");
 	assert_eq!(paused.phase().as_str(), "WAITING");
 	assert_eq!(
 		json!(paused.state)["data"]["request_id"],
 		human.id.to_string()
 	);
-	let task = f.store.task(run.task_id).await.unwrap();
+	let task = f.store.task(&TEST_FIXTURE, run.task_id).await.unwrap();
 	let failed = f
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
@@ -636,7 +646,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	.unwrap();
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -644,7 +654,15 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 		.unwrap();
 	assert_eq!(run.control.as_str(), "PAUSED");
 	assert_eq!(run.phase().as_str(), "READY");
-	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "CLAIMED");
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"CLAIMED"
+	);
 	cleanup(f, &url, &schema).await;
 }
 

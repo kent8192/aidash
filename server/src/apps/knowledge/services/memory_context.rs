@@ -272,6 +272,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	};
+	let scope = store.run_tenancy(run.id).await?;
 	let index: Option<i64> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("revision"))
@@ -279,7 +280,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(run.workspace_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_optional(&store.pool)
+	.scalar_optional(store.pool.in_scope(&scope))
 	.await?;
 	let binding = crate::database::native::query_as::<(uuid::Uuid, i64)>(
 		&Query::select()
@@ -289,13 +290,14 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 			.to_string(PostgresQueryBuilder),
 	)
 	.columns(&["participant_id", "participant_revision"])
-	.fetch_optional(&store.pool)
+	.fetch_optional(store.pool.in_scope(&scope))
 	.await?;
 	Ok(SourceRevisions {
 		index,
 		participant: binding.map(|(_, revision)| revision),
 		corpus: corpus_digest(
 			store,
+			&scope,
 			run.workspace_id,
 			binding.map(|(participant, _)| participant),
 		)
@@ -309,7 +311,7 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 pub(crate) trait CorpusReads: Send {
 	fn executor(&mut self) -> impl crate::database::native::Executor + '_;
 }
-impl CorpusReads for &crate::database::native::Pool {
+impl CorpusReads for crate::database::native::InScope<'_> {
 	fn executor(&mut self) -> impl crate::database::native::Executor + '_ {
 		*self
 	}
@@ -343,10 +345,11 @@ pub(crate) async fn remote_corpus_digest(
 /// memory unit mutations (which bump their bank's revision) change this.
 pub async fn corpus_digest(
 	store: &Store,
+	scope: &aidash_application::tenancy::TenancyScope,
 	workspace: uuid::Uuid,
 	participant: Option<uuid::Uuid>,
 ) -> Result<String> {
-	corpus_reads(&store.pool, workspace, participant).await
+	corpus_reads(store.pool.in_scope(scope), workspace, participant).await
 }
 
 async fn corpus_reads(

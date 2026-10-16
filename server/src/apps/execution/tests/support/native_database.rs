@@ -88,6 +88,17 @@ pub struct DatabaseFixture {
 
 #[allow(dead_code)] // Shared by integration binaries without a crash test.
 impl DatabaseFixture {
+	/// A pool on the server role, for code that opens scoped transactions.
+	pub async fn pool(&self) -> aidash_server::database::native::Pool {
+		aidash_server::database::native::Pool::from(
+			aidash_server::database::runtime::connect(&self.url, 4)
+				.await
+				.unwrap()
+				.into_postgres()
+				.unwrap(),
+		)
+	}
+
 	/// Crash only this fixture's isolated server after committed writes.
 	pub async fn kill_and_restart(
 		&self,

@@ -9,13 +9,15 @@ use crate::apps::identity::serializers::tenant_administration::{
 	TenantRegistration,
 };
 use crate::authorization::{Snapshot, identity::SubjectIdentity};
+use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::ports::authorization::dashboard::AccountPolicy;
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::policy::{Decision, Evaluation, Resource};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, QuerySet};
+use reinhardt::db::orm::{AtomicTransaction, Model, QuerySet};
 use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -172,6 +174,11 @@ impl TenantAdministrator {
 			policy,
 			denial: Mutex::new(None),
 		})
+	}
+
+	/// Every effect of a Tenant Administrator happens in its Tenant's scope.
+	pub(crate) fn scope(&self) -> Result<TenancyScope> {
+		Ok(TenancyScope::tenant(self.tenant())?)
 	}
 
 	pub(crate) fn tenant(&self) -> &str {
@@ -392,9 +399,7 @@ impl TenantAdministrator {
 		let Some((evaluation, decision)) = self.denial.lock().expect("denial lock").take() else {
 			return Ok(());
 		};
-		let mut tx = crate::database::native::begin(pool)
-			.await?
-			.into_executor()?;
+		let mut tx = pool.begin(&self.scope()?).await?.into_executor()?;
 		AuthorizationDecision::append(tx.as_mut(), self.tenant(), &evaluation, &decision).await?;
 		tx.commit().await?;
 		Ok(())
@@ -430,8 +435,8 @@ impl TenantAdministrator {
 impl TenantAdministrator {
 	/// The Tenant Administrator actions this caller holds. Ordinary members
 	/// receive no actions and no policy details.
-	pub(crate) async fn overview(&self, db: DatabaseConnection) -> Result<TenantAdministration> {
-		db.atomic(async |tx| {
+	pub(crate) async fn overview(&self, db: &Pool) -> Result<TenantAdministration> {
+		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
 			let mut actions = vec![];
 			for action in rules::ACTIONS {
@@ -480,11 +485,8 @@ impl TenantAdministrator {
 	/// Pending Registration Requests addressed to this Tenant, through a Tenant
 	/// Binding or an Invitation, other than this administrator's own. Requests
 	/// addressed elsewhere or to no Tenant are excluded in SQL.
-	pub(crate) async fn registrations(
-		&self,
-		db: DatabaseConnection,
-	) -> Result<Vec<TenantRegistration>> {
-		db.atomic(async |tx| {
+	pub(crate) async fn registrations(&self, db: &Pool) -> Result<Vec<TenantRegistration>> {
+		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
 			self.require(
 				tx,
@@ -550,12 +552,8 @@ impl TenantAdministrator {
 
 	/// This Tenant's Mappings with each subject's Assignable Group memberships.
 	/// Mappings of hidden identities are excluded before paging.
-	pub(crate) async fn mappings(
-		&self,
-		db: DatabaseConnection,
-		offset: u64,
-	) -> Result<Vec<TenantMapping>> {
-		db.atomic(async |tx| {
+	pub(crate) async fn mappings(&self, db: &Pool, offset: u64) -> Result<Vec<TenantMapping>> {
+		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
 			self.require(
 				tx,
@@ -641,13 +639,13 @@ impl TenantAdministrator {
 	/// administration history.
 	pub(crate) async fn update_memberships(
 		&self,
-		db: DatabaseConnection,
+		db: &Pool,
 		actor: &AdministrationActor,
 		subject: String,
 		input: MembershipUpdate,
 	) -> Result<Membership> {
 		aidash_domain::policy::identifier(&subject)?;
-		db.atomic(async |tx| {
+		db.atomic(&self.scope()?, async |tx| {
 			let mut snapshot = self.lock(tx, true).await?;
 			if snapshot.revision != input.expected_policy_revision {
 				return Err(Error::Conflict("authorization revision changed".into()));

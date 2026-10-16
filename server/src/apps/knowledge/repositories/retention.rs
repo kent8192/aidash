@@ -1,6 +1,7 @@
 //! Bounded Home maintenance applies the bank's pinned policy, never caller-selected caps.
 use super::{access::Lease, native_memory as repository, units};
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{Duration, Utc};
 mod repairs;
@@ -9,13 +10,16 @@ use reinhardt::query::{
 	PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
+
 pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	// Filter busy banks before LIMIT: otherwise 32 active banks can permanently
 	// hide every later maintenance candidate. Claiming all joined rows with
 	// SKIP LOCKED also avoids waiting on settings readers or workspace writers.
 	// Release the discovery locks before each independently bounded pass, which
 	// reacquires and validates its own workspace/policy authority below.
-	let mut discovery = native::begin(&store.pool).await?;
+	let mut discovery = store.pool.begin(&MAINTENANCE).await?;
 	let due = native::query(
 		&Query::select()
 			.columns(
@@ -53,7 +57,8 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			id: item.try_get("provider_id")?,
 			version: item.try_get("provider_version")?,
 		};
-		let mut lease = Lease::without_subject(store).await?;
+		let mut lease =
+			Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
 		let result = async {
 			let row = native::query(
 				&Query::select()
@@ -263,7 +268,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 		if lease.finish(result).await.is_err() {
 			// A broken bank cannot monopolize the oldest due page. Advance
 			// only the exact observed provider/revision after rolling back.
-			let mut tx = native::begin(&store.pool).await?;
+			let mut tx = store.pool.begin(&MAINTENANCE).await?;
 			// A reader can arrive after the failed pass releases its workspace.
 			// Never queue a settings writer behind it while postponing a retry.
 			if native::query(

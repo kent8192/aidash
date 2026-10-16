@@ -137,8 +137,9 @@ fn brave_from_env() -> std::result::Result<Arc<BraveSearch>, String> {
 /// The Node's Research evidence store over `store`.
 pub fn evidence_store(
 	store: crate::store::Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::research::EvidenceStore {
-	crate::apps::execution::repositories::research::Evidence { store }
+	crate::apps::execution::repositories::research::Evidence { store, scope }
 }
 
 /// The Node's research providers. Configuration changes need a restart.
@@ -218,6 +219,7 @@ impl Tool for ResearchTool {
 		let providers = providers();
 		let store = crate::apps::execution::repositories::research::Evidence {
 			store: context.store.clone(),
+			scope: context.scope.clone(),
 		};
 		let gate = Gate { context };
 		let research = Research {

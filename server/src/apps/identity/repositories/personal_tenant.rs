@@ -2,12 +2,14 @@
 //! checked the Tenancy Rules and that the identity has no Tenant Binding.
 use super::tenants::{self, Creator};
 use crate::apps::identity::models::{DashboardIdentity, PersonalTenantLink, database_time};
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::identity::tenancy::PERSONAL_LABEL;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::{
 	backends::TransactionExecutor,
-	orm::{DatabaseConnection, Model, execution::convert_values},
+	orm::{Model, OrmExecutor, execution::convert_values},
 };
 use reinhardt::query::{
 	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
@@ -17,8 +19,9 @@ use uuid::Uuid;
 /// Creates the identity's Personal Tenant unless it ever had one. The link is
 /// written once, so a disabled Mapping, a changed policy or (later) a deleted
 /// Personal Tenant is never repaired by signing in.
-pub(crate) async fn provision(db: DatabaseConnection, identity: Uuid) -> Result<()> {
-	db.atomic(async |tx| {
+pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::TenantCreation);
+	db.atomic(&scope, async |tx| {
 		// Serialize first sign-ins without taking an identity row lock before
 		// policy authority. Approval and revocation retain policy -> identity order.
 		let (sql, values) = Query::select()
@@ -75,11 +78,10 @@ pub(crate) async fn provision(db: DatabaseConnection, identity: Uuid) -> Result<
 }
 
 /// The Personal Tenant `identity` holds, if Aidash ever made one.
-pub(crate) async fn of(db: DatabaseConnection, identity: Uuid) -> Result<Option<String>> {
-	let mut db = db;
+pub(crate) async fn of<E: OrmExecutor>(tx: &mut E, identity: Uuid) -> Result<Option<String>> {
 	Ok(PersonalTenantLink::objects()
 		.filter(PersonalTenantLink::field_identity_id().eq(identity))
-		.all_with_db(&mut db)
+		.all_with_db(tx)
 		.await?
 		.pop()
 		.map(|link| link.tenant))

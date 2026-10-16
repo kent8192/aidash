@@ -74,7 +74,12 @@ pub trait SemanticIndexingRepository: Send + Sync {
 	/// Return at most 32 entries ordered by the original due time and ID.
 	async fn due(&self) -> Result<Vec<Uuid>>;
 	async fn initial(&self, id: Uuid) -> Result<Option<(Uuid, Value)>>;
-	async fn restore(&self, authority: &Value) -> Result<Box<dyn SemanticIndexingSession>>;
+	/// Restore the authority saved with an entry of `workspace`.
+	async fn restore(
+		&self,
+		workspace: Uuid,
+		authority: &Value,
+	) -> Result<Box<dyn SemanticIndexingSession>>;
 	async fn revoke(&self, workspace: Uuid, id: Uuid, authority: &Value) -> Result<()>;
 	async fn cleanup_due(&self) -> Result<CleanupBatch>;
 	async fn begin_cleanup(&self) -> Result<Box<dyn SemanticCleanupSession>>;

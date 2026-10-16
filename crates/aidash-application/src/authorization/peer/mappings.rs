@@ -1,4 +1,5 @@
 //! Peer authentication never substitutes for current mapped tenant authority.
+use crate::tenancy::TenancyScope;
 use crate::{
 	Error, Result,
 	ports::authorization::peer::mappings::{MappingAccess, MappingRepository, MappingWrite},
@@ -25,7 +26,8 @@ pub async fn write<R: MappingRepository>(
 		repository.enabled_peer(&input.source_node).await?;
 	}
 	input.require_existing_revocation()?;
-	let mut scope = repository.begin_write(input.enabled).await?;
+	let tenancy = TenancyScope::tenant(tenant)?;
+	let mut scope = repository.begin_write(&tenancy, input.enabled).await?;
 	scope.policy(tenant).await?;
 	let subject = scope
 		.credential_subject(tenant, input.credential_id)

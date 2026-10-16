@@ -4,8 +4,9 @@ use crate::{
 	federation::{Federation, Home},
 	registry::AgentConfig,
 	registry::Registry,
-	store::Store,
+	store::{RunStore, Store},
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::{CompactionClassifier, CompactionQuestions, ModelProvider, execution::*},
@@ -28,7 +29,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[async_trait]
-impl ExecutionStore for Store {
+impl ExecutionStore for RunStore {
 	async fn unknown_evidence(
 		&self,
 		run: &Run,
@@ -36,7 +37,8 @@ impl ExecutionStore for Store {
 	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
 		use aidash_application::ports::research::EvidenceStore;
 		let delivered = super::research::Evidence {
-			store: self.clone(),
+			store: self.store.clone(),
+			scope: self.scope.clone(),
 		}
 		.fragments(run.id, references)
 		.await?;
@@ -51,11 +53,12 @@ impl ExecutionStore for Store {
 			.collect())
 	}
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		*run = Store::save_run(self, run, token, "run.sources_observed").await?;
+		*run =
+			Store::save_run(&self.store, &self.scope, run, token, "run.sources_observed").await?;
 		Ok(())
 	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		*run = Store::save_run(self, run, token, "run.estimate_pinned").await?;
+		*run = Store::save_run(&self.store, &self.scope, run, token, "run.estimate_pinned").await?;
 		Ok(())
 	}
 	async fn calibration_samples(
@@ -63,12 +66,12 @@ impl ExecutionStore for Store {
 		upstream_model: &str,
 		projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
-		Store::calibration_samples(self, upstream_model, projection_version)
+		Store::calibration_samples(&self.store, upstream_model, projection_version)
 			.await
 			.map_err(Into::into)
 	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
-		Store::save_run(self, run, token, event)
+		Store::save_run(&self.store, &self.scope, run, token, event)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -79,7 +82,7 @@ impl ExecutionStore for Store {
 		token: Uuid,
 		attempt: InferenceAttemptId,
 	) -> Result<()> {
-		Store::start_inference(self, run.id, token, attempt)
+		Store::start_inference(&self.store, &self.scope, run.id, token, attempt)
 			.await
 			.map_err(Into::into)
 	}
@@ -90,7 +93,7 @@ impl ExecutionStore for Store {
 		attempt: InferenceAttemptId,
 		batch: &[InferenceProgress],
 	) -> Result<()> {
-		Store::append_inference_progress(self, run.id, token, attempt, batch)
+		Store::append_inference_progress(&self.store, &self.scope, run.id, token, attempt, batch)
 			.await
 			.map_err(Into::into)
 	}
@@ -101,20 +104,22 @@ impl ExecutionStore for Store {
 		attempt: InferenceAttemptId,
 		outcome: ProgressOutcome,
 	) -> Result<()> {
-		Store::finish_inference(self, run.id, token, attempt, outcome)
+		Store::finish_inference(&self.store, &self.scope, run.id, token, attempt, outcome)
 			.await
 			.map_err(Into::into)
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
-		Store::emit(self, workspace, kind, data)
+		Store::emit(&self.store, &self.scope, workspace, kind, data)
 			.await
 			.map_err(Into::into)
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
-		Store::run_inputs(self, run).await.map_err(Into::into)
+		Store::run_inputs(&self.store, &self.scope, run)
+			.await
+			.map_err(Into::into)
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
-		Store::begin_final_completion(self, run, token)
+		Store::begin_final_completion(&self.store, &self.scope, run, token)
 			.await
 			.map_err(Into::into)
 	}
@@ -125,17 +130,17 @@ impl ExecutionStore for Store {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
-		Store::human_request(self, run, kind, prompt, key)
+		Store::human_request(&self.store, &self.scope, run, kind, prompt, key)
 			.await
 			.map_err(Into::into)
 	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
-		Store::human_request_by_id(self, id)
+		Store::human_request_by_id(&self.store, &self.scope, id)
 			.await
 			.map_err(Into::into)
 	}
 	async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest> {
-		Store::expire_workbench_approval(self, id)
+		Store::expire_workbench_approval(&self.store, &self.scope, id)
 			.await
 			.map_err(Into::into)
 	}
@@ -148,8 +153,17 @@ impl ExecutionStore for Store {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<InvocationOutcome> {
-		let result =
-			Store::invocation_start(self, run, token, key, name, input, replay_safe).await?;
+		let result = Store::invocation_start(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			key,
+			name,
+			input,
+			replay_safe,
+		)
+		.await?;
 		Ok(InvocationOutcome {
 			status: result.status,
 			result: result.result,
@@ -165,14 +179,16 @@ impl ExecutionStore for Store {
 			.iter()
 			.map(|call| (call.key, call.name, call.input))
 			.collect();
-		Ok(Store::invocation_start_batch(self, run, token, &calls)
-			.await?
-			.into_iter()
-			.map(|invocation| InvocationOutcome {
-				status: invocation.status,
-				result: invocation.result,
-			})
-			.collect())
+		Ok(
+			Store::invocation_start_batch(&self.store, &self.scope, run, token, &calls)
+				.await?
+				.into_iter()
+				.map(|invocation| InvocationOutcome {
+					status: invocation.status,
+					result: invocation.result,
+				})
+				.collect(),
+		)
 	}
 	async fn invocation_finish(
 		&self,
@@ -181,7 +197,7 @@ impl ExecutionStore for Store {
 		key: &str,
 		output: &Value,
 	) -> Result<()> {
-		Store::invocation_finish(self, run, token, key, output)
+		Store::invocation_finish(&self.store, &self.scope, run, token, key, output)
 			.await
 			.map_err(Into::into)
 	}
@@ -192,7 +208,7 @@ impl ExecutionStore for Store {
 		key: &str,
 		prompt: &str,
 	) -> Result<()> {
-		Store::reconciliation_request(self, run, token, key, prompt)
+		Store::reconciliation_request(&self.store, &self.scope, run, token, key, prompt)
 			.await
 			.map_err(Into::into)
 	}
@@ -202,7 +218,7 @@ impl ExecutionStore for Store {
 		token: Uuid,
 		dispatch: &UsageDispatch,
 	) -> Result<()> {
-		Store::record_usage_dispatch(self, run, token, dispatch)
+		Store::record_usage_dispatch(&self.store, &self.scope, run, token, dispatch)
 			.await
 			.map_err(Into::into)
 	}
@@ -212,13 +228,13 @@ impl ExecutionStore for Store {
 		attempt: Uuid,
 		outcome: &UsageOutcome,
 	) -> Result<()> {
-		Store::complete_usage_record(self, run, attempt, outcome)
+		Store::complete_usage_record(&self.store, &self.scope, run, attempt, outcome)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
-		Store::run_message_has_media(self, messages)
+		Store::run_message_has_media(&self.store, &self.scope, messages)
 			.await
 			.map_err(Into::into)
 	}
@@ -228,12 +244,12 @@ impl ExecutionStore for Store {
 		from: u64,
 		through: u64,
 	) -> Result<Vec<aidash_domain::context::HistoryEntry>> {
-		Store::context_journal(self, run, from, through)
+		Store::context_journal(&self.store, &self.scope, run, from, through)
 			.await
 			.map_err(Into::into)
 	}
 	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()> {
-		Store::journal_context(self, run, token)
+		Store::journal_context(&self.store, &self.scope, run, token)
 			.await
 			.map_err(Into::into)
 	}
@@ -244,7 +260,7 @@ impl ExecutionStore for Store {
 		attempt: &aidash_domain::context::recovery::Attempt,
 		call_budget: u32,
 	) -> Result<()> {
-		Store::begin_compaction(self, run, token, attempt, call_budget)
+		Store::begin_compaction(&self.store, &self.scope, run, token, attempt, call_budget)
 			.await
 			.map_err(Into::into)
 	}
@@ -255,7 +271,7 @@ impl ExecutionStore for Store {
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
 	) -> Result<()> {
-		Store::settle_compaction(self, run, token, attempt, settlement)
+		Store::settle_compaction(&self.store, &self.scope, run, token, attempt, settlement)
 			.await
 			.map_err(Into::into)
 	}
@@ -266,7 +282,7 @@ impl ExecutionStore for Store {
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
 	) -> Result<()> {
-		Store::adopt_compaction(self, run, token, attempt, settlement)
+		Store::adopt_compaction(&self.store, &self.scope, run, token, attempt, settlement)
 			.await
 			.map_err(Into::into)
 	}
@@ -545,13 +561,20 @@ pub(crate) struct Environment<'a> {
 	federation: &'a Federation,
 	authority: Option<Authority<'a>>,
 	step_run: Run,
+	run_store: RunStore,
 }
 impl<'a> Environment<'a> {
 	pub(crate) fn new(federation: &'a Federation, guard: Option<&'a Guard>, run: &Run) -> Self {
+		// A Run without a grant has no Tenant; only test fixtures create one.
+		let scope = guard.map_or(
+			TenancyScope::Deployment(DeploymentScopeReason::LegacyRun),
+			|guard| guard.tenancy().clone(),
+		);
 		Self {
 			federation,
 			authority: guard.map(|guard| Authority { guard, federation }),
 			step_run: run.clone(),
+			run_store: federation.store.for_run(scope),
 		}
 	}
 	fn native_home(&self) -> Home {
@@ -569,7 +592,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		&self.federation.config.node_id
 	}
 	fn store(&self) -> &dyn ExecutionStore {
-		&self.federation.store
+		&self.run_store
 	}
 	fn catalog(&self) -> &dyn ExecutionCatalog {
 		&self.federation.registry
@@ -660,8 +683,7 @@ impl ExecutionEnvironment for Environment<'_> {
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
 				let value =
-					crate::knowledge::load(&self.federation.registry.db, &binding.definition)
-						.await?;
+					crate::knowledge::load(&self.federation.registry, &binding.definition).await?;
 				documents.extend(
 					value
 						.as_array()
@@ -685,8 +707,11 @@ impl ExecutionEnvironment for Environment<'_> {
 				.recheck_source_observation(&self.federation.store, content)
 				.await?;
 		} else if let Some(semantic) = content.get("semantic_memory").filter(|v| !v.is_null()) {
-			let mut lease =
-				crate::semantic::service::Lease::without_subject(&self.federation.store).await?;
+			let mut lease = crate::semantic::service::Lease::within(
+				&self.federation.store,
+				&self.run_store.scope,
+			)
+			.await?;
 			let result = crate::semantic::services::memory_context::recheck(
 				&self.federation.store,
 				&mut lease,
@@ -830,7 +855,8 @@ impl ExecutionEnvironment for Environment<'_> {
 			|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
 		)?)?;
 		let mut lease =
-			crate::semantic::service::Lease::without_subject(&self.federation.store).await?;
+			crate::semantic::service::Lease::within(&self.federation.store, &self.run_store.scope)
+				.await?;
 		let mut query = format!("{}\n{}", task.title, task.description);
 		for (_, text) in inputs {
 			query.push('\n');
@@ -914,6 +940,7 @@ impl ExecutionEnvironment for Environment<'_> {
 	) -> Result<InferenceInterruption> {
 		super::super::services::runtime::wait_for_inference_interruption(
 			&self.federation.store,
+			&self.run_store.scope,
 			run,
 			included_input_seq,
 		)
@@ -959,7 +986,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			match self
 				.federation
 				.store
-				.workspace_record(run.workspace_id, "message", *id)
+				.workspace_record(&self.run_store.scope, run.workspace_id, "message", *id)
 				.await
 			{
 				Ok(_) => {}
@@ -977,6 +1004,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		let providers = Arc::new(super::bindings::Providers {
 			federation: self.federation.clone(),
 			home: self.native_home(),
+			scope: self.run_store.scope.clone(),
 		});
 		let authority = if let Some(authority) = &self.authority {
 			authority.guard.binding_authority()

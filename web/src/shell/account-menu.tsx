@@ -10,6 +10,7 @@ import { initials } from "../collaboration/avatar";
 import { NativeSelect } from "../components/ui/native-select";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
+import { mappingContext } from "../transport";
 import type { ThemePreference } from "../theme";
 import { useI18n, type Locale } from "../ui";
 import { authCopy, shellCopy } from "./copy";
@@ -108,7 +109,7 @@ export function AccountPanel({ account }: { account: Account }) {
               ? auth.deploymentAdministrator
               : account.mappings
                   .filter(
-                    (mapping) => account.context === `mapping:${mapping.id}`,
+                    (mapping) => account.context === mappingContext(mapping),
                   )
                   .map(
                     (mapping) =>
@@ -126,7 +127,7 @@ export function AccountPanel({ account }: { account: Account }) {
             className="font-mono text-xs"
           >
             {account.mappings.map((mapping) => (
-              <option key={mapping.id} value={`mapping:${mapping.id}`}>
+              <option key={mapping.id} value={mappingContext(mapping)}>
                 {mapping.label ?? mapping.tenant} / {mapping.subject}
               </option>
             ))}

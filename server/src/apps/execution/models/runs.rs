@@ -5,7 +5,6 @@ use crate::apps::execution::services::states::RunControl;
 use crate::apps::execution::services::states::RunPhase;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::orm::DatabaseConnection;
 use reinhardt::db::orm::{Json, Model as ModelTrait, OrmExecutor};
 use reinhardt::macros::Model;
 use serde::{Deserialize, Serialize};
@@ -90,8 +89,12 @@ impl Run {
 	}
 
 	/// The caller retains its credential and policy lease through this commit.
-	pub(crate) async fn resume_identity_pause(db: DatabaseConnection, id: Uuid) -> Result<bool> {
-		db.atomic(async |tx| {
+	pub(crate) async fn resume_identity_pause(
+		db: &crate::database::native::Pool,
+		scope: &aidash_application::tenancy::TenancyScope,
+		id: Uuid,
+	) -> Result<bool> {
+		db.atomic(scope, async |tx| {
 			let row = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.filter(Self::field_control().eq(RunControl::Paused))

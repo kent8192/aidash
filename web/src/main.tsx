@@ -30,6 +30,7 @@ import {
   signIn,
   signOut,
   dashboardContext,
+  mappingContext,
   selectDashboardContext,
 } from "./transport";
 import { ConnectionGate } from "./connection-gate";
@@ -163,7 +164,7 @@ function sessionContext(session: BrowserSession, selected: string | null) {
       ? session.deployment_administrator
       : session.mappings.some(
           (mapping) =>
-            selected === `mapping:${mapping.id}` &&
+            selected === mappingContext(mapping) &&
             mapping.credential_active !== false,
         )
   )
@@ -171,7 +172,7 @@ function sessionContext(session: BrowserSession, selected: string | null) {
   const personal = session.mappings.filter(
     (mapping) => mapping.personal && mapping.credential_active,
   );
-  return personal.length === 1 ? `mapping:${personal[0].id}` : null;
+  return personal.length === 1 ? mappingContext(personal[0]) : null;
 }
 function App() {
   const [locale, setLocale] = useState<Locale>(() =>
@@ -393,7 +394,7 @@ function Dashboard({
     oidcProvider === "gcip" && !desktopAvailable()
       ? (
           browserSession?.mappings.find(
-            (mapping) => context === `mapping:${mapping.id}`,
+            (mapping) => context === mappingContext(mapping),
           ) ?? browserSession?.mappings[0]
         )?.tenant
       : undefined;
@@ -421,7 +422,10 @@ function Dashboard({
     if (!response.ok) return;
     const current = (await response.json()) as BrowserSession;
     setBrowserSession(current);
-    if (created.mapping_id) chooseContext(`mapping:${created.mapping_id}`);
+    if (created.mapping_id)
+      chooseContext(
+        mappingContext({ tenant: created.name, id: created.mapping_id }),
+      );
   };
   const disconnect = () => {
     void logOut(false);
@@ -670,7 +674,7 @@ function Dashboard({
                     key={mapping.id}
                     type="button"
                     className="justify-start font-mono text-xs"
-                    onClick={() => chooseContext(`mapping:${mapping.id}`)}
+                    onClick={() => chooseContext(mappingContext(mapping))}
                   >
                     {mapping.label ?? mapping.tenant} / {mapping.subject}
                   </Button>

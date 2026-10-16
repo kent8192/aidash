@@ -1,5 +1,6 @@
 use super::upstream_fixtures;
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use upstream_fixtures::{reply, upstream};
@@ -283,7 +284,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 	let (f, url, schema) = runtime.parts();
 	let app = fixture.application.clone();
 	let (_, token, dependency) = bootstrap(&f, &app, "http://localhost:1").await;
-	let parent = f.store.task(dependency).await.unwrap();
+	let parent = f.store.task(&TEST_FIXTURE, dependency).await.unwrap();
 	let (status, task) = request(
 		&app,
 		&token,
@@ -303,7 +304,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	{
 		let query_bind_1 = [dependency];
 		sqlx::query(
@@ -333,7 +334,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
-	let waiting = f.store.run(run.id).await.unwrap();
+	let waiting = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(waiting.phase().as_str(), "WAITING");
 	// Widen the ordinary two-second timer so elapsed test time cannot mask the bug.
 	sqlx::query(
@@ -487,7 +488,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 	let mut delivered = 0;
 	for id in runs {
 		delivered += usize::from(
-			f.store.run_inputs(id).await.unwrap()[0]
+			f.store.run_inputs(&TEST_FIXTURE, id).await.unwrap()[0]
 				.message_id
 				.is_some(),
 		);
@@ -558,18 +559,22 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 	std::fs::remove_file(pause).unwrap();
 	complete(&f, healthy).await;
 	tokio::time::timeout(Duration::from_secs(10), async {
-		while f.store.inspect_run(invalid).await.unwrap().phase
-			!= aidash_server::domain::RunPhase::Failed
+		while f
+			.store
+			.inspect_run(&TEST_FIXTURE, invalid)
+			.await
+			.unwrap()
+			.phase != aidash_server::domain::RunPhase::Failed
 		{
 			tokio::time::sleep(Duration::from_millis(20)).await;
 		}
 	})
 	.await
 	.unwrap();
-	let inspected = f.store.inspect_run(invalid).await.unwrap();
+	let inspected = f.store.inspect_run(&TEST_FIXTURE, invalid).await.unwrap();
 	assert!(inspected.state_error.is_some());
 	assert_eq!(
-		f.store.task(task).await.unwrap().status,
+		f.store.task(&TEST_FIXTURE, task).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Failed
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -581,7 +586,7 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 		)
 		.await > 0
 	);
-	let events = f.store.events(0, None, 500).await.unwrap();
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 500).await.unwrap();
 	assert!(
 		events
 			.iter()
@@ -775,7 +780,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	assert_eq!(calls.load(Ordering::SeqCst), 0);
 	assert!(
 		f.store
-			.inspect_run(run)
+			.inspect_run(&TEST_FIXTURE, run)
 			.await
 			.unwrap()
 			.lease_owner
@@ -871,7 +876,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	assert_eq!(status, 200, "{claimed}");
 	let run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -897,7 +902,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	);
 	assert!(
 		f.store
-			.inspect_run(run)
+			.inspect_run(&TEST_FIXTURE, run)
 			.await
 			.unwrap()
 			.state
@@ -920,10 +925,21 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	};
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.inspect_run(run).await.unwrap().control,
+		f.store
+			.inspect_run(&TEST_FIXTURE, run)
+			.await
+			.unwrap()
+			.control,
 		aidash_server::domain::RunControl::Paused
 	);
-	assert!(!f.store.task(task).await.unwrap().status.is_terminal());
+	assert!(
+		!f.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.is_terminal()
+	);
 	let (status, _) = common::request(
 		&app,
 		deployment_administrator,
@@ -947,11 +963,11 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	assert!(resumed["state_error"].is_string());
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.inspect_run(run).await.unwrap().phase,
+		f.store.inspect_run(&TEST_FIXTURE, run).await.unwrap().phase,
 		aidash_server::domain::RunPhase::Failed
 	);
 	assert_eq!(
-		f.store.task(task).await.unwrap().status,
+		f.store.task(&TEST_FIXTURE, task).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Failed
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 0);

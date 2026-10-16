@@ -18,6 +18,7 @@ use crate::authorization::identity::Actor;
 use crate::federation::Federation;
 use crate::http::validate;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::tenancy::invitation;
 use aidash_domain::identity::tenant_administration::{
 	COLLECTION, INVITATION_CREATE, INVITATION_READ, INVITATION_REVOKE,
@@ -152,10 +153,11 @@ impl Invitations {
 		let lifetime = invitation::lifetime(input.expires_in_seconds)?;
 		let public_origin = required_config(&self.runtime)?.public_origin.to_owned();
 		let issuer = self.issuer(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = lease
-			.handle()
-			.atomic(async |tx| {
+		let result = self
+			.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
 				let snapshot = issuer
 					.authorize(tx, &tenant, INVITATION_CREATE, COLLECTION)
 					.await?;
@@ -181,10 +183,11 @@ impl Invitations {
 		tenant: String,
 	) -> Result<Vec<InvitationView>> {
 		let issuer = self.issuer(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = lease
-			.handle()
-			.atomic(async |tx| {
+		let result = self
+			.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
 				issuer
 					.authorize(tx, &tenant, INVITATION_READ, COLLECTION)
 					.await?;
@@ -207,10 +210,11 @@ impl Invitations {
 		id: Uuid,
 	) -> Result<InvitationView> {
 		let issuer = self.issuer(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = lease
-			.handle()
-			.atomic(async |tx| {
+		let result = self
+			.runtime
+			.store
+			.pool
+			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
 				issuer
 					.authorize(tx, &tenant, INVITATION_REVOKE, &id.to_string())
 					.await?;
@@ -231,8 +235,13 @@ impl Invitations {
 		if !csrf_allowed(config, headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
-		let lease = f.store.orm_connection()?;
-		let identity = DashboardIdentity::find(&mut lease.handle(), session.identity_id()).await?;
+		let identity = f
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardIdentity::find(tx, session.identity_id()).await
+			})
+			.await?;
 		let pool = (!identity.gcip_tenant.is_empty()).then_some(identity.gcip_tenant.as_str());
 		if identity.disabled_at.is_some()
 			|| !f
@@ -253,10 +262,10 @@ impl Invitations {
 	) -> Result<InvitationPreview> {
 		validate(&input)?;
 		self.holder(&headers).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.runtime
+			.store
+			.pool
+			.atomic(&link_scope(&input.tenant)?, async |tx| {
 				invitations::usable(tx, &input.tenant, &input.secret, false)
 					.await?
 					.ok_or_else(invalid_link)?;
@@ -282,10 +291,11 @@ impl Invitations {
 	) -> Result<Registration> {
 		validate(&input)?;
 		let identity = self.holder(&headers).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let registration = lease
-			.handle()
-			.atomic(async |tx| {
+		let registration = self
+			.runtime
+			.store
+			.pool
+			.atomic(&link_scope(&input.tenant)?, async |tx| {
 				let invitation = invitations::usable(tx, &input.tenant, &input.secret, true)
 					.await?
 					.ok_or_else(invalid_link)?;
@@ -299,6 +309,12 @@ impl Invitations {
 /// One answer for every unusable link, so it reveals nothing about why.
 fn invalid_link() -> Error {
 	Error::NotFound("invalid link".into())
+}
+
+/// A link names its Tenant, so it is read and spent in that Tenant's scope.
+/// A name no Tenant could have is as unusable as any other link.
+fn link_scope(tenant: &str) -> Result<TenancyScope> {
+	TenancyScope::tenant(tenant).map_err(|_| invalid_link())
 }
 
 fn view(row: TenantInvitation, now: chrono::DateTime<chrono::Utc>) -> InvitationView {

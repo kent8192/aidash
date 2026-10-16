@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
@@ -471,7 +472,7 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
-	let retry = c.f.store.run(admitted.id).await.unwrap();
+	let retry = c.f.store.run(&TEST_FIXTURE, admitted.id).await.unwrap();
 	let observed = retry
 		.context
 		.source_observation
@@ -498,7 +499,7 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
 	let blocked = loop {
 		harness.worker_once().await.unwrap();
-		let current = c.f.store.run(admitted.id).await.unwrap();
+		let current = c.f.store.run(&TEST_FIXTURE, admitted.id).await.unwrap();
 		if current.control == aidash_server::domain::RunControl::Paused {
 			break current;
 		}

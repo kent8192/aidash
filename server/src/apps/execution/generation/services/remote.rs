@@ -20,9 +20,10 @@ pub(crate) async fn reserve(
 	store: &Store,
 	usage: &Usage,
 ) -> Result<Vec<Reserved>> {
+	let tenancy = access.tenancy()?;
 	aidash_application::generation::reservation::reserve(
 		&mut crate::bootstrap::generation_usage_authority_scope(access),
-		&crate::bootstrap::generation_reservation_repository(store),
+		&crate::bootstrap::generation_reservation_repository(store, tenancy),
 		usage,
 	)
 	.await
@@ -31,7 +32,12 @@ pub(crate) async fn reserve(
 /// Called only by the bound dispatcher's authenticated finalization path.
 pub(crate) async fn finalize(store: &Store, usage: &Usage, result: &Finalization) -> Result<()> {
 	aidash_application::generation::settlement::finalize(
-		&crate::bootstrap::generation_settlement_repository(store),
+		&crate::bootstrap::generation_settlement_repository(
+			store,
+			store
+				.remote_tenancy(usage.admission_id, usage.grant_id)
+				.await?,
+		),
 		usage,
 		result,
 	)

@@ -5,6 +5,7 @@ use crate::{
 	authorization::{Authorization, access::Access, identity::SubjectIdentity},
 	federation::Federation,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::authorization::peer::mappings::{MappingAccess, MappingRepository, MappingWrite},
@@ -41,7 +42,7 @@ impl MappingRepository for Repository<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn begin_write(&self, enabled: bool) -> Result<WriteScope> {
+	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<WriteScope> {
 		let result: NativeResult<WriteScope> = async {
 			let visibility = if enabled {
 				Some(crate::transactions::gate::ReadLease::begin(&self.runtime.store).await?)
@@ -49,9 +50,9 @@ impl MappingRepository for Repository<'_> {
 				None
 			};
 			let mut tx = if enabled {
-				crate::database::native::begin(&self.runtime.store.pool).await?
+				self.runtime.store.pool.begin(scope).await?
 			} else {
-				crate::database::native::begin(&self.runtime.store.control_pool).await?
+				self.runtime.store.control_pool.begin(scope).await?
 			};
 			if !enabled {
 				crate::transactions::authority::control(&mut tx).await?;
@@ -88,7 +89,11 @@ impl MappingRepository for Repository<'_> {
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_optional(&f.store.pool)
+		// The source names its own Tenant; the local Tenant is found across
+		// Tenants until #241 gives every Node a Tenant.
+		.fetch_optional(f.store.pool.in_scope(&TenancyScope::Deployment(
+			DeploymentScopeReason::FederationInbound,
+		)))
 		.await?
 			})
 		}
@@ -116,7 +121,11 @@ impl MappingRepository for Repository<'_> {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.scalar_optional(&f.store.pool)
+				.scalar_optional(
+					f.store
+						.pool
+						.in_scope(&TenancyScope::tenant(&mapping.tenant)?),
+				)
 				.await?
 			})
 		}

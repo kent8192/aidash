@@ -153,7 +153,7 @@ impl Deployment {
 			.iter()
 			.find(|mapping| mapping["tenant"] == tenant)
 			.unwrap_or_else(|| panic!("no Mapping into {tenant}: {session}"));
-		format!("mapping:{}", mapping["id"].as_str().unwrap())
+		format!("mapping:{tenant}:{}", mapping["id"].as_str().unwrap())
 	}
 
 	async fn count(&self, sql: &str) -> i64 {
@@ -709,7 +709,7 @@ impl Deployment {
 			.unwrap()
 			.iter()
 			.find(|mapping| mapping["tenant"] == tenant)
-			.map(|mapping| format!("mapping:{}", mapping["id"].as_str().unwrap()))
+			.map(|mapping| format!("mapping:{tenant}:{}", mapping["id"].as_str().unwrap()))
 	}
 
 	/// Invites `person` into `groups` of `tenant` and approves the request as
@@ -1033,6 +1033,77 @@ async fn a_pending_invitation_request_keeps_the_display_attributes_its_administr
 	assert_eq!(
 		pending[0]["identity"]["verified_email"], "bob@example.com",
 		"{pending}"
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_retention_follows_the_request_that_ended_last(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	// Arrange: Bob holds Invitation requests to two Tenants, the first made
+	// before the second.
+	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let bob = d.person("bob").await;
+	let mut requests = Vec::new();
+	for label in ["First", "Second"] {
+		let (_, created) = d
+			.as_deployment_administrator("POST", "/api/tenants", json!({"label":label}))
+			.await;
+		let tenant = created["name"].as_str().unwrap().to_owned();
+		let (status, invitation) = d
+			.as_deployment_administrator(
+				"POST",
+				&format!("/api/tenants/{tenant}/invitations"),
+				json!({}),
+			)
+			.await;
+		assert_eq!(status, 201, "{invitation}");
+		let (status, request) = d
+			.as_person(
+				&bob,
+				"POST",
+				"/auth/invitations/redeem",
+				None,
+				json!({"tenant":tenant,"secret":invitation["secret"]}),
+			)
+			.await;
+		assert_eq!(status, 200, "{request}");
+		requests.push(request["id"].as_str().unwrap().to_owned());
+	}
+	let reject = async |id: &str| {
+		let (status, body) = d
+			.as_deployment_administrator(
+				"POST",
+				&format!("/api/dashboard/registrations/{id}/reject"),
+				json!({}),
+			)
+			.await;
+		assert_eq!(status, 200, "{body}");
+	};
+
+	// Act: the later request ends first, Bob's claims are observed again, and
+	// then the earlier request ends.
+	reject(&requests[1]).await;
+	sqlx::query(
+		"UPDATE dashboard_identities SET display_observed_at = clock_timestamp() WHERE id = $1",
+	)
+	.bind(bob.identity)
+	.execute(d.federation.store.pool.driver())
+	.await
+	.unwrap();
+	reject(&requests[0]).await;
+
+	// Assert: the observation preceded the last request's end, so nothing
+	// retains the Display Attributes that request showed.
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM dashboard_identities WHERE id = '{}' AND verified_email IS NULL AND display_name IS NULL",
+			bob.identity
+		))
+		.await,
+		1
 	);
 	d.finish().await;
 }

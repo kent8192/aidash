@@ -105,11 +105,12 @@ impl Harness {
 /// authority transaction, and a failed observation never interrupts inference.
 pub(crate) async fn wait_for_inference_interruption(
 	store: &crate::store::Store,
+	scope: &aidash_application::tenancy::TenancyScope,
 	id: Uuid,
 	included_input_seq: i64,
 ) -> Result<InferenceInterruption> {
 	loop {
-		match inference_interruption(store, id, included_input_seq).await {
+		match inference_interruption(store, scope, id, included_input_seq).await {
 			Ok(Some(interruption)) => return Ok(interruption),
 			Ok(None) => {}
 			Err(error) => {
@@ -124,17 +125,21 @@ const INTERRUPTION_POLL: std::time::Duration = std::time::Duration::from_millis(
 
 async fn inference_interruption(
 	store: &crate::store::Store,
+	scope: &aidash_application::tenancy::TenancyScope,
 	id: Uuid,
 	included_input_seq: i64,
 ) -> Result<Option<InferenceInterruption>> {
 	use crate::apps::execution::models::{Run as RunRecord, RunInput};
-	let lease = store.orm_connection()?;
-	let mut db = lease.handle();
-	if RunRecord::committed_control(&mut db, id).await? == RunControl::Cancelled {
-		return Ok(Some(InferenceInterruption::Cancelled));
-	}
-	let newer = RunInput::newer_committed(&mut db, id, included_input_seq).await?;
-	Ok(newer.then_some(InferenceInterruption::Superseded))
+	store
+		.pool
+		.atomic(scope, async |tx| {
+			if RunRecord::committed_control(tx, id).await? == RunControl::Cancelled {
+				return Ok(Some(InferenceInterruption::Cancelled));
+			}
+			let newer = RunInput::newer_committed(tx, id, included_input_seq).await?;
+			Ok(newer.then_some(InferenceInterruption::Superseded))
+		})
+		.await
 }
 
 #[cfg(test)]
