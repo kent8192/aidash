@@ -17,20 +17,34 @@ fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
 		let config = json!({
 			"transport":"mcp",
 			"endpoint":"http://localhost:9999/mcp",
-			"credential_env":null,
 			"tool_name":"create",
 			"replay":"idempotent",
 			"idempotency_argument":argument
 		});
-		assert!(validate_config_in(&config, false).is_err(), "{argument:?}");
+		assert!(validate_config(&config).is_err(), "{argument:?}");
 	}
 	let valid = json!({
 		"transport":"mcp",
 		"endpoint":"http://localhost:9999/mcp",
-		"credential_env":null,
 		"tool_name":"create",
 		"replay":"idempotent",
 		"idempotency_argument":"request_id"
 	});
-	validate_config_in(&valid, false).unwrap();
+	validate_config(&valid).unwrap();
+}
+
+#[rstest::rstest]
+fn tool_transports_cannot_name_a_deployment_secret() {
+	for config in [
+		json!({"transport":"http","endpoint":"https://tools.example/rpc","credential_env":"AIDASH_SECRET_TEST_PEER","replay":"read_only"}),
+		json!({"transport":"mcp","endpoint":"https://tools.example/mcp","credential_env":null,"tool_name":"lookup","replay":"read_only"}),
+	] {
+		let error = validate_config(&config).unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("cannot name a Deployment secret"),
+			"{error}"
+		);
+	}
 }
