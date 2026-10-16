@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::apps::execution::capabilities::services::core::*;
 use std::path::PathBuf;
 
-/// One operator-owned execution profile. Agents can never raise these ceilings.
+/// The Node's execution profile. Agents can never raise these ceilings.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {

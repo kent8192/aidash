@@ -124,7 +124,7 @@ impl Management {
 				}
 				Ok(Authority(Some(access)))
 			}
-			Actor::Operator => {
+			Actor::DeploymentAdministrator => {
 				use crate::apps::identity::{
 					models::AuthorizationDecision, repositories::NativePolicyScope,
 				};
@@ -132,14 +132,14 @@ impl Management {
 				let mut tx = self.runtime.store.control_pool.connection().begin().await?;
 				let snapshot = NativePolicyScope(tx.as_mut()).load(tenant).await?;
 				let evaluation = Evaluation {
-					subject: "operator".into(),
+					subject: "deployment_administrator".into(),
 					action,
 					resource,
-					environment: json!({"operator":true}),
+					environment: json!({"deployment_administrator":true}),
 				};
 				let mut decision = snapshot.bundle.evaluate(&evaluation);
 				decision.allowed = true;
-				decision.reason = "authenticated operator authority".into();
+				decision.reason = "authenticated Deployment Administrator authority".into();
 				decision.revision = snapshot.revision;
 				AuthorizationDecision::append(tx.as_mut(), tenant, &evaluation, &decision).await?;
 				tx.commit().await?;
@@ -149,7 +149,7 @@ impl Management {
 	}
 	fn actor(actor: &Actor) -> &str {
 		match actor {
-			Actor::Operator => "operator",
+			Actor::DeploymentAdministrator => "deployment_administrator",
 			Actor::Subject(identity) => &identity.subject,
 		}
 	}
@@ -299,7 +299,7 @@ impl Management {
 			Actor::Subject(identity) => {
 				Some(NativeAccess::begin(&self.runtime.store, identity).await?)
 			}
-			Actor::Operator => None,
+			Actor::DeploymentAdministrator => None,
 		};
 		let mut audit = ListAudit {
 			access,
@@ -307,10 +307,18 @@ impl Management {
 		};
 		let result = async {
 			let limit = page.limit.clamp(1, 200);
-			let operator = matches!(actor, Actor::Operator);
-			let mut source_offset = if operator { page.offset } else { 0 };
-			let mut visible_offset = if operator { 0 } else { page.offset };
-			let batch_size = if operator { limit } else { 200 };
+			let deployment_administrator = matches!(actor, Actor::DeploymentAdministrator);
+			let mut source_offset = if deployment_administrator {
+				page.offset
+			} else {
+				0
+			};
+			let mut visible_offset = if deployment_administrator {
+				0
+			} else {
+				page.offset
+			};
+			let batch_size = if deployment_administrator { limit } else { 200 };
 			let mut result = Vec::new();
 			loop {
 				let mut scope = service.repository.begin(&tenant).await?;

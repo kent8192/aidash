@@ -384,7 +384,7 @@ impl RealDispatchScope for Scope<'_> {
 				if selected.id == "tool_1" {
 					json!({"transport":"agent","node_id":"node","agent":reference("delegate")})
 				} else {
-					json!({"transport":"http","endpoint":"https://production.example/rpc","credential_env":null,"replay":"read_only"})
+					json!({"transport":"http","endpoint":"https://production.example/rpc","replay":"read_only"})
 				},
 			)
 		})

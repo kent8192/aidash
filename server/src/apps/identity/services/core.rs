@@ -100,10 +100,10 @@ impl Authorization {
 			let validation = crate::bootstrap::registry_validation_for(store);
 			Some(
 				aidash_application::marketplace::operations::host_packages::provision(
-					&mut crate::bootstrap::marketplace_operator_scope(
+					&mut crate::bootstrap::marketplace_deployment_administrator_scope(
 						store,
 						&mut tx,
-						aidash_domain::identity::Principal::Operator,
+						aidash_domain::identity::Principal::DeploymentAdministrator,
 					),
 					&validation,
 					&validation,

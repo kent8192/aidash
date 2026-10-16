@@ -798,7 +798,7 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	let mut other_kind = serde_json::to_value(model()).unwrap();
 	other_kind["id"] = json!("not-a-model");
 	other_kind["kind"] = json!("tool");
-	other_kind["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9999/tool","credential_env":null,"replay":"read_only"}});
+	other_kind["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9999/tool","replay":"read_only"}});
 	insert_entry(f.store.pool.driver(), &other_kind)
 		.await
 		.unwrap();
@@ -1001,19 +1001,32 @@ async fn tool_configs_reject_undecodable_shapes(
 		tool["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{
 			"transport":"http",
 			"endpoint":endpoint,
-			"credential_env":null,
 			"replay":"read_only"
 		}});
 		insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	}
+	// A Tool never names a Deployment secret, even a well-formed one (#296).
 	tool["id"] = json!("secret-tool");
-	tool["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{
-		"transport":"http",
-		"endpoint":"http://localhost",
-		"credential_env":"AIDASH_SECRET_TOOL_TOKEN",
-		"replay":"read_only"
-	}});
-	insert_entry(f.store.pool.driver(), &tool).await.unwrap();
+	for (provider, transport) in [
+		(
+			"integration.http@1",
+			json!({"transport":"http","endpoint":"http://localhost","credential_env":"AIDASH_SECRET_TOOL_TOKEN","replay":"read_only"}),
+		),
+		(
+			"integration.http@1",
+			json!({"transport":"http","endpoint":"http://localhost","credential_env":null,"replay":"read_only"}),
+		),
+		(
+			"integration.mcp@1",
+			json!({"transport":"mcp","endpoint":"http://localhost","credential_env":"AIDASH_SECRET_TOOL_TOKEN","tool_name":"call","replay":"read_only"}),
+		),
+	] {
+		tool["config"] = json!({"registry_node":"aidash://execution-test","provider":provider,"operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":transport});
+		check_rejected(
+			insert_entry(f.store.pool.driver(), &tool).await,
+			"registry_tool_config",
+		);
+	}
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1681,7 +1694,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 				Expr::value(json!({
 					"credential": null,
 					"tenant": "",
-					"subject": "operator",
+					"subject": "without_subject",
 					"subjects": [],
 				}))
 				.into(),
@@ -1693,9 +1706,9 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	for invalid in [
 		json!({}),
 		json!([]),
-		json!({"credential":null,"tenant":"","subject":"operator","subjects":[7]}),
-		json!({"credential":"not-a-uuid","tenant":"","subject":"operator","subjects":[]}),
-		json!({"credential":null,"tenant":7,"subject":"operator","subjects":[]}),
+		json!({"credential":null,"tenant":"","subject":"without_subject","subjects":[7]}),
+		json!({"credential":"not-a-uuid","tenant":"","subject":"without_subject","subjects":[]}),
+		json!({"credential":null,"tenant":7,"subject":"without_subject","subjects":[]}),
 	] {
 		check_rejected(
 			update(

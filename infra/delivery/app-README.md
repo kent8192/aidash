@@ -37,7 +37,7 @@ Rerun finalize after installation completes; it does not register another App.
 Registration refuses an existing key. If creation succeeded but callback failed,
 inspect GitHub's App settings and recover that App/key rather than registering a
 duplicate. Keep the local key private and retain/revoke it according to the
-operator's recovery policy after GitHub handoff.
+your recovery policy after GitHub handoff.
 
 [Manifest registration](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
 and [App REST API](https://docs.github.com/en/rest/apps/apps).

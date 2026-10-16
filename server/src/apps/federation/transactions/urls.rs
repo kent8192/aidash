@@ -7,7 +7,7 @@ pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
 			.endpoint(protocol::restore_peer)
-			.with_route_middleware(AccessBoundary::operator())
+			.with_route_middleware(AccessBoundary::deployment_administrator())
 			.endpoint(protocol::preflight)
 			.with_route_middleware(AccessBoundary::peer())
 			.endpoint(protocol::read_access)
@@ -23,11 +23,11 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(protocol::abort)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(protocol::participants)
-			.with_route_middleware(AccessBoundary::operator())
+			.with_route_middleware(AccessBoundary::deployment_administrator())
 			.endpoint(protocol::trust_list)
-			.with_route_middleware(AccessBoundary::operator())
+			.with_route_middleware(AccessBoundary::deployment_administrator())
 			.endpoint(protocol::trust)
-			.with_route_middleware(AccessBoundary::operator())
+			.with_route_middleware(AccessBoundary::deployment_administrator())
 			.endpoint(protocol::reserve)
 			.with_route_middleware(AccessBoundary::peer())
 			.endpoint(protocol::prepare)

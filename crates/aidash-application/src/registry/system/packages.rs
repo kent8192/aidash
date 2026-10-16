@@ -1,4 +1,4 @@
-//! Operator declarations for the host and research package groups. No executable payloads.
+//! Node declarations for the host and research package groups. No executable payloads.
 use super::*;
 use crate::{Error, ports::bindings::ProviderCatalog};
 use aidash_domain::{
@@ -61,7 +61,7 @@ pub fn declarations(
 	validation: &DefinitionValidation,
 	node: &str,
 ) -> Result<Vec<PackageGroup>> {
-	crate::authorization::require_operator(principal)?;
+	crate::authorization::require_deployment_administrator(principal)?;
 	aidash_domain::configuration::validate_node_id(node)?;
 	let specs = validation.node_specifications();
 	HOST_GROUPS
@@ -86,7 +86,7 @@ pub fn declarations(
 						name: BTreeMap::from([("en".into(), operation.to_string())]),
 						description: BTreeMap::from([("en".into(), spec.description.clone())]),
 						capabilities: vec![operation.to_string()],
-						tags: vec!["operator".into()],
+						tags: vec!["deployment_administrator".into()],
 						languages: vec![],
 						skills: vec![],
 						schema: spec.parameters.clone(),
@@ -122,7 +122,7 @@ pub fn declarations(
 						name: BTreeMap::from([("en".into(), spec.name.clone())]),
 						description: BTreeMap::from([("en".into(), spec.description)]),
 						capabilities: vec![format!("research.{operation}")],
-						tags: vec!["operator".into(), "research".into()],
+						tags: vec!["deployment_administrator".into(), "research".into()],
 						languages: vec![],
 						skills: vec![],
 						schema: spec.parameters,
@@ -152,7 +152,7 @@ fn bundle_entry(node: &str, name: &str, operations: &[Entry]) -> Result<Entry> {
 			.iter()
 			.flat_map(|entry| entry.capabilities.clone())
 			.collect(),
-		tags: vec!["operator".into()],
+		tags: vec!["deployment_administrator".into()],
 		languages: vec![],
 		skills: vec![],
 		schema: json!({}),

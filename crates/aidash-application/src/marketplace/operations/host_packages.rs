@@ -1,4 +1,4 @@
-//! Authenticated operator declarations and complete pending installation groups.
+//! Authenticated Deployment Administrator declarations and complete pending installation groups.
 use super::*;
 use crate::ports::bindings::ProviderCatalog;
 use aidash_domain::{
@@ -52,7 +52,7 @@ fn version(
 	dependencies.sort_by_key(|d| (d.reference.id.clone(), d.reference.version.clone()));
 	let manifest_source = serde_json::to_string(&Package {
 		entity: entry.clone(),
-		author: "Aidash Node operator".into(),
+		author: "Aidash Node".into(),
 		permissions: vec!["tool.invoke".into()],
 		dependencies: direct.into_iter().map(|(r, _)| r).collect(),
 	})?;
@@ -63,7 +63,7 @@ fn version(
 		package_id: entry.id.clone(),
 		version: entry.version.clone(),
 		kind: entry.kind.clone(),
-		publisher: "node-operator".into(),
+		publisher: "aidash-node".into(),
 		source: reference(entry),
 		digest: format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes())),
 		manifest_source,
@@ -83,17 +83,17 @@ fn source_key(tenant: &str, node: &str, entry: &Entry) -> String {
 }
 
 /// All providers, source bytes and dependency substitutions are checked before
-/// writes. The caller retains one operator/distribution transaction for the full
+/// writes. The caller retains one deployment_administrator/distribution transaction for the full
 /// set, including source versions, projections, provenance, replay and outbox.
 /// This explicit operation never approves a catalog entry or active pointer.
 pub async fn provision(
-	scope: &mut dyn OperatorScope,
+	scope: &mut dyn DeploymentAdministratorScope,
 	validation: &DefinitionValidation,
 	providers: &dyn ProviderCatalog,
 	input: &HostPackages,
 	node: &str,
 ) -> Result<PendingHostPackages> {
-	require_operator(scope.principal())?;
+	require_deployment_administrator(scope.principal())?;
 	aidash_domain::policy::identifier(&input.tenant)?;
 	let known = crate::registry::system::packages::HOST_GROUPS.len()
 		+ crate::registry::system::packages::RESEARCH_GROUPS.len();

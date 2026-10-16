@@ -20,7 +20,7 @@ stored as base64 and oversized packages are rejected. Root-level Skills load
 `SKILL.md` and common `references/`, `scripts/`, `assets/`, and `templates/`
 directories. The importer
 validates YAML `name` and `description` fields, preserves the complete Markdown
-(including license metadata), and lets the operator review all imported text
+(including license metadata), and lets the Deployment Administrator review all imported text
 before saving. Private repositories, arbitrary hosts, packs, and archive URLs
 are not supported by this importer.
 The UI links to the Anthropic and OpenAI Skills repositories; it does not bundle or
@@ -70,7 +70,7 @@ text across all files. The selected model's context budget can impose a lower li
 No content is silently truncated. Files without extractable text are rejected.
 PDF.js and ExcelJS are loaded only when their respective file types are selected.
 
-`POST /api/agents/personal` is operator-only and accepts an `entry`, `documents`,
+`POST /api/agents/personal` is Deployment Administrator-only and accepts an `entry`, `documents`,
 and a required `Idempotency-Key` UUID. Registration, private document storage, and
 the registration event share a database transaction. Retries preserve the assigned
 agent ID; changing documents with the same key is rejected. The server validates

@@ -34,6 +34,10 @@ jobs:
       - uses: trunk-io/trunk-action/setup@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0
       - name: Check formatting and lint
         run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures --exclude clippy'
+      - name: Check Deployment Administrator terminology
+        run: |
+          python3 scripts/test_check_role_terminology.py
+          python3 scripts/check-role-terminology.py
   rust-lint:
     name: Rust Clippy (${{ matrix.workspace }})
     runs-on: ubuntu-latest
@@ -212,6 +216,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Interim licensing (#250): no license declarations until #255 replaces this guard.
+      - run: python3 scripts/check-license-declarations.py
+      - run: python3 -m unittest discover -s scripts -p test_license_declarations.py
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py

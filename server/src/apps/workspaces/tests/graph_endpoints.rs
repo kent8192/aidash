@@ -8,7 +8,13 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 async fn create(app: &EndpointFixture, path: &str, input: &Value) -> Value {
-	assert_json(app.operator.post(path, input, "json").await.unwrap(), 200)
+	assert_json(
+		app.deployment_administrator
+			.post(path, input, "json")
+			.await
+			.unwrap(),
+		200,
+	)
 }
 
 #[rstest]
@@ -17,8 +23,8 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let home = workspace(&app.operator, "Home").await;
-	let other = workspace(&app.operator, "Other").await;
+	let home = workspace(&app.deployment_administrator, "Home").await;
+	let other = workspace(&app.deployment_administrator, "Other").await;
 	let home_path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
 	let other_path = format!("/api/workspaces/{}/tasks", other["id"].as_str().unwrap());
 	let foreign = create(
@@ -36,7 +42,10 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 				target.clone()
 			};
 			assert_json(
-				app.operator.post(&home_path, &input, "json").await.unwrap(),
+				app.deployment_administrator
+					.post(&home_path, &input, "json")
+					.await
+					.unwrap(),
 				400,
 			);
 		}
@@ -75,7 +84,7 @@ async fn diamond_graph_reachability_is_bounded_and_combined_cycles_are_rejected(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let home = workspace(&app.operator, "Diamond graph").await;
+	let home = workspace(&app.deployment_administrator, "Diamond graph").await;
 	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
 	let mut levels: Vec<Vec<Value>> = vec![];
 	for depth in 0..20 {
@@ -90,7 +99,7 @@ async fn diamond_graph_reachability_is_bounded_and_combined_cycles_are_rejected(
 	let cycle = json!({"title":"Cycle","description":"Reject before projection","parent_id":levels[0][0],"dependencies":[levels.last().unwrap()[0]]});
 	let response = tokio::time::timeout(
 		std::time::Duration::from_secs(5),
-		app.operator.post(&path, &cycle, "json"),
+		app.deployment_administrator.post(&path, &cycle, "json"),
 	)
 	.await
 	.expect("diamond traversal must not enumerate every path")
@@ -126,7 +135,7 @@ async fn concurrent_parent_and_dependency_changes_cannot_commit_a_cycle(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let home = workspace(&app.operator, "Concurrent graph").await;
+	let home = workspace(&app.deployment_administrator, "Concurrent graph").await;
 	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
 	let left = create(&app, &path, &json!({"title":"Left","description":"Root"})).await;
 	let right = create(&app, &path, &json!({"title":"Right","description":"Root"})).await;
@@ -134,8 +143,8 @@ async fn concurrent_parent_and_dependency_changes_cannot_commit_a_cycle(
 	let second = json!({"title":"Second child","description":"Right to left","parent_id":right["id"],"dependencies":[left["id"]]});
 	let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
 		tokio::join!(
-			app.operator.post(&path, &first, "json"),
-			app.operator.post(&path, &second, "json")
+			app.deployment_administrator.post(&path, &first, "json"),
+			app.deployment_administrator.post(&path, &second, "json")
 		)
 	})
 	.await

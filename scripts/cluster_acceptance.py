@@ -94,7 +94,7 @@ def main():
             subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--set-json", 'keylessEndpoints={"permittedPrivateOrigins":["http://fixture:8000"]}', "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
         for service_name in ["nats"]:
             kube("rollout", "status", f"statefulset/{service_name}", "--timeout=180s")
-        # The fixture operator provisions once; runtime bootstrapping stays off.
+        # The fixture provisions activation once; runtime bootstrapping stays off.
         activation_scopes = {}
         for node in ["a", "b"]:
             activation_scopes[node] = json.loads(kube("exec", f"deployment/ops-{node}-aidash-server", "--", "aidash", "activation-provision"))
@@ -108,7 +108,7 @@ def main():
         for base, other in [(base_a, "b"), (base_b, "a")]:
             api_request(base, "/api/peers", {"node_id": f"aidash://ops-{other}", "endpoint": f"http://ops-{other}-backend:8080", "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
             api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}))
-            tool = entity("tool", "research-http", tool_descriptor("aidash://ops-a" if base == base_a else "aidash://ops-b", {"transport": "http", "endpoint": "http://fixture:8000/research", "credential_env": None, "replay": "unsafe"}))
+            tool = entity("tool", "research-http", tool_descriptor("aidash://ops-a" if base == base_a else "aidash://ops-b", {"transport": "http", "endpoint": "http://fixture:8000/research", "replay": "unsafe"}))
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)
             api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "schema_version": 1, "bindings": [tool_binding("aidash://ops-a" if base == base_a else "aidash://ops-b", "research-http")], "remove_default": [], "max_steps": 128}))

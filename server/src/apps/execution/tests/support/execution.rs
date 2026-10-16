@@ -41,7 +41,7 @@ pub fn execution(
 		let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
 			"policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 		assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme",
 					&json!({"expected_revision":0,"bundle":policy}),
@@ -67,7 +67,7 @@ pub fn execution(
 			(
 				"tool",
 				"http",
-				json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"idempotent"}}),
+				json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 			),
 			(
 				"agent",
@@ -77,14 +77,14 @@ pub fn execution(
 		] {
 			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 			assert_json(
-				app.operator
+				app.deployment_administrator
 					.post("/api/registry", &entry, "json")
 					.await
 					.unwrap(),
 				200,
 			);
 			assert_json(
-				app.operator
+				app.deployment_administrator
 					.post(
 						"/api/authorization/acme/catalog",
 						&json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -96,7 +96,7 @@ pub fn execution(
 			);
 		}
 		let credential = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme/credentials",
 					&json!({"subject":"alice"}),

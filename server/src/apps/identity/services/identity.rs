@@ -23,7 +23,7 @@ pub(crate) type PoolIdentityValidity =
 /// from a request body, query parameter or peer-provided identity claim.
 #[derive(Clone)]
 pub enum Actor {
-	Operator,
+	DeploymentAdministrator,
 	Subject(SubjectIdentity),
 }
 

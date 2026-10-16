@@ -26,7 +26,7 @@ pub(crate) struct NativeControls {
 	pub principal: Principal,
 }
 enum Mode {
-	Operator(crate::database::native::Transaction),
+	DeploymentAdministrator(crate::database::native::Transaction),
 	Subject(Box<Access>),
 }
 struct Scope {
@@ -38,7 +38,7 @@ impl Scope {
 		NativeLifecycle {
 			runtime: &self.runtime,
 			transaction: match &mut self.mode {
-				Mode::Operator(tx) => tx,
+				Mode::DeploymentAdministrator(tx) => tx,
 				Mode::Subject(access) => &mut access.tx,
 			},
 		}
@@ -54,9 +54,9 @@ impl GenerationControls for NativeControls {
 		_tenant: &str,
 	) -> aidash_application::Result<Box<dyn GenerationControlScope>> {
 		let mode = match &self.actor {
-			Actor::Operator => {
-				Mode::Operator(crate::database::native::begin(&self.runtime.store.pool).await?)
-			}
+			Actor::DeploymentAdministrator => Mode::DeploymentAdministrator(
+				crate::database::native::begin(&self.runtime.store.pool).await?,
+			),
 			Actor::Subject(identity) => Mode::Subject(Box::new(
 				Access::begin_exclusive(&self.runtime.store, identity).await?,
 			)),
@@ -99,7 +99,7 @@ impl GenerationControlScope for Scope {
 		result: aidash_application::Result<Request>,
 	) -> aidash_application::Result<Request> {
 		match self.mode {
-			Mode::Operator(tx) => match result {
+			Mode::DeploymentAdministrator(tx) => match result {
 				Ok(job) => {
 					tx.commit().await?;
 					Ok(job)

@@ -153,7 +153,7 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
     route.fulfill({
       json: {
         id: "fixture-browser-session",
-        operator: true,
+        deployment_administrator: true,
         mappings: [{ id: "alice", tenant: "acme", subject: "alice" }],
       },
     }),

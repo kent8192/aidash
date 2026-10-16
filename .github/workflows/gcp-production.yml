@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       retry_failed:
-        description: "Retry a failed deployment after operator inspection; never downgrade or replay uncertain work"
+        description: "Retry a failed deployment after manual inspection; never downgrade or replay uncertain work"
         type: boolean
         default: false
 

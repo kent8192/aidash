@@ -362,7 +362,9 @@ impl Protection {
 			);
 		}
 		let key = match actor {
-			Some(crate::authorization::identity::Actor::Operator) => "operator".into(),
+			Some(crate::authorization::identity::Actor::DeploymentAdministrator) => {
+				"deployment_administrator".into()
+			}
 			Some(crate::authorization::identity::Actor::Subject(subject)) => {
 				format!("subject:{}:{}", subject.tenant, subject.subject)
 			}

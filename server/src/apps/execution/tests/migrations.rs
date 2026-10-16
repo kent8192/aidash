@@ -27,12 +27,15 @@ use std::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// Issue #243's migrations. Historical rollback tests run on the history before
-/// them, because reversing an earlier migration from the current head would
-/// reach objects those migrations removed or replaced.
+/// Issue #243's migrations and the registry migrations that depend on them.
+/// Historical rollback tests run on the history before them, because reversing
+/// an earlier migration from the current head would reach objects those
+/// migrations removed or replaced. A later registry migration left out of this
+/// list loses its dependency in that history and can run before registry/0001.
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0026_remove_legacy_installations"),
 	("registry", "0027_remove_legacy_installations_state"),
+	("registry", "0028_tool_transport_secrets"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -783,7 +786,7 @@ async fn unknown_or_inconsistent_native_history_is_not_adopted(
 	#[case] migration: &str,
 	#[case] message: &str,
 ) {
-	// Arrange: preserve the invalid row as evidence; repair is an operator action.
+	// Arrange: preserve the invalid row as evidence; repair is a manual action.
 	let fixture = fresh_database.await;
 	let recorder = DatabaseMigrationRecorder::new(fixture.connection.clone());
 	recorder.ensure_schema_table().await.unwrap();
@@ -818,7 +821,7 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	#[future] fresh_database: MigrationFixture,
 ) {
-	// Arrange: extension ownership belongs to an operator, before native history.
+	// Arrange: extension ownership belongs to whoever runs the Deployment, before native history.
 	let fixture = fresh_database.await;
 	let create = reinhardt::db::migrations::Operation::CreateExtension {
 		name: "pg_jsonschema".into(),

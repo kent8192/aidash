@@ -1,4 +1,4 @@
-//! Deployment observations and the release boundary exposed to operators.
+//! Deployment observations and the release boundary exposed to Deployment Administrators.
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::BTreeSet;
