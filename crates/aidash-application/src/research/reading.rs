@@ -7,7 +7,9 @@
 //! The readability decision commits before the evidence is read, so a
 //! revocation could land in between. The read therefore asks again after the
 //! evidence is in hand and returns it only to a reader who may still read the
-//! Run, as if the read had stayed inside the authorization.
+//! Run, as if the read had stayed inside the authorization. The snapshot is
+//! read once more after that decision, so a retention purge committed during
+//! the read leaves the fragment without its surrounding context.
 use crate::{
 	Error, Result,
 	ports::research::{EvidenceStore, RunReader},
@@ -40,7 +42,7 @@ pub async fn read(
 		.into_iter()
 		.next()
 		.ok_or_else(unavailable)?;
-	let document = store
+	store
 		.snapshot(run, fragment.document_id)
 		.await?
 		.ok_or_else(unavailable)?;
@@ -49,5 +51,10 @@ pub async fn read(
 	if !reader.readable(run).await? || store.revoked(run).await? {
 		return Err(unavailable());
 	}
+	// Context comes only from lines the snapshot still retains now.
+	let document = store
+		.snapshot(run, fragment.document_id)
+		.await?
+		.ok_or_else(unavailable)?;
 	Ok(CitedEvidence::new(fragment, &document))
 }

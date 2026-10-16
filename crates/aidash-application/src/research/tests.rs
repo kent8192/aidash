@@ -38,6 +38,8 @@ struct Memory {
 	purge_at_fragment: AtomicBool,
 	/// A revocation that commits just after the next snapshot read.
 	revoke_after_snapshot_read: AtomicBool,
+	/// A retention purge that commits just after the next snapshot read.
+	purge_after_snapshot_read: AtomicBool,
 }
 
 impl Memory {
@@ -321,6 +323,9 @@ impl EvidenceStore for Memory {
 			.swap(false, Ordering::SeqCst)
 		{
 			self.revoke(run);
+		}
+		if self.purge_after_snapshot_read.swap(false, Ordering::SeqCst) {
+			self.purge_snapshot(id);
 		}
 		Ok(snapshot)
 	}
@@ -1867,6 +1872,26 @@ async fn evidence_revoked_during_the_read_is_withheld() {
 
 	// Assert
 	assert_eq!(error.to_string(), reading::unavailable().to_string());
+}
+
+#[tokio::test]
+async fn a_snapshot_purged_during_the_read_gives_no_context() {
+	// Arrange: the retention purge commits after the first snapshot read.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	store
+		.purge_after_snapshot_read
+		.store(true, Ordering::SeqCst);
+
+	// Act
+	let evidence = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap();
+
+	// Assert: the fragment stays readable, its purged context does not.
+	assert_eq!(evidence.fragment.reference, reference);
+	assert!(evidence.context.is_none());
 }
 
 #[tokio::test]
