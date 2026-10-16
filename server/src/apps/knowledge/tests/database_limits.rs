@@ -54,9 +54,9 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	for invalid in [
 		json!({}),
 		json!([]),
-		json!({"credential":null,"tenant":"","subject":"deployment_administrator","subjects":[7]}),
-		json!({"credential":"not-a-uuid","tenant":"","subject":"deployment_administrator","subjects":[]}),
-		json!({"credential":null,"tenant":7,"subject":"deployment_administrator","subjects":[]}),
+		json!({"credential":null,"tenant":"","subject":"without_subject","subjects":[7]}),
+		json!({"credential":"not-a-uuid","tenant":"","subject":"without_subject","subjects":[]}),
+		json!({"credential":null,"tenant":7,"subject":"without_subject","subjects":[]}),
 	] {
 		assert!(
 			SemanticEntry::objects()

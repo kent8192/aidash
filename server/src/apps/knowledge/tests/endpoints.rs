@@ -339,7 +339,7 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 		.get_with_db(&mut db)
 		.await
 		.unwrap();
-	assert_eq!(record.authority.0["subject"], "deployment_administrator");
+	assert_eq!(record.authority.0["subject"], "without_subject");
 	assert_eq!(record.authority.0["credential"], Value::Null);
 }
 

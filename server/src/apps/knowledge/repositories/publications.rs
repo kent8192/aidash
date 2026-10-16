@@ -151,7 +151,7 @@ pub(crate) async fn check(
 		audit?;
 		result
 	} else {
-		if saved.subject != "deployment_administrator"
+		if saved.subject != super::access::WITHOUT_SUBJECT
 			|| !saved.tenant.is_empty()
 			|| !saved.subjects.is_empty()
 		{

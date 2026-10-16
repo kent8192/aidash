@@ -13,7 +13,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 /// The `subject` a saved authority records for a lease without a Subject.
-const WITHOUT_SUBJECT: &str = "without_subject";
+pub(crate) const WITHOUT_SUBJECT: &str = "without_subject";
 
 pub(crate) enum Lease<'a> {
 	/// A transaction that no Subject's authority limits, for a Deployment

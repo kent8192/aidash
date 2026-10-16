@@ -149,7 +149,7 @@ for (const selected of [
     page,
   }) => {
     await installSession(page, {
-      deployment_administrator: true,
+      deploymentAdministrator: true,
       selected: selected ?? undefined,
       mappings: [
         personalMapping,
@@ -242,7 +242,7 @@ test("a revoked personal credential is not selected automatically", async ({
   page,
 }) => {
   await installSession(page, {
-    deployment_administrator: true,
+    deploymentAdministrator: true,
     mappings: [
       { ...personalMapping, credential_active: false },
       {
@@ -281,7 +281,7 @@ test("a saved personal selection with an inactive credential returns to the choo
   page,
 }) => {
   await installSession(page, {
-    deployment_administrator: true,
+    deploymentAdministrator: true,
     selected: "mapping:personal-mapping",
     mappings: [
       { ...personalMapping, credential_active: false },
