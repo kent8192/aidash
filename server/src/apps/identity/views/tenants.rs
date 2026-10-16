@@ -27,9 +27,10 @@ pub async fn create(
 #[get("/api/tenants", name = "tenants-list", auth = "protected")]
 pub async fn list(
 	#[inject] service: Depends<Tenants>,
+	#[inject] actor: Actor,
 	Query(page): Query<PageQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.list(page).await)
+	crate::http::json(service.list(actor, page).await)
 }
 
 #[put(

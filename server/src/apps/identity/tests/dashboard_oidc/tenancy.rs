@@ -505,6 +505,11 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 		.await;
 	let tenant = created["name"].as_str().unwrap().to_owned();
 	let context = d.context(&alice, &tenant).await;
+	// A Tenant's own administrator never enumerates the Deployment's Tenants.
+	let (status, _) = d
+		.as_person(&alice, "GET", "/api/tenants", Some(&context), Value::Null)
+		.await;
+	assert_eq!(status, 403);
 
 	let (status, invitation) = d
 		.as_person(

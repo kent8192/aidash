@@ -143,8 +143,12 @@ impl Tenants {
 		Ok(created.into())
 	}
 
-	/// One page of Tenants, newest first, for Deployment Administrators.
-	pub(crate) async fn list(&self, page: PageQuery) -> Result<Vec<TenantRecord>> {
+	/// One page of Tenants, newest first, only for Deployment Administrators:
+	/// a subject of one Tenant never enumerates the others.
+	pub(crate) async fn list(&self, actor: Actor, page: PageQuery) -> Result<Vec<TenantRecord>> {
+		if !matches!(actor, Actor::DeploymentAdministrator) {
+			return Err(Error::Forbidden);
+		}
 		let lease = self.runtime.store.orm_connection()?;
 		let tenants = lease
 			.handle()
