@@ -30,8 +30,9 @@ pub mod reading;
 
 /// Instruction returned with a pending Web disclosure approval.
 pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision; after approval, repeat this exact call.";
-/// Instruction returned with the pages of a document that carry no text.
-pub const VIEW_INSTRUCTION: &str = "These pages carry no text. View one as an image with the view operation, if it is bound; a model without image input cannot read them.";
+/// Instruction returned with the pages of a retained document that carry no
+/// text while no research operation can show them as images.
+pub const NO_VIEW_INSTRUCTION: &str = "These pages carry no text, and no research operation can view them as images yet, so their contents cannot be read.";
 /// Instruction returned when those pages cannot be viewed.
 pub const NOT_RETAINED_INSTRUCTION: &str =
 	"These pages carry no text, and the document is not retained, so they cannot be viewed.";
@@ -718,21 +719,23 @@ fn fetch_result(snapshot: &DocumentSnapshot, mut fragment: Value, next: Option<P
 	)
 }
 
-/// The pages of a snapshot that carry no text, and whether their images can be
-/// viewed from the retained original (ADR 0053).
+/// The pages of a snapshot that carry no text, and why their images cannot be
+/// viewed (ADR 0053). The original is retained for the `view` operation, which
+/// no research contract binds yet (#312), so a retained original is not yet
+/// reported `available` either.
 fn pages_without_text(snapshot: &DocumentSnapshot) -> Option<Value> {
 	if snapshot.pages_without_text.is_empty() {
 		return None;
 	}
-	let viewable = snapshot.purged.is_none()
+	let retained = snapshot.purged.is_none()
 		&& snapshot
 			.original
 			.as_ref()
 			.is_some_and(|original| original.retained);
 	Some(json!({
 		"pages": snapshot.pages_without_text,
-		"page_images": if viewable { "available" } else { "original_not_retained" },
-		"instruction": if viewable { VIEW_INSTRUCTION } else { NOT_RETAINED_INSTRUCTION },
+		"page_images": if retained { "no_view_operation" } else { "original_not_retained" },
+		"instruction": if retained { NO_VIEW_INSTRUCTION } else { NOT_RETAINED_INSTRUCTION },
 	}))
 }
 

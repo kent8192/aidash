@@ -2153,7 +2153,7 @@ async fn pages_without_text_are_reported_with_whether_they_can_be_viewed() {
 	assert_eq!(read["data"]["pages_without_text"]["pages"], json!([2]));
 	assert_eq!(
 		read["data"]["pages_without_text"]["page_images"],
-		"available"
+		"no_view_operation"
 	);
 	assert_eq!(store.originals.lock().unwrap().len(), 1);
 }
@@ -2221,6 +2221,9 @@ async fn originals_beyond_the_run_limit_are_not_retained() {
 			.unwrap();
 		states.push(read["data"]["pages_without_text"]["page_images"].clone());
 	}
-	assert_eq!(states, [json!("available"), json!("original_not_retained")]);
+	assert_eq!(
+		states,
+		[json!("no_view_operation"), json!("original_not_retained")]
+	);
 	assert_eq!(store.originals.lock().unwrap().len(), 1);
 }
