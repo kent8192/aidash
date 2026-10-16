@@ -6,6 +6,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	federation::Peer,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::authorization::{
@@ -438,7 +439,10 @@ impl GrantRepository for Repository {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				// A remote worker names the grant, not its Tenant (#241).
+				.fetch_optional(f.store.pool.in_scope(&TenancyScope::Deployment(
+					DeploymentScopeReason::FederationInbound,
+				)))
 				.await?
 			})
 		}

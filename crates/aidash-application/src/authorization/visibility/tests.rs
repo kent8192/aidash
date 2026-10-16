@@ -678,3 +678,131 @@ fn generation(id: u128) -> aidash_domain::generation::requests::Request {
 		created_at: timestamp,
 	}
 }
+
+fn run_update() -> Event {
+	event("run.updated", json!({"run_id":Uuid::from_u128(1)}))
+}
+
+#[rstest]
+#[case::visible(true)]
+#[case::hidden(false)]
+#[tokio::test]
+async fn one_scan_evaluates_each_run_once_for_all_of_its_events(#[case] allowed: bool) {
+	let mut scope = Events::new();
+	scope.allowed = allowed;
+	let mut runs = RunVerdicts::default();
+	for _ in 0..3 {
+		assert_eq!(
+			event_visible_in(&mut scope, &run_update(), &mut runs)
+				.await
+				.unwrap(),
+			allowed
+		);
+	}
+	assert_eq!(
+		scope.calls,
+		vec!["resource", "run", "run_visible", "resource", "resource"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn another_scan_or_workspace_evaluates_the_run_again() {
+	let mut scope = Events::new();
+	let mut runs = RunVerdicts::default();
+	let mut elsewhere = run_update();
+	elsewhere.workspace_id = Some(Uuid::from_u128(4));
+	assert!(
+		event_visible_in(&mut scope, &run_update(), &mut runs)
+			.await
+			.unwrap()
+	);
+	assert!(
+		event_visible_in(&mut scope, &elsewhere, &mut runs)
+			.await
+			.unwrap()
+	);
+	assert!(
+		event_visible_in(&mut scope, &run_update(), &mut RunVerdicts::default())
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls,
+		vec![
+			"resource",
+			"run",
+			"run_visible",
+			"resource",
+			"run",
+			"run_visible",
+			"resource",
+			"run",
+			"run_visible"
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn human_events_recheck_their_request_but_reuse_the_run_verdict() {
+	let mut scope = Events::new();
+	let mut runs = RunVerdicts::default();
+	let answered = event(
+		"human.answered",
+		json!({"id":Uuid::from_u128(5),"run_id":Uuid::from_u128(1)}),
+	);
+	assert!(
+		event_visible_in(&mut scope, &run_update(), &mut runs)
+			.await
+			.unwrap()
+	);
+	assert!(
+		event_visible_in(&mut scope, &answered, &mut runs)
+			.await
+			.unwrap()
+	);
+	scope.human_allowed = false;
+	assert!(
+		!event_visible_in(&mut scope, &answered, &mut runs)
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls,
+		vec![
+			"resource",
+			"run",
+			"run_visible",
+			"resource",
+			"human",
+			"human_visible",
+			"resource",
+			"human",
+			"human_visible"
+		]
+	);
+}
+
+#[rstest]
+#[case("run")]
+#[case("run_visible")]
+#[tokio::test]
+async fn a_failed_run_evaluation_is_not_remembered(#[case] boundary: &'static str) {
+	let mut scope = Events::new();
+	let mut runs = RunVerdicts::default();
+	scope.fail = Some(boundary);
+	assert!(
+		event_visible_in(&mut scope, &run_update(), &mut runs)
+			.await
+			.is_err()
+	);
+	scope.fail = None;
+	scope.calls.clear();
+	assert!(
+		event_visible_in(&mut scope, &run_update(), &mut runs)
+			.await
+			.unwrap()
+	);
+	assert_eq!(scope.calls, vec!["resource", "run", "run_visible"]);
+}

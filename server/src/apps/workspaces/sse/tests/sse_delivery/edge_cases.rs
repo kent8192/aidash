@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::{Expr, LockType};
 use sha2::{Digest, Sha256};
 
@@ -125,10 +126,17 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 	fixture
 		.f
 		.store
-		.message(ws, "alice", "protected message", None)
+		.message(&TEST_FIXTURE, ws, "alice", "protected message", None)
 		.await
 		.unwrap();
-	let message = fixture.f.store.snapshot(ws).await.unwrap().messages[0].id;
+	let message = fixture
+		.f
+		.store
+		.snapshot(&TEST_FIXTURE, ws)
+		.await
+		.unwrap()
+		.messages[0]
+		.id;
 	let (status, visible) = request(
 		&fixture.app,
 		&fixture.token,
@@ -453,7 +461,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.unwrap();
 		"deployment_administrator".to_owned()
 	} else {
-		format!("mapping:{mapping}")
+		format!("mapping:acme:{mapping}")
 	};
 	let mut responses = Vec::new();
 	for (workspace, after) in [(fixture.workspaces[0], 0), (fixture.workspaces[1], -1)] {

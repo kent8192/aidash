@@ -1,4 +1,5 @@
 //! Fresh-schema verification for the native Reinhardt migration command.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/deployment.rs"]
 mod deployment;
 use aidash_server::apps::workspaces::models::Workspace;

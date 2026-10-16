@@ -19,6 +19,7 @@ pub mod provider_credentials;
 pub mod run_input;
 pub mod run_state;
 pub mod semantic;
+pub mod tenancy;
 
 pub use entities::*;
 

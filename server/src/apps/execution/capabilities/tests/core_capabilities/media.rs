@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::harness::Harness;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use reinhardt::ServerRouter as Router;
@@ -77,7 +78,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let run = c.f.store.runs().await.unwrap().remove(0);
+	let run = c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let (status, area) = request(
 		&c.app,
 		&c.token,
@@ -139,14 +140,26 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 		federation: c.f.clone(),
 	};
 	for _ in 0..12 {
-		if c.f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
+		if c.f
+			.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
 			break;
 		}
 		assert!(worker.worker_once().await.unwrap());
 	}
 	// Assert: duplicate selections and labels survive both the native row boundary and use case.
 	assert_eq!(
-		c.f.store.run(run.id).await.unwrap().phase().as_str(),
+		c.f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	{

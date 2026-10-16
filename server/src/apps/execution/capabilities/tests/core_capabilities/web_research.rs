@@ -2,6 +2,7 @@
 //! approval HTTP API: a scripted model calls the research fixture package,
 //! whose disclosure waits for an exact approval that one dispatch consumes.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	domain::{Run, RunPhase, RunState, WaitingState},
 	harness::Harness,
@@ -175,7 +176,7 @@ impl Research {
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");
-		self.c.f.store.runs().await.unwrap().remove(0)
+		self.c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0)
 	}
 	/// Step the real worker until the Run waits on a Web disclosure approval.
 	async fn until_waiting(&self, id: Uuid) -> Uuid {
@@ -187,7 +188,7 @@ impl Research {
 			.worker_once()
 			.await
 			.unwrap();
-			let run = self.c.f.store.run(id).await.unwrap();
+			let run = self.c.f.store.run(&TEST_FIXTURE, id).await.unwrap();
 			if let RunState::Waiting(waiting) = &run.state
 				&& let WaitingState::CoreApproval { approval_id, .. } = waiting.as_ref()
 			{
@@ -297,7 +298,7 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	let second = r.until_waiting(run.id).await;
 	assert_ne!(second, first);
 	assert_eq!(r.attempts(run.id).await, 1, "exactly one dispatch");
-	let run = r.c.f.store.run(run.id).await.unwrap();
+	let run = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let events = run.context.events().collect::<Vec<_>>();
 	let statuses = serde_json::to_value(events)
 		.unwrap()
@@ -398,7 +399,7 @@ impl Research {
 			.worker_once()
 			.await
 			.unwrap();
-			let run = self.c.f.store.run(id).await.unwrap();
+			let run = self.c.f.store.run(&TEST_FIXTURE, id).await.unwrap();
 			if run.phase() == RunPhase::Completed {
 				return run;
 			}

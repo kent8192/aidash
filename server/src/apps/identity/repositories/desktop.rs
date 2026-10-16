@@ -7,6 +7,7 @@ use crate::apps::identity::services::oidc::{
 };
 use crate::database::native::{Transaction, query as execute_query, query_as, query_scalar};
 use crate::{Error, Result, federation::Federation};
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::desktop::{ACCESS_PREFIX, REFRESH_PREFIX, Rotation};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
@@ -101,7 +102,7 @@ fn callback_url(value: &str) -> Result<reqwest::Url> {
 
 pub(crate) async fn start(f: &Federation, input: Start) -> Result<Started> {
 	let config = required_config(f)?;
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = f.store.pool.begin(&TenancyScope::NoTenant).await?;
 	// Serialize bounded admission across replicas using a transaction-owned lock.
 	let lock = Query::select()
 		.expr(Expr::cust("pg_advisory_xact_lock(714234281)"))
@@ -198,7 +199,7 @@ pub(crate) async fn authorize(
 ) -> Result<Response> {
 	let config = required_config(f)?;
 	let handoff: Handoff = query_as(&handoff_query(input.request))
-		.fetch_optional(&f.store.pool)
+		.fetch_optional(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	if handoff.expires_at <= Utc::now()
@@ -237,7 +238,7 @@ pub(crate) async fn authorize(
 		)
 		.to_string(PostgresQueryBuilder);
 	if execute_query(&bind)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.rows_affected()
 		!= 1
@@ -277,7 +278,7 @@ pub(crate) async fn consent(
 	{
 		return Err(Error::Forbidden);
 	}
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = f.store.pool.begin(&TenancyScope::NoTenant).await?;
 	let code = random_secret();
 	let update = Query::update()
 		.table(table("desktop_handoffs"))
@@ -324,7 +325,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 		.cond_where(proof.clone())
 		.to_string(PostgresQueryBuilder);
 	let browser_id = query_scalar::<Option<Uuid>>(&lookup)
-		.scalar_optional(&f.store.pool)
+		.scalar_optional(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.flatten()
 		.ok_or(Error::Unauthorized)?;
@@ -334,7 +335,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 		.and_where(Expr::col(table("id")).eq(Expr::value(browser_id)))
 		.to_string(PostgresQueryBuilder);
 	let browser: BrowserSession = query_as(&query)
-		.fetch_optional(&f.store.pool)
+		.fetch_optional(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	if browser.desktop
@@ -348,7 +349,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 	// Provider validation may perform pooled reads and writes. Finish it before
 	// reserving a transaction connection, even when the pool has only one slot.
 	oidc::validate_session_identity(f, browser).await?;
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = f.store.pool.begin(&TenancyScope::NoTenant).await?;
 	lock_identity(&mut tx, identity_id, LockType::Share).await?;
 	// Consume the same proof atomically after preflight; concurrent exchanges
 	// still issue at most one session and rejection rolls back consumption.
@@ -486,7 +487,7 @@ pub(crate) async fn refresh(f: &Federation, input: Renewal) -> Result<Tokens> {
 		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.refresh_token))))
 		.to_string(PostgresQueryBuilder);
 	let id: Uuid = query_scalar(&lookup)
-		.scalar_optional(&f.store.pool)
+		.scalar_optional(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	// Preflight and provider validation use the pool without holding a
@@ -497,12 +498,12 @@ pub(crate) async fn refresh(f: &Federation, input: Renewal) -> Result<Tokens> {
 		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
 	let candidate: BrowserSession = query_as(&preflight)
-		.fetch_optional(&f.store.pool)
+		.fetch_optional(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	let identity_id = candidate.identity_id();
 	oidc::validate_session_identity(f, candidate).await?;
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = f.store.pool.begin(&TenancyScope::NoTenant).await?;
 	lock_identity(&mut tx, identity_id, LockType::Share).await?;
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
@@ -597,7 +598,7 @@ pub(crate) async fn revoke_refresh(f: &Federation, input: Revocation) -> Result<
 		.from(table("desktop_refresh_credentials"))
 		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.refresh_token))))
 		.to_string(PostgresQueryBuilder);
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = f.store.pool.begin(&TenancyScope::NoTenant).await?;
 	if let Some(id) = query_scalar(&lookup).scalar_optional(&mut *tx).await? {
 		revoke(&mut tx, id).await?;
 	}
@@ -625,7 +626,7 @@ pub(crate) async fn session_record(f: &Federation, token: &str) -> Result<Browse
 		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(token))))
 		.to_string(PostgresQueryBuilder);
 	let session: BrowserSession = query_as(&query)
-		.fetch_optional(&f.store.pool)
+		.fetch_optional(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	valid_session(&session, true)?;

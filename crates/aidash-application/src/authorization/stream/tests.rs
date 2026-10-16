@@ -245,6 +245,7 @@ struct Session {
 	queries: Vec<(i64, usize, Option<Uuid>, Vec<Uuid>)>,
 	deny_action: Option<&'static str>,
 	denied_workspace: Option<Uuid>,
+	verdicts_seen: Vec<usize>,
 	fail: Option<&'static str>,
 }
 #[fixture]
@@ -257,6 +258,7 @@ fn session() -> Session {
 		queries: vec![],
 		deny_action: None,
 		denied_workspace: Some(Uuid::from_u128(2)),
+		verdicts_seen: vec![],
 		fail: None,
 	}
 }
@@ -340,8 +342,10 @@ impl StreamSession for Session {
 			.cloned()
 			.collect())
 	}
-	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+	async fn event_visible(&mut self, event: &Event, runs: &mut RunVerdicts) -> Result<bool> {
 		self.touch("event_visible")?;
+		self.verdicts_seen.push(runs.remembered());
+		runs.remember(event.id, None, true);
 		Ok(event.data["visible"] == true)
 	}
 }
@@ -406,6 +410,23 @@ async fn replay_continues_past_hidden_pages_and_returns_the_last_scanned_event(
 		&session.calls[..4],
 		&["require", "workspace.read", "require", "workspace.events"]
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn one_stream_page_shares_its_run_verdicts(mut session: Session) {
+	session.events = (1..=5).map(|seq| event(seq, true)).collect();
+	stream_page(&mut session, 0, None, || {}).await.unwrap();
+	assert_eq!(session.verdicts_seen, (0..5).collect::<Vec<_>>());
+}
+#[rstest]
+#[tokio::test]
+async fn one_replay_scan_shares_its_run_verdicts_across_pages(mut session: Session) {
+	session.events = (1..=1100).map(|seq| event(seq, seq >= 1050)).collect();
+	read_events(&mut session, -9, Some(Uuid::from_u128(1)), 2)
+		.await
+		.unwrap();
+	assert_eq!(session.queries.len(), 3);
+	assert_eq!(session.verdicts_seen, (0..1051).collect::<Vec<_>>());
 }
 #[rstest]
 #[tokio::test]

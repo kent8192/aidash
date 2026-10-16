@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::authorization::identity::Actor;
 use aidash_server::registry::Registry;
 use reinhardt::http::{Handler, Middleware, ViewResult};
@@ -990,12 +992,12 @@ async fn trust_run_backlog(
 	wb.register().await;
 	let visible =
 		wb.f.store
-			.create_workspace("Visible history", "Fixture")
+			.create_workspace(&TEST_FIXTURE, "Visible history", "Fixture")
 			.await
 			.unwrap();
 	let hidden =
 		wb.f.store
-			.create_workspace("Hidden history", "Fixture")
+			.create_workspace(&TEST_FIXTURE, "Hidden history", "Fixture")
 			.await
 			.unwrap();
 	for workspace in [&visible, &hidden] {
@@ -1029,6 +1031,7 @@ async fn trust_run_backlog(
 		let task =
 			wb.f.store
 				.create_task(
+					&TEST_FIXTURE,
 					workspace,
 					&aidash_server::domain::NewTask {
 						title: "History".into(),

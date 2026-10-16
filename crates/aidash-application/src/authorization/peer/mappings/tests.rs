@@ -1,4 +1,5 @@
 use super::*;
+use crate::tenancy::TenancyScope;
 use async_trait::async_trait;
 use chrono::DateTime;
 use rstest::{fixture, rstest};
@@ -74,7 +75,11 @@ impl MappingRepository for Repository {
 		self.called("enabled-peer");
 		Ok(())
 	}
-	async fn begin_write(&self, enabled: bool) -> Result<Write> {
+	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Write> {
+		assert!(
+			scope.tenant_name().is_some(),
+			"a mapping is written in its Tenant's scope"
+		);
 		self.called(if enabled {
 			"begin-data"
 		} else {

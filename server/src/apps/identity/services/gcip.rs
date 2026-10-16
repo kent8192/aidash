@@ -5,6 +5,7 @@ use crate::apps::identity::{
 	serializers::oidc::{LoginDiscovery, LoginQuery},
 };
 use crate::{Error, Result, federation::Federation};
+use aidash_application::tenancy::TenancyScope;
 use chrono::{Duration, Utc};
 use http::{HeaderMap, StatusCode, header};
 use reinhardt::db::orm::Model;
@@ -116,8 +117,7 @@ async fn begin(
 		.started_at(Some(now))
 		.gcip_tenant(Some(tenant))
 		.finish();
-	let lease = f.store.orm_connection()?;
-	transaction.reserve(lease.handle()).await?;
+	transaction.reserve(&f.store.pool).await?;
 	let mut response =
 		Response::new(StatusCode::SEE_OTHER).with_location(&format!("/sign-in?state={state}"));
 	oidc::set_cookie(
@@ -142,10 +142,17 @@ async fn transaction(
 	let config = oidc::required_config(f)?;
 	let browser = oidc::cookie_value(headers, &oidc::cookie_name(LOGIN_COOKIE, config))
 		.ok_or(Error::Unauthorized)?;
-	let lease = f.store.orm_connection()?;
-	let transaction = DashboardLoginTransaction::objects()
-		.filter(DashboardLoginTransaction::field_state_hash().eq(ByteKey(oidc::digest(state))))
-		.all_with_db(&mut lease.handle())
+	let transaction = f
+		.store
+		.pool
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			Ok(DashboardLoginTransaction::objects()
+				.filter(
+					DashboardLoginTransaction::field_state_hash().eq(ByteKey(oidc::digest(state))),
+				)
+				.all_with_db(tx)
+				.await?)
+		})
 		.await?
 		.pop()
 		.ok_or(Error::Unauthorized)?;
@@ -221,10 +228,9 @@ pub(crate) async fn exchange(
 		.await?;
 	// Verify the token before the shared authority checks the Binding and
 	// durably disables an existing identity whose Binding has been removed.
-	let lease = f.store.orm_connection()?;
 	let identity = crate::bootstrap::dashboard_authority(f)
 		.admit_login(
-			&mut crate::bootstrap::dashboard_login(lease.handle()),
+			&mut crate::bootstrap::dashboard_login(f.store.pool.clone()),
 			&sign_in,
 		)
 		.await?;
@@ -232,7 +238,7 @@ pub(crate) async fn exchange(
 	let browser = oidc::cookie_value(&headers, &oidc::cookie_name(LOGIN_COOKIE, session_config))
 		.ok_or(Error::Unauthorized)?;
 	let transaction = DashboardLoginTransaction::consume_bound(
-		lease.handle(),
+		&f.store.pool,
 		oidc::digest(&input.state),
 		oidc::digest(browser),
 	)
@@ -242,7 +248,7 @@ pub(crate) async fn exchange(
 	let previous = oidc::cookie_value(&headers, &oidc::cookie_name(SESSION_COOKIE, session_config))
 		.map(oidc::digest);
 	DashboardSession::start(
-		lease.handle(),
+		&f.store.pool,
 		identity.id,
 		(oidc::digest(&secret), oidc::digest(&csrf)),
 		None,

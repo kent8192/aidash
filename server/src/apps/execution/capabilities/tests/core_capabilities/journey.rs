@@ -1,6 +1,7 @@
 //! A provider-driven journey: tool selection and tool arguments travel through
 //! the real Harness, authorization guards, journal, and isolated runtime.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	context::ContextEvent,
 	domain::{RunControl, RunPhase, RunState, WaitingState},
@@ -181,7 +182,7 @@ async fn journey_fixture(
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	let run = c.f.store.runs().await.unwrap().remove(0);
+	let run = c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	Journey {
 		c,
 		peer,
@@ -210,7 +211,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	let mut answered_approval = false;
 	let finished = loop {
 		harness.worker_once().await.unwrap();
-		let run = j.c.f.store.run(j.run.id).await.unwrap();
+		let run = j.c.f.store.run(&TEST_FIXTURE, j.run.id).await.unwrap();
 		assert!(
 			!matches!(run.phase(), RunPhase::Failed | RunPhase::Cancelled)
 				&& run.control != RunControl::Paused,
@@ -239,7 +240,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 			assert_eq!(call.arguments, json!({"result":42}));
 			assert_eq!(j.effects.load(Ordering::SeqCst), 0);
 			let human = aidash_application::ports::execution::ExecutionStore::human_request_by_id(
-				&j.c.f.store,
+				&j.c.f.store.for_run(TEST_FIXTURE),
 				*request_id,
 			)
 			.await

@@ -9,6 +9,7 @@ use crate::{
 	},
 	federation::Federation,
 };
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	authorization::Snapshot,
@@ -58,6 +59,22 @@ impl Scope {
 		}
 	}
 }
+impl NativeHome {
+	/// A subject reads its own Tenant's intents; a Deployment Administrator
+	/// and a request that a peer Node authenticated read across Tenants.
+	fn tenancy(&self) -> crate::Result<TenancyScope> {
+		match &self.actor {
+			Some(Actor::Subject(identity)) => identity.tenancy(),
+			Some(Actor::DeploymentAdministrator) => Ok(TenancyScope::Deployment(
+				aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+			)),
+			None => Ok(TenancyScope::Deployment(
+				aidash_application::tenancy::DeploymentScopeReason::FederationInbound,
+			)),
+		}
+	}
+}
+
 #[async_trait]
 impl HomeGenerationRepository for NativeHome {
 	fn principal(&self) -> Option<&Principal> {
@@ -89,7 +106,7 @@ impl HomeGenerationRepository for NativeHome {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&f.store.pool)
+			.fetch_optional(f.store.pool.in_scope(&self.tenancy()?))
 			.await?
 		}
 		.ok_or(Error::Forbidden);

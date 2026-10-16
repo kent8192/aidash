@@ -12,6 +12,7 @@ use crate::apps::execution::capabilities::{
 	services::{service, sessions},
 };
 use crate::{Error as NativeError, Result as NativeResult, authorization::peer};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	ports::capabilities::transfer::receiver::{ReceiverRepository, ReceiverScope},
@@ -29,6 +30,9 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// An inbound peer names a transfer, not its Tenant, until #241.
+const INBOUND: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::FederationInbound);
 fn missing() -> Error {
 	Error::External("transfer receiver scope invariant".into())
 }
@@ -86,7 +90,7 @@ impl ReceiverRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&INBOUND))
 				.await?
 			}
 			.ok_or_else(|| NativeError::NotFound("transfer unavailable".into()))
@@ -110,7 +114,7 @@ impl ReceiverRepository for Repository<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&INBOUND))
 				.await?
 			}
 			.ok_or_else(|| NativeError::NotFound("transfer unavailable".into()))

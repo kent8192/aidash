@@ -1,4 +1,5 @@
 //! App-local distributed protocol E2E tests using native framework fixtures.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "fixtures.rs"]
 mod fixtures;
 #[path = "../../../execution/tests/support/native_database.rs"]

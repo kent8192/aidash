@@ -9,8 +9,7 @@ pub struct ReadLease {
 }
 impl ReadLease {
 	pub async fn begin(store: &Store) -> Result<Self> {
-		let connection = store.control_pool.connection();
-		let (tx, commit_epoch) = AtomicGate::read_lease(&connection).await?;
+		let (tx, commit_epoch) = AtomicGate::read_lease(&store.control_pool).await?;
 		Ok(Self {
 			transaction: Some(tx),
 			commit_epoch,

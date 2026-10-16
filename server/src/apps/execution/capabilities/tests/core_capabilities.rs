@@ -1,5 +1,7 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../tests/support/legacy.rs"]
 mod common;
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use common::{bootstrap, cleanup, request};
 use futures_util::{
@@ -563,7 +565,7 @@ async fn admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
-	c.f.store.runs().await.unwrap().remove(0)
+	c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0)
 }
 async fn source(c: &CoreFixture, workspace: Uuid, text: &str) -> Uuid {
 	let (status, response) = request(
@@ -746,7 +748,11 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 		404
 	);
 	assert!(
-		c.f.store.run_inputs(run.id).await.unwrap().is_empty(),
+		c.f.store
+			.run_inputs(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.is_empty(),
 		"another requester cannot steer a privileged Run"
 	);
 	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, steer.clone()).await;
@@ -757,7 +763,7 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 			.0,
 		200
 	);
-	let inputs = c.f.store.run_inputs(run.id).await.unwrap();
+	let inputs = c.f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(inputs.len(), 1);
 	assert_eq!(inputs[0].content, "Prioritize the current question");
 	assert_eq!(
@@ -1216,7 +1222,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	assert_eq!(status, 200, "{value}");
 	let receiver =
 		c.f.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.into_iter()
@@ -1434,7 +1440,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
-	let run = c.f.store.runs().await.unwrap().remove(0);
+	let run = c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let (_, area) = request(
 		&c.app,
 		&c.token,

@@ -1,6 +1,7 @@
 //! PostgreSQL adapters share worker pools, visibility leases and authorized execution.
 use crate::{Error, Result, harness::Harness, transactions::gate::ReadLease};
 use aidash_application::ports::activation::*;
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{
 	Run,
 	activation::{Obligation, QuarantineReason},
@@ -56,10 +57,12 @@ impl ActivationRepository for Repository {
 				.harness
 				.federation
 				.store
-				.database()
-				.begin()
+				.pool
+				.begin(&TenancyScope::Deployment(
+					DeploymentScopeReason::ActivationClaim,
+				))
 				.await
-				.map_err(Error::from)
+				.and_then(crate::database::native::Transaction::into_executor)
 				.map_err(error)?,
 		}))
 	}

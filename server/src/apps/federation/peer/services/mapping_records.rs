@@ -4,17 +4,21 @@ use crate::apps::federation::peer::models::{
 	AuthorizationPeerMapping, AuthorizationPeerMappingHistory,
 };
 use crate::apps::identity::serializers::peer::{MappingRevision, PeerMapping};
-use reinhardt::db::orm::DatabaseConnection;
+use crate::database::native::Pool;
+use crate::federation::Federation;
+use aidash_application::tenancy::TenancyScope;
 use reinhardt::injectable;
 
 #[derive(Clone)]
 pub(crate) struct PeerMappingRecords {
-	connection: DatabaseConnection,
+	pool: Pool,
 }
 
 #[injectable(scope = "request")]
-pub(crate) async fn provide(#[inject] connection: DatabaseConnection) -> PeerMappingRecords {
-	PeerMappingRecords { connection }
+pub(crate) async fn provide(#[inject] runtime: Federation) -> PeerMappingRecords {
+	PeerMappingRecords {
+		pool: runtime.store.pool.clone(),
+	}
 }
 
 impl PeerMappingRecords {
@@ -24,14 +28,15 @@ impl PeerMappingRecords {
 		after: i64,
 		limit: usize,
 	) -> Result<Vec<MappingRevision>> {
-		let mut connection = self.connection;
-		Ok(
-			AuthorizationPeerMappingHistory::page(&mut connection, tenant, after, limit)
-				.await?
-				.into_iter()
-				.map(MappingRevision::from)
-				.collect(),
-		)
+		Ok(self
+			.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AuthorizationPeerMappingHistory::page(tx, tenant, after, limit).await
+			})
+			.await?
+			.into_iter()
+			.map(MappingRevision::from)
+			.collect())
 	}
 
 	pub(crate) async fn list(
@@ -40,13 +45,14 @@ impl PeerMappingRecords {
 		offset: usize,
 		limit: usize,
 	) -> Result<Vec<PeerMapping>> {
-		let mut connection = self.connection;
-		Ok(
-			AuthorizationPeerMapping::page(&mut connection, tenant, offset, limit)
-				.await?
-				.into_iter()
-				.map(PeerMapping::from)
-				.collect(),
-		)
+		Ok(self
+			.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AuthorizationPeerMapping::page(tx, tenant, offset, limit).await
+			})
+			.await?
+			.into_iter()
+			.map(PeerMapping::from)
+			.collect())
 	}
 }

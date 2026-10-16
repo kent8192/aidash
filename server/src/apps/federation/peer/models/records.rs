@@ -80,13 +80,18 @@ pub(crate) async fn save(tx: &mut AtomicTransaction, peer: &PeerContract) -> Res
 }
 
 /// Restore peer authentication while preserving disabled subject mappings/trust.
+/// A Deployment Administrator's change to peer configuration, which has no
+/// Tenant until #241.
 pub(crate) async fn restore_authentication(
-	db: reinhardt::db::orm::DatabaseConnection,
+	db: &crate::database::native::Pool,
 	node: &str,
 	credential_env: &str,
 	credential: &str,
 ) -> Result<PeerContract> {
-	db.atomic(async |tx| {
+	let scope = aidash_application::tenancy::TenancyScope::Deployment(
+		aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministration,
+	);
+	db.atomic(&scope, async |tx| {
 		crate::apps::identity::models::authority_control(tx).await?;
 		lock_registration(tx).await?;
 		aidash_application::federation::peers::require_distinct_credentials(

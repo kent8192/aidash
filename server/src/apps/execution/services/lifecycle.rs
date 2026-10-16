@@ -1,6 +1,5 @@
 //! Process readiness and a dedicated probe listener, independent of admission.
 use crate::{Error, Result, federation::Federation};
-use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::di::{KeyedFactoryOutput, SelfKey};
 use reinhardt::server::{HttpServer, ShutdownCoordinator};
 use reinhardt::{Depends, InjectionContext, injectable};
@@ -30,7 +29,7 @@ pub async fn provide_lifecycle() -> ProcessLifecycle {
 
 #[derive(Clone)]
 pub struct ProcessHealth {
-	connection: DatabaseConnection,
+	pool: crate::database::native::Pool,
 	lifecycle: ProcessLifecycle,
 }
 
@@ -40,7 +39,7 @@ pub async fn provide_health(
 	#[inject] lifecycle: Depends<ProcessLifecycle>,
 ) -> ProcessHealth {
 	ProcessHealth {
-		connection: runtime.store.control_pool.connection(),
+		pool: runtime.store.control_pool.clone(),
 		lifecycle: (*lifecycle).clone(),
 	}
 }
@@ -53,7 +52,7 @@ impl ProcessHealth {
 		// Probe connection capacity without taking the application visibility lock.
 		let available = tokio::time::timeout(
 			Duration::from_secs(2),
-			super::super::models::health::probe(&self.connection),
+			super::super::models::health::probe(&self.pool),
 		)
 		.await
 		.is_ok_and(|result| result.is_ok());

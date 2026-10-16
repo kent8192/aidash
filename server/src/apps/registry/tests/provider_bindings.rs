@@ -1,4 +1,5 @@
 //! Native descriptor admission and immutable system seeding on disposable PostgreSQL.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
 use aidash_domain::{registry::bindings::QualifiedRef, tool::providers::ToolDescriptor};

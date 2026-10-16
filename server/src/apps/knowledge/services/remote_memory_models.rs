@@ -21,8 +21,13 @@ pub(crate) struct Reservation {
 }
 impl Reservation {
 	pub(crate) async fn settle(self, reported: Option<u64>) -> Result<()> {
+		let scope = self
+			.runtime
+			.store
+			.remote_tenancy(self.input.usage.admission_id, self.input.usage.grant_id)
+			.await?;
 		aidash_application::generation::dispatch::finish(
-			&crate::bootstrap::generation_dispatch_repository(&self.runtime.store),
+			&crate::bootstrap::generation_dispatch_repository(&self.runtime.store, scope),
 			&crate::bootstrap::generation_dispatch_settlement(&self.runtime),
 			&self.input,
 			Finalization::Settled {
@@ -66,7 +71,12 @@ pub(crate) async fn reserve(
 		},
 		boundary: serde_json::to_value(&origin.operation)?,
 	};
-	let dispatch = crate::bootstrap::generation_dispatch_repository(&origin.runtime.store);
+	let scope = origin
+		.runtime
+		.store
+		.remote_tenancy(input.usage.admission_id, input.usage.grant_id)
+		.await?;
+	let dispatch = crate::bootstrap::generation_dispatch_repository(&origin.runtime.store, scope);
 	let settlement = crate::bootstrap::generation_dispatch_settlement(&origin.runtime);
 	aidash_application::generation::dispatch::prepare(&dispatch, &input, &origin.receiver).await?;
 	let result: Result<()> = async {

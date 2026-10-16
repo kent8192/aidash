@@ -78,9 +78,10 @@ pub(crate) async fn handoff<T: Serialize>(
 			audit
 		})
 	});
+	let tenancy = access.tenancy()?;
 	let result = access.finish(result).await;
 	if let Some(denial) = denial {
-		let mut tx = crate::database::native::begin(&store.pool).await?;
+		let mut tx = store.pool.begin(&tenancy).await?;
 		store
 			.event(&mut tx, None, "marketplace.audit", denial)
 			.await?;

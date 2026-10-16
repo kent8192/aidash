@@ -1,5 +1,6 @@
 //! `GET /api/runs/{run}/inference/stream` delivery, replay and closure.
 use super::{Conversation, common};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::provider::progress::{InterruptionReason, ProgressOutcome};
 use aidash_server::sse;
 use common::request;
@@ -178,7 +179,7 @@ async fn replay_resumes_after_the_cursor_without_duplicates(
 		c.text(worker, attempt, text).await;
 	}
 	c.f.store
-		.finish_inference(c.run.id, worker, attempt, stall())
+		.finish_inference(&TEST_FIXTURE, c.run.id, worker, attempt, stall())
 		.await
 		.unwrap();
 	let mut full = fixture.stream(None, None).await;
@@ -229,7 +230,7 @@ async fn without_a_cursor_the_stream_starts_at_the_latest_attempt(
 	let earlier = c.start(worker).await;
 	c.text(worker, earlier, "earlier").await;
 	c.f.store
-		.finish_inference(c.run.id, worker, earlier, stall())
+		.finish_inference(&TEST_FIXTURE, c.run.id, worker, earlier, stall())
 		.await
 		.unwrap();
 	let latest = c.start(worker).await;
@@ -266,7 +267,7 @@ async fn a_gap_replaces_pruned_rows_and_outcomes_are_still_delivered(
 	c.text(worker, attempt, "first").await;
 	c.text(worker, attempt, "second").await;
 	c.f.store
-		.finish_inference(c.run.id, worker, attempt, stall())
+		.finish_inference(&TEST_FIXTURE, c.run.id, worker, attempt, stall())
 		.await
 		.unwrap();
 	sqlx::query(

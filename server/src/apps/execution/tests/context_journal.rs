@@ -1,8 +1,10 @@
 //! The Context Journal is authoritative; `runs.context` is its lossy projection.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/legacy.rs"]
 mod common;
 
 use aidash_application::ports::execution::ExecutionStore;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::context::{
 	ContextEvent, HistoryEntry, JournalCursor,
 	recovery::{Attempt, Failure, Outcome, Settlement, Stage},
@@ -148,7 +150,7 @@ async fn saves_journal_original_events_with_their_origin(
 	project(&mut run, 3, 2);
 	// Act
 	f.store
-		.save_run(&run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
 		.await
 		.unwrap();
 	// Assert
@@ -168,7 +170,7 @@ async fn saves_journal_original_events_with_their_origin(
 	run.context.push(event(4));
 	// Act
 	f.store
-		.save_run(&run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
 		.await
 		.unwrap();
 	// Assert: the journal keeps the originals; the projection is lossy.
@@ -184,8 +186,17 @@ async fn saves_journal_original_events_with_their_origin(
 			(4, "appended")
 		]
 	);
-	assert_eq!(f.store.run(run.id).await.unwrap().context.history.len(), 2);
-	let range = ExecutionStore::context_journal(&f.store, run.id, 2, 3)
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.context
+			.history
+			.len(),
+		2
+	);
+	let range = ExecutionStore::context_journal(&f.store.for_run(TEST_FIXTURE), run.id, 2, 3)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -202,12 +213,15 @@ async fn saves_journal_original_events_with_their_origin(
 		]
 	);
 	assert!(
-		ExecutionStore::context_journal(&f.store, run.id, 5, 9)
+		ExecutionStore::context_journal(&f.store.for_run(TEST_FIXTURE), run.id, 5, 9)
 			.await
 			.unwrap()
 			.is_empty()
 	);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -224,20 +238,27 @@ async fn begin_compaction_abandons_open_attempts_and_enforces_the_call_budget(
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	project(&mut run, 3, 0);
 	f.store
-		.save_run(&run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
 		.await
 		.unwrap();
 	let first = attempt(&run, 1, 2);
 	let second = attempt(&run, 1, 3);
 	let exhausted = attempt(&run, 1, 3);
 	// Act
-	ExecutionStore::begin_compaction(&f.store, &run, worker, &first, 2)
+	ExecutionStore::begin_compaction(&f.store.for_run(TEST_FIXTURE), &run, worker, &first, 2)
 		.await
 		.unwrap();
-	ExecutionStore::begin_compaction(&f.store, &run, worker, &second, 2)
+	ExecutionStore::begin_compaction(&f.store.for_run(TEST_FIXTURE), &run, worker, &second, 2)
 		.await
 		.unwrap();
-	let refused = ExecutionStore::begin_compaction(&f.store, &run, worker, &exhausted, 2).await;
+	let refused = ExecutionStore::begin_compaction(
+		&f.store.for_run(TEST_FIXTURE),
+		&run,
+		worker,
+		&exhausted,
+		2,
+	)
+	.await;
 	// Assert: the spent budget is typed, and every earlier attempt is settled.
 	assert!(
 		matches!(
@@ -257,11 +278,20 @@ async fn begin_compaction_abandons_open_attempts_and_enforces_the_call_budget(
 	);
 	// A foreign lease cannot record an attempt.
 	assert!(matches!(
-		ExecutionStore::begin_compaction(&f.store, &run, Uuid::new_v4(), &attempt(&run, 1, 3), 9)
-			.await,
+		ExecutionStore::begin_compaction(
+			&f.store.for_run(TEST_FIXTURE),
+			&run,
+			Uuid::new_v4(),
+			&attempt(&run, 1, 3),
+			9
+		)
+		.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -278,7 +308,7 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	project(&mut run, 3, 0);
 	f.store
-		.save_run(&run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
 		.await
 		.unwrap();
 	let mut compacted = run.clone();
@@ -286,31 +316,59 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	compacted.context.compactions += 1;
 	// An unknown attempt is not open.
 	assert!(matches!(
-		ExecutionStore::adopt_compaction(&f.store, &compacted, worker, Uuid::new_v4(), &adopted())
-			.await,
+		ExecutionStore::adopt_compaction(
+			&f.store.for_run(TEST_FIXTURE),
+			&compacted,
+			worker,
+			Uuid::new_v4(),
+			&adopted()
+		)
+		.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
 	// The journal does not cover the attempt's source range.
 	let beyond = attempt(&run, 1, 9);
-	ExecutionStore::begin_compaction(&f.store, &run, worker, &beyond, 9)
+	ExecutionStore::begin_compaction(&f.store.for_run(TEST_FIXTURE), &run, worker, &beyond, 9)
 		.await
 		.unwrap();
 	assert!(matches!(
-		ExecutionStore::adopt_compaction(&f.store, &compacted, worker, beyond.id, &adopted()).await,
+		ExecutionStore::adopt_compaction(
+			&f.store.for_run(TEST_FIXTURE),
+			&compacted,
+			worker,
+			beyond.id,
+			&adopted()
+		)
+		.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
-	assert_eq!(f.store.run(run.id).await.unwrap().context.history.len(), 3);
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.context
+			.history
+			.len(),
+		3
+	);
 	assert_eq!(
 		outcomes(&f.store, run.id).await,
 		vec![(beyond.id, None, false)]
 	);
 	// A settled attempt cannot be adopted.
 	let insufficient = attempt(&run, 1, 2);
-	ExecutionStore::begin_compaction(&f.store, &run, worker, &insufficient, 9)
-		.await
-		.unwrap();
+	ExecutionStore::begin_compaction(
+		&f.store.for_run(TEST_FIXTURE),
+		&run,
+		worker,
+		&insufficient,
+		9,
+	)
+	.await
+	.unwrap();
 	ExecutionStore::settle_compaction(
-		&f.store,
+		&f.store.for_run(TEST_FIXTURE),
 		&run,
 		worker,
 		insufficient.id,
@@ -324,20 +382,32 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	.await
 	.unwrap();
 	assert!(matches!(
-		ExecutionStore::adopt_compaction(&f.store, &compacted, worker, insufficient.id, &adopted())
-			.await,
+		ExecutionStore::adopt_compaction(
+			&f.store.for_run(TEST_FIXTURE),
+			&compacted,
+			worker,
+			insufficient.id,
+			&adopted()
+		)
+		.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
 	// Act: an open attempt whose range is journaled.
 	let accepted = attempt(&run, 1, 2);
-	ExecutionStore::begin_compaction(&f.store, &run, worker, &accepted, 9)
+	ExecutionStore::begin_compaction(&f.store.for_run(TEST_FIXTURE), &run, worker, &accepted, 9)
 		.await
 		.unwrap();
-	ExecutionStore::adopt_compaction(&f.store, &compacted, worker, accepted.id, &adopted())
-		.await
-		.unwrap();
+	ExecutionStore::adopt_compaction(
+		&f.store.for_run(TEST_FIXTURE),
+		&compacted,
+		worker,
+		accepted.id,
+		&adopted(),
+	)
+	.await
+	.unwrap();
 	// Assert: projection, attempt and event changed together.
-	let saved = f.store.run(run.id).await.unwrap();
+	let saved = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(saved.context.history.len(), 1);
 	assert_eq!(saved.context.compactions, run.context.compactions + 1);
 	assert_eq!(
@@ -366,11 +436,20 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	assert_eq!(compactions, 1);
 	// Adoption is single-use.
 	assert!(matches!(
-		ExecutionStore::adopt_compaction(&f.store, &compacted, worker, accepted.id, &adopted())
-			.await,
+		ExecutionStore::adopt_compaction(
+			&f.store.for_run(TEST_FIXTURE),
+			&compacted,
+			worker,
+			accepted.id,
+			&adopted()
+		)
+		.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -394,20 +473,29 @@ async fn a_pinned_estimate_is_durable_and_keeps_the_lease(
 	run.context.estimate.snapshot = Some(snapshot);
 	let revision = run.revision;
 	// Act
-	ExecutionStore::pin_estimate(&f.store, &mut run, worker)
+	ExecutionStore::pin_estimate(&f.store.for_run(TEST_FIXTURE), &mut run, worker)
 		.await
 		.unwrap();
 	// Assert: the saved revision is adopted, the lease still admits the step's
 	// next save, and a reload reads the snapshot.
 	assert_eq!(run.revision, revision + 1);
 	f.store
-		.save_run(&run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
 		.await
 		.unwrap();
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().context.estimate.snapshot,
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.context
+			.estimate
+			.snapshot,
 		Some(snapshot)
 	);
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use aidash_server::apps::identity::models::states::AuthorizationRunReadResourceKind as Kind;
 use reinhardt::{
 	db::orm::{DatabaseValue, Model, connection::OrmExecutor},

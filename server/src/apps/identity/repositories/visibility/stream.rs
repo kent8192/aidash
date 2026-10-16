@@ -3,7 +3,10 @@ use super::{Reads, projection::event_scope};
 use crate::{Result as NativeResult, apps::identity::services::workspace::Workspaces};
 use aidash_application::{
 	Result,
-	ports::authorization::stream::{AuthorityRecord, StreamAuthorityStore, StreamSession},
+	ports::authorization::{
+		stream::{AuthorityRecord, StreamAuthorityStore, StreamSession},
+		visibility::RunVerdicts,
+	},
 };
 use aidash_domain::Event;
 use async_trait::async_trait;
@@ -126,7 +129,12 @@ impl StreamAuthorityStore for Authority<'_> {
 					.bind(self.workspaces.identity.credential_id)
 					.bind(&self.workspaces.identity.tenant)
 					.bind(&self.workspaces.identity.subject)
-					.fetch_optional(&self.workspaces.store.pool)
+					.fetch_optional(
+						self.workspaces
+							.store
+							.pool
+							.in_scope(&self.workspaces.identity.tenancy()?),
+					)
 					.await?;
 			if let Some(current) = &current
 				&& current.mapping_id.is_some()
@@ -185,8 +193,8 @@ impl StreamSession for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
-		Box::pin(self.access.event_visible(event))
+	async fn event_visible(&mut self, event: &Event, runs: &mut RunVerdicts) -> Result<bool> {
+		Box::pin(self.access.event_visible_in(event, runs))
 			.await
 			.map_err(Into::into)
 	}

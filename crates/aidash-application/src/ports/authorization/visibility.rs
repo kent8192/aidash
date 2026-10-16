@@ -5,7 +5,27 @@ use aidash_domain::{
 	policy::Resource,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 use uuid::Uuid;
+
+/// Run verdicts shared by the events of one scan. A scan reads under one
+/// authority, so every event of a Run takes that Run's verdict; the next scan
+/// starts empty and applies live human membership and read provenance again.
+#[derive(Default)]
+pub struct RunVerdicts(HashMap<(Uuid, Option<Uuid>), bool>);
+
+impl RunVerdicts {
+	pub fn get(&self, run: Uuid, workspace: Option<Uuid>) -> Option<bool> {
+		self.0.get(&(run, workspace)).copied()
+	}
+	pub fn remember(&mut self, run: Uuid, workspace: Option<Uuid>, visible: bool) {
+		self.0.insert((run, workspace), visible);
+	}
+	#[cfg(test)]
+	pub(crate) fn remembered(&self) -> usize {
+		self.0.len()
+	}
+}
 
 #[async_trait]
 pub trait LocalRunVisibilityScope: Send {

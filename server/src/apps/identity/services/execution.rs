@@ -146,6 +146,10 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	/// The scope of every transaction this authority's Run opens.
+	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
+		self.access.read().await.tenancy()
+	}
 	/// Concurrent core tool calls of one Run share the outer authority lease.
 	/// Each call runs in its own inner transaction while the outer transaction
 	/// keeps the authorization locks, so revocation waits until every concurrent
@@ -500,7 +504,7 @@ pub(crate) async fn operator_human_message_media(
 	model: &crate::registry::ModelConfig,
 ) -> Result<HumanMediaBatch> {
 	aidash_application::execution::media::deployment_administrator(
-		&crate::bootstrap::operator_media_repository(store),
+		&crate::bootstrap::operator_media_repository(store, store.run_tenancy(run.id).await?),
 		&run.metadata(),
 		messages,
 		model,
@@ -516,6 +520,8 @@ pub(crate) struct Guard {
 	access: Arc<RwLock<Access>>,
 	run: Run,
 	agent: AgentConfig,
+	/// The Run's Tenant, learned from its authority when the step began.
+	tenancy: aidash_application::tenancy::TenancyScope,
 }
 
 pub(in crate::apps::identity) async fn authorize_guard(
@@ -596,12 +602,17 @@ impl Guard {
 			run,
 		)
 		.await?;
-		Ok(entry.map(|entry| Self {
-			remote: entry.remote.then(|| f.clone()),
-			access: Arc::new(RwLock::new(entry.scope)),
-			run: run.clone(),
-			agent: entry.agent,
-		}))
+		entry
+			.map(|entry| {
+				Ok(Self {
+					tenancy: entry.scope.tenancy()?,
+					remote: entry.remote.then(|| f.clone()),
+					access: Arc::new(RwLock::new(entry.scope)),
+					run: run.clone(),
+					agent: entry.agent,
+				})
+			})
+			.transpose()
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.write().await;
@@ -630,6 +641,10 @@ impl Guard {
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()
 	}
+	/// The scope of every transaction this Run's step opens.
+	pub(crate) fn tenancy(&self) -> &aidash_application::tenancy::TenancyScope {
+		&self.tenancy
+	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.
 	pub(crate) async fn tenant(&self) -> String {
@@ -657,7 +672,9 @@ impl Guard {
 		store: &Store,
 	) -> Result<aidash_domain::context::sources::RetrievalScope> {
 		if let Some(federation) = &self.remote {
-			let description = super::peer::semantic::admission(federation, &self.run).await?;
+			let tenancy = self.access.read().await.tenancy()?;
+			let description =
+				super::peer::semantic::admission(federation, &self.run, &tenancy).await?;
 			let (index_revision, participant_revision) = match &description.semantic {
 				aidash_domain::semantic::remote::Binding::Disabled { .. } => (None, None),
 				aidash_domain::semantic::remote::Binding::RequiredHome {
@@ -1077,9 +1094,10 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		request_bytes: i64,
 	) -> aidash_application::Result<()> {
 		let mut access = self.guard.access.write().await;
+		let tenancy = access.tenancy()?;
 		aidash_application::generation::summary::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&crate::bootstrap::generation_summary_repository(&self.f.store),
+			&crate::bootstrap::generation_summary_repository(&self.f.store, tenancy),
 			&self.generation_context(),
 			summarizer,
 			request_bytes,
