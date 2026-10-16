@@ -74,6 +74,10 @@ pub enum Failure {
 	ResponseTooLarge,
 	UnsupportedMedia,
 	ExtractionFailed,
+	/// A PDF that opens only with a password.
+	EncryptedDocument,
+	/// A PDF whose permissions forbid extracting its text.
+	ExtractionNotPermitted,
 	/// A page redirected to another host than the approved destination.
 	CrossHostRedirect,
 	/// A page redirected from https to an unencrypted address.
@@ -111,6 +115,8 @@ impl Failure {
 			Self::ResponseTooLarge => "response_too_large",
 			Self::UnsupportedMedia => "unsupported_media",
 			Self::ExtractionFailed => "extraction_failed",
+			Self::EncryptedDocument => "encrypted_document",
+			Self::ExtractionNotPermitted => "extraction_not_permitted",
 			Self::CrossHostRedirect => "cross_host_redirect",
 			Self::InsecureRedirect => "insecure_redirect",
 			Self::Timeout => "timeout",
@@ -142,6 +148,10 @@ impl Failure {
 			Self::ResponseTooLarge => "The response exceeded the configured size limit.",
 			Self::UnsupportedMedia => "The page has an unsupported media type.",
 			Self::ExtractionFailed => "No readable text could be extracted from the page.",
+			Self::EncryptedDocument => "The document opens only with a password.",
+			Self::ExtractionNotPermitted => {
+				"The document's permissions forbid extracting its text."
+			}
 			Self::CrossHostRedirect => {
 				"The page redirected to another host; request that address in a new call."
 			}

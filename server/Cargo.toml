@@ -118,6 +118,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 cfg_aliases = "0.2"
 
 [dev-dependencies]
+flate2 = "1"
 # Test-only Provider Credential write port and fake-provider constructors
 # (ADR 0006). Never enable these features in [dependencies].
 aidash-application = { workspace = true, features = ["test-support"] }
@@ -151,6 +152,10 @@ path = "src/apps/execution/tests/commands.rs"
 [[test]]
 name = "context_journal"
 path = "src/apps/execution/tests/context_journal.rs"
+
+[[test]]
+name = "research_pdf"
+path = "src/apps/execution/tests/research_pdf.rs"
 
 [[test]]
 name = "dashboard_oidc"
