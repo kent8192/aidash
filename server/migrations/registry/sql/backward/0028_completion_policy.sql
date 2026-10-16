@@ -1,24 +1,24 @@
 -- PostgreSQL function bodies have no typed migration operation. DDL only.
 -- Restore the 0022_context_policy Agent Binding contract. Downgrading refuses
 -- stored Completion Policy declarations rather than leaving rows that the
--- restored contract and pre-0027 binaries reject. Agent definitions are the
+-- restored contract and pre-0028 binaries reject. Agent definitions are the
 -- only declarations left: registry/0025_remove_legacy_installations dropped
 -- packages and installations before this migration. It also refuses while any
 -- Run, finished or not, stores Completion Gate progress or a Binding snapshot
--- pinning an Agent definition that declares a Completion Policy: pre-0027
+-- pinning an Agent definition that declares a Completion Policy: pre-0028
 -- binaries reject both when they read the Run, including its history. Such a
 -- Run's Context Journal events are covered by its progress, which every
 -- Completion Gate decision records.
 DO $$
 BEGIN
  IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND metadata->'config' ? 'completion') THEN
-  RAISE EXCEPTION 'registry 0027_completion_policy cannot be reversed: Agent definitions declare completion';
+  RAISE EXCEPTION 'registry 0028_completion_policy cannot be reversed: Agent definitions declare completion';
  END IF;
  IF to_regclass('public.runs') IS NOT NULL AND EXISTS(SELECT 1 FROM public.runs
    WHERE context ? 'completion'
    OR jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && exists(@.config.completion))')
    OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && exists(@.config.completion))')) THEN
-  RAISE EXCEPTION 'registry 0027_completion_policy cannot be reversed: Runs store Completion Gate progress or pin Agent definitions declaring completion';
+  RAISE EXCEPTION 'registry 0028_completion_policy cannot be reversed: Runs store Completion Gate progress or pin Agent definitions declaring completion';
  END IF;
 END
 $$;

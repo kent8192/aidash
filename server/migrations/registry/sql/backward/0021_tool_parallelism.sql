@@ -8,18 +8,29 @@
 -- restriction: a Run admitted after this migration pins a provider contract
 -- digest that encodes `concurrency`, which pre-0021 binaries reject when they
 -- resolve the Run's tools. Retry once those Runs finish or are cancelled.
+-- registry 0025_remove_legacy_installations drops `packages` and `installations`,
+-- so they are read only while they exist. PL/pgSQL plans a whole IF condition
+-- at once, so each check needs its own nested IF rather than an AND guard.
 DO $$
 BEGIN
  IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND (metadata->'config' ? 'tool_parallelism'
    OR jsonb_path_exists(metadata->'config', 'lax $.bindings[*].narrow.concurrency')))
- OR EXISTS(SELECT 1 FROM registry WHERE kind = 'tool' AND metadata #> '{config,narrow}' ? 'concurrency')
- OR EXISTS(SELECT 1 FROM packages WHERE manifest #> '{entity,config}' ? 'tool_parallelism'
-   OR jsonb_path_exists(manifest #> '{entity,config}', 'lax $.bindings[*].narrow.concurrency')
-   OR manifest #> '{entity,config,narrow}' ? 'concurrency')
- OR EXISTS(SELECT 1 FROM installations WHERE config ? 'tool_parallelism'
-   OR jsonb_path_exists(config, 'lax $.bindings[*].narrow.concurrency')
-   OR config #> '{narrow}' ? 'concurrency') THEN
+ OR EXISTS(SELECT 1 FROM registry WHERE kind = 'tool' AND metadata #> '{config,narrow}' ? 'concurrency') THEN
   RAISE EXCEPTION 'registry 0021_tool_parallelism cannot be reversed: definitions, packages or installations declare tool_parallelism or narrow.concurrency';
+ END IF;
+ IF to_regclass('packages') IS NOT NULL THEN
+  IF EXISTS(SELECT 1 FROM packages WHERE manifest #> '{entity,config}' ? 'tool_parallelism'
+    OR jsonb_path_exists(manifest #> '{entity,config}', 'lax $.bindings[*].narrow.concurrency')
+    OR manifest #> '{entity,config,narrow}' ? 'concurrency') THEN
+   RAISE EXCEPTION 'registry 0021_tool_parallelism cannot be reversed: definitions, packages or installations declare tool_parallelism or narrow.concurrency';
+  END IF;
+ END IF;
+ IF to_regclass('installations') IS NOT NULL THEN
+  IF EXISTS(SELECT 1 FROM installations WHERE config ? 'tool_parallelism'
+    OR jsonb_path_exists(config, 'lax $.bindings[*].narrow.concurrency')
+    OR config #> '{narrow}' ? 'concurrency') THEN
+   RAISE EXCEPTION 'registry 0021_tool_parallelism cannot be reversed: definitions, packages or installations declare tool_parallelism or narrow.concurrency';
+  END IF;
  END IF;
  IF to_regclass('public.runs') IS NOT NULL AND EXISTS(SELECT 1 FROM public.runs
    WHERE phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')

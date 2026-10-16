@@ -32,9 +32,9 @@ use uuid::Uuid;
 /// migration from the current head would reach objects those migrations
 /// removed or replaced.
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
-	("registry", "0025_remove_legacy_installations"),
-	("registry", "0026_remove_legacy_installations_state"),
-	("registry", "0027_completion_policy"),
+	("registry", "0026_remove_legacy_installations"),
+	("registry", "0027_remove_legacy_installations_state"),
+	("registry", "0028_completion_policy"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -1819,7 +1819,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0027_completion_policy")
+			.find(|m| m.app_label == "registry" && m.name == "0028_completion_policy")
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -1887,7 +1887,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.unwrap_err();
 	assert!(
 		error.to_string().contains(
-			"registry 0027_completion_policy cannot be reversed: Agent definitions declare completion"
+			"registry 0028_completion_policy cannot be reversed: Agent definitions declare completion"
 		),
 		"{error}"
 	);
