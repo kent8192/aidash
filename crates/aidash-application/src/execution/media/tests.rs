@@ -566,7 +566,7 @@ fn repository() -> Repository {
 }
 #[rstest]
 #[tokio::test]
-async fn an_deployment_administrator_cannot_open_a_media_transaction_for_a_foreign_run(
+async fn a_deployment_administrator_cannot_open_a_media_transaction_for_a_foreign_run(
 	repository: Repository,
 	mut run: RunMetadata,
 	model: ModelConfig,
@@ -580,7 +580,7 @@ async fn an_deployment_administrator_cannot_open_a_media_transaction_for_a_forei
 }
 #[rstest]
 #[tokio::test]
-async fn an_deployment_administrator_commits_before_returning_resolved_media(
+async fn a_deployment_administrator_commits_before_returning_resolved_media(
 	repository: Repository,
 	run: RunMetadata,
 	model: ModelConfig,
@@ -596,7 +596,7 @@ async fn an_deployment_administrator_commits_before_returning_resolved_media(
 }
 #[rstest]
 #[tokio::test]
-async fn an_deployment_administrator_budget_error_rolls_back_without_publishing_a_batch(
+async fn a_deployment_administrator_budget_error_rolls_back_without_publishing_a_batch(
 	repository: Repository,
 	run: RunMetadata,
 	model: ModelConfig,
@@ -638,7 +638,7 @@ async fn a_commit_error_preserves_its_identity_and_never_returns_media(
 }
 #[rstest]
 #[tokio::test]
-async fn cancelling_an_deployment_administrator_read_releases_the_owned_transaction(
+async fn cancelling_a_deployment_administrator_read_releases_the_owned_transaction(
 	repository: Repository,
 	run: RunMetadata,
 	model: ModelConfig,

@@ -86,7 +86,7 @@ async fn small_network_fixture(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn broker_response_budget_uses_the_deployment_administrator_profile_and_retains_no_partial_artifact(
+async fn broker_response_budget_uses_the_node_profile_and_retains_no_partial_artifact(
 	#[future]
 	#[from(running_small_network_fixture)]
 	small_network_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),

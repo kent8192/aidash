@@ -54,8 +54,7 @@ fn validation(runner: bool) -> DefinitionValidation {
 	DefinitionValidation::new(Arc::new(Credential), Arc::new(Provider { runner }))
 }
 #[test]
-fn six_deployment_administrator_groups_have_only_provider_owned_declarations_and_complete_lifecycles()
- {
+fn six_host_and_research_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
 	let validation = validation(true);
 	let groups = declarations(
 		&Principal::DeploymentAdministrator,

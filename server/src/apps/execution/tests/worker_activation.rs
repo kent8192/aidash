@@ -1051,7 +1051,7 @@ async fn scoped_credentials_deny_server_pull_and_validate_without_resetting_cons
 ) {
 	use futures_util::StreamExt;
 	let fixture = scoped_nats.await;
-	let operator = fixture.operator.clone();
+	let nats_operator = fixture.nats_operator.clone();
 	let operator_url = fixture.operator_url.clone();
 	let server_url = fixture.server_url.clone();
 	let worker_url = fixture.worker_url.clone();
@@ -1062,7 +1062,12 @@ async fn scoped_credentials_deny_server_pull_and_validate_without_resetting_cons
 	let next = fixture.next.clone();
 	let directory = fixture.directory.clone();
 
-	let created = operator.consumer.as_ref().unwrap().cached_info().created;
+	let created = nats_operator
+		.consumer
+		.as_ref()
+		.unwrap()
+		.cached_info()
+		.created;
 	let mut wrong = settings.clone();
 	wrong.max_bytes += 1;
 	assert!(
@@ -1102,7 +1107,7 @@ async fn scoped_credentials_deny_server_pull_and_validate_without_resetting_cons
 		.unwrap()
 		.await
 		.unwrap();
-	let mut consumer = operator.consumer.clone().unwrap();
+	let mut consumer = nats_operator.consumer.clone().unwrap();
 	assert_eq!(consumer.info().await.unwrap().num_pending, 1);
 	let denied = tokio::time::timeout(
 		Duration::from_millis(300),
@@ -1774,7 +1779,7 @@ async fn initial_process(
 }
 
 struct ScopedNats {
-	operator: Broker,
+	nats_operator: Broker,
 	operator_url: String,
 	server_url: String,
 	worker_url: String,
@@ -1855,7 +1860,7 @@ authorization {{ users: [
 	let server_url = format!("nats://server:fixture-server@{address}");
 	let worker_url = format!("nats://worker:fixture-worker@{address}");
 	let start = Instant::now();
-	let operator = loop {
+	let nats_operator = loop {
 		if let Ok(broker) = Broker::provision(&operator_url, node, &settings).await {
 			break broker;
 		}
@@ -1872,7 +1877,7 @@ authorization {{ users: [
 		tokio::time::sleep(Duration::from_millis(50)).await;
 	};
 	ScopedNats {
-		operator,
+		nats_operator,
 		operator_url,
 		server_url,
 		worker_url,

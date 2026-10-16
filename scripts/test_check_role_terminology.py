@@ -36,7 +36,7 @@ class ViolationsTest(unittest.TestCase):
         self.assertEqual(list(guard.violations([line])), [line])
 
     def test_allowed_files_are_skipped(self):
-        line = "docs/operations/core-capabilities-evidence.json:1:\"uses_the_operator_profile\""
+        line = "scripts/check-role-terminology.py:1:An operator approves."
         self.assertEqual(list(guard.violations([line])), [])
 
     def test_paths_naming_the_role_fail(self):

@@ -81,7 +81,7 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn attempts_are_reserved_once_settled_once_and_charged_to_the_deployment_administrator_account(
+async fn attempts_are_reserved_once_settled_once_and_charged_to_the_search_account_holder(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,

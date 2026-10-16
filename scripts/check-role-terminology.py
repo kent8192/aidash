@@ -4,8 +4,8 @@
 The deployment-wide authority role is the Deployment Administrator. Text that
 means whoever runs the Deployment's machines names them or the Node instead.
 "operator" remains only where it means something else: SQL operators, NATS
-operators, Kubernetes selector operators, search query operators, the private
-infra/delivery input directory, and recorded evidence.
+operators, Kubernetes selector operators, search query operators, and the
+private infra/delivery input directory.
 """
 
 import re
@@ -23,6 +23,9 @@ ALLOWED = [
     r"NATS operator",
     r"operator NATS",
     r"operator_url",
+    r"nats_operator",
+    r'user: "operator", password: "fixture-operator"',
+    r"nats://operator:fixture-operator@",
     # Kubernetes and Cilium.
     r"""["']?operator["']?: ["']?(?:Exists|In|NotIn|Equal|DoesNotExist)\b""",
     r"operator\.replicas",
@@ -56,10 +59,6 @@ ALLOWED = [
 
 # Files whose every "operator" is unrelated.
 ALLOWED_FILES = {
-    # Recorded evidence names tests as they were at the recorded revision.
-    "docs/operations/core-capabilities-evidence.json",
-    # The NATS operator fixture of worker activation.
-    "server/src/apps/execution/tests/worker_activation.rs",
     # This guard and its test.
     "scripts/check-role-terminology.py",
     "scripts/test_check_role_terminology.py",
