@@ -111,6 +111,14 @@ enabled = false
 # audience = "develop"
 # kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"
 
+# How long Research Document snapshot contents are retained (ADR 0045), in
+# seconds: after their Run ends and after their retrieval. Unset periods keep
+# the defaults (one day and thirty days); at most ten years. A Tenant's own
+# rules may shorten them. Takes effect on restart.
+# [research_retention]
+# snapshot_after_run_seconds = 86400
+# snapshot_max_age_seconds = 2592000
+
 # Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
 # keys this node creates only Legacy Runs. Rotate by adding a key version and
 # changing `current`.

@@ -50,6 +50,8 @@ pub struct Store {
 	pub provider_clients: aidash_integrations::keyless::Clients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
+	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
+	pub research_retention: aidash_domain::retention::RetentionRules,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
@@ -295,6 +297,7 @@ impl Store {
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			keyless: Default::default(),
+			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			recovery_cursors: Default::default(),
 			tool_slots,
 			cache_salt: None,
@@ -324,6 +327,13 @@ impl Store {
 		self
 	}
 	/// Permit these private origins for Keyless endpoints (ADR 0036).
+	pub fn with_research_retention(
+		mut self,
+		rules: aidash_domain::retention::RetentionRules,
+	) -> Self {
+		self.research_retention = rules;
+		self
+	}
 	pub fn with_keyless_origins(
 		mut self,
 		origins: aidash_domain::keyless::PermittedOrigins,
@@ -379,6 +389,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			research_retention: self.research_retention,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
@@ -421,6 +432,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			research_retention: self.research_retention,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),

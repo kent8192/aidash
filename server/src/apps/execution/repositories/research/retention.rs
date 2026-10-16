@@ -6,10 +6,10 @@ use crate::apps::execution::models::research::{
 };
 use crate::store::Store;
 use aidash_application::{
-	Error, Result,
+	Result,
 	ports::research::{RetainedSnapshot, SnapshotRetention},
 };
-use aidash_domain::retention::{MAX_PERIOD_SECONDS, RetentionRules, SnapshotPeriods};
+use aidash_domain::retention::{RetentionRules, SnapshotPeriods};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
@@ -20,41 +20,6 @@ use reinhardt::query::{
 };
 use serde::Deserialize;
 use uuid::Uuid;
-
-/// The settings naming the Deployment's snapshot periods, in seconds.
-pub(crate) const AFTER_RUN: &str = "AIDASH_RETENTION_SNAPSHOT_AFTER_RUN_SECONDS";
-pub(crate) const MAX_AGE: &str = "AIDASH_RETENTION_SNAPSHOT_MAX_AGE_SECONDS";
-
-/// The Deployment's Retention Rules: the code defaults, which are the same in
-/// every Offering, unless whoever runs the Deployment sets other finite
-/// periods. A change takes effect when the server restarts.
-pub(crate) fn deployment_rules(read: impl Fn(&str) -> Option<String>) -> Result<RetentionRules> {
-	let seconds = |key: &str, default: u32| -> Result<u32> {
-		let value = read(key)
-			.map(|value| value.trim().parse::<u32>())
-			.transpose()
-			.map_err(|_| Error::Invalid(format!("invalid {key}")))?
-			.unwrap_or(default);
-		if value > MAX_PERIOD_SECONDS {
-			return Err(Error::Invalid(format!(
-				"{key} must not exceed ten years ({MAX_PERIOD_SECONDS} seconds)"
-			)));
-		}
-		Ok(value)
-	};
-	let defaults = RetentionRules::DEFAULT.document_snapshots;
-	Ok(RetentionRules {
-		document_snapshots: SnapshotPeriods {
-			after_run_seconds: seconds(AFTER_RUN, defaults.after_run_seconds)?,
-			max_age_seconds: seconds(MAX_AGE, defaults.max_age_seconds)?,
-		},
-	})
-}
-
-/// The Deployment's Retention Rules from the process environment.
-pub(crate) fn configured_rules() -> Result<RetentionRules> {
-	deployment_rules(|key| std::env::var(key).ok())
-}
 
 pub(crate) struct Snapshots {
 	pub store: Store,

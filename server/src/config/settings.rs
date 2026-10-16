@@ -47,6 +47,7 @@
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
 use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
+use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
 use crate::apps::identity::serializers::managed_settings::ManagedGcipSource;
@@ -63,7 +64,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | research_retention: ResearchRetentionSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -158,6 +159,7 @@ fn file_settings_builder(
                 .with_value("provider_credentials", serde_json::json!({}))
                 .with_value("cache_salt", serde_json::json!({}))
                 .with_value("keyless_endpoints", serde_json::json!({}))
+                .with_value("research_retention", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({})),
         )
         // Medium priority: Base TOML file

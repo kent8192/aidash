@@ -254,6 +254,5 @@ impl Tool for ResearchTool {
 /// retention loop runs it under the configured Deployment periods.
 pub async fn sweep_retention(store: &crate::store::Store) -> crate::Result<u64> {
 	use crate::apps::execution::repositories::research::retention;
-	let rules = retention::configured_rules()?;
-	Ok(retention::sweep(store, &rules).await?)
+	Ok(retention::sweep(store, &store.research_retention).await?)
 }

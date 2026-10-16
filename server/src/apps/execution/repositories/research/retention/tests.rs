@@ -1,45 +1,45 @@
 use super::*;
+use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
 use rstest::rstest;
 
-fn read(values: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
-	move |key| {
-		values
-			.iter()
-			.find(|(name, _)| *name == key)
-			.map(|(_, value)| (*value).to_owned())
-	}
+fn settings(value: serde_json::Value) -> ResearchRetentionSettings {
+	serde_json::from_value(value).unwrap()
 }
 
 #[rstest]
 fn the_deployment_keeps_the_offering_defaults_unless_set() {
 	assert_eq!(
-		deployment_rules(read(&[])).unwrap(),
+		settings(serde_json::json!({})).rules().unwrap(),
 		RetentionRules::DEFAULT
 	);
 }
 
 #[rstest]
-#[case(&[(AFTER_RUN, "0"), (MAX_AGE, "3600")], 0, 3_600)]
-#[case(&[(MAX_AGE, "315360000")], 86_400, 315_360_000)]
+#[case(serde_json::json!({"snapshot_after_run_seconds": 0, "snapshot_max_age_seconds": 3600}), 0, 3_600)]
+#[case(serde_json::json!({"snapshot_max_age_seconds": 315_360_000}), 86_400, 315_360_000)]
 fn whoever_runs_the_deployment_sets_any_finite_period(
-	#[case] values: &'static [(&'static str, &'static str)],
+	#[case] value: serde_json::Value,
 	#[case] after_run: u32,
 	#[case] max_age: u32,
 ) {
-	let rules = deployment_rules(read(values)).unwrap();
+	let rules = settings(value).rules().unwrap();
 	assert_eq!(rules.document_snapshots.after_run_seconds, after_run);
 	assert_eq!(rules.document_snapshots.max_age_seconds, max_age);
 }
 
 #[rstest]
-#[case(&[(AFTER_RUN, "-1")])]
-#[case(&[(AFTER_RUN, "never")])]
-#[case(&[(MAX_AGE, "315360001")])]
-fn a_period_that_is_not_finite_and_bounded_refuses_to_start(
-	#[case] values: &'static [(&'static str, &'static str)],
-) {
-	assert!(matches!(
-		deployment_rules(read(values)),
-		Err(Error::Invalid(_))
-	));
+fn a_period_beyond_ten_years_refuses_to_start() {
+	let periods = settings(serde_json::json!({"snapshot_max_age_seconds": 315_360_001}));
+	assert!(matches!(periods.rules(), Err(crate::Error::Invalid(_))));
+	use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+	assert!(periods.validate(&Profile::Development).is_err());
+}
+
+/// A period that is not a non-negative whole number of seconds is refused
+/// when the settings load.
+#[rstest]
+#[case(serde_json::json!({"snapshot_after_run_seconds": -1}))]
+#[case(serde_json::json!({"snapshot_after_run_seconds": "never"}))]
+fn a_period_that_is_not_finite_refuses_to_load(#[case] value: serde_json::Value) {
+	assert!(serde_json::from_value::<ResearchRetentionSettings>(value).is_err());
 }

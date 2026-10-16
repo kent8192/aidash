@@ -30,7 +30,7 @@ use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
-use crate::apps::execution::repositories::research::{Revocations, retention::configured_rules};
+use crate::apps::execution::repositories::research::Revocations;
 use crate::apps::execution::serializers::research::{
 	HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
 };
@@ -419,7 +419,7 @@ impl HarnessManagement {
 			store: &self.runtime.store,
 			actor,
 			administrator: administrator(actor, browser),
-			deployment: configured_rules()?,
+			deployment: self.runtime.store.research_retention,
 		})
 	}
 	pub(crate) async fn run_control(

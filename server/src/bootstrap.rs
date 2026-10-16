@@ -83,7 +83,9 @@ pub async fn initialize(
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
-		.with_keyless_origins(settings.keyless_endpoints.origins()?);
+		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		// An invalid Deployment retention period refuses to start (ADR 0045).
+		.with_research_retention(settings.research_retention.rules()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some());
@@ -250,9 +252,7 @@ impl RuntimeTasks {
 			}));
 		}
 		let retention = federation.store.clone();
-		// An invalid Deployment retention period refuses to start (ADR 0045).
-		let research_retention =
-			crate::apps::execution::repositories::research::retention::configured_rules()?;
+		let research_retention = federation.store.research_retention;
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
 			// orphaned on unscheduled Runs are closed first; hourly workbench
