@@ -27,7 +27,7 @@ pub(crate) struct NativeControls {
 	pub principal: Principal,
 }
 enum Mode {
-	Operator(crate::database::native::Transaction),
+	DeploymentAdministrator(crate::database::native::Transaction),
 	Subject(Box<Access>),
 }
 struct Scope {
@@ -39,7 +39,7 @@ impl Scope {
 		NativeLifecycle {
 			runtime: &self.runtime,
 			transaction: match &mut self.mode {
-				Mode::Operator(tx) => tx,
+				Mode::DeploymentAdministrator(tx) => tx,
 				Mode::Subject(access) => &mut access.tx,
 			},
 		}
@@ -56,7 +56,9 @@ impl GenerationControls for NativeControls {
 	) -> aidash_application::Result<Box<dyn GenerationControlScope>> {
 		let mode = match &self.actor {
 			// A Deployment Administrator controls a job in the named Tenant's scope.
-			Actor::Operator => Mode::Operator(self.runtime.store.pool.begin(scope).await?),
+			Actor::DeploymentAdministrator => {
+				Mode::DeploymentAdministrator(self.runtime.store.pool.begin(scope).await?)
+			}
 			Actor::Subject(identity) => {
 				if identity.tenancy()? != *scope {
 					return Err(aidash_application::Error::Forbidden);
@@ -104,7 +106,7 @@ impl GenerationControlScope for Scope {
 		result: aidash_application::Result<Request>,
 	) -> aidash_application::Result<Request> {
 		match self.mode {
-			Mode::Operator(tx) => match result {
+			Mode::DeploymentAdministrator(tx) => match result {
 				Ok(job) => {
 					tx.commit().await?;
 					Ok(job)

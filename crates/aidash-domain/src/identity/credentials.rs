@@ -96,7 +96,7 @@ mod tests {
 		for selector in [
 			format!("mapping:{id}"),
 			"mapping:acme:not-a-uuid".into(),
-			format!("operator:acme:{id}"),
+			format!("deployment_administrator:acme:{id}"),
 			format!("mapping::{id}"),
 		] {
 			assert_eq!(parse_mapping_selector(&selector), None, "{selector}");

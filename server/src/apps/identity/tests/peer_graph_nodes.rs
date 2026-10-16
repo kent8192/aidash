@@ -38,7 +38,7 @@ fn graph_runtime(
 		f.config.node_id = format!("aidash://graph-{suffix}");
 		f.store.node_id = f.config.node_id.clone();
 		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
-		f.config.api_token = format!("graph-operator-{suffix}");
+		f.config.api_token = format!("peer-graph-{suffix}");
 		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
 		owner
 	}

@@ -87,7 +87,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	drop(auth);
 
 	let limited_app = actor_fixture.application;
-	let limited = actor_fixture.operator;
+	let limited = actor_fixture.deployment_administrator;
 	let limited_anonymous = actor_fixture.anonymous;
 	assert_eq!(
 		limited_anonymous
@@ -117,7 +117,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 
 	let app = stream_fixture.application;
 	let server = stream_fixture.anonymous;
-	let operator = stream_fixture.operator;
+	let deployment_administrator = stream_fixture.deployment_administrator;
 	for (path, status) in [("/api/session", 401), ("/auth/config", 200)] {
 		let response = server.get(path).await.unwrap();
 		assert_eq!(response.status_code(), status);
@@ -143,7 +143,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	assert!(!public.headers().contains_key("cache-control"));
 	let static_response = server.get("/assets/missing.js").await.unwrap();
 	assert!(!static_response.headers().contains_key("cache-control"));
-	let session = operator.get("/api/session").await.unwrap();
+	let session = deployment_administrator.get("/api/session").await.unwrap();
 	assert_eq!(session.status_code(), 200);
 	assert_eq!(session.headers()["cache-control"], "no-store");
 	assert_eq!(session.headers()["referrer-policy"], "no-referrer");
@@ -161,7 +161,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	] {
 		let response = http_client
 			.request(method.parse().unwrap(), app.url(path))
-			.bearer_auth("operator-execution-fixture")
+			.bearer_auth("deployment-administrator-execution-fixture")
 			.header(http::header::CONTENT_LENGTH, (limit + 1).to_string())
 			.body(vec![b' '; limit + 1])
 			.send()
@@ -180,7 +180,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		]));
 		let response = http_client
 			.post(app.url(path))
-			.bearer_auth("operator-execution-fixture")
+			.bearer_auth("deployment-administrator-execution-fixture")
 			.header("content-type", "application/json")
 			.body(body)
 			.send()
@@ -189,7 +189,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		assert_eq!(response.status(), 413, "{path}");
 		assert!(response.headers().contains_key("x-request-id"));
 	}
-	let invalid_conversation = operator.post("/api/conversations", &json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
+	let invalid_conversation = deployment_administrator.post("/api/conversations", &json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
 	assert_eq!(invalid_conversation.status_code(), 400);
 	assert_eq!(
 		invalid_conversation.json_value().unwrap()["error"],
@@ -200,7 +200,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		("{}", "application/json", 422),
 		("{}", "text/plain", 415),
 	] {
-		let response = operator
+		let response = deployment_administrator
 			.post_raw("/api/workspaces", body.as_bytes(), content_type)
 			.await
 			.unwrap();
@@ -210,7 +210,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 			"invalid JSON request"
 		);
 	}
-	let invalid = operator
+	let invalid = deployment_administrator
 		.post(
 			"/api/workspaces",
 			&json!({"title":"   ","goal":"valid"}),
@@ -224,7 +224,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		"invalid request fields: title"
 	);
 	assert_eq!(
-		operator
+		deployment_administrator
 			.post(
 				"/api/workspaces",
 				&json!({"title":"first","goal":"valid"}),
@@ -244,7 +244,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.unwrap()
 		.sequence;
 	assert_eq!(
-		operator
+		deployment_administrator
 			.post(
 				"/api/workspaces",
 				&json!({"title":"second","goal":"valid"}),
@@ -264,7 +264,10 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let stream_request = || {
 		Request::builder()
 			.uri("/api/events/stream?after=0")
-			.header("authorization", "Bearer operator-execution-fixture")
+			.header(
+				"authorization",
+				"Bearer deployment-administrator-execution-fixture",
+			)
 			.header("last-event-id", before.to_string())
 			.body(Bytes::new())
 			.unwrap()

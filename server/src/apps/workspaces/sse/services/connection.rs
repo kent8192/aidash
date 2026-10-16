@@ -203,7 +203,7 @@ impl Context {
 					&& current.mapping_id == origin.mapping_id
 					&& matches!(
 						(self.scope.is_none(), actor),
-						(true, Actor::Operator) | (false, Actor::Subject(_))
+						(true, Actor::DeploymentAdministrator) | (false, Actor::Subject(_))
 					)
 			}
 			Err(_) => false,
@@ -268,7 +268,7 @@ impl Watch<Event> for Context {
 							.map_err(|_| Closed::Authority)?
 							.then(|| event.cloud_event().to_string()),
 						None => {
-							// The Operator's stream observes every Tenant's events.
+							// The Deployment Administrator's stream observes every Tenant's events.
 							let scope = aidash_application::tenancy::TenancyScope::Deployment(
 								aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
 							);
@@ -279,7 +279,7 @@ impl Watch<Event> for Context {
 								.begin(&scope)
 								.await
 								.map_err(|_| Closed::Database)?;
-							crate::authorization::remote::operator::event_visible(
+							crate::authorization::remote::deployment_administrator::event_visible(
 								&mut connection,
 								event,
 							)
@@ -332,16 +332,18 @@ impl Service {
 		} = request;
 		// Register before validation/high-water lookup/initial read.
 		let observation = self.register(workspace);
-		// The initial cursor reads the actor's events: the Operator's stream
+		// The initial cursor reads the actor's events: the Deployment Administrator's stream
 		// observes every Tenant's.
 		let tenancy = match &actor {
-			Actor::Operator => aidash_application::tenancy::TenancyScope::Deployment(
-				aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
-			),
+			Actor::DeploymentAdministrator => {
+				aidash_application::tenancy::TenancyScope::Deployment(
+					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+				)
+			}
 			Actor::Subject(identity) => identity.tenancy()?,
 		};
 		let scope = match actor {
-			Actor::Operator => None,
+			Actor::DeploymentAdministrator => None,
 			Actor::Subject(identity) => Some(Workspaces {
 				store: f.store.clone(),
 				identity,

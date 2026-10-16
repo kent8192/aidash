@@ -68,12 +68,16 @@ impl RunContext {
 		match &self.base.scope {
 			Some(scope) => scope.can_emit(&probe).await,
 			None => {
-				// The Operator's stream observes every Tenant's inference.
+				// The Deployment Administrator's stream observes every Tenant's inference.
 				let scope = aidash_application::tenancy::TenancyScope::Deployment(
 					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
 				);
 				let mut connection = self.base.f.store.pool.begin(&scope).await?;
-				crate::authorization::remote::operator::event_visible(&mut connection, &probe).await
+				crate::authorization::remote::deployment_administrator::event_visible(
+					&mut connection,
+					&probe,
+				)
+				.await
 			}
 		}
 	}
@@ -213,7 +217,7 @@ impl Service {
 		// names a Run and reads it in that Run's Tenant.
 		let tenancy = match &actor {
 			Actor::Subject(identity) => identity.tenancy()?,
-			Actor::Operator => f.store.run_tenancy(run).await?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
 		};
 		let target = match f.store.inference_run(&tenancy, run).await {
 			Err(Error::NotFound(_)) if matches!(actor, Actor::Subject(_)) => {
@@ -224,7 +228,7 @@ impl Service {
 		// Register before validation and the initial read; marker events wake it.
 		let observation = self.register(Some(target.workspace_id));
 		let scope = match actor {
-			Actor::Operator => None,
+			Actor::DeploymentAdministrator => None,
 			Actor::Subject(identity) => Some(Workspaces {
 				store: f.store.clone(),
 				identity,

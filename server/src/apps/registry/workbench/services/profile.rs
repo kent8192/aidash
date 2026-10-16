@@ -1,4 +1,4 @@
-//! Operator-owned, tenant-specific connection profiles for confined real-tool tests.
+//! Deployment Administrator-owned, tenant-specific connection profiles for confined real-tool tests.
 use super::*;
 use reinhardt::injectable;
 

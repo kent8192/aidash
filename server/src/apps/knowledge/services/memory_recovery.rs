@@ -726,7 +726,7 @@ pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 	Ok(())
 }
 
-/// Persistently close memory serving before operator recovery work.
+/// Persistently close memory serving before Deployment Administrator recovery work.
 pub fn prepare_restore(store: &Store, directory: &Path) -> Result<Uuid> {
 	let recovery = active_external(store, directory)?;
 	let epoch = recovery.load()?.epoch;

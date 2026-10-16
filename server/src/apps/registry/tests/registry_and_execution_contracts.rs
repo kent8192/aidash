@@ -192,7 +192,13 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	};
 	let parent = f
 		.store
-		.create_task(&TEST_FIXTURE, workspace.id, &input, "operator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&input,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	let mut child = input.clone();
@@ -200,14 +206,26 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	child.dependencies = vec![parent.id];
 	assert!(
 		f.store
-			.create_task(&TEST_FIXTURE, workspace.id, &child, "operator", None)
+			.create_task(
+				&TEST_FIXTURE,
+				workspace.id,
+				&child,
+				"deployment_administrator",
+				None
+			)
 			.await
 			.is_err()
 	);
 	child.dependencies.clear();
 	let child = f
 		.store
-		.create_task(&TEST_FIXTURE, workspace.id, &child, "operator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&child,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	let mut grandchild = input;
@@ -215,7 +233,13 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	grandchild.dependencies = vec![parent.id];
 	assert!(
 		f.store
-			.create_task(&TEST_FIXTURE, workspace.id, &grandchild, "operator", None)
+			.create_task(
+				&TEST_FIXTURE,
+				workspace.id,
+				&grandchild,
+				"deployment_administrator",
+				None
+			)
 			.await
 			.is_err()
 	);
@@ -336,7 +360,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "operator", "goal")
+		.create_workspace(&TEST_FIXTURE, "deployment_administrator", "goal")
 		.await
 		.unwrap();
 	let task = f
@@ -870,7 +894,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_conversation_returns_the_committed_task_revision(
+async fn deployment_administrator_conversation_returns_the_committed_task_revision(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,

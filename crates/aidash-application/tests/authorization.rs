@@ -169,7 +169,9 @@ async fn invalid_replacement_never_opens_a_transaction() {
 		fail_audit: false,
 	}));
 
-	let result = service.replace("other", 7, bundle(), "operator").await;
+	let result = service
+		.replace("other", 7, bundle(), "deployment_administrator")
+		.await;
 
 	assert!(matches!(result, Err(Error::Invalid(_))));
 	assert_eq!(state.lock().unwrap().begun, 0);

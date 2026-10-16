@@ -380,11 +380,11 @@ async fn dashboard_projections_omit_inference_markers(
 		.unwrap();
 	assert_eq!(c.closures(attempt).await, (1, 1));
 	let workspace = format!("/api/workspaces/{}", c.run.workspace_id);
-	let operator = c.f.config.api_token.clone();
+	let deployment_administrator = c.f.config.api_token.clone();
 
 	// Act
 	let mut projections = Vec::new();
-	for token in [&c.token, &operator] {
+	for token in [&c.token, &deployment_administrator] {
 		for path in ["/api/state", workspace.as_str()] {
 			let (status, body) = request(&c.app, token, "GET", path, serde_json::Value::Null).await;
 			assert_eq!(status, 200, "{path}: {body}");

@@ -18,7 +18,7 @@ test("restarts the event stream when the tab selects another authority", async (
     route.fulfill({
       json: {
         id: "fixture-browser-session",
-        operator: true,
+        deployment_administrator: true,
         mappings: [{ id: "fixture-mapping", tenant: "acme", subject: "alice" }],
       },
     }),
@@ -39,8 +39,10 @@ test("restarts the event stream when the tab selects another authority", async (
     name: "このタブで使う権限を選択してください",
     exact: true,
   });
-  await expect(selector).toHaveValue("operator");
-  await expect.poll(() => contexts.includes("operator")).toBeTruthy();
+  await expect(selector).toHaveValue("deployment_administrator");
+  await expect
+    .poll(() => contexts.includes("deployment_administrator"))
+    .toBeTruthy();
   await selector.selectOption("mapping:acme:fixture-mapping");
   await expect
     .poll(() => contexts.includes("mapping:acme:fixture-mapping"))
@@ -53,7 +55,7 @@ test("reinitializes an open tab after its shared session is replaced", async ({
   let sessionId = "fixture-browser-session";
   await page.route("**/auth/session", (route) =>
     route.fulfill({
-      json: { id: sessionId, operator: true, mappings: [] },
+      json: { id: sessionId, deployment_administrator: true, mappings: [] },
     }),
   );
   await page.clock.install();

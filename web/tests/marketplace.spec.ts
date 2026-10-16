@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
-  test(`operator reviews an exact pending Host approval set (${locale})`, async ({
+  test(`Deployment Administrator reviews an exact pending Host approval set (${locale})`, async ({
     page,
   }) => {
     await installBearerDashboard(page, "fixture");
@@ -69,14 +69,17 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       if (path === "/api/events/stream") return route.abort();
       if (path === "/api/session")
         return route.fulfill({
-          json: { access: { kind: "operator" }, node_id: "aidash://node" },
+          json: {
+            access: { kind: "deployment_administrator" },
+            node_id: "aidash://node",
+          },
         });
       if (path === "/api/mesh")
         return route.fulfill({ json: { nodes: [], errors: [] } });
       if (path === "/api/state")
         return route.fulfill({
           json: {
-            access: { kind: "operator" },
+            access: { kind: "deployment_administrator" },
             node: {
               id: "aidash://node",
               endpoint: "http://localhost",
@@ -246,7 +249,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       route.fulfill({
         json: {
           id: "fixture-browser-session",
-          operator: false,
+          deployment_administrator: false,
           mappings: [
             { id: "fixture-mapping", tenant: "a", subject: "alice" },
             { id: "second-mapping", tenant: "b", subject: "bob" },
@@ -588,7 +591,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
 }
 
 for (const locale of ["en-US", "ja-JP"] as const) {
-  test(`operator Marketplace pages retained revisions and clears revoked results (${locale})`, async ({
+  test(`Deployment Administrator Marketplace pages retained revisions and clears revoked results (${locale})`, async ({
     page,
   }) => {
     await installBearerDashboard(page, "fixture");
@@ -602,14 +605,17 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       if (url.pathname === "/api/events/stream") return route.abort();
       if (url.pathname === "/api/session")
         return route.fulfill({
-          json: { access: { kind: "operator" }, node_id: "aidash://node" },
+          json: {
+            access: { kind: "deployment_administrator" },
+            node_id: "aidash://node",
+          },
         });
       if (url.pathname === "/api/mesh")
         return route.fulfill({ json: { nodes: [], errors: [] } });
       if (url.pathname === "/api/state")
         return route.fulfill({
           json: {
-            access: { kind: "operator" },
+            access: { kind: "deployment_administrator" },
             node: {
               id: "aidash://node",
               endpoint: "http://localhost",
@@ -669,7 +675,10 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       }
       if (url.pathname === "/api/info")
         return route.fulfill({
-          json: { access: { kind: "operator" }, node_id: "aidash://node" },
+          json: {
+            access: { kind: "deployment_administrator" },
+            node_id: "aidash://node",
+          },
         });
       return route.fulfill({ json: [] });
     });

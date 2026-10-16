@@ -21,7 +21,7 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody().operator).to.equal(false);
+    expect(res.getBody().deployment_administrator).to.equal(false);
     expect(res.getBody().mappings.map(mapping => mapping.tenant)).to.eql([bru.getEnvVar("tenant")]);
     expect(res.getBody().mappings[0].subject).to.equal("alice");
   });

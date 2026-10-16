@@ -193,7 +193,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 		.unwrap();
 }
 
-/// A browser identity with an Operator grant and two dashboard sessions, and
+/// A browser identity with a Deployment Administrator grant and two dashboard sessions, and
 /// a Provider Credential Store whose exchange is the fake OpenRouter.
 #[rstest::fixture]
 fn authorization_runtime(
@@ -229,7 +229,7 @@ fn authorization_runtime(
 				)
 				.to_string(PostgresQueryBuilder),
 			Query::insert()
-				.into_table(Alias::new("dashboard_operator_grants"))
+				.into_table(Alias::new("dashboard_deployment_administrator_grants"))
 				.columns([Alias::new("identity_id")])
 				.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
 				.to_string(PostgresQueryBuilder),
@@ -248,7 +248,7 @@ fn authorization_runtime(
 		Authorization {
 			pool: f.store.pool.clone(),
 		}
-		.replace("alpha", 0, policy, "operator")
+		.replace("alpha", 0, policy, "deployment_administrator")
 		.await
 		.unwrap();
 		f.store.provider_credentials = Some(Arc::new(Service {
@@ -338,7 +338,7 @@ struct Started {
 	challenge: String,
 }
 async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&str>) -> Started {
-	start_as(fixture, session, "operator", body, browser).await
+	start_as(fixture, session, "deployment_administrator", body, browser).await
 }
 /// The browser request that starts an authorization under a dashboard context.
 async fn start_request(
@@ -806,7 +806,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 	application: common::ApplicationFixture,
 ) {
 	let fixture = Fixture::new(application, parts);
-	// The operator bearer has no browser to bind.
+	// The Deployment Administrator bearer has no browser to bind.
 	let response = send(
 		&fixture.app,
 		"POST",
@@ -832,7 +832,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 			("cookie", "aidash-session=browser-a"),
 			("origin", ORIGIN),
 			("x-aidash-csrf", "csrf-a"),
-			("x-aidash-context", "operator"),
+			("x-aidash-context", "deployment_administrator"),
 		],
 		json!({"key_material": "sk-or-v1-pasted"}),
 	)
@@ -848,7 +848,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 				("cookie", "aidash-session=browser-a"),
 				("origin", ORIGIN),
 				("x-aidash-csrf", "csrf-a"),
-				("x-aidash-context", "operator"),
+				("x-aidash-context", "deployment_administrator"),
 			],
 			json!({"return_to": return_to}),
 		)
@@ -881,7 +881,7 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 ) {
 	let fixture = Fixture::new(application, parts);
 	// Map the browser identity to Tenant subject alice through the normal
-	// registration and Operator approval.
+	// registration and Deployment Administrator approval.
 	let registration = send(
 		&fixture.app,
 		"POST",
@@ -937,7 +937,7 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 	Authorization {
 		pool: fixture.f.store.pool.clone(),
 	}
-	.replace("alpha", 1, policy, "operator")
+	.replace("alpha", 1, policy, "deployment_administrator")
 	.await
 	.unwrap();
 	let started = start_as(&fixture, "browser-a", &context, json!({}), None).await;

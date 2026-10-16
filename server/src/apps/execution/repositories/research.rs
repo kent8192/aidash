@@ -36,7 +36,7 @@ fn native<T>(result: crate::Result<T>) -> Result<T> {
 
 /// Run readability for one API reader, decided exactly as `GET /api/runs/{id}`
 /// decides it: a Subject through Run inspection's visibility decision, an
-/// Operator through the Workspace's operator visibility.
+/// Deployment Administrator through the Workspace's Deployment Administrator visibility.
 pub(crate) struct Readers<'a> {
 	pub federation: &'a Federation,
 	pub actor: &'a Actor,
@@ -52,14 +52,14 @@ impl RunReader for Readers<'_> {
 			)
 			.await
 			.map(|_| ()),
-			Actor::Operator => native(
+			Actor::DeploymentAdministrator => native(
 				async {
 					// A Deployment Administrator reads a Run by id, in any Tenant.
 					let scope = aidash_application::tenancy::TenancyScope::Deployment(
 						aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
 					);
 					let inspected = self.federation.store.inspect_run(&scope, run).await?;
-					crate::authorization::remote::operator::require(
+					crate::authorization::remote::deployment_administrator::require(
 						&mut self.federation.store.pool.begin(&scope).await?,
 						inspected.workspace_id,
 					)

@@ -1033,7 +1033,7 @@ impl Store {
 			.await?;
 		crate::semantic::repositories::bindings::claimed(
 			self,
-			&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
+			&mut crate::semantic::service::Lease::BorrowedWithoutSubject(&mut tx),
 			task.id,
 			agent,
 		)
@@ -1346,7 +1346,7 @@ impl Store {
 		tx.commit().await?;
 		Ok(result)
 	}
-	/// Explicit operator abandonment preserves the failed outcome and reason
+	/// Explicit Deployment Administrator abandonment preserves the failed outcome and reason
 	/// while allowing the parent to finish using the remaining results.
 	pub async fn abandon_task(
 		&self,
@@ -3091,7 +3091,7 @@ impl Store {
 				Ok(entry) => {
 					crate::semantic::repositories::bindings::admit(
 						self,
-						&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
+						&mut crate::semantic::service::Lease::BorrowedWithoutSubject(&mut tx),
 						&run.metadata(),
 						&entry,
 					)
@@ -4900,7 +4900,7 @@ impl Store {
 
 impl Store {
 	/// `recovery_reason` names a typed `pending.recovery` field recorded only
-	/// when this pause, rather than an operator, stops an active Run.
+	/// when this pause, rather than a Deployment Administrator, stops an active Run.
 	async fn pause_for_execution_reason(
 		&self,
 		run: impl Into<RunMetadata>,

@@ -93,8 +93,13 @@ pub fn validate_replacement(
 
 pub mod catalog;
 
-pub fn require_operator(principal: &aidash_domain::identity::Principal) -> Result<()> {
-	if matches!(principal, aidash_domain::identity::Principal::Operator) {
+pub fn require_deployment_administrator(
+	principal: &aidash_domain::identity::Principal,
+) -> Result<()> {
+	if matches!(
+		principal,
+		aidash_domain::identity::Principal::DeploymentAdministrator
+	) {
 		Ok(())
 	} else {
 		Err(Error::Forbidden)

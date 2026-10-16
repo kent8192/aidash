@@ -125,7 +125,7 @@ fn desktop_runtime(
 			.await
 			.unwrap();
 		let query = Query::insert()
-			.into_table(Alias::new("dashboard_operator_grants"))
+			.into_table(Alias::new("dashboard_deployment_administrator_grants"))
 			.columns([Alias::new("identity_id")])
 			.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
 			.to_string(PostgresQueryBuilder);
@@ -336,7 +336,7 @@ async fn bearer(
 				"authorization",
 				&format!("Bearer {}", token.as_str().unwrap()),
 			),
-			("x-aidash-context", "operator"),
+			("x-aidash-context", "deployment_administrator"),
 		],
 		String::new(),
 	)
@@ -357,7 +357,7 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 		200,
 	)
 	.await;
-	assert_eq!(session["operator"], true);
+	assert_eq!(session["deployment_administrator"], true);
 	let sid_query = Query::select()
 		.column(Alias::new("provider_sid"))
 		.from(Alias::new("dashboard_sessions"))

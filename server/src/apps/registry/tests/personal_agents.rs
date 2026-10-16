@@ -54,7 +54,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let f = &app.runtime;
 	let skill = json!({"id":"writing","version":"1.0.0","kind":"skill","name":{"en":"Writing"},"description":{"en":"Writing"},"config":{"instructions":"Use the provided reference documents."}});
 	assert_eq!(
-		app.operator
+		app.deployment_administrator
 			.post("/api/registry", &skill, "json")
 			.await
 			.unwrap()
@@ -91,7 +91,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	for field in ["name", "text"] {
 		let mut invalid = input.clone();
 		invalid["documents"][0][field] = json!("invalid\0document");
-		let rejected = personal(&app.operator, Uuid::new_v4(), invalid).await;
+		let rejected = personal(&app.deployment_administrator, Uuid::new_v4(), invalid).await;
 		assert_eq!(rejected.0, 400, "{rejected:?}");
 		assert!(rejected.1.to_string().contains("NUL"));
 	}
@@ -100,10 +100,13 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 		personal(&execution.subject, key, input.clone()).await.0,
 		403
 	);
-	let first = personal(&app.operator, key, input.clone()).await;
+	let first = personal(&app.deployment_administrator, key, input.clone()).await;
 	assert_eq!(first.0, 200, "{first:?}");
 	assert!(!first.1.to_string().contains("PRIVATE-REFERENCE"));
-	assert_eq!(first, personal(&app.operator, key, input.clone()).await);
+	assert_eq!(
+		first,
+		personal(&app.deployment_administrator, key, input.clone()).await
+	);
 	let entry: Entry = serde_json::from_value(first.1.clone()).unwrap();
 	let source = entry.config["bindings"]
 		.as_array()
@@ -121,8 +124,19 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	assert_eq!(documents.documents[0]["text"], expected_text);
 	let mut changed = input.clone();
 	changed["documents"][0]["text"] = json!("Different");
-	assert_eq!(personal(&app.operator, key, changed).await.0, 409);
-	let state = assert_json(app.operator.get("/api/state").await.unwrap(), 200);
+	assert_eq!(
+		personal(&app.deployment_administrator, key, changed)
+			.await
+			.0,
+		409
+	);
+	let state = assert_json(
+		app.deployment_administrator
+			.get("/api/state")
+			.await
+			.unwrap(),
+		200,
+	);
 	assert!(!state.to_string().contains("PRIVATE-REFERENCE"));
 	assert!(!state.to_string().contains("private.pdf"));
 	let mut cloned = entry.clone();
@@ -136,7 +150,9 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");
 	assert_eq!(
-		personal(&app.operator, Uuid::new_v4(), invalid).await.0,
+		personal(&app.deployment_administrator, Uuid::new_v4(), invalid)
+			.await
+			.0,
 		400
 	);
 	let workspace = f
@@ -162,7 +178,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 		.await
 		.unwrap();
 	let claimed = app
-		.operator
+		.deployment_administrator
 		.post(
 			&format!("/api/tasks/{}/claim", task.id),
 			&json!({"revision":0,"agent":{"id":entry.id,"version":entry.version}}),
@@ -179,7 +195,13 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			break;
 		}
 	}
-	let diagnostic_state = assert_json(app.operator.get("/api/state").await.unwrap(), 200);
+	let diagnostic_state = assert_json(
+		app.deployment_administrator
+			.get("/api/state")
+			.await
+			.unwrap(),
+		200,
+	);
 	let body = execution
 		.provider
 		.received

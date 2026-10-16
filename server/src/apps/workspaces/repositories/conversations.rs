@@ -220,7 +220,7 @@ impl OperatorConversations for NativeOperatorConversations {
 			.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Box<dyn OperatorConversationTransaction>> {
-		// An Operator's conversation creates a Workspace without a Tenant.
+		// A Deployment Administrator's conversation creates a Workspace without a Tenant.
 		let scope = aidash_application::tenancy::TenancyScope::Deployment(
 			aidash_application::tenancy::DeploymentScopeReason::LegacyRun,
 		);

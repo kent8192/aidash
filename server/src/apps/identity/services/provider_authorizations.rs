@@ -221,7 +221,7 @@ impl ProviderAuthorizations {
 			return Err(Error::Unauthorized);
 		}
 		// Re-derive the actor under the original context with live account,
-		// mapping and operator-grant checks.
+		// mapping and deployment-administrator-grant checks.
 		let mut scoped = headers.clone();
 		scoped.insert(
 			"x-aidash-context",

@@ -26,7 +26,7 @@ fn mapping() -> Mapping {
 		credential_id: Uuid::from_u128(1),
 		enabled: true,
 		revision: 7,
-		actor: "operator".into(),
+		actor: "deployment_administrator".into(),
 		updated_at: DateTime::from_timestamp(1000, 0).unwrap(),
 	}
 }

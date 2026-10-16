@@ -280,7 +280,7 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 	run: Record,
 ) {
 	use crate::domain::FailureTarget;
-	// Arrange: the operator cancelled a Run whose state needs a capability no build has.
+	// Arrange: the Deployment Administrator cancelled a Run whose state needs a capability no build has.
 	let database = database.await;
 	let store = Store::from_pool(
 		database.connection.into_postgres().unwrap(),

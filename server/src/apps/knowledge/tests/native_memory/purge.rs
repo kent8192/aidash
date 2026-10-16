@@ -24,7 +24,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 	};
 	memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("short-history"),
@@ -52,7 +52,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		);
 		input.provider = reference("short-history");
 		chain.push(
-			memory::mutate(&store, &Actor::Operator, input)
+			memory::mutate(&store, &Actor::DeploymentAdministrator, input)
 				.await
 				.unwrap()
 				.remove(0),
@@ -67,13 +67,13 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		},
 	);
 	input.provider = reference("short-history");
-	memory::mutate(&store, &Actor::Operator, input)
+	memory::mutate(&store, &Actor::DeploymentAdministrator, input)
 		.await
 		.unwrap();
 	for id in [chain[0].id, independent] {
 		memory::operate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("short-history"),
@@ -92,7 +92,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		},
 	);
 	deletion.provider = reference("short-history");
-	memory::mutate(&store, &Actor::Operator, deletion)
+	memory::mutate(&store, &Actor::DeploymentAdministrator, deletion)
 		.await
 		.unwrap();
 	// Advance only disposable history and job clocks. Canonical bodies and the
@@ -206,7 +206,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -221,7 +221,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	for id in [protected, independent, permanent] {
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -261,7 +261,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	for id in [protected, independent, permanent] {
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Delete {
@@ -348,7 +348,7 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank
@@ -455,7 +455,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	let (store, registry, workspace) = setup(&database, bounds).await;
 	let private = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -470,7 +470,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	};
 	memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -487,7 +487,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 		let id = Uuid::now_v7();
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&shared,
 				Change::Add {
@@ -525,7 +525,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	tx.commit().await.unwrap();
 	let memory::Outcome::Candidates(before) = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -544,7 +544,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 	registry.register(replacement).await.unwrap();
 	memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("small-purge-graph"),
@@ -564,7 +564,7 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 		},
 	);
 	deletion.provider = reference("small-purge-graph");
-	memory::mutate(&store, &Actor::Operator, deletion)
+	memory::mutate(&store, &Actor::DeploymentAdministrator, deletion)
 		.await
 		.unwrap();
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();

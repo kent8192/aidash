@@ -14,12 +14,15 @@ async function setup(page: Page) {
       await route.abort();
     } else if (path === "/api/session") {
       await route.fulfill({
-        json: { access: { kind: "operator" }, node_id: "aidash://test" },
+        json: {
+          access: { kind: "deployment_administrator" },
+          node_id: "aidash://test",
+        },
       });
     } else if (path === "/api/state") {
       await route.fulfill({
         json: {
-          access: { kind: "operator" },
+          access: { kind: "deployment_administrator" },
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",

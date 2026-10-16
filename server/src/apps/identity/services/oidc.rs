@@ -1,7 +1,7 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
 use crate::apps::identity::models::{
-	AuthorizationCredential, DashboardIdentity, DashboardLoginTransaction, DashboardMapping,
-	DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
+	AuthorizationCredential, DashboardDeploymentAdministratorGrant, DashboardIdentity,
+	DashboardLoginTransaction, DashboardMapping, DashboardRegistrationRequest, DashboardSession,
 };
 use crate::http::validate;
 use http::header;
@@ -321,17 +321,21 @@ pub async fn actor_from_headers(
 		.and_then(|value| value.to_str().ok())
 		.ok_or(Error::Forbidden)?;
 	let pool = &f.store.pool;
-	if selector == "operator" {
+	if selector == "deployment_administrator" {
 		let granted = pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
-				DashboardOperatorGrant::enabled_for_identity(tx, session.identity_id()).await
+				DashboardDeploymentAdministratorGrant::enabled_for_identity(
+					tx,
+					session.identity_id(),
+				)
+				.await
 			})
 			.await?;
 		if !granted {
 			return Err(Error::Forbidden);
 		}
 		return Ok((
-			Actor::Operator,
+			Actor::DeploymentAdministrator,
 			BrowserOrigin {
 				identity_id: session.identity_id(),
 				mapping_id: None,
@@ -372,17 +376,18 @@ pub async fn actor_from_headers(
 	))
 }
 
-/// `/api/dashboard` routes admit only Operators: the bearer token or a browser
-/// session holding an operator grant.
-fn operator_actor(
+/// `/api/dashboard` routes admit only Deployment Administrators: the bearer token or a browser
+/// session holding a Deployment Administrator grant.
+fn deployment_administrator_actor(
 	origin: Option<BrowserOrigin>,
 ) -> crate::apps::identity::models::AdministrationActor {
 	use crate::apps::identity::models::AdministrationActor;
-	origin.map_or(AdministrationActor::OperatorBearer, |origin| {
-		AdministrationActor::Operator {
+	origin.map_or(
+		AdministrationActor::DeploymentAdministratorBearer,
+		|origin| AdministrationActor::DeploymentAdministrator {
 			identity: origin.identity_id,
-		}
-	})
+		},
+	)
 }
 
 impl Registration {
@@ -396,9 +401,10 @@ impl Registration {
 
 pub use crate::apps::identity::serializers::oidc::MappingView;
 pub(crate) use crate::apps::identity::serializers::oidc::{
-	AdminIdentityPage, AdminMapping, AdminMappingPage, AdminOperatorGrant, Approval,
-	ApprovedMapping, BackchannelLogout, CallbackQuery, Configuration, IdentityView, LoginQuery,
-	MappingRevision, OperatorGrantInput, Registration, SessionView,
+	AdminIdentityPage, AdminMapping, AdminMappingPage, Approval, ApprovedMapping,
+	BackchannelLogout, CallbackQuery, Configuration, DeploymentAdministratorGrant,
+	DeploymentAdministratorGrantInput, IdentityView, LoginQuery, MappingRevision, Registration,
+	SessionView,
 };
 
 use http::{HeaderMap, Method};
@@ -419,7 +425,7 @@ impl DashboardSessions {
 		let f = self.runtime.clone();
 		Ok(Configuration {
 			enabled: f.config.dashboard_session().is_some(),
-			desktop_protocol: 1,
+			desktop_protocol: 2,
 			provider: if f.config.gcip.is_some() {
 				"gcip"
 			} else if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
@@ -578,7 +584,7 @@ impl DashboardSessions {
 		};
 		// The identity's Mappings in every Tenant, which the Tenant switcher lists.
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
-		let (mappings, active, operator) = pool
+		let (mappings, active, deployment_administrator) = pool
 			.atomic(&scope, async |tx| {
 				let mappings = DashboardMapping::enabled_for_identity(tx, external.id)
 					.await?
@@ -601,16 +607,20 @@ impl DashboardSessions {
 						.collect(),
 				)
 				.await?;
-				let operator =
-					DashboardOperatorGrant::enabled_for_identity(tx, session.identity_id()).await?;
-				Ok((mappings, active, operator))
+				let deployment_administrator =
+					DashboardDeploymentAdministratorGrant::enabled_for_identity(
+						tx,
+						session.identity_id(),
+					)
+					.await?;
+				Ok((mappings, active, deployment_administrator))
 			})
 			.await?;
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
 				personal_account: external.direct_google(),
-				operator,
+				deployment_administrator,
 				mappings: mappings
 					.into_iter()
 					.map(|row| MappingView {
@@ -712,7 +722,7 @@ impl DashboardSessions {
 			id,
 			input,
 			Default::default(),
-			&operator_actor(actor),
+			&deployment_administrator_actor(actor),
 			digest(&random_secret()),
 			self.runtime.config.dashboard_policy(),
 		)
@@ -723,7 +733,7 @@ impl DashboardSessions {
 		actor: Option<BrowserOrigin>,
 		id: Uuid,
 	) -> Result<Registration> {
-		// Bearer Operators may reject requests left from a removed sign-in configuration.
+		// Bearer Deployment Administrators may reject requests left from a removed sign-in configuration.
 		let idle_seconds = self
 			.runtime
 			.config
@@ -732,7 +742,7 @@ impl DashboardSessions {
 		DashboardRegistrationRequest::reject(
 			&self.runtime.store.pool,
 			id,
-			&operator_actor(actor),
+			&deployment_administrator_actor(actor),
 			idle_seconds,
 		)
 		.await
@@ -745,17 +755,17 @@ impl DashboardSessions {
 		DashboardIdentity::erase_display(
 			&self.runtime.store.pool,
 			id,
-			operator_actor(actor).decision_actor(),
+			deployment_administrator_actor(actor).decision_actor(),
 		)
 		.await
 	}
-	pub(crate) async fn admin_operator_grant(
+	pub(crate) async fn deployment_administrator_grant(
 		&self,
 		id: Uuid,
-		input: OperatorGrantInput,
-	) -> Result<AdminOperatorGrant> {
+		input: DeploymentAdministratorGrantInput,
+	) -> Result<DeploymentAdministratorGrant> {
 		validate(&input)?;
-		DashboardOperatorGrant::change_enabled(
+		DashboardDeploymentAdministratorGrant::change_enabled(
 			&self.runtime.store.pool,
 			id,
 			input.enabled,
@@ -763,12 +773,14 @@ impl DashboardSessions {
 		)
 		.await
 	}
-	pub(crate) async fn admin_operator_grants(&self) -> Result<Vec<AdminOperatorGrant>> {
+	pub(crate) async fn deployment_administrator_grants(
+		&self,
+	) -> Result<Vec<DeploymentAdministratorGrant>> {
 		self.runtime
 			.store
 			.pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
-				DashboardOperatorGrant::list(tx).await
+				DashboardDeploymentAdministratorGrant::list(tx).await
 			})
 			.await
 	}
@@ -783,7 +795,7 @@ impl DashboardSessions {
 			&self.runtime.store.pool,
 			id,
 			input.expected_revision,
-			&operator_actor(actor),
+			&deployment_administrator_actor(actor),
 		)
 		.await?;
 		Ok(http::StatusCode::NO_CONTENT)
@@ -886,7 +898,7 @@ async fn exchange_identity(
 }
 
 impl BrowserOrigin {
-	pub(crate) async fn require_operator(
+	pub(crate) async fn require_deployment_administrator(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		lock: bool,
@@ -894,7 +906,7 @@ impl BrowserOrigin {
 		if self.mapping_id.is_some() {
 			return Err(Error::Forbidden);
 		}
-		// Operator-grant writes lock the identity before the grant. Retain that
+		// Deployment Administrator grant writes lock the identity before the grant. Retain that
 		// order, followed by the session, through the Marketplace commit.
 		let mut query = Query::select();
 		query
@@ -916,7 +928,7 @@ impl BrowserOrigin {
 		let mut query = Query::select();
 		query
 			.column(Alias::new("enabled"))
-			.from(Alias::new("dashboard_operator_grants"))
+			.from(Alias::new("dashboard_deployment_administrator_grants"))
 			.and_where(
 				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("identity_id")))
 					.eq(Expr::cust("$1")),

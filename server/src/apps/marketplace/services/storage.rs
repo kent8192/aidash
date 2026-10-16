@@ -2,26 +2,30 @@ use super::*;
 use crate::{Error, Result, authorization::access::Access};
 use reinhardt::query::{Alias, Expr, JoinType, PostgresQueryBuilder, Query, TableRef};
 
-pub(super) async fn operator_begin(
+pub(super) async fn deployment_administrator_begin(
 	store: &crate::store::Store,
 	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
 ) -> Result<crate::database::native::Transaction> {
 	let mut tx = store
 		.pool
-		.begin(&crate::authorization::identity::Actor::Operator.tenancy()?)
+		.begin(&crate::authorization::identity::Actor::DeploymentAdministrator.tenancy()?)
 		.await?;
 	if let Some(browser) = browser {
-		browser.require_operator(&mut tx, true).await?;
+		browser
+			.require_deployment_administrator(&mut tx, true)
+			.await?;
 	}
 	Ok(tx)
 }
 
-pub(super) async fn operator_commit(
+pub(super) async fn deployment_administrator_commit(
 	mut tx: crate::database::native::Transaction,
 	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
 ) -> Result<()> {
 	if let Some(browser) = browser {
-		browser.require_operator(&mut tx, false).await?;
+		browser
+			.require_deployment_administrator(&mut tx, false)
+			.await?;
 	}
 	tx.commit().await?;
 	Ok(())
@@ -121,7 +125,7 @@ pub(super) async fn credential_current(access: &mut Access) -> Result<()> {
 	Ok(())
 }
 
-/// Separate operator-only audit metadata; never policy input or a subject event.
+/// Separate Deployment Administrator-only audit metadata; never policy input or a subject event.
 pub(crate) fn operation(access: &mut Access, name: &str, resource: Value, request: Option<Uuid>) {
 	if let Some(audit) = &mut access.marketplace_audit
 		&& audit.get("operation").is_none()

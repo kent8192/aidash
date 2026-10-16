@@ -793,7 +793,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		.await?;
 		Ok(aidash_domain::context::sources::RetrievalScope {
 			tenant,
-			subject: "operator".into(),
+			subject: "deployment_administrator".into(),
 			authorization_revision: None,
 			index_revision: revisions.index,
 			participant_revision: revisions.participant,

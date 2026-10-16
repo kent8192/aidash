@@ -2,7 +2,7 @@
 
 Both tiers use this driver. The deterministic tier points it at a disposable
 local Node whose models are the scripted fixture provider; the live tier points
-it at an operator-chosen Node and model under its guard rails. The driver only
+it at a Node and model the evaluator chooses under its guard rails. The driver only
 observes; fixed_task_evaluation.py grades and aggregates.
 """
 import copy
@@ -49,10 +49,10 @@ class Api:
     # blindly; a write is retried by its caller after checking its effect.
     TRANSIENT = (502, 503, 504)
 
-    def __init__(self, call, operator_token, retries=4, backoff=2.0, sleep=time.sleep, request_timeout=180.0,
+    def __init__(self, call, deployment_administrator_token, retries=4, backoff=2.0, sleep=time.sleep, request_timeout=180.0,
                  clock=time.monotonic):
         self.call = call
-        self.operator = operator_token
+        self.deployment_administrator = deployment_administrator_token
         self.log = []
         self.retries = retries
         self.backoff = backoff
@@ -78,7 +78,7 @@ class Api:
                 if timeout <= 0:
                     raise DeadlineExceeded(f"{method} {path}: the deadline passed before the request")
             begin = time.perf_counter()
-            status, value = self.call(method, path, body, token or self.operator, timeout)
+            status, value = self.call(method, path, body, token or self.deployment_administrator, timeout)
             self.log.append({"method": method, "path": path, "status": status,
                              "round_trip_ms": round((time.perf_counter() - begin) * 1000, 3)})
             if status in accept:
@@ -128,7 +128,7 @@ class Experiment:
 
         The allow-all policy is acceptable only because the Node, its database
         and its Tenant exist solely for this invocation. The live tier never
-        calls this and uses the operator's existing Tenant policy.
+        calls this and uses the evaluator's existing Tenant policy.
         """
         subjects = {self.subject: {"kind": "user"}}
         for agent in agent_ids:
@@ -282,7 +282,7 @@ def stop_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=False)
     """Cancel a Run the evaluator stops waiting for; return its latest state, or None without one.
 
     It runs after the Run's own deadline, so its requests get CANCEL_GRACE of their own. When the
-    Tenant subject `token` cannot cancel (expired, rejected), the operator token is tried once.
+    Tenant subject `token` cannot cancel (expired, rejected), the Deployment Administrator token is tried once.
     `claim_uncertain` means a claim was sent without a definite answer: it may have admitted a
     Run that appears later, so absence is polled for through the grace period and, if no Run
     appears, reported as an unresolved cancellation rather than as no Run.
@@ -292,10 +292,10 @@ def stop_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=False)
     try:
         return cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain)
     except Exception as failure:
-        if token is None or token == api.operator:
+        if token is None or token == api.deployment_administrator:
             raise
         try:
-            return cancel_run(api, None, task_uuid, run_id, clock, sleep, claim_uncertain)  # None: operator token.
+            return cancel_run(api, None, task_uuid, run_id, clock, sleep, claim_uncertain)  # None: Deployment Administrator token.
         except Exception as fallback:
             raise fallback from failure
 
@@ -723,7 +723,7 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                          after_claim=after_claim if binding_check is not None else None)
                 if observation.get("cancellation_failed"):
                     stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
-                                 "or the operator token")
+                                 "or the Deployment Administrator token")
                 if observation.get("compactions"):
                     stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
                                  "compactor answered although the approval attests external compaction is disabled")

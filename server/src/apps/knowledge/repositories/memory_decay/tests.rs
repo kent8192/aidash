@@ -23,7 +23,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				dependencies: vec![],
 				parent_id: None,
 			},
-			"operator",
+			"deployment_administrator",
 			None,
 		)
 		.await
@@ -181,14 +181,15 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 			&AuthorizationWorkspace::build()
 				.workspace_id(other.id)
 				.tenant("acme")
-				.owner_subject("operator")
+				.owner_subject("deployment_administrator")
 				.finish(),
 		)
 		.await
 		.unwrap();
-	let index = crate::semantic::service::get_index(&store, &Actor::Operator, workspace)
-		.await
-		.unwrap();
+	let index =
+		crate::semantic::service::get_index(&store, &Actor::DeploymentAdministrator, workspace)
+			.await
+			.unwrap();
 	crate::semantic::service::configure(
 		&store,
 		other.id,
@@ -204,7 +205,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	for workspace in [workspace, other.id] {
 		let bank = memory::create_participant(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -216,7 +217,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		let id = Uuid::now_v7();
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -435,7 +436,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -447,7 +448,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -491,7 +492,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	lease.finish(Ok(())).await.unwrap();
 	let corrected = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -558,7 +559,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -570,7 +571,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -590,18 +591,24 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
         {"id":"default-read","effect":"allow","subjects":{"ids":["reader","person"]},"actions":["workspace.read","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}}
     ]})).unwrap();
 	authorization
-		.replace("acme", 1, bundle, "operator")
+		.replace("acme", 1, bundle, "deployment_administrator")
 		.await
 		.unwrap();
 	for role in ["p", "a", "m", "e", "r", "t"] {
 		authorization
-			.set_catalog("acme", &reference(role), 0, true, "operator")
+			.set_catalog(
+				"acme",
+				&reference(role),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
 	for subject in ["agent", "reader", "person"] {
 		let credential = authorization
-			.issue_credential("acme", subject, 3600, "operator")
+			.issue_credential("acme", subject, 3600, "deployment_administrator")
 			.await
 			.unwrap();
 		let actor = authorization.authenticate(&credential.token).await.unwrap();
@@ -670,7 +677,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 		}
 	}
 	let credential = authorization
-		.issue_credential("acme", "admin", 3600, "operator")
+		.issue_credential("acme", "admin", 3600, "deployment_administrator")
 		.await
 		.unwrap();
 	let actor = authorization.authenticate(&credential.token).await.unwrap();
@@ -735,7 +742,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -747,7 +754,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	let source = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -868,7 +875,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		ids.push(id);
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -1028,7 +1035,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1040,7 +1047,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1087,7 +1094,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	lease.finish(Ok(())).await.unwrap();
 	let outcome = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -1166,7 +1173,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1178,7 +1185,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1290,7 +1297,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1309,7 +1316,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		sources.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1346,7 +1353,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	}
 	sources[2] = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -1471,7 +1478,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1486,7 +1493,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 		admitted.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1657,7 +1664,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1674,7 +1681,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		admitted.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1802,7 +1809,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 	for text in ["Authorized bank fact", "Another participant's fact"] {
 		let bank = memory::create_participant(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -1814,7 +1821,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 		admitted.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {

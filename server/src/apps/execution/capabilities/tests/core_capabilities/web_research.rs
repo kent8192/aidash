@@ -492,10 +492,13 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 			{"text":"Omega line","page":2}
 		])
 	);
-	let (status, operator) =
+	let (status, deployment_administrator) =
 		request(&r.c.app, &r.c.f.config.api_token, "GET", &path, json!(null)).await;
-	assert_eq!(status, 200, "an Operator reads what run_get discloses");
-	assert_eq!(operator["text"], "Alpha");
+	assert_eq!(
+		status, 200,
+		"a Deployment Administrator reads what run_get discloses"
+	);
+	assert_eq!(deployment_administrator["text"], "Alpha");
 
 	// Everyone else gets one identical absence, whatever the reason. Bob is
 	// a member of the Tenant whose policy no longer lets him read Runs.

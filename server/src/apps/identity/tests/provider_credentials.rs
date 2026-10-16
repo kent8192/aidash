@@ -116,7 +116,7 @@ impl KeyValidator for Validator {
 }
 
 async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
-	assert_json(f.operator.post(&format!("/api/authorization/{tenant}"), &json!({
+	assert_json(f.deployment_administrator.post(&format!("/api/authorization/{tenant}"), &json!({
 		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(&f.runtime.config.node_id,"environment-agent","1.0.0"):{"kind":"agent"}},
 		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}
 	}), "json").await.unwrap(),200);
@@ -181,7 +181,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 		}]
 	});
 	assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha",
 				&json!({"expected_revision":0,"bundle":bundle}),
@@ -230,7 +230,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 	f.runtime.store.provider_credentials = Some(service);
 	f.context.set_singleton(f.runtime.clone());
 	let token = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha/credentials",
 				&json!({"subject":"alice","expires_in_seconds":3600}),
@@ -289,16 +289,16 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 		assert_eq!(decision.resource_id, id.to_string());
 		assert_eq!(decision.decision.0["allowed"], index >= 200);
 	}
-	let operator_rows = assert_json(
-		f.operator
+	let deployment_administrator_rows = assert_json(
+		f.deployment_administrator
 			.get("/api/tenants/alpha/provider-credentials?offset=201&limit=2")
 			.await
 			.unwrap(),
 		200,
 	);
-	assert_eq!(operator_rows[0]["id"], ids[201].to_string());
-	assert_eq!(operator_rows[1]["id"], ids[202].to_string());
-	assert_eq!(operator_rows.as_array().unwrap().len(), 2);
+	assert_eq!(deployment_administrator_rows[0]["id"], ids[201].to_string());
+	assert_eq!(deployment_administrator_rows[1]["id"], ids[202].to_string());
+	assert_eq!(deployment_administrator_rows.as_array().unwrap().len(), 2);
 }
 
 #[rstest]
@@ -323,7 +323,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	);
 
 	let disabled = f
-		.operator
+		.deployment_administrator
 		.get("/api/tenants/alpha/provider-credentials")
 		.await
 		.unwrap();
@@ -331,7 +331,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	for tenant in ["alpha", "beta"] {
 		let bundle = json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
 		assert_json(
-			f.operator
+			f.deployment_administrator
 				.post(
 					&format!("/api/authorization/{tenant}"),
 					&json!({"expected_revision":0,"bundle":bundle}),
@@ -369,7 +369,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		),
 	] {
 		let response = f
-			.operator
+			.deployment_administrator
 			.post(
 				&path,
 				&json!({"provider":"openrouter", "key_material":canary, "expected_revision":0}),
@@ -386,7 +386,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	let created = serde_json::to_value(
 		management
 			.complete_authorization(
-				aidash_server::authorization::identity::Actor::Operator,
+				aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 				"alpha".into(),
 				Provider::Openrouter,
 				Target::Connect { id: Uuid::now_v7() },
@@ -404,7 +404,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	let id = created["provider_credential"]["id"].as_str().unwrap();
 	let revision = created["provider_credential"]["revision"].as_i64().unwrap();
 	let token = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/beta/credentials",
 				&json!({"subject":"alice","expires_in_seconds":3600}),
@@ -431,7 +431,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		403
 	);
 	assert_eq!(
-		f.operator
+		f.deployment_administrator
 			.get(&format!("/api/tenants/beta/provider-credentials/{id}"))
 			.await
 			.unwrap()
@@ -439,7 +439,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		404
 	);
 	let alpha_token = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha/credentials",
 				&json!({"subject":"alice","expires_in_seconds":3600}),
@@ -469,7 +469,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	let second = serde_json::to_value(
 		management
 			.complete_authorization(
-				aidash_server::authorization::identity::Actor::Operator,
+				aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 				"alpha".into(),
 				Provider::Openrouter,
 				Target::Connect { id: Uuid::now_v7() },
@@ -484,7 +484,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert!(matches!(
 		management
 			.complete_authorization(
-				aidash_server::authorization::identity::Actor::Operator,
+				aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 				"alpha".into(),
 				Provider::Openrouter,
 				Target::Connect { id: Uuid::now_v7() },
@@ -510,7 +510,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert_eq!(malformed.status().as_u16(), 422);
 	assert_eq!(malformed.headers()["cache-control"], "no-store");
 	let bound = assert_json(
-		f.operator
+		f.deployment_administrator
 			.put(
 				"/api/tenants/alpha/provider-credential-bindings/openrouter",
 				&json!({"provider_credential_id":id,"expected_revision":0}),
@@ -522,7 +522,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	);
 	assert_eq!(bound["revision"], 1);
 	let response = f
-		.operator
+		.deployment_administrator
 		.put(
 			"/api/tenants/alpha/provider-credential-bindings/openrouter",
 			&json!({"provider_credential_id":id,"expected_revision":0}),
@@ -534,7 +534,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	let rotated = serde_json::to_value(
 		management
 			.complete_authorization(
-				aidash_server::authorization::identity::Actor::Operator,
+				aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 				"alpha".into(),
 				Provider::Openrouter,
 				Target::Reconnect {
@@ -551,7 +551,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert!(!rotated.to_string().contains(canary));
 	assert_eq!(rotated["provider_credential"]["revision"], revision + 1);
 	assert_eq!(
-		f.operator
+		f.deployment_administrator
 			.post(
 				&format!("/api/tenants/alpha/provider-credentials/{id}/revoke"),
 				&json!({"expected_revision":revision}),
@@ -563,7 +563,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		409
 	);
 	let revoked = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				&format!("/api/tenants/alpha/provider-credentials/{id}/revoke"),
 				&json!({"expected_revision":revision+1}),
@@ -587,7 +587,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert_eq!(response.status().as_u16(), 409);
 	assert_eq!(response.headers()["cache-control"], "no-store");
 	let unbound = assert_json(
-		f.operator
+		f.deployment_administrator
 			.put(
 				"/api/tenants/alpha/provider-credential-bindings/openrouter",
 				&json!({"provider_credential_id":null,"expected_revision":1}),
@@ -671,7 +671,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	// Matching the Tenant is insufficient when Provider Credential read is denied.
 	let denied = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[]});
 	assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha",
 				&json!({"expected_revision":1,"bundle":denied}),
@@ -703,7 +703,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert!(database.contains("provider_credential.created"));
 	assert!(database.contains("provider_credential.rotated"));
 	assert!(database.contains("provider_credential.revoked"));
-	assert!(database.contains("authenticated operator authority"));
+	assert!(database.contains("authenticated Deployment Administrator authority"));
 }
 
 #[rstest]
@@ -750,7 +750,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	f.context.set_singleton(f.runtime.clone());
 	for id in ["environment-agent-fixture-model", "environment-agent"] {
 		assert_json(
-			f.operator
+			f.deployment_administrator
 				.post(
 					"/api/authorization/beta/catalog",
 					&json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -762,7 +762,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		);
 	}
 	let token = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/beta/credentials",
 				&json!({"subject":"actor"}),
@@ -983,7 +983,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		);
 	}
 	f.context.set_singleton(f.runtime.clone());
-	let draft = assert_json(f.operator.post("/api/workbench/drafts", &json!({
+	let draft = assert_json(f.deployment_administrator.post("/api/workbench/drafts", &json!({
 		"tenant":"beta","owner":"actor","entry":{
 			"id":"","version":"1.0.0","kind":"agent","name":{"en":"Tenant sandbox"},"description":{"en":"Tenant sandbox"},
 			"config":{"schema_version":1,"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}
@@ -991,7 +991,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	}), "json").await.unwrap(),200);
 	// Leave enough fixture headroom for the built-in catalog so this request
 	// exercises credential admission rather than the independent input bound.
-	assert_json(f.operator.put("/api/workbench/test-limits/beta", &json!({
+	assert_json(f.deployment_administrator.put("/api/workbench/test-limits/beta", &json!({
 		"tenant":"beta","max_input_bytes":1000000,"max_output_tokens":1024,"max_total_tokens":1000000,
 		"max_steps":4,"max_duration_secs":30,"max_concurrent":1,"payload_days":1,"incident_evidence_days":1
 	}), "json").await.unwrap(),200);
@@ -1000,7 +1000,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		draft["id"].as_str().unwrap()
 	);
 	let rejected = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				&sandbox_path,
 				&json!({"expected_revision":draft["revision"],"message":"Test the Tenant model"}),
@@ -1016,7 +1016,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			.contains("Workbench tests do not support Tenant Provider Credentials"),
 		"{rejected}"
 	);
-	let sessions = assert_json(f.operator.get(&sandbox_path).await.unwrap(), 200);
+	let sessions = assert_json(
+		f.deployment_administrator.get(&sandbox_path).await.unwrap(),
+		200,
+	);
 	assert_eq!(
 		sessions,
 		json!([]),
@@ -2785,7 +2788,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	let mut f = endpoint.await;
 	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
 	assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha",
 				&json!({"expected_revision":0,"bundle":bundle}),
@@ -2796,7 +2799,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 		200,
 	);
 	let issued = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha/credentials",
 				&json!({"subject":"alice","expires_in_seconds":3600}),
@@ -3015,7 +3018,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 	let f = endpoint.await;
 	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-create","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create"],"resources":{"kinds":["provider_credential"]}}]});
 	assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha",
 				&json!({"expected_revision":0,"bundle":bundle}),
@@ -3026,7 +3029,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		200,
 	);
 	let issued = assert_json(
-		f.operator
+		f.deployment_administrator
 			.post(
 				"/api/authorization/alpha/credentials",
 				&json!({"subject":"alice","expires_in_seconds":3600}),

@@ -59,7 +59,7 @@ impl Repository {
 					subject: "alice".into(),
 				}
 			} else {
-				Principal::Operator
+				Principal::DeploymentAdministrator
 			},
 			state: Arc::new(Mutex::new(State {
 				job,
@@ -327,7 +327,7 @@ impl GenerationLifecycleScope for Scope {
 fn stop() -> Control {
 	Control {
 		action: Action::Stop,
-		reason: "operator request".into(),
+		reason: "Deployment Administrator request".into(),
 	}
 }
 
@@ -378,7 +378,8 @@ async fn authorized_control_preserves_transition_and_action_mapping(
 }
 #[rstest]
 #[tokio::test]
-async fn operator_takes_the_policy_lock_before_job_load_and_notifies_only_after_commit() {
+async fn deployment_administrator_takes_the_policy_lock_before_job_load_and_notifies_only_after_commit()
+ {
 	let repo = Repository::new(false);
 	control(&repo, "tenant", Uuid::from_u128(1), &stop())
 		.await
@@ -392,10 +393,10 @@ async fn operator_takes_the_policy_lock_before_job_load_and_notifies_only_after_
 			"quota.release",
 			"quota.mark",
 			"runs.cancel",
-			"authority:8:operator",
-			"retirement:37:operator",
+			"authority:8:deployment_administrator",
+			"retirement:37:deployment_administrator",
 			"status:STOPPED",
-			"history:STOPPED:operator:operator request",
+			"history:STOPPED:deployment_administrator:Deployment Administrator request",
 			"event"
 		]
 	);

@@ -76,7 +76,7 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 	let mut accepted = Uuid::nil();
 	for (action, status) in [("resume", 200), ("resume", 409)] {
 		let credential = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme/credentials",
 					&json!({"subject":"alice"}),
@@ -291,7 +291,7 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 	let mut policy = execution.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-answers","effect":"deny","subjects":{"any":true},"actions":["human.answer"],"resources":{"kinds":["*"]}}));
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				"/api/authorization/acme",
 				&json!({"expected_revision":1,"bundle":policy}),

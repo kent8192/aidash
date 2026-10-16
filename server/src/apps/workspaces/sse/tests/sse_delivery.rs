@@ -571,10 +571,10 @@ fn sse_fixture(
 		let application_fixture = application.await;
 		let (f, url, schema) = application_fixture.runtime.parts();
 		let app = application_fixture.application.clone();
-		let operator = &f.config.api_token;
+		let deployment_administrator = &f.config.api_token;
 		let (status, value) = request(
 			&app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":0,"bundle":policy(&f.config.node_id)}),
@@ -583,7 +583,7 @@ fn sse_fixture(
 		assert_eq!(status, 200, "{value}");
 		let (status, credential) = request(
 			&app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme/credentials",
 			json!({"subject":"alice"}),

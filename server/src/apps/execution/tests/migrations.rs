@@ -784,7 +784,7 @@ async fn unknown_or_inconsistent_native_history_is_not_adopted(
 	#[case] migration: &str,
 	#[case] message: &str,
 ) {
-	// Arrange: preserve the invalid row as evidence; repair is an operator action.
+	// Arrange: preserve the invalid row as evidence; repair is a manual action.
 	let fixture = fresh_database.await;
 	let recorder = DatabaseMigrationRecorder::new(fixture.connection.clone());
 	recorder.ensure_schema_table().await.unwrap();
@@ -819,7 +819,7 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	#[future] fresh_database: MigrationFixture,
 ) {
-	// Arrange: extension ownership belongs to an operator, before native history.
+	// Arrange: extension ownership belongs to whoever runs the Deployment, before native history.
 	let fixture = fresh_database.await;
 	let create = reinhardt::db::migrations::Operation::CreateExtension {
 		name: "pg_jsonschema".into(),

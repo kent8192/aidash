@@ -228,7 +228,7 @@ async fn desktop_login(
 	let config: auth::Config = auth::request(&state.client, &profile, Endpoint::Config, None)
 		.await
 		.map_err(Failure::message)?;
-	if config.desktop_protocol != Some(1) {
+	if config.desktop_protocol != Some(2) {
 		return Err(
 			"This Aidash server does not support desktop sign-in. Upgrade the server.".into(),
 		);

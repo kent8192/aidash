@@ -73,7 +73,7 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 	let replay = assert_json(
 		fixture
 			.app
-			.operator
+			.deployment_administrator
 			.get(&reference.expect("oversized event has a reference"))
 			.await
 			.unwrap(),

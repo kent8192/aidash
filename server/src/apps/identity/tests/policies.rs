@@ -43,7 +43,7 @@ async fn request(
 	authenticated: bool,
 ) -> (u16, Value) {
 	let client = if authenticated {
-		&app.operator
+		&app.deployment_administrator
 	} else {
 		&app.anonymous
 	};
@@ -51,7 +51,7 @@ async fn request(
 }
 
 async fn get(app: &EndpointFixture, path: &str) -> (u16, Value) {
-	decoded(app.operator.get(path).await.unwrap())
+	decoded(app.deployment_administrator.get(path).await.unwrap())
 }
 
 async fn scoped_request(
@@ -132,7 +132,11 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	let app = Arc::new(endpoint.await);
 	let store = app.runtime.store.clone();
 	let legacy = store
-		.create_workspace(&TEST_FIXTURE, "operator-only", "legacy secret")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Deployment Administrator-only",
+			"legacy secret",
+		)
 		.await
 		.unwrap();
 	let mut tokens = vec![];
@@ -277,7 +281,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	.await;
 	assert_eq!(
 		status, 403,
-		"operator must not bypass missing execution authority"
+		"Deployment Administrator must not bypass missing execution authority"
 	);
 	assert_eq!(
 		scoped_request(
@@ -980,7 +984,7 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	assert_eq!(status, 200);
 	assert_eq!(history.as_array().unwrap().len(), 1);
 	assert_eq!(history[0]["revision"], 2);
-	assert_eq!(history[0]["actor"], "operator");
+	assert_eq!(history[0]["actor"], "deployment_administrator");
 	let (status, decisions) = get(&app, "/api/authorization/acme/decisions?limit=1").await;
 	assert_eq!(status, 200);
 	assert_eq!(decisions.as_array().unwrap().len(), 1);
@@ -1004,7 +1008,7 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 	};
 	let policy: PolicyBundle = serde_json::from_value(bundle()).unwrap();
 	service
-		.replace("acme", 0, policy.clone(), "operator")
+		.replace("acme", 0, policy.clone(), "deployment_administrator")
 		.await
 		.unwrap();
 	let input: Evaluation = serde_json::from_value(evaluation()).unwrap();
@@ -1036,8 +1040,8 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 	let mut revoked = policy.clone();
 	revoked.subjects.get_mut("alice").unwrap().enabled = false;
 	let (one, two) = tokio::join!(
-		service.replace("acme", 1, revoked, "operator"),
-		service.replace("acme", 1, policy, "operator")
+		service.replace("acme", 1, revoked, "deployment_administrator"),
+		service.replace("acme", 1, policy, "deployment_administrator")
 	);
 	assert_ne!(one.is_ok(), two.is_ok());
 	let error = one.err().or_else(|| two.err()).unwrap();
@@ -1056,7 +1060,7 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 				"other",
 				0,
 				serde_json::from_value(bundle()).unwrap(),
-				"operator"
+				"deployment_administrator"
 			)
 			.await
 			.is_err()

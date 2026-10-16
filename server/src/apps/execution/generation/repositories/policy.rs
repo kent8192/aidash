@@ -24,7 +24,7 @@ pub(crate) struct NativePolicies {
 	pub principal: Principal,
 }
 enum Mode {
-	Operator(crate::database::native::Transaction),
+	DeploymentAdministrator(crate::database::native::Transaction),
 	Subject(Box<Access>),
 }
 struct Session {
@@ -35,7 +35,7 @@ struct Session {
 impl Session {
 	fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match &mut self.mode {
-			Mode::Operator(tx) => tx,
+			Mode::DeploymentAdministrator(tx) => tx,
 			Mode::Subject(access) => &mut access.tx,
 		}
 	}
@@ -44,7 +44,7 @@ impl Session {
 		result: aidash_application::Result<T>,
 	) -> aidash_application::Result<T> {
 		match self.mode {
-			Mode::Operator(tx) => match result {
+			Mode::DeploymentAdministrator(tx) => match result {
 				Ok(value) => {
 					tx.commit().await?;
 					Ok(value)
@@ -90,7 +90,9 @@ impl GenerationPolicies for NativePolicies {
 	) -> aidash_application::Result<Box<dyn PolicySession>> {
 		let mode = match &self.actor {
 			// A Deployment Administrator manages policies in the named Tenant's scope.
-			Actor::Operator => Mode::Operator(self.store.pool.begin(scope).await?),
+			Actor::DeploymentAdministrator => {
+				Mode::DeploymentAdministrator(self.store.pool.begin(scope).await?)
+			}
 			Actor::Subject(identity) => {
 				if identity.tenancy()? != *scope {
 					return Err(aidash_application::Error::Forbidden);
@@ -127,7 +129,7 @@ impl PolicySession for Session {
 	}
 	async fn decide(&mut self, id: &str, action: &str) -> aidash_application::Result<bool> {
 		match &mut self.mode {
-			Mode::Operator(_) => Ok(true),
+			Mode::DeploymentAdministrator(_) => Ok(true),
 			Mode::Subject(access) => access
 				.decide(&crate::generation::resource(access, id), action)
 				.await

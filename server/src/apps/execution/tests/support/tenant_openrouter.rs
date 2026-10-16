@@ -128,14 +128,20 @@ impl TenantOpenRouter {
 				Uuid::now_v7(),
 				Provider::Openrouter,
 				"scoped-home-provider-key".into(),
-				"operator",
+				"deployment_administrator",
 			)
 			.await
 			.unwrap()
 			.provider_credential
 			.id;
 		self.service
-			.bind(tenant, Provider::Openrouter, id, 0, "operator")
+			.bind(
+				tenant,
+				Provider::Openrouter,
+				id,
+				0,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 		id
@@ -144,7 +150,13 @@ impl TenantOpenRouter {
 	#[allow(dead_code)] // Only the remote compaction suite unbinds.
 	pub async fn unbind(&self, tenant: &str) {
 		self.service
-			.bind(tenant, Provider::Openrouter, None, 1, "operator")
+			.bind(
+				tenant,
+				Provider::Openrouter,
+				None,
+				1,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}

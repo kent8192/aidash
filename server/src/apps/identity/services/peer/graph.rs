@@ -1,7 +1,7 @@
 //! Scoped graph projection. A peer connection authenticates the source Node;
-//! a mapped Subject or a typed operator grant supplies the receiving authority.
+//! a mapped Subject or a typed Deployment Administrator grant supplies the receiving authority.
 pub(crate) use crate::apps::identity::repositories::graph::persistence::{
-	GraphAuthority, list_grants, operator_grant, set_grant, source_peer_lease,
+	GraphAuthority, deployment_administrator_grant, list_grants, set_grant, source_peer_lease,
 };
 
 use crate::{
@@ -41,14 +41,14 @@ pub(crate) async fn peers(
 			.await;
 			access.finish(result).await
 		}
-		Actor::Operator if origin.is_some() => Ok(peers
+		Actor::DeploymentAdministrator if origin.is_some() => Ok(peers
 			.into_iter()
 			.filter(|peer| peer.enabled)
 			.map(|peer| GraphPeer {
 				node_id: peer.node_id,
 			})
 			.collect()),
-		Actor::Operator => Err(Error::Forbidden),
+		Actor::DeploymentAdministrator => Err(Error::Forbidden),
 	}
 }
 
@@ -87,7 +87,7 @@ pub(crate) async fn expand(
 			.await;
 			access.finish(result).await
 		}
-		Actor::Operator => {
+		Actor::DeploymentAdministrator => {
 			let id = origin.ok_or(Error::Forbidden)?.identity_id;
 			let Some(tenant) = input.options.target_tenant.as_deref() else {
 				return Err(Error::Invalid("target tenant required".into()));
@@ -96,7 +96,7 @@ pub(crate) async fn expand(
 			let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
 			let mut tx = f.store.pool.begin(&scope).await?;
 			source_peer_lease(&mut tx, &input.node_id).await?;
-			let result = remote_page(&f, &input, GraphViewer::Operator { id }).await;
+			let result = remote_page(&f, &input, GraphViewer::DeploymentAdministrator { id }).await;
 			if result.is_ok() {
 				tx.commit().await?;
 			} else {
@@ -219,20 +219,20 @@ async fn project_page(f: &Federation, node: &str, input: GraphRequest) -> Result
 			.await;
 			access.finish(result).await
 		}
-		GraphViewer::Operator { id } => {
+		GraphViewer::DeploymentAdministrator { id } => {
 			let tenant = input
 				.options
 				.target_tenant
 				.as_deref()
 				.ok_or(Error::Forbidden)?;
-			let (mut tx, grant) = operator_grant(f, node, *id, tenant).await?;
-			let revision = format!("{}:{}", grant.source_operator, grant.revision);
+			let (mut tx, grant) = deployment_administrator_grant(f, node, *id, tenant).await?;
+			let revision = format!("{}:{}", grant.source_identity, grant.revision);
 			let result = project_in(
 				f,
 				node,
 				&input.viewer,
 				&input.options,
-				&mut GraphAuthority::Operator {
+				&mut GraphAuthority::DeploymentAdministrator {
 					tenant,
 					tx: &mut tx,
 				},
@@ -263,7 +263,7 @@ pub async fn provide(#[inject] runtime: Federation) -> GraphManagement {
 use reinhardt::injectable;
 
 pub use crate::apps::identity::serializers::peer_graph::{
-	GraphExpandInput, GraphOperatorGrantInput, GraphOptions, GraphPage, GraphPeer, GraphRequest,
+	GraphExpandInput, GraphOptions, GraphPage, GraphPeer, GraphRequest, PeerGraphGrantInput,
 };
 
 pub(crate) use crate::apps::identity::serializers::peer_graph::{GrantPage, GraphViewer};

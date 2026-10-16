@@ -36,7 +36,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 pub(crate) struct Repository {
 	pub(crate) runtime: Federation,
-	pub(crate) actor: Actor,
+	/// The local actor, or `None` for a request that a peer Node authenticated,
+	/// which has no local actor.
+	pub(crate) actor: Option<Actor>,
 }
 pub(crate) struct Scope {
 	pub(crate) runtime: Federation,
@@ -548,16 +550,16 @@ impl HomeRepository for Repository {
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
 		match &self.actor {
-			Actor::Subject(id) => Some(ExecutionPrincipal {
+			Some(Actor::Subject(id)) => Some(ExecutionPrincipal {
 				tenant: id.tenant.clone(),
 				subject: id.subject.clone(),
 				credential_id: id.credential_id,
 			}),
-			Actor::Operator => None,
+			Some(Actor::DeploymentAdministrator) | None => None,
 		}
 	}
 	async fn begin(&self) -> Result<Scope> {
-		let Actor::Subject(identity) = &self.actor else {
+		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
 		};
 		Ok(Scope {
@@ -587,10 +589,13 @@ impl HomeRepository for Repository {
 			.map_err(Into::into)
 	}
 	async fn prepare(&self, task: Uuid, input: PrepareInput) -> Result<Prepared> {
+		let Some(actor) = self.actor.clone() else {
+			return Err(NativeError::Forbidden.into());
+		};
 		crate::authorization::remote::RemoteGrants {
 			runtime: self.runtime.clone(),
 		}
-		.prepare(self.actor.clone(), task, input)
+		.prepare(actor, task, input)
 		.await
 		.map_err(Into::into)
 	}

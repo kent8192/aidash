@@ -2,7 +2,7 @@
 use crate::apps::identity::oidc::{BrowserOrigin, DashboardSessions};
 use crate::apps::identity::serializers::oidc::{
 	AdminIdentityPage, AdminMappingPage, Approval, BackchannelLogout, CallbackQuery,
-	LoginDiscovery, LoginQuery, MappingRevision, OperatorGrantInput,
+	DeploymentAdministratorGrantInput, LoginDiscovery, LoginQuery, MappingRevision,
 };
 use crate::http::json::Json;
 use reinhardt::Depends;
@@ -182,27 +182,27 @@ pub async fn admin_reject(
 }
 
 #[post(
-	"/api/dashboard/identities/{id}/operator-grant",
-	name = "sessions-admin-operator-grant",
+	"/api/dashboard/identities/{id}/deployment-administrator-grant",
+	name = "sessions-deployment-administrator-grant",
 	auth = "protected"
 )]
-pub async fn admin_operator_grant(
+pub async fn deployment_administrator_grant(
 	#[inject] service: Depends<DashboardSessions>,
 	Path(id): Path<Uuid>,
-	Json(input): Json<OperatorGrantInput>,
+	Json(input): Json<DeploymentAdministratorGrantInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.admin_operator_grant(id, input).await)
+	crate::http::json(service.deployment_administrator_grant(id, input).await)
 }
 
 #[get(
-	"/api/dashboard/operator-grants",
-	name = "sessions-admin-operator-grants",
+	"/api/dashboard/deployment-administrator-grants",
+	name = "sessions-deployment-administrator-grants",
 	auth = "protected"
 )]
-pub async fn admin_operator_grants(
+pub async fn deployment_administrator_grants(
 	#[inject] service: Depends<DashboardSessions>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.admin_operator_grants().await)
+	crate::http::json(service.deployment_administrator_grants().await)
 }
 
 #[post(

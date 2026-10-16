@@ -20,7 +20,7 @@ impl PersonalTenant {
 		tenant == self.tenant && subject == OWNER
 	}
 	/// Ordinary Subject authority is limited by the bundle's Tenant boundary.
-	/// Operator authority is a separate, explicitly granted Principal.
+	/// Deployment Administrator authority is a separate, explicitly granted Principal.
 	pub fn policy(&self) -> PolicyBundle {
 		PolicyBundle {
 			tenant: self.tenant.clone(),

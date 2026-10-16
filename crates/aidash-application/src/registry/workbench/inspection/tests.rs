@@ -85,9 +85,10 @@ async fn inspection_requires_current_identity_and_exact_agent_version_policy(
 }
 #[rstest]
 #[tokio::test]
-async fn operator_inspection_preserves_its_existing_authority_without_subject_reads() {
+async fn deployment_administrator_inspection_preserves_its_existing_authority_without_subject_reads()
+ {
 	let mut scope = Scope {
-		principal: Principal::Operator,
+		principal: Principal::DeploymentAdministrator,
 		allowed: false,
 		calls: vec![],
 	};

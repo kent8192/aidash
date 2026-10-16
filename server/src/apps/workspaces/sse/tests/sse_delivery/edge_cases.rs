@@ -329,7 +329,7 @@ async fn notification_during_initial_authority_read_is_retained(
 #[case::session_idle_expired("session", "last_activity_at")]
 #[case::mapping_disabled("mapping", "enabled")]
 #[case::identity_disabled("identity", "disabled_at")]
-#[case::operator_grant_removed("operator", "enabled")]
+#[case::deployment_administrator_grant_removed("deployment_administrator", "enabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 	#[case] change: &str,
@@ -438,12 +438,12 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.await
 	}
 	.unwrap();
-	let selector = if change == "operator" {
+	let selector = if change == "deployment_administrator" {
 		{
 			let query_bind_1 = identity;
 			sqlx::query(
 				&Query::insert()
-					.into_table(Alias::new("dashboard_operator_grants"))
+					.into_table(Alias::new("dashboard_deployment_administrator_grants"))
 					.columns([Alias::new("identity_id")])
 					.from_subquery(
 						reinhardt::query::Query::select()
@@ -459,7 +459,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 			.await
 		}
 		.unwrap();
-		"operator".to_owned()
+		"deployment_administrator".to_owned()
 	} else {
 		format!("mapping:acme:{mapping}")
 	};
@@ -489,7 +489,11 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		"session" => ("dashboard_sessions", "id", session),
 		"mapping" => ("dashboard_mappings", "id", mapping),
 		"identity" => ("dashboard_identities", "id", identity),
-		"operator" => ("dashboard_operator_grants", "identity_id", identity),
+		"deployment_administrator" => (
+			"dashboard_deployment_administrator_grants",
+			"identity_id",
+			identity,
+		),
 		_ => unreachable!(),
 	};
 	let value = if column == "enabled" {
@@ -548,7 +552,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.unwrap();
 		assert!(!String::from_utf8_lossy(&body).contains("event: mesh"));
 	}
-	let operator = fixture
+	let deployment_administrator = fixture
 		.app
 		.clone()
 		.native_oneshot(
@@ -562,8 +566,8 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		)
 		.await
 		.unwrap();
-	assert_eq!(operator.status, 200);
-	drop(operator);
+	assert_eq!(deployment_administrator.status, 200);
+	drop(deployment_administrator);
 	fixture.finish().await;
 }
 

@@ -40,7 +40,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	.unwrap();
 	let saved = service::put(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace.id,
 		memory("Source".into()),
 	)
@@ -55,9 +55,9 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	for invalid in [
 		json!({}),
 		json!([]),
-		json!({"credential":null,"tenant":"","subject":"operator","subjects":[7]}),
-		json!({"credential":"not-a-uuid","tenant":"","subject":"operator","subjects":[]}),
-		json!({"credential":null,"tenant":7,"subject":"operator","subjects":[]}),
+		json!({"credential":null,"tenant":"","subject":"without_subject","subjects":[7]}),
+		json!({"credential":"not-a-uuid","tenant":"","subject":"without_subject","subjects":[]}),
+		json!({"credential":null,"tenant":7,"subject":"without_subject","subjects":[]}),
 	] {
 		assert!(
 			SemanticEntry::objects()
@@ -92,7 +92,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	assert_eq!(unchanged.authority, original.authority);
 	assert_eq!(unchanged.revision, 1);
 	assert_eq!(
-		service::get_index(&store, &Actor::Operator, workspace.id)
+		service::get_index(&store, &Actor::DeploymentAdministrator, workspace.id)
 			.await
 			.unwrap()
 			.revision,
@@ -166,21 +166,21 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	// Japanese text exercises byte length rather than character count.
 	let oversized = service::put(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace.id,
 		memory("あ".repeat(86)),
 	)
 	.await;
 	assert!(matches!(oversized, Err(Error::Invalid(_))), "{oversized:?}");
 	assert!(
-		service::entries(&store, &Actor::Operator, workspace.id)
+		service::entries(&store, &Actor::DeploymentAdministrator, workspace.id)
 			.await
 			.unwrap()
 			.is_empty()
 	);
 	let saved = service::put(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace.id,
 		memory("あ".repeat(80)),
 	)
@@ -198,13 +198,13 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	)
 	.await;
 	assert!(matches!(reduced, Err(Error::Conflict(_))), "{reduced:?}");
-	let unchanged = service::get_index(&store, &Actor::Operator, workspace.id)
+	let unchanged = service::get_index(&store, &Actor::DeploymentAdministrator, workspace.id)
 		.await
 		.unwrap();
 	assert_eq!(unchanged.revision, 1);
 	assert_eq!(unchanged.configuration().unwrap().max_input_bytes, 256);
 	assert_eq!(
-		service::entries(&store, &Actor::Operator, workspace.id)
+		service::entries(&store, &Actor::DeploymentAdministrator, workspace.id)
 			.await
 			.unwrap()[0]
 			.id,
@@ -257,7 +257,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 	let (write, reduce) = tokio::join!(
 		service::put(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace.id,
 			memory("x".repeat(240))
 		),
@@ -275,11 +275,11 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		reduce.is_ok(),
 		"exactly one operation must win: {write:?}, {reduce:?}"
 	);
-	let index = service::get_index(&store, &Actor::Operator, workspace.id)
+	let index = service::get_index(&store, &Actor::DeploymentAdministrator, workspace.id)
 		.await
 		.unwrap();
 	let limit = index.configuration().unwrap().max_input_bytes;
-	for entry in service::entries(&store, &Actor::Operator, workspace.id)
+	for entry in service::entries(&store, &Actor::DeploymentAdministrator, workspace.id)
 		.await
 		.unwrap()
 	{
@@ -292,7 +292,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 
 #[rstest]
 #[tokio::test]
-async fn operator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
+async fn deployment_administrator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
 	#[future] database: DatabaseFixture,
 	spec: IndexSpec,
 ) {
@@ -309,7 +309,7 @@ async fn operator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
 	let workspace = store
 		.create_workspace(
 			&TEST_FIXTURE,
-			"Operator vectors",
+			"Deployment Administrator vectors",
 			"Empty tenant remains scoped",
 		)
 		.await
@@ -318,13 +318,17 @@ async fn operator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
 	let point = Uuid::now_v7();
 	let values = vec![1.0; spec.embedding.dimensions];
 	transport
-		.ensure_collection(&spec.vector, "operator-fixture", values.len())
+		.ensure_collection(
+			&spec.vector,
+			"deployment-administrator-fixture",
+			values.len(),
+		)
 		.await
 		.unwrap();
 	transport
 		.upsert(
 			&spec.vector,
-			"operator-fixture",
+			"deployment-administrator-fixture",
 			point,
 			&values,
 			json!({"workspace_id":workspace.id,"tenant":""}),
@@ -335,7 +339,7 @@ async fn operator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
 		let found = transport
 			.query(
 				&spec.vector,
-				"operator-fixture",
+				"deployment-administrator-fixture",
 				&values,
 				VectorFilter {
 					allowed: &[point],

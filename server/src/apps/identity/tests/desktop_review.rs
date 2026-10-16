@@ -315,14 +315,15 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 #[case(false)]
 #[case(true)]
 #[tokio::test]
-async fn operator_token_with_desktop_prefix_retains_api_access(
+async fn deployment_administrator_token_with_desktop_prefix_retains_api_access(
 	#[future(awt)]
 	#[from(review_fixture)]
 	fixture: Fixture,
 	#[case] oidc_enabled: bool,
 ) {
 	let mut fixture = fixture;
-	fixture.f.config.api_token = format!("aidash_desktop_{}", "operator".repeat(10));
+	fixture.f.config.api_token =
+		format!("aidash_desktop_{}", "deployment_administrator".repeat(10));
 	if !oidc_enabled {
 		fixture.f.config.oidc = None;
 	}
@@ -347,7 +348,7 @@ async fn operator_token_with_desktop_prefix_retains_api_access(
 	.await;
 	assert_eq!(response.status(), StatusCode::OK);
 	let body: Value = serde_json::from_slice(response.body()).unwrap();
-	assert_eq!(body["access"]["kind"], "operator", "{body}");
+	assert_eq!(body["access"]["kind"], "deployment_administrator", "{body}");
 	assert_eq!(
 		request(
 			&app,

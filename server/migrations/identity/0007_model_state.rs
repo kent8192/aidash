@@ -388,7 +388,7 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::CreateTable {
-			name: "authorization_graph_operator_grants".to_string(),
+			name: "authorization_peer_graph_grants".to_string(),
 			columns: vec![
 				ColumnDefinition::new("enabled", FieldType::Boolean)
 					.with_not_null(true)
@@ -414,7 +414,7 @@ pub(super) fn migration() -> Migration {
 					.with_default(None)
 					.with_generated(None)
 					.with_domain_option(None),
-				ColumnDefinition::new("source_operator", FieldType::Uuid)
+				ColumnDefinition::new("source_identity", FieldType::Uuid)
 					.with_not_null(true)
 					.with_unique(false)
 					.with_primary_key(true)
@@ -1150,7 +1150,7 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::CreateTable {
-			name: "dashboard_operator_grants".to_string(),
+			name: "dashboard_deployment_administrator_grants".to_string(),
 			columns: vec![
 				ColumnDefinition::new("enabled", FieldType::Boolean)
 					.with_not_null(true)

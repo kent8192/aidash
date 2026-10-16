@@ -224,7 +224,7 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 	let blank = post(&app, &token, &workspace, "   ", None, Uuid::new_v4()).await;
 	assert_eq!(blank.0, 400);
 	let spoof = app
-		.operator
+		.deployment_administrator
 		.post(
 			&format!("/api/workspaces/{workspace}/thread-messages"),
 			&json!({"content":"spoof","sender":"admin","idempotency_key":Uuid::new_v4()}),
@@ -266,8 +266,13 @@ async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
 		token: alice,
 		workspace: channel_id,
 	} = Box::pin(scoped_channel).await;
-	let operator = app.runtime.config.api_token.clone();
-	let foreign = workspace(&app, &operator, "Operator-owned").await;
+	let deployment_administrator = app.runtime.config.api_token.clone();
+	let foreign = workspace(
+		&app,
+		&deployment_administrator,
+		"Deployment Administrator-owned",
+	)
+	.await;
 	let workspace = channel_id;
 	let mut ids = Vec::new();
 	for text in ["first", "hidden", "last"] {
@@ -294,7 +299,7 @@ async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
 	}));
 	let updated = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy}),
@@ -323,7 +328,7 @@ async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
 	}));
 	let updated = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":2,"bundle":policy}),

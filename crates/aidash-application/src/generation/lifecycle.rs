@@ -25,12 +25,12 @@ pub async fn control(
 		return Err(Error::Forbidden);
 	}
 	let actor = match principal {
-		Principal::Operator => "operator",
+		Principal::DeploymentAdministrator => "deployment_administrator",
 		Principal::Subject { subject, .. } => subject,
 	};
 	let mut scope = repository.begin(&TenancyScope::tenant(tenant)?).await?;
 	let result = async {
-		if matches!(principal, Principal::Operator) {
+		if matches!(principal, Principal::DeploymentAdministrator) {
 			scope.authority(tenant).await?;
 		}
 		let job = scope.load(tenant, id).await?;

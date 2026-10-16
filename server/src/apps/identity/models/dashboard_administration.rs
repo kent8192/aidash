@@ -2,12 +2,13 @@
 
 use super::tenant_administration::AdministrationEvent;
 use super::{
-	AdministrationActor, AuthorizationBundle, AuthorizationCredential, DashboardIdentity,
-	DashboardMapping, DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
-	TenantAdministrator,
+	AdministrationActor, AuthorizationBundle, AuthorizationCredential,
+	DashboardDeploymentAdministratorGrant, DashboardIdentity, DashboardMapping,
+	DashboardRegistrationRequest, DashboardSession, TenantAdministrator,
 };
 use crate::apps::identity::serializers::oidc::{
-	AdminMapping, AdminOperatorGrant, Approval, ApprovedMapping, IdentityView, Registration,
+	AdminMapping, Approval, ApprovedMapping, DeploymentAdministratorGrant, IdentityView,
+	Registration,
 };
 use crate::apps::identity::services::dashboard_rules;
 use crate::authorization::Snapshot;
@@ -107,7 +108,7 @@ impl DashboardRegistrationRequest {
 			if let Some(previous) = Self::latest(tx, identity).await? {
 				// Direct Google accounts retain private authority while requesting
 				// additional shared membership. Each approval remains immutable and
-				// a new request still requires explicit Operator approval.
+				// a new request still requires explicit Deployment Administrator approval.
 				let active_mapping = !identities.iter().any(DashboardIdentity::direct_google)
 					&& previous.status == "approved"
 					&& DashboardMapping::objects()
@@ -489,7 +490,7 @@ pub(super) fn visible_to(
 impl DashboardIdentity {
 	/// Clears Display Attributes once the External Identity has no retention basis.
 	///
-	/// Authority (an enabled Mapping or operator grant) or an unexpired pending
+	/// Authority (an enabled Mapping or Deployment Administrator grant) or an unexpired pending
 	/// Registration Request retains them. A live session or a sign-in within
 	/// [`RECENT_SIGN_IN`] retains them only when it began after the latest
 	/// Registration Request ended, so rejection and expiry still clear the
@@ -539,9 +540,9 @@ impl DashboardIdentity {
 			.filter(DashboardMapping::field_identity_id().eq(row.id))
 			.filter(DashboardMapping::field_enabled().eq(true))
 			.exists_with_db(db)
-			.await? || DashboardOperatorGrant::objects()
-			.filter(DashboardOperatorGrant::field_identity_id().eq(row.id))
-			.filter(DashboardOperatorGrant::field_enabled().eq(true))
+			.await? || DashboardDeploymentAdministratorGrant::objects()
+			.filter(DashboardDeploymentAdministratorGrant::field_identity_id().eq(row.id))
+			.filter(DashboardDeploymentAdministratorGrant::field_enabled().eq(true))
 			.exists_with_db(db)
 			.await?
 		{
@@ -623,8 +624,8 @@ impl DashboardIdentity {
 					.map(|row| row.identity_id)
 					.collect();
 				authorized.extend(
-					DashboardOperatorGrant::objects()
-						.filter(DashboardOperatorGrant::field_enabled().eq(true))
+					DashboardDeploymentAdministratorGrant::objects()
+						.filter(DashboardDeploymentAdministratorGrant::field_enabled().eq(true))
 						.all_with_db(tx)
 						.await?
 						.into_iter()
@@ -698,7 +699,7 @@ impl DashboardIdentity {
 		.await
 	}
 
-	/// Performs an Operator's Display Erasure, keeping the first erasure's trace.
+	/// Performs a Deployment Administrator's Display Erasure, keeping the first erasure's trace.
 	pub(crate) async fn erase_display(db: &Pool, id: Uuid, actor: String) -> Result<IdentityView> {
 		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let mut row = Self::objects()
@@ -924,16 +925,18 @@ impl DashboardMapping {
 	}
 }
 
-impl DashboardOperatorGrant {
-	pub(crate) fn contract(self) -> AdminOperatorGrant {
-		AdminOperatorGrant {
+impl DashboardDeploymentAdministratorGrant {
+	pub(crate) fn contract(self) -> DeploymentAdministratorGrant {
+		DeploymentAdministratorGrant {
 			identity_id: self.identity_id(),
 			enabled: self.enabled,
 			revision: self.revision,
 		}
 	}
 
-	pub(crate) async fn list<E: OrmExecutor>(db: &mut E) -> Result<Vec<AdminOperatorGrant>> {
+	pub(crate) async fn list<E: OrmExecutor>(
+		db: &mut E,
+	) -> Result<Vec<DeploymentAdministratorGrant>> {
 		Ok(Self::objects()
 			.all()
 			.order_by(&["identity_id"])
@@ -949,7 +952,7 @@ impl DashboardOperatorGrant {
 		identity: Uuid,
 		enabled: bool,
 		revision: i64,
-	) -> Result<AdminOperatorGrant> {
+	) -> Result<DeploymentAdministratorGrant> {
 		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let identity = DashboardIdentity::objects()
 				.filter(DashboardIdentity::field_id().eq(identity))
@@ -969,14 +972,18 @@ impl DashboardOperatorGrant {
 				.pop();
 			let grant = if let Some(mut grant) = existing {
 				if grant.revision != revision {
-					return Err(Error::Conflict("operator grant revision changed".into()));
+					return Err(Error::Conflict(
+						"Deployment Administrator grant revision changed".into(),
+					));
 				}
 				grant.enabled = enabled;
 				grant.revision = dashboard_rules::next_revision(grant.revision)?;
 				Self::objects().update_with_conn(tx, &grant).await?
 			} else {
 				if revision != 0 {
-					return Err(Error::Conflict("operator grant revision changed".into()));
+					return Err(Error::Conflict(
+						"Deployment Administrator grant revision changed".into(),
+					));
 				}
 				let grant = Self::build()
 					.identity_id(identity.id)

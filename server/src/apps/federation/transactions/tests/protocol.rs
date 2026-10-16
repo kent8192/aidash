@@ -95,7 +95,7 @@ async fn unavailable(node: &Node, workspace_id: Uuid) {
 	assert_eq!(node.get("/health").await.0, 200);
 	let (session_status, session) = node.get("/api/session").await;
 	assert_eq!(session_status, 200);
-	assert_eq!(session["access"]["kind"], "operator");
+	assert_eq!(session["access"]["kind"], "deployment_administrator");
 	assert_eq!(node.get("/api/transactions/participants").await.0, 200);
 	let worker = Harness {
 		federation: node.f.clone(),
@@ -149,7 +149,7 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 		.execute(&sql, convert_values(values))
 		.await
 		.unwrap();
-	// A recovery step can hold this lease during slow peer I/O. An operator's
+	// A recovery step can hold this lease during slow peer I/O. A Deployment Administrator's
 	// durable abort must not be lost merely because that step is in flight.
 	let (status, body) = a
 		.post(
@@ -392,7 +392,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 					dependencies: vec![],
 					parent_id: None,
 				},
-				"operator",
+				"deployment_administrator",
 				None,
 			)
 			.await

@@ -90,7 +90,7 @@ impl IncidentScope for Scope {
 	async fn target_enabled(&mut self, tenant: &str, subject: &str) -> Result<()> {
 		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::target_enabled(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &Actor::Operator, policy),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor, policy),
 			tenant,
 			subject,
 		)
@@ -153,19 +153,22 @@ impl IncidentScope for Scope {
 #[async_trait]
 impl IncidentRetentionRepository for RetentionRepository<'_> {
 	async fn begin(&self) -> Result<Box<dyn IncidentRetentionScope + '_>> {
-		Ok(Box::new(Scope {
+		Ok(Box::new(RetentionScope {
 			tx: self
 				.pool
 				.begin(&aidash_application::tenancy::TenancyScope::Deployment(
 					aidash_application::tenancy::DeploymentScopeReason::Retention,
 				))
 				.await?,
-			actor: Actor::Operator,
 		}))
 	}
 }
+/// Retention is Aidash's own work and acts for no actor.
+struct RetentionScope {
+	tx: crate::database::native::Transaction,
+}
 #[async_trait]
-impl IncidentRetentionScope for Scope {
+impl IncidentRetentionScope for RetentionScope {
 	async fn expired(&mut self) -> Result<Vec<Incident>> {
 		AgentIncident::expired(&mut self.tx)
 			.await

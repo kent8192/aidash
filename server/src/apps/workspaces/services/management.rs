@@ -39,7 +39,7 @@ impl CollaborationManagement {
 		// A Deployment Administrator lists tasks across Tenants.
 		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
 		let mut page = f.store.task_page(&listing, page.offset).await?;
-		let denied = crate::authorization::remote::operator::blocked(
+		let denied = crate::authorization::remote::deployment_administrator::blocked(
 			&mut f.store.pool.begin(&listing).await?,
 			&page
 				.tasks
@@ -62,7 +62,7 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.create(&input.title, &input.goal).await;
 		}
-		// Operator execution creates a legacy Workspace that belongs to no Tenant.
+		// Deployment Administrator execution creates a legacy Workspace that belongs to no Tenant.
 		f.store
 			.create_workspace(
 				&TenancyScope::Deployment(DeploymentScopeReason::LegacyRun),
@@ -77,8 +77,11 @@ impl CollaborationManagement {
 			return scope.snapshot(id).await;
 		}
 		let scope = f.store.workspace_tenancy(id).await?;
-		crate::authorization::remote::operator::require(&mut f.store.pool.begin(&scope).await?, id)
-			.await?;
+		crate::authorization::remote::deployment_administrator::require(
+			&mut f.store.pool.begin(&scope).await?,
+			id,
+		)
+		.await?;
 		f.store.snapshot(&scope, id).await
 	}
 	pub(crate) async fn workspace_update(
@@ -92,8 +95,11 @@ impl CollaborationManagement {
 			return scope.update(id, input.revision, input.state).await;
 		}
 		let scope = f.store.workspace_tenancy(id).await?;
-		crate::authorization::remote::operator::require(&mut f.store.pool.begin(&scope).await?, id)
-			.await?;
+		crate::authorization::remote::deployment_administrator::require(
+			&mut f.store.pool.begin(&scope).await?,
+			id,
+		)
+		.await?;
 		f.store
 			.update_state(&scope, id, input.revision, input.state)
 			.await
@@ -168,7 +174,7 @@ impl CollaborationManagement {
 		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
 		let existing = f.store.task(&listing, id).await?;
 		let scope = f.store.workspace_tenancy(existing.workspace_id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut f.store.pool.begin(&scope).await?,
 			existing.workspace_id,
 		)

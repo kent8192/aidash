@@ -53,7 +53,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036).
 	f.store.keyless.permit_origin_of(&endpoint).unwrap();
 	let app = application_fixture.application.clone();
-	let operator = f.config.api_token.clone();
+	let deployment_administrator = f.config.api_token.clone();
 	for (id, kind, config) in [
 		(
 			"fixture-model",
@@ -67,14 +67,21 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":config});
-		let (status, body) = request(&app, &operator, "POST", "/api/registry", entry).await;
+		let (status, body) = request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/registry",
+			entry,
+		)
+		.await;
 		assert_eq!(status, 200, "register dependency: {body}");
 	}
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
 	assert_eq!(
 		request(
 			&app,
-			&operator,
+			&deployment_administrator,
 			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":0,"bundle":bundle})
@@ -85,7 +92,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	);
 	let (_, credential) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme/credentials",
 		json!({"subject":"alice"}),
@@ -147,7 +154,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		0,
 		"simulation reached a real tool endpoint"
 	);
-	let (status, profile) = request(&app, &operator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, profile) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, 200, "profile: {profile}");
 	let (status, visible) = request(
 		&app,
@@ -209,7 +216,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let reset = finished_test(&app, token, &path, reset["id"].as_str().unwrap()).await;
 	assert_eq!(reset["status"], "completed", "reset session: {reset}");
 	assert_eq!(real_hits.load(Ordering::SeqCst), 2);
-	let (status, revised) = request(&app, &operator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
+	let (status, revised) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
 	assert_eq!(status, 200, "revised profile: {revised}");
 	let (status, denied) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Try outside the test resource","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "denied test: {denied}");
@@ -238,9 +245,16 @@ async fn draft_conflict_register_and_factual_inspection(
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
-	let operator = f.config.api_token.clone();
+	let deployment_administrator = f.config.api_token.clone();
 	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
-	let (status, body) = request(&app, &operator, "POST", "/api/registry", model).await;
+	let (status, body) = request(
+		&app,
+		&deployment_administrator,
+		"POST",
+		"/api/registry",
+		model,
+	)
+	.await;
 	assert_eq!(status, 200, "model: {body}");
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[
 		{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.register","agent_draft.test","agent_draft.share","agent_draft.transfer","agent_draft.archive","agent_dependency.read","agent_version.inspect","agent_incident.manage","agent_incident.read"],"resources":{"kinds":["agent_draft","registry_entry","agent_version","agent_incident"]}},
@@ -248,7 +262,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	]});
 	let (status, body) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":0,"bundle":bundle}),
@@ -257,7 +271,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "policy: {body}");
 	let (_, alice) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme/credentials",
 		json!({"subject":"alice"}),
@@ -265,7 +279,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	.await;
 	let (_, bob) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/authorization/acme/credentials",
 		json!({"subject":"bob"}),
@@ -390,7 +404,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	);
 	let (_, catalog) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"GET",
 		"/api/authorization/acme/catalog",
 		Value::Null,
@@ -669,7 +683,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(
 		request(
 			&app,
-			&operator,
+			&deployment_administrator,
 			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":restricted})

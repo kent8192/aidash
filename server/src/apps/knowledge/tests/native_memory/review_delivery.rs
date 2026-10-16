@@ -86,7 +86,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 	let (store, registry, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -125,7 +125,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 				.expr(Expr::value(bank_id))
 				.expr(Expr::value(1_i64))
 				.expr(Expr::value("fixture"))
-				.expr(Expr::value("operator"))
+				.expr(Expr::value("deployment_administrator"))
 				.expr(Expr::value(json!(null)))
 				.expr(Expr::value(now));
 		} else {
@@ -155,7 +155,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 				.expr(Expr::value(
 					json!({"kind":"learn","run":Uuid::now_v7(),"revision":1}),
 				))
-				.expr(Expr::value(json!({"actor":"operator"})))
+				.expr(Expr::value(json!({"actor":"deployment_administrator"})))
 				.expr(Expr::value("complete"))
 				.expr(Expr::value(1_i32))
 				.expr(Expr::value(now))
@@ -180,7 +180,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 	registry.register(agent).await.unwrap();
 	let result = memory::upgrade_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		bank.clone(),
 		memory::UpgradeParticipant {
 			agent: EntityRef {
@@ -197,7 +197,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 	);
 	let memory::Outcome::Settings(Some(settings)) = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -231,7 +231,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -247,7 +247,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		admitted.extend(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -277,7 +277,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		},
 	};
 	let memory::Outcome::Recall(Recall::Ready { units }) =
-		memory::operate(&store, &Actor::Operator, recall())
+		memory::operate(&store, &Actor::DeploymentAdministrator, recall())
 			.await
 			.unwrap()
 	else {
@@ -293,7 +293,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 	);
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -309,7 +309,7 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		.await
 		.unwrap();
 	let memory::Outcome::Recall(Recall::Ready { units }) =
-		memory::operate(&store, &Actor::Operator, recall())
+		memory::operate(&store, &Actor::DeploymentAdministrator, recall())
 			.await
 			.unwrap()
 	else {

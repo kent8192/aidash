@@ -122,11 +122,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "authorization_credentials", Pending(264)),
 	table("identity", "authorization_decisions", Pending(264)),
 	table("identity", "authorization_execution", Pending(264)),
-	table(
-		"identity",
-		"authorization_graph_operator_grants",
-		Pending(264),
-	),
+	table("identity", "authorization_peer_graph_grants", Pending(264)),
 	table("identity", "authorization_remote_commands", Pending(265)),
 	table("identity", "authorization_remote_execution", Pending(265)),
 	table("identity", "authorization_remote_outputs", Pending(265)),
@@ -151,7 +147,11 @@ pub const TABLES: &[Table] = &[
 	table("identity", "dashboard_logout_tokens", DeploymentWide),
 	table("identity", "dashboard_mappings", Pending(264)),
 	// Deployment Administrator grants
-	table("identity", "dashboard_operator_grants", DeploymentWide),
+	table(
+		"identity",
+		"dashboard_deployment_administrator_grants",
+		DeploymentWide,
+	),
 	// Registration Requests
 	table(
 		"identity",

@@ -6,7 +6,7 @@ fn profile() -> AccountProfile {
 	serde_json::from_value(serde_json::json!({
 		"account_id":"search-account",
 		"agreement_reference":"approved-contract-record",
-		"verified_by":"operator",
+		"verified_by":"deployment_administrator",
 		"verified_at":"2026-09-01T00:00:00Z",
 		"review_after":"2026-10-01T00:00:00Z",
 		"storage_permitted":true,

@@ -110,7 +110,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 
 	// Preparation validates the complete write set without publishing any output.
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/transactions", &manifest, "json")
 			.await
 			.unwrap(),
@@ -248,7 +248,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		"actions":["message.read"],"resources":{"kinds":["message"],"ids":[source_id]}
 	}));
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				"/api/authorization/acme",
 				&json!({"expected_revision":1,"bundle":policy}),
@@ -260,6 +260,13 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	);
 	let hidden = assert_json(execution.subject.get(&path).await.unwrap(), 200);
 	assert_eq!(hidden["artifacts"], json!([]));
-	let operator = assert_json(app.operator.get(&path).await.unwrap(), 200);
-	assert_eq!(operator["artifacts"].as_array().unwrap().len(), 1);
+	let deployment_administrator =
+		assert_json(app.deployment_administrator.get(&path).await.unwrap(), 200);
+	assert_eq!(
+		deployment_administrator["artifacts"]
+			.as_array()
+			.unwrap()
+			.len(),
+		1
+	);
 }

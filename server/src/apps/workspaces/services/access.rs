@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 pub(crate) enum Lease {
 	Scoped(Box<Access>),
-	Operator(crate::database::native::Transaction),
+	DeploymentAdministrator(crate::database::native::Transaction),
 }
 
 impl Lease {
@@ -60,10 +60,11 @@ impl Lease {
 				}
 				Ok(Self::Scoped(Box::new(access)))
 			}
-			Actor::Operator => {
+			Actor::DeploymentAdministrator => {
 				let scope = store.workspace_tenancy(workspace).await?;
 				let mut tx = store.pool.begin(&scope).await?;
-				crate::authorization::remote::operator::require(&mut tx, workspace).await?;
+				crate::authorization::remote::deployment_administrator::require(&mut tx, workspace)
+					.await?;
 				let exists: Option<Uuid> = {
 					let query_bind_1 = workspace;
 					crate::database::native::query_scalar(
@@ -87,7 +88,7 @@ impl Lease {
 				if exists.is_none() {
 					return Err(Error::NotFound("channel unavailable".into()));
 				}
-				Ok(Self::Operator(tx))
+				Ok(Self::DeploymentAdministrator(tx))
 			}
 		}
 	}
@@ -95,21 +96,21 @@ impl Lease {
 	pub fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
 			Self::Scoped(access) => &mut access.tx,
-			Self::Operator(tx) => tx,
+			Self::DeploymentAdministrator(tx) => tx,
 		}
 	}
 
 	pub fn access_mut(&mut self) -> Option<&mut Access> {
 		match self {
 			Self::Scoped(access) => Some(access.as_mut()),
-			Self::Operator(_) => None,
+			Self::DeploymentAdministrator(_) => None,
 		}
 	}
 
 	pub fn sender(&self) -> String {
 		match self {
 			Self::Scoped(access) => access.identity.subject.clone(),
-			Self::Operator(_) => "human".into(),
+			Self::DeploymentAdministrator(_) => "human".into(),
 		}
 	}
 
@@ -118,14 +119,14 @@ impl Lease {
 			Self::Scoped(access) => crate::registry::digest(&json!({
 				"tenant":access.identity.tenant, "subject":access.identity.subject,
 			})),
-			Self::Operator(_) => "operator".into(),
+			Self::DeploymentAdministrator(_) => "deployment_administrator".into(),
 		}
 	}
 
 	pub async fn visible(&mut self, message: &Message) -> Result<bool> {
 		match self {
 			Self::Scoped(access) => access.message_visible(message).await,
-			Self::Operator(_) => Ok(true),
+			Self::DeploymentAdministrator(_) => Ok(true),
 		}
 	}
 
@@ -166,7 +167,7 @@ impl Lease {
 	pub async fn finish<T>(self, result: Result<T>) -> Result<T> {
 		match self {
 			Self::Scoped(access) => (*access).finish(result).await,
-			Self::Operator(tx) => match result {
+			Self::DeploymentAdministrator(tx) => match result {
 				Ok(value) => {
 					tx.commit().await?;
 					Ok(value)
@@ -186,13 +187,15 @@ use crate::authorization::access::NativeAccess;
 use reinhardt::db::backends::TransactionExecutor;
 pub(crate) enum NativeLease {
 	Scoped(Box<NativeAccess>),
-	Operator(Box<dyn TransactionExecutor>),
+	DeploymentAdministrator(Box<dyn TransactionExecutor>),
 }
 impl Lease {
 	pub(crate) fn into_native(self) -> Result<NativeLease> {
 		match self {
 			Self::Scoped(access) => Ok(NativeLease::Scoped(Box::new((*access).into_native()?))),
-			Self::Operator(tx) => Ok(NativeLease::Operator(tx.into_executor()?)),
+			Self::DeploymentAdministrator(tx) => {
+				Ok(NativeLease::DeploymentAdministrator(tx.into_executor()?))
+			}
 		}
 	}
 }
@@ -200,13 +203,13 @@ impl NativeLease {
 	pub(crate) fn tx(&mut self) -> &mut dyn TransactionExecutor {
 		match self {
 			Self::Scoped(access) => access.tx.as_mut(),
-			Self::Operator(tx) => tx.as_mut(),
+			Self::DeploymentAdministrator(tx) => tx.as_mut(),
 		}
 	}
 	pub(crate) async fn finish<T>(self, result: Result<T>) -> Result<T> {
 		match self {
 			Self::Scoped(access) => (*access).finish(result).await,
-			Self::Operator(tx) => match result {
+			Self::DeploymentAdministrator(tx) => match result {
 				Ok(value) => {
 					tx.commit().await?;
 					Ok(value)

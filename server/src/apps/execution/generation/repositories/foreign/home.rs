@@ -44,8 +44,10 @@ use uuid::Uuid;
 
 pub(crate) struct NativeHome {
 	pub federation: Federation,
-	pub actor: Actor,
-	pub principal: Principal,
+	/// The local actor, or `None` for a request that a peer Node authenticated,
+	/// which has no local actor.
+	pub actor: Option<Actor>,
+	pub principal: Option<Principal>,
 }
 struct Scope {
 	access: Access,
@@ -59,12 +61,15 @@ impl Scope {
 }
 impl NativeHome {
 	/// A subject reads its own Tenant's intents; a Deployment Administrator
-	/// reads across Tenants.
+	/// and a request that a peer Node authenticated read across Tenants.
 	fn tenancy(&self) -> crate::Result<TenancyScope> {
 		match &self.actor {
-			Actor::Subject(identity) => identity.tenancy(),
-			Actor::Operator => Ok(TenancyScope::Deployment(
+			Some(Actor::Subject(identity)) => identity.tenancy(),
+			Some(Actor::DeploymentAdministrator) => Ok(TenancyScope::Deployment(
 				aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+			)),
+			None => Ok(TenancyScope::Deployment(
+				aidash_application::tenancy::DeploymentScopeReason::FederationInbound,
 			)),
 		}
 	}
@@ -72,13 +77,13 @@ impl NativeHome {
 
 #[async_trait]
 impl HomeGenerationRepository for NativeHome {
-	fn principal(&self) -> &Principal {
-		&self.principal
+	fn principal(&self) -> Option<&Principal> {
+		self.principal.as_ref()
 	}
 	fn credential_id(&self) -> Option<Uuid> {
 		match &self.actor {
-			Actor::Operator => None,
-			Actor::Subject(identity) => Some(identity.credential_id),
+			Some(Actor::Subject(identity)) => Some(identity.credential_id),
+			Some(Actor::DeploymentAdministrator) | None => None,
 		}
 	}
 	fn node_id(&self) -> &str {
@@ -108,7 +113,7 @@ impl HomeGenerationRepository for NativeHome {
 		Ok(row?.into())
 	}
 	async fn begin(&self) -> Result<Box<dyn HomeGenerationScope>> {
-		let Actor::Subject(identity) = &self.actor else {
+		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(aidash_application::Error::Forbidden);
 		};
 		Ok(Box::new(Scope {

@@ -64,12 +64,12 @@ async fn verify_audio_batches(
 	f: &Federation,
 	worker: &Harness,
 	received: &mut mpsc::UnboundedReceiver<Value>,
-	operator: &str,
+	deployment_administrator: &str,
 	case: AudioBatchCase<'_>,
 ) {
 	let (status, audio_created) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/conversations",
 		json!({"title":"Audio batching", "goal":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
@@ -108,7 +108,7 @@ async fn verify_audio_batches(
 	if let Some(content) = &leading_text {
 		let (status, sent) = request(
 			app,
-			operator,
+			deployment_administrator,
 			"POST",
 			&format!("/api/runs/{}/message", audio_run.id),
 			json!({"content":content,"idempotency_key":Uuid::new_v4()}),
@@ -120,7 +120,7 @@ async fn verify_audio_batches(
 	*second_audio.last_mut().unwrap() = 1;
 	let first = upload(
 		app,
-		operator,
+		deployment_administrator,
 		audio_workspace,
 		"first.wav",
 		"audio/wav",
@@ -129,7 +129,7 @@ async fn verify_audio_batches(
 	.await;
 	let second = upload(
 		app,
-		operator,
+		deployment_administrator,
 		audio_workspace,
 		"second.wav",
 		"audio/wav",
@@ -139,7 +139,7 @@ async fn verify_audio_batches(
 	for attachment in [first, second] {
 		let (status, sent) = request(
 			app,
-			operator,
+			deployment_administrator,
 			"POST",
 			&format!("/api/runs/{}/message", audio_run.id),
 			json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
@@ -211,11 +211,11 @@ async fn verify_audio_batches(
 async fn verify_attachment_labels_count_toward_admission(
 	app: &common::TestApplication,
 	f: &Federation,
-	operator: &str,
+	deployment_administrator: &str,
 ) {
 	let (status, created) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/conversations",
 		json!({"title":"Media label budget", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
@@ -255,12 +255,28 @@ async fn verify_attachment_labels_count_toward_admission(
 		.unwrap();
 	let mut audio = vec![0_u8; audio_tokens * 16];
 	audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
-	let long = upload(app, operator, workspace, &long_name, "audio/wav", &audio).await;
-	let short = upload(app, operator, workspace, short_name, "audio/wav", &audio).await;
+	let long = upload(
+		app,
+		deployment_administrator,
+		workspace,
+		&long_name,
+		"audio/wav",
+		&audio,
+	)
+	.await;
+	let short = upload(
+		app,
+		deployment_administrator,
+		workspace,
+		short_name,
+		"audio/wav",
+		&audio,
+	)
+	.await;
 	let path = format!("/api/runs/{}/message", run.id);
 	let (status, rejected) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		&path,
 		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[long["id"]]}),
@@ -276,7 +292,7 @@ async fn verify_attachment_labels_count_toward_admission(
 	);
 	let (status, sent) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		&path,
 		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[short["id"]]}),
@@ -297,17 +313,24 @@ async fn verify_expired_route_retry(
 	app: &common::TestApplication,
 	f: &Federation,
 	worker: &Harness,
-	operator: &str,
+	deployment_administrator: &str,
 ) {
 	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
 	model.version = "1.0.2".into();
 	model.config["media_routes"][0]["expires_at"] =
 		json!(chrono::Utc::now() + chrono::Duration::seconds(3));
-	let (status, body) = request(app, operator, "POST", "/api/registry", json!(model)).await;
+	let (status, body) = request(
+		app,
+		deployment_administrator,
+		"POST",
+		"/api/registry",
+		json!(model),
+	)
+	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"model","version":"1.0.2"},"expected_revision":0,"enabled":true}),
@@ -318,11 +341,18 @@ async fn verify_expired_route_retry(
 	agent.version = "1.0.2".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.2");
-	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
+	let (status, body) = request(
+		app,
+		deployment_administrator,
+		"POST",
+		"/api/registry",
+		json!(agent),
+	)
+	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.0.2"},"expected_revision":0,"enabled":true}),
@@ -331,7 +361,7 @@ async fn verify_expired_route_retry(
 	assert_eq!(status, 200, "{body}");
 	let (status, created) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/conversations",
 		json!({"title":"Retry after route expiry", "goal":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}),
@@ -349,7 +379,7 @@ async fn verify_expired_route_retry(
 		.unwrap();
 	let image = upload(
 		app,
-		operator,
+		deployment_administrator,
 		workspace,
 		"retry.png",
 		"image/png",
@@ -359,10 +389,10 @@ async fn verify_expired_route_retry(
 	let key = Uuid::new_v4();
 	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
 	let path = format!("/api/runs/{}/message", run.id);
-	let (status, body) = request(app, operator, "POST", &path, input.clone()).await;
+	let (status, body) = request(app, deployment_administrator, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{body}");
 	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-	let (status, body) = request(app, operator, "POST", &path, input).await;
+	let (status, body) = request(app, deployment_administrator, "POST", &path, input).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(
 		f.store
@@ -393,7 +423,7 @@ async fn verify_separate_format_routes(
 	f: &Federation,
 	worker: &Harness,
 	received: &mut mpsc::UnboundedReceiver<Value>,
-	operator: &str,
+	deployment_administrator: &str,
 ) {
 	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
 	model.version = "1.0.3".into();
@@ -405,11 +435,18 @@ async fn verify_separate_format_routes(
 		 "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
 		 "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}
 	]);
-	let (status, body) = request(app, operator, "POST", "/api/registry", json!(model)).await;
+	let (status, body) = request(
+		app,
+		deployment_administrator,
+		"POST",
+		"/api/registry",
+		json!(model),
+	)
+	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"model","version":"1.0.3"},"expected_revision":0,"enabled":true}),
@@ -420,11 +457,18 @@ async fn verify_separate_format_routes(
 	agent.version = "1.0.3".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.3");
-	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
+	let (status, body) = request(
+		app,
+		deployment_administrator,
+		"POST",
+		"/api/registry",
+		json!(agent),
+	)
+	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.0.3"},"expected_revision":0,"enabled":true}),
@@ -433,7 +477,7 @@ async fn verify_separate_format_routes(
 	assert_eq!(status, 200, "{body}");
 	let (status, created) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/conversations",
 		json!({"title":"Separate media routes", "goal":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}),
@@ -464,10 +508,10 @@ async fn verify_separate_format_routes(
 		),
 	];
 	for (name, mime, bytes, _) in images {
-		let attachment = upload(app, operator, workspace, name, mime, bytes).await;
+		let attachment = upload(app, deployment_administrator, workspace, name, mime, bytes).await;
 		let (status, sent) = request(
 			app,
-			operator,
+			deployment_administrator,
 			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
@@ -841,35 +885,35 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.as_str(),
 		"COMPLETED"
 	);
-	let operator = f.config.api_token.clone();
+	let deployment_administrator = f.config.api_token.clone();
 	let (status, created) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
 		"/api/conversations",
-		json!({"title":"Operator media", "goal":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
+		json!({"title":"Deployment Administrator media", "goal":"Inspect image", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let operator_workspace = created["workspace"]["id"].as_str().unwrap();
-	let operator_run = f
+	let deployment_administrator_workspace = created["workspace"]["id"].as_str().unwrap();
+	let deployment_administrator_run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|run| run.workspace_id.to_string() == operator_workspace)
+		.find(|run| run.workspace_id.to_string() == deployment_administrator_workspace)
 		.unwrap();
 	let mut image_ids = Vec::new();
 	let mut expected_urls = Vec::new();
 	for index in 0..10_u8 {
-		let mut bytes = b"\x89PNG\r\n\x1a\noperator".to_vec();
+		let mut bytes = b"\x89PNG\r\n\x1a\ndeployment_administrator".to_vec();
 		bytes.push(b'0' + index);
 		let uploaded = upload(
 			&app,
-			&operator,
-			operator_workspace,
-			&format!("operator-{index}.png"),
+			&deployment_administrator,
+			deployment_administrator_workspace,
+			&format!("deployment-administrator-{index}.png"),
 			"image/png",
 			&bytes,
 		)
@@ -882,22 +926,22 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	}
 	let original_inputs = f
 		.store
-		.run_inputs(&TEST_FIXTURE, operator_run.id)
+		.run_inputs(&TEST_FIXTURE, deployment_administrator_run.id)
 		.await
 		.unwrap()
 		.len();
 	let (status, rejected) = request(
 		&app,
-		&operator,
+		&deployment_administrator,
 		"POST",
-		&format!("/api/runs/{}/message", operator_run.id),
+		&format!("/api/runs/{}/message", deployment_administrator_run.id),
 		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":&image_ids[..9]}),
 	)
 	.await;
 	assert_eq!(status, 400, "{rejected}");
 	assert_eq!(
 		f.store
-			.run_inputs(&TEST_FIXTURE, operator_run.id)
+			.run_inputs(&TEST_FIXTURE, deployment_administrator_run.id)
 			.await
 			.unwrap()
 			.len(),
@@ -906,9 +950,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	for ids in image_ids.chunks(5) {
 		let (status, sent) = request(
 			&app,
-			&operator,
+			&deployment_administrator,
 			"POST",
-			&format!("/api/runs/{}/message", operator_run.id),
+			&format!("/api/runs/{}/message", deployment_administrator_run.id),
 			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":ids}),
 		)
 		.await;
@@ -938,18 +982,22 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			break;
 		}
 	}
-	let final_operator_run = f.store.run(&TEST_FIXTURE, operator_run.id).await.unwrap();
+	let final_deployment_administrator_run = f
+		.store
+		.run(&TEST_FIXTURE, deployment_administrator_run.id)
+		.await
+		.unwrap();
 	assert!(
 		media_batches.len() == 3,
-		"operator run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
-		final_operator_run.phase().as_str(),
-		final_operator_run.control,
-		final_operator_run.error,
-		final_operator_run.state,
-		final_operator_run.lease_owner,
-		final_operator_run.lease_until,
+		"Deployment Administrator run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
+		final_deployment_administrator_run.phase().as_str(),
+		final_deployment_administrator_run.control,
+		final_deployment_administrator_run.error,
+		final_deployment_administrator_run.state,
+		final_deployment_administrator_run.lease_owner,
+		final_deployment_administrator_run.lease_until,
 		f.store
-			.task(&TEST_FIXTURE, final_operator_run.task_id)
+			.task(&TEST_FIXTURE, final_deployment_administrator_run.task_id)
 			.await
 			.unwrap()
 			.status
@@ -962,7 +1010,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
 		f.store
-			.run(&TEST_FIXTURE, operator_run.id)
+			.run(&TEST_FIXTURE, deployment_administrator_run.id)
 			.await
 			.unwrap()
 			.phase()
@@ -974,7 +1022,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&f,
 		&worker,
 		&mut received,
-		&operator,
+		&deployment_administrator,
 		AudioBatchCase {
 			first_audio: &large_audio,
 			with_text: false,
@@ -987,7 +1035,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&f,
 		&worker,
 		&mut received,
-		&operator,
+		&deployment_administrator,
 		AudioBatchCase {
 			first_audio: &large_audio[..380 * 1024],
 			with_text: true,
@@ -1003,7 +1051,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&f,
 		&worker,
 		&mut received,
-		&operator,
+		&deployment_administrator,
 		AudioBatchCase {
 			first_audio: &near_window_audio,
 			with_text: false,
@@ -1016,12 +1064,20 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&f,
 		&worker,
 		&mut received,
-		&operator,
+		&deployment_administrator,
 	))
 	.await;
-	Box::pin(verify_expired_route_retry(&app, &f, &worker, &operator)).await;
+	Box::pin(verify_expired_route_retry(
+		&app,
+		&f,
+		&worker,
+		&deployment_administrator,
+	))
+	.await;
 	Box::pin(verify_attachment_labels_count_toward_admission(
-		&app, &f, &operator,
+		&app,
+		&f,
+		&deployment_administrator,
 	))
 	.await;
 	drop(server);

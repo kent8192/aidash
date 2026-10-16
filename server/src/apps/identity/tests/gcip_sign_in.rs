@@ -171,7 +171,7 @@ fn signed_token(pool: &str, uid: &str, name: &str, auth_time: i64, provider: &st
 	let now = Utc::now().timestamp();
 	let mut header = Header::new(Algorithm::RS256);
 	header.kid = Some("fixture".into());
-	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":provider},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
+	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":provider},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"deployment_administrator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
 }
 /// A token as GCIP issues it after a TOTP challenge: the first factor's provider
 /// plus `sign_in_second_factor`. Aidash never reads these claims as authority.
@@ -179,7 +179,7 @@ fn second_factor_token(pool: &str, uid: &str, name: &str, auth_time: i64) -> Str
 	let now = Utc::now().timestamp();
 	let mut header = Header::new(Algorithm::RS256);
 	header.kid = Some("fixture".into());
-	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":"password","sign_in_second_factor":"totp","second_factor_identifier":"enrollment-id"},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
+	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":"password","sign_in_second_factor":"totp","second_factor_identifier":"enrollment-id"},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"deployment_administrator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
 }
 async fn transaction(app: &common::TestApplication, org: &str) -> (String, String) {
 	let response = browser()
@@ -1023,7 +1023,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.replace("acme", 0, policy, "operator")
+	.replace("acme", 0, policy, "deployment_administrator")
 	.await
 	.unwrap();
 	let app = common::application(f.clone()).await;
@@ -1053,7 +1053,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	assert_eq!(approved.status(), 200);
 	let grant = browser()
 		.post(app.url(format!(
-			"/api/dashboard/identities/{identity}/operator-grant"
+			"/api/dashboard/identities/{identity}/deployment-administrator-grant"
 		)))
 		.bearer_auth(&f.config.api_token)
 		.json(&json!({"enabled":true,"expected_revision":0}))
@@ -1169,13 +1169,16 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 			.unwrap()
 			.is_some()
 	);
-	for table in ["dashboard_mappings", "dashboard_operator_grants"] {
+	for table in [
+		"dashboard_mappings",
+		"dashboard_deployment_administrator_grants",
+	] {
 		let enabled = Query::select()
 			.column(Alias::new("enabled"))
 			.from(Alias::new(table))
 			.and_where(Expr::col("identity_id").eq(Expr::val(identity)))
 			.to_string(PostgresQueryBuilder);
-		// Disablement preserves operator-managed approvals, but gates all of
+		// Disablement preserves Deployment Administrator-managed approvals, but gates all of
 		// them behind an explicit Identity restore rather than a fresh login.
 		assert!(
 			sqlx::query_scalar::<_, bool>(&enabled)
@@ -1232,7 +1235,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 		aidash_server::authorization::Authorization {
 			pool: f.store.pool.clone(),
 		}
-		.replace(tenant, 0, policy, "operator")
+		.replace(tenant, 0, policy, "deployment_administrator")
 		.await
 		.unwrap();
 	}
@@ -1545,7 +1548,11 @@ async fn age(f: &Federation, table: &str, column: &str, interval: &str) {
 		.await
 		.unwrap();
 }
-async fn operator_get(app: &common::TestApplication, f: &Federation, path: &str) -> Value {
+async fn deployment_administrator_get(
+	app: &common::TestApplication,
+	f: &Federation,
+	path: &str,
+) -> Value {
 	let response = browser()
 		.get(app.url(path))
 		.bearer_auth(&f.config.api_token)
@@ -1556,7 +1563,7 @@ async fn operator_get(app: &common::TestApplication, f: &Federation, path: &str)
 	response.json().await.unwrap()
 }
 async fn only_identity_path(app: &common::TestApplication, f: &Federation) -> String {
-	let identities = operator_get(app, f, "/api/dashboard/identities").await;
+	let identities = deployment_administrator_get(app, f, "/api/dashboard/identities").await;
 	let [identity] = identities.as_array().unwrap().as_slice() else {
 		panic!("expected one External Identity: {identities}");
 	};
@@ -1589,7 +1596,7 @@ async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives
 	)
 	.await;
 	sweep(&f).await;
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert_eq!(
 		view["display_name"], "Abandoned",
 		"the live session retains them"
@@ -1598,7 +1605,7 @@ async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives
 	// The idle limit is 30 minutes; the abandoned session no longer counts.
 	age(&f, "dashboard_sessions", "last_activity_at", "31 minutes").await;
 	sweep(&f).await;
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	assert!(
 		view["display_erased_at"].is_null(),
@@ -1606,7 +1613,7 @@ async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives
 	);
 	sign_in(&app, "acme", "pool-a", "Returned").await;
 	assert_eq!(
-		operator_get(&app, &f, &path).await["display_name"],
+		deployment_administrator_get(&app, &f, &path).await["display_name"],
 		"Returned"
 	);
 	common::cleanup(f, &url, &schema).await;
@@ -1708,7 +1715,7 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 		.await
 		.unwrap()
 		.unwrap();
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert_eq!(
 		view["display_name"], "Fresh",
 		"the sweep must not erase claims recorded while it waited"
@@ -1734,7 +1741,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.replace("acme", 0, policy, "operator")
+	.replace("acme", 0, policy, "deployment_administrator")
 	.await
 	.unwrap();
 	let app = common::application(f.clone()).await;
@@ -1770,7 +1777,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 	let identity = registration["identity_id"].as_str().unwrap();
 	let path = format!("/api/dashboard/identities/{identity}");
 	assert_eq!(
-		operator_get(&app, &f, &path).await["display_name"],
+		deployment_administrator_get(&app, &f, &path).await["display_name"],
 		"Person"
 	);
 	let erase = || {
@@ -1783,7 +1790,10 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 	assert_eq!(erased.status(), 200);
 	let erased: Value = erased.json().await.unwrap();
 	assert!(erased["display_name"].is_null() && erased["verified_email"].is_null());
-	assert_eq!(erased["display_erased_by"], "operator-bearer");
+	assert_eq!(
+		erased["display_erased_by"],
+		"deployment-administrator-bearer"
+	);
 	assert!(erased["display_erased_at"].is_string());
 	let repeated: Value = erase().await.unwrap().json().await.unwrap();
 	assert_eq!(
@@ -1804,17 +1814,19 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		200
 	);
 	sweep(&f).await;
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	assert_eq!(view["display_erased_at"], erased["display_erased_at"]);
 	for listing in ["/api/dashboard/identities", "/api/dashboard/registrations"] {
-		let body = operator_get(&app, &f, listing).await.to_string();
+		let body = deployment_administrator_get(&app, &f, listing)
+			.await
+			.to_string();
 		assert!(
 			!body.contains("person@example.test") && !body.contains("Renamed"),
 			"{listing} returned erased attributes"
 		);
 	}
-	let mappings = operator_get(&app, &f, "/api/dashboard/mappings").await;
+	let mappings = deployment_administrator_get(&app, &f, "/api/dashboard/mappings").await;
 	assert!(
 		mappings
 			.as_array()
@@ -1854,7 +1866,7 @@ async fn rejected_sign_in_of_a_disabled_identity_records_no_display_attributes(
 	let path = only_identity_path(&app, &f).await;
 	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
 	sweep(&f).await;
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	// The provider still verifies the person, but the local identity stays disabled.
 	let (state, cookie) = transaction(&app, "acme").await;
@@ -1867,7 +1879,7 @@ async fn rejected_sign_in_of_a_disabled_identity_records_no_display_attributes(
 	)
 	.await;
 	assert_eq!(rejected.status(), 403);
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(
 		view["display_name"].is_null() && view["verified_email"].is_null(),
 		"a rejected sign-in must not restore Display Attributes: {view}"
@@ -1899,7 +1911,7 @@ async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
 	aidash_server::dashboard_auth::enforce_display_retention(unconfigured, stopping)
 		.await
 		.unwrap();
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	assert!(view["display_erased_at"].is_null());
 	common::cleanup(f, &url, &schema).await;
@@ -1907,7 +1919,7 @@ async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn bearer_operator_rejects_a_request_after_dashboard_sign_in_is_unconfigured(
+async fn bearer_deployment_administrator_rejects_a_request_after_dashboard_sign_in_is_unconfigured(
 	#[future(awt)]
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
@@ -1945,7 +1957,7 @@ async fn bearer_operator_rejects_a_request_after_dashboard_sign_in_is_unconfigur
 	let rejected: Value = rejected.json().await.unwrap();
 	assert_eq!(rejected["status"], "rejected");
 	let identity = registration["identity_id"].as_str().unwrap();
-	let view = operator_get(
+	let view = deployment_administrator_get(
 		&restarted,
 		&unconfigured,
 		&format!("/api/dashboard/identities/{identity}"),
@@ -1999,7 +2011,7 @@ async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retenti
 		.await
 		.unwrap();
 	sweep(&f).await;
-	let view = operator_get(&app, &f, &path).await;
+	let view = deployment_administrator_get(&app, &f, &path).await;
 	assert!(
 		view["display_name"].is_null() && view["verified_email"].is_null(),
 		"a rejected sign-in must not become a retention basis: {view}"
@@ -2048,7 +2060,7 @@ async fn register(app: &common::TestApplication, cookie: &str, csrf: &str) -> Va
 	response.json().await.unwrap()
 }
 
-/// Signs in, registers and lets the operator bearer approve into `subject`.
+/// Signs in, registers and lets the Deployment Administrator bearer approve into `subject`.
 async fn mapped_browser(
 	app: &common::TestApplication,
 	f: &Federation,
@@ -2122,7 +2134,7 @@ async fn replace_policy(f: &Federation, tenant: &str, revision: i64, policy: Val
 		tenant,
 		revision,
 		serde_json::from_value(policy).unwrap(),
-		"operator",
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();
@@ -2251,7 +2263,7 @@ async fn tenant_administrator_cannot_read_or_approve_across_tenants(
 		.await
 		.unwrap();
 	assert_eq!(theirs[0]["id"], outsider["id"]);
-	// Operators and bearer Subject Credentials are never Tenant Administrators.
+	// Deployment Administrators and bearer Subject Credentials are never Tenant Administrators.
 	assert_eq!(
 		browser()
 			.get(app.url("/api/tenants/acme/registrations"))
@@ -2470,7 +2482,12 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 	assert_eq!(
 		history,
 		vec![
-			("registration.approve".into(), "operator".into(), None, None),
+			(
+				"registration.approve".into(),
+				"deployment_administrator".into(),
+				None,
+				None
+			),
 			(
 				"registration.approve".into(),
 				"tenant_administrator".into(),
@@ -2810,7 +2827,10 @@ async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are
 		assert_eq!(info.status(), 200);
 		sessions.push(info.json::<Value>().await.unwrap());
 	}
-	assert_eq!(sessions[0]["operator"], sessions[1]["operator"]);
+	assert_eq!(
+		sessions[0]["deployment_administrator"],
+		sessions[1]["deployment_administrator"]
+	);
 	assert_eq!(sessions[0]["mappings"], sessions[1]["mappings"]);
 	assert_ne!(sessions[0]["id"], sessions[1]["id"]);
 	common::cleanup(f, &url, &schema).await;

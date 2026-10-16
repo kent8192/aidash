@@ -355,7 +355,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	let mut server = releasable_provider;
 	let app = fixture.application;
 	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
-	let operator_token = f.config.api_token.clone();
+	let deployment_administrator_token = f.config.api_token.clone();
 	let (status, claimed) = request(
 		&app,
 		&subject_token,
@@ -445,7 +445,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	);
 	let (status, credentials) = request(
 		&app,
-		&operator_token,
+		&deployment_administrator_token,
 		"GET",
 		"/api/authorization/acme/credentials",
 		json!({}),
@@ -456,7 +456,13 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	let revoke = format!("/api/authorization/acme/credentials/{credential_id}/revoke");
 	let (status, revoked) = timeout(
 		Duration::from_secs(5),
-		request(&app, &operator_token, "POST", &revoke, json!({})),
+		request(
+			&app,
+			&deployment_administrator_token,
+			"POST",
+			&revoke,
+			json!({}),
+		),
 	)
 	.await
 	.expect("credential revocation must not wait for the provider");
@@ -501,7 +507,7 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 	let mut server = releasable_provider;
 	let app = fixture.application;
 	let (mut policy, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
-	let operator_token = f.config.api_token.clone();
+	let deployment_administrator_token = f.config.api_token.clone();
 	let (status, claimed) = request(
 		&app,
 		&subject_token,
@@ -529,7 +535,7 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 	}));
 	let (status, changed) = request(
 		&app,
-		&operator_token,
+		&deployment_administrator_token,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy}),

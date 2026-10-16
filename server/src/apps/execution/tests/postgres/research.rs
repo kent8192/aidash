@@ -88,7 +88,7 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_account(
+async fn attempts_are_reserved_once_settled_once_and_charged_to_the_search_account_holder(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
@@ -100,7 +100,10 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 
 	assert_eq!(
 		evidence
-			.reserve(run.id, &reservation("k1", Some(("operator", 5_000))))
+			.reserve(
+				run.id,
+				&reservation("k1", Some(("deployment_administrator", 5_000)))
+			)
 			.await
 			.unwrap(),
 		Reserved::Reserved { source: None }
@@ -118,7 +121,10 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 	);
 	// Unknown outcomes are charged while dispatched.
 	assert_eq!(
-		evidence.account_spend("operator", since).await.unwrap(),
+		evidence
+			.account_spend("deployment_administrator", since)
+			.await
+			.unwrap(),
 		5_000
 	);
 	let result = json!({"status":"ok"});
@@ -147,7 +153,10 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 	);
 	assert_eq!(
 		evidence
-			.reserve(run.id, &reservation("k2", Some(("operator", 5_000))))
+			.reserve(
+				run.id,
+				&reservation("k2", Some(("deployment_administrator", 5_000)))
+			)
 			.await
 			.unwrap(),
 		Reserved::Reserved { source: None }
@@ -163,13 +172,19 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 		.await
 		.unwrap();
 	assert_eq!(
-		evidence.account_spend("operator", since).await.unwrap(),
+		evidence
+			.account_spend("deployment_administrator", since)
+			.await
+			.unwrap(),
 		5_000
 	);
 	assert_eq!(evidence.usage(run.id).await.unwrap().search_attempts, 2);
 	assert_eq!(
 		evidence
-			.reserve(run.id, &reservation("k3", Some(("operator", 6_000))))
+			.reserve(
+				run.id,
+				&reservation("k3", Some(("deployment_administrator", 6_000)))
+			)
 			.await
 			.unwrap(),
 		Reserved::BudgetExhausted
@@ -343,9 +358,9 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 	});
 	let now = chrono::Utc::now();
 	let profile = aidash_domain::research::account::AccountProfile {
-		account_id: "operator".into(),
+		account_id: "deployment_administrator".into(),
 		agreement_reference: "contract".into(),
-		verified_by: "operator".into(),
+		verified_by: "deployment_administrator".into(),
 		verified_at: now - chrono::Duration::days(1),
 		review_after: now + chrono::Duration::days(1),
 		storage_permitted: true,

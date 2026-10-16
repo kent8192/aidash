@@ -94,7 +94,7 @@ impl HarnessManagement {
 			before = batch.last().expect("nonempty event batch").sequence;
 			let exhausted = batch.len() < 500;
 			events.extend(
-				crate::authorization::remote::operator::filter_events(
+				crate::authorization::remote::deployment_administrator::filter_events(
 					&mut f.store.pool.begin(&listing()).await?,
 					batch,
 				)
@@ -115,9 +115,11 @@ impl HarnessManagement {
 					reinhardt::query::Alias::new("human_requests"),
 					reinhardt::query::Alias::new("h"),
 				)
-				.and_where(crate::authorization::remote::operator::state_visible(
-					"h.workspace_id",
-				))
+				.and_where(
+					crate::authorization::remote::deployment_administrator::state_visible(
+						"h.workspace_id",
+					),
+				)
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("created_at"),
@@ -138,9 +140,11 @@ impl HarnessManagement {
 					reinhardt::query::Alias::new("conversations"),
 					reinhardt::query::Alias::new("c"),
 				)
-				.and_where(crate::authorization::remote::operator::state_visible(
-					"c.workspace_id",
-				))
+				.and_where(
+					crate::authorization::remote::deployment_administrator::state_visible(
+						"c.workspace_id",
+					),
+				)
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("created_at"),
@@ -161,9 +165,11 @@ impl HarnessManagement {
 					reinhardt::query::Alias::new("artifacts"),
 					reinhardt::query::Alias::new("a"),
 				)
-				.and_where(crate::authorization::remote::operator::state_visible(
-					"a.workspace_id",
-				))
+				.and_where(
+					crate::authorization::remote::deployment_administrator::state_visible(
+						"a.workspace_id",
+					),
+				)
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("created_at"),
@@ -176,7 +182,7 @@ impl HarnessManagement {
 		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let mut state = StateResponse {
-			access: AccessProfile::Operator,
+			access: AccessProfile::DeploymentAdministrator,
 			node: f.config.identity(vec![]),
 			registry: records,
 			workspaces: f.store.workspaces(&listing()).await?,
@@ -187,9 +193,11 @@ impl HarnessManagement {
 						reinhardt::query::Alias::new("tasks"),
 						reinhardt::query::Alias::new("t"),
 					)
-					.and_where(crate::authorization::remote::operator::state_visible(
-						"t.workspace_id",
-					))
+					.and_where(
+						crate::authorization::remote::deployment_administrator::state_visible(
+							"t.workspace_id",
+						),
+					)
 					.order_by(
 						reinhardt::query::Alias::new("created_at"),
 						reinhardt::query::Order::Desc,
@@ -210,9 +218,11 @@ impl HarnessManagement {
 						reinhardt::query::Alias::new("runs"),
 						reinhardt::query::Alias::new("r"),
 					)
-					.and_where(crate::authorization::remote::operator::state_visible(
-						"r.workspace_id",
-					))
+					.and_where(
+						crate::authorization::remote::deployment_administrator::state_visible(
+							"r.workspace_id",
+						),
+					)
 					.order_by(
 						reinhardt::query::Alias::new("updated_at"),
 						reinhardt::query::Order::Desc,
@@ -231,7 +241,7 @@ impl HarnessManagement {
 			events,
 			artifacts,
 		};
-		crate::authorization::remote::operator::filter_state(
+		crate::authorization::remote::deployment_administrator::filter_state(
 			&mut f.store.pool.begin(&listing()).await?,
 			&mut state,
 		)
@@ -256,7 +266,7 @@ impl HarnessManagement {
 			.get(&input.agent.id, &input.agent.version)
 			.await?;
 		let owner = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
-		// Operator execution creates a Run without an execution grant.
+		// Deployment Administrator execution creates a Run without an execution grant.
 		let legacy = TenancyScope::Deployment(DeploymentScopeReason::LegacyRun);
 		let task = f
 			.store
@@ -281,7 +291,7 @@ impl HarnessManagement {
 		}
 		let scope = f.store.run_tenancy(id).await?;
 		let run = f.store.inspect_run(&scope, id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut f.store.pool.begin(&scope).await?,
 			run.workspace_id,
 		)
@@ -305,7 +315,7 @@ impl HarnessManagement {
 		};
 		let scope = match &actor {
 			Actor::Subject(identity) => identity.tenancy()?,
-			Actor::Operator => f.store.run_tenancy(run).await?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
 		};
 		let store = crate::research::evidence_store(f.store.clone(), scope);
 		Ok(
@@ -322,7 +332,7 @@ impl HarnessManagement {
 		input: ControlInput,
 	) -> Result<crate::domain::RunInspection> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::Operator)
+		if matches!(actor, Actor::DeploymentAdministrator)
 			&& browser.is_some()
 			&& input.action == crate::domain::RunControlAction::Resume
 		{
@@ -333,7 +343,7 @@ impl HarnessManagement {
 		}
 		let scope = f.store.run_tenancy(id).await?;
 		let existing = f.store.inspect_run(&scope, id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut f.store.pool.begin(&scope).await?,
 			existing.workspace_id,
 		)
@@ -417,7 +427,11 @@ impl HarnessManagement {
 		let mut visible = Vec::new();
 		let mut connection = f.store.pool.begin(&listing()).await?;
 		if let Some(workspace) = q.workspace_id
-			&& !crate::authorization::remote::operator::visible(&mut connection, workspace).await?
+			&& !crate::authorization::remote::deployment_administrator::visible(
+				&mut connection,
+				workspace,
+			)
+			.await?
 		{
 			let mut response = Response::ok().with_json(&visible)?;
 			response
@@ -435,8 +449,11 @@ impl HarnessManagement {
 				cursor = last.sequence;
 			}
 			visible.extend(
-				crate::authorization::remote::operator::filter_events(&mut connection, page)
-					.await?,
+				crate::authorization::remote::deployment_administrator::filter_events(
+					&mut connection,
+					page,
+				)
+				.await?,
 			);
 			if visible.len() >= 500 || exhausted {
 				if visible.len() >= 500 {
@@ -539,12 +556,14 @@ impl HarnessManagement {
 				let result = access.run_for_interaction(id).await;
 				access.finish(result).await?
 			}
-			Actor::Operator => f.store.run(&f.store.run_tenancy(id).await?, id).await?,
+			Actor::DeploymentAdministrator => {
+				f.store.run(&f.store.run_tenancy(id).await?, id).await?
+			}
 		};
 		let external = input.idempotency_key.unwrap_or_else(Uuid::new_v4);
 		let key = match &actor {
 			Actor::Subject(identity) => interaction::run_message_key(identity, id, external),
-			Actor::Operator => format!("human:{id}:{external}"),
+			Actor::DeploymentAdministrator => format!("human:{id}:{external}"),
 		};
 		let mut lease = crate::collaboration::access::Lease::begin_message_create(
 			&f.store,

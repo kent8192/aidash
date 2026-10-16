@@ -32,7 +32,7 @@ pub(crate) async fn description_lease(
 	id: Uuid,
 ) -> Result<(Access, Description)> {
 	aidash_application::authorization::source::grants::description(
-		&crate::bootstrap::home_execution_repository(f, Actor::Operator),
+		&crate::bootstrap::peer_home_execution_repository(f),
 		node,
 		id,
 	)
@@ -48,7 +48,7 @@ async fn description_lease_mode(
 	revision_race: &mut bool,
 ) -> Result<(Access, Description)> {
 	aidash_application::authorization::source::grants::description_mode(
-		&crate::bootstrap::home_execution_repository(f, Actor::Operator),
+		&crate::bootstrap::peer_home_execution_repository(f),
 		node,
 		id,
 		command,
@@ -205,8 +205,8 @@ impl RemoteGrants {
 	}
 }
 
-#[path = "remote/operator.rs"]
-pub(crate) mod operator;
+#[path = "remote/deployment_administrator.rs"]
+pub(crate) mod deployment_administrator;
 
 #[path = "remote/reads.rs"]
 pub(crate) mod reads;

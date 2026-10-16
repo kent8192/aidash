@@ -25,7 +25,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -38,7 +38,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	let original = content("Deploy from the release branch only.");
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -83,9 +83,13 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 			}
 		}
 	};
-	memory::mutate(&store, &Actor::Operator, mutation(&bank, change))
-		.await
-		.unwrap();
+	memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		mutation(&bank, change),
+	)
+	.await
+	.unwrap();
 
 	// Assert
 	assert!(
@@ -94,7 +98,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	);
 	let current = memory::list(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank: bank.clone(),
@@ -128,7 +132,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -140,7 +144,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -169,12 +173,12 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	let (left, right) = tokio::join!(
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			correct("Shared runbook step one, writer A.")
 		),
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			correct("Shared runbook step one, writer B.")
 		),
 	);
@@ -201,7 +205,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	}
 	let current = memory::list(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -227,7 +231,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 				dependencies: vec![],
 				parent_id: None,
 			},
-			"operator",
+			"deployment_administrator",
 			None,
 		)
 		.await
@@ -330,7 +334,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -341,7 +345,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	.bank;
 	let source = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -365,7 +369,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	);
 	let memory::Outcome::Units(derived) = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: derivation.operation_id,
 			provider: reference("p"),
@@ -420,7 +424,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	// Act: change, then the post-change view
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -463,7 +467,7 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 			{"id":"hide-runs","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["*"]}}
 		]}))
 		.unwrap(),
-		"operator",
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();
@@ -493,7 +497,7 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -504,7 +508,7 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	.bank;
 	let foreign = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -520,7 +524,7 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	let actor = Actor::Subject(scope.identity.clone());
 	memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -589,7 +593,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -610,10 +614,14 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 			},
 		)
 	};
-	let source = memory::mutate(&store, &Actor::Operator, add("Root finding", vec![]))
-		.await
-		.unwrap()
-		.remove(0);
+	let source = memory::mutate(
+		&store,
+		&Actor::DeploymentAdministrator,
+		add("Root finding", vec![]),
+	)
+	.await
+	.unwrap()
+	.remove(0);
 	let mut derived = Vec::new();
 	for text in [
 		"Live dependent",
@@ -621,17 +629,21 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 		"Supported dependent",
 	] {
 		derived.push(
-			memory::mutate(&store, &Actor::Operator, add(text, vec![source.evidence()]))
-				.await
-				.unwrap()
-				.remove(0),
+			memory::mutate(
+				&store,
+				&Actor::DeploymentAdministrator,
+				add(text, vec![source.evidence()]),
+			)
+			.await
+			.unwrap()
+			.remove(0),
 		);
 	}
 	let mut withdrawn = derived[1].content.clone();
 	withdrawn.verification = Verification::Contradicted;
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {

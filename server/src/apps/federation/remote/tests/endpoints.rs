@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 #[rstest]
 #[tokio::test]
-async fn remote_control_checks_operator_and_peer_before_external_io(
+async fn remote_control_checks_deployment_administrator_and_peer_before_external_io(
 	endpoint: crate::endpoint::EndpointFuture,
 	#[from(crate::endpoint::anonymous_client)]
 	#[with(endpoint.clone())]
@@ -23,7 +23,7 @@ async fn remote_control_checks_operator_and_peer_before_external_io(
 		.unwrap();
 	let denied = alice.post("/api/remote", &command, "json").await.unwrap();
 	let missing_peer = app
-		.operator
+		.deployment_administrator
 		.post("/api/remote", &command, "json")
 		.await
 		.unwrap();

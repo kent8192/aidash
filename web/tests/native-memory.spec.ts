@@ -53,7 +53,7 @@ async function fixture(
     participant,
   };
   const state = {
-    access: { kind: "operator" },
+    access: { kind: "deployment_administrator" },
     node: {
       id: bank.home,
       endpoint: "http://localhost",
@@ -79,7 +79,7 @@ async function fixture(
         description: "Use current memory",
         status: "OPEN",
         owner: null,
-        created_by: "operator",
+        created_by: "deployment_administrator",
         requirements: {},
         dependencies: [],
         parent_id: null,

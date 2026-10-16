@@ -84,7 +84,7 @@ impl GenerationReads for NativeReads {
 			access: Access::begin(&self.store, identity).await?,
 		}))
 	}
-	async fn operator_history(
+	async fn deployment_administrator_history(
 		&self,
 		tenant: &str,
 		id: Uuid,
@@ -95,7 +95,11 @@ impl GenerationReads for NativeReads {
 			.fetch_all(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
 			.await?)
 	}
-	async fn operator_usage(&self, tenant: &str, id: Uuid) -> aidash_application::Result<Usage> {
+	async fn deployment_administrator_usage(
+		&self,
+		tenant: &str,
+		id: Uuid,
+	) -> aidash_application::Result<Usage> {
 		crate::database::query_as(&usage_query())
 			.bind(tenant)
 			.bind(id)
@@ -103,7 +107,7 @@ impl GenerationReads for NativeReads {
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}
-	async fn operator_specification(
+	async fn deployment_administrator_specification(
 		&self,
 		tenant: &str,
 		id: Uuid,

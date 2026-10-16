@@ -25,8 +25,8 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 	fn scoped(&self) -> bool {
 		true
 	}
-	// NativeReads always retains subject authority; there is no operator branch.
-	async fn operator_visible(&mut self, _: Uuid) -> Result<bool> {
+	// NativeReads always retains subject authority; there is no Deployment Administrator branch.
+	async fn deployment_administrator_visible(&mut self, _: Uuid) -> Result<bool> {
 		Ok(true)
 	}
 	async fn workspace_resource(&mut self, id: Uuid) -> Result<Resource> {
