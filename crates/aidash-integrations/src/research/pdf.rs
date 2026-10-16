@@ -239,18 +239,41 @@ fn open(pdf: &[u8]) -> Result<Pdf, Failure> {
 
 /// Whether the standard security handler, if any, permits copying or
 /// otherwise extracting text (bit 5 of `P`). Encryption dictionaries are
-/// never encrypted themselves, so the dictionary is found among the objects.
+/// never encrypted themselves, so they are found among the objects, including
+/// the trailer dictionaries of cross-reference streams.
+///
+/// hayro does not expose which trailer names the effective dictionary, so
+/// every standard security dictionary in the file must permit extraction: a
+/// decoy that permits it cannot outvote the real one, and a forbidding decoy
+/// only refuses its own document. A file that names an encryption dictionary
+/// none of which is found, such as one written directly into a trailer, is
+/// refused rather than read.
 fn extraction_permitted(pdf: &Pdf) -> bool {
 	const EXTRACT: i64 = 1 << 4;
-	pdf.objects()
-		.into_iter()
-		.filter_map(|object| match object {
+	let mut found = false;
+	for object in pdf.objects() {
+		let dict = match object {
 			Object::Dict(dict) => Some(dict),
+			Object::Stream(stream) => stream.dict().get::<Dict<'_>>(b"Encrypt"),
 			_ => None,
-		})
-		.find(is_standard_security)
-		.and_then(|dict| dict.get::<i64>(b"P"))
-		.is_none_or(|permissions| permissions & EXTRACT != 0)
+		};
+		let Some(dict) = dict.filter(is_standard_security) else {
+			continue;
+		};
+		found = true;
+		if dict
+			.get::<i64>(b"P")
+			.is_some_and(|permissions| permissions & EXTRACT == 0)
+		{
+			return false;
+		}
+	}
+	found
+		|| !pdf
+			.data()
+			.as_ref()
+			.windows(b"/Encrypt".len())
+			.any(|window| window == b"/Encrypt")
 }
 
 fn is_standard_security(dict: &Dict<'_>) -> bool {

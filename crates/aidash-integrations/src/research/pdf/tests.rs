@@ -172,6 +172,23 @@ fn protected_documents_are_refused(#[case] bytes: &[u8], #[case] failure: Failur
 	assert_eq!(extract(bytes), Err(failure));
 }
 
+/// A decoy security dictionary that permits extraction, placed before the
+/// document's real one, does not unlock text the real one forbids.
+#[rstest]
+fn a_decoy_security_dictionary_does_not_permit_extraction() {
+	let header = NO_EXTRACTION
+		.iter()
+		.position(|&byte| byte == b'\n')
+		.unwrap()
+		+ 1;
+	let mut bytes = NO_EXTRACTION[..header].to_vec();
+	bytes.extend_from_slice(
+		b"9999 0 obj\n<< /Filter /Standard /V 2 /R 3 /O (decoy) /U (decoy) /P -4 >>\nendobj\n",
+	);
+	bytes.extend_from_slice(&NO_EXTRACTION[header..]);
+	assert_eq!(extract(&bytes), Err(Failure::ExtractionNotPermitted));
+}
+
 #[rstest]
 fn an_encrypted_document_that_permits_extraction_is_read() {
 	let text = extract(EXTRACTION_PERMITTED).unwrap();
