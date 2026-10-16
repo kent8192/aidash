@@ -875,6 +875,34 @@ async fn ineligible_plans_mark_the_connection_once() {
 	);
 }
 
+/// A reconnection that completes after its connection was disconnected must
+/// not bring it back: the owner ended the grant meanwhile.
+#[tokio::test]
+async fn a_reconnection_completed_after_a_disconnect_is_refused() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	// The reconnect started while the connection existed, so it carries the
+	// saved client; the owner disconnects before its callback completes.
+	let saved = fixture.service.check(&owner()).await.unwrap();
+	assert_eq!(saved.as_deref(), Some("oaiapp_1"));
+	fixture
+		.service
+		.disconnect(&owner(), 2, "alice")
+		.await
+		.unwrap();
+	assert!(matches!(
+		connect(&fixture, saved.as_deref(), None).await,
+		Err(Error::Conflict(_))
+	));
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	// The tokens the late exchange issued are revoked, not left live.
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1", "refresh-1"]
+	);
+}
+
 #[tokio::test]
 async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
 	let fixture = fixture(1, FakeAuthorization::default());

@@ -344,6 +344,9 @@ impl Service {
 			CallbackResult::Code { code, client_id } => (code, client_id.as_deref()),
 		};
 		let client = domain::issued_client(pending.saved_client, returned_client)?;
+		// An attempt started with the connection's saved client renews that
+		// connection; if it is gone by now, a disconnect ended it.
+		let reconnecting = pending.saved_client.is_some();
 		let issued = self
 			.authorization
 			.exchange(ExchangeRequest {
@@ -383,7 +386,7 @@ impl Service {
 			// Keep the sign-in without plan usage: a later attempt reuses the
 			// issued client instead of registering another one.
 			if self
-				.register(owner, &client, &account, actor)
+				.register(owner, &client, &account, reconnecting, actor)
 				.await
 				.is_err()
 			{
@@ -399,7 +402,15 @@ impl Service {
 			}
 		};
 		match self
-			.write(owner, client.clone(), account, &issued, lifetime, actor)
+			.write(
+				owner,
+				client.clone(),
+				account,
+				&issued,
+				lifetime,
+				reconnecting,
+				actor,
+			)
 			.await
 		{
 			Ok(outcome) => Ok(outcome),
@@ -415,12 +426,15 @@ impl Service {
 	/// Token is stored. The row is the only pointer to its Store resource, so
 	/// tokens are never written where a disconnect or reconnect cannot find
 	/// them. Until tokens are pinned, the connection needs reconnection.
+	/// A reconnection never creates one: the connection it renews was
+	/// disconnected meanwhile, and recreating it would undo that.
 	/// Returns whether this call created it.
 	async fn register(
 		&self,
 		owner: &Owner,
 		client: &str,
 		account: &str,
+		reconnecting: bool,
 		actor: &str,
 	) -> Result<bool> {
 		let mut scope = self.repository.begin(owner).await?;
@@ -430,6 +444,12 @@ impl Service {
 		if scope.owned(Provider::Chatgpt).await?.is_some() {
 			scope.commit().await?;
 			return Ok(false);
+		}
+		if reconnecting {
+			scope.commit().await?;
+			return Err(Error::Conflict(
+				"the Plan Connection was disconnected while reconnecting".into(),
+			));
 		}
 		let now = Utc::now();
 		let id = Uuid::now_v7();
@@ -467,6 +487,7 @@ impl Service {
 		Ok(true)
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	async fn write(
 		&self,
 		owner: &Owner,
@@ -474,9 +495,12 @@ impl Service {
 		account: String,
 		issued: &Issued,
 		lifetime: Duration,
+		reconnecting: bool,
 		actor: &str,
 	) -> Result<Outcome> {
-		let first = self.register(owner, &client, &account, actor).await?;
+		let first = self
+			.register(owner, &client, &account, reconnecting, actor)
+			.await?;
 		let mut scope = self.repository.begin(owner).await?;
 		if scope.mapped_identities().await? != 1 {
 			return Err(shared_subject());
