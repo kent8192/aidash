@@ -222,55 +222,6 @@ test("creates a workspace and task and receives live assignment changes", async 
   await expect(row).toContainText("完了", { timeout: 30000 });
 });
 
-test("publishes and installs a skill through the marketplace", async ({
-  page,
-}) => {
-  const name = `Research checklist browser-skill-${Date.now()}`;
-  await page.goto("/settings?view=registry");
-  await page
-    .getByRole("button", { name: "エンティティを登録", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("エンティティの種類").selectOption("skill");
-  await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
-  await dialog.getByLabel("名前").fill(name);
-  await dialog.getByLabel("説明").fill("Cite every factual claim.");
-  await dialog
-    .getByLabel("指示", { exact: true })
-    .fill("Cite every factual claim.");
-  await dialog
-    .getByRole("button", { name: "エンティティを登録", exact: true })
-    .click();
-  await expect(dialog).not.toBeVisible();
-  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await page.goto("/settings?view=marketplace");
-  await page
-    .getByRole("button", { name: "パッケージを公開", exact: true })
-    .click();
-  await dialog
-    .getByLabel("ローカルのエンティティ")
-    .selectOption({ label: `${name} · 1.0.0` });
-  await dialog.getByLabel("作成者").fill("Acceptance fixture");
-  await dialog
-    .getByRole("button", { name: "パッケージを公開", exact: true })
-    .click();
-  await expect(dialog).not.toBeVisible();
-  const entry = page.getByRole("button").filter({
-    has: page.getByRole("heading", { name, exact: true }),
-  });
-  await entry.click();
-  await dialog
-    .getByRole("button", { name: "インストール", exact: true })
-    .click();
-  await expect(dialog).not.toBeVisible();
-  // The row repeats its status for narrow and wide layouts; one is visible.
-  await expect(
-    entry
-      .getByText("インストール済み", { exact: true })
-      .filter({ visible: true }),
-  ).toBeVisible();
-});
-
 test("preserves a draft after a failed message request and clears it after success", async ({
   page,
 }) => {

@@ -8,9 +8,9 @@
 // nothing calls them once their triggers are gone.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0025_remove_legacy_installations", "registry")
+	Migration::new("0026_remove_legacy_installations", "registry")
 		.database_only(true)
-		.add_dependency("registry", "0024_model_provider_keys")
+		.add_dependency("registry", "0025_compactor_provider_keys")
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_search_path.sql").into(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").into()),
@@ -28,9 +28,9 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0025_remove_legacy_installations.sql").into(),
+			sql: include_str!("sql/forward/0026_remove_legacy_installations.sql").into(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0025_remove_legacy_installations.sql").into(),
+				include_str!("sql/backward/0026_remove_legacy_installations.sql").into(),
 			),
 		})
 		.atomic(true)

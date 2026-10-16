@@ -32,8 +32,8 @@ use uuid::Uuid;
 /// them, because reversing an earlier migration from the current head would
 /// reach objects those migrations removed or replaced.
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
-	("registry", "0025_remove_legacy_installations"),
-	("registry", "0026_remove_legacy_installations_state"),
+	("registry", "0026_remove_legacy_installations"),
+	("registry", "0027_remove_legacy_installations_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
