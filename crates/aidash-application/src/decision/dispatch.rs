@@ -16,13 +16,33 @@ fn stable_id(value: &Value) -> Uuid {
 }
 
 pub(super) fn decision_id(input: &Evaluation<'_>, state: &str, window: usize) -> Uuid {
-	let boundary = input.boundary;
+	decision_identity(
+		input.boundary,
+		&input.decider.pin,
+		&input.decider.restrictions,
+		state,
+		&input.disclosure.sources,
+		window,
+	)
+}
+
+/// The stable identity of one decision: the inputs that must all be the
+/// same for a recovery to reuse its charged answers. A journal recomputes it
+/// at commit, so evidence can never describe other inputs under it.
+pub fn decision_identity(
+	boundary: &Boundary,
+	decider: &DeciderPin,
+	binding_restrictions: &Restrictions,
+	state: &str,
+	sources: &[SourcePin],
+	window: usize,
+) -> Uuid {
 	stable_id(&json!({
 		"contract":"aidash.decision/1", "node":boundary.node, "run":boundary.run,
 		"step":boundary.step, "input_revision":boundary.input_revision,
-		"input_digest":boundary.input_digest, "decider":input.decider.pin,
-		"binding_restrictions":input.decider.restrictions, "state":state,
-		"sources":input.disclosure.sources, "window":window,
+		"input_digest":boundary.input_digest, "decider":decider,
+		"binding_restrictions":binding_restrictions, "state":state,
+		"sources":sources, "window":window,
 	}))
 }
 

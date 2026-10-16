@@ -238,7 +238,6 @@ async fn schema_rejection_precedes_every_tool_effect(fixture: Fixture) {
 	let tool = plugin(
 		ToolConfig::Http {
 			endpoint: "http://fixture.invalid".into(),
-			credential_env: None,
 			replay: "idempotent".into(),
 		},
 		json!({"type":"object","required":["name"]}),

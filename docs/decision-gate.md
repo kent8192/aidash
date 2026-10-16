@@ -80,3 +80,52 @@ Rust adapters must update `Evaluation::decider` to accept `&BoundDecider`, inclu
 return `Reservation` from `reserve`. Handle `AttemptStatus::NotDispatched`, the new
 failure reasons and the required `Evidence::state_retention` field. Native Gate
 composition and durable database/worker acceptance remain pending.
+
+## Native persistence
+
+`RunDecisionJournal` (`server/src/apps/execution/repositories/decisions.rs`) is the
+PostgreSQL `DecisionJournal` for one leased Run and the exact Decider pin admitted
+for it. Its boundary maps `run_revision` to `runs.revision` and `input_revision` to
+`runs.observed_input_seq`; reserving, recovering and committing lock the Run row and
+require the current lease and both revisions, and the boundary's step and revisions
+must also match the Run snapshot the journal was created with. A Decision Attempt is charged once, as a
+`pending` row keyed by its stable identity, together with a receipt for the Run's own
+per-Run call limit (`ExecutionAllowance::max_calls_per_run`). Every reservation reads
+the Run's current policy again through `CurrentAllowance` inside its transaction and
+charges against the stricter of the admitted and current limits. Reserving the same
+attempt again returns it as recovered. A changed charge, an overlapping question plan
+or another batch of the decision with different inputs (input commitment, state digest,
+mode or binding restrictions) is a conflict, a current policy that pins another Decider is invalid, and a spent
+limit or a Decider the current policy no longer allows stops with `PruneUnavailable`
+before anything is charged. Recovery reports a `pending` row as uncertain and keeps
+its original worker fence. Only the exact permit an attempt was charged with records
+its result, and a late result is still recorded after the lease moved. Committed
+evidence must name exactly the attempts charged for its decision, locked for the commit,
+each with its durable status and with its questions in the evidence's question catalog.
+It must keep their input commitment and mode, keep
+restrictions at least as strict as their binding restrictions, and carry exactly the
+answers its answered attempts recorded. A rejected snapshot skips replay, because an
+early failure has no answers or branches yet, but it must still carry its decision
+identity and pass `Evidence::validate_rejection`: a reason other than `fits`, the
+supported evidence version and contracts, restrictions within the policy floor, the
+pinned Decider and model, a consistent retained-state reference, and fit counts of a
+context that did not fit. An `insufficient` rejection only follows a complete
+evaluation, so it must replay in full.
+
+An applied decision saves the Run's context through the same lease-fenced save as an
+adopted Summary Stage (`context.compacted`), which ends the step, and writes its
+Decision Evidence in that transaction. Shadow and rejected decisions never touch the
+Run. Applying context or retaining state rechecks the current policy inside the commit
+transaction and is forbidden once that policy no longer names the admitted pin;
+evidence without either effect is still recorded. Retained state must match its digest,
+and an expired marker must match its retention witness and the evidence's state digest,
+and its deadline must have passed by the commit.
+A decision has at most one applied or shadow snapshot; each retry of a rejected
+decision appends another. Retained state whose deadline passed before the commit keeps
+only its expired marker, and `Store::expire_decision_states` later deletes due state and
+writes the matching marker into its evidence. Decision Evidence is not exposed through
+the public API.
+
+The gate is still not composed into native execution. Wiring it into context recovery,
+the server Decision Provider and Decision Authority, the `decider` Registry kind and
+generated-chain owners remain pending.

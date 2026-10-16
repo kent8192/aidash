@@ -3,8 +3,8 @@
 // Task (no input key) or run input that carried them, never in its text.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0025_url_intents", "execution")
-        .add_dependency("execution", "0024_estimate_calibration_state")
+	Migration::new("0027_url_intents", "execution")
+        .add_dependency("execution", "0026_decision_evidence_model_state")
         .add_operation(Operation::CreateTable {
             name: "url_intents".into(),
             columns: vec![

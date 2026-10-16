@@ -2,6 +2,7 @@
 mod catalog;
 mod completion;
 pub(crate) mod context_journal;
+pub(crate) mod decisions;
 pub(crate) mod inference;
 mod inspection;
 mod invocation_records;

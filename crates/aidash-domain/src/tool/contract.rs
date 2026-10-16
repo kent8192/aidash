@@ -720,7 +720,6 @@ mod tests {
 				reference.clone(),
 				&ToolConfig::Http {
 					endpoint: "https://example.invalid".into(),
-					credential_env: None,
 					replay: replay.into(),
 				},
 			);

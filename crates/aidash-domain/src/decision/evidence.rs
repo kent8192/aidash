@@ -162,70 +162,7 @@ pub struct Evidence {
 impl Evidence {
 	/// No provider, current policy, mutable definition or executable state is consulted.
 	pub fn replay(&self) -> Result<BTreeMap<String, Branch>> {
-		self.boundary.validate()?;
-		self.decider.validate()?;
-		if self.decider.identity.registry_node != self.boundary.node {
-			return Err(Error::Invalid(
-				"historical Decider differs from the execution Node".into(),
-			));
-		}
-		validate_digest(&self.state_digest)?;
-		validate_model(&self.model)?;
-		validate_digest(&self.configuration_parameters_digest)?;
-		if model_configuration_digest(&self.model, &self.configuration_parameters_digest)
-			!= self.decider.configuration_digest
-		{
-			return Err(Error::Invalid(
-				"historical model differs from the pinned Decider configuration".into(),
-			));
-		}
-		for source in &self.sources {
-			validate_digest(&source.revision_digest)?;
-			if source.resource.trim().is_empty() {
-				return Err(Error::Invalid("corrupt historical source reference".into()));
-			}
-		}
-		let valid_state = match (&self.state, &self.state_retention) {
-			(StateReference::Disabled, StateRetentionWitness::Disabled) => true,
-			(
-				StateReference::Retained {
-					id,
-					digest,
-					expires_at,
-				},
-				StateRetentionWitness::Enabled {
-					id: retained_id,
-					expires_at: deadline,
-				},
-			) => {
-				!id.is_nil()
-					&& id == retained_id
-					&& digest == &self.state_digest
-					&& expires_at == deadline
-			}
-			(
-				StateReference::Expired {
-					id,
-					digest,
-					expired_at,
-				},
-				StateRetentionWitness::Enabled {
-					id: retained_id,
-					expires_at: deadline,
-				},
-			) => {
-				!id.is_nil()
-					&& id == retained_id
-					&& digest == &self.state_digest
-					&& expired_at == deadline
-			}
-			_ => false,
-		};
-		if !valid_state {
-			return Err(Error::Invalid(
-				"historical retained-state reference changed".into(),
-			));
-		}
+		self.validate_identity()?;
 		let proposed_reason = if self.restrictions.forbid_apply {
 			Reason::Forbidden
 		} else if self.fit.proposed > self.fit.window {
@@ -250,16 +187,8 @@ impl Evidence {
 				"corrupt historical application outcome".into(),
 			));
 		}
-		if self.version != EVIDENCE_VERSION
-			|| self.rule != RULE
-			|| self.provider_contract != PROVIDER
-			|| self.builder != BUILDER
-			|| self.option_source != OPTION_SOURCE
-			|| self.restrictions.keep_threshold.value() > 0.5
-			|| self.restrictions.preserve_recent < 6
-			|| self.id.is_nil()
-			|| self.candidates.is_empty()
-		{
+		self.validate_contract()?;
+		if self.id.is_nil() || self.candidates.is_empty() {
 			return Err(Error::Invalid(
 				"unsupported or incomplete historical decision evidence".into(),
 			));
@@ -349,6 +278,160 @@ impl Evidence {
 			));
 		}
 		Ok(replay)
+	}
+	/// A rejection may follow an early failure, before any answer, branch or
+	/// candidate exists, so it cannot replay. It still keeps every invariant
+	/// that holds for a rejection at any stage: a reason other than fitting, a
+	/// supported contract, the pinned Decider and model, a consistent retained
+	/// state reference and fit counts of the context that did not fit. A
+	/// rejection that followed a complete evaluation (`insufficient`, or
+	/// `forbidden` with selected branches) replays in full. Every other one
+	/// stopped before branch selection, so it reports no branch and the
+	/// unchanged context, and without candidates nothing was asked, answered
+	/// or charged. Candidates it does report are as the builder made them.
+	pub fn validate_rejection(&self) -> Result<()> {
+		if self.outcome != Outcome::Rejected || self.reason == Reason::Fits {
+			return Err(Error::Invalid(
+				"corrupt historical application outcome".into(),
+			));
+		}
+		// Only a complete evaluation finds the proposed context too large, so
+		// that rejection must replay in full, fit metrics included.
+		if self.reason == Reason::Insufficient
+			|| self.reason == Reason::Forbidden && !self.branches.is_empty()
+		{
+			return self.replay().map(|_| ());
+		}
+		self.validate_identity()?;
+		if self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)
+			|| self.fit.truncated > self.fit.retained
+			|| self.fit.before <= self.fit.window
+			|| !self.branches.is_empty()
+			|| self.fit.proposed != self.fit.before
+			|| self.fit.dropped != 0
+			|| self.fit.truncated != 0
+			|| self.reason == Reason::NoCandidates
+				&& (!self.questions.is_empty()
+					|| !self.answers.is_empty()
+					|| !self.attempts.is_empty())
+		{
+			return Err(Error::Invalid(
+				"corrupt historical application outcome".into(),
+			));
+		}
+		self.validate_candidates()?;
+		self.validate_contract()
+	}
+	/// Each candidate names an event of the history under the ID its boundary
+	/// derives, with a call and a result question of its own, and every
+	/// question belongs to a candidate. The builder makes candidates and
+	/// questions together, so this holds before any branch is selected.
+	fn validate_candidates(&self) -> Result<()> {
+		let mut question_ids = std::collections::BTreeSet::new();
+		for candidate in &self.candidates {
+			if candidate.history_index >= self.history_length
+				|| candidate.id != self.boundary.candidate_id(candidate.history_index)
+				|| candidate.description.trim().is_empty()
+				|| !question_ids.insert(&candidate.keep_call)
+				|| !question_ids.insert(&candidate.keep_result)
+			{
+				return Err(Error::Invalid(
+					"corrupt historical decision candidate".into(),
+				));
+			}
+		}
+		if question_ids.len() != self.questions.len()
+			|| question_ids
+				.iter()
+				.any(|question| !self.questions.contains_key(*question))
+		{
+			return Err(Error::Invalid(
+				"historical decision questions differ from its candidates".into(),
+			));
+		}
+		Ok(())
+	}
+	fn validate_identity(&self) -> Result<()> {
+		self.boundary.validate()?;
+		self.decider.validate()?;
+		if self.decider.identity.registry_node != self.boundary.node {
+			return Err(Error::Invalid(
+				"historical Decider differs from the execution Node".into(),
+			));
+		}
+		validate_digest(&self.state_digest)?;
+		validate_model(&self.model)?;
+		validate_digest(&self.configuration_parameters_digest)?;
+		if model_configuration_digest(&self.model, &self.configuration_parameters_digest)
+			!= self.decider.configuration_digest
+		{
+			return Err(Error::Invalid(
+				"historical model differs from the pinned Decider configuration".into(),
+			));
+		}
+		for source in &self.sources {
+			validate_digest(&source.revision_digest)?;
+			if source.resource.trim().is_empty() {
+				return Err(Error::Invalid("corrupt historical source reference".into()));
+			}
+		}
+		let valid_state = match (&self.state, &self.state_retention) {
+			(StateReference::Disabled, StateRetentionWitness::Disabled) => true,
+			(
+				StateReference::Retained {
+					id,
+					digest,
+					expires_at,
+				},
+				StateRetentionWitness::Enabled {
+					id: retained_id,
+					expires_at: deadline,
+				},
+			) => {
+				!id.is_nil()
+					&& id == retained_id
+					&& digest == &self.state_digest
+					&& expires_at == deadline
+			}
+			(
+				StateReference::Expired {
+					id,
+					digest,
+					expired_at,
+				},
+				StateRetentionWitness::Enabled {
+					id: retained_id,
+					expires_at: deadline,
+				},
+			) => {
+				!id.is_nil()
+					&& id == retained_id
+					&& digest == &self.state_digest
+					&& expired_at == deadline
+			}
+			_ => false,
+		};
+		if !valid_state {
+			return Err(Error::Invalid(
+				"historical retained-state reference changed".into(),
+			));
+		}
+		Ok(())
+	}
+	fn validate_contract(&self) -> Result<()> {
+		if self.version != EVIDENCE_VERSION
+			|| self.rule != RULE
+			|| self.provider_contract != PROVIDER
+			|| self.builder != BUILDER
+			|| self.option_source != OPTION_SOURCE
+			|| self.restrictions.keep_threshold.value() > 0.5
+			|| self.restrictions.preserve_recent < 6
+		{
+			return Err(Error::Invalid(
+				"unsupported or incomplete historical decision evidence".into(),
+			));
+		}
+		Ok(())
 	}
 	pub fn summary(&self) -> Summary {
 		Summary {
