@@ -146,7 +146,7 @@ pub async fn failed(
 ) -> Result<Failure> {
 	let mut scope = repository.begin().await?;
 	let record = scope.current(attempt).await?;
-	let retry = retry(record.failures, failure);
+	let retry = retry(&record, failure);
 	let error = code(retry.failure)?;
 	scope
 		.fail_operation(&record, retry.failures, retry.delay, retry.state, &error)

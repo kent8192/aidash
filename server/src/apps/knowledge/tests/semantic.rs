@@ -266,18 +266,18 @@ enum Unavailable {
 	VectorBackend,
 }
 
-/// Issue #154, current contract: a local Run in a Workspace whose index has
-/// `auto_context` enabled does not degrade, retry or pause when semantic
-/// retrieval is unavailable. The step stops before inference, the Run is
-/// delivered as `Failed` and its Task becomes `Failed`. No typed semantic
-/// reason is recorded. This documents today's behavior and does not endorse it.
+/// Issue #233: a local Run in a Workspace whose index has `auto_context`
+/// enabled treats unavailable semantic retrieval as a typed, transient
+/// `unavailable` semantic failure, like a required-Home Run. The step stops
+/// before inference and retries with a persisted delay; the Run and its Task
+/// are not failed.
 #[rstest::rstest]
 #[case::provider_status(Unavailable::ProviderStatus)]
 #[case::provider_transport(Unavailable::ProviderTransport)]
 #[case::provider_timeout(Unavailable::ProviderTimeout)]
 #[case::vector_backend(Unavailable::VectorBackend)]
 #[tokio::test]
-async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavailable(
+async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_every_cause(
 	#[case] unavailable: Unavailable,
 	#[future(awt)]
 	#[with(false, true)]
@@ -290,11 +290,11 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 	let indexed = fixture.fault.requests();
 	let query_calls = match unavailable {
 		Unavailable::ProviderStatus => {
-			fixture.fault.set(Outage::Unavailable);
+			fixture.fault.set(Fault::Unavailable);
 			1
 		}
 		Unavailable::ProviderTimeout => {
-			fixture.fault.set(Outage::Hang);
+			fixture.fault.set(Fault::Hang);
 			1
 		}
 		Unavailable::ProviderTransport => {
@@ -329,13 +329,12 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 			0
 		}
 	};
-	let backend_error = "semantic backend unavailable or invalid; inspect index status and retry";
 
 	// Act: the step that requests semantic context before inference.
 	assert!(fixture.worker.worker_once().await.unwrap());
 	let run = fixture.f.store.runs().await.unwrap().remove(0);
 
-	// Assert: one attempt, no retry schedule, no semantic pause reason, no inference.
+	// Assert: a scheduled retry with the typed transient reason, no inference.
 	assert_eq!(
 		fixture.fault.requests() - indexed,
 		query_calls,
@@ -345,30 +344,31 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 		fixture.captured.lock().unwrap().is_empty(),
 		"{unavailable:?}"
 	);
+	assert_eq!(run.control.as_str(), "ACTIVE", "{unavailable:?}");
+	let retry = run.recovery.retry.as_ref().expect("a scheduled retry");
+	assert_eq!(retry.count, 1, "{unavailable:?}");
+	assert!(retry.at > chrono::Utc::now(), "{unavailable:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable",
+		"{unavailable:?}"
+	);
+	assert_eq!(
+		run.error.as_deref(),
+		Some("The semantic backend is temporarily unavailable"),
+		"{unavailable:?}"
+	);
 	assert!(
-		matches!(
+		!matches!(
 			&run.state,
-			RunState::Waiting(wait) if matches!(**wait, WaitingState::FailureDelivery { target: aidash_server::domain::FailureTarget::Failed, .. })
+			RunState::Waiting(wait) if matches!(**wait, WaitingState::FailureDelivery { .. })
 		),
 		"{unavailable:?}: {:?}",
 		run.state
 	);
-	assert_eq!(run.error.as_deref(), Some(backend_error), "{unavailable:?}");
-	assert!(run.recovery.retry.is_none(), "{unavailable:?}");
-	assert!(run.recovery.semantic_reason.is_none(), "{unavailable:?}");
-	assert_eq!(run.control.as_str(), "ACTIVE", "{unavailable:?}");
-
-	// The next step delivers the failure to the Task.
-	assert!(fixture.worker.worker_once().await.unwrap());
-	let run = fixture.f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase().as_str(), "FAILED", "{unavailable:?}");
-	assert_eq!(
+	assert_ne!(
 		fixture.f.store.task(run.task_id).await.unwrap().status,
 		TaskStatus::Failed,
-		"{unavailable:?}"
-	);
-	assert!(
-		fixture.captured.lock().unwrap().is_empty(),
 		"{unavailable:?}"
 	);
 
@@ -379,13 +379,151 @@ async fn local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavai
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
+/// Issue #233: after the bounded retry a local Run under an embedding outage
+/// pauses with the typed `retries_exhausted`, keeps its Task, and continues to
+/// inference once the provider recovers and the Run is manually resumed.
+#[rstest::rstest]
+#[tokio::test]
+async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_provider_recovers(
+	#[future(awt)]
+	#[with(false, true)]
+	controlled_context: ControlledContext,
+) {
+	use aidash_server::domain::{RunControlAction, TaskStatus};
+	let fixture = controlled_context;
+	fixture.fault.set(Fault::Unavailable);
+	let mut run_id = None;
+	for failure in 1..=6 {
+		assert!(
+			fixture.worker.worker_once().await.unwrap(),
+			"attempt {failure}"
+		);
+		let run = fixture.f.store.runs().await.unwrap().remove(0);
+		run_id = Some(run.id);
+		assert!(
+			fixture.captured.lock().unwrap().is_empty(),
+			"attempt {failure}"
+		);
+		let reason = serde_json::to_value(run.recovery.semantic_reason).unwrap();
+		if failure < 6 {
+			assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+			assert_eq!(reason, "unavailable", "{run:?}");
+			let retry = run.recovery.retry.as_ref().unwrap();
+			assert_eq!(retry.count, failure, "{run:?}");
+			assert!(retry.at > chrono::Utc::now(), "{run:?}");
+			// Advance only the persisted deadline after checking that the
+			// production path saved a delay and kept its failure counter.
+			{
+				let query_bind_1 = run.id;
+				sqlx::query(
+					&reinhardt::query::Query::update()
+						.table(reinhardt::query::Alias::new("runs"))
+						.value_expr(
+							reinhardt::query::Alias::new("pending"),
+							Expr::cust(
+								"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+							),
+						)
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')"
+								.to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(reinhardt::query::PostgresQueryBuilder),
+				)
+				.execute(fixture.f.store.pool.driver())
+				.await
+			}
+			.unwrap();
+		} else {
+			assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+			assert_eq!(reason, "retries_exhausted", "{run:?}");
+			assert_ne!(
+				fixture.f.store.task(run.task_id).await.unwrap().status,
+				TaskStatus::Failed
+			);
+		}
+	}
+
+	fixture.fault.clear();
+	let resumed = fixture
+		.f
+		.store
+		.control(run_id.unwrap(), RunControlAction::Resume)
+		.await
+		.unwrap();
+	assert_eq!(resumed.control.as_str(), "ACTIVE");
+	assert!(fixture.worker.worker_once().await.unwrap());
+	let contexts = fixture.captured.lock().unwrap().clone();
+	assert_eq!(contexts.len(), 1, "the resumed step reaches inference");
+	assert!(
+		contexts[0]["current"]["semantic_memory"]["workspace"]["matches"]
+			.as_array()
+			.is_some_and(|matches| !matches.is_empty()),
+		"the resumed step carries semantic context: {}",
+		contexts[0]
+	);
+
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+/// Issue #233: a rejected key (HTTP 401–403) or a response that breaks the
+/// approved contract is not an outage. The local Run pauses at once with its
+/// own typed reason and schedules no retry.
+#[rstest::rstest]
+#[case::key_rejected(Fault::Rejected, "configuration")]
+#[case::provider_contract(Fault::Malformed, "provider_contract")]
+#[tokio::test]
+async fn local_semantic_key_rejection_and_contract_violation_pause_without_retry(
+	#[case] fault: Fault,
+	#[case] reason: &str,
+	#[future(awt)]
+	#[with(false, true)]
+	controlled_context: ControlledContext,
+) {
+	use aidash_server::domain::TaskStatus;
+	let fixture = controlled_context;
+	let indexed = fixture.fault.requests();
+	fixture.fault.set(fault);
+
+	assert!(fixture.worker.worker_once().await.unwrap());
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+
+	assert_eq!(fixture.fault.requests() - indexed, 1, "{reason}");
+	assert!(fixture.captured.lock().unwrap().is_empty(), "{reason}");
+	assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+	assert!(run.recovery.retry.is_none(), "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		reason
+	);
+	assert_ne!(
+		fixture.f.store.task(run.task_id).await.unwrap().status,
+		TaskStatus::Failed
+	);
+
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
 /// How the fixture embedding provider fails; it answers normally until one is set.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Outage {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
 	/// HTTP 503 from the provider.
 	Unavailable = 1,
 	/// The provider accepts the request and never answers within the client timeout.
 	Hang = 2,
+	/// HTTP 401: the provider rejects the configured key.
+	Rejected = 3,
+	/// HTTP 200 with a body that is not an embedding response.
+	Malformed = 4,
 }
 #[derive(Default)]
 struct EmbeddingFault {
@@ -393,9 +531,12 @@ struct EmbeddingFault {
 	requests: std::sync::atomic::AtomicUsize,
 }
 impl EmbeddingFault {
-	fn set(&self, outage: Outage) {
+	fn set(&self, fault: Fault) {
 		self.mode
-			.store(outage as u8, std::sync::atomic::Ordering::Release);
+			.store(fault as u8, std::sync::atomic::Ordering::Release);
+	}
+	fn clear(&self) {
+		self.mode.store(0, std::sync::atomic::Ordering::Release);
 	}
 	fn requests(&self) -> usize {
 		self.requests.load(std::sync::atomic::Ordering::Acquire)
@@ -1310,8 +1451,10 @@ fn embeddings_router(
 .route("/v1/embeddings", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();let fault = fault.clone();async move {
             fault.requests.fetch_add(1, Ordering::AcqRel);
             match fault.mode.load(Ordering::Acquire) {
-                mode if mode == Outage::Unavailable as u8 => return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap(),
-                mode if mode == Outage::Hang as u8 => tokio::time::sleep(std::time::Duration::from_secs(120)).await,
+                mode if mode == Fault::Unavailable as u8 => return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap(),
+                mode if mode == Fault::Hang as u8 => tokio::time::sleep(std::time::Duration::from_secs(120)).await,
+                mode if mode == Fault::Rejected as u8 => return reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_json(&json!({"error":"fixture key rejected"})).unwrap(),
+                mode if mode == Fault::Malformed as u8 => return reinhardt::Response::ok().with_json(&json!({"unexpected":true})).unwrap(),
                 _ => {}
             }
             let text=input["input"].as_str().unwrap_or_default().to_lowercase();

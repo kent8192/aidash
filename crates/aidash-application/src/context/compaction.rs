@@ -1,6 +1,6 @@
 //! Rust adaptation of fast-jev-compaction for Aidash's paired history events.
 //! Upstream: e3f262a7f4d42bd8dd32ced30d26176f7cb545b0 (MIT).
-//! See LICENSE.
+//! The upstream MIT notice is in `third_party/fast-jev-compaction/LICENSE`; see `THIRD_PARTY_NOTICES.md`.
 use super::probability;
 use crate::ports::{CompactionClassifier as JevAsker, CompactionQuestions as Questions};
 use crate::{Error, Result};

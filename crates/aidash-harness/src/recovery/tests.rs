@@ -129,6 +129,40 @@ async fn pending_semantic_operations_do_not_consume_retry_allowance(
 }
 #[rstest]
 #[tokio::test]
+async fn a_repeated_pending_replay_backs_off_without_consuming_retry_allowance(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Arrange: the previous replay already found the memory attempt live.
+	{
+		let mut run = repository.run.lock().unwrap();
+		let recovery = &mut run.as_mut().unwrap().recovery;
+		recovery.semantic_reason = Some(SemanticFailure::Pending);
+		recovery.retry = Some(RetryState { count: 2, at: now });
+	}
+	// Act
+	let metric = recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Semantic(SemanticFailure::Pending),
+		now,
+	)
+	.await
+	.unwrap();
+	// Assert: every replay repeats the charged workspace embedding, so the
+	// next one waits longer, and the outage retry count stays the same.
+	assert!(!metric);
+	let run = repository.run.lock().unwrap();
+	let retry = run.as_ref().unwrap().recovery.retry.as_ref().unwrap();
+	assert_eq!(retry.count, 2);
+	assert_eq!(retry.at, now + chrono::Duration::seconds(30));
+	assert_eq!(
+		*repository.writes.lock().unwrap(),
+		[Write::Save("run.semantic_retrying".into())]
+	);
+}
+#[rstest]
+#[tokio::test]
 async fn exhausted_semantic_retries_require_manual_authority(
 	repository: Repository,
 	now: DateTime<Utc>,
