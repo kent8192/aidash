@@ -896,7 +896,7 @@ async fn the_commit_fence_persists_the_completion_basis(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(
 		Harness {
 			federation: f.clone()
@@ -914,7 +914,7 @@ async fn the_commit_fence_persists_the_completion_basis(
 		"cursor":0
 	}))));
 	f.store
-		.save_run(&leased, worker, "model.completed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
 		.await
 		.unwrap();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
@@ -922,14 +922,17 @@ async fn the_commit_fence_persists_the_completion_basis(
 	leased.context.completion.basis = Some(aidash_domain::completion::CompletionBasis::Verified);
 	assert!(
 		f.store
-			.begin_final_completion(&leased, worker)
+			.begin_final_completion(&TEST_FIXTURE, &leased, worker)
 			.await
 			.unwrap()
 	);
-	let stored = f.store.run(run.id).await.unwrap();
+	let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(stored.context.completion, leased.context.completion);
 	assert_eq!(stored.context.history.len(), leased.context.history.len());
-	f.store.release_lease(run.id, worker).await.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 

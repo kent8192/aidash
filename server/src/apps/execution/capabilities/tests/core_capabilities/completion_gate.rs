@@ -137,7 +137,7 @@ impl Gate {
 		self.c
 			.f
 			.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.into_iter()
@@ -155,7 +155,7 @@ impl Gate {
 			.worker_once()
 			.await
 			.unwrap();
-			let run = self.c.f.store.run(id).await.unwrap();
+			let run = self.c.f.store.run(&TEST_FIXTURE, id).await.unwrap();
 			if done(&run) {
 				return run;
 			}
