@@ -86,7 +86,7 @@ async fn small_network_fixture(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact(
+async fn broker_response_budget_uses_the_deployment_administrator_profile_and_retains_no_partial_artifact(
 	#[future]
 	#[from(running_small_network_fixture)]
 	small_network_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
@@ -129,7 +129,7 @@ async fn real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied(
 			.unwrap()
 			.contains("https://httpbingo.org/get")
 	);
-	// The operator permits both hosts, but this invocation approved one origin.
+	// The Node permits both hosts, but this invocation approved one origin.
 	let (redirect, _) = approve(
 		&c,
 		run.id,

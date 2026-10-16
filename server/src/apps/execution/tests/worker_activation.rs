@@ -833,7 +833,7 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 		.unwrap();
 	let baseline = stream.info().await.unwrap().config.clone();
 	// Retain one real activation, then reject further publication while workers
-	// are paused. Draining must recover without operator capacity repair.
+	// are paused. Draining must recover without manual capacity repair.
 	let queued = admit(&f, &token, fresh_task(&f, &token).await).await;
 	wait_count(
 		&f,
@@ -1815,7 +1815,7 @@ async fn scoped_nats(
 port: 4222
 jetstream {{ store_dir: "/tmp/jetstream" }}
 authorization {{ users: [
- {{ user: "operator", password: "fixture-operator" }},
+ {{ user: "Deployment Administrator", password: "fixture-deployment-administrator" }},
  {{ user: "server", password: "fixture-server", permissions: {{
    publish: {{ allow: ["{subject}","$JS.API.STREAM.INFO.{stream}"] }}, subscribe: {{allow:["_INBOX.>"]}}
  }} }},

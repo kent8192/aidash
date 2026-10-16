@@ -13,7 +13,7 @@ pub async fn status(
 	#[inject] actor: Actor,
 ) -> ViewResult<Response> {
 	let principal = match &actor {
-		Actor::Operator => Principal::Operator,
+		Actor::DeploymentAdministrator => Principal::DeploymentAdministrator,
 		Actor::Subject(subject) => Principal::Subject {
 			tenant: subject.tenant.clone(),
 			subject: subject.subject.clone(),

@@ -18,7 +18,7 @@ impl AuthorizationManagement {
 	pub(crate) async fn session(&self, actor: Actor) -> Result<SessionResponse> {
 		let f = self.runtime.clone();
 		let access = match actor {
-			Actor::Operator => AccessProfile::Operator,
+			Actor::DeploymentAdministrator => AccessProfile::DeploymentAdministrator,
 			Actor::Subject(identity) => AccessProfile::Subject {
 				tenant: identity.tenant,
 				subject: identity.subject,

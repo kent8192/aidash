@@ -12,7 +12,7 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(management::state)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::openrouter_models)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
+			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::task_claim)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::run_get)

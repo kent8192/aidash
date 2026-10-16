@@ -105,8 +105,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 		let attempts: i32 = row.try_get("attempts")?;
 		let mut max_retries = None;
 		let bank: uuid::Uuid = row.try_get("bank_id")?;
-		let mut lease =
-			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+		let mut lease = Lease::without_subject(store).await?;
 		let result = async {
 			let workspace: uuid::Uuid = native::query_scalar(
 				&Query::select()

@@ -36,8 +36,8 @@ pub async fn expand(
 }
 
 #[get(
-	"/api/authorization/{tenant}/graph-operator-grants",
-	name = "!authorization_graph_operator_grants",
+	"/api/authorization/{tenant}/peer-graph-grants",
+	name = "!authorization_peer_graph_grants",
 	auth = "protected"
 )]
 pub async fn list_grants(
@@ -49,14 +49,14 @@ pub async fn list_grants(
 }
 
 #[post(
-	"/api/authorization/{tenant}/graph-operator-grants",
-	name = "!authorization_set_graph_operator_grant",
+	"/api/authorization/{tenant}/peer-graph-grants",
+	name = "!authorization_set_peer_graph_grant",
 	auth = "protected"
 )]
 pub async fn set_grant(
 	#[inject] service: Depends<GraphManagement>,
 	Path(tenant): Path<String>,
-	Json(input): Json<GraphOperatorGrantInput>,
+	Json(input): Json<PeerGraphGrantInput>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());

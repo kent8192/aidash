@@ -13,21 +13,21 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let created = workspace(&app.operator, "Workspace over HTTP").await;
+	let created = workspace(&app.deployment_administrator, "Workspace over HTTP").await;
 	let id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
 	let path = format!("/api/workspaces/{id}");
 	// Act
 	let updated = app
-		.operator
+		.deployment_administrator
 		.patch(&path, &json!({"revision":0,"state":{"step":1}}), "json")
 		.await
 		.unwrap();
 	let stale = app
-		.operator
+		.deployment_administrator
 		.patch(&path, &json!({"revision":0,"state":{"step":2}}), "json")
 		.await
 		.unwrap();
-	let snapshot = app.operator.get(&path).await.unwrap();
+	let snapshot = app.deployment_administrator.get(&path).await.unwrap();
 	// Assert
 	assert_eq!(assert_json(updated, 200)["revision"], 1);
 	assert_json(stale, 409);
@@ -51,11 +51,11 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Task graph").await;
+	let workspace = workspace(&app.deployment_administrator, "Task graph").await;
 	let workspace_id = workspace["id"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace_id}/tasks");
 	let ancestor = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&path,
 				&json!({"title":"Ancestor","description":"Root"}),
@@ -68,7 +68,7 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 	let dependent_input = json!({"title":"Dependent","description":"Wait for ancestor","dependencies":[ancestor["id"],ancestor["id"]]});
 	// Act
 	let dependent = assert_json(
-		app.operator
+		app.deployment_administrator
 			.request(Method::POST, &path)
 			.header("idempotency-key", "endpoint-task")
 			.json(&dependent_input)
@@ -78,14 +78,14 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 		200,
 	);
 	let repeated = app
-		.operator
+		.deployment_administrator
 		.request(Method::POST, &path)
 		.header("idempotency-key", "endpoint-task")
 		.json(&dependent_input)
 		.send()
 		.await
 		.unwrap();
-	let cycle = app.operator.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();
+	let cycle = app.deployment_administrator.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();
 	// Assert
 	assert_eq!(assert_json(repeated, 200)["id"], dependent["id"]);
 	// The development baseline enforces combined cycles with a DB trigger.
@@ -102,7 +102,7 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 		.unwrap();
 	assert_eq!(links.len(), 1);
 	let snapshot = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!("/api/workspaces/{workspace_id}"))
 			.await
 			.unwrap(),
@@ -120,12 +120,12 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 	let app = endpoint.await;
 	// Act
 	let malformed = app
-		.operator
+		.deployment_administrator
 		.post_raw("/api/workspaces", b"{", "application/json")
 		.await
 		.unwrap();
 	let unknown = app
-		.operator
+		.deployment_administrator
 		.post(
 			"/api/workspaces",
 			&json!({"title":"Rejected","goal":"Contract","unexpected":true}),
@@ -134,7 +134,7 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 		.await
 		.unwrap();
 	let invalid_id = app
-		.operator
+		.deployment_administrator
 		.get("/api/workspaces/not-a-uuid")
 		.await
 		.unwrap();
@@ -158,7 +158,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let home = workspace(&app.operator, "Validation boundary").await;
+	let home = workspace(&app.deployment_administrator, "Validation boundary").await;
 	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
 	let whitespace: Vec<_> = (0..=0x10ffff)
 		.filter_map(char::from_u32)
@@ -171,7 +171,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 			let mut input = json!({"title":"Workspace", "goal":"Goal"});
 			input[field] = json!(blank);
 			let response = app
-				.operator
+				.deployment_administrator
 				.post("/api/workspaces", &input, "json")
 				.await
 				.unwrap();
@@ -185,7 +185,11 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 		for field in ["title", "description"] {
 			let mut input = json!({"title":"Task", "description":"Work"});
 			input[field] = json!(blank);
-			let response = app.operator.post(&path, &input, "json").await.unwrap();
+			let response = app
+				.deployment_administrator
+				.post(&path, &input, "json")
+				.await
+				.unwrap();
 			assert_eq!(
 				response.status_code(),
 				400,
@@ -213,7 +217,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 	);
 	for content in ["\t\u{a0}content\u{3000}\n", "\u{200b}"] {
 		let created = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					&path,
 					&json!({"title":content,"description":content}),

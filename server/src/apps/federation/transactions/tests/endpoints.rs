@@ -20,7 +20,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	// Arrange
 	let app = endpoint.await;
 	let subject = subject(&app, "alice", _credential_client_0.await).await;
-	let created = workspace(&app.operator, "Atomic validation").await;
+	let created = workspace(&app.deployment_administrator, "Atomic validation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,
@@ -36,14 +36,14 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		json!([])
 	);
 	let admitted = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/transactions", &manifest, "json")
 			.await
 			.unwrap(),
 		202,
 	);
 	let replay = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/transactions", &manifest, "json")
 			.await
 			.unwrap(),
@@ -55,7 +55,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let mut changed = manifest.clone();
 	changed["participants"][0]["mutations"][0]["state"] = json!({"different":true});
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/transactions", &changed, "json")
 			.await
 			.unwrap(),
@@ -69,7 +69,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.unwrap()
 		.push(json!({"kind":"external_tool","endpoint":"http://127.0.0.1:9/effect"}));
 	assert_json_rejection(
-		app.operator
+		app.deployment_administrator
 			.post("/api/transactions", &external, "json")
 			.await
 			.unwrap(),
@@ -85,7 +85,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		"invalid manifests create no durable work"
 	);
 	let snapshot = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!(
 				"/api/workspaces/{}",
 				created["id"].as_str().unwrap()
@@ -104,32 +104,32 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Atomic mutation").await;
+	let workspace = workspace(&app.deployment_administrator, "Atomic mutation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
 	let path = format!("/api/transactions/{id}");
 	// Act
 	let admitted = app
-		.operator
+		.deployment_administrator
 		.post("/api/transactions", &manifest, "json")
 		.await
 		.unwrap();
 	let replay = app
-		.operator
+		.deployment_administrator
 		.post("/api/transactions", &manifest, "json")
 		.await
 		.unwrap();
 	let abort = app
-		.operator
+		.deployment_administrator
 		.post(&format!("{path}/abort"), &json!({}), "json")
 		.await
 		.unwrap();
 	let repeated = app
-		.operator
+		.deployment_administrator
 		.post(&format!("{path}/abort"), &json!({}), "json")
 		.await
 		.unwrap();
-	let details = app.operator.get(&path).await.unwrap();
+	let details = app.deployment_administrator.get(&path).await.unwrap();
 	// Assert
 	assert_eq!(assert_json(admitted, 202)["id"], json!(id));
 	assert_eq!(assert_json(replay, 202)["manifest"], manifest);
@@ -152,7 +152,7 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 		.unwrap();
 	assert_eq!(history.len(), 2, "one admission and one durable abort");
 	let snapshot = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!(
 				"/api/workspaces/{}",
 				workspace["id"].as_str().unwrap()
@@ -174,7 +174,7 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Concurrent admission").await;
+	let workspace = workspace(&app.deployment_administrator, "Concurrent admission").await;
 	let id = Uuid::new_v4();
 	let first = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
@@ -186,8 +186,10 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	}
 	// Act
 	let (a, b) = tokio::join!(
-		app.operator.post("/api/transactions", &first, "json"),
-		app.operator.post("/api/transactions", &second, "json"),
+		app.deployment_administrator
+			.post("/api/transactions", &first, "json"),
+		app.deployment_administrator
+			.post("/api/transactions", &second, "json"),
 	);
 	let a = a.unwrap();
 	let b = b.unwrap();
@@ -199,13 +201,19 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 	let admitted = assert_json(winner, 202);
 	let replay = assert_json(loser, if conflicting { 409 } else { 202 });
 	let details = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!("/api/transactions/{id}"))
 			.await
 			.unwrap(),
 		200,
 	);
-	let listed = assert_json(app.operator.get("/api/transactions").await.unwrap(), 200);
+	let listed = assert_json(
+		app.deployment_administrator
+			.get("/api/transactions")
+			.await
+			.unwrap(),
+		200,
+	);
 	// Assert
 	if !conflicting {
 		assert_eq!(replay["manifest"], first);
@@ -229,7 +237,7 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 
 #[rstest]
 #[tokio::test]
-async fn operator_abort_is_durable_while_recovery_owns_the_lease(
+async fn deployment_administrator_abort_is_durable_while_recovery_owns_the_lease(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_server::{Error, transactions::coordinator};
@@ -239,14 +247,14 @@ async fn operator_abort_is_durable_while_recovery_owns_the_lease(
 	};
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Abort during recovery").await;
+	let workspace = workspace(&app.deployment_administrator, "Abort during recovery").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state",
             "workspace_id":workspace["id"],"expected_revision":0,"state":{"never": "applied"}}]}]});
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/transactions", &manifest, "json")
 			.await
 			.unwrap(),
@@ -271,15 +279,18 @@ async fn operator_abort_is_durable_while_recovery_owns_the_lease(
 	let pending = coordinator::advance(&app.runtime, id).await;
 	let aborted = tokio::time::timeout(
 		std::time::Duration::from_secs(2),
-		app.operator
-			.post(&format!("/api/transactions/{id}/abort"), &json!({}), "json"),
+		app.deployment_administrator.post(
+			&format!("/api/transactions/{id}/abort"),
+			&json!({}),
+			"json",
+		),
 	)
 	.await
-	.expect("operator abort must not wait for peer recovery I/O")
+	.expect("Deployment Administrator abort must not wait for peer recovery I/O")
 	.unwrap();
 	held.commit().await.unwrap();
 	let persisted = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!("/api/transactions/{id}"))
 			.await
 			.unwrap(),
@@ -317,7 +328,7 @@ async fn peer_trust_changes_are_persisted_once_per_node_and_audited(
 	for enabled in [true, true, false] {
 		let input = json!({"node_id":peer.node_id,"enabled":enabled});
 		let saved = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post("/api/transactions/trust", &input, "json")
 				.await
 				.unwrap(),
@@ -329,7 +340,10 @@ async fn peer_trust_changes_are_persisted_once_per_node_and_audited(
 		);
 	}
 	let peers = assert_json(
-		app.operator.get("/api/transactions/trust").await.unwrap(),
+		app.deployment_administrator
+			.get("/api/transactions/trust")
+			.await
+			.unwrap(),
 		200,
 	);
 	let history = AtomicHistory::objects()
@@ -373,7 +387,7 @@ async fn participant_list_reads_persisted_orm_state(#[future] endpoint: Endpoint
 		.unwrap();
 	// Act
 	let saved = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get("/api/transactions/participants")
 			.await
 			.unwrap(),
@@ -394,7 +408,7 @@ async fn visibility_lock_blocks_protected_reads_but_leaves_recovery_routes_avail
 	use reinhardt::query::{Alias, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	// Arrange
 	let app = endpoint.await;
-	let created = workspace(&app.operator, "Visibility barrier").await;
+	let created = workspace(&app.deployment_administrator, "Visibility barrier").await;
 	let path = format!("/api/workspaces/{}", created["id"].as_str().unwrap());
 	let mut held = app.database.connection.begin().await.unwrap();
 	let sql = Query::select()
@@ -404,10 +418,14 @@ async fn visibility_lock_blocks_protected_reads_but_leaves_recovery_routes_avail
 		.to_string(PostgresQueryBuilder);
 	held.fetch_one(&sql, vec![]).await.unwrap();
 	// Act
-	let hidden = app.operator.get(&path).await.unwrap();
-	let recovery = app.operator.get("/api/transactions").await.unwrap();
+	let hidden = app.deployment_administrator.get(&path).await.unwrap();
+	let recovery = app
+		.deployment_administrator
+		.get("/api/transactions")
+		.await
+		.unwrap();
 	held.rollback().await.unwrap();
-	let visible = app.operator.get(&path).await.unwrap();
+	let visible = app.deployment_administrator.get(&path).await.unwrap();
 	// Assert
 	assert_eq!(hidden.header("retry-after"), Some("1"));
 	assert_eq!(hidden.header("x-aidash-transaction-pending"), Some("1"));
@@ -432,7 +450,7 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 	};
 	// Arrange
 	let app = endpoint.await;
-	let created = workspace(&app.operator, "Pending visibility").await;
+	let created = workspace(&app.deployment_administrator, "Pending visibility").await;
 	let path = format!("/api/workspaces/{}", created["id"].as_str().unwrap());
 	let mut db = app.database.lease.handle();
 	let mut lease = ReadLease::begin(&app.runtime.store).await.unwrap();
@@ -458,7 +476,7 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 		.await
 		.unwrap();
 	// Act
-	let hidden = app.operator.get(&path).await.unwrap();
+	let hidden = app.deployment_administrator.get(&path).await.unwrap();
 	let (sql, values) = Query::update()
 		.table(Alias::new("atomic_gate"))
 		.value_expr(Alias::new("transaction_id"), Expr::null())
@@ -484,6 +502,6 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 		.unwrap();
 	assert_eq!(gate.commit_epoch(), 1);
 	assert_eq!(gate.transaction_id(), &None);
-	let visible = assert_json(app.operator.get(&path).await.unwrap(), 200);
+	let visible = assert_json(app.deployment_administrator.get(&path).await.unwrap(), 200);
 	assert_eq!(visible["workspace"]["id"], created["id"]);
 }

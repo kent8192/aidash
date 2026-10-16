@@ -22,7 +22,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Semantic limits").await;
+	let workspace = workspace(&app.deployment_administrator, "Semantic limits").await;
 	let base = format!(
 		"/api/workspaces/{}/semantic",
 		workspace["id"].as_str().unwrap()
@@ -30,7 +30,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	let index_path = format!("{base}/index");
 	let entries_path = format!("{base}/entries");
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -41,18 +41,24 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 		200,
 	);
 	// Act
-	let oversized = app.operator.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(86)},"metadata":{}}), "json").await.unwrap();
+	let oversized = app.deployment_administrator.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(86)},"metadata":{}}), "json").await.unwrap();
 	// Assert
 	assert_json(oversized, 400);
 	assert_eq!(
-		assert_json(app.operator.get(&entries_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&entries_path)
+				.await
+				.unwrap(),
+			200
+		),
 		json!([])
 	);
 	// Act
-	let saved = assert_json(app.operator.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(80)},"metadata":{}}), "json").await.unwrap(), 200);
+	let saved = assert_json(app.deployment_administrator.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(80)},"metadata":{}}), "json").await.unwrap(), 200);
 	index_spec["max_input_bytes"] = json!(128);
 	let reduced = app
-		.operator
+		.deployment_administrator
 		.post(
 			&index_path,
 			&json!({"expected_revision":1,"spec":index_spec}),
@@ -62,7 +68,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 		.unwrap();
 	index_spec["max_sources"] = json!(0);
 	let invalid_spec = app
-		.operator
+		.deployment_administrator
 		.post(
 			&index_path,
 			&json!({"expected_revision":1,"spec":index_spec}),
@@ -73,10 +79,19 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	// Assert
 	assert_json(reduced, 409);
 	assert_json(invalid_spec, 400);
-	let unchanged = assert_json(app.operator.get(&index_path).await.unwrap(), 200);
+	let unchanged = assert_json(
+		app.deployment_administrator.get(&index_path).await.unwrap(),
+		200,
+	);
 	assert_eq!(unchanged["revision"], 1);
 	assert_eq!(unchanged["spec"]["max_input_bytes"], 256);
-	let entries = assert_json(app.operator.get(&entries_path).await.unwrap(), 200);
+	let entries = assert_json(
+		app.deployment_administrator
+			.get(&entries_path)
+			.await
+			.unwrap(),
+		200,
+	);
 	assert_eq!(entries[0]["id"], saved["id"]);
 }
 
@@ -87,7 +102,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 	index_spec: Value,
 ) {
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Index contracts").await;
+	let workspace = workspace(&app.deployment_administrator, "Index contracts").await;
 	let path = format!(
 		"/api/workspaces/{}/semantic/index",
 		workspace["id"].as_str().unwrap()
@@ -183,7 +198,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 	}
 	for (spec, status) in invalid {
 		let response = app
-			.operator
+			.deployment_administrator
 			.post(&path, &json!({"expected_revision":0,"spec":spec}), "json")
 			.await
 			.unwrap();
@@ -208,7 +223,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			let mut boundary = index_spec.clone();
 			boundary[field] = json!(value);
 			let saved = assert_json(
-				app.operator
+				app.deployment_administrator
 					.post(
 						&path,
 						&json!({"expected_revision":revision,"spec":boundary}),
@@ -227,7 +242,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		let mut boundary = index_spec.clone();
 		boundary["embedding"]["dimensions"] = json!(dimensions);
 		let saved = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					&path,
 					&json!({"expected_revision":revision,"spec":boundary}),
@@ -249,13 +264,13 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 	index_spec: Value,
 ) {
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Source contracts").await;
+	let workspace = workspace(&app.deployment_administrator, "Source contracts").await;
 	let base = format!(
 		"/api/workspaces/{}/semantic",
 		workspace["id"].as_str().unwrap()
 	);
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&format!("{base}/index"),
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -287,7 +302,7 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 		),
 	] {
 		let response = app
-			.operator
+			.deployment_administrator
 			.post(
 				&entries,
 				&json!({"key":"memory","expected_revision":0,"source":source,"metadata":{}}),
@@ -301,9 +316,12 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 			assert_json(response, 400);
 		}
 	}
-	assert_json_rejection(app.operator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"safe"},"metadata":{},"authority":{"subject":"forged"}}), "json").await.unwrap(), 422);
+	assert_json_rejection(app.deployment_administrator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"safe"},"metadata":{},"authority":{"subject":"forged"}}), "json").await.unwrap(), 422);
 	assert_eq!(
-		assert_json(app.operator.get(&entries).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator.get(&entries).await.unwrap(),
+			200
+		),
 		json!([])
 	);
 	let mut db = app.database.lease.handle();
@@ -315,13 +333,13 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 			.unwrap()
 			.is_empty()
 	);
-	let saved = assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"Memory"},"metadata":{}}), "json").await.unwrap(), 200);
+	let saved = assert_json(app.deployment_administrator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"Memory"},"metadata":{}}), "json").await.unwrap(), 200);
 	let record = SemanticEntry::objects()
 		.get(serde_json::from_value(saved["id"].clone()).unwrap())
 		.get_with_db(&mut db)
 		.await
 		.unwrap();
-	assert_eq!(record.authority.0["subject"], "operator");
+	assert_eq!(record.authority.0["subject"], "deployment_administrator");
 	assert_eq!(record.authority.0["credential"], Value::Null);
 }
 
@@ -338,7 +356,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	};
 	// Arrange two generations, including a superseded point in the active collection.
 	let app = endpoint.await;
-	let workspace = workspace(&app.operator, "Generation cleanup").await;
+	let workspace = workspace(&app.deployment_administrator, "Generation cleanup").await;
 	let base = format!(
 		"/api/workspaces/{}/semantic",
 		workspace["id"].as_str().unwrap()
@@ -347,7 +365,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let entries_path = format!("{base}/entries");
 	let cleanup_path = format!("{base}/cleanup");
 	let first = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -357,11 +375,11 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 			.unwrap(),
 		200,
 	);
-	let original = assert_json(app.operator.post(&entries_path,
+	let original = assert_json(app.deployment_administrator.post(&entries_path,
 		&json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
 	index_spec["embedding"]["model_version"] = json!("2");
 	let second = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":1,"spec":index_spec}),
@@ -372,7 +390,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		200,
 	);
 	let replay = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":1,"spec":index_spec}),
@@ -385,7 +403,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	assert_eq!(second, replay);
 	assert_eq!(second["revision"], 2);
 	assert_ne!(first["collection"], second["collection"]);
-	let reconfigured = assert_json(app.operator.get(&entries_path).await.unwrap(), 200);
+	let reconfigured = assert_json(
+		app.deployment_administrator
+			.get(&entries_path)
+			.await
+			.unwrap(),
+		200,
+	);
 	assert_eq!(reconfigured[0]["revision"], 1);
 	assert_eq!(reconfigured[0]["index_revision"], 2);
 	assert_ne!(original["point_id"], reconfigured[0]["point_id"]);
@@ -457,11 +481,17 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		.unwrap();
 	}
 	tx.commit().await.unwrap();
-	let updated = assert_json(app.operator.post(&entries_path,
+	let updated = assert_json(app.deployment_administrator.post(&entries_path,
 		&json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let pending = json!({"points":{"retired":1,"pending":1,"failed":0},"collections":{"retired":1,"pending":1,"failed":0}});
 	assert_eq!(
-		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		pending
 	);
 
@@ -469,7 +499,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	worker::sweep(&app.runtime.store).await.unwrap();
 	let failed = json!({"points":{"retired":1,"pending":1,"failed":1},"collections":{"retired":1,"pending":1,"failed":1}});
 	assert_eq!(
-		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		failed
 	);
 	let mut db = app.database.lease.handle();
@@ -487,7 +523,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		.next_attempt;
 	worker::sweep(&app.runtime.store).await.unwrap();
 	assert_eq!(
-		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		failed
 	);
 	assert_eq!(
@@ -551,7 +593,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	// Assert: replay did not duplicate a generation, and acknowledgements keep tombstones.
 	let cleaned = json!({"points":{"retired":1,"pending":0,"failed":0},"collections":{"retired":1,"pending":0,"failed":0}});
 	assert_eq!(
-		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		cleaned
 	);
 	let points = SemanticPoint::objects()
@@ -604,10 +652,10 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	let store = &app.runtime.store;
 	let mut ids = vec![];
 	for title in ["Corpus", "Other corpus"] {
-		let workspace = workspace(&app.operator, title).await;
+		let workspace = workspace(&app.deployment_administrator, title).await;
 		let id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
 		assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					&format!("/api/workspaces/{id}/semantic/index"),
 					&json!({"expected_revision":0,"spec":index_spec}),
@@ -627,11 +675,11 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	let unbound = || aidash_server::semantic::services::corpus_digest(store, workspace, None);
 	let empty = digest().await.unwrap();
 	// Act
-	assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
+	assert_json(app.deployment_administrator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
 	let inserted = digest().await.unwrap();
-	assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
+	assert_json(app.deployment_administrator.post(&entries, &json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let edited = digest().await.unwrap();
-	assert_json(app.operator.post(&format!("/api/workspaces/{other}/semantic/entries"), &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"elsewhere"},"metadata":{}}), "json").await.unwrap(), 200);
+	assert_json(app.deployment_administrator.post(&format!("/api/workspaces/{other}/semantic/entries"), &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"elsewhere"},"metadata":{}}), "json").await.unwrap(), 200);
 	let unchanged = digest().await.unwrap();
 	// A memory unit mutation bumps only its bank's revision.
 	use aidash_server::database::native;
@@ -678,7 +726,7 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	// Without a memory participant no bank is recalled, so none is keyed.
 	assert_eq!(unbound().await.unwrap(), edited);
 	assert_eq!(
-		assert_json(app.operator.get(&index).await.unwrap(), 200)["revision"],
+		assert_json(app.deployment_administrator.get(&index).await.unwrap(), 200)["revision"],
 		1
 	);
 }
