@@ -41,7 +41,7 @@ import { DisplayFile, panelClass } from "./display";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
-import type { RunInspection } from "../generated/models";
+import type { RunDetails } from "../generated/models";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
@@ -878,8 +878,9 @@ export function ThreadCapabilities({
   const activeRunId = area ? (session.data?.active_run_id ?? null) : null;
   const activeRun = useQuery({
     queryKey: ["run-agent", activeRunId],
-    queryFn: ({ signal }) =>
-      apiFetch<RunInspection>(`/api/runs/${activeRunId}`, { signal }),
+    // The Run details carry the inspection under `run`.
+    queryFn: async ({ signal }) =>
+      (await apiFetch<RunDetails>(`/api/runs/${activeRunId}`, { signal })).run,
     enabled: !!activeRunId,
     staleTime: Infinity,
     retry: false,

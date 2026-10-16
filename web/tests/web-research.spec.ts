@@ -169,7 +169,7 @@ const thread: Card[] = [
   },
 ];
 
-async function research(page: Page) {
+async function research(page: Page, { admittedPageReading = true } = {}) {
   const fixture = await setup(page, { subject: true, coreCapabilities: true });
   await page.goto("/collaboration?channel=workspace-one");
   const data = await page.evaluate(() =>
@@ -299,6 +299,34 @@ async function research(page: Page) {
         },
       });
     }
+    // The active Run's details carry the binding snapshot it was admitted
+    // with; steering reads pages only through a fetch Binding it includes.
+    if (path === "/api/runs/run-0")
+      return send({
+        run: {
+          ...data.runs.find((run: { id: string }) => run.id === "run-0"),
+          context: {
+            binding_snapshot: {
+              remote: false,
+              bindings: [
+                {
+                  definition: tool(
+                    "aidash.research.fixture.fetch",
+                    "research.fixture@1",
+                    "fetch",
+                  ),
+                  excluded_reason: admittedPageReading
+                    ? null
+                    : "catalog_approval",
+                },
+              ],
+            },
+          },
+        },
+        invocations: [],
+        media_input_routes: [],
+        memory: null,
+      });
     if (path === "/api/runs/run-0/research")
       return send({
         limits: {
@@ -476,6 +504,32 @@ test("a pasted URL can be offered for reading without approving its disclosure",
   ).toBeVisible();
   // Asking to read approved nothing: no decision was sent.
   expect(calls.some((call) => call.path.endsWith("/decide"))).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test("a Run admitted without Page reading is not steered with pages, whatever is approved now", async ({
+  page,
+}) => {
+  const { calls, errors } = await research(page, {
+    admittedPageReading: false,
+  });
+  await openThread(page);
+  await page
+    .getByLabel("Next instruction")
+    .fill("Summarize https://example.com/notes.");
+  const chip = page
+    .getByRole("group", { name: "Read this page" })
+    .getByRole("button", { name: "Read this page: https://example.com/notes" });
+  await chip.click();
+  await expect(chip).toHaveAttribute("aria-pressed", "true");
+  // The queued Run's version can read it, the active Run cannot.
+  await expect(
+    page.getByRole("button", { name: "Steer active Run" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Queue next Run" }),
+  ).toBeEnabled();
+  expect(calls.some((call) => call.path.endsWith("/steer"))).toBe(false);
   expect(errors).toEqual([]);
 });
 
