@@ -35,11 +35,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 	let (current, retired) = keys.load_postgres_keys().await?;
 	let config = crate::config::Config::from_settings(&settings)?;
 	// Do not migrate or initialize the node: even a dry run must leave the database unchanged.
-	let database = reinhardt::db::backends::DatabaseConnection::connect_postgres_with_pool_size(
-		&config.database_url,
-		Some(8),
-	)
-	.await?;
+	let database = crate::database::runtime::connect(&config.database_url, 8).await?;
 	let pool =
 		crate::database::native::Pool::from(database.into_postgres().ok_or(Error::Forbidden)?);
 	let store = Arc::new(PostgresStore::for_recovery(pool.clone(), current, retired).await?);

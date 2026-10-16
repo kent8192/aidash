@@ -1,4 +1,5 @@
 //! Django-style endpoint suites live beside the application they exercise.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/endpoint.rs"]
 mod endpoint;
 #[path = "support/execution.rs"]

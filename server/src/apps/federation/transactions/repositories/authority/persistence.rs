@@ -5,6 +5,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	federation::Federation,
 };
+use aidash_application::tenancy::TenancyScope;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, IntoValue, OnConflict, PostgresQueryBuilder, Query, SimpleExpr,
 };
@@ -116,7 +117,12 @@ pub(crate) async fn binding<T: serde::de::DeserializeOwned>(
 	table: &str,
 	id: Uuid,
 ) -> Result<Option<T>> {
-	binding_with(&f.store.control_pool, table, id).await
+	binding_with(
+		f.store.control_pool.in_scope(&TenancyScope::NoTenant),
+		table,
+		id,
+	)
+	.await
 }
 
 pub(crate) async fn binding_with<T: serde::de::DeserializeOwned>(
@@ -215,7 +221,7 @@ pub(crate) async fn settle(f: &Federation, id: Uuid, node: &str, outcome: &str) 
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.control_pool)
+		.execute(f.store.control_pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 	};
 	Ok(())
@@ -247,7 +253,9 @@ pub(crate) async fn pending(
 	if let Some(credential) = credential {
 		query = query.bind(credential.to_string());
 	}
-	query.scalar_all(&f.store.control_pool).await
+	query
+		.scalar_all(f.store.control_pool.in_scope(&TenancyScope::NoTenant))
+		.await
 }
 
 pub(crate) async fn scoped(f: &Federation, id: Uuid) -> Result<bool> {
@@ -290,7 +298,7 @@ pub(crate) async fn pending_peer(f: &Federation, node: &str) -> Result<Vec<Uuid>
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_all(&f.store.control_pool)
+		.scalar_all(f.store.control_pool.in_scope(&TenancyScope::NoTenant))
 		.await?
 	})
 }

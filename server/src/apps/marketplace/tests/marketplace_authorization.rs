@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use futures_util::FutureExt;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
@@ -841,6 +843,8 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	common::cleanup(f, &url, &schema).await;
 }
 
+/// Finds the waiter by its database: a Deployment Scope relabels
+/// `application_name` for the transaction's duration.
 async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	for _ in 0..500 {
@@ -852,8 +856,7 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 					.expr(Expr::cust("count(*)"))
 					.from(Alias::new("pg_stat_activity"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(application_name=? AND wait_event_type='Lock' AND query LIKE ?)"
-							.to_owned(),
+						"(datname=? AND wait_event_type='Lock' AND query LIKE ?)".to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),
@@ -1103,7 +1106,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	);
 	assert!(
 		!f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -1178,7 +1181,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	)
 	.await;
 	assert_eq!(claimed.0, 200, "{claimed:?}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.agent_id, old_ref.id);
 	let installed_id = original.1["installation"]["id"].as_str().unwrap();
 	let changed=request(&app,&a,"POST",&format!("/api/marketplace/installations/{installed_id}"),json!({"expected_revision":1,"config":{"instructions":"Replacement instructions"},"idempotency_key":Uuid::new_v4()})).await;
@@ -1276,7 +1279,10 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.0,
 		200
 	);
-	assert_eq!(f.store.run(run.id).await.unwrap().agent_id, old_ref.id);
+	assert_eq!(
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().agent_id,
+		old_ref.id
+	);
 	assert_eq!(
 		f.registry
 			.get(&old_ref.id, &old_ref.version)
@@ -1295,7 +1301,12 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.unwrap()
 	);
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"THINKING"
 	);
 	assert_eq!(
@@ -1313,16 +1324,18 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 			.await
 			.unwrap()
 		);
-		if f.store.run(run.id).await.unwrap().control == aidash_server::domain::RunControl::Paused {
+		if f.store.run(&TEST_FIXTURE, run.id).await.unwrap().control
+			== aidash_server::domain::RunControl::Paused
+		{
 			break;
 		}
 	}
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(paused.control, aidash_server::domain::RunControl::Paused);
 	assert_eq!(paused.agent_id, old_ref.id);
 	let active = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -1777,7 +1790,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 		.0,
 		403
 	);
-	let events = f.store.events(0, None, 1000).await.unwrap();
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
 	let audit = events
 		.iter()
 		.find(|e| {
@@ -2004,7 +2017,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 	);
 	let successes = f
 		.store
-		.events(0, None, 1000)
+		.events(&TEST_FIXTURE, 0, None, 1000)
 		.await
 		.unwrap()
 		.into_iter()
@@ -2080,7 +2093,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	);
 	assert_eq!(
 		f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -2277,7 +2290,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	assert_eq!(installed.0, 200, "{installed:?}");
 	let after = f
 		.store
-		.events(0, None, 1000)
+		.events(&TEST_FIXTURE, 0, None, 1000)
 		.await
 		.unwrap()
 		.last()
@@ -2297,7 +2310,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		store: f.store.clone(),
 		identity,
 	};
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for _ in 0..512 {
 		f.store
 			.event(
@@ -2340,7 +2353,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
 	assert_eq!(state.0, 200, "{state:?}");
 	assert_eq!(state.1["events"], json!([]));
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let visible = f
 		.store
 		.event(
@@ -2605,7 +2618,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	};
 	let before = f
 		.store
-		.events(0, None, 1000)
+		.events(&TEST_FIXTURE, 0, None, 1000)
 		.await
 		.unwrap()
 		.iter()
@@ -2650,7 +2663,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				if deployment_administrator {
 					"deployment_administrator".into()
 				} else {
-					format!("mapping:{mapping}")
+					format!("mapping:a:{mapping}")
 				},
 			)
 			.header("content-type", "application/json")
@@ -2772,7 +2785,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	assert_eq!(
 		f.store
-			.events(0, None, 1000)
+			.events(&TEST_FIXTURE, 0, None, 1000)
 			.await
 			.unwrap()
 			.iter()
@@ -2821,7 +2834,12 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	for i in 0..501 {
 		after = f
 			.store
-			.emit(Some(ws), "workspace.updated", json!({"id":ws,"number":i}))
+			.emit(
+				&TEST_FIXTURE,
+				Some(ws),
+				"workspace.updated",
+				json!({"id":ws,"number":i}),
+			)
 			.await
 			.unwrap()
 			.sequence;
@@ -2832,7 +2850,12 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	let package = publish(&app, &a, "cursor-source").await;
 	let newest = f
 		.store
-		.emit(Some(ws), "workspace.updated", json!({"id":ws,"number":502}))
+		.emit(
+			&TEST_FIXTURE,
+			Some(ws),
+			"workspace.updated",
+			json!({"id":ws,"number":502}),
+		)
 		.await
 		.unwrap();
 	let result = tokio::time::timeout(

@@ -1,6 +1,7 @@
 //! Ranking-only state: no Unit revision, digest, bank revision, or dependent Run changes.
 use super::{access::Lease, bank_settings, native_memory as repository, units};
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{DateTime, Duration, SubsecRound, Utc};
 use reinhardt::query::{
@@ -9,6 +10,9 @@ use reinhardt::query::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
 pub(crate) async fn configure(
 	lease: &mut Lease<'_>,
@@ -568,11 +572,12 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			.limit(32)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&MAINTENANCE))
 	.await?;
 	let mut processed = 0;
 	for row in rows {
-		let mut lease = Lease::without_subject(store).await?;
+		let mut lease =
+			Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
 		let result = page(&mut lease, row.try_get("id")?, Utc::now()).await;
 		match lease.finish(result).await {
 			Ok(n) => processed += n,

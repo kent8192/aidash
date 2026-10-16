@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 struct RecoveryFixture {
@@ -18,7 +19,12 @@ fn recovery_fixture(
 	let capability_fixture = Box::pin(capability_fixture);
 	async move {
 		let c = capability_fixture.await;
-		let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+		let workspace =
+			c.f.store
+				.task(&TEST_FIXTURE, c.task)
+				.await
+				.unwrap()
+				.workspace_id;
 		let mut threads = vec![];
 		for content in ["Retain these files", "Authorized restoration destination"] {
 			let root = source(&c, workspace, content).await;

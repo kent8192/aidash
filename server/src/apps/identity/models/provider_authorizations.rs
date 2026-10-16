@@ -2,12 +2,14 @@
 //! browser that started it, its dashboard session, its Tenant and the
 //! Provider Credential it will write. A callback consumes the row exactly once.
 use super::dashboard_administration::database_time;
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model};
 use reinhardt::model;
 use reinhardt::query::{
 	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
@@ -26,7 +28,7 @@ pub struct ProviderAuthorization {
 	pub browser_hash: String,
 	#[field]
 	pub session_id: Uuid,
-	/// The dashboard context selector (`deployment_administrator` or `mapping:<id>`) under
+	/// The dashboard context selector (`deployment_administrator` or `mapping:<tenant>:<id>`) under
 	/// which the callback re-derives and re-authorizes the actor.
 	#[field(field_type = "text")]
 	pub context: String,
@@ -57,8 +59,8 @@ impl ProviderAuthorization {
 	/// authorization of the same browser, dashboard session and provider, so a
 	/// declined consent, which arrives without `state`, always maps to exactly
 	/// one row; the superseded flow's `state` is refused before any exchange.
-	pub(crate) async fn reserve(&self, db: DatabaseConnection) -> Result<()> {
-		db.atomic(async |tx| {
+	pub(crate) async fn reserve(&self, db: &Pool) -> Result<()> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let (sql, values) = Query::select()
 				.expr(SimpleExpr::FunctionCall(
 					Alias::new("pg_advisory_xact_lock").into_iden(),
@@ -95,8 +97,8 @@ impl ProviderAuthorization {
 
 	/// Deletes and returns the pending row for `state_hash`. Consumption commits
 	/// even when the caller then rejects the row, so a `state` never works twice.
-	pub(crate) async fn consume(db: DatabaseConnection, state_hash: String) -> Result<Self> {
-		db.atomic(async |tx| {
+	pub(crate) async fn consume(db: &Pool, state_hash: String) -> Result<Self> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let row = Self::objects()
 				.filter(Self::field_state_hash().eq(state_hash))
 				.select_for_update()
@@ -126,12 +128,12 @@ impl ProviderAuthorization {
 	/// Only a declined consent uses it, because OpenRouter omits `state` from
 	/// that redirect; the row never reaches an exchange.
 	pub(crate) async fn consume_declined(
-		db: DatabaseConnection,
+		db: &Pool,
 		browser_hash: String,
 		provider: &str,
 		session_id: Uuid,
 	) -> Result<Self> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			let mut rows = Self::objects()
 				.filter(Self::field_browser_hash().eq(browser_hash))

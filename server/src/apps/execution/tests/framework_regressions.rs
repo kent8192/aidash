@@ -1,4 +1,5 @@
 //! Consumer regressions for the framework fixes required by this migration.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::model;

@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	domain::{Message, NewTask, Run, qualified_agent},
 	federation::{Federation, Home},
@@ -87,7 +89,7 @@ async fn failed_admission_with_unavailable_release_expires_at_home(
 		fixture
 			.executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.is_empty()
@@ -129,11 +131,17 @@ async fn failed_admission_with_unavailable_release_expires_at_home(
 	.execute(fixture.home.store.pool.driver())
 	.await
 	.unwrap();
-	let task = fixture.home.store.task(run.task_id).await.unwrap();
+	let task = fixture
+		.home
+		.store
+		.task(&TEST_FIXTURE, run.task_id)
+		.await
+		.unwrap();
 	let cancelled = fixture
 		.home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
@@ -192,12 +200,13 @@ async fn remote_fixture(
 	let server = home_app;
 	let workspace = home
 		.store
-		.create_workspace("Remote fences", "Run-message recovery")
+		.create_workspace(&TEST_FIXTURE, "Remote fences", "Run-message recovery")
 		.await
 		.unwrap();
 	let task = home
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Remote correction".into(),
@@ -237,12 +246,13 @@ async fn remote_fixture(
 	.unwrap();
 	let task = home
 		.store
-		.claim(task.id, task.revision, &owner, &agent)
+		.claim(&TEST_FIXTURE, task.id, task.revision, &owner, &agent)
 		.await
 		.unwrap();
 	let task = home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
@@ -252,7 +262,13 @@ async fn remote_fixture(
 		.unwrap();
 	let run = executor
 		.store
-		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&home.config.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	RemoteFixture {
@@ -302,7 +318,7 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 		fixture
 			.executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.len(),
@@ -321,11 +337,17 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 	.execute(fixture.home.store.pool.driver())
 	.await
 	.unwrap();
-	let task = fixture.home.store.task(run.task_id).await.unwrap();
+	let task = fixture
+		.home
+		.store
+		.task(&TEST_FIXTURE, run.task_id)
+		.await
+		.unwrap();
 	fixture
 		.home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
@@ -339,7 +361,12 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 		.deliver_run_messages(run)
 		.await
 		.expect("a durable executor input must recover its exact expired reservation");
-	let inputs = fixture.executor.store.run_inputs(run.id).await.unwrap();
+	let inputs = fixture
+		.executor
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap();
 	assert!(inputs[0].message_id.is_some());
 	for (proof_run, proof_seq, proof_content) in [
 		(run.id, inputs[0].seq + 1, "durable correction"),
@@ -370,7 +397,7 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 		fixture
 			.home
 			.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.messages
@@ -427,7 +454,7 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 		fixture
 			.executor
 			.store
-			.run(run.id)
+			.run(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.phase()
@@ -479,7 +506,7 @@ async fn scoped_remote_admission_imports_history_before_assigning_new_sequence(
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
-	let inputs = f.store.run_inputs(run.id).await.unwrap();
+	let inputs = f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		inputs.len(),
 		2,
@@ -537,7 +564,7 @@ async fn durable_remote_admission_fences_both_human_key_formats(
 		fixture
 			.executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.len(),
@@ -553,12 +580,18 @@ async fn durable_remote_admission_fences_both_human_key_formats(
 			.await
 			.is_err()
 	);
-	let task = fixture.home.store.task(run.task_id).await.unwrap();
+	let task = fixture
+		.home
+		.store
+		.task(&TEST_FIXTURE, run.task_id)
+		.await
+		.unwrap();
 	assert!(
 		fixture
 			.home
 			.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				task.revision,
 				task.owner.as_deref().unwrap(),
@@ -580,7 +613,7 @@ async fn durable_remote_admission_fences_both_human_key_formats(
 		fixture
 			.executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.len(),
@@ -657,6 +690,7 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 		.home
 		.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			run.task_id,
 			run.id,
 			&fixture.executor.config.node_id,
@@ -692,7 +726,7 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 		fixture
 			.home
 			.store
-			.task(run.task_id)
+			.task(&TEST_FIXTURE, run.task_id)
 			.await
 			.unwrap()
 			.status
@@ -703,6 +737,7 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 		.home
 		.store
 		.release_remote_run_message(
+			&TEST_FIXTURE,
 			run.task_id,
 			run.id,
 			&fixture.executor.config.node_id,
@@ -749,7 +784,7 @@ let app=fixture.application.clone();
 		"title":"Scoped history", "goal":"Reply", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let old_message = Message {
 		id: Uuid::new_v4(),
 		workspace_id: run.workspace_id,

@@ -73,8 +73,7 @@ impl TenantAdministrations {
 		tenant: String,
 	) -> Result<TenantAdministration> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		administrator.overview(lease.handle()).await
+		administrator.overview(&self.runtime.store.pool).await
 	}
 
 	pub(crate) async fn registrations(
@@ -84,8 +83,7 @@ impl TenantAdministrations {
 		tenant: String,
 	) -> Result<Vec<TenantRegistration>> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = administrator.registrations(lease.handle()).await;
+		let result = administrator.registrations(&self.runtime.store.pool).await;
 		self.finish(&administrator, result).await
 	}
 
@@ -100,9 +98,8 @@ impl TenantAdministrations {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let policy = Some(administrator.policy().clone());
-		let lease = self.runtime.store.orm_connection()?;
 		let result = DashboardRegistrationRequest::approve(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			Approval {
 				tenant,
@@ -130,9 +127,8 @@ impl TenantAdministrations {
 			.config
 			.dashboard_session()
 			.map(|config| config.session_idle_seconds);
-		let lease = self.runtime.store.orm_connection()?;
 		let result = DashboardRegistrationRequest::reject(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			&AdministrationActor::TenantAdministrator(administrator.clone()),
 			idle_seconds,
@@ -149,8 +145,9 @@ impl TenantAdministrations {
 		offset: u64,
 	) -> Result<Vec<TenantMapping>> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = administrator.mappings(lease.handle(), offset).await;
+		let result = administrator
+			.mappings(&self.runtime.store.pool, offset)
+			.await;
 		self.finish(&administrator, result).await
 	}
 
@@ -164,9 +161,8 @@ impl TenantAdministrations {
 	) -> Result<http::StatusCode> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
 		let result = DashboardMapping::disable(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			input.expected_revision,
 			&AdministrationActor::TenantAdministrator(administrator.clone()),
@@ -187,9 +183,8 @@ impl TenantAdministrations {
 	) -> Result<Membership> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
 		let result = administrator
-			.update_memberships(lease.handle(), subject, input)
+			.update_memberships(&self.runtime.store.pool, subject, input)
 			.await;
 		self.finish(&administrator, result).await
 	}

@@ -1,5 +1,5 @@
 //! Native scopes retain serializable validation, visibility gates and authority auditing.
-use super::coordination::connection;
+use super::coordination::plumbing;
 use crate::apps::{
 	execution::repositories::inference,
 	federation::transactions::{
@@ -28,8 +28,8 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::{backends::TransactionExecutor, orm::DatabaseConnectionLease};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
 
@@ -212,7 +212,6 @@ impl ParticipantScope for Scope {
 
 struct Pending {
 	rows: Vec<LocalStatus>,
-	_connection: DatabaseConnectionLease,
 }
 impl PendingParticipants for Pending {
 	fn rows(&self) -> &[LocalStatus] {
@@ -230,8 +229,7 @@ impl ParticipantRepository for Repository {
 		&self.runtime.config.node_id
 	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
-		let db = self.runtime.store.control_pool.connection();
-		let tx = AtomicParticipant::begin(&db).await?;
+		let tx = AtomicParticipant::begin(&self.runtime.store.control_pool).await?;
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),
 			transaction: Transaction::Standalone(tx),
@@ -253,16 +251,14 @@ impl ParticipantRepository for Repository {
 		})))
 	}
 	async fn pending(&self) -> Result<Box<dyn PendingParticipants>> {
-		let lease = connection(&self.runtime)?;
-		let rows = AtomicParticipant::pending(&mut lease.handle())
-			.await?
-			.into_iter()
-			.map(status)
-			.collect();
-		Ok(Box::new(Pending {
-			rows,
-			_connection: lease,
-		}))
+		let rows = plumbing(&self.runtime, async |tx| {
+			AtomicParticipant::pending(tx).await
+		})
+		.await?
+		.into_iter()
+		.map(status)
+		.collect();
+		Ok(Box::new(Pending { rows }))
 	}
 	async fn fault(&self, id: Uuid, point: &str) -> Result<()> {
 		fault::cut(id, point).await.map_err(Into::into)

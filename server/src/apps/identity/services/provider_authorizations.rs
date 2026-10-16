@@ -157,8 +157,7 @@ impl ProviderAuthorizations {
 			.return_to(return_to)
 			.expires_at(Utc::now() + Duration::minutes(authorization::LIFETIME_MINUTES))
 			.finish();
-		let lease = f.store.orm_connection()?;
-		pending.reserve(lease.handle()).await?;
+		pending.reserve(&f.store.pool).await?;
 		let mut response = Response::ok().with_json(&Started {
 			authorization_url: request.url,
 		})?;
@@ -192,10 +191,9 @@ impl ProviderAuthorizations {
 		let browser = oidc::cookie_value(&headers, &oidc::cookie_name(COOKIE, config))
 			.ok_or(Error::Unauthorized)?;
 		let provider = Provider::credential(&provider)?;
-		let lease = f.store.orm_connection()?;
 		let pending = match (query.state.as_deref(), query.code.as_deref()) {
 			(Some(state), _) => {
-				ProviderAuthorization::consume(lease.handle(), hex_digest(state)).await?
+				ProviderAuthorization::consume(&f.store.pool, hex_digest(state)).await?
 			}
 			// OpenRouter omits `state` when the user declines. That denial alone is
 			// correlated through the browser binding and session; it never
@@ -203,7 +201,7 @@ impl ProviderAuthorizations {
 			(None, None) => {
 				let session = oidc::browser_session_from_headers(f, &headers).await?;
 				ProviderAuthorization::consume_declined(
-					lease.handle(),
+					&f.store.pool,
 					hex_digest(browser),
 					provider.id(),
 					session.id,

@@ -1,9 +1,11 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 #[path = "sse_delivery/edge_cases.rs"]
 mod edge_cases;
 #[path = "sse_delivery/process.rs"]
 mod process;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{domain::Event, federation::Federation, sse};
 use common::*;
 use futures_util::FutureExt;
@@ -79,6 +81,7 @@ impl Fixture {
 		self.f
 			.store
 			.emit(
+				&TEST_FIXTURE,
 				Some(workspace),
 				"workspace.updated",
 				json!({"id":workspace,"number":number}),
@@ -160,7 +163,7 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 		.unwrap();
 	// Unknown UUIDs, incorrect Workspace hints and supplied data never become frames.
 	hint(&nats, &fixture.f, json!({"specversion":"1.0","id":Uuid::new_v4(),"source":fixture.f.config.node_id,"subject":ws,"sequence":i64::MAX,"data":{"secret":"forged"},"dataref":"http://127.0.0.1:1/must-not-fetch"})).await;
-	let mut tx = fixture.f.store.pool.begin().await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let rolled_back = fixture
 		.f
 		.store
@@ -225,7 +228,7 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 ) {
 	let fixture = root;
 	let ws = fixture.workspaces[0];
-	let mut tx = fixture.f.store.pool.begin().await.unwrap();
+	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut expected = Vec::new();
 	for n in 0..550 {
 		let kind = if n < 325 {
@@ -244,7 +247,13 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 		}
 	}
 	tx.commit().await.unwrap();
-	let created = fixture.f.store.events(0, Some(ws), 1).await.unwrap()[0].sequence;
+	let created = fixture
+		.f
+		.store
+		.events(&TEST_FIXTURE, 0, Some(ws), 1)
+		.await
+		.unwrap()[0]
+		.sequence;
 	let began = Instant::now();
 	let mut stream = fixture
 		.stream(0, Some(ws), Some(&created.to_string()))
@@ -501,6 +510,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		.f
 		.store
 		.emit(
+			&TEST_FIXTURE,
 			Some(ws),
 			"workspace.updated",
 			json!({"id":ws,"text":"x".repeat(300_000)}),

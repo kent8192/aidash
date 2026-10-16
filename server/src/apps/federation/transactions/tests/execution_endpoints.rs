@@ -1,6 +1,7 @@
 //! Atomic completion retains the producing execution's live read dependencies.
 use crate::endpoint::assert_json;
 use crate::execution_fixtures::{ExecutionFixture, execution};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::{
 	federation::transactions::models::{
 		AtomicHistory, AtomicParticipant,
@@ -42,7 +43,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	let workspace = app
 		.runtime
 		.store
-		.task(execution.task)
+		.task(&TEST_FIXTURE, execution.task)
 		.await
 		.unwrap()
 		.workspace_id;
@@ -71,7 +72,13 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	};
 	assert!(harness.worker_once().await.unwrap());
 	assert!(harness.worker_once().await.unwrap());
-	let run = app.runtime.store.runs().await.unwrap().remove(0);
+	let run = app
+		.runtime
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.remove(0);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let task = Task::objects()
 		.filter(Task::field_id().eq(execution.task))
@@ -135,13 +142,18 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 			.is_empty()
 	);
 	assert_eq!(
-		app.runtime.store.task(task.id).await.unwrap().status,
+		app.runtime
+			.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status,
 		aidash_server::domain::TaskStatus::Running
 	);
 	assert_eq!(
 		app.runtime
 			.store
-			.run(run.id)
+			.run(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.phase()
@@ -206,13 +218,18 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		.unwrap();
 	assert_eq!(reads.len(), 1);
 	assert_eq!(
-		app.runtime.store.task(task.id).await.unwrap().status,
+		app.runtime
+			.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status,
 		aidash_server::domain::TaskStatus::Completed
 	);
 	assert_eq!(
 		app.runtime
 			.store
-			.run(run.id)
+			.run(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.phase()

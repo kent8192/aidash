@@ -43,9 +43,9 @@ test("restarts the event stream when the tab selects another authority", async (
   await expect
     .poll(() => contexts.includes("deployment_administrator"))
     .toBeTruthy();
-  await selector.selectOption("mapping:fixture-mapping");
+  await selector.selectOption("mapping:acme:fixture-mapping");
   await expect
-    .poll(() => contexts.includes("mapping:fixture-mapping"))
+    .poll(() => contexts.includes("mapping:acme:fixture-mapping"))
     .toBeTruthy();
 });
 

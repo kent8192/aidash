@@ -2,11 +2,13 @@
 //! SQL is compiled by Reinhardt Query at the owning repository. Projection columns
 //! are explicit for tuples; database rows never acquire an invented field order.
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use async_trait::async_trait;
 use reinhardt::db::backends::{
 	DatabaseConnection, PostgresBackend, QueryValue, TransactionExecutor,
 };
-use reinhardt::db::orm::connection::QueryRow;
+use reinhardt::db::orm::AtomicTransaction;
+use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
 use std::{marker::PhantomData, sync::Arc};
 
@@ -76,13 +78,84 @@ impl Pool {
 	pub fn driver(&self) -> &sqlx::PgPool {
 		&self.driver
 	}
-	pub async fn begin(&self) -> Result<Transaction> {
+	/// Open a transaction in `scope`. The scope is fixed for the transaction's
+	/// lifetime; savepoints inherit it.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
+	pub async fn begin(&self, scope: &TenancyScope) -> Result<Transaction> {
+		let mut executor = self.connection.begin().await?;
+		super::scope::enter(executor.as_mut(), scope).await?;
 		Ok(Transaction(
-			Some(self.connection.begin().await?),
+			Some(executor),
 			self.clone(),
 			Default::default(),
 			0,
+			Some(Box::new(scope.clone())),
 		))
+	}
+	/// Like [`Self::begin`], at the serializable isolation level.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
+	pub async fn begin_serializable(&self, scope: &TenancyScope) -> Result<Transaction> {
+		let mut executor = self
+			.connection
+			.begin_with_isolation(reinhardt::db::backends::IsolationLevel::Serializable)
+			.await?;
+		super::scope::enter(executor.as_mut(), scope).await?;
+		Ok(Transaction(
+			Some(executor),
+			self.clone(),
+			Default::default(),
+			0,
+			Some(Box::new(scope.clone())),
+		))
+	}
+	/// Run `work` in a transaction opened in `scope`, committing when it
+	/// succeeds. An error rolls the transaction back.
+	pub async fn scoped<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl for<'t> AsyncFnOnce(&'t mut Transaction) -> Result<T>,
+	) -> Result<T> {
+		let mut tx = self.begin(scope).await?;
+		let value = work(&mut tx).await?;
+		tx.commit().await?;
+		Ok(value)
+	}
+	/// Run `work` in a Reinhardt ORM transaction opened in `scope`.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
+	pub async fn atomic<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
+	) -> Result<T> {
+		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+		lease
+			.handle()
+			.atomic(async |tx| {
+				super::scope::enter(tx, scope).await?;
+				work(tx).await
+			})
+			.await
+	}
+	/// Like [`Self::atomic`], acquiring write intent before the first read.
+	#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
+	pub async fn atomic_write<T>(
+		&self,
+		scope: &TenancyScope,
+		work: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction) -> Result<T>,
+	) -> Result<T> {
+		let lease = DatabaseConnectionLease::register(self.connection.clone())?;
+		lease
+			.handle()
+			.atomic_write(async |tx| {
+				super::scope::enter(tx, scope).await?;
+				work(tx).await
+			})
+			.await
+	}
+	/// An executor that runs each statement in its own transaction opened in
+	/// `scope`, for a single statement that needs no surrounding transaction.
+	pub fn in_scope<'a>(&'a self, scope: &'a TenancyScope) -> InScope<'a> {
+		InScope { pool: self, scope }
 	}
 	pub async fn close(&self) {
 		self.driver.close().await;
@@ -101,6 +174,9 @@ pub struct Transaction(
 	std::collections::BTreeMap<uuid::Uuid, aidash_domain::memory::Unit>,
 	/// Savepoint rollbacks so far: each may release locks taken after its savepoint.
 	u64,
+	/// The tenancy scope the transaction was opened in, boxed so the scope
+	/// does not grow every value that holds a transaction.
+	Option<Box<TenancyScope>>,
 );
 // A savepoint rollback issued on the deref'd executor bypasses the lock epoch.
 impl std::ops::Deref for Transaction {
@@ -127,7 +203,12 @@ impl Transaction {
 			self.1.clone(),
 			std::mem::take(&mut self.2),
 			self.3,
+			self.4.clone(),
 		)
+	}
+	/// The tenancy scope the transaction was opened in, if it was opened with one.
+	pub(crate) fn scope(&self) -> Option<&TenancyScope> {
+		self.4.as_deref()
 	}
 	pub(crate) fn restore(&mut self, lent: Self) {
 		assert!(self.0.is_none());
@@ -229,7 +310,7 @@ impl Transaction {
 impl Transaction {
 	/// A connectionless transaction shell for adapter state tests.
 	pub(crate) fn detached(pool: Pool) -> Self {
-		Self(None, pool, Default::default(), 0)
+		Self(None, pool, Default::default(), 0, None)
 	}
 }
 impl AsMut<dyn TransactionExecutor> for Transaction {
@@ -239,14 +320,6 @@ impl AsMut<dyn TransactionExecutor> for Transaction {
 			.expect("transaction is lent to an authority scope")
 			.as_mut()
 	}
-}
-pub async fn begin(pool: &Pool) -> Result<Transaction> {
-	Ok(Transaction(
-		Some(pool.connection.begin().await?),
-		pool.clone(),
-		Default::default(),
-		0,
-	))
 }
 
 pub struct Row(reinhardt::db::backends::Row);
@@ -400,38 +473,6 @@ pub trait Executor: Send {
 	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution>;
 }
 #[async_trait]
-impl Executor for &Pool {
-	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
-		Ok(self
-			.connection
-			.fetch_all(sql, params)
-			.await?
-			.into_iter()
-			.map(Row)
-			.collect())
-	}
-	async fn optional(self, sql: &str, params: Vec<QueryValue>) -> Result<Option<Row>> {
-		Ok(self.connection.fetch_optional(sql, params).await?.map(Row))
-	}
-	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution> {
-		Ok(Execution(
-			self.connection.execute(sql, params).await?.rows_affected,
-		))
-	}
-}
-#[async_trait]
-impl Executor for &sqlx::PgPool {
-	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
-		Executor::rows(&Pool::from(self.clone()), sql, params).await
-	}
-	async fn optional(self, sql: &str, params: Vec<QueryValue>) -> Result<Option<Row>> {
-		Executor::optional(&Pool::from(self.clone()), sql, params).await
-	}
-	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution> {
-		Executor::execute(&Pool::from(self.clone()), sql, params).await
-	}
-}
-#[async_trait]
 impl<T: TransactionExecutor + ?Sized> Executor for &mut T {
 	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
 		Ok(TransactionExecutor::fetch_all(self, sql, params)
@@ -451,6 +492,34 @@ impl<T: TransactionExecutor + ?Sized> Executor for &mut T {
 				.await?
 				.rows_affected,
 		))
+	}
+}
+
+/// One statement in its own transaction opened in a tenancy scope.
+#[derive(Clone, Copy)]
+pub struct InScope<'a> {
+	pool: &'a Pool,
+	scope: &'a TenancyScope,
+}
+#[async_trait]
+impl Executor for InScope<'_> {
+	async fn rows(self, sql: &str, params: Vec<QueryValue>) -> Result<Vec<Row>> {
+		let mut tx = self.pool.begin(self.scope).await?;
+		let rows = Executor::rows(&mut tx, sql, params).await?;
+		tx.commit().await?;
+		Ok(rows)
+	}
+	async fn optional(self, sql: &str, params: Vec<QueryValue>) -> Result<Option<Row>> {
+		let mut tx = self.pool.begin(self.scope).await?;
+		let row = Executor::optional(&mut tx, sql, params).await?;
+		tx.commit().await?;
+		Ok(row)
+	}
+	async fn execute(self, sql: &str, params: Vec<QueryValue>) -> Result<Execution> {
+		let mut tx = self.pool.begin(self.scope).await?;
+		let execution = Executor::execute(&mut tx, sql, params).await?;
+		tx.commit().await?;
+		Ok(execution)
 	}
 }
 

@@ -24,10 +24,12 @@ pub trait Store: Send + Sync {
 	async fn create(&self, tenant: &str, id: Uuid) -> Result<()>;
 	async fn add_version(&self, tenant: &str, resource: &str, key: &SecretString)
 	-> Result<String>;
-	async fn versions(&self, resource: &str) -> Result<Vec<String>>;
-	async fn disable(&self, version: &str) -> Result<()>;
-	async fn destroy(&self, version: &str) -> Result<()>;
-	async fn delete(&self, resource: &str) -> Result<()>;
+	/// Every operation names the Tenant whose Key Material it touches, so a
+	/// store inside the database works in that Tenant's scope.
+	async fn versions(&self, tenant: &str, resource: &str) -> Result<Vec<String>>;
+	async fn disable(&self, tenant: &str, version: &str) -> Result<()>;
+	async fn destroy(&self, tenant: &str, version: &str) -> Result<()>;
+	async fn delete(&self, tenant: &str, resource: &str) -> Result<()>;
 	/// The resource holding one Plan Connection's Plan Tokens. Plan Tokens
 	/// share the Store with Key Material under their own namespace (ADR 0008).
 	fn plan_resource(&self, id: Uuid) -> String {
@@ -327,7 +329,7 @@ impl Service {
 		let pending = scope.get(id).await?;
 		if pending.state != State::Pending {
 			// Reconciliation may win while an external create is in flight.
-			self.store.delete(&row.secret_resource).await?;
+			self.store.delete(&row.tenant, &row.secret_resource).await?;
 			return Err(Error::Conflict(
 				"Provider Credential creation expired".into(),
 			));
@@ -380,7 +382,7 @@ impl Service {
 			.save(&row, "provider_credential.rotated", actor)
 			.await?;
 		if let Err(error) = scope.commit().await {
-			let _cleanup = self.store.disable(&version).await;
+			let _cleanup = self.store.disable(&row.tenant, &version).await;
 			return Err(error);
 		}
 		// The pin and revision are already committed. PostgreSQL's active row
@@ -388,7 +390,7 @@ impl Service {
 		// report cleanup separately instead of turning a successful rotation into
 		// an error that the caller cannot safely retry at its original revision.
 		let mut warnings = validation.warnings;
-		if self.store.disable(&old).await.is_err() {
+		if self.store.disable(&row.tenant, &old).await.is_err() {
 			warnings.push(ROTATION_CLEANUP_PENDING.into());
 		}
 		Ok(Validated {
@@ -542,7 +544,7 @@ impl Service {
 		match row.state {
 			State::Pending if row.created_at <= Utc::now() - Duration::minutes(5) => {
 				// Delete is idempotent across crashes before/after Secret creation.
-				self.store.delete(&row.secret_resource).await?;
+				self.store.delete(&row.tenant, &row.secret_resource).await?;
 				row.state = State::Deleted;
 				row.revision += 1;
 				scope
@@ -556,22 +558,34 @@ impl Service {
 			}
 			State::Active => {
 				let pinned = row.require_active()?;
-				for version in self.store.versions(&row.secret_resource).await? {
+				for version in self
+					.store
+					.versions(&row.tenant, &row.secret_resource)
+					.await?
+				{
 					if version != pinned {
-						self.store.disable(&version).await?;
+						self.store.disable(&row.tenant, &version).await?;
 					}
 				}
 			}
 			State::Revoked => {
-				for version in self.store.versions(&row.secret_resource).await? {
-					self.store.disable(&version).await?;
+				for version in self
+					.store
+					.versions(&row.tenant, &row.secret_resource)
+					.await?
+				{
+					self.store.disable(&row.tenant, &version).await?;
 				}
 			}
 			State::Deleted if row.pinned_version.is_some() => {
-				for version in self.store.versions(&row.secret_resource).await? {
-					self.store.destroy(&version).await?;
+				for version in self
+					.store
+					.versions(&row.tenant, &row.secret_resource)
+					.await?
+				{
+					self.store.destroy(&row.tenant, &version).await?;
 				}
-				self.store.delete(&row.secret_resource).await?;
+				self.store.delete(&row.tenant, &row.secret_resource).await?;
 				row.pinned_version = None;
 				scope
 					.save(
