@@ -1992,7 +1992,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -2004,7 +2004,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -2064,7 +2064,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 		},
 	};
 	// Act
-	let result = memory::operate(&store, &Actor::Operator, recall.clone()).await;
+	let result = memory::operate(&store, &Actor::DeploymentAdministrator, recall.clone()).await;
 	// Assert
 	assert!(
 		matches!(
@@ -2078,7 +2078,8 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	if !missing_points {
 		// Act: the Run's retry replays the operation while the failed
 		// attempt is still inside its call deadline.
-		let replayed = memory::operate(&store, &Actor::Operator, recall.clone()).await;
+		let replayed =
+			memory::operate(&store, &Actor::DeploymentAdministrator, recall.clone()).await;
 		// Assert
 		assert!(
 			matches!(
@@ -2109,7 +2110,8 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 			.await
 			.unwrap();
 			// Act
-			let replayed = memory::operate(&store, &Actor::Operator, recall.clone()).await;
+			let replayed =
+				memory::operate(&store, &Actor::DeploymentAdministrator, recall.clone()).await;
 			// Assert
 			assert!(
 				matches!(
