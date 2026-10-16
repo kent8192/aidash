@@ -227,3 +227,9 @@ class StartStampTest(unittest.TestCase):
             self.assertTrue(first["accepted"])
             self.assertIsInstance(first["started_at"], float)
             self.assertEqual(self.hydrate(root, incoming)["started_at"], first["started_at"])
+            # A controller that restarts after the command ended reads it back.
+            stdout = io.StringIO()
+            with patch.multiple(collector, CONTROL=root / "control.json", REQUEST=root / "request.json"), \
+                    contextlib.redirect_stdout(stdout):
+                collector.prepared()
+            self.assertEqual(json.loads(stdout.getvalue()), {"digest": "d", "started_at": first["started_at"]})

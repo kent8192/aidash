@@ -826,6 +826,13 @@ class Runner:
                     self.exec_collector(operation, ["cancel"])
                 if "terminated" in execution:
                     terminal = execution["terminated"]
+                    if current.get("started_at") is None and "running" in collector:
+                        # The controller stopped after hydrate published the
+                        # command but before it journaled the start, and the
+                        # command ended meanwhile: the collector kept the stamp.
+                        stamp = json.loads(self.exec_collector(operation, ["prepared"]).stdout).get("started_at")
+                        if stamp is not None:
+                            current = self.update(operation, started_at=stamp)
                     # A Check is charged until its command stopped, not until
                     # its output and files were harvested below.
                     self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"],

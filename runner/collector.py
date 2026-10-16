@@ -212,6 +212,15 @@ def logs(limit):
                       "deadline_expired": EXPIRED.exists()}))
 
 
+def prepared():
+    """The published request's digest and the start stamped with it, read
+    only: a controller that restarts after the command ended still learns
+    when it started."""
+    state = json.loads(CONTROL.read_bytes()) if CONTROL.exists() else {}
+    print(json.dumps({"digest": json.loads(REQUEST.read_bytes())["digest"] if REQUEST.exists() else None,
+                      "started_at": state.get("started_at")}))
+
+
 def expire_if_running():
     """Record an expired deadline once it has passed while the command's output
     stream is still open, whether or not a liveness probe arrived after it. The
@@ -282,7 +291,7 @@ if __name__ == "__main__":
     elif mode == "read":
         read_output()
     elif mode == "prepared":
-        print(json.dumps({"digest": json.loads(REQUEST.read_bytes())["digest"] if REQUEST.exists() else None}))
+        prepared()
     elif mode == "cancel":
         save(CONTROL, {"cancelled": True, "deadline": 0})
     elif mode == "logs":

@@ -586,20 +586,26 @@ impl completion::CompletionChecks for Environment<'_> {
 		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
 		let store = &self.federation.store;
 		// The Check's own timeout, or what an omitted shell argument gets:
-		// the shell Binding's ceiling, else the node default. Never longer
-		// than the Run's remaining verification time.
+		// the shell Binding's ceiling, else the node default. One above the
+		// ceiling reaches the Binding's narrowing as declared, which refuses
+		// it; an admitted one is never longer than the Run's remaining
+		// verification time.
 		let ceiling = run
 			.context
 			.binding_snapshot
 			.as_deref()
 			.and_then(|snapshot| snapshot.operation(aidash_domain::completion::SHELL).ok())
 			.and_then(|binding| binding.narrow.limits.get("timeout_seconds").copied());
-		let timeout_seconds = aidash_domain::completion::check_timeout(
+		let declared = aidash_domain::completion::check_timeout(
 			request.timeout_seconds,
 			ceiling,
 			store.capabilities.0.operation_seconds,
-		)
-		.min(request.remaining_seconds);
+		);
+		let timeout_seconds = if ceiling.is_some_and(|ceiling| declared > ceiling) {
+			declared
+		} else {
+			declared.min(request.remaining_seconds)
+		};
 		let input = serde_json::json!({
 			"idempotency_key": request.key,
 			"command": request.command,
