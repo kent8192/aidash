@@ -517,9 +517,9 @@ impl Store {
 					Alias::new("owner_subject"),
 				])
 				.values_panic([
-					SimpleExpr::from(Expr::value(workspace)),
-					SimpleExpr::from(Expr::value(tenant)),
-					SimpleExpr::from(Expr::value(owner)),
+					Expr::value(workspace),
+					Expr::value(tenant),
+					Expr::value(owner),
 				])
 				.to_string(PostgresQueryBuilder),
 		)

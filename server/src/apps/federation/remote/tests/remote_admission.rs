@@ -135,6 +135,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		first, second,
 		"duplicate delivery must return the same local binding"
 	);
+	let source_task = a.store.task(task).await.unwrap();
 	let receipt = first.1;
 	assert_eq!(receipt["task_id"], task.to_string());
 	let verification = format!("{admit}/{}/verify", receipt["id"].as_str().unwrap());
