@@ -1,4 +1,4 @@
-<!-- Thank you for contributing to aidash! Please fill out the information below. -->
+<!-- External code contributions are not accepted until the licensing in #124 takes effect (see the License section of README.md). Please open an Issue instead. Maintainers: fill out the information below. -->
 
 ## Summary
 

@@ -787,7 +787,7 @@ impl ResearchOriginal {
 		let (sql, values) = Query::select()
 			.expr_as(
 				Func::coalesce(vec![
-					Func::sum(Expr::cust("octet_length(bytes)").into()).into(),
+					Func::sum(Expr::cust("octet_length(bytes)").into()),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("held"),

@@ -5,9 +5,9 @@
 // Run, so it outlives the Run, and holds no source content.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0025_research_retention", "execution")
+	Migration::new("0027_research_retention", "execution")
         .database_only(true)
-        .add_dependency("execution", "0024_estimate_calibration_state")
+        .add_dependency("execution", "0026_decision_evidence_model_state")
         .add_operation(Operation::AddColumn {
             table: "research_snapshots".into(),
             column: ColumnDefinition::new("purged_at", FieldType::TimestampTz),

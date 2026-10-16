@@ -6,9 +6,9 @@
 // Evidence Revocation, and with its Run.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0027_research_originals", "execution")
+	Migration::new("0029_research_originals", "execution")
         .database_only(true)
-        .add_dependency("execution", "0026_research_retention_state")
+        .add_dependency("execution", "0028_research_retention_state")
         .add_operation(Operation::AddColumn {
             table: "research_snapshots".into(),
             column: ColumnDefinition::new("page_count", FieldType::Integer),

@@ -158,6 +158,10 @@ name = "research_pdf"
 path = "src/apps/execution/tests/research_pdf.rs"
 
 [[test]]
+name = "decision_journal"
+path = "src/apps/execution/tests/decision_journal.rs"
+
+[[test]]
 name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
