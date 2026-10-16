@@ -1,7 +1,10 @@
 //! Queries preserve ordering, bounds, typed decoding and the caller's transaction.
 use super::Reads;
 use crate::Result as NativeResult;
-use aidash_application::{Result, ports::authorization::projection::WorkspaceProjection};
+use aidash_application::{
+	Result,
+	ports::authorization::{projection::WorkspaceProjection, visibility::RunVerdicts},
+};
 use aidash_domain::{
 	Artifact, Event, Message, Task, Workspace, WorkspaceSnapshot, policy::Resource,
 	provider::progress::MARKER_PREFIX,
@@ -90,8 +93,8 @@ impl WorkspaceProjection for Reads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn event_visible(&mut self, row: &Event) -> Result<bool> {
-		Box::pin(self.access.event_visible(row))
+	async fn event_visible(&mut self, row: &Event, runs: &mut RunVerdicts) -> Result<bool> {
+		Box::pin(self.access.event_visible_in(row, runs))
 			.await
 			.map_err(Into::into)
 	}
