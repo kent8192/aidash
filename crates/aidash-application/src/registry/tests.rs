@@ -1,5 +1,5 @@
 use super::*;
-use crate::ports::{Credentials, registry::*};
+use crate::ports::registry::*;
 use aidash_domain::{
 	model::ModelConfig,
 	registry::{
@@ -11,22 +11,12 @@ use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::{
 	collections::{BTreeMap, BTreeSet},
-	sync::{Arc, Mutex},
+	sync::Arc,
 };
 
 mod memory;
 mod projection;
 
-#[derive(Default)]
-struct Secrets(Mutex<Vec<String>>);
-impl Credentials for Secrets {
-	fn resolve(&self, reference: &str) -> Result<String> {
-		self.0.lock().unwrap().push(reference.into());
-		Err(Error::Invalid(format!(
-			"credential reference {reference} is not configured"
-		)))
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(
@@ -38,7 +28,7 @@ impl CoreToolCatalog for CoreContracts {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(Secrets::default()), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 fn validate(entry: &Entry) -> Result<()> {
 	validation().validate_in(entry, true)
@@ -262,9 +252,28 @@ async fn discovery_exclusions_are_counted_before_decoding_metadata() {
 #[rstest]
 #[case::remote(false)]
 #[case::local(true)]
-fn embedding_validation_never_resolves_environment_credentials(#[case] local: bool) {
-	let secrets = Arc::new(Secrets::default());
-	let validation = DefinitionValidation::new(secrets.clone(), Arc::new(CoreContracts));
+fn tool_registration_rejects_a_deployment_secret(
+	validation: DefinitionValidation,
+	#[case] local: bool,
+) {
+	for name in [json!("AIDASH_SECRET_BRAVE_SEARCH"), json!(null)] {
+		let mut tool = crate::test_support::http_tool("aidash://local", "tool", "lookup");
+		tool.config["transport"]["credential_env"] = name;
+		let error = validation.validate_in(&tool, local).unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("cannot name a Deployment secret"),
+			"{error}"
+		);
+	}
+}
+
+#[rstest]
+#[case::remote(false)]
+#[case::local(true)]
+fn embedding_validation_needs_no_environment_credentials(#[case] local: bool) {
+	let validation = DefinitionValidation::new(Arc::new(CoreContracts));
 	let embedding = definition(
 		"embedding",
 		"embedding",
@@ -272,7 +281,6 @@ fn embedding_validation_never_resolves_environment_credentials(#[case] local: bo
 	);
 	// ADR 0006: embeddings name a Provider Catalog entry or no key at all.
 	assert!(validation.validate_in(&embedding, local).is_ok());
-	assert!(secrets.0.lock().unwrap().is_empty());
 }
 
 #[rstest]

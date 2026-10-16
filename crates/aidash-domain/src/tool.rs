@@ -31,14 +31,14 @@ pub enum ToolConfig {
 		#[serde(default)]
 		allowed_hosts: Vec<String>,
 	},
+	/// Tool transports never carry a Deployment secret; a Tenant's tools will
+	/// authenticate with Tenant Secrets instead (#296).
 	Http {
 		endpoint: String,
-		credential_env: Option<String>,
 		replay: String,
 	},
 	Mcp {
 		endpoint: String,
-		credential_env: Option<String>,
 		tool_name: String,
 		replay: String,
 		idempotency_argument: Option<String>,

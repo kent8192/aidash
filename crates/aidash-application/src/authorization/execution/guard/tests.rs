@@ -59,7 +59,7 @@ fn scope() -> Scope {
 	let tool = crate::test_support::entry(
 		"tool",
 		"tool",
-		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe","credential_env":null}}),
+		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe"}}),
 	);
 	Scope {
 		visible: true,
