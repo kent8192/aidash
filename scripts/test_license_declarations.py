@@ -44,9 +44,13 @@ REQUIRED = {
         "adapted": ("src/adapted.rs",),
     },
 }
+README_TEXT = (ROOT / "README.md").read_text()
+# The interim License section, as this repository's README carries it.
+README_LICENSE = README_TEXT[README_TEXT.index("## License"):]
 # The smallest repository that the guard accepts.
 ACCEPTED = {
     "LICENSE": (ROOT / "LICENSE").read_text(),
+    "README.md": "# Fixture\n\nIntroduction.\n\n" + README_LICENSE,
     "THIRD_PARTY_NOTICES.md": NOTICES,
     "third_party/upstream/LICENSE": UPSTREAM_NOTICE,
     "src/adapted.rs": "fn adapted() {}\n",
@@ -56,6 +60,9 @@ ACCEPTED = {
     "web/package.json": '{"name": "web", "private": true}\n',
     "web/package-lock.json": '{"packages": {"node_modules/x": {"license": "MIT"}}}\n',
     "web/src/license-screen.tsx": "export {};\n",
+    "web/src/LICENSE-screen.tsx": "export {};\n",
+    "tools/COPYING-tools.py": "pass\n",
+    "infra/setup.py": "def setup(name):\n    return name\n\nsetup(name='tool')\n",
     "desktop/src-tauri/tauri.conf.json": '{"bundle": {"active": true}}\n',
     "runner/pyproject.toml": '[project]\nname = "runner"\nclassifiers = ["Programming Language :: Python"]\n',
     "tools/setup.cfg": "[metadata]\nname = tools\n",
@@ -193,6 +200,23 @@ REJECTED = {
         {"runner/pyproject.toml": '[tool.poetry]\nname = "runner"\nlicense = "MIT"\n'},
         "runner/pyproject.toml: [tool.poetry] declares license",
     ),
+    "a setup.py license": (
+        {"infra/setup.py": "from setuptools import setup\nsetup(name='tool', license='MIT')\n"},
+        "infra/setup.py: setup() declares license",
+    ),
+    "a setup.py License classifier": (
+        {"infra/setup.py":
+            "import setuptools\nsetuptools.setup(name='tool', classifiers=['License :: OSI Approved :: MIT License'])\n"},
+        "infra/setup.py: setup() declares a License classifier",
+    ),
+    "a README license grant": (
+        {"README.md": "# Fixture\n\n## License\n\nAidash is licensed under the MIT License.\n"},
+        "README.md: the License section differs from the interim wording; licensing changes belong to #255",
+    ),
+    "an uppercase license qualifier": (
+        {"docs/LICENSE.APACHE": "Apache License\n"},
+        "docs/LICENSE.APACHE: license files belong only in the root LICENSE or a pinned third-party notice",
+    ),
     "a setuptools license": (
         {"tools/setup.cfg": "[metadata]\nname = tools\nlicense_files = LICENSE\n"},
         "tools/setup.cfg: [metadata] declares license_files",
@@ -218,6 +242,11 @@ REJECTED = {
         {"THIRD_PARTY_NOTICES.md": NOTICES.replace("- `src/adapted.rs`: adapted code (lineage)\n", "")
             + "\n## Elsewhere\n\n- `src/adapted.rs`: adapted code (lineage)\n"},
         "THIRD_PARTY_NOTICES.md does not list src/adapted.rs under Upstream, adapted from upstream",
+    ),
+    "an original file listed as adapted": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES + "- `src/original.rs`: not adapted at all\n",
+         "src/original.rs": "fn original() {}\n"},
+        "THIRD_PARTY_NOTICES.md lists src/original.rs under Upstream, which the pinned inventory does not name",
     ),
     "a missing project section": (
         {"THIRD_PARTY_NOTICES.md": NOTICES.replace("## Upstream", "## Renamed")},
@@ -272,7 +301,7 @@ class LicenseDeclarationTests(unittest.TestCase):
         # A Windows checkout with core.autocrlf converts the notices to CRLF.
         crlf = {
             path: ACCEPTED[path].replace("\n", "\r\n")
-            for path in ("LICENSE", "third_party/upstream/LICENSE")
+            for path in ("LICENSE", "README.md", "third_party/upstream/LICENSE")
         }
         self.assertEqual(errors_for(crlf), [])
 

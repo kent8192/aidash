@@ -5,6 +5,7 @@ A license grant cannot be revoked once it is pushed. Until #255 replaces this
 guard with the full licensing checks, the interim notice reserves all rights
 and only the allowlisted package may declare a license.
 """
+import ast
 import configparser
 import hashlib
 import json
@@ -19,6 +20,10 @@ ALLOWED_CARGO_LICENSES = {"crates/aidash-capability/Cargo.toml": "Apache-2.0"}
 # SHA-256 of the interim notice, hashed with CRLF read as LF so that a Windows
 # checkout hashes the same text. Changing it is a licensing decision.
 ROOT_LICENSE_SHA256 = "72fc11963fe4eb1f463f5da9ee62162e28fc12c37d95c1da42311abfa778510d"
+# SHA-256 of the README's License section, from its heading to the next
+# section, hashed like the notices. It is the repository's primary licensing
+# text, so changing it is a licensing decision too.
+README_LICENSE_SHA256 = "ec9f495abc237cd41bb94bbc6ca2da2c101d0a733a559d5e8dad382839fdc1c4"
 THIRD_PARTY = "third_party"
 NOTICES = "THIRD_PARTY_NOTICES.md"
 # Every project whose adapted material Aidash carries: the notices section that
@@ -69,15 +74,20 @@ REQUIRED_NOTICES = {
 SPDX_MARKER = ("SPDX-" + "License-Identifier").encode()
 OCI_MARKER = ("org.opencontainers.image." + "licenses").encode()
 # LICENSE-MIT, License-MIT, MIT-LICENSE, UNLICENSE, COPYING.LESSER or license.md,
-# but not license-screen.tsx or license.rs: in any case, one dash or underscore
-# prefix or suffix, then only a document extension.
+# but not license-screen.tsx, LICENSE-screen.tsx or license.rs: in any case, one
+# dash or underscore prefix or suffix, then only a document extension.
 LICENSE_NAME = re.compile(
-    r"^(LICEN[CS]E|COPYING)"
-    r"|^(?i:([^.]+[-_])?(un)?licen[cs]e|copying)([-_][^.]+)?(\.(?i:md|txt|rst))?$"
+    r"^(?i:([^.]+[-_])?(un)?licen[cs]e|copying)([-_][^.]+)?"
+    # A document extension in any case, or an uppercase qualifier such as
+    # COPYING.LESSER or LICENSE.APACHE; never a source extension.
+    r"(\.((?i:md|txt|rst)|[A-Z][A-Z0-9-]*))?$"
 )
 # A REUSE-style directory of license texts, such as LICENSES/MIT.txt.
 LICENSE_DIRECTORY = "licenses"
 PYTHON_MANIFESTS = ("pyproject.toml", "setup.cfg")
+SETUP_LICENSE_KEYWORDS = ("license", "license_file", "license_files", "license_expression")
+README = "README.md"
+SECTION = re.compile(r"^## .*$", re.MULTILINE)
 TAURI_CONFIG = re.compile(r"tauri(\..+)?\.conf\.json")
 # A notices list item that starts with a backticked path names a tracked file.
 LISTED_PATH = re.compile(r"^- `([^`]+)`", re.MULTILINE)
@@ -144,6 +154,46 @@ def python_violations(path, text):
     return errors
 
 
+def setup_violations(path, text):
+    """License metadata a setuptools `setup()` call declares in setup.py."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return [f"{path}: cannot be parsed to check its setup() metadata"]
+    errors = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        if name != "setup":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg in SETUP_LICENSE_KEYWORDS:
+                errors.append(f"{path}: setup() declares {keyword.arg}")
+            elif keyword.arg == "classifiers" and any(
+                isinstance(item, ast.Constant) and isinstance(item.value, str)
+                and item.value.strip().startswith("License ::")
+                for item in ast.walk(keyword.value)
+            ):
+                errors.append(f"{path}: setup() declares a License classifier")
+    return errors
+
+
+def readme_violations(root, tracked):
+    """The README's License section must stay the interim wording."""
+    if README not in tracked:
+        return [f"{README} is missing"]
+    text = (root / README).read_bytes().replace(b"\r\n", b"\n").decode()
+    start = re.search(r"^## License[ \t]*$", text, re.MULTILINE)
+    if start is None:
+        return [f"{README} has no License section"]
+    following = SECTION.search(text, start.end())
+    section = text[start.start():following.start() if following else len(text)].rstrip()
+    if hashlib.sha256(section.encode()).hexdigest() != README_LICENSE_SHA256:
+        return [f"{README}: the License section differs from the interim wording; licensing changes belong to #255"]
+    return []
+
+
 def project_violations(root, tracked, sections, project, expected):
     """Check one required project's pinned notice and its notices section."""
     notice = f"{THIRD_PARTY}/{project}/LICENSE"
@@ -167,9 +217,15 @@ def project_violations(root, tracked, sections, project, expected):
         if line not in lines
     ]
     listed = LISTED_PATH.findall(section)
-    return errors + [
+    errors += [
         f"{NOTICES} does not list {path} under {heading}, adapted from {project}"
         for path in expected["adapted"] if path not in listed
+    ]
+    # An extra path would place original Aidash material under the project's
+    # license, so the section names exactly the pinned files.
+    return errors + [
+        f"{NOTICES} lists {path} under {heading}, which the pinned inventory does not name"
+        for path in listed if path not in expected["adapted"]
     ]
 
 
@@ -227,6 +283,8 @@ def violations(root, files, required=REQUIRED_NOTICES):
             errors += json_violations(path, json.loads((root / path).read_text()))
         elif name in PYTHON_MANIFESTS:
             errors += python_violations(path, (root / path).read_text())
+        elif name == "setup.py":
+            errors += setup_violations(path, (root / path).read_text())
         if path in pinned:
             continue
         content = (root / path).read_bytes()
@@ -234,7 +292,7 @@ def violations(root, files, required=REQUIRED_NOTICES):
             errors.append(f"{path}: contains an SPDX license identifier")
         if OCI_MARKER in content:
             errors.append(f"{path}: declares an OCI image license label")
-    return errors + notice_violations(root, files, required)
+    return errors + readme_violations(root, set(files)) + notice_violations(root, files, required)
 
 
 def main(argv):
