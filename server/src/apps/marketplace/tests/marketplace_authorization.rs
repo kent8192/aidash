@@ -874,6 +874,7 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn audience_revocation_and_install_commit_have_a_durable_order(
 	#[future(awt)]
@@ -883,6 +884,9 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
 	let (f, url, schema) = application_fixture.runtime.parts();
+	// Requests released by a barrier can wait on locks or pool connections, so
+	// every later await fails with its name and the database activity (#284).
+	let environment = application_fixture.runtime.environment();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
@@ -944,32 +948,54 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
 		);
 	wait_for_lock(&f, &schema, "%74003201%").await;
-	barrier.commit().await.unwrap();
-	assert_eq!(blocked.await.unwrap().0, 403);
-	assert_eq!(
-		request(
-			&app,
-			&b,
-			"GET",
-			"/api/marketplace/installations",
-			Value::Null
+	let stage = |step: &str| format!("audience revocation (database {schema}): {step}");
+	environment
+		.bounded(
+			stage("commit the revoking distribution barrier"),
+			barrier.commit(),
 		)
 		.await
-		.1,
+		.unwrap();
+	assert_eq!(
+		environment
+			.bounded(stage("finish the blocked install"), blocked)
+			.await
+			.unwrap()
+			.0,
+		403
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("list installations after revocation"),
+				request(
+					&app,
+					&b,
+					"GET",
+					"/api/marketplace/installations",
+					Value::Null
+				)
+			)
+			.await
+			.1,
 		json!([])
 	);
 	// Installation wins: block its final success-event insertion after all
 	// protected reads/writes, then queue a revoker on the distribution lock.
 	assert_eq!(
-		request(
-			&app,
-			&a,
-			"PUT",
-			&audience_path,
-			json!({"expected_revision":3,"tenants":["a","b"]})
-		)
-		.await
-		.0,
+		environment
+			.bounded(
+				stage("restore the audience"),
+				request(
+					&app,
+					&a,
+					"PUT",
+					&audience_path,
+					json!({"expected_revision":3,"tenants":["a","b"]})
+				)
+			)
+			.await
+			.0,
 		200
 	);
 	let mut barrier = f.store.pool.driver().begin().await.unwrap();
@@ -999,38 +1025,61 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		.await
 	});
 	wait_for_lock(&f, &schema, "%74003201%").await;
-	barrier.commit().await.unwrap();
-	let installed = allowed.await.unwrap();
-	assert_eq!(installed.0, 200, "{installed:?}");
-	assert_eq!(revoked.await.unwrap().0, 200);
-	assert_eq!(
-		request(
-			&app,
-			&b,
-			"GET",
-			&format!("/api/marketplace/packages/{key}"),
-			Value::Null
-		)
+	environment
+		.bounded(stage("commit the event barrier"), barrier.commit())
 		.await
-		.0,
+		.unwrap();
+	let installed = environment
+		.bounded(stage("finish the allowed install"), allowed)
+		.await
+		.unwrap();
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(
+		environment
+			.bounded(stage("finish the queued revocation"), revoked)
+			.await
+			.unwrap()
+			.0,
+		200
+	);
+	assert_eq!(
+		environment
+			.bounded(
+				stage("read the revoked package"),
+				request(
+					&app,
+					&b,
+					"GET",
+					&format!("/api/marketplace/packages/{key}"),
+					Value::Null
+				)
+			)
+			.await
+			.0,
 		403
 	);
 	assert_eq!(
-		request(
-			&app,
-			&b,
-			"GET",
-			"/api/marketplace/installations",
-			Value::Null
-		)
-		.await
-		.1
-		.as_array()
-		.unwrap()
-		.len(),
+		environment
+			.bounded(
+				stage("list installations after the install commit"),
+				request(
+					&app,
+					&b,
+					"GET",
+					"/api/marketplace/installations",
+					Value::Null
+				)
+			)
+			.await
+			.1
+			.as_array()
+			.unwrap()
+			.len(),
 		1
 	);
-	common::cleanup(f, &url, &schema).await;
+	environment
+		.bounded(stage("clean up"), common::cleanup(f, &url, &schema))
+		.await;
 }
 
 #[rstest::rstest]
