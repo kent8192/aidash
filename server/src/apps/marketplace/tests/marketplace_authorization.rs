@@ -16,6 +16,9 @@ use uuid::Uuid;
 // Advisory locks are database-wide while the shared test service isolates
 // schemas. Serialize fixtures so intentional barriers cannot block another test
 // holding a different half of the lock order; requests inside each test race.
+// Every test carries the whole-test backstop: besides #284's barrier test,
+// `browse_pages_hidden_versions_before_returning_a_visible_package` hung for 6 h
+// while its fixture resolved, before it took this lock.
 static FIXTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn reference(id: &str) -> EntityRef {
@@ -107,6 +110,7 @@ fn deny(mut value: Value, actions: Value) -> Value {
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("user")]
 #[case("agent")]
 #[case("node")]
@@ -384,6 +388,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	#[future(awt)]
@@ -508,6 +513,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	#[future(awt)]
@@ -618,6 +624,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	#[future(awt)]
@@ -1099,6 +1106,7 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("credential")]
 #[case("policy")]
 #[tokio::test]
@@ -1178,6 +1186,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_reference(
 	#[future(awt)]
@@ -1398,6 +1407,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries(
 	#[future(awt)]
@@ -1509,6 +1519,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_revisions(
 	#[future(awt)]
@@ -1715,6 +1726,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_replay(
 	#[future(awt)]
@@ -1858,6 +1870,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("dependency", false)]
 #[case("dependency", true)]
 #[case("consent", false)]
@@ -2086,6 +2099,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries(
 	#[future(awt)]
@@ -2324,6 +2338,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	#[future(awt)]
@@ -2463,6 +2478,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[case("install", "logout", false)]
 #[case("install", "logout", true)]
 #[case("activation", "logout", false)]
@@ -2859,6 +2875,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	#[future(awt)]
@@ -2957,6 +2974,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	#[future(awt)]
@@ -3019,6 +3037,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn installation_rejects_missing_private_knowledge(
 	#[future(awt)]
@@ -3103,6 +3122,7 @@ async fn installation_rejects_missing_private_knowledge(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn source_and_administration_pages_preserve_candidate_progress(
 	#[future(awt)]
@@ -3188,6 +3208,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn owner_can_reload_and_restore_a_withdrawn_audience(
 	#[future(awt)]
