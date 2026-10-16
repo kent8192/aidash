@@ -120,14 +120,14 @@ export async function startFixture() {
         case "/auth/session":
           return reply(200, {
             id: `session-${server.address().port}`,
-            operator: true,
+            deployment_administrator: true,
             mappings: [],
           });
         case "/auth/registration":
           return reply(200, null);
         case "/api/session":
           return reply(200, {
-            access: { kind: "operator" },
+            access: { kind: "deployment_administrator" },
             node_id: scene.data.node.id,
           });
         case "/api/state":

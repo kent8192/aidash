@@ -13,14 +13,14 @@ async function installSession(
   page: Page,
   options: {
     locale?: "ja-JP" | "en-US";
-    operator?: boolean;
+    deploymentAdministrator?: boolean;
     personalAccount?: boolean;
     mappings?: (typeof personalMapping)[];
     selected?: string;
   } = {},
 ) {
   await setup(page, {
-    subject: !options.operator,
+    subject: !options.deploymentAdministrator,
     locale: options.locale,
     dashboardContext: options.selected ?? null,
   });
@@ -31,7 +31,7 @@ async function installSession(
     route.fulfill({
       json: {
         id: "fixture-browser-session",
-        operator: options.operator ?? false,
+        deployment_administrator: options.deploymentAdministrator ?? false,
         personal_account: options.personalAccount ?? true,
         mappings: options.mappings ?? [personalMapping],
       },
@@ -106,7 +106,9 @@ for (const locale of ["ja-JP", "en-US"] as const) {
     expect(selected).toContain("mapping:personal-mapping");
     expect(requests).toBe(0);
     await account.click();
-    await expect(page.locator("option[value=operator]")).toHaveCount(0);
+    await expect(
+      page.locator("option[value=deployment_administrator]"),
+    ).toHaveCount(0);
     await page
       .getByRole("button", {
         name: ja
@@ -138,12 +140,16 @@ for (const locale of ["ja-JP", "en-US"] as const) {
   });
 }
 
-for (const selected of ["mapping:shared-mapping", "operator", null]) {
-  test(`personal onboarding ${selected ? `preserves explicitly selected ${selected}` : "defaults to personal access with an Operator grant"}`, async ({
+for (const selected of [
+  "mapping:shared-mapping",
+  "deployment_administrator",
+  null,
+]) {
+  test(`personal onboarding ${selected ? `preserves explicitly selected ${selected}` : "defaults to personal access with a Deployment Administrator grant"}`, async ({
     page,
   }) => {
     await installSession(page, {
-      operator: true,
+      deployment_administrator: true,
       selected: selected ?? undefined,
       mappings: [
         personalMapping,
@@ -218,7 +224,7 @@ test("legacy mappings still require an explicit authority choice", async ({
     page.getByRole("button", { name: "acme / alice", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "operator", exact: true }),
+    page.getByRole("button", { name: "Deployment Administrator", exact: true }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "acme / alice", exact: true }).click();
   await page
@@ -236,7 +242,7 @@ test("a revoked personal credential is not selected automatically", async ({
   page,
 }) => {
   await installSession(page, {
-    operator: true,
+    deployment_administrator: true,
     mappings: [
       { ...personalMapping, credential_active: false },
       {
@@ -275,7 +281,7 @@ test("a saved personal selection with an inactive credential returns to the choo
   page,
 }) => {
   await installSession(page, {
-    operator: true,
+    deployment_administrator: true,
     selected: "mapping:personal-mapping",
     mappings: [
       { ...personalMapping, credential_active: false },
@@ -300,11 +306,13 @@ test("a saved personal selection with an inactive credential returns to the choo
     }),
   ).toBeVisible();
   expect(selected).toEqual([]);
-  await page.getByRole("button", { name: "operator", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Deployment Administrator", exact: true })
+    .click();
   await expect(
     page.getByRole("button", { name: "Account settings", exact: true }),
   ).toBeVisible();
-  expect(selected).toContain("operator");
+  expect(selected).toContain("deployment_administrator");
   expect(selected).not.toContain("mapping:personal-mapping");
 });
 

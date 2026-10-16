@@ -67,8 +67,9 @@ export function DashboardIdentityAdministration() {
       apiFetch<Mapping[]>(`/api/dashboard/mappings?offset=${mappingOffset}`),
   });
   const grants = useQuery({
-    queryKey: ["dashboard-operator-grants"],
-    queryFn: () => apiFetch<Grant[]>("/api/dashboard/operator-grants"),
+    queryKey: ["dashboard-deployment-administrator-grants"],
+    queryFn: () =>
+      apiFetch<Grant[]>("/api/dashboard/deployment-administrator-grants"),
   });
   const identity = (id: string) =>
     identities.data?.find((item) => item.id === id);
@@ -82,12 +83,12 @@ export function DashboardIdentityAdministration() {
       await client.invalidateQueries({ queryKey: ["dashboard-identities"] });
       await client.invalidateQueries({ queryKey: ["dashboard-mappings"] });
       await client.invalidateQueries({
-        queryKey: ["dashboard-operator-grants"],
+        queryKey: ["dashboard-deployment-administrator-grants"],
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       await client.invalidateQueries({
-        queryKey: ["dashboard-operator-grants"],
+        queryKey: ["dashboard-deployment-administrator-grants"],
       });
     } finally {
       setBusy(false);
@@ -100,8 +101,8 @@ export function DashboardIdentityAdministration() {
     <Panel title={english ? "Dashboard identities" : "ダッシュボード ID"}>
       <Hint>
         {english
-          ? "Approve a verified identity only for an existing user subject. Operator access is separate."
-          : "確認済みの外部 ID を既存の user subject に紐づけます。operator 権限は別に設定します。"}
+          ? "Approve a verified identity only for an existing user subject. Deployment Administrator access is separate."
+          : "確認済みの外部 ID を既存の user subject に紐づけます。デプロイメント管理者権限は別に設定します。"}
       </Hint>
       {error && <Alert>{error}</Alert>}
       <ul className="divide-y divide-border">
@@ -242,7 +243,11 @@ export function DashboardIdentityAdministration() {
           go: () => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE),
         }}
       />
-      <h3 className={group}>{english ? "Operator grants" : "operator 権限"}</h3>
+      <h3 className={group}>
+        {english
+          ? "Deployment Administrator grants"
+          : "デプロイメント管理者権限"}
+      </h3>
       <ul className="divide-y divide-border border-y border-border">
         {(identities.data ?? []).map((item) => {
           const grant = grants.data?.find(
@@ -329,7 +334,7 @@ export function DashboardIdentityAdministration() {
                 onClick={() => {
                   void act(() =>
                     authenticatedFetch(
-                      `/api/dashboard/identities/${item.id}/operator-grant`,
+                      `/api/dashboard/identities/${item.id}/deployment-administrator-grant`,
                       {
                         method: "POST",
                         headers: { "content-type": "application/json" },
@@ -344,11 +349,11 @@ export function DashboardIdentityAdministration() {
               >
                 {enabled
                   ? english
-                    ? "Revoke operator"
-                    : "operator 権限を解除"
+                    ? "Revoke Deployment Administrator"
+                    : "デプロイメント管理者権限を解除"
                   : english
-                    ? "Grant operator"
-                    : "operator 権限を付与"}
+                    ? "Grant Deployment Administrator"
+                    : "デプロイメント管理者権限を付与"}
               </Button>
             </li>
           );

@@ -438,7 +438,7 @@ export function MemoryWorkspace({
         )}
       </Hint>
       <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {data.access.kind === "operator" && (
+        {data.access.kind === "deployment_administrator" && (
           <Field label={text("Tenant", "テナント")}>
             <Input
               className="font-mono"

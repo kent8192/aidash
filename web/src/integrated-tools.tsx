@@ -103,12 +103,12 @@ export function CreatorTools({
 }
 export function TrustTools({
   entries,
-  operator,
+  deploymentAdministrator,
   tenant,
   initiallyOpen,
 }: {
   entries: State["registry"];
-  operator: boolean;
+  deploymentAdministrator: boolean;
   /** The selected Mapping's Tenant, whose Tenant Administrators manage it here. */
   tenant: string | null;
   initiallyOpen: boolean;
@@ -127,7 +127,7 @@ export function TrustTools({
       }
       initiallyOpen={initiallyOpen}
     >
-      {operator ? (
+      {deploymentAdministrator ? (
         <Suspense fallback={loading}>
           <DashboardIdentityAdministration />
           <AuthorizationPage entries={entries} />
@@ -151,7 +151,7 @@ export function ConversationTools({
   data,
   stateError,
   nodeId,
-  operator,
+  deploymentAdministrator,
   workspace,
   close,
 }: {
@@ -159,7 +159,7 @@ export function ConversationTools({
   data?: State;
   stateError?: string;
   nodeId: string;
-  operator: boolean;
+  deploymentAdministrator: boolean;
   workspace?: string;
   close: () => void;
 }) {
@@ -204,7 +204,7 @@ export function ConversationTools({
               <RequestFiles workspace={workspace} />
             )}
             {view === "files" &&
-              (operator ? (
+              (deploymentAdministrator ? (
                 <Hint role="status">
                   {ja
                     ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
@@ -216,7 +216,10 @@ export function ConversationTools({
             {view === "progress" && (
               <>
                 {stateError && <Alert>{stateError}</Alert>}
-                <TransactionsPage nodeId={nodeId} operator={operator} />
+                <TransactionsPage
+                  nodeId={nodeId}
+                  deploymentAdministrator={deploymentAdministrator}
+                />
               </>
             )}
           </Suspense>
