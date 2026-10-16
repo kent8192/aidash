@@ -542,6 +542,12 @@ export function TenantIdentityAdministration({
     return <>{fallback}</>;
   if (!overview.data) return null;
   const assignable = overview.data.assignable_groups;
+  // An Invitation's proposal can name a group that is no longer assignable;
+  // such a group is neither shown nor submitted with the approval.
+  const chosen = (request: { id: string; proposed_groups: string[] }) =>
+    (groups[request.id] ?? request.proposed_groups).filter((group) =>
+      assignable.includes(group),
+    );
   const revision = overview.data.policy_revision;
   const row = "flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5";
   const heading = "text-[11px] font-medium text-faint";
@@ -616,7 +622,7 @@ export function TenantIdentityAdministration({
                       </label>
                       <GroupChoice
                         groups={assignable}
-                        selected={groups[request.id] ?? request.proposed_groups}
+                        selected={chosen(request)}
                         disabled={busy}
                         change={(next) =>
                           setGroups({ ...groups, [request.id]: next })
@@ -638,9 +644,7 @@ export function TenantIdentityAdministration({
                                 headers: { "content-type": "application/json" },
                                 body: JSON.stringify({
                                   subject: subjects[request.id],
-                                  groups:
-                                    groups[request.id] ??
-                                    request.proposed_groups,
+                                  groups: chosen(request),
                                 }),
                               },
                             ),
