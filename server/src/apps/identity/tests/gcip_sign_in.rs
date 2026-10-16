@@ -767,6 +767,19 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 	);
 	let view: Value = get_identity().send().await.unwrap().json().await.unwrap();
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	// A Deployment Administrator's rejection still records the Tenant the
+	// Binding addressed the request to.
+	let rejected_for: Option<String> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("dashboard_administration_history"))
+			.and_where(Expr::cust("action = 'registration.reject'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(rejected_for.as_deref(), Some("acme"));
 	let force_stale = Query::update()
 		.table(Alias::new("dashboard_identities"))
 		.value_expr(
@@ -952,6 +965,67 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 			.status(),
 		401
 	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenant(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	let submit = async |app: &common::TestApplication, cookie: &str, csrf: &str| -> Value {
+		let response = browser()
+			.post(app.url("/auth/registration"))
+			.header("cookie", cookie)
+			.header("origin", "http://127.0.0.1:8080")
+			.header("x-aidash-csrf", csrf)
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 200);
+		response.json().await.unwrap()
+	};
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let first = submit(&app, &cookie, &csrf).await;
+	assert_eq!(first["tenant"], "acme");
+	// The pool moves to another Tenant while the request is pending.
+	common::tenant_root(&f, "third").await;
+	f.config
+		.gcip
+		.as_mut()
+		.unwrap()
+		.tenant_bindings
+		.insert("pool-a".into(), "third".into());
+	f.store = f
+		.store
+		.clone()
+		.with_dashboard_policy(f.config.dashboard_policy());
+	let moved = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&moved, "third", "pool-a", "Person").await;
+	let second = submit(&moved, &cookie, &csrf).await;
+	assert_ne!(second["id"], first["id"]);
+	assert_eq!(second["tenant"], "third");
+	assert_eq!(second["status"], "pending");
+	let ended: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("status"))
+			.from(Alias::new("dashboard_registration_requests"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(
+				uuid::Uuid::parse_str(first["id"].as_str().unwrap()).unwrap(),
+			)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(ended, "expired");
 	common::cleanup(f, &url, &schema).await;
 }
 

@@ -190,7 +190,19 @@ impl DashboardRegistrationRequest {
 				.await?;
 			// A replacement request retains the latest authenticated display
 			// attributes. Expiry without resubmission is erased by the sweeper.
-			if let Some(previous) = Self::latest(tx, identity).await? {
+			let previous = Self::latest(tx, identity).await?;
+			if let Some(previous) = &previous
+				&& previous.status == "pending"
+				&& previous.tenant != tenant
+			{
+				// A pending request addressed elsewhere, as when the identity's
+				// GCIP pool was bound to another Tenant since, can no longer be
+				// approved: it ends, and a request to the current address opens.
+				Self::objects()
+					.filter(Self::field_id().eq(previous.id))
+					.update_fields_with_conn(tx, [(Self::field_status(), "expired".to_owned())])
+					.await?;
+			} else if let Some(previous) = previous {
 				// A Personal Tenant's owner keeps that authority while requesting
 				// additional shared membership. Each approval remains immutable and
 				// a new request still requires an explicit approval.
@@ -592,7 +604,11 @@ impl DashboardRegistrationRequest {
 						identity: Some(row.identity_id()),
 						registration: Some(id),
 						mapping: None,
-						tenant: administrator.map(TenantAdministrator::tenant),
+						// A Deployment Administrator's rejection still names the
+						// Tenant an addressed request was for.
+						tenant: administrator
+							.map(TenantAdministrator::tenant)
+							.or(row.tenant.as_deref()),
 						subject: None,
 						invitation: row.invitation_id,
 					},
