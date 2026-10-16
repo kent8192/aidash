@@ -84,9 +84,12 @@ async fn recover(execute: bool) -> Result<Counts> {
 		}
 	}
 	let counts = Counts {
+		// A Tenant counts once, whether a Provider Credential, a Plan
+		// Connection or both lost their key there.
 		affected_tenants: affected
 			.iter()
-			.map(|row| &row.tenant)
+			.map(|row| row.tenant.as_str())
+			.chain(plans.iter().map(|(_, tenant)| tenant.as_str()))
 			.collect::<BTreeSet<_>>()
 			.len(),
 		affected_provider_credentials: affected.len(),
@@ -128,7 +131,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 				aidash_integrations::semantic::client()?,
 			)),
 		};
-		for id in plans {
+		for (id, _) in plans {
 			plan_service
 				.mark_unreadable(id, "provider-credential-store-recovery")
 				.await?;
@@ -144,7 +147,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 async fn unreadable_plan_connections(
 	pool: &crate::database::native::Pool,
 	lost_pins: &BTreeSet<String>,
-) -> Result<Vec<uuid::Uuid>> {
+) -> Result<Vec<(uuid::Uuid, String)>> {
 	use reinhardt::db::orm::{QueryRow, execution::convert_values};
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -154,7 +157,11 @@ async fn unreadable_plan_connections(
 	loop {
 		let mut query = Query::select();
 		query
-			.columns([Alias::new("id"), Alias::new("pinned_version")])
+			.columns([
+				Alias::new("id"),
+				Alias::new("tenant"),
+				Alias::new("pinned_version"),
+			])
 			.from(Alias::new("plan_connections"))
 			.and_where(Expr::col(Alias::new("pinned_version")).is_not_null())
 			.order_by(Alias::new("id"), Order::Asc)
@@ -174,15 +181,23 @@ async fn unreadable_plan_connections(
 					.as_str()
 					.and_then(|id| id.parse::<uuid::Uuid>().ok())
 					.ok_or_else(|| Error::Invalid("unreadable Plan Connection id".into()))?;
-				Ok((id, data["pinned_version"].as_str().map(str::to_owned)))
+				let tenant = data["tenant"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("unreadable Plan Connection Tenant".into()))?
+					.to_owned();
+				Ok((
+					id,
+					tenant,
+					data["pinned_version"].as_str().map(str::to_owned),
+				))
 			})
 			.collect::<Result<Vec<_>>>()?;
-		after = page.last().map(|(id, _)| *id);
+		after = page.last().map(|(id, _, _)| *id);
 		let complete = page.len() < RECONCILIATION_BATCH_SIZE;
 		found.extend(
 			page.into_iter()
-				.filter(|(_, pin)| pin.as_ref().is_some_and(|pin| lost_pins.contains(pin)))
-				.map(|(id, _)| id),
+				.filter(|(_, _, pin)| pin.as_ref().is_some_and(|pin| lost_pins.contains(pin)))
+				.map(|(id, tenant, _)| (id, tenant)),
 		);
 		if complete {
 			return Ok(found);
