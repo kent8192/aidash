@@ -447,7 +447,8 @@ fn journey_router(
 .route("/effect", http::Method::POST, reply(move |request: reinhardt::Request| {let headers = request.headers.clone();let _body = request.json::<Value>().unwrap();
 		let counter = counter.clone();
 		async move {
-			assert_eq!(headers.get("authorization").unwrap(), &format!("Bearer {}", std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()));
+			// A Tool never forwards a Deployment secret such as the Peer Credential (#296).
+			assert!(headers.get("authorization").is_none());
 			counter.fetch_add(1, Ordering::SeqCst);
 			reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
 		}
@@ -460,7 +461,6 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		let mut c = core.await;
 		let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
 		tool.version = "1.1.0".into();
-		tool.config["transport"]["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
 		let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
 		agent.binding_normalization = None;

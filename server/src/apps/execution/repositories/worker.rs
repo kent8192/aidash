@@ -267,6 +267,9 @@ impl FailureScope for Failure {
 /// Keep backend codes and native failure identity out of the application use case.
 pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 	match error {
+		// A local embedding or vector outage is typed `Unavailable` where it
+		// occurs, so it retries and pauses like a Home one. `SemanticUnavailable`
+		// also reports invariant and allowance violations, which never retry.
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
 		// The harness owns bounded compact-and-retry; an overflow that escapes

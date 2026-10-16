@@ -256,11 +256,12 @@ Tools are immutable Registry descriptors with provider-owned behavior and a JSON
   "transport": {
     "transport": "http",
     "endpoint": "https://tools.example.com/research",
-    "credential_env": "AIDASH_SECRET_TOOLS",
     "replay": "unsafe"
   }
 }
 ```
+
+HTTP and MCP tool transports never name a Deployment secret: `credential_env` is rejected on registration, import and installation, and a stored Tool that still carries it is refused when it runs (#296). Tenant-owned secrets for tools are planned in the same Issue.
 
 Bind its exact registered identity in the Agent configuration:
 
@@ -378,7 +379,7 @@ Run `scripts/test-rust.sh --partition identity` for one partition, or `python3 s
 
 Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 281 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
 
-Third-party attribution for the adapted context compaction code is in [LICENSE](LICENSE).
+Third-party attribution for adapted code is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 HTTP request logging, admission limits, SSE capacity, and the optional Prometheus
 listener are documented in [HTTP protection and observability](docs/operations/http-observability.md).
@@ -386,3 +387,7 @@ listener are documented in [HTTP protection and observability](docs/operations/h
 ## Desktop client
 
 The [Tauri 2 desktop client](desktop/README.md) bundles the shared dashboard and connects to an existing local or remote Aidash server. It supports external-browser Google sign-in and persistent OS-protected credentials.
+
+## License
+
+The licensing of Aidash is being prepared in [#124](https://github.com/kent8192/aidash/issues/124). Until it takes effect, the [interim notice](LICENSE) reserves all rights in original Aidash material, except `aidash-capability` (Apache-2.0). Third-party material keeps its own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). External code contributions are not accepted until then, and issues are welcome.

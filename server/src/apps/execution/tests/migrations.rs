@@ -28,12 +28,15 @@ use std::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// Issue #243's migrations. Historical rollback tests run on the history before
-/// them, because reversing an earlier migration from the current head would
-/// reach objects those migrations removed or replaced.
+/// Issue #243's migrations and the registry migrations that depend on them.
+/// Historical rollback tests run on the history before them, because reversing
+/// an earlier migration from the current head would reach objects those
+/// migrations removed or replaced. A later registry migration left out of this
+/// list loses its dependency in that history and can run before registry/0001.
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0026_remove_legacy_installations"),
 	("registry", "0027_remove_legacy_installations_state"),
+	("registry", "0028_tool_transport_secrets"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -84,7 +87,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		27
+		28
 	);
 	let tables = migrations
 		.iter()
@@ -299,14 +302,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0025_policy_probe")
+		.get_migration("execution", "0027_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0024_estimate_calibration_state".to_owned()
+			"0026_decision_evidence_model_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -576,7 +579,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		27
+		28
 	);
 }
 

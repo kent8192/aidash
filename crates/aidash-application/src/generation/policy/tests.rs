@@ -1,5 +1,5 @@
 use super::*;
-use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::ports::registry::CoreToolCatalog;
 use crate::tenancy::TenancyScope;
 use aidash_domain::{capabilities::CoreCapabilities, provider::ToolSpec, registry::EntityRef};
 use async_trait::async_trait;
@@ -11,12 +11,6 @@ use std::{
 	time::Duration,
 };
 
-struct NoSecrets;
-impl Credentials for NoSecrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("policy admission must not execute an approved provider")
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
@@ -25,7 +19,7 @@ impl CoreToolCatalog for CoreContracts {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(NoSecrets), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 #[fixture]
 fn spec() -> Spec {

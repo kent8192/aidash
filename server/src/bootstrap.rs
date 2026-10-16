@@ -489,12 +489,9 @@ pub(crate) fn event_inbox(
 	})
 }
 
-/// HTTP and MCP tools resolve credentials for each invocation, including rotation.
+/// HTTP and MCP tools never carry a Deployment secret (#296).
 pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::tools::HttpTools {
-	aidash_integrations::tools::HttpTools {
-		client,
-		credentials: Arc::new(EnvironmentCredentials),
-	}
+	aidash_integrations::tools::HttpTools { client }
 }
 
 /// Discovery and worker retries share the native repository and rotating keys.
@@ -525,16 +522,13 @@ impl aidash_application::ports::Credentials for PeerCredentials {
 
 /// Assemble definition admission for both management and worker paths.
 pub fn registry_validation() -> aidash_application::registry::DefinitionValidation {
-	aidash_application::registry::DefinitionValidation::new(
-		Arc::new(EnvironmentCredentials),
-		Arc::new(NativeCoreToolCatalog),
-	)
-	.with_provider_credentials(
-		crate::config::settings::get_settings()
-			.ok()
-			.and_then(|s| s.resolve().ok())
-			.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
-	)
+	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
+		.with_provider_credentials(
+			crate::config::settings::get_settings()
+				.ok()
+				.and_then(|s| s.resolve().ok())
+				.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
+		)
 }
 pub fn registry_validation_for(
 	store: &Store,

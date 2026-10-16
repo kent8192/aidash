@@ -327,10 +327,8 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
   await expect(
     dialog.getByLabel("Retry behavior").locator("option"),
   ).toHaveCount(1);
-  await dialog.getByLabel("Use configured credentials").check();
-  await dialog
-    .getByLabel("Credential reference", { exact: true })
-    .fill("AIDASH_SECRET_SEARCH");
+  // Tool transports never name a Deployment secret (#296).
+  await expect(dialog.getByLabel("Use configured credentials")).toHaveCount(0);
   await dialog
     .getByRole("button", { name: "Add argument", exact: true })
     .click();
@@ -373,7 +371,6 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
         transport: "mcp",
         endpoint: "https://example.com/mcp",
         tool_name: "search",
-        credential_env: "AIDASH_SECRET_SEARCH",
         replay: "unsafe",
         idempotency_argument: null,
       },
@@ -452,7 +449,6 @@ test("HTTP tools validate duplicate argument names and support typed lists", asy
       transport: {
         transport: "http",
         endpoint: "https://example.com/tool",
-        credential_env: null,
         replay: "unsafe",
       },
     },

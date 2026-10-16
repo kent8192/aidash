@@ -18,7 +18,7 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "RemoteSemanticFailure")]
 pub enum Failure {
-	#[error("Home semantic retrieval configuration is unavailable or changed")]
+	#[error("Semantic retrieval configuration is unavailable or changed")]
 	Configuration,
 	#[error("Home semantic retrieval requires current authority at both nodes")]
 	Authority,
@@ -30,7 +30,7 @@ pub enum Failure {
 	ContextBudget,
 	#[error("The generated lineage has insufficient provider allowance")]
 	Allowance,
-	#[error("The Home semantic backend is temporarily unavailable")]
+	#[error("The semantic backend is temporarily unavailable")]
 	Unavailable,
 	#[error("Semantic retries are exhausted; an authorized manual retry is required")]
 	RetriesExhausted,
@@ -41,6 +41,11 @@ pub enum Failure {
 	#[error("The reused semantic retrieval is out of date; retrieve it again")]
 	Stale,
 }
+
+/// Delay between repeated replays of a semantic operation that is still
+/// `Pending`. Each replay repeats the charged workspace embedding, so only the
+/// first one comes after a second. None of them spends an outage retry (#233).
+pub const PENDING_REPLAY_SECONDS: i64 = 30;
 
 impl Failure {
 	pub fn transient(self) -> bool {
