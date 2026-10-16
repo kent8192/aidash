@@ -948,7 +948,9 @@ test("message attachments show their names and download in the selected tab cont
     attachment.click(),
   ]);
   expect(download.suggestedFilename()).toBe("evidence.txt");
-  expect(request.headers()["x-aidash-context"]).toBe("operator");
+  expect(request.headers()["x-aidash-context"]).toBe(
+    "deployment_administrator",
+  );
   expect(request.headers()["authorization"]).toBeUndefined();
   expect(errors).toEqual([]);
 });
@@ -1236,7 +1238,7 @@ test("remote channel participants are displayed without linking to the local gra
   expect(errors).toEqual([]);
 });
 
-test("partial mesh responses tell operators which peer was omitted", async ({
+test("partial mesh responses tell Deployment Administrators which peer was omitted", async ({
   page,
 }) => {
   const { errors } = await setup(page, { meshErrors: true });

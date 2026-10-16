@@ -89,7 +89,7 @@ impl DefinitionLookup for Scope {
 		node: &str,
 		reference: &aidash_domain::registry::bindings::QualifiedRef,
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		if !matches!(self.actor, Actor::Operator) || node != self.node {
+		if !matches!(self.actor, Actor::DeploymentAdministrator) || node != self.node {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		NativeScope(&mut *self.tx)

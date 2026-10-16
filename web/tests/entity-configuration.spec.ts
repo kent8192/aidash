@@ -11,12 +11,15 @@ test.beforeEach(async ({ page }) => {
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({
-        json: { access: { kind: "operator" }, node_id: "aidash://test" },
+        json: {
+          access: { kind: "deployment_administrator" },
+          node_id: "aidash://test",
+        },
       });
     if (path === "/api/state")
       return route.fulfill({
         json: {
-          access: { kind: "operator" },
+          access: { kind: "deployment_administrator" },
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",

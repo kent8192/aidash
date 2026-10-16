@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::apps::identity::serializers::peer_graph::{
-	GrantPage, GraphOperatorGrant, GraphOperatorGrantInput,
+	GrantPage, PeerGraphGrant, PeerGraphGrantInput,
 };
 use crate::domain::RunMetadata;
 use aidash_domain::federation::graph::*;
@@ -56,7 +56,7 @@ pub(crate) async fn source_peer_lease(
 
 pub(crate) enum GraphAuthority<'a> {
 	Subject(&'a mut Access),
-	Operator {
+	DeploymentAdministrator {
 		tenant: &'a str,
 		tx: &'a mut crate::database::native::Transaction,
 	},
@@ -66,14 +66,14 @@ impl GraphAuthority<'_> {
 	pub(super) fn tenant(&self) -> &str {
 		match self {
 			Self::Subject(access) => &access.identity.tenant,
-			Self::Operator { tenant, .. } => tenant,
+			Self::DeploymentAdministrator { tenant, .. } => tenant,
 		}
 	}
 
 	pub(super) fn connection(&mut self) -> &mut Transaction {
 		match self {
 			Self::Subject(access) => &mut access.tx,
-			Self::Operator { tx, .. } => tx,
+			Self::DeploymentAdministrator { tx, .. } => tx,
 		}
 	}
 
@@ -96,8 +96,11 @@ impl GraphAuthority<'_> {
 
 	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
 		let Self::Subject(access) = self else {
-			return crate::authorization::remote::operator::event_visible(self.connection(), event)
-				.await;
+			return crate::authorization::remote::deployment_administrator::event_visible(
+				self.connection(),
+				event,
+			)
+			.await;
 		};
 		// project_activity checks workspace.events once per workspace. Retain
 		// the event-specific resource and provenance checks without repeating it.
@@ -586,7 +589,7 @@ pub(crate) async fn list_grants(
 	f: Federation,
 	tenant: String,
 	QueryParams(page): QueryParams<GrantPage>,
-) -> Result<Vec<GraphOperatorGrant>> {
+) -> Result<Vec<PeerGraphGrant>> {
 	identifier(&tenant)?;
 	if !(1..=200).contains(&page.limit) {
 		return Err(Error::Invalid("invalid grant page".into()));
@@ -596,10 +599,10 @@ pub(crate) async fn list_grants(
 		crate::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("authorization_graph_operator_grants"))
+				.from(Alias::new("authorization_peer_graph_grants"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())))
 				.order_by(Alias::new("source_node"), Order::Asc)
-				.order_by(Alias::new("source_operator"), Order::Asc)
+				.order_by(Alias::new("source_identity"), Order::Asc)
 				.limit(page.limit)
 				.offset(page.offset)
 				.to_string(PostgresQueryBuilder),
@@ -613,13 +616,13 @@ pub(crate) async fn list_grants(
 pub(crate) async fn set_grant(
 	f: Federation,
 	tenant: String,
-	input: GraphOperatorGrantInput,
-) -> Result<GraphOperatorGrant> {
+	input: PeerGraphGrantInput,
+) -> Result<PeerGraphGrant> {
 	identifier(&tenant)?;
 	crate::config::validate_node_id(&input.source_node)?;
 	if input.source_node == f.config.node_id || !(0..i64::MAX).contains(&input.expected_revision) {
 		return Err(Error::Invalid(
-			"invalid graph operator grant or revision".into(),
+			"invalid Peer Graph Grant or revision".into(),
 		));
 	}
 	if input.enabled {
@@ -638,18 +641,18 @@ pub(crate) async fn set_grant(
 		crate::transactions::authority::control(&mut tx).await?;
 	}
 	Authorization::load(&mut tx, &tenant).await?;
-	let row: Option<GraphOperatorGrant> = if input.expected_revision == 0 {
+	let row: Option<PeerGraphGrant> = if input.expected_revision == 0 {
 		{
 			let query_bind_1 = &input.source_node;
-			let query_bind_2 = input.source_operator;
+			let query_bind_2 = input.source_identity;
 			let query_bind_3 = &tenant;
 			let query_bind_4 = input.enabled;
 			crate::database::native::query_as(
 				&Query::insert()
-					.into_table(Alias::new("authorization_graph_operator_grants"))
+					.into_table(Alias::new("authorization_peer_graph_grants"))
 					.columns([
 						Alias::new("source_node"),
-						Alias::new("source_operator"),
+						Alias::new("source_identity"),
 						Alias::new("tenant"),
 						Alias::new("enabled"),
 						Alias::new("revision"),
@@ -664,7 +667,7 @@ pub(crate) async fn set_grant(
 							.to_owned(),
 					)
 					.on_conflict(
-						OnConflict::columns(["source_node", "source_operator", "tenant"])
+						OnConflict::columns(["source_node", "source_identity", "tenant"])
 							.do_nothing()
 							.to_owned(),
 					)
@@ -673,7 +676,7 @@ pub(crate) async fn set_grant(
 			)
 			.columns(&[
 				"source_node",
-				"source_operator",
+				"source_identity",
 				"tenant",
 				"enabled",
 				"revision",
@@ -684,13 +687,13 @@ pub(crate) async fn set_grant(
 	} else {
 		{
 			let query_bind_1 = &input.source_node;
-			let query_bind_2 = input.source_operator;
+			let query_bind_2 = input.source_identity;
 			let query_bind_3 = &tenant;
 			let query_bind_4 = input.enabled;
 			let query_bind_5 = input.expected_revision;
 			crate::database::native::query_as(
 				&Query::update()
-					.table(Alias::new("authorization_graph_operator_grants"))
+					.table(Alias::new("authorization_peer_graph_grants"))
 					.value_expr(
 						Alias::new("enabled"),
 						SimpleExpr::CustomWithExpr(
@@ -701,7 +704,7 @@ pub(crate) async fn set_grant(
 					.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 					.value_expr(Alias::new("updated_at"), Expr::cust("clock_timestamp()"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(source_node = ? AND source_operator = ? AND tenant = ? AND revision = ?)"
+						"(source_node = ? AND source_identity = ? AND tenant = ? AND revision = ?)"
 							.to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
@@ -717,31 +720,30 @@ pub(crate) async fn set_grant(
 			.await?
 		}
 	};
-	let grant =
-		row.ok_or_else(|| Error::Conflict("graph operator grant revision changed".into()))?;
+	let grant = row.ok_or_else(|| Error::Conflict("Peer Graph Grant revision changed".into()))?;
 	tx.commit().await?;
 	Ok(grant)
 }
 
-pub(crate) async fn operator_grant(
+pub(crate) async fn deployment_administrator_grant(
 	f: &Federation,
 	node: &str,
-	operator: Uuid,
+	deployment_administrator: Uuid,
 	tenant: &str,
-) -> Result<(crate::database::native::Transaction, GraphOperatorGrant)> {
+) -> Result<(crate::database::native::Transaction, PeerGraphGrant)> {
 	identifier(tenant)?;
 	let mut tx = crate::database::native::begin(&f.store.pool).await?;
 	Authorization::load(&mut tx, tenant).await?;
-	let grant: GraphOperatorGrant = {
+	let grant: PeerGraphGrant = {
 		let query_bind_1 = node;
-		let query_bind_2 = operator;
+		let query_bind_2 = deployment_administrator;
 		let query_bind_3 = tenant;
 		crate::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
-				.from(Alias::new("authorization_graph_operator_grants"))
+				.from(Alias::new("authorization_peer_graph_grants"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(source_node = ? AND source_operator = ? AND tenant = ? AND enabled)"
+					"(source_node = ? AND source_identity = ? AND tenant = ? AND enabled)"
 						.to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),

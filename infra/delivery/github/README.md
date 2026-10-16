@@ -58,7 +58,7 @@ fields false. Turning on any flag requires both `bootstrap_code_installed=true`
 and `activation_validated=true`; production additionally requires nonproduction
 and the App-bound staging gate. Mail activation requires the account ID, and
 certificate activation requires its dedicated WIF identity and ACME email.
-These acknowledgements do not execute live probes: the orchestrator/operator
+These acknowledgements do not execute live probes: the person running the setup
 must supply the corresponding acceptance evidence before controlled activation.
 
 Never pass runtime JSON, private keys, DNS tokens, Cloudflare sending tokens or

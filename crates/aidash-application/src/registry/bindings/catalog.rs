@@ -40,7 +40,7 @@ impl BindingCatalog for LookupCatalog<'_> {
 	}
 }
 
-/// Tenant and receiver-export paths cannot borrow the operator peer credential
+/// Tenant and receiver-export paths cannot borrow the Node's Peer Credential
 /// to import another Node's definitions.
 pub struct LocalCatalog<'a>(pub LookupCatalog<'a>);
 #[async_trait]

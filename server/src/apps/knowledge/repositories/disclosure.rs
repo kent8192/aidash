@@ -1,4 +1,4 @@
-//! Borrowed source readers keep exact Query trees, row locks and operator visibility adapters.
+//! Borrowed source readers keep exact Query trees, row locks and Deployment Administrator visibility adapters.
 use super::access::Lease;
 use crate::{Error, Result as NativeResult};
 use aidash_application::{Result, ports::semantic::visibility::SemanticDisclosureScope};
@@ -19,10 +19,13 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 		}
 	}
 	fn scoped(&self) -> bool {
-		!matches!(self.lease, Lease::Operator(_) | Lease::BorrowedOperator(_))
+		!matches!(
+			self.lease,
+			Lease::WithoutSubject(_) | Lease::BorrowedWithoutSubject(_)
+		)
 	}
-	async fn operator_visible(&mut self, workspace: Uuid) -> Result<bool> {
-		crate::authorization::remote::operator::visible(self.lease.tx(), workspace)
+	async fn deployment_administrator_visible(&mut self, workspace: Uuid) -> Result<bool> {
+		crate::authorization::remote::deployment_administrator::visible(self.lease.tx(), workspace)
 			.await
 			.map_err(Into::into)
 	}

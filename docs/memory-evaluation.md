@@ -37,7 +37,7 @@ the failed check must not be graded as verified success. Regex labels provide
 reproducible contract measurements, not complete semantic judgments. Keep the
 raw claims for human support/contradiction review. Exact deployment model,
 embedding dimensions/version, reranker, tokenizer, price configuration and
-operator approval must accompany a production evaluation.
+Deployment Administrator approval must accompany a production evaluation.
 
 Two-node native cluster acceptance invokes this same runner using its declared
 synthetic model and zero-price policy. Those measurements prove the integrated

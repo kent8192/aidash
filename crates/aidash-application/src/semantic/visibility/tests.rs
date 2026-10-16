@@ -55,7 +55,7 @@ fn message() -> Message {
 }
 struct Scope {
 	scoped: bool,
-	operator: bool,
+	deployment_administrator: bool,
 	managed: Option<(String, String)>,
 	artifact: Option<Artifact>,
 	message: Option<Message>,
@@ -70,7 +70,7 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		scoped: true,
-		operator: true,
+		deployment_administrator: true,
 		managed: None,
 		artifact: Some(artifact()),
 		message: Some(message()),
@@ -97,10 +97,10 @@ impl SemanticDisclosureScope for Scope {
 	fn scoped(&self) -> bool {
 		self.scoped
 	}
-	async fn operator_visible(&mut self, workspace: Uuid) -> Result<bool> {
+	async fn deployment_administrator_visible(&mut self, workspace: Uuid) -> Result<bool> {
 		assert_eq!(workspace, Uuid::from_u128(2));
-		self.touch("operator")?;
-		Ok(self.operator)
+		self.touch("deployment_administrator")?;
+		Ok(self.deployment_administrator)
 	}
 	async fn workspace_resource(&mut self, workspace: Uuid) -> Result<Resource> {
 		assert_eq!(workspace, Uuid::from_u128(2));
@@ -196,19 +196,19 @@ async fn deleted_history_retains_policy_and_skips_revoked_source_decode(
 #[case::allowed(true)]
 #[case::denied(false)]
 #[tokio::test]
-async fn operator_disclosure_requires_visible_workspace_before_any_source(
+async fn deployment_administrator_disclosure_requires_visible_workspace_before_any_source(
 	mut scope: Scope,
 	mut entry: Entry,
 	#[case] allowed: bool,
 ) {
 	scope.scoped = false;
-	scope.operator = allowed;
+	scope.deployment_administrator = allowed;
 	entry.source = json!({"malformed":true});
 	assert_eq!(
 		permits(&mut scope, &entry, "semantic.read").await.unwrap(),
 		allowed
 	);
-	assert_eq!(scope.calls, vec!["operator"]);
+	assert_eq!(scope.calls, vec!["deployment_administrator"]);
 	assert!(scope.resources.is_empty());
 	scope.calls.clear();
 	let result = source(
@@ -221,7 +221,7 @@ async fn operator_disclosure_requires_visible_workspace_before_any_source(
 	.await
 	.unwrap();
 	assert_eq!(result, allowed.then(|| "saved".to_owned()));
-	assert_eq!(scope.calls, vec!["operator"]);
+	assert_eq!(scope.calls, vec!["deployment_administrator"]);
 }
 #[rstest]
 #[case::artifact(true)]
@@ -309,7 +309,7 @@ async fn absent_or_denied_stored_source_cannot_disclose_content(
 #[case::artifact(true)]
 #[case::message(false)]
 #[tokio::test]
-async fn operator_source_checks_workspace_and_retains_query_scope(
+async fn deployment_administrator_source_checks_workspace_and_retains_query_scope(
 	mut scope: Scope,
 	#[case] artifact_kind: bool,
 ) {
@@ -333,9 +333,9 @@ async fn operator_source_checks_workspace_and_retains_query_scope(
 	assert_eq!(
 		scope.calls,
 		if artifact_kind {
-			vec!["operator", "artifact"]
+			vec!["deployment_administrator", "artifact"]
 		} else {
-			vec!["operator", "message"]
+			vec!["deployment_administrator", "message"]
 		}
 	);
 }
@@ -415,7 +415,7 @@ async fn source_policy_adapter_failures_remain_opaque(
 	assert_eq!(scope.calls.last(), Some(&fail));
 }
 #[rstest]
-#[case::operator("operator", false)]
+#[case::deployment_administrator("deployment_administrator", false)]
 #[case::message("message", true)]
 #[case::message_visibility("message_visible", true)]
 #[tokio::test]

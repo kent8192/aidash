@@ -430,7 +430,7 @@ def preflight(event_name, event):
     elif event_name == "workflow_dispatch":
         actor = os.environ.get("GITHUB_ACTOR", "")
         if not matches(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", actor):
-            raise Refused("invalid notification operator")
+            raise Refused("invalid notification actor")
         permission = github(f"repos/{REPOSITORY}/collaborators/{actor}/permission")
         if permission.get("permission") not in {"admin", "maintain", "write"}:
             raise Refused("notification retry requires repository write permission")

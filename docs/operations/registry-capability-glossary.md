@@ -43,7 +43,7 @@ The identity of one exact capability declaration within its registering Node. Th
 _Avoid_: Unqualified tool name, model alias
 
 **Core capability**:
-A capability whose implementation and governing authority belong to the Node operator. A Core capability is declared through the Registry as a Built-in tool or a Host-distributed tool.
+A capability whose implementation and governing authority belong to the Node. A Core capability is declared through the Registry as a Built-in tool or a Host-distributed tool.
 _Avoid_: Capability outside the Registry
 
 **Registry integration**:
@@ -55,7 +55,7 @@ A system-origin Tool required by Aidash's own features and declared as an immuta
 _Avoid_: Marketplace package, ungoverned operation
 
 **Host-distributed tool**:
-A Node-operator capability distributed as a Marketplace package for explicit tenant installation and approval. Installing it does not confer authority over its target resources.
+A Node capability distributed as a Marketplace package for explicit tenant installation and approval. Installing it does not confer authority over its target resources.
 _Avoid_: Third-party integration, automatically authorized builtin
 
 **Binding**:

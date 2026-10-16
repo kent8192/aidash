@@ -1,10 +1,10 @@
-use super::super::tests::OperatorFixture;
+use super::super::tests::DeploymentAdministratorFixture;
 use super::*;
 use crate::marketplace::installations::tests::validation;
 use aidash_domain::identity::Principal;
 
-async fn selection() -> (OperatorFixture, ApprovalSet) {
-	let (mut scope, id) = OperatorFixture::installed().await;
+async fn selection() -> (DeploymentAdministratorFixture, ApprovalSet) {
+	let (mut scope, id) = DeploymentAdministratorFixture::installed().await;
 	let revision = scope.inner.revisions[&format!("{id}:1")].clone();
 	scope.approvals.clear();
 	scope.events.clear();

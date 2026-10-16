@@ -920,9 +920,17 @@ async fn unconfirmed_revocations_still_delete_aidashs_copy() {
 #[tokio::test]
 async fn owners_who_lose_access_lose_their_connection() {
 	let fixture = fixture(1, FakeAuthorization::default());
-	fixture.service.retire(&owner(), "operator").await.unwrap();
+	fixture
+		.service
+		.retire(&owner(), "deployment_administrator")
+		.await
+		.unwrap();
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	fixture.service.retire(&owner(), "operator").await.unwrap();
+	fixture
+		.service
+		.retire(&owner(), "deployment_administrator")
+		.await
+		.unwrap();
 	assert!(fixture.repo.0.lock().await.rows.is_empty());
 	assert_eq!(fixture.store.resources(), 0);
 	assert!(

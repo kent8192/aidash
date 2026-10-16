@@ -71,7 +71,7 @@ fn invalid_and_unlisted_origins_retain_distinct_failures() {
 		matches!(permitted_origin("invalid",&[]),Err(Error::Invalid(message)) if message=="INVALID_OUTBOUND_URL")
 	);
 	assert!(
-		matches!(permitted_origin("https://example.com/",&[]),Err(Error::Conflict(message)) if message=="OUTBOUND_OPERATOR_DENIED")
+		matches!(permitted_origin("https://example.com/",&[]),Err(Error::Conflict(message)) if message=="OUTBOUND_ORIGIN_DENIED")
 	);
 	let prefix = "https://example.com/";
 	let target = format!("{prefix}{}", "a".repeat(4096 - prefix.len()));

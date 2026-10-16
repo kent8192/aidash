@@ -14,10 +14,10 @@ Aidash outperforms another harness.
 
 ## Tiers
 
-| Tier            | Model                                       | Credentials                                                      | Spend                         | Use                                                            |
-| --------------- | ------------------------------------------- | ---------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------- |
-| `deterministic` | Scripted fixture provider on `127.0.0.1`    | None                                                             | None                          | Local and CI. Checks the harness and the evaluator itself.     |
-| `live`          | An operator-registered model on a real Node | The Tenant's connected Provider Credential (OAuth, #158), opt-in | Hard ceiling, approved prices | Baseline reports before a default rollout. Never run by PR CI. |
+| Tier            | Model                                           | Credentials                                                      | Spend                         | Use                                                            |
+| --------------- | ----------------------------------------------- | ---------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------- |
+| `deterministic` | Scripted fixture provider on `127.0.0.1`        | None                                                             | None                          | Local and CI. Checks the harness and the evaluator itself.     |
+| `live`          | A model the evaluator registered on a real Node | The Tenant's connected Provider Credential (OAuth, #158), opt-in | Hard ceiling, approved prices | Baseline reports before a default rollout. Never run by PR CI. |
 
 ### The one command (deterministic)
 
@@ -38,7 +38,7 @@ Cargo fetching crates for the first build. It
 3. runs `manage migrate` and `manage memory-recovery init-if-missing` on a
    private recovery directory, then starts one Node in the `serve` role (HTTP
    plus four worker slots that consume activation) with
-   `AIDASH_ACTIVATION_BOOTSTRAP=true`, a random operator token and a random
+   `AIDASH_ACTIVATION_BOOTSTRAP=true`, a random Deployment Administrator token and a random
    Cache Salt Key, so Ordered Runs are possible;
 4. serves the scripted provider (`scripts/fixed_task_fixture.py`): the model at
    `/v1/chat/completions` and the fixture tools at `/tools/{task}/{alias}`
@@ -142,7 +142,7 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   bearer token to the new location, so a 30x response is a failed request.
   Plain `http://` never goes through an environment proxy (`HTTP_PROXY`),
   which would otherwise receive both tokens in plaintext;
-- both bearer tokens are set (operator for Registry writes, Tenant subject for
+- both bearer tokens are set (Deployment Administrator for Registry writes, Tenant subject for
   Tasks); neither is copied into the manifest;
 - the named Provider Credential exists, is `active`, and is the credential the
   Tenant's Provider Credential Binding for its provider names (Run admission
@@ -185,7 +185,7 @@ Before it registers anything or starts a Run, the live tier refuses unless:
 
 ```json
 {
-  "approver": "operator@example",
+  "approver": "evaluator@example",
   "approved_at": "2026-10-11T00:00:00Z",
   "expires_at": "2026-10-12T00:00:00Z",
   "corpus_sha256": "<corpus.sha256 from a deterministic manifest>",
@@ -252,7 +252,7 @@ when a request about the Run fails. A claim retried after a gateway error
 may already have admitted the Run, so when its backoff would end past the
 time limit the evaluator cancels the Run at once instead of sleeping. A
 cancellation the Tenant subject token cannot make is retried once with the
-operator token; if that fails too, the Run may still be active, so the
+Deployment Administrator token; if that fails too, the Run may still be active, so the
 manifest records it and no further Run is dispatched. A claim sent without a
 definite answer may admit a Run that appears later: cancellation polls for it
 through the 30-second grace period, and a Run that never appears counts as an
@@ -513,7 +513,7 @@ utility; this branch measures only the first deterministically.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
 - The live tier cannot reserve or price Jev compaction calls; it relies on the
-  operator's attestation that the evaluated Tenant approves no compactor and
+  evaluator's attestation that the evaluated Tenant approves no compactor and
   stops dispatching when a Run shows an applied compaction.
 - Neither tier measures pruning until #108 binds the built-in compaction
   Decider: ordinary Runs are not pruned (ADR 0041).

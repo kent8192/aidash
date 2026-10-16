@@ -29,7 +29,7 @@ for (const [host, bind] of [
         "access-control-allow-origin": "http://127.0.0.1:18083",
         "content-type": "application/json",
       });
-      response.end(JSON.stringify({ enabled: true, desktop_protocol: 1 }));
+      response.end(JSON.stringify({ enabled: true, desktop_protocol: 2 }));
     });
     try {
       await new Promise((resolve, reject) => {
@@ -65,7 +65,7 @@ for (const [host, bind] of [
       }, `http://${host}:${server.address().port}`);
       expect(result).toEqual({
         status: 200,
-        body: { enabled: true, desktop_protocol: 1 },
+        body: { enabled: true, desktop_protocol: 2 },
         violations: [],
       });
       expect(requests).toEqual(["/auth/config"]);

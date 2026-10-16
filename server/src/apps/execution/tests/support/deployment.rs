@@ -70,7 +70,10 @@ pub fn deployment_command_excluding(
 		.env("DATABASE_URL", database_url)
 		.env("AIDASH_NODE_ID", "aidash://manage-fixture")
 		.env("AIDASH_ENDPOINT", "http://127.0.0.1:0")
-		.env("AIDASH_API_TOKEN", "native-command-test-operator")
+		.env(
+			"AIDASH_API_TOKEN",
+			"native-command-test-deployment-administrator",
+		)
 		.env("NATS_URL", "nats://127.0.0.1:0")
 		.env("AIDASH_BACKGROUND_ENABLED", "false")
 		.env("AIDASH_WORKER_COUNT", "1")

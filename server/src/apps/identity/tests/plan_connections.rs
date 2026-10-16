@@ -285,7 +285,7 @@ async fn execute(f: &Federation, query: String) {
 		.await
 		.unwrap();
 }
-async fn insert_identity(f: &Federation, subject: &str, operator: bool) -> Uuid {
+async fn insert_identity(f: &Federation, subject: &str, deployment_administrator: bool) -> Uuid {
 	let identity = Uuid::new_v4();
 	execute(
 		f,
@@ -303,11 +303,11 @@ async fn insert_identity(f: &Federation, subject: &str, operator: bool) -> Uuid 
 			.to_string(PostgresQueryBuilder),
 	)
 	.await;
-	if operator {
+	if deployment_administrator {
 		execute(
 			f,
 			Query::insert()
-				.into_table(Alias::new("dashboard_operator_grants"))
+				.into_table(Alias::new("dashboard_deployment_administrator_grants"))
 				.columns([Alias::new("identity_id")])
 				.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
 				.to_string(PostgresQueryBuilder),
@@ -382,7 +382,7 @@ fn plan_runtime(
 		Policies {
 			pool: f.store.pool.clone(),
 		}
-		.replace("alpha", 0, policy, "operator")
+		.replace("alpha", 0, policy, "deployment_administrator")
 		.await
 		.unwrap();
 		f.store.plan_connections = Some(Arc::new(Service {
@@ -719,8 +719,16 @@ async fn only_the_owners_own_session_reaches_plan_connections(
 	let fixture = Fixture::new(application, parts);
 	let (_, context) = map(&fixture, "browser-a", "alice").await;
 	// The Deployment Administrator context holds no Plan Connection.
-	let operator = send(&fixture, "browser-a", "operator", "GET", PLAN, Value::Null).await;
-	assert_eq!(operator.status(), 403);
+	let deployment_administrator = send(
+		&fixture,
+		"browser-a",
+		"deployment_administrator",
+		"GET",
+		PLAN,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(deployment_administrator.status(), 403);
 	// A bearer caller has no dashboard or desktop session.
 	let (status, _) = common::request(
 		&fixture.app,

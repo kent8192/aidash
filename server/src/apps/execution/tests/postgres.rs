@@ -853,7 +853,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 			.header("authorization", "Bearer test-access-token")
 			.header("content-type", "application/json")
 			.body(
-				json!({"revision":child.revision,"reason":"Operator accepts partial results"})
+				json!({"revision":child.revision,"reason":"Deployment Administrator accepts partial results"})
 					.to_string(),
 			)
 			.send()
@@ -889,7 +889,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		events
 			.iter()
 			.filter(|e| e.kind == "task.abandoned"
-				&& e.data["reason"] == "Operator accepts partial results")
+				&& e.data["reason"] == "Deployment Administrator accepts partial results")
 			.count(),
 		3
 	);
@@ -3202,7 +3202,7 @@ mod research;
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction(
+async fn deployment_administrator_remote_humans_live_on_home_and_survive_receiver_reconstruction(
 	#[future(awt)]
 	#[from(common::native_peer)]
 	#[with("aidash://human-home")]

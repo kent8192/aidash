@@ -48,7 +48,7 @@ fn atomic_runtime(
 		let f = &mut runtime.federation;
 		f.config.node_id = format!("aidash://atomic-{suffix}");
 		f.store.node_id = f.config.node_id.clone();
-		f.config.api_token = "atomic-operator-fixture-token".into();
+		f.config.api_token = "atomic-deployment-administrator-fixture-token".into();
 		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
 		runtime
 	}
@@ -292,7 +292,7 @@ impl Drop for Node {
 	}
 }
 // Fixture state represents a subject transaction durably admitted before the
-// cross-node submission suspension. Production operator admission creates the
+// cross-node submission suspension. Production Deployment Administrator admission creates the
 // coordinator; ORM fixture records retain its immutable subject authority.
 async fn fixture_origin(node: &Node) -> Value {
 	let credential = aidash_server::authorization::Authorization {
@@ -340,7 +340,10 @@ async fn seed_existing_scoped_transaction(
 			Some(json!(manifest)),
 		)
 		.await;
-	assert_eq!(status, 202, "operator fixture admission: {body}");
+	assert_eq!(
+		status, 202,
+		"Deployment Administrator fixture admission: {body}"
+	);
 	let origin = fixture_origin(source).await;
 	let lease =
 		DatabaseConnectionLease::register(source.f.store.control_pool.connection()).unwrap();
@@ -465,7 +468,7 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	assert_eq!(node.get("/health").await.0, 200);
 	let (session_status, session) = node.get("/api/session").await;
 	assert_eq!(session_status, 200);
-	assert_eq!(session["access"]["kind"], "operator");
+	assert_eq!(session["access"]["kind"], "deployment_administrator");
 	assert_eq!(node.get("/api/transactions/participants").await.0, 200);
 	assert!(matches!(
 		aidash_server::harness::Harness {
@@ -512,7 +515,7 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 		.await
 	}
 	.unwrap();
-	// A recovery step can hold this lease during slow peer I/O. An operator's
+	// A recovery step can hold this lease during slow peer I/O. A Deployment Administrator's
 	// durable abort must not be lost merely because that step is in flight.
 	let (status, body) = a
 		.request(
@@ -796,7 +799,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 					dependencies: vec![],
 					parent_id: None,
 				},
-				"operator",
+				"deployment_administrator",
 				None,
 			)
 			.await
@@ -1486,7 +1489,7 @@ async fn mapped_transaction_admission_and_revocation(
 				"acme",
 				snapshot.revision,
 				serde_json::from_value(policy).unwrap(),
-				"operator",
+				"deployment_administrator",
 			)
 			.await
 			.unwrap();
@@ -1844,7 +1847,7 @@ async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_t
 		Some("COMMIT")
 	);
 	// Simulate loss of the existing communication credential after admission.
-	// The operator recovery route must restore that exact Node, not grant trust.
+	// The Deployment Administrator recovery route must restore that exact Node, not grant trust.
 	let mut tx = a.f.store.control_pool.driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()

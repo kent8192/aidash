@@ -25,21 +25,23 @@ pub async fn provide(#[inject] runtime: Federation) -> MarketplaceManagement {
 fn subject(actor: &Actor) -> Result<&crate::authorization::identity::SubjectIdentity> {
 	match actor {
 		Actor::Subject(identity) => Ok(identity),
-		Actor::Operator => Err(Error::Forbidden),
+		Actor::DeploymentAdministrator => Err(Error::Forbidden),
 	}
 }
 
 fn principal(actor: &Actor) -> aidash_domain::identity::Principal {
 	match actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
 		},
 	}
 }
-fn operator(actor: &Actor) -> Result<()> {
-	aidash_application::marketplace::operations::require_operator(&principal(actor))
+fn deployment_administrator(actor: &Actor) -> Result<()> {
+	aidash_application::marketplace::operations::require_deployment_administrator(&principal(actor))
 		.map_err(Into::into)
 }
 
@@ -275,11 +277,15 @@ impl MarketplaceManagement {
 		input: Activate,
 	) -> Result<Installation> {
 		let f = self.runtime.clone();
-		operator(&actor)?;
+		deployment_administrator(&actor)?;
 		let origin = browser.as_ref();
-		let mut tx = operator_begin(&f.store, origin).await?;
+		let mut tx = deployment_administrator_begin(&f.store, origin).await?;
 		let result = aidash_application::marketplace::operations::activate(
-			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
+			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
+				&f.store,
+				&mut tx,
+				principal(&actor),
+			),
 			&id,
 			&aidash_application::marketplace::operations::ActivationCommand {
 				tenant: input.tenant,
@@ -290,7 +296,7 @@ impl MarketplaceManagement {
 			},
 		)
 		.await?;
-		operator_commit(tx, origin).await?;
+		deployment_administrator_commit(tx, origin).await?;
 		Ok(result)
 	}
 
@@ -300,12 +306,12 @@ impl MarketplaceManagement {
 		browser: Option<BrowserOrigin>,
 		input: aidash_application::marketplace::operations::approval_set::ApprovalSet,
 	) -> Result<Vec<Installation>> {
-		operator(&actor)?;
+		deployment_administrator(&actor)?;
 		let origin = browser.as_ref();
-		let mut tx = operator_begin(&self.runtime.store, origin).await?;
+		let mut tx = deployment_administrator_begin(&self.runtime.store, origin).await?;
 		let result =
 			aidash_application::marketplace::operations::approval_set::approve_and_activate(
-				&mut crate::bootstrap::marketplace_operator_scope(
+				&mut crate::bootstrap::marketplace_deployment_administrator_scope(
 					&self.runtime.store,
 					&mut tx,
 					principal(&actor),
@@ -315,7 +321,7 @@ impl MarketplaceManagement {
 				&self.runtime.store.node_id,
 			)
 			.await?;
-		operator_commit(tx, origin).await?;
+		deployment_administrator_commit(tx, origin).await?;
 		Ok(result)
 	}
 	pub(crate) async fn host_packages(
@@ -324,12 +330,12 @@ impl MarketplaceManagement {
 		browser: Option<BrowserOrigin>,
 		input: aidash_application::marketplace::operations::host_packages::HostPackages,
 	) -> Result<aidash_application::marketplace::operations::host_packages::PendingHostPackages> {
-		operator(&actor)?;
+		deployment_administrator(&actor)?;
 		let origin = browser.as_ref();
-		let mut tx = operator_begin(&self.runtime.store, origin).await?;
+		let mut tx = deployment_administrator_begin(&self.runtime.store, origin).await?;
 		let validation = crate::bootstrap::registry_validation_for(&self.runtime.store);
 		let result = aidash_application::marketplace::operations::host_packages::provision(
-			&mut crate::bootstrap::marketplace_operator_scope(
+			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
 				&self.runtime.store,
 				&mut tx,
 				principal(&actor),
@@ -340,7 +346,7 @@ impl MarketplaceManagement {
 			&self.runtime.store.node_id,
 		)
 		.await?;
-		operator_commit(tx, origin).await?;
+		deployment_administrator_commit(tx, origin).await?;
 		Ok(result)
 	}
 
@@ -351,12 +357,16 @@ impl MarketplaceManagement {
 		query: AdministrationQuery,
 	) -> Result<Response> {
 		let f = self.runtime.clone();
-		operator(&actor)?;
+		deployment_administrator(&actor)?;
 		crate::authorization::policy::identifier(&query.tenant)?;
 		let origin = browser.as_ref();
-		let mut tx = operator_begin(&f.store, origin).await?;
+		let mut tx = deployment_administrator_begin(&f.store, origin).await?;
 		let page = aidash_application::marketplace::operations::administration(
-			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
+			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
+				&f.store,
+				&mut tx,
+				principal(&actor),
+			),
 			&aidash_application::marketplace::operations::AdministrationQuery {
 				tenant: query.tenant,
 				offset: query.offset,
@@ -364,9 +374,9 @@ impl MarketplaceManagement {
 			},
 		)
 		.await?;
-		// Serialize into the bounded queue before releasing browser and operator leases.
+		// Serialize into the bounded queue before releasing browser and Deployment Administrator leases.
 		let mut response = bounded_json(&page.entries)?;
-		operator_commit(tx, origin).await?;
+		deployment_administrator_commit(tx, origin).await?;
 		next_page(&mut response, page.next_offset);
 		Ok(response)
 	}

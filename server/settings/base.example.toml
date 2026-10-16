@@ -50,7 +50,7 @@ root = "staticfiles"
 [node]
 node_id = "aidash://local"
 endpoint = "http://127.0.0.1:8000"
-# api_token = "set-a-random-operator-token-at-least-16-characters"
+# api_token = "set-a-random-deployment-administrator-token-at-least-16-characters"
 nats_url = "nats://127.0.0.1:4222"
 web_dir = "../web/dist"
 lease_seconds = 30

@@ -7,6 +7,6 @@ pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
 			.endpoint(deployment::status)
-			.with_route_middleware(AccessBoundary::operator())
+			.with_route_middleware(AccessBoundary::deployment_administrator())
 	})
 }

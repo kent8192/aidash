@@ -97,7 +97,7 @@ async fn polling_applies_workspace_and_event_authority_in_order(
 }
 #[rstest]
 #[tokio::test]
-async fn polling_keeps_event_order_and_hides_operator_audit() {
+async fn polling_keeps_event_order_and_hides_deployment_administrator_audit() {
 	let mut scope = published();
 	let mut workspace = event("workspace.changed", json!({}));
 	workspace.workspace_id = Some(Uuid::nil());

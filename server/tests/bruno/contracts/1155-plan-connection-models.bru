@@ -1,5 +1,5 @@
 meta {
-  name: 1155 plan-connection-models - Operator bearer owns no Plan Connection
+  name: 1155 plan-connection-models - Deployment Administrator bearer owns no Plan Connection
   type: http
   seq: 1155
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{operator_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

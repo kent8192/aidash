@@ -1,4 +1,4 @@
-//! The operator handles Web research only through declared behavior: citation
+//! The Harness handles Web research only through declared behavior: citation
 //! checks follow `yields: Citations` and disclosure waits follow the generic
 //! approval result. No research tool name is consulted.
 use super::*;
