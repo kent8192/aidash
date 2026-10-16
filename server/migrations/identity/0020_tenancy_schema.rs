@@ -137,10 +137,36 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
+		// A Tenant's newest Invitations, for the administration page's history.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "tenant_invitations".into(),
+			name: "tenant_invitations_history".into(),
+			columns: vec!["tenant".into(), "created_at".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_registration_requests".into(),
 			column: ColumnDefinition::new("tenant", FieldType::Text).with_not_null(false),
 			mysql_options: None,
+		})
+		// One Tenant's pending requests, which its administrators list.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "dashboard_registration_requests".into(),
+			name: "dashboard_registration_tenant_pending".into(),
+			columns: vec!["tenant".into(), "status".into(), "expires_at".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
 		})
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_registration_requests".into(),
