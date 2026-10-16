@@ -13,6 +13,7 @@ use crate::apps::identity::serializers::tenants::{
 	CreatedTenant, LabelUpdate, TenantCreation, TenantLabel, TenantRecord,
 };
 use crate::apps::identity::services::http_auth::bearer;
+use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
 use crate::http::validate;
@@ -142,12 +143,12 @@ impl Tenants {
 		Ok(created.into())
 	}
 
-	/// Every Tenant, for Deployment Administrators.
-	pub(crate) async fn list(&self) -> Result<Vec<TenantRecord>> {
+	/// One page of Tenants, newest first, for Deployment Administrators.
+	pub(crate) async fn list(&self, page: PageQuery) -> Result<Vec<TenantRecord>> {
 		let lease = self.runtime.store.orm_connection()?;
 		let tenants = lease
 			.handle()
-			.atomic(async |tx| tenants::list(tx).await)
+			.atomic(async |tx| tenants::list(tx, page.offset).await)
 			.await?;
 		Ok(tenants.into_iter().map(Into::into).collect())
 	}

@@ -248,10 +248,15 @@ async fn map_owner(tx: &mut AtomicTransaction, tenant: &str, identity: Uuid) -> 
 	Ok(mapping.id)
 }
 
-/// Every root record, newest first, for Deployment Administrators.
-pub(crate) async fn list(tx: &mut AtomicTransaction) -> Result<Vec<Tenant>> {
+/// Root records listed per page.
+const PAGE: usize = 200;
+
+/// One page of root records, newest first, for Deployment Administrators.
+pub(crate) async fn list(tx: &mut AtomicTransaction, offset: u64) -> Result<Vec<Tenant>> {
 	Ok(Tenant::objects()
 		.order_by(&["-created_at", "name"])
+		.limit(PAGE)
+		.offset(usize::try_from(offset).unwrap_or(usize::MAX))
 		.all_with_db(tx)
 		.await?)
 }

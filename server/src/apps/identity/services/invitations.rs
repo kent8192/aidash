@@ -166,7 +166,7 @@ impl Invitations {
 		let issued = self.finish(&issuer, result).await?;
 		Ok(IssuedInvitation {
 			id: issued.invitation.id,
-			link: format!("{public_origin}/invitations/{tenant}#{}", issued.secret),
+			link: invitation_link(&public_origin, &tenant, &issued.secret),
 			tenant,
 			secret: issued.secret,
 			groups: issued.groups,
@@ -309,5 +309,36 @@ fn view(row: TenantInvitation, now: chrono::DateTime<chrono::Utc>) -> Invitation
 		created_at: row.created_at,
 		expires_at: row.expires_at,
 		registration_id: row.registration_id,
+	}
+}
+
+/// What a Tenant name keeps verbatim in a link's path segment: RFC 3986's
+/// unreserved characters. A valid name may still hold `#`, `?` or `/`.
+const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+	.remove(b'-')
+	.remove(b'.')
+	.remove(b'_')
+	.remove(b'~');
+
+/// The dashboard link of an Invitation; its secret travels in the fragment.
+fn invitation_link(public_origin: &str, tenant: &str, secret: &str) -> String {
+	let tenant = percent_encoding::utf8_percent_encode(tenant, PATH_SEGMENT);
+	format!("{public_origin}/invitations/{tenant}#{secret}")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::invitation_link;
+
+	#[test]
+	fn an_invitation_link_encodes_its_tenant_as_one_path_segment() {
+		assert_eq!(
+			invitation_link("https://aidash.example", "acme-east_1.x~y", "s3cret"),
+			"https://aidash.example/invitations/acme-east_1.x~y#s3cret"
+		);
+		assert_eq!(
+			invitation_link("https://aidash.example", "customer#east?a/b%", "s3cret"),
+			"https://aidash.example/invitations/customer%23east%3Fa%2Fb%25#s3cret"
+		);
 	}
 }

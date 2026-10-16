@@ -2,9 +2,12 @@
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::serializers::tenants::{LabelUpdate, TenantCreation};
 use crate::apps::identity::services::tenants::Tenants;
+use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
-use reinhardt::{Depends, Path, Request, Response, StatusCode, get, http::ViewResult, post, put};
+use reinhardt::{
+	Depends, Path, Query, Request, Response, StatusCode, get, http::ViewResult, post, put,
+};
 
 /// Creates a Tenant under an assigned name. The route boundary is public and
 /// the service authenticates the Deployment Administrator bearer token or a
@@ -22,8 +25,11 @@ pub async fn create(
 }
 
 #[get("/api/tenants", name = "tenants-list", auth = "protected")]
-pub async fn list(#[inject] service: Depends<Tenants>) -> ViewResult<Response> {
-	crate::http::json(service.list().await)
+pub async fn list(
+	#[inject] service: Depends<Tenants>,
+	Query(page): Query<PageQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.list(page).await)
 }
 
 #[put(

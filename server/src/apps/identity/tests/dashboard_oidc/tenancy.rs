@@ -235,6 +235,14 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Research"}))
 		.await;
 	assert_ne!(second["name"], name);
+	// The list pages from the newest Tenant.
+	let (status, page) = d
+		.as_deployment_administrator("GET", "/api/tenants?offset=1", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{page}");
+	let total = tenants.as_array().unwrap().len();
+	assert_eq!(page.as_array().unwrap().len(), total, "{page}");
+	assert_eq!(page[0]["name"], tenants[0]["name"]);
 	for label in ["", "   ", "line\nbreak"] {
 		let (status, _) = d
 			.as_deployment_administrator("POST", "/api/tenants", json!({"label":label}))

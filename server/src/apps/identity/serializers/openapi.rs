@@ -44,6 +44,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
+		contracts.query::<_, PageQuery>(document, views::tenants::list)?;
 		contracts.request::<_, t::LabelUpdate>(document, views::tenants::relabel)?;
 		contracts.response::<_, t::TenantLabel>(
 			document,
