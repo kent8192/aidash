@@ -31,7 +31,7 @@ locals {
     length(setsubtract(toset(keys(try(pool.mfa, {}))), toset(["state", "totp"]))) == 0 &&
     length(setsubtract(toset(keys(try(pool.mfa.totp, {}))), toset(["adjacent_intervals"]))) == 0
   ]])), false)
-  # Broker intent carries only bootstrap identity/key IDs and operator enablement;
+  # Broker intent carries only bootstrap identity/key IDs and explicit enablement;
   # the image digest stays reviewed code, and PR previews never receive a broker.
   public_brokers_valid = try(alltrue(flatten([for config in [local.nonproduction, local.production] : [
     for id, broker in try(config.credential_brokers, {}) :

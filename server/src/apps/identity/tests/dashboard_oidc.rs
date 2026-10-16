@@ -201,7 +201,10 @@ async fn call(
 		request = request.header("x-aidash-context", context);
 	}
 	if bearer {
-		request = request.header("authorization", "Bearer operator-execution-fixture");
+		request = request.header(
+			"authorization",
+			"Bearer deployment-administrator-execution-fixture",
+		);
 	}
 	let response = request.json(&body).send().await.unwrap();
 	let status = response.status().as_u16();
@@ -212,10 +215,10 @@ async fn call(
 #[rstest::rstest]
 #[case::keycloak("http://127.0.0.1:18099/realms/test")]
 #[tokio::test]
-async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
+async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user(
 	#[case] issuer: &str,
 	#[future(awt)]
-	#[from(unmapped_identity_stays_denied_until_operator_approves_existing_user_fixture)]
+	#[from(unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture)]
 	#[with(issuer)]
 	fixture: common::ApplicationFixture,
 	#[from(refresh_control)] expiry_control: (
@@ -237,7 +240,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	Authorization {
 		pool: federation.store.pool.clone(),
 	}
-	.replace("acme", 0, policy, "operator")
+	.replace("acme", 0, policy, "deployment_administrator")
 	.await
 	.unwrap();
 	let identity_id = Uuid::new_v4();
@@ -719,7 +722,8 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.0,
 		200
 	);
-	let grant_path = format!("/api/dashboard/identities/{identity_id}/operator-grant");
+	let grant_path =
+		format!("/api/dashboard/identities/{identity_id}/deployment-administrator-grant");
 	let (invalid_status, _) = call(
 		&app,
 		"POST",
@@ -756,7 +760,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			workspace.id,
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
-				description: "Browser operator control".into(),
+				description: "Browser Deployment Administrator control".into(),
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -798,7 +802,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			&run_management,
 			true,
 			false,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			json!({"action":"pause"})
 		)
@@ -821,7 +825,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			&run_management,
 			true,
 			true,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			json!({"action":action}),
 		)
@@ -869,14 +873,14 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 				path,
 				true,
 				true,
-				Some("operator"),
+				Some("deployment_administrator"),
 				false,
 				Value::Null
 			)
 			.await
 			.0,
 			403,
-			"operator route {path} must reach its handler"
+			"Deployment Administrator route {path} must reach its handler"
 		);
 	}
 	assert_ne!(
@@ -886,7 +890,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002",
 			true,
 			true,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			Value::Null,
 		)
@@ -894,7 +898,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.0,
 		403
 	);
-	// The boundary holds a shared lock on the operator's own identity until the
+	// The boundary holds a shared lock on the Deployment Administrator's own identity until the
 	// mutation commits, so self Display Erasure must be refused rather than stall.
 	let self_erasure = tokio::time::timeout(
 		std::time::Duration::from_secs(20),
@@ -904,7 +908,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			&format!("/api/dashboard/identities/{identity_id}/display-erasure"),
 			true,
 			true,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			Value::Null,
 		),
@@ -913,7 +917,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.expect("self display erasure must not wait on the boundary's identity lock");
 	assert_eq!(self_erasure.0, 403, "{}", self_erasure.1);
 	// Approving or rejecting one's own Registration Request would also wait on
-	// that lock, so the boundary refuses it before taking the operator lease.
+	// that lock, so the boundary refuses it before taking the Deployment Administrator lease.
 	let own_registration = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -947,7 +951,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 				&format!("/api/dashboard/registrations/{own_registration}/{decision}"),
 				true,
 				true,
-				Some("operator"),
+				Some("deployment_administrator"),
 				false,
 				body,
 			),
@@ -961,12 +965,12 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.clone()
 		.request(Method::GET, app.url("/api/events/stream?after=-1"))
 		.header("cookie", "aidash-session=fixture-session")
-		.header("x-aidash-context", "operator")
+		.header("x-aidash-context", "deployment_administrator")
 		.send()
 		.await
 		.unwrap();
 	assert_eq!(stream_response.status(), 200);
-	let mut operator_stream = stream_response.bytes_stream();
+	let mut deployment_administrator_stream = stream_response.bytes_stream();
 	assert_eq!(
 		call(
 			&app,
@@ -974,7 +978,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			"/api/generation/acme/tasks/00000000-0000-0000-0000-000000000001/assign",
 			true,
 			true,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			Value::Null
 		)
@@ -1002,20 +1006,23 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			&run_management,
 			true,
 			true,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			json!({"action":"pause"})
 		)
 		.await
 		.0,
 		403,
-		"a revoked operator grant must still deny management writes"
+		"a revoked Deployment Administrator grant must still deny management writes"
 	);
 	assert!(
-		tokio::time::timeout(std::time::Duration::from_secs(7), operator_stream.next())
-			.await
-			.unwrap()
-			.is_none()
+		tokio::time::timeout(
+			std::time::Duration::from_secs(7),
+			deployment_administrator_stream.next()
+		)
+		.await
+		.unwrap()
+		.is_none()
 	);
 	assert_eq!(
 		call(
@@ -1208,7 +1215,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			.bind("acme")
 			.bind(&subject)
 			.bind(Sha256::digest(format!("mapping-token-{index}")).to_vec())
-			.bind("operator")
+			.bind("deployment_administrator")
 			.execute(federation.store.pool.driver())
 			.await
 			.unwrap();
@@ -1566,7 +1573,7 @@ async fn google_session_provisions_private_access_without_registration(
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
-	.replace("acme", 0, shared_policy, "operator")
+	.replace("acme", 0, shared_policy, "deployment_administrator")
 	.await
 	.unwrap();
 	let mut pending = None;
@@ -1601,9 +1608,9 @@ async fn google_session_provisions_private_access_without_registration(
 	}))
 	.await;
 	let (status, session) = &sessions[0];
-	// Assert: personal access is available without granting Operator authority.
+	// Assert: personal access is available without granting Deployment Administrator authority.
 	assert_eq!(*status, 200, "{session}");
-	assert_eq!(session["operator"], false);
+	assert_eq!(session["deployment_administrator"], false);
 	assert_eq!(session["personal_account"], true);
 	assert_eq!(session["mappings"].as_array().unwrap().len(), 1);
 	assert_eq!(session["mappings"][0]["personal"], true);
@@ -1667,7 +1674,7 @@ async fn google_session_provisions_private_access_without_registration(
 			"/api/dashboard/registrations",
 			true,
 			false,
-			Some("operator"),
+			Some("deployment_administrator"),
 			false,
 			Value::Null,
 		)
@@ -1818,7 +1825,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	#[from(google_browser)]
 	fixture: GoogleBrowser,
 ) {
-	// Arrange: an Operator already created data in the reserved tenant namespace.
+	// Arrange: a Deployment Administrator already created data in the reserved tenant namespace.
 	let tenant = format!("personal-{}", fixture.identity.simple());
 	let policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
@@ -1828,7 +1835,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 		pool: fixture.federation.store.pool.clone(),
 	};
 	let before = authorization
-		.replace(&tenant, 0, policy, "operator")
+		.replace(&tenant, 0, policy, "deployment_administrator")
 		.await
 		.unwrap();
 	// Act: resumable Google authentication must not claim existing tenant data.
@@ -1933,7 +1940,12 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 			let mut policy = authorization.snapshot(tenant).await.unwrap();
 			policy.bundle.subjects.get_mut("owner").unwrap().enabled = false;
 			authorization
-				.replace(tenant, policy.revision, policy.bundle, "operator")
+				.replace(
+					tenant,
+					policy.revision,
+					policy.bundle,
+					"deployment_administrator",
+				)
 				.await
 				.unwrap();
 		}
@@ -2110,7 +2122,7 @@ async fn google_identity(
 }
 
 /// A browser request through the session `session`, optionally acting in
-/// `context`; `None` as the session sends the operator bearer token instead.
+/// `context`; `None` as the session sends the Deployment Administrator bearer token instead.
 async fn browser_call(
 	app: &common::TestApplication,
 	method: &str,
@@ -2131,7 +2143,10 @@ async fn browser_call(
 			.header("cookie", format!("aidash-session={session}"))
 			.header("origin", "http://127.0.0.1:8080")
 			.header("x-aidash-csrf", format!("{session}-csrf")),
-		None => request.header("authorization", "Bearer operator-execution-fixture"),
+		None => request.header(
+			"authorization",
+			"Bearer deployment-administrator-execution-fixture",
+		),
 	};
 	if let Some(context) = context {
 		request = request.header("x-aidash-context", context);
@@ -2144,9 +2159,9 @@ async fn browser_call(
 	)
 }
 
-/// Registers `session`'s External Identity and lets an Operator approve it
+/// Registers `session`'s External Identity and lets a Deployment Administrator approve it
 /// into `subject` of `tenant`, returning the approved Mapping.
-async fn operator_mapped(
+async fn deployment_administrator_mapped(
 	app: &common::TestApplication,
 	session: &str,
 	tenant: &str,
@@ -2185,7 +2200,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	#[from(google_browser)]
 	fixture: GoogleBrowser,
 ) {
-	// Arrange: an Operator seeds an unbound Tenant with an administrator and a
+	// Arrange: a Deployment Administrator seeds an unbound Tenant with an administrator and a
 	// member. Google sign-in has no Tenant Bindings at all.
 	let actions = aidash_domain::identity::tenant_administration::ACTIONS;
 	let policy: PolicyBundle = serde_json::from_value(json!({
@@ -2212,15 +2227,15 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
-	.replace("acme", 0, policy, "operator")
+	.replace("acme", 0, policy, "deployment_administrator")
 	.await
 	.unwrap();
 	let app = &fixture.app;
 	google_identity(&fixture.federation, "alice", "alice-session").await;
 	google_identity(&fixture.federation, "bob", "bob-session").await;
 	google_identity(&fixture.federation, "carol", "carol-session").await;
-	let alice = operator_mapped(app, "alice-session", "acme", "root").await;
-	let bob = operator_mapped(app, "bob-session", "acme", "bob").await;
+	let alice = deployment_administrator_mapped(app, "alice-session", "acme", "root").await;
+	let bob = deployment_administrator_mapped(app, "bob-session", "acme", "bob").await;
 	let alice_context = format!("mapping:{}", alice["id"].as_str().unwrap());
 	let bob_context = format!("mapping:{}", bob["id"].as_str().unwrap());
 	// Carol's request is generic: it is addressed to no Tenant.
@@ -2567,7 +2582,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fix
 }
 
 #[rstest::fixture]
-fn unmapped_identity_stays_denied_until_operator_approves_existing_user_fixture_runtime(
+fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture_runtime(
 	#[default("https://accounts.google.com")] issuer: &str,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
@@ -2592,9 +2607,9 @@ fn unmapped_identity_stays_denied_until_operator_approves_existing_user_fixture_
 	.shared()
 }
 #[rstest::fixture]
-async fn unmapped_identity_stays_denied_until_operator_approves_existing_user_fixture(
+async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture(
 	#[default("https://accounts.google.com")] _issuer: &str,
-	#[from(unmapped_identity_stays_denied_until_operator_approves_existing_user_fixture_runtime)]
+	#[from(unmapped_identity_stays_denied_until_deployment_administrator_approves_existing_user_fixture_runtime)]
 	#[with(_issuer)]
 	_runtime: common::RuntimeFuture,
 	#[from(common::native_application)]

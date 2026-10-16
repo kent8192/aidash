@@ -145,11 +145,11 @@ async fn bootstrap_with_resources(
 	semantic: bool,
 	files: bool,
 ) -> (Value, String, Uuid) {
-	let operator = &f.config.api_token;
+	let deployment_administrator = &f.config.api_token;
 	let policy = policy(&f.config.node_id);
 	let (status, snapshot) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":0,"bundle":policy}),
@@ -161,11 +161,18 @@ async fn bootstrap_with_resources(
 	];
 	if semantic {
 		let memory = json!({"id":"semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Semantic Memory"},"description":{"en":"Explicit retrieval opt-in"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}});
-		let (status, result) = request(app, operator, "POST", "/api/registry", memory).await;
+		let (status, result) = request(
+			app,
+			deployment_administrator,
+			"POST",
+			"/api/registry",
+			memory,
+		)
+		.await;
 		assert_eq!(status, 200, "{result}");
 		let (status, result) = request(
 			app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"semantic-memory","version":"1.0.0"},"enabled":true,"expected_revision":0}),
@@ -186,7 +193,7 @@ async fn bootstrap_with_resources(
 		(
 			"tool",
 			"http",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"idempotent"}}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 		),
 		(
 			"agent",
@@ -196,14 +203,20 @@ async fn bootstrap_with_resources(
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		assert_eq!(
-			request(app, operator, "POST", "/api/registry", entry)
-				.await
-				.0,
+			request(
+				app,
+				deployment_administrator,
+				"POST",
+				"/api/registry",
+				entry
+			)
+			.await
+			.0,
 			200
 		);
 		let (status, response) = request(
 			app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -213,7 +226,7 @@ async fn bootstrap_with_resources(
 	}
 	let (status, credential) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/credentials",
 		json!({"subject":"alice"}),
@@ -446,7 +459,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				endpoint: "http://localhost:8080".into(),
 				database_url: database.url.clone(),
 				nats_url: database.environment.nats_url.clone(),
-				api_token: "operator-execution-fixture".into(),
+				api_token: "deployment-administrator-execution-fixture".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
 				default_host_packages: vec![],

@@ -6,7 +6,7 @@ use crate::{
 };
 
 impl Authorization {
-	/// Operator maintenance capability; the actor string labels history and grants no authority.
+	/// Deployment Administrator maintenance capability; the actor string labels history and grants no authority.
 	pub async fn set_catalog(
 		&self,
 		tenant: &str,
@@ -20,7 +20,7 @@ impl Authorization {
 		let binding = aidash_application::authorization::catalog::set_catalog(
 			&mut crate::bootstrap::catalog_administrator_scope(
 				&mut tx,
-				aidash_domain::identity::Principal::Operator,
+				aidash_domain::identity::Principal::DeploymentAdministrator,
 			),
 			tenant,
 			entry,
@@ -33,12 +33,12 @@ impl Authorization {
 		Ok(binding)
 	}
 
-	/// Operator maintenance capability, shared with the protected management routes.
+	/// Deployment Administrator maintenance capability, shared with the protected management routes.
 	pub async fn catalog(&self, tenant: &str) -> Result<Vec<Binding>> {
 		aidash_application::authorization::catalog::administration(
 			&mut crate::bootstrap::catalog_administration_read(
 				&self.pool,
-				aidash_domain::identity::Principal::Operator,
+				aidash_domain::identity::Principal::DeploymentAdministrator,
 			),
 			tenant,
 		)

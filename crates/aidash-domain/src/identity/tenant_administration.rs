@@ -1,5 +1,5 @@
 //! Tenant Administrator rules. Assignable Groups bound the only authority a
-//! Tenant Administrator can confer; Operator authority is never Tenant-scoped.
+//! Tenant Administrator can confer; Deployment Administrator authority is never Tenant-scoped.
 use crate::policy::{PolicyBundle, Subject, SubjectKind, identifier};
 use crate::{Error, Result};
 use serde_json::json;

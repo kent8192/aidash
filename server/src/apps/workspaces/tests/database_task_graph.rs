@@ -34,12 +34,12 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 		.await
 		.unwrap();
 	let ancestor = store
-		.create_task(workspace.id, &task, "operator", None)
+		.create_task(workspace.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![ancestor.id];
 	let dependent = store
-		.create_task(workspace.id, &task, "operator", None)
+		.create_task(workspace.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	// ancestor -> child -> dependent -> ancestor is a cycle even though the
@@ -47,7 +47,12 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	task.parent_id = Some(ancestor.id);
 	task.dependencies = vec![dependent.id];
 	let rejected = store
-		.create_task(workspace.id, &task, "operator", Some("cycle"))
+		.create_task(
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			Some("cycle"),
+		)
 		.await;
 	// The latest development schema rejects the combined graph through its
 	// deferred constraint trigger. Preserve its failure class and rollback.
@@ -78,16 +83,26 @@ async fn dependency_projection_is_atomic_and_idempotent(
 		.await
 		.unwrap();
 	let dependency = store
-		.create_task(workspace.id, &task, "operator", None)
+		.create_task(workspace.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![dependency.id, dependency.id];
 	let saved = store
-		.create_task(workspace.id, &task, "operator", Some("projection"))
+		.create_task(
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			Some("projection"),
+		)
 		.await
 		.unwrap();
 	let repeated = store
-		.create_task(workspace.id, &task, "operator", Some("projection"))
+		.create_task(
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			Some("projection"),
+		)
 		.await
 		.unwrap();
 	assert_eq!(saved.id, repeated.id);
@@ -104,7 +119,9 @@ async fn dependency_projection_is_atomic_and_idempotent(
 		.create_workspace("Other", "Keep dependencies local")
 		.await
 		.unwrap();
-	let rejected = store.create_task(other.id, &task, "operator", None).await;
+	let rejected = store
+		.create_task(other.id, &task, "deployment_administrator", None)
+		.await;
 	assert!(matches!(rejected, Err(Error::Invalid(_))), "{rejected:?}");
 	assert!(store.tasks(Some(other.id)).await.unwrap().is_empty());
 }
@@ -131,12 +148,12 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 		.await
 		.unwrap();
 	let target = store
-		.create_task(workspace.id, &task, "operator", None)
+		.create_task(workspace.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![target.id];
 	let source = store
-		.create_task(workspace.id, &task, "operator", None)
+		.create_task(workspace.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();
@@ -194,7 +211,7 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 		.await
 		.unwrap();
 	let target = store
-		.create_task(workspace.id, &task, "operator", None)
+		.create_task(workspace.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![target.id];
@@ -202,7 +219,7 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	let tasks = Task::objects();
 	let (created, deleted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
 		tokio::join!(
-			store.create_task(workspace.id, &task, "operator", None),
+			store.create_task(workspace.id, &task, "deployment_administrator", None),
 			tasks.delete_with_conn(&mut db, target.id)
 		)
 	})

@@ -1506,7 +1506,7 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 }
 
 #[rstest::rstest]
-#[case::operator(false)]
+#[case::deployment_administrator(false)]
 #[case::subject(true)]
 #[tokio::test]
 async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_retry(
@@ -1584,7 +1584,11 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 		.fetch_all(f.store.pool.driver())
 		.await
 		.unwrap();
-	let expected_actor = if subject { "alice" } else { "operator" };
+	let expected_actor = if subject {
+		"alice"
+	} else {
+		"deployment_administrator"
+	};
 	assert_eq!(
 		history,
 		vec![

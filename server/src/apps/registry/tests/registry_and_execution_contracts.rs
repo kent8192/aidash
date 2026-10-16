@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":"http://127.0.0.1:9/original","credential_env":null,"replay":"read_only"}}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":"http://127.0.0.1:9/original","replay":"read_only"}}})).unwrap()
 }
 
 async fn register_keyed(
@@ -186,7 +186,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	};
 	let parent = f
 		.store
-		.create_task(workspace.id, &input, "operator", None)
+		.create_task(workspace.id, &input, "deployment_administrator", None)
 		.await
 		.unwrap();
 	let mut child = input.clone();
@@ -194,14 +194,14 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	child.dependencies = vec![parent.id];
 	assert!(
 		f.store
-			.create_task(workspace.id, &child, "operator", None)
+			.create_task(workspace.id, &child, "deployment_administrator", None)
 			.await
 			.is_err()
 	);
 	child.dependencies.clear();
 	let child = f
 		.store
-		.create_task(workspace.id, &child, "operator", None)
+		.create_task(workspace.id, &child, "deployment_administrator", None)
 		.await
 		.unwrap();
 	let mut grandchild = input;
@@ -209,7 +209,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	grandchild.dependencies = vec![parent.id];
 	assert!(
 		f.store
-			.create_task(workspace.id, &grandchild, "operator", None)
+			.create_task(workspace.id, &grandchild, "deployment_administrator", None)
 			.await
 			.is_err()
 	);
@@ -321,7 +321,11 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.create_workspace("operator", "goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("deployment_administrator", "goal")
+		.await
+		.unwrap();
 	let task = f
 		.store
 		.create_task(
@@ -841,7 +845,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_conversation_returns_the_committed_task_revision(
+async fn deployment_administrator_conversation_returns_the_committed_task_revision(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,

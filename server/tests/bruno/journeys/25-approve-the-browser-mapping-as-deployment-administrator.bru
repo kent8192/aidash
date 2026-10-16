@@ -1,5 +1,5 @@
 meta {
-  name: Approve the browser mapping as operator
+  name: Approve the browser mapping as Deployment Administrator
   type: http
   seq: 25
 }
@@ -13,7 +13,7 @@ post {
 headers {
   Accept: application/json
   Content-Type: application/json
-  Authorization: Bearer {{operator_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 body:json {

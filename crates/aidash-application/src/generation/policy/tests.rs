@@ -1,5 +1,5 @@
 use super::*;
-use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::ports::registry::CoreToolCatalog;
 use aidash_domain::{capabilities::CoreCapabilities, provider::ToolSpec, registry::EntityRef};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -10,12 +10,6 @@ use std::{
 	time::Duration,
 };
 
-struct NoSecrets;
-impl Credentials for NoSecrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("policy admission must not execute an approved provider")
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
@@ -24,7 +18,7 @@ impl CoreToolCatalog for CoreContracts {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(NoSecrets), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 #[fixture]
 fn spec() -> Spec {
@@ -80,7 +74,7 @@ struct Repository {
 impl Repository {
 	fn new() -> Self {
 		Self {
-			principal: Principal::Operator,
+			principal: Principal::DeploymentAdministrator,
 			state: Arc::new(Mutex::new(State {
 				document: bundle(),
 				approved: crate::test_support::builtin_entries("aidash://local")
@@ -416,7 +410,7 @@ async fn unchanged_disable_survives_revoked_catalog_and_invalid_authorization_do
 			"bundle:tenant",
 			"previous:tenant:policy:7",
 			"cas:tenant:policy:7",
-			"history:tenant:policy:8:operator",
+			"history:tenant:policy:8:deployment_administrator",
 			"load:tenant:policy:false",
 			"finish"
 		]
@@ -537,7 +531,7 @@ async fn stale_revision_does_not_append_history(spec: Spec, validation: Definiti
 }
 #[rstest]
 #[case::subject(true)]
-#[case::operator(false)]
+#[case::deployment_administrator(false)]
 #[tokio::test]
 async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(
 	spec: Spec,

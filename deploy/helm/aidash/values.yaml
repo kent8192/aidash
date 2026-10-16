@@ -193,7 +193,7 @@ execution:
     idle_seconds: 1800
 
 # Stable across Pod replacements. Provision once with `aidash activation-provision`
-# using operator credentials and these same values; runtime does not create objects.
+# using NATS operator credentials and these same values; runtime does not create objects.
 activation:
   namespace: default
   maxAgeSeconds: 86400

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ports::marketplace::{DefinitionScope, DistributionScope};
-use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::ports::registry::CoreToolCatalog;
 use aidash_domain::policy::Resource;
 use aidash_domain::registry::Entry;
 use async_trait::async_trait;
@@ -10,12 +10,6 @@ use std::{
 	sync::Arc,
 };
 
-struct UnusedCredentials;
-impl Credentials for UnusedCredentials {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("structural staging never resolves a local credential")
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(
@@ -26,7 +20,7 @@ impl CoreToolCatalog for CoreContracts {
 	}
 }
 pub(crate) fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(UnusedCredentials), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 pub(crate) fn entry(id: &str) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"skill","name":{"en":id},"description":{"en":"Fixture"},"config":{"instructions":"Frozen instructions"}})).unwrap()

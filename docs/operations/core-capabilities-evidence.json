@@ -386,7 +386,7 @@
           "source": "server/src/apps/execution/capabilities/services/limits.rs"
         },
         {
-          "name": "network_tests::broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact",
+          "name": "network_tests::broker_response_budget_uses_the_node_profile_and_retains_no_partial_artifact",
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities/network.rs"
         },
         {

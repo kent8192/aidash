@@ -48,9 +48,10 @@ import {
   type SettingsSection,
 } from "./model";
 
-const operatorSections: Partial<Record<SettingsSection, true>> = {
-  deployment: true,
-};
+const deploymentAdministratorSections: Partial<Record<SettingsSection, true>> =
+  {
+    deployment: true,
+  };
 
 const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   node: Server,
@@ -84,19 +85,20 @@ function useSectionLabel() {
 function SettingsFrame({
   section,
   select,
-  operator,
+  deploymentAdministrator,
   children,
 }: {
   section: SettingsSection;
   select: (section: SettingsSection) => void;
-  operator: boolean;
+  deploymentAdministrator: boolean;
   children: ReactNode;
 }) {
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const label = useSectionLabel();
   const sections = visibleSettingsSections.filter(
-    (value) => operator || !operatorSections[value],
+    (value) =>
+      deploymentAdministrator || !deploymentAdministratorSections[value],
   );
   return (
     <section className="collab-settings flex h-full min-h-0 flex-col">
@@ -338,7 +340,8 @@ function NodeView({
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
-  const operator = data.access.kind === "operator";
+  const deploymentAdministrator =
+    data.access.kind === "deployment_administrator";
   return (
     <div className="grid max-w-4xl min-w-0 gap-6">
       <Panel title={copy.node}>
@@ -374,7 +377,7 @@ function NodeView({
           <p className="text-[13px] text-foreground">{t("administrator")}</p>
         )}
       </Panel>
-      {operator && (
+      {deploymentAdministrator && (
         <Panel
           title={t("connectedNodes")}
           action={
@@ -450,9 +453,12 @@ export function Configuration({
   channel?: string;
 }) {
   const { t, locale } = useI18n();
-  const operator = data.access.kind === "operator";
-  const restricted = !operator && operatorSections[section] === true;
-  const registerAction = operator && (
+  const deploymentAdministrator =
+    data.access.kind === "deployment_administrator";
+  const restricted =
+    !deploymentAdministrator &&
+    deploymentAdministratorSections[section] === true;
+  const registerAction = deploymentAdministrator && (
     <Button
       type="button"
       onClick={() =>
@@ -464,12 +470,18 @@ export function Configuration({
     </Button>
   );
   return (
-    <SettingsFrame section={section} select={select} operator={operator}>
+    <SettingsFrame
+      section={section}
+      select={select}
+      deploymentAdministrator={deploymentAdministrator}
+    >
       {restricted ? (
         <Notice role="status">{t("administratorsOnly")}</Notice>
       ) : (
         <>
-          {section === "deployment" && operator && <DeploymentPage />}
+          {section === "deployment" && deploymentAdministrator && (
+            <DeploymentPage />
+          )}
           {section === "providerCredentials" && (
             <ProviderCredentialsPage access={data.access} />
           )}
@@ -498,14 +510,14 @@ export function Configuration({
             </ToolSection>
           )}
           {section === "marketplace" &&
-            !operator &&
+            !deploymentAdministrator &&
             data.access.kind === "subject" && (
               <ScopedMarketplace
                 key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
                 identity={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
               />
             )}
-          {section === "marketplace" && operator && (
+          {section === "marketplace" && deploymentAdministrator && (
             <MarketplaceAdministration />
           )}
           {section === "node" && (

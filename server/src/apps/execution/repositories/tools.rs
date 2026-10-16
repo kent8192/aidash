@@ -108,11 +108,7 @@ impl ToolOperations for Operations {
 				.await
 				.map_err(Into::into)
 		} else if ctx.home.local() {
-			let mut lease = crate::semantic::service::Lease::begin(
-				&ctx.store,
-				&crate::authorization::identity::Actor::Operator,
-			)
-			.await?;
+			let mut lease = crate::semantic::service::Lease::without_subject(&ctx.store).await?;
 			let result = crate::semantic::native_memory::run_mutate(
 				&ctx.store, &mut lease, &ctx.run, key, changes,
 			)
@@ -136,11 +132,7 @@ impl ToolOperations for Operations {
 					.await?
 			));
 		}
-		let mut lease = crate::semantic::service::Lease::begin(
-			&ctx.store,
-			&crate::authorization::identity::Actor::Operator,
-		)
-		.await?;
+		let mut lease = crate::semantic::service::Lease::without_subject(&ctx.store).await?;
 		let result = crate::semantic::native_memory::run_recall(
 			&ctx.store,
 			&mut lease,

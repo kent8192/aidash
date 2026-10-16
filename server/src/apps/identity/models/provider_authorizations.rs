@@ -26,7 +26,7 @@ pub struct ProviderAuthorization {
 	pub browser_hash: String,
 	#[field]
 	pub session_id: Uuid,
-	/// The dashboard context selector (`operator` or `mapping:<id>`) under
+	/// The dashboard context selector (`deployment_administrator` or `mapping:<id>`) under
 	/// which the callback re-derives and re-authorizes the actor.
 	#[field(field_type = "text")]
 	pub context: String,

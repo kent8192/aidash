@@ -19,7 +19,7 @@ pub fn author_identity(
 	owner: Option<&str>,
 ) -> Result<(String, String)> {
 	match actor {
-		Principal::Operator => {
+		Principal::DeploymentAdministrator => {
 			let tenant = tenant
 				.filter(|s| !s.trim().is_empty())
 				.ok_or_else(|| Error::Invalid("tenant is required".into()))?;
@@ -43,7 +43,7 @@ pub fn author_identity(
 }
 pub fn owner_only(actor: &Principal, draft: &Draft) -> Result<()> {
 	match actor {
-		Principal::Operator => Ok(()),
+		Principal::DeploymentAdministrator => Ok(()),
 		Principal::Subject { tenant, subject }
 			if tenant == &draft.tenant && subject == &draft.owner =>
 		{

@@ -8,7 +8,7 @@ use reinhardt::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// A scoped admission or an operator's exact task delegation owns the journal.
+/// A scoped admission or a Deployment Administrator's exact task delegation owns the journal.
 #[derive(Clone, Copy)]
 pub(crate) enum Journal {
 	Scoped(Uuid),

@@ -1,4 +1,4 @@
-//! Node identity, operator access, and background execution settings.
+//! Node identity, Deployment Administrator access, and background execution settings.
 use crate::config::{validate_endpoint, validate_node_id};
 use reinhardt::conf::settings::fragment::SettingsValidation;
 use reinhardt::conf::settings::profile::Profile;
@@ -26,7 +26,7 @@ pub struct NodeSettings {
 	#[setting(default = "30")]
 	#[validate(range(min = 3, max = 3600))]
 	pub lease_seconds: i32,
-	/// Pending operator packages for newly created tenants; never an approval.
+	/// Pending Node packages for newly created tenants; never an approval.
 	#[setting(default = "Vec::new()", leaf)]
 	pub default_host_packages: Vec<String>,
 	#[setting(default = "4")]

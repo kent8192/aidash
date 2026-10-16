@@ -35,7 +35,7 @@ pub(crate) async fn describe(
 ) -> Result<Intent> {
 	let source = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 	aidash_application::generation::foreign::home::describe(
-		&crate::bootstrap::generation_home_repository(&f, Actor::Operator),
+		&crate::bootstrap::peer_generation_home_repository(&f),
 		source,
 		input.intent_id,
 	)

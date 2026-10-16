@@ -52,7 +52,12 @@ export function HostPackages({
   const [message, setMessage] = useState("");
   const attempt = useRef<{ fingerprint: string; key: string }>(null);
   const catalog = useQuery({
-    queryKey: ["marketplace", "operator", tenant, "review-catalog"],
+    queryKey: [
+      "marketplace",
+      "deployment_administrator",
+      tenant,
+      "review-catalog",
+    ],
     queryFn: () => authorizationCatalog(tenant),
     enabled: !!tenant,
     retry: false,

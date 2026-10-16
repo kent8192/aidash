@@ -68,7 +68,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 /// Node providers of the host-owned research contract and the operations each
 /// implements. Providers are interchangeable: the host behavior is selected by
 /// the research operation, so replacing one search provider with another needs
-/// no operator change.
+/// no configuration change.
 pub const RESEARCH_PROVIDERS: &[(&str, &[&str], ToolTier)] = &[
 	("research.brave@1", &["search"], ToolTier::Host),
 	("research.page@1", &["fetch", "find"], ToolTier::Host),

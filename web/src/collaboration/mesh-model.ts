@@ -231,7 +231,7 @@ export function buildMeshGraph(
         (e.kind === "agent" && !reference(e.config?.cluster)),
     ))
       edge(local, entityKey(nodeId, e.kind, e), "hosts");
-  } else if (data.access.kind === "operator") {
+  } else if (data.access.kind === "deployment_administrator") {
     const local = resource("remote", nodeId, nodeId);
     nodes.get(local)!.status = "LOCAL";
     for (const peer of data.peers.filter((p) => p.enabled)) {

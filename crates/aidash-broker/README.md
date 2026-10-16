@@ -1,7 +1,7 @@
 # Credential Broker
 
-Community, Apache-2.0. `aidash-capability` contains portable Capability Token
-contracts; `aidash-broker` is a persistence-free Cloud Run binary. Production
+`aidash-capability` contains portable Capability Token contracts;
+`aidash-broker` is a persistence-free Cloud Run binary. Production
 composition uses `aidash-integrations::capability` for minimal GCP REST calls.
 There is no self-hosted broker mode and no GCP SDK dependency. Self-hosted
 workers continue to use environment credentials directly.
@@ -210,7 +210,7 @@ grant in the BYOK project.
 
 Managed `credential_brokers[environment_id]` also accepts `signing_version`
 (default `"1"`) and `verification_versions` (default `["1"]`). After a human
-operator creates and enables a replacement KMS version, set, for example,
+whoever runs the Deployment creates and enables a replacement KMS version, set, for example,
 `signing_version = "2"` and `verification_versions = ["1", "2"]`. The worker
 descriptor selects version 2 while the broker verifies both versions. Keep the
 old public key until all capabilities signed with it expire, then remove it from
@@ -235,9 +235,9 @@ Record the descriptor so reconciliation does not repeat the reload;
 reload failure keeps the release gated. Failed deployments that were
 deliberately gated, stopped hosts and retired hosts remain gated.
 
-### Operators who applied a pre-merge draft
+### If a pre-merge draft was applied
 
-This change has never been applied to a Cloud environment. If an operator applied
+This change has never been applied to a Cloud environment. If anyone applied
 an earlier draft that kept keys in the environments state, pause automation and
 back up both remote Terraform states before switching ownership. Keep the same
 key IDs and `broker_signing_region`; Cloud KMS [key names cannot be reused after
@@ -254,7 +254,7 @@ terraform -chdir=infra/gcp/environments state rm 'module.credential_broker["test
 
 Use the imported `broker_signing_keys` output in `credential_brokers`. Review both
 plans and require no key/key-version destruction or replacement before any apply
-or automation resume. These are operator-only state/import steps; no migration
+or automation resume. These are manual state/import steps; no migration
 automation or Cloud mutation runs as part of this implementation.
 
 ### Runtime composition

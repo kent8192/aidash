@@ -78,8 +78,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         api("/api/registry", entry("tool", identifier, alias, tool["description"], json.loads(tool["schema"]), {
             "registry_node": node, "provider": "integration.http@1", "operation": "invoke",
             "default_alias": alias, "tier": "integration", "narrow": {},
-            "transport": {"transport": "http", "endpoint": endpoint, "credential_env": None,
-                          "replay": "idempotent"}}))
+            "transport": {"transport": "http", "endpoint": endpoint, "replay": "idempotent"}}))
         return identifier
 
     def register_skill(case_id, skill_id):
@@ -237,7 +236,7 @@ def main():
     for name in ("base-url", "model-id", "model-version", "server-revision", "output"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--token-env", default="AIDASH_EVALUATION_TOKEN",
-                        help="environment variable holding the operator bearer token")
+                        help="environment variable holding the Deployment Administrator bearer token")
     parser.add_argument("--fixture", type=Path, default=ROOT / "tests/fixtures/capability_exposure_evaluation.toml")
     parser.add_argument("--tool-endpoint", default=None,
                         help="HTTP endpoint declared by the fixture tools (contacted only with --approve-external-calls)")

@@ -16,8 +16,9 @@ removed from model and embedding configurations in #158: `provider_access`
 has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
 Every model-provider key therefore comes from a Provider Credential Store, on
-Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
-store references keep their `AIDASH_SECRET_*` configuration.
+Cloud and self-hosted nodes alike. Peer, sandbox, runner and vector store
+references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
+transports can no longer name one (#296).
 
 Jev also runs through OpenRouter, at `POST {base}/systemone` with
 `provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
@@ -40,7 +41,7 @@ Key Material.
 A model or embedding configuration without `provider_credential` is a Keyless
 endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
 and Aidash promises nothing about what it retains (ADR 0036). It may connect
-only to public addresses unless the Deployment's Operators list its exact
+only to public addresses unless the Deployment Administrators list its exact
 origin in `[keyless_endpoints] permitted_private_origins` (Helm:
 `keylessEndpoints.permittedPrivateOrigins`; environment:
 `AIDASH_KEYLESS_PRIVATE_ORIGINS`, comma-separated). An origin is
@@ -102,7 +103,7 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
    with `provider_authorization=connected|unbound|reconnected|denied|failed`
    (and the parameters below) added to its query, before any fragment. The
    dashboard reopens the Tenant the authorization started for, including an
-   operator's selected Tenant, and shows the outcome only there.
+   Deployment Administrator's selected Tenant, and shows the outcome only there.
    A connection reports `connected` only when the new Provider Credential is
    bound afterwards; when another active binding wins (for example a
    concurrent connection) or the actor may not update the binding, the key is
@@ -174,8 +175,8 @@ Both kinds require the separate `provider_credentials.fingerprint_key` setting.
 It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
 random raw string of at least 32 bytes, through `{ env = "..." }` or
 `{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
-`AIDASH_SECRET_*` environment names are rejected because Registry configurations
-can resolve that namespace. Names that skill imports pass to the `gh` CLI, such
+`AIDASH_SECRET_*` environment names are rejected because that namespace holds
+Deployment secrets such as Peer Credentials. Names that skill imports pass to the `gh` CLI, such
 as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
 because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
 Fingerprints use independent derived Tenant keys,
@@ -249,7 +250,7 @@ Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
 callback; these are the Provider Credential management permissions. Resources
 carry the provider attribute and UUID or Provider Catalog ID respectively.
 Authenticated Subjects may operate only within their Tenant; authenticated
-operators retain explicit policy decision audits. Responses use
+Deployment Administrators retain explicit policy decision audits. Responses use
 `Cache-Control: no-store`.
 
 Tenant settings show Provider connections (Connect, Reconnect), metadata,

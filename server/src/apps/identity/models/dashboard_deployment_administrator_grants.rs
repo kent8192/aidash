@@ -1,13 +1,16 @@
-//! Persistent dashboard_operator_grants records.
+//! Persistent dashboard_deployment_administrator_grants records.
 
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[model(app_label = "identity", table_name = "dashboard_operator_grants")]
+#[model(
+	app_label = "identity",
+	table_name = "dashboard_deployment_administrator_grants"
+)]
 #[derive(Serialize, Deserialize)]
-pub struct DashboardOperatorGrant {
+pub struct DashboardDeploymentAdministratorGrant {
 	#[field(primary_key = true)]
 	pub identity_id: uuid::Uuid,
 	#[field(default = true)]
@@ -16,7 +19,7 @@ pub struct DashboardOperatorGrant {
 	pub revision: i64,
 }
 
-impl DashboardOperatorGrant {
+impl DashboardDeploymentAdministratorGrant {
 	pub(crate) async fn enabled_for_identity<E: OrmExecutor>(
 		db: &mut E,
 		identity: Uuid,
@@ -29,4 +32,4 @@ impl DashboardOperatorGrant {
 	}
 }
 
-impl DashboardOperatorGrant {}
+impl DashboardDeploymentAdministratorGrant {}

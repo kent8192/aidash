@@ -28,7 +28,7 @@ pub struct Draft {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateDraft {
-	/// Operators must specify both fields. Authenticated subjects use their own identity.
+	/// Deployment Administrators must specify both fields. Authenticated subjects use their own identity.
 	pub tenant: Option<String>,
 	pub owner: Option<String>,
 	pub entry: Entry,

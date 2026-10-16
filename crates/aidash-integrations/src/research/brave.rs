@@ -1,5 +1,5 @@
 //! Brave Web Search as a research search provider. Its key is a tool secret
-//! (`AIDASH_SECRET_*`) named by the operator's account profile, never a
+//! (`AIDASH_SECRET_*`) named by the Search account holder's account profile, never a
 //! Provider Credential. The host attributes every request to that account.
 use crate::research::Failure;
 use aidash_application::ports::research::{Outbound, SearchProvider};

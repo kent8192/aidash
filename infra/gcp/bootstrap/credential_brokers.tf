@@ -18,7 +18,7 @@ resource "google_service_account_iam_member" "deploy_act_as_broker" {
   member             = "serviceAccount:${google_service_account.automation["deploy"].email}"
 }
 // Immutable signing-key names outlive automation's broker enablement and VM
-// retirement. Bootstrap owns their state; operators must retain this namespace.
+// retirement. Bootstrap owns their state; whoever runs the Deployment must retain this namespace.
 resource "google_kms_key_ring" "capability" {
   for_each = var.byok_project_id != "" ? var.byok_broker_environments : toset([])
   project  = var.project_id

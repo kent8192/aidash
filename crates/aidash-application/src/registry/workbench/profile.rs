@@ -1,4 +1,4 @@
-//! Operator-owned profiles are exposed to subjects only after current draft-test authority and rule matching.
+//! Deployment Administrator-owned profiles are exposed to subjects only after current draft-test authority and rule matching.
 use crate::{
 	Error, Result,
 	ports::registry::workbench::profile::{ProfileConfiguration, ProfileRepository},
@@ -43,28 +43,18 @@ pub fn validate_real_rule(
 	let cfg = descriptor
 		.transport
 		.ok_or_else(|| Error::Invalid("real tests require an integration transport".into()))?;
+	// A production Tool carries no Deployment secret (#296), so a test
+	// credential, which only the Deployment's settings name, is always separate.
 	let isolated = match cfg {
-		ToolConfig::Http {
-			endpoint,
-			replay: _,
-			credential_env,
-		} => {
+		ToolConfig::Http { endpoint, .. } => {
 			let production = url::Url::parse(&endpoint)
 				.map_err(|_| Error::Invalid("invalid production endpoint".into()))?;
-			rule.read_only_verified
-				&& production != url
-				&& match credential_env {
-					Some(production) => rule
-						.credential_env
-						.as_ref()
-						.is_some_and(|test| test != &production),
-					None => true,
-				}
+			rule.read_only_verified && production != url
 		}
 		_ => false,
 	};
 	if !isolated {
-		return Err(Error::Invalid("real tests require an operator-verified read-only HTTP test endpoint and separate test credentials".into()));
+		return Err(Error::Invalid("real tests require a Deployment Administrator-verified read-only HTTP test endpoint and separate test credentials".into()));
 	}
 	Ok(())
 }
@@ -74,7 +64,7 @@ pub async fn list(
 ) -> Result<Vec<ProfileSummary>> {
 	let mut draft_tools = None;
 	let tenant = match repository.principal() {
-		Principal::Operator => query
+		Principal::DeploymentAdministrator => query
 			.tenant
 			.ok_or_else(|| Error::Invalid("tenant is required".into()))?,
 		Principal::Subject { tenant, .. } => {
@@ -130,7 +120,7 @@ pub async fn put(
 	id: String,
 	input: ProfileInput,
 ) -> Result<TestProfile> {
-	if repository.principal() != Principal::Operator {
+	if repository.principal() != Principal::DeploymentAdministrator {
 		return Err(Error::Forbidden);
 	}
 	if tenant.trim().is_empty() || id.trim().is_empty() || id.len() > 100 || input.rules.len() > 32

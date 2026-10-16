@@ -92,7 +92,7 @@ pub async fn list<R: DraftRepository>(repository: &R, page: DraftPage) -> Result
 		}
 	};
 	let tenant = match &actor {
-		Principal::Operator => None,
+		Principal::DeploymentAdministrator => None,
 		Principal::Subject { tenant, .. } => Some(tenant),
 	};
 	loop {
@@ -152,7 +152,7 @@ pub async fn duplicate<R: DraftRepository>(
 		id,
 		tenant: original.tenant.clone(),
 		owner: match &actor {
-			Principal::Operator => original.owner.clone(),
+			Principal::DeploymentAdministrator => original.owner.clone(),
 			Principal::Subject { subject, .. } => subject.clone(),
 		},
 		revision: 1,
@@ -176,7 +176,7 @@ pub async fn adopt<R: DraftRepository>(
 	input: AdoptInput,
 ) -> Result<Draft> {
 	let actor = repository.principal();
-	if !matches!(actor, Principal::Operator) {
+	if !matches!(actor, Principal::DeploymentAdministrator) {
 		return Err(Error::Forbidden);
 	}
 	let (tenant, owner) = author_identity(&actor, Some(&input.tenant), Some(&input.owner))?;

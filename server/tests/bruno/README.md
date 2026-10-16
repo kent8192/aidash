@@ -6,7 +6,7 @@ per endpoint. The checked-in `contracts.json` is compared with the real
 request, including the external OIDC authorization hops. It checks the public health and
 OIDC configuration responses, anonymous rejection, scoped credentials, workspace
 ownership, atomic revision conflicts, task creation and paging, strict JSON,
-content types, credential revocation, browser registration, operator approval,
+content types, credential revocation, browser registration, Deployment Administrator approval,
 opaque cookies, origin and CSRF enforcement, and server-side logout.
 
 The harness starts the compiled `manage server` custom command with isolated settings and

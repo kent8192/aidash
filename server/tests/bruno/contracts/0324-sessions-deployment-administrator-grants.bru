@@ -1,18 +1,18 @@
 meta {
-  name: 0324 sessions-admin-operator-grants - Application read preserves the typed response contract
+  name: 0324 sessions-deployment-administrator-grants - Application read preserves the typed response contract
   type: http
   seq: 324
 }
 
 get {
-  url: {{base_url}}/api/dashboard/operator-grants
+  url: {{base_url}}/api/dashboard/deployment-administrator-grants
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{operator_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

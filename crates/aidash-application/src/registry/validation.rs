@@ -1,14 +1,14 @@
-//! Definition admission resolves local credentials only through the injected port.
+//! Definition admission validates definitions without resolving any secret.
 use crate::{
 	Error, Result,
-	ports::{Credentials, bindings::ProviderCatalog, registry::CoreToolCatalog},
+	ports::{bindings::ProviderCatalog, registry::CoreToolCatalog},
 };
 use aidash_domain::exposure::{
 	self, CapabilityIdentity, CapabilityKind, DeferredBudgets, ExposureState,
 };
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
-	configuration::{validate_endpoint, validate_node_id, validate_secret_reference},
+	configuration::{validate_endpoint, validate_node_id},
 	model::ModelConfig,
 	registry::{AgentConfig, ClusterConfig, CompactorConfig, Entry},
 	tool::ToolConfig,
@@ -16,19 +16,28 @@ use aidash_domain::{
 use serde_json::Value;
 use std::sync::Arc;
 
+/// A tool never names a Deployment secret: the value would go to an endpoint
+/// the definition's author chose (#296).
+fn reject_deployment_secret(transport: Option<&Value>) -> Result<()> {
+	if transport.is_some_and(|transport| transport.get("credential_env").is_some()) {
+		return Err(Error::Invalid(
+			"tool transports cannot name a Deployment secret".into(),
+		));
+	}
+	Ok(())
+}
+
 #[derive(Clone)]
 pub struct DefinitionValidation {
-	credentials: Arc<dyn Credentials>,
 	provider_credentials_enabled: bool,
 	plan_connections_enabled: bool,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
-	pub fn new(credentials: Arc<dyn Credentials>, core_tools: Arc<dyn CoreToolCatalog>) -> Self {
+	pub fn new(core_tools: Arc<dyn CoreToolCatalog>) -> Self {
 		Self {
 			provider_credentials_enabled: false,
 			plan_connections_enabled: false,
-			credentials,
 			core_tools,
 		}
 	}
@@ -36,8 +45,8 @@ impl DefinitionValidation {
 		self.provider_credentials_enabled = configured;
 		self
 	}
-	/// Plan Connections are enabled only on Self-hosted Deployments whose
-	/// Operator turned them on (ADR 0007).
+	/// Plan Connections are enabled only on Self-hosted Deployments that
+	/// turned them on in their settings (ADR 0007).
 	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
 		self.plan_connections_enabled = enabled;
 		self
@@ -229,6 +238,7 @@ impl DefinitionValidation {
 				));
 			}
 			"tool" => {
+				reject_deployment_secret(e.config.get("transport"))?;
 				let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 					serde_json::from_value(e.config.clone()).map_err(|error| {
 						Error::Invalid(format!("invalid Tool descriptor: {error}"))
@@ -242,7 +252,7 @@ impl DefinitionValidation {
 					},
 				)?;
 				if let Some(transport) = &descriptor.transport {
-					self.validate_tool(&serde_json::to_value(transport)?, local)?;
+					self.validate_tool(&serde_json::to_value(transport)?)?;
 				}
 				if local {
 					self.core_tools.provider_available(&descriptor)?;
@@ -294,7 +304,8 @@ impl DefinitionValidation {
 		Ok(())
 	}
 
-	pub fn validate_tool(&self, value: &Value, local: bool) -> Result<()> {
+	pub fn validate_tool(&self, value: &Value) -> Result<()> {
+		reject_deployment_secret(Some(value))?;
 		let cfg: ToolConfig =
 			serde_json::from_value(value.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
 		match &cfg {
@@ -310,24 +321,11 @@ impl DefinitionValidation {
 					));
 				}
 			}
-			ToolConfig::Http {
-				endpoint,
-				credential_env,
-				replay,
-			}
+			ToolConfig::Http { endpoint, replay }
 			| ToolConfig::Mcp {
-				endpoint,
-				credential_env,
-				replay,
-				..
+				endpoint, replay, ..
 			} => {
 				validate_endpoint(endpoint)?;
-				if let Some(name) = credential_env {
-					validate_secret_reference(name)?;
-					if local {
-						self.credentials.resolve(name)?;
-					}
-				}
 				if !matches!(replay.as_str(), "read_only" | "idempotent" | "unsafe") {
 					return Err(Error::Invalid(
 						"replay must be read_only, idempotent or unsafe".into(),
