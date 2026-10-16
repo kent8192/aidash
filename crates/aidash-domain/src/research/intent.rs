@@ -67,12 +67,16 @@ pub fn validate(pages: &[String]) -> Result<(), InvalidUrlIntent> {
 }
 
 /// Whether a Run with `snapshot` can act on a URL intent: its Agent binds a
-/// Page reading operation, directly or through a bundle. A remote Run never
-/// can, because Research operations are never exposed to remote Runs.
+/// Page reading operation, directly or through a bundle. Only the resolved
+/// Bindings the Run is exposed to count, not every definition a bundle
+/// declares: a member the bundle Binding did not select gives no tool. A
+/// remote Run never can, because Research operations are never exposed to
+/// remote Runs.
 pub fn reads_pages(snapshot: &BindingSnapshot) -> bool {
 	!snapshot.remote
-		&& snapshot.definitions.iter().any(|resolved| {
-			resolved.definition.kind == "tool"
+		&& snapshot.bindings.iter().any(|resolved| {
+			resolved.excluded_reason.is_none()
+				&& resolved.definition.kind == "tool"
 				&& serde_json::from_value::<ToolDescriptor>(resolved.definition.config.clone())
 					.ok()
 					.and_then(|tool| research_operation(&tool.provider, &tool.operation))

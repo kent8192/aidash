@@ -655,22 +655,30 @@ impl HarnessManagement {
 		id: Uuid,
 	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			execution::details_page(&f, &identity, id, 0).await?;
-		} else {
-			let run = f.store.inspect_run(id).await?;
-			crate::authorization::remote::deployment_administrator::require(
-				&mut crate::database::native::begin(&f.store.pool).await?,
-				run.workspace_id,
-			)
-			.await?;
-		}
-		crate::apps::execution::repositories::research::run_research(
+		let readable = || async {
+			if let Actor::Subject(identity) = &actor {
+				execution::details_page(&f, identity, id, 0).await?;
+			} else {
+				let run = f.store.inspect_run(id).await?;
+				crate::authorization::remote::deployment_administrator::require(
+					&mut crate::database::native::begin(&f.store.pool).await?,
+					run.workspace_id,
+				)
+				.await?;
+			}
+			Ok::<_, crate::Error>(())
+		};
+		readable().await?;
+		let research = crate::apps::execution::repositories::research::run_research(
 			&f.store,
 			id,
 			crate::research::providers().limits,
 		)
-		.await
+		.await?;
+		// The research reads are separate transactions: authority revoked
+		// meanwhile withholds them, as for a cited fragment.
+		readable().await?;
+		Ok(research)
 	}
 	/// The Research providers of this Deployment for a Tenant's subject.
 	pub(crate) async fn research_providers(

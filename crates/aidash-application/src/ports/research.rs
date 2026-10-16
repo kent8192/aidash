@@ -166,7 +166,8 @@ pub struct WebDisclosure {
 	/// The Run's observed input sequence; new user input needs a new approval.
 	pub context_revision: i64,
 	/// The Research account holder's account and price for this request, as
-	/// they stand when approval is requested. Not part of the digest.
+	/// they stand when approval is requested. Part of the digest, so an
+	/// approval covers only the charge its approver was shown.
 	pub attribution: Option<CostAttribution>,
 	/// The host-validated search query in provider-independent form, so an
 	/// approver reads it without parsing a provider's request body. Not part
@@ -185,6 +186,7 @@ impl WebDisclosure {
 			self.outbound.destination,
 			self.outbound.content,
 			self.context_revision,
+			self.attribution,
 		]))
 	}
 }

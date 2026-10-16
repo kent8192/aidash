@@ -86,6 +86,61 @@ test("research operations come from tool and bundle bindings, once each, in cont
   ]);
 });
 
+test("a bundle Binding exposes only its selected members, nested bundles whole", () => {
+  const nested = [
+    ...registry,
+    {
+      id: "research-outer",
+      version: "1.0.0",
+      kind: "bundle",
+      config: {
+        members: [
+          {
+            registry_node: "aidash://home",
+            id: "research-fixture",
+            version: "1.0.0",
+          },
+          {
+            registry_node: "aidash://home",
+            id: "aidash.research.page.fetch",
+            version: "1.0.0",
+          },
+        ],
+      },
+    },
+  ];
+  const operations = (bindings) =>
+    researchBindings(agent(bindings), nested).map(
+      (binding) => binding.operation,
+    );
+  assert.deepEqual(
+    operations([
+      {
+        kind: "bundle",
+        target: { id: "research-fixture", version: "1.0.0" },
+        members: ["aidash.research.fixture.search"],
+      },
+    ]),
+    ["search"],
+  );
+  assert.deepEqual(
+    operations([
+      {
+        kind: "bundle",
+        target: { id: "research-outer", version: "1.0.0" },
+        members: ["research-fixture"],
+      },
+    ]),
+    ["search", "find"],
+  );
+  assert.deepEqual(
+    operations([
+      { kind: "bundle", target: { id: "research-outer", version: "1.0.0" } },
+    ]),
+    ["search", "fetch", "find"],
+  );
+});
+
 test("an Agent without research bindings, or an unknown version, binds none", () => {
   assert.deepEqual(researchBindings(agent([]), registry), []);
   assert.deepEqual(
@@ -114,6 +169,27 @@ test("URL intents are the distinct readable http(s) addresses in the text", () =
       "https://example.net/c",
     ],
   );
+});
+
+test("a URL keeps the closing brackets it opens itself", () => {
+  assert.deepEqual(
+    urlIntents(
+      "See https://en.wikipedia.org/wiki/Foo_(bar), [https://example.com/x] and https://example.com/a[1].",
+    ),
+    [
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+      "https://example.com/x",
+      "https://example.com/a[1]",
+    ],
+  );
+});
+
+test("a URL longer than the server accepts is not offered", () => {
+  const base = "https://example.com/";
+  const fits = base + "a".repeat(4096 - base.length);
+  assert.deepEqual(urlIntents(`${fits} ${fits}b`), [fits]);
+  // The limit counts UTF-8 bytes, not characters.
+  assert.deepEqual(urlIntents(base + "é".repeat(2040)), []);
 });
 
 test("addresses the host would refuse are not offered", () => {

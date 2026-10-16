@@ -1162,6 +1162,22 @@ impl<'a> Executor<'a> {
 					.filter(|intent| intent.input_key.is_none())
 					.flat_map(|intent| intent.pages.iter().cloned())
 					.collect();
+				// A run message folded into the run-message summary is on no
+				// page again, so the pages it asked for are carried forward like
+				// the Task's own.
+				for input in inputs.iter().filter(|input| input.seq <= summary_seq) {
+					let key = input.idempotency_key.as_str();
+					for intent in url_intents
+						.iter()
+						.filter(|intent| intent.input_key.as_deref() == Some(key))
+					{
+						for page in &intent.pages {
+							if !requested_pages.contains(page) {
+								requested_pages.push(page.clone());
+							}
+						}
+					}
+				}
 				for (position, (index, _)) in page.entries.iter().enumerate() {
 					let key = inputs[*index].idempotency_key.as_str();
 					let Some(intent) = url_intents

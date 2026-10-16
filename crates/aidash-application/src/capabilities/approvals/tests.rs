@@ -606,6 +606,55 @@ async fn a_run_grant_does_not_cover_disclosures_after_new_user_input() {
 }
 
 #[tokio::test]
+async fn a_run_grant_covers_only_the_operation_and_search_provider_it_was_given_for() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
+		.await
+		.unwrap();
+	// A page read on the search host is not a later search.
+	let mut read = request();
+	read.digest = "sha256:page-read".into();
+	read.operation = Operation::Fetch;
+	read.provider = "research.page@1".into();
+	read.content = "https://api.search.brave.com/".into();
+	// Nor is a search through another provider at the same host.
+	let mut other = request();
+	other.digest = "sha256:other-provider".into();
+	other.provider = "research.other@1".into();
+	for request in [read, other] {
+		assert!(matches!(
+			disclose(&mut scope, &run, &request).await.unwrap(),
+			DisclosureState::Pending { .. }
+		));
+	}
+}
+
+#[tokio::test]
+async fn deciding_a_disclosure_whose_run_ended_closes_it() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	scope.run.control = RunControl::Cancelled;
+	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	assert_eq!(decided["state"], "closed");
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.state, "closed");
+	assert_eq!(record.data["closed_reason"], "run_ended");
+}
+
+#[tokio::test]
 async fn only_the_requesting_run_can_consume_its_approval() {
 	let mut scope = scope(Value::Null);
 	let run = scope.run.clone();

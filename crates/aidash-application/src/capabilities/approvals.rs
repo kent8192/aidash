@@ -27,10 +27,11 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 pub const DISCLOSURE: &str = "disclosure";
 /// The policy action a Web disclosure approval authorizes.
 pub const DISCLOSE: &str = "research.disclose";
-/// The shortest Run grant an approver may give. The dashboard offers whole
-/// minutes; a few seconds of slack let a one-minute grant survive the trip
-/// to the server.
-const MIN_RUN_GRANT_SECONDS: i64 = 60;
+/// The shortest Run grant an approver may give, and so the least a
+/// Deployment's `grant_seconds` may be. The dashboard offers whole minutes;
+/// a few seconds of slack let a one-minute grant survive the trip to the
+/// server.
+pub const MIN_RUN_GRANT_SECONDS: i64 = 60;
 const GRANT_CLOCK_SLACK_SECONDS: i64 = 5;
 
 fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) -> Resource {
@@ -230,6 +231,16 @@ pub async fn decide(
 		return Err(Error::Conflict("APPROVAL_STALE_OR_EXPIRED".into()));
 	}
 	if run.control == RunControl::Cancelled || run.phase.is_terminal() {
+		// A disclosure ends with its Run. One its Run's end did not already
+		// close is closed now, with the reason, instead of failing forever.
+		if disclosure {
+			record.state = "closed".into();
+			record.data["closed_reason"] = json!("run_ended");
+			scope.update(&mut record).await?;
+			let result = json!({"approval_id":id,"state":record.state,"revision":record.revision,"grant_id":Value::Null});
+			scope.cache(input.idempotency_key, &digest, &result).await?;
+			return Ok(result);
+		}
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	let subjects = scope.replace_subjects(serde_json::from_value(record.data["subjects"].clone())?);
@@ -532,6 +543,12 @@ pub async fn disclose(
 			&& g.data["actions"]
 				.as_array()
 				.is_some_and(|a| a.contains(&json!(DISCLOSE)))
+			// A grant covers what the approver was told it covers: a search
+			// grant only later searches through its provider, a Page reading
+			// grant only page readings of its host, through any provider.
+			&& g.data["operation"] == json!(request.operation)
+			&& (request.operation != aidash_domain::research::Operation::Search
+				|| g.data["provider"] == json!(request.provider))
 			&& g.data["subjects"] == json!(scope.subjects())
 			// New user input needs a new decision, as for one-time approvals.
 			&& g.data["context_revision"] == json!(request.context_revision)

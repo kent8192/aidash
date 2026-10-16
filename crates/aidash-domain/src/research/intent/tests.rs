@@ -2,7 +2,7 @@ use super::*;
 use crate::{
 	registry::{
 		Entry,
-		bindings::{QualifiedRef, ResolvedDefinition},
+		bindings::{BindingOrigin, QualifiedRef, ResolvedBinding, ResolvedDefinition},
 		rules,
 	},
 	tool::providers::{core_descriptor, research_descriptor},
@@ -33,7 +33,28 @@ fn tool(id: &str, descriptor: ToolDescriptor) -> ResolvedDefinition {
 	}
 }
 
+/// The Run is exposed to `definition` unless the Binding excluded it.
+fn bound(definition: &ResolvedDefinition, excluded: bool) -> ResolvedBinding {
+	ResolvedBinding {
+		identity: definition.identity.clone(),
+		definition: definition.definition.clone(),
+		digest: definition.digest.clone(),
+		origin: BindingOrigin::Explicit,
+		alias: None,
+		narrow: Default::default(),
+		installation: None,
+		provider_contract_digest: None,
+		provider_implementation: None,
+		excluded_reason: excluded.then(|| "not selected".into()),
+	}
+}
+
+/// A snapshot that binds every definition it carries.
 fn snapshot(remote: bool, definitions: Vec<ResolvedDefinition>) -> BindingSnapshot {
+	let bindings = definitions
+		.iter()
+		.map(|definition| bound(definition, false))
+		.collect();
 	BindingSnapshot {
 		schema_version: 1,
 		agent: QualifiedRef {
@@ -42,7 +63,7 @@ fn snapshot(remote: bool, definitions: Vec<ResolvedDefinition>) -> BindingSnapsh
 			version: "1.0.0".into(),
 		},
 		remote,
-		bindings: vec![],
+		bindings,
 		definitions,
 		foreign_agents: vec![],
 	}
@@ -121,6 +142,28 @@ fn only_a_bound_page_reading_operation_can_act_on_a_url_intent(
 
 	// Assert
 	assert_eq!(acts, reads);
+}
+
+#[rstest]
+fn a_page_reading_definition_the_run_is_not_bound_to_cannot_act_on_a_url_intent() {
+	// Arrange: a bundle's unselected fetch member is still in the closure.
+	let search = tool(
+		"aidash.research.brave.search",
+		research_descriptor(NODE, "research.brave@1", "search").unwrap(),
+	);
+	let fetch = tool(
+		"aidash.research.page.fetch",
+		research_descriptor(NODE, "research.page@1", "fetch").unwrap(),
+	);
+	let mut unselected = snapshot(false, vec![search.clone(), fetch.clone()]);
+	unselected.bindings = vec![bound(&search, false)];
+	let mut excluded = snapshot(false, vec![search, fetch.clone()]);
+	excluded.bindings.push(bound(&fetch, true));
+	excluded.bindings.remove(1);
+
+	// Act / Assert
+	assert!(!reads_pages(&unselected));
+	assert!(!reads_pages(&excluded));
 }
 
 #[rstest]

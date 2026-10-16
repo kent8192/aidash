@@ -198,13 +198,18 @@ for this Run" decision on a search creates a Run grant for the provider's
 host, so it covers every later search of that Run through the provider,
 including queries the approver has not seen, until new user input or its
 expiry. A Page reading grant names the page's host, whichever provider reads
-it. A Run grant lasts at least a minute and at most the Deployment's
-`grant_seconds` (an hour by default); the dashboard offers 1 to 60 minutes and
-starts at 15.
+it. A search grant never covers a page reading, nor a search through another
+provider. A Run grant lasts at least a minute and at most the Deployment's
+`grant_seconds` (an hour by default, and never less than 60); the dashboard
+offers 1 to 60 minutes and starts at 15. An approval covers only the charge
+its approver was shown: when the Research account or its price changes, the
+same request needs a new approval.
 
-A disclosure approval is never revoked: it ends by a decision, by expiry, with
-its Run, or as `closed` (with `closed_reason`, such as `evidence_revoked`) when
-the Run's research evidence is revoked. One that no subject of the Tenant may
+A disclosure approval is never revoked: it ends by a decision, by expiry, or
+as `closed` with a `closed_reason`: `evidence_revoked` when the Run's research
+evidence is revoked, `area_cleaned` when its Working Area is cleaned up, and
+`run_ended` when someone decides it after its Run ended. The pending inbox
+never lists a disclosure whose Run has ended. One that no subject of the Tenant may
 approve is recorded as `blocked` and is never addressed to anyone.
 
 `GET /api/capabilities/approvals` takes two optional filters for an inbox:

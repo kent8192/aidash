@@ -3445,6 +3445,35 @@ async fn url_intents_are_rendered_from_their_records_only_into_steps_that_carry_
 	);
 }
 
+#[rstest]
+#[tokio::test]
+async fn url_intents_of_summarized_run_messages_are_carried_forward(mut fixture: Fixture) {
+	// Arrange: the run message that asked for a page was folded into the
+	// run-message summary, so it is on no page of this step.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	fixture.run.context.run_message_summary = "Include the rollback steps.".into();
+	fixture.run.context.run_message_summary_seq = 2;
+	fixture.run.observed_input_seq = 2;
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents =
+		vec![aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		}];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert!(state.get("run_messages").is_none(), "{state}");
+	assert_eq!(
+		state["url_intents"]["pages"],
+		json!(["https://example.org/rollback"])
+	);
+}
+
 /// A tool whose results the test scripts in call order; counts real invocations.
 struct Scripted {
 	specification: ToolSpec,

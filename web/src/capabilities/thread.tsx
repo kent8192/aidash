@@ -41,6 +41,7 @@ import { DisplayFile, panelClass } from "./display";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { urlIntents } from "../research";
+import type { RunInspection } from "../generated/models";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
@@ -846,7 +847,7 @@ export function ThreadCapabilities({
     }
   };
   const enqueueRun = async (path: string, input: Record<string, unknown>) => {
-    const pages = selectedPages;
+    const pages = selectedPages.filter((page) => queued.includes(page));
     const body = pages.length ? { ...input, read_pages: pages } : input;
     const signature = JSON.stringify([path, body]);
     if (pendingEnqueue.current?.signature !== signature)
@@ -872,8 +873,28 @@ export function ThreadCapabilities({
     (e) => `${e.id}@${e.version}` === effectiveAgent,
   );
   const research = useResearch(target, data);
-  // A URL intent is offered only when the Agent can read pages on this Node.
-  const intents = research.canRead ? urlIntents(prompt) : [];
+  // Steering reaches the active Run, which reads pages only through the
+  // Agent version it was pinned to, whichever version the selector shows.
+  const activeRunId = area ? (session.data?.active_run_id ?? null) : null;
+  const activeRun = useQuery({
+    queryKey: ["run-agent", activeRunId],
+    queryFn: ({ signal }) =>
+      apiFetch<RunInspection>(`/api/runs/${activeRunId}`, { signal }),
+    enabled: !!activeRunId,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const pinned = agents.find(
+    (e) =>
+      e.id === activeRun.data?.agent_id &&
+      e.version === activeRun.data?.agent_version,
+  );
+  const steering = useResearch(pinned, data);
+  // A URL intent is offered only when an Agent it would reach can read pages
+  // on this Node, and each action sends only the pages its Agent can read.
+  const queued = research.canRead ? urlIntents(prompt) : [];
+  const steered = activeRunId && steering.canRead ? urlIntents(prompt) : [];
+  const intents = [...new Set([...queued, ...steered])];
   const selectedPages = readPages.filter((page) => intents.includes(page));
   if (!area && agents.length === 0 && !query.isError) return null;
   return (
@@ -974,7 +995,9 @@ export function ThreadCapabilities({
               onClick={() =>
                 void act(async () => {
                   const expectedRunId = session.data!.active_run_id!;
-                  const pages = selectedPages;
+                  const pages = selectedPages.filter((page) =>
+                    steered.includes(page),
+                  );
                   const signature = JSON.stringify([
                     area.id,
                     expectedRunId,

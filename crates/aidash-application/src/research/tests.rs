@@ -1688,3 +1688,24 @@ async fn every_reason_a_reader_cannot_see_evidence_is_the_same_absence() {
 		);
 	}
 }
+
+#[test]
+fn an_approval_covers_only_the_charge_its_approver_was_shown() {
+	let disclosure = |price_micro_usd| WebDisclosure {
+		operation: Operation::Search,
+		provider: "research.brave@1".into(),
+		outbound: crate::ports::research::Outbound {
+			destination: "api.search.brave.com".into(),
+			content: "rust release".into(),
+		},
+		context_revision: 0,
+		attribution: Some(aidash_domain::research::account::CostAttribution {
+			account_id: "deployment".into(),
+			price_micro_usd,
+		}),
+		query: None,
+	};
+	let run = Uuid::new_v4();
+	assert_eq!(disclosure(5_000).digest(run), disclosure(5_000).digest(run));
+	assert_ne!(disclosure(5_000).digest(run), disclosure(9_000).digest(run));
+}

@@ -7,6 +7,9 @@
 /** Most pages one input may ask the Run to read; the server enforces it too. */
 export const MAX_URL_INTENTS = 5;
 
+/** Longest URL, in UTF-8 bytes, the server accepts as a URL intent. */
+export const MAX_URL_BYTES = 4096;
+
 /**
  * One research operation an Agent binds, through a tool or a bundle, with
  * the tool definitions that bind it.
@@ -43,7 +46,9 @@ function reference(value: unknown): Reference | undefined {
 /**
  * The research operations `agent` binds directly or through a bundle, each
  * once, in contract order. A tool is a research operation when its
- * descriptor names a `research.` provider.
+ * descriptor names a `research.` provider. A bundle Binding exposes only its
+ * selected members when it names any, and a nested bundle all of its own,
+ * as the server resolves them.
  */
 export function researchBindings(
   agent: Entry | undefined,
@@ -58,6 +63,24 @@ export function researchBindings(
         entry.version === target.version,
     );
   const tools: Entry[] = [];
+  const expand = (
+    bundle: Entry | false | undefined,
+    selected: string[],
+    seen: Set<string>,
+  ) => {
+    // The server refuses a recursive bundle; here it simply ends.
+    if (!bundle || seen.has(`${bundle.id}@${bundle.version}`)) return;
+    seen.add(`${bundle.id}@${bundle.version}`);
+    const members = record(bundle.config)?.members;
+    for (const member of Array.isArray(members) ? members : []) {
+      const target = reference(member);
+      if (!target || (selected.length > 0 && !selected.includes(target.id)))
+        continue;
+      const tool = find("tool", target);
+      if (tool) tools.push(tool);
+      else expand(find("bundle", target), [], seen);
+    }
+  };
   const bindings = record(agent?.config)?.bindings;
   for (const binding of Array.isArray(bindings) ? bindings : []) {
     const item = record(binding);
@@ -66,11 +89,12 @@ export function researchBindings(
       const tool = find("tool", target);
       if (tool) tools.push(tool);
     } else if (item?.kind === "bundle") {
-      const members = record(find("bundle", target)?.config)?.members;
-      for (const member of Array.isArray(members) ? members : []) {
-        const tool = find("tool", reference(member));
-        if (tool) tools.push(tool);
-      }
+      const selected = Array.isArray(item.members)
+        ? item.members.filter(
+            (member): member is string => typeof member === "string",
+          )
+        : [];
+      expand(find("bundle", target), selected, new Set());
     }
   }
   const found = new Map<string, ResearchBinding>();
@@ -104,15 +128,35 @@ export function researchBindings(
   );
 }
 
+const CLOSING: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/**
+ * `raw` without trailing sentence punctuation, or a closing bracket the URL
+ * does not open itself: `https://en.wikipedia.org/wiki/Foo_(bar)` keeps its
+ * parenthesis, while `(https://example.net/c)` loses the wrapper's.
+ */
+function trimUrl(raw: string): string {
+  let url = raw;
+  for (;;) {
+    const last = url.at(-1) ?? "";
+    const opening = CLOSING[last];
+    const count = (character: string) => url.split(character).length - 1;
+    if (".,;:!?".includes(last) && last !== "") url = url.slice(0, -1);
+    else if (opening && count(last) > count(opening)) url = url.slice(0, -1);
+    else return url;
+  }
+}
+
 /**
  * Distinct absolute http(s) URLs in `text`, in order of appearance, that the
- * host would accept as URL intents: no credentials and no fragment. Trailing
- * sentence punctuation is not part of a URL.
+ * host would accept as URL intents: no credentials, no fragment and at most
+ * `MAX_URL_BYTES` long. Trailing sentence punctuation is not part of a URL.
  */
 export function urlIntents(text: string): string[] {
   const found: string[] = [];
   for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
-    const candidate = match[0].replace(/[.,;:!?)\]}]+$/u, "");
+    const candidate = trimUrl(match[0]);
+    if (new TextEncoder().encode(candidate).length > MAX_URL_BYTES) continue;
     let url: URL;
     try {
       url = new URL(candidate);

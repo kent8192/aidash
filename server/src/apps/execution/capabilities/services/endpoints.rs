@@ -724,6 +724,15 @@ pub(crate) async fn approval_list(
 				.and_where(Expr::col(Alias::new("state")).eq(Expr::value(state)))
 				.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())));
 		}
+		if query.state == Some(ApprovalState::Pending) {
+			// A disclosure ends with its Run: an inbox never offers one whose
+			// Run has ended, since no decision on it could take effect.
+			select.and_where(Expr::cust(
+				"(kind <> 'disclosure' OR NOT EXISTS (SELECT 1 FROM runs r \
+				 WHERE r.id::text = core_records.data->>'run_id' \
+				 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
+			));
+		}
 		let rows: Vec<super::records::Record> =
 			crate::database::native::query_as(&select.to_string(PostgresQueryBuilder))
 				.fetch_all(&mut **access.tx)
