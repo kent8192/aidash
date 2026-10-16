@@ -947,8 +947,14 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		tokio::spawn(
 			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
 		);
-	wait_for_lock(&f, &schema, "%74003201%").await;
 	let stage = |step: &str| format!("audience revocation (database {schema}): {step}");
+	// The barrier probe needs a pool connection too, so it is bounded as well.
+	environment
+		.bounded(
+			stage("reach the revoking distribution barrier"),
+			wait_for_lock(&f, &schema, "%74003201%"),
+		)
+		.await;
 	environment
 		.bounded(
 			stage("commit the revoking distribution barrier"),
@@ -1012,7 +1018,12 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		tokio::spawn(
 			async move { install(&app2, &b2, &package2, &install_input(&package2)).await },
 		);
-	wait_for_lock(&f, &schema, "%71003201%").await;
+	environment
+		.bounded(
+			stage("reach the event barrier"),
+			wait_for_lock(&f, &schema, "%71003201%"),
+		)
+		.await;
 	let (app2, a2) = (app.clone(), a.clone());
 	let revoked = tokio::spawn(async move {
 		request(
@@ -1024,7 +1035,12 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 		)
 		.await
 	});
-	wait_for_lock(&f, &schema, "%74003201%").await;
+	environment
+		.bounded(
+			stage("queue the revocation on the distribution lock"),
+			wait_for_lock(&f, &schema, "%74003201%"),
+		)
+		.await;
 	environment
 		.bounded(stage("commit the event barrier"), barrier.commit())
 		.await
