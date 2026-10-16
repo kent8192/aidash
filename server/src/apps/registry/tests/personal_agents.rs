@@ -138,7 +138,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	);
 	let workspace = f
 		.store
-		.create_workspace("Personal", "Use documents")
+		.create_workspace("acme", "alice", "Personal", "Use documents")
 		.await
 		.unwrap();
 	let task = f

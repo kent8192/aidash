@@ -131,7 +131,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	let app = Arc::new(endpoint.await);
 	let store = app.runtime.store.clone();
 	let legacy = store
-		.create_workspace("operator-only", "legacy secret")
+		.create_workspace("acme", "alice", "operator-only", "legacy secret")
 		.await
 		.unwrap();
 	let mut tokens = vec![];

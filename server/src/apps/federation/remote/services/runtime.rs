@@ -223,56 +223,6 @@ impl Federation {
 			.await
 			.map_err(Into::into)
 	}
-	pub async fn delegate(
-		&self,
-		task_id: Uuid,
-		node: &str,
-		agent: &EntityRef,
-	) -> Result<Delegation> {
-		crate::bootstrap::federation(self)
-			.delegate(task_id, node, agent)
-			.await
-			.map_err(Into::into)
-	}
-	pub(crate) async fn delegate_pinned(
-		&self,
-		task_id: Uuid,
-		node: &str,
-		agent: &EntityRef,
-		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
-	) -> Result<Delegation> {
-		crate::bootstrap::federation(self)
-			.delegate_pinned(task_id, node, agent, snapshot)
-			.await
-			.map_err(Into::into)
-	}
-	pub(crate) async fn delegate_in(
-		&self,
-		tx: &mut dyn TransactionExecutor,
-		task: &Task,
-		node: &str,
-		agent: &EntityRef,
-	) -> Result<(Task, Delegation)> {
-		DelegationRecord::reserve(tx, &self.config.node_id, task, node, agent).await
-	}
-	pub async fn deliver(&self, delegation: &Delegation) -> Result<()> {
-		crate::bootstrap::federation(self)
-			.deliver(delegation)
-			.await
-			.map_err(Into::into)
-	}
-	pub async fn retry_deliveries(&self) -> Result<()> {
-		crate::bootstrap::federation(self)
-			.retry_deliveries()
-			.await
-			.map_err(Into::into)
-	}
-	pub async fn authorize_task(&self, node: &str, task: Uuid, agent: &EntityRef) -> Result<()> {
-		crate::bootstrap::peer_authority(self)
-			.authorize_task(node, task, agent)
-			.await
-			.map_err(Into::into)
-	}
 }
 
 // All worker operations use this single home-node boundary.
@@ -388,44 +338,17 @@ impl Home {
 			)
 			.await;
 		}
-		self.federation.request(&self.run.home_node,Method::POST,"/workspace",Some(&json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data}))).await
+		// Remote Runs execute only under a Remote Execution Grant (ADR 0043).
+		Err(Error::Forbidden)
 	}
+	/// Granted Homes answer every operation; `None` was only for the removed
+	/// legacy workspace protocol, so callers keep their optional contract.
 	pub(crate) async fn optional_command<T: DeserializeOwned>(
 		&self,
 		op: &str,
 		data: Value,
 	) -> Result<Option<T>> {
-		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
-			.await?
-			.is_some()
-		{
-			return self.command(op, data).await.map(Some);
-		}
-		let command = json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data});
-		let response = self
-			.federation
-			.peer_response(
-				&self.run.home_node,
-				Method::POST,
-				"/workspace",
-				Some(&command),
-			)
-			.await?;
-		if response.status() == reqwest::StatusCode::BAD_REQUEST {
-			let body: Value = crate::response::json(response, 4096).await?;
-			if body["error"] == "unknown federation operation" {
-				return Ok(None);
-			}
-			return Err(Error::External(format!(
-				"peer {} rejected {op}: {}",
-				self.run.home_node, body["error"]
-			)));
-		}
-		if response.status() == reqwest::StatusCode::CONFLICT {
-			return Err(Error::Conflict("remote task state changed".into()));
-		}
-		let response = response.error_for_status()?;
-		Ok(Some(crate::response::json(response, 4_194_304).await?))
+		self.command(op, data).await.map(Some)
 	}
 	pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
 		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
@@ -621,14 +544,11 @@ impl Home {
 			return Ok(task.clone());
 		}
 		if self.local() {
-			self.federation
-				.store
-				.claim(task.id, task.revision, &self.owner(), agent)
-				.await
-		} else {
-			self.command("claim", json!({"revision":task.revision,"entry":agent}))
-				.await
+			// A local Run's task is claimed at admission (ADR 0043).
+			return Err(Error::Forbidden);
 		}
+		self.command("claim", json!({"revision":task.revision,"entry":agent}))
+			.await
 	}
 	pub async fn transition(&self, next: TaskStatus) -> Result<Task> {
 		let t = self.task().await?;
@@ -776,32 +696,14 @@ impl Home {
 				.await;
 		}
 		if self.local() {
-			let t = self.federation.store.task(task_id).await?;
-			if t.workspace_id != self.run.workspace_id {
-				return Err(Error::Unauthorized);
-			}
-			if let Some(snapshot) = self
-				.execution
-				.as_ref()
-				.and_then(|run| run.context.binding_snapshot.as_ref())
-				.and_then(|snapshot| {
-					snapshot.foreign_agents.iter().find(|snapshot| {
-						snapshot.agent.registry_node == node && snapshot.agent.local() == *agent
-					})
-				}) {
-				self.federation
-					.delegate_pinned(task_id, node, agent, snapshot)
-					.await
-			} else {
-				self.federation.delegate(task_id, node, agent).await
-			}
-		} else {
-			self.command(
-				"delegate",
-				json!({"key":key,"task_id":task_id,"node_id":node,"agent":agent}),
-			)
-			.await
+			// Local Runs delegate only under their worker authority (ADR 0043).
+			return Err(Error::Forbidden);
 		}
+		self.command(
+			"delegate",
+			json!({"key":key,"task_id":task_id,"node_id":node,"agent":agent}),
+		)
+		.await
 	}
 	pub async fn message(&self, key: &str, content: &str) -> Result<()> {
 		if self.authority.is_some() {
@@ -927,16 +829,6 @@ impl Home {
 			.await?;
 		Ok(())
 	}
-}
-
-#[cfg(test)]
-fn map_workspace_chunk_bad_request(
-	path: &str,
-	request: Option<&Value>,
-	error: &Value,
-) -> Option<Error> {
-	aidash_application::federation::map_workspace_chunk_bad_request(path, request, error)
-		.map(Into::into)
 }
 
 #[cfg(test)]

@@ -273,10 +273,6 @@ name = "resource_authorization"
 path = "src/apps/identity/tests/resource_authorization.rs"
 
 [[test]]
-name = "run_message_fence"
-path = "src/apps/federation/remote/tests/run_message_fence.rs"
-
-[[test]]
 name = "run_message_finalization"
 path = "src/apps/execution/tests/run_message_finalization.rs"
 

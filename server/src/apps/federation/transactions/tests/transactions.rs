@@ -240,7 +240,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	);
 	let workspace = f
 		.store
-		.create_workspace("Atomic", "Commit together")
+		.create_workspace("acme", "alice", "Atomic", "Commit together")
 		.await
 		.unwrap();
 	let id = Uuid::new_v4();

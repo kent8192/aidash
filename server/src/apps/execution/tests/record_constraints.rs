@@ -297,8 +297,16 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
-	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
+	let other = f
+		.store
+		.create_workspace("acme", "alice", "Other", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -542,7 +550,11 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 	)
 	.await
 	.unwrap();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	f.store
 		.create_task(
 			workspace.id,
@@ -1090,7 +1102,11 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let task = f
 		.store
 		.create_task(
@@ -1458,7 +1474,11 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let spec = index_spec();
 	let _: aidash_server::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
 	insert_values(
@@ -1861,7 +1881,11 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 ) {
 	use std::time::Duration;
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -1939,7 +1963,11 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -1988,7 +2016,11 @@ async fn task_dependency_cycles_include_parent_edges(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2060,7 +2092,11 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2116,7 +2152,11 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),
@@ -2233,8 +2273,16 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
-	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "Main", "Goal")
+		.await
+		.unwrap();
+	let other = f
+		.store
+		.create_workspace("acme", "alice", "Other", "Goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
 		description: "Work".into(),

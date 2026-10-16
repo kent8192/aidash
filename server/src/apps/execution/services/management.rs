@@ -241,19 +241,11 @@ impl HarnessManagement {
 		input: ClaimInput,
 	) -> Result<Task> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return execution::claim(&f, &identity, id, input.revision, &input.agent).await;
-		}
-		let entry = f
-			.registry
-			.get(&input.agent.id, &input.agent.version)
-			.await?;
-		let owner = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
-		let task = f.store.claim(id, input.revision, &owner, &entry).await?;
-		f.store
-			.accept_run(&task, &f.config.node_id, &entry.id, &entry.version)
-			.await?;
-		Ok(task)
+		let Actor::Subject(identity) = actor else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		execution::claim(&f, &identity, id, input.revision, &input.agent).await
 	}
 	pub(crate) async fn run_get(
 		&self,
@@ -315,24 +307,12 @@ impl HarnessManagement {
 			return self.run_media_message(actor, id, input).await;
 		}
 
-		if let Actor::Subject(identity) = actor {
-			interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
-				.await?;
-			return Ok(SentResponse { sent: true });
-		}
-		let run = f.store.run(id).await?;
-		let key = format!(
-			"human:{id}:{}",
-			input.idempotency_key.unwrap_or_else(Uuid::new_v4)
-		);
-		f.require_terminal_safe_delivery(&run).await?;
-		let limit = f.run_message_limit(&run).await?;
-		f.admit_run_message(&run, "human", &input.content, &key, limit)
+		let Actor::Subject(identity) = actor else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
 			.await?;
-		if let Err(error) = f.deliver_run_messages(&run).await {
-			tracing::warn!(run_id=%id, %error, "accepted run message awaits home delivery");
-		}
-		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
 	}
 	pub(crate) async fn human_answer(
@@ -342,23 +322,11 @@ impl HarnessManagement {
 		response: Value,
 	) -> Result<HumanRequest> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return interaction::answer(&f, &identity, id, response).await;
-		}
-		let request = f.store.human_request_by_id(id).await?;
-		let run = f.store.run(request.run_id).await?;
-		if run.home_node != f.config.node_id
-			&& crate::authorization::peer::admission::run_grant(&f.store, &run.metadata())
-				.await?
-				.is_none()
-		{
-			crate::federation::Home::new(f.clone(), run)
-				.answer_home_human(id, response.clone())
-				.await?;
-		}
-		let h = f.store.answer(id, response).await?;
-		f.notify.notify_waiters();
-		Ok(h)
+		let Actor::Subject(identity) = actor else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		interaction::answer(&f, &identity, id, response).await
 	}
 	pub(crate) async fn events(&self, actor: Actor, q: EventQuery) -> Result<Response> {
 		let f = self.runtime.clone();
@@ -490,20 +458,18 @@ impl HarnessManagement {
 		input: MessageInput,
 	) -> Result<SentResponse> {
 		let f = self.runtime.clone();
-		let run = match &actor {
-			Actor::Subject(identity) => {
-				let mut access =
-					crate::authorization::access::Access::begin(&f.store, identity).await?;
-				let result = access.run_for_interaction(id).await;
-				access.finish(result).await?
-			}
-			Actor::Operator => f.store.run(id).await?,
+		let Actor::Subject(identity) = &actor else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		let run = {
+			let mut access =
+				crate::authorization::access::Access::begin(&f.store, identity).await?;
+			let result = access.run_for_interaction(id).await;
+			access.finish(result).await?
 		};
 		let external = input.idempotency_key.unwrap_or_else(Uuid::new_v4);
-		let key = match &actor {
-			Actor::Subject(identity) => interaction::run_message_key(identity, id, external),
-			Actor::Operator => format!("human:{id}:{external}"),
-		};
+		let key = interaction::run_message_key(identity, id, external);
 		let mut lease = crate::collaboration::access::Lease::begin_message_create(
 			&f.store,
 			actor,

@@ -43,7 +43,7 @@ async fn agent(store: &Store) -> Entry {
 
 async fn leased_run(store: &Store, agent: &Entry) -> Run {
 	let workspace = store
-		.create_workspace("Research", "Read public sources")
+		.create_workspace("acme", "alice", "Research", "Read public sources")
 		.await
 		.unwrap();
 	let task = store

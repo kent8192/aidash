@@ -912,21 +912,15 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	let database = database.await;
 	let (store, _, indexed) = setup(&database, bounds).await;
 	let workspace = store
-		.create_workspace("Late index", "Deletion must remain usable")
+		.create_workspace(
+			"acme",
+			"operator",
+			"Late index",
+			"Deletion must remain usable",
+		)
 		.await
 		.unwrap()
 		.id;
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(workspace)
-				.tenant("acme")
-				.owner_subject("operator")
-				.finish(),
-		)
-		.await
-		.unwrap();
 	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
 		.await
 		.unwrap();

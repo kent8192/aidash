@@ -238,17 +238,6 @@ impl RuntimeTasks {
 				),
 			));
 		}
-		if event_streams.is_some() {
-			let deliveries = federation.clone();
-			tasks.spawn_service(runtime_task(async move {
-				loop {
-					if let Err(error) = deliveries.retry_deliveries().await {
-						tracing::warn!(%error, "delegation retry failed");
-					}
-					tokio::time::sleep(Duration::from_millis(250)).await;
-				}
-			}));
-		}
 		let retention = federation.store.clone();
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
@@ -613,15 +602,6 @@ pub(crate) fn conversation_scope<'a>(
 ) -> crate::apps::workspaces::repositories::conversations::NativeConversation<'a> {
 	crate::apps::workspaces::repositories::conversations::NativeConversation::new(
 		federation, access,
-	)
-}
-
-/// Operator conversations use the same Store and transaction implementation.
-pub(crate) fn operator_conversations(
-	federation: &Federation,
-) -> crate::apps::workspaces::repositories::conversations::NativeOperatorConversations {
-	crate::apps::workspaces::repositories::conversations::NativeOperatorConversations(
-		federation.clone(),
 	)
 }
 

@@ -316,7 +316,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	);
 	let other = f
 		.store
-		.create_workspace("Private", "Another workspace")
+		.create_workspace("acme", "alice", "Private", "Another workspace")
 		.await
 		.unwrap();
 	assert!(

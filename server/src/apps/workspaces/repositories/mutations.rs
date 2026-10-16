@@ -79,43 +79,14 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			.map_err(Into::into)
 	}
 	async fn record_owner(&mut self, id: Uuid) -> Result<()> {
-		let result: NativeResult<()> = async {
-			{
-				let query_bind_1 = id;
-				let query_bind_2 = &self.access.identity.tenant;
-				let query_bind_3 = &self.access.identity.subject;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("authorization_workspaces"))
-						.columns([
-							Alias::new("workspace_id"),
-							Alias::new("tenant"),
-							Alias::new("owner_subject"),
-						])
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **self.access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
+		self.store
+			.record_workspace_tenant_in(
+				&mut self.access.tx,
+				id,
+				&self.access.identity.tenant,
+				&self.access.identity.subject,
+			)
+			.await
+			.map_err(Into::into)
 	}
 }

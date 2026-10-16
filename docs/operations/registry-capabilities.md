@@ -413,13 +413,9 @@ references cannot be exported through it. Tenant admission never borrows an
 operator peer credential; scoped federation continues to require its retained
 subject and mapping grants. Explicit unsupported dependencies are rejected.
 
-Agent Tool delegation stores `delegations.binding_snapshot` in the same
-transaction as its target reservation. Retries send that original closure.
-A receiver accepts a new Run only when its current admission snapshot matches
-exactly; an idempotent replay must match the original Run snapshot. Updating a
-catalog or retrying delivery cannot silently add a dependency or substitute a
-same-named local Agent. The nullable forward migration preserves historical
-unscoped reservations without importing legacy capability fields.
+Agent Tool delegation from a Run uses scoped remote execution only. The
+unscoped offer path that carried `delegations.binding_snapshot` is removed
+(ADR 0043); the column keeps historical reservations readable.
 
 ## Workbench test connections
 

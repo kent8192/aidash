@@ -56,10 +56,11 @@ impl CollaborationManagement {
 	) -> Result<Workspace> {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
-		if let Some(scope) = scoped(&f, actor) {
-			return scope.create(&input.title, &input.goal).await;
-		}
-		f.store.create_workspace(&input.title, &input.goal).await
+		let Some(scope) = scoped(&f, actor) else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		scope.create(&input.title, &input.goal).await
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let f = self.runtime.clone();
@@ -80,15 +81,11 @@ impl CollaborationManagement {
 		input: StateInput,
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
-		if let Some(scope) = scoped(&f, actor) {
-			return scope.update(id, input.revision, input.state).await;
-		}
-		crate::authorization::remote::operator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
-			id,
-		)
-		.await?;
-		f.store.update_state(id, input.revision, input.state).await
+		let Some(scope) = scoped(&f, actor) else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		scope.update(id, input.revision, input.state).await
 	}
 	pub(crate) async fn task_create(
 		&self,
@@ -98,20 +95,14 @@ impl CollaborationManagement {
 		input: NewTask,
 	) -> Result<Task> {
 		let f = self.runtime.clone();
-		if let Some(scope) = scoped(&f, actor) {
-			return scope
-				.create_task(
-					id,
-					&input,
-					headers.get("idempotency-key").and_then(|h| h.to_str().ok()),
-				)
-				.await;
-		}
-		f.store
+		let Some(scope) = scoped(&f, actor) else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		scope
 			.create_task(
 				id,
 				&input,
-				"human",
 				headers.get("idempotency-key").and_then(|h| h.to_str().ok()),
 			)
 			.await
@@ -128,18 +119,12 @@ impl CollaborationManagement {
 			));
 		}
 		let f = self.runtime.clone();
-		if let Some(scope) = scoped(&f, actor) {
-			scope
-				.message_keyed(id, &input.content, input.idempotency_key)
-				.await?;
-			return Ok(SentResponse { sent: true });
-		}
-		let key = format!(
-			"workspace-human:{id}:{}",
-			input.idempotency_key.unwrap_or_else(Uuid::new_v4)
-		);
-		f.store
-			.message(id, "human", &input.content, Some(&key))
+		let Some(scope) = scoped(&f, actor) else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		scope
+			.message_keyed(id, &input.content, input.idempotency_key)
 			.await?;
 		Ok(SentResponse { sent: true })
 	}
@@ -173,27 +158,18 @@ impl CollaborationManagement {
 	) -> Result<ConversationResponse> {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return interaction::conversation(
-				&f,
-				&identity,
-				&input.title,
-				&input.goal,
-				&input.target,
-				&input.target_kind,
-			)
-			.await;
-		}
-		aidash_application::workspaces::operator_conversation(
-			&crate::bootstrap::operator_conversations(&f),
-			aidash_application::workspaces::ConversationRequest {
-				title: &input.title,
-				goal: &input.goal,
-				target: &input.target,
-				target_kind: &input.target_kind,
-			},
+		let Actor::Subject(identity) = actor else {
+			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		interaction::conversation(
+			&f,
+			&identity,
+			&input.title,
+			&input.goal,
+			&input.target,
+			&input.target_kind,
 		)
 		.await
-		.map_err(Into::into)
 	}
 }

@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { Alert, Facts } from "../components/patterns";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronRight, X } from "lucide-react";
-import { humanAnswer, remoteAction } from "../generated/aidash";
+import { humanAnswer } from "../generated/aidash";
 import type { HumanRequest } from "../types";
 import type { Selection } from "./details";
 import { useI18n } from "../ui";
@@ -42,17 +42,7 @@ export function ChannelRequests({
     setError("");
     try {
       const response = { approved };
-      if (item.node === localNode) await humanAnswer(item.request.id, response);
-      else
-        await remoteAction({
-          node_id: item.node,
-          control: {
-            run_id: item.request.run_id,
-            request_id: item.request.id,
-            action: "answer",
-            response,
-          },
-        });
+      await humanAnswer(item.request.id, response);
       await Promise.all([
         client.invalidateQueries({ queryKey: ["state"] }),
         client.invalidateQueries({ queryKey: ["mesh"] }),

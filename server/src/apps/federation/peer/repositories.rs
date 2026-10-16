@@ -43,15 +43,4 @@ impl PeerConfiguration for Configuration {
 	async fn all(&self) -> Result<Vec<Peer>> {
 		self.0.peers().await.map_err(Into::into)
 	}
-	async fn authorized(&self, node: &str, task: Uuid, agent: &EntityRef) -> Result<bool> {
-		let lease = self.0.store.orm_connection()?;
-		crate::apps::federation::remote::models::Delegation::authorized(
-			&mut lease.handle(),
-			task,
-			node,
-			agent,
-		)
-		.await
-		.map_err(Into::into)
-	}
 }

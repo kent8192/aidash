@@ -30,7 +30,7 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Cycle validation")
+		.create_workspace("acme", "alice", "Graph", "Cycle validation")
 		.await
 		.unwrap();
 	let ancestor = store
@@ -74,7 +74,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Reference projection")
+		.create_workspace("acme", "alice", "Graph", "Reference projection")
 		.await
 		.unwrap();
 	let dependency = store
@@ -101,7 +101,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	assert_eq!(links[0].workspace_key, workspace.id);
 
 	let other = store
-		.create_workspace("Other", "Keep dependencies local")
+		.create_workspace("acme", "alice", "Other", "Keep dependencies local")
 		.await
 		.unwrap();
 	let rejected = store.create_task(other.id, &task, "operator", None).await;
@@ -123,11 +123,11 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Reverse relations")
+		.create_workspace("acme", "alice", "Graph", "Reverse relations")
 		.await
 		.unwrap();
 	let other = store
-		.create_workspace("Other", "Keep references local")
+		.create_workspace("acme", "alice", "Other", "Keep references local")
 		.await
 		.unwrap();
 	let target = store
@@ -190,7 +190,7 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Concurrent references")
+		.create_workspace("acme", "alice", "Graph", "Concurrent references")
 		.await
 		.unwrap();
 	let target = store

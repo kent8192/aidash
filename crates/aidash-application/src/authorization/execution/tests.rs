@@ -74,15 +74,6 @@ impl ExecutionGrantRepository for Repository {
 		self.touch("grant")?;
 		Ok(self.current.clone())
 	}
-	async fn require_legacy_remote_task(&self, _: &str, _: Uuid) -> Result<()> {
-		self.touch("legacy_task")
-	}
-	async fn require_legacy_execution(&self, _: Uuid) -> Result<()> {
-		self.touch("legacy_workspace")
-	}
-	async fn require_legacy_agent(&self, _: &str, _: &str) -> Result<()> {
-		self.touch("legacy_agent")
-	}
 }
 struct Scope {
 	current: Option<ExecutionGrant>,
@@ -187,9 +178,9 @@ impl ExecutionGrantSession for Scope {
 
 #[rstest]
 #[case::scoped(true)]
-#[case::legacy(false)]
+#[case::untenanted(false)]
 #[tokio::test]
-async fn worker_admission_keeps_legacy_guards_in_the_original_order(#[case] scoped: bool) {
+async fn worker_admission_reads_only_the_grant(#[case] scoped: bool) {
 	let (run, binding, _) = fixture();
 	let repository = Repository {
 		current: scoped.then_some(binding),
@@ -197,19 +188,12 @@ async fn worker_admission_keeps_legacy_guards_in_the_original_order(#[case] scop
 		fail: None,
 	};
 	assert_eq!(grant(&repository, &run).await.unwrap().is_some(), scoped);
-	assert_eq!(
-		*repository.calls.lock().unwrap(),
-		if scoped {
-			vec!["grant"]
-		} else {
-			vec!["grant", "legacy_task", "legacy_workspace", "legacy_agent"]
-		}
-	);
+	assert_eq!(*repository.calls.lock().unwrap(), ["grant"]);
 }
 
 #[rstest]
 #[tokio::test]
-async fn invalid_scoped_binding_never_falls_back_to_legacy_access() {
+async fn invalid_scoped_binding_is_refused() {
 	let (run, mut binding, _) = fixture();
 	binding.workspace_id = Uuid::from_u128(9);
 	let repository = Repository {
@@ -226,11 +210,8 @@ async fn invalid_scoped_binding_never_falls_back_to_legacy_access() {
 
 #[rstest]
 #[case::grant("grant")]
-#[case::legacy_task("legacy_task")]
-#[case::legacy_workspace("legacy_workspace")]
-#[case::legacy_agent("legacy_agent")]
 #[tokio::test]
-async fn legacy_admission_preserves_adapter_error_identity(#[case] fail: &'static str) {
+async fn admission_preserves_adapter_error_identity(#[case] fail: &'static str) {
 	let repository = Repository {
 		current: None,
 		calls: Mutex::new(vec![]),

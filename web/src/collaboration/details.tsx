@@ -22,7 +22,6 @@ import {
   channelAttachmentUpload,
   humanAnswer,
   taskAbandon,
-  remoteAction,
 } from "../generated/aidash";
 import type {
   Artifact,
@@ -121,6 +120,10 @@ export function OperationsDialog({
   )?.find((value) => value.id === d.request?.id);
   const isOperator = data.access.kind === "operator";
   const administrative = ["entity", "cluster", "peer"].includes(d.kind);
+  // Every workspace, task and Run belongs to a Tenant (ADR 0043).
+  const execution = ["workspace", "goal", "task", "assign", "human"].includes(
+    d.kind,
+  );
   const taskRuns = task
     ? [
         ...data.runs
@@ -167,6 +170,8 @@ export function OperationsDialog({
       <fieldset disabled={busy} className="m-0 grid min-w-0 gap-4 border-0 p-0">
         {administrative && !isOperator ? (
           <Hint>{copy.unavailable}</Hint>
+        ) : execution && isOperator ? (
+          <Hint>{copy.operatorExecution}</Hint>
         ) : (
           <>
             {d.kind === "workspace" && (
@@ -225,7 +230,9 @@ export function OperationsDialog({
               />
             )}
             {d.kind === "human" &&
-              (request && request.response === null ? (
+              (request &&
+              request.response === null &&
+              (!d.node || d.node === data.node.id) ? (
                 <form
                   className={formClass}
                   onSubmit={(event) => {
@@ -239,19 +246,7 @@ export function OperationsDialog({
                     } catch {
                       /* A plain text answer is valid. */
                     }
-                    void submit(() =>
-                      d.node && d.node !== data.node.id
-                        ? remoteAction({
-                            node_id: d.node,
-                            control: {
-                              run_id: request.run_id,
-                              request_id: request.id,
-                              action: "answer",
-                              response,
-                            },
-                          })
-                        : humanAnswer(request.id, response),
-                    );
+                    void submit(() => humanAnswer(request.id, response));
                   }}
                 >
                   <div className="grid min-w-0 justify-items-start gap-2">
@@ -475,18 +470,16 @@ function RunPanel({
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
   const control = (action: "pause" | "resume" | "cancel") => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
-    void submit(() =>
-      local
-        ? runControl(id, { action })
-        : remoteAction({ node_id: node, control: { run_id: id, action } }),
-    );
+    void submit(() => runControl(id, { action }));
   };
   const invocations = local
     ? (query.data?.pages.flatMap((page) => page.invocations) ?? [])
     : (remoteNode?.invocations.filter((value) => value.run_id === id) ?? []);
   const managed =
     local && run.home_node !== data.node.id && data.access.kind === "subject";
-  const controllable = !terminal && !managed;
+  // Runs observed on another node are read-only here; each node controls its
+  // own Runs (ADR 0043).
+  const controllable = local && !terminal && !managed;
   const home = run.home_node === data.node.id;
   return (
     <>
@@ -621,21 +614,11 @@ function RunPanel({
                 }
                 const idempotency_key = request.current.key;
                 const ok = await submit(() =>
-                  local
-                    ? runMessage(id, {
-                        content,
-                        idempotency_key,
-                        attachment_ids: attachments,
-                      })
-                    : remoteAction({
-                        node_id: node,
-                        control: {
-                          run_id: id,
-                          action: "message",
-                          content,
-                          idempotency_key,
-                        },
-                      }),
+                  runMessage(id, {
+                    content,
+                    idempotency_key,
+                    attachment_ids: attachments,
+                  }),
                 );
                 if (ok) {
                   setDraft("");

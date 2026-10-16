@@ -1210,7 +1210,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	// Even an operator cannot attach a resource from a different workspace.
 	let other = f
 		.store
-		.create_workspace("Other", "Isolation")
+		.create_workspace("acme", "alice", "Other", "Isolation")
 		.await
 		.unwrap();
 	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;

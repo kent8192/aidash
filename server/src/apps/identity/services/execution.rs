@@ -558,18 +558,18 @@ impl Guard {
 		})
 	}
 
-	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
 		let entry = aidash_application::authorization::worker_entry::execution(
 			&crate::bootstrap::worker_entry_repository(f),
 			run,
 		)
 		.await?;
-		Ok(entry.map(|entry| Self {
+		Ok(Self {
 			remote: entry.remote.then(|| f.clone()),
 			access: Arc::new(RwLock::new(entry.scope)),
 			run: run.clone(),
 			agent: entry.agent,
-		}))
+		})
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.write().await;
@@ -1146,16 +1146,16 @@ pub(crate) struct DeliveryGuard {
 }
 
 impl DeliveryGuard {
-	pub async fn begin(f: &Federation, run: &RunMetadata) -> Result<Option<Self>> {
+	pub async fn begin(f: &Federation, run: &RunMetadata) -> Result<Self> {
 		let entry = aidash_application::authorization::worker_entry::delivery(
 			&crate::bootstrap::worker_entry_repository(f),
 			run,
 		)
 		.await?;
-		Ok(entry.map(|entry| Self {
+		Ok(Self {
 			access: Arc::new(RwLock::new(entry.scope)),
 			remote: entry.remote,
-		}))
+		})
 	}
 }
 

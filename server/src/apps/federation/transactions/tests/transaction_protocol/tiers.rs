@@ -16,7 +16,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		workspaces.push(
 			node.f
 				.store
-				.create_workspace("Atomic tier", "Independent participant")
+				.create_workspace("acme", "alice", "Atomic tier", "Independent participant")
 				.await
 				.unwrap()
 				.id,

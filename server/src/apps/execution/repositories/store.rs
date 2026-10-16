@@ -180,28 +180,6 @@ impl Store {
 		Ok(())
 	}
 
-	// Legacy admission cannot supply durable scoped execution authority.
-	pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
-		let scoped: bool = {
-			let query_bind_1 = workspace;
-			crate::database::native::query_scalar(
-				&Query::select()
-					.expr(SimpleExpr::CustomWithExpr(
-						"(EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id = ?))"
-							.to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_one(&self.pool)
-			.await?
-		};
-		if scoped {
-			return Err(Error::Forbidden);
-		}
-		Ok(())
-	}
-
 	/// The Tenant that owns a local workspace; unscoped workspaces have none.
 	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<Option<String>> {
 		crate::database::native::query_scalar(
@@ -482,13 +460,49 @@ impl Store {
 			})
 			.await
 	}
-	pub async fn create_workspace(&self, title: &str, goal: &str) -> Result<Workspace> {
+	/// Persistence primitive without authorization: every workspace belongs to
+	/// a Tenant and its owning subject (ADR 0043).
+	pub async fn create_workspace(
+		&self,
+		tenant: &str,
+		owner: &str,
+		title: &str,
+		goal: &str,
+	) -> Result<Workspace> {
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let workspace = self
 			.create_workspace_in(&mut tx, Uuid::new_v4(), title, goal)
 			.await?;
+		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
+			.await?;
 		tx.commit().await?;
 		Ok(workspace)
+	}
+	pub(crate) async fn record_workspace_tenant_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		workspace: Uuid,
+		tenant: &str,
+		owner: &str,
+	) -> Result<()> {
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("authorization_workspaces"))
+				.columns([
+					Alias::new("workspace_id"),
+					Alias::new("tenant"),
+					Alias::new("owner_subject"),
+				])
+				.values_panic([
+					SimpleExpr::from(Expr::value(workspace)),
+					SimpleExpr::from(Expr::value(tenant)),
+					SimpleExpr::from(Expr::value(owner)),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
+		Ok(())
 	}
 	pub(crate) async fn create_workspace_in(
 		&self,
@@ -850,10 +864,10 @@ impl Store {
 		};
 		Ok(task)
 	}
+	/// Persistence primitive without admission. No API reaches it: Runs are
+	/// admitted under a Tenant's authority (ADR 0043), so this only seeds records.
 	pub async fn claim(&self, id: Uuid, revision: i64, owner: &str, agent: &Entry) -> Result<Task> {
 		let task = self.task(id).await?;
-		self.require_legacy_execution(task.workspace_id).await?;
-		self.require_legacy_agent(&agent.id, &agent.version).await?;
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let claimed = self
 			.claim_in(&mut tx, &task, revision, owner, agent, None)
@@ -2548,260 +2562,6 @@ impl Store {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
-	}
-	pub(crate) async fn require_legacy_remote_task(&self, home: &str, task: Uuid) -> Result<()> {
-		let admitted: bool = {
-			let query_bind_1 = home;
-			let query_bind_2 = task;
-			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&self.pool).await?
-		};
-		if admitted {
-			return Err(Error::Forbidden);
-		}
-		Ok(())
-	}
-	pub async fn accept_run(
-		&self,
-		task: &Task,
-		home_node: &str,
-		agent_id: &str,
-		agent_version: &str,
-	) -> Result<Run> {
-		self.accept_run_pinned(task, home_node, agent_id, agent_version, None)
-			.await
-	}
-	pub(crate) async fn accept_run_pinned(
-		&self,
-		task: &Task,
-		home_node: &str,
-		agent_id: &str,
-		agent_version: &str,
-		pinned: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
-	) -> Result<Run> {
-		if let Some(pinned) = pinned {
-			pinned.validate()?;
-			if pinned.agent.registry_node != self.node_id
-				|| pinned.agent.id != agent_id
-				|| pinned.agent.version != agent_version
-				|| home_node == self.node_id
-			{
-				return Err(Error::Forbidden);
-			}
-		}
-		self.require_legacy_execution(task.workspace_id).await?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
-		// Serialize legacy admission against scoped receiver admission. Neither
-		// mode may appear between the other's check and durable commit.
-		{
-			let query_bind_1 = format!("{home_node}:{}", task.id);
-			crate::database::native::query(
-				&Query::select()
-					.expr(SimpleExpr::CustomWithExpr(
-						"(PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED(?, 71003209)))".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *tx)
-			.await?
-		};
-		let admitted: bool = {
-			let query_bind_1 = home_node;
-			let query_bind_2 = task.id;
-			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&mut *tx).await?
-		};
-		if admitted {
-			return Err(Error::Forbidden);
-		}
-		let existing: Option<Run> = aidash_server::database::query_as(
-			&Query::select()
-				.column(ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
-				.and_where(Expr::col(Alias::new("home_node")).eq(home_node))
-				.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task.id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut *tx)
-		.await?;
-		if let Some(run) = existing {
-			if run.agent_id != agent_id
-				|| run.agent_version != agent_version
-				|| run.workspace_id != task.workspace_id
-				|| pinned.is_some_and(|snapshot| {
-					run.context.binding_snapshot.as_deref() != Some(&snapshot.snapshot())
-				}) {
-				return Err(Error::Conflict(
-					"task already has a different executor".into(),
-				));
-			}
-			tx.commit().await?;
-			return Ok(run);
-		}
-		self.require_legacy_agent(agent_id, agent_version).await?;
-		let agent = aidash_application::ports::registry::DefinitionLookup::definition(
-			&mut crate::apps::registry::repositories::sql::SqlScope(&mut tx),
-			agent_id,
-			agent_version,
-		)
-		.await?;
-		let snapshot = crate::apps::registry::repositories::bindings::snapshot(
-			&mut tx,
-			&self.node_id,
-			&agent,
-			home_node != self.node_id,
-			self.provider_credentials.is_some(),
-		)
-		.await?;
-		if pinned.is_some_and(|pinned| pinned.snapshot() != snapshot) {
-			return Err(Error::Conflict(
-				"offered Agent closure differs from receiver admission".into(),
-			));
-		}
-		// Legacy remote admission is tenantless (require_legacy_execution).
-		self.require_projection(&snapshot, false)?;
-		let context = crate::context::Context {
-			binding_snapshot: Some(Box::new(snapshot)),
-			..Default::default()
-		};
-		let row: Option<Run> = {
-			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = task.id;
-			let query_bind_3 = task.workspace_id;
-			let query_bind_4 = home_node;
-			let query_bind_5 = agent_id;
-			let query_bind_6 = agent_version;
-			let query_bind_7 = serde_json::to_value(&context)?;
-			aidash_server::database::query_as(
-				&Query::insert()
-					.into_table(Alias::new("runs"))
-					.columns([
-						Alias::new("id"),
-						Alias::new("task_id"),
-						Alias::new("workspace_id"),
-						Alias::new("home_node"),
-						Alias::new("agent_id"),
-						Alias::new("agent_version"),
-						Alias::new("context"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_5.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_6.to_owned()).into()],
-							))
-							.expr(Expr::value(query_bind_7))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::columns([Alias::new("home_node"), Alias::new("task_id")])
-							.do_nothing()
-							.to_owned(),
-					)
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut *tx)
-			.await?
-		};
-		let run = match row {
-			Some(r) => {
-				self.event(
-					&mut tx,
-					(home_node == self.node_id).then_some(task.workspace_id),
-					"run.created",
-					json!(r),
-				)
-				.await?;
-				r
-			}
-			None => {
-				let r: Run = {
-					let query_bind_1 = home_node;
-					let query_bind_2 = task.id;
-					aidash_server::database::query_as(
-						&Query::select()
-							.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-							.from(Alias::new("runs"))
-							.and_where(SimpleExpr::CustomWithExpr(
-								"(home_node = ? AND task_id = ?)".to_owned(),
-								vec![
-									Expr::value(query_bind_1.to_owned()).into(),
-									Expr::value(query_bind_2.to_owned()).into(),
-								],
-							))
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_one(&mut *tx)
-					.await?
-				};
-				if r.agent_id != agent_id
-					|| r.agent_version != agent_version
-					|| r.workspace_id != task.workspace_id
-				{
-					return Err(Error::Conflict(
-						"task already has a different executor".into(),
-					));
-				}
-				r
-			}
-		};
-		if home_node == self.node_id {
-			// Legacy journals may name an Agent absent from this Registry.
-			// Such runs have no native-memory configuration to bind; known
-			// scoped/generated Agents are still rejected by require_legacy_agent.
-			match crate::apps::registry::models::Definition::read_in(
-				&mut *tx,
-				agent_id,
-				agent_version,
-			)
-			.await
-			{
-				Ok(entry) => {
-					crate::semantic::repositories::bindings::admit(
-						self,
-						&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
-						&run.metadata(),
-						&entry,
-					)
-					.await?;
-				}
-				Err(Error::NotFound(_)) => {}
-				Err(error) => return Err(error),
-			}
-		}
-		crate::apps::identity::repositories::provider_credentials::admit_workspace(
-			&mut *tx,
-			run.id,
-			run.workspace_id,
-			run.context
-				.binding_snapshot
-				.as_deref()
-				.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?,
-			self.provider_credentials.is_some(),
-		)
-		.await?;
-		tx.commit().await?;
-		Ok(run)
 	}
 	pub async fn run(&self, id: Uuid) -> Result<Run> {
 		let lease = self.orm_connection()?;

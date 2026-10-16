@@ -39,7 +39,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 	let workspace = app
 		.runtime
 		.store
-		.create_workspace("Journal", "Bounded observation")
+		.create_workspace("acme", "alice", "Journal", "Bounded observation")
 		.await
 		.unwrap();
 	crate::endpoint::register_fixture_agent(&app, "agent").await;

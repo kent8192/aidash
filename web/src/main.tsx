@@ -749,14 +749,6 @@ function Dashboard({
           request,
           node: data.node.id,
         })),
-        ...(operator
-          ? (remote?.nodes.flatMap((node) =>
-              node.human_requests.map((request) => ({
-                request,
-                node: node.node_id,
-              })),
-            ) ?? [])
-          : []),
       ]
     : [];
   const visit = (target: NoticeTarget) => {

@@ -1,19 +1,16 @@
-//! Legacy delegation and discovery share authorization gates with worker delivery.
+//! Operator Agent discovery across enabled peers.
 use crate::{
 	Error, Result,
 	ports::federation::{FederationRepository, PeerTransport},
 };
 use aidash_domain::{
-	Run, TaskStatus,
-	federation::{Delegation, DiscoveredAgent, Discovery, Offer, PeerError},
-	qualified_agent,
-	registry::{AgentConfig, AgentPage, EntityRef, Entry, Search},
+	federation::{DiscoveredAgent, Discovery, PeerError},
+	registry::{AgentPage, Entry, Search},
 };
 use futures_util::{StreamExt, stream};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub struct Federation {
 	node_id: String,
@@ -47,11 +44,6 @@ impl Federation {
 			503 if reply.transaction_pending => Err(Error::TransactionPending),
 			409 if reply.run_message_pending => Err(Error::TransactionPending),
 			409 => Err(Error::Conflict("remote task state changed".into())),
-			400 => Err(
-				map_workspace_chunk_bad_request(path, body, &reply.body).unwrap_or_else(|| {
-					Error::External(format!("peer {node} returned {}", reply.status_label))
-				}),
-			),
 			_ => Err(Error::External(format!(
 				"peer {node} returned {}",
 				reply.status_label
@@ -129,174 +121,6 @@ impl Federation {
 		}
 		Ok(result)
 	}
-	pub async fn delegate(
-		&self,
-		task_id: Uuid,
-		node: &str,
-		agent: &EntityRef,
-	) -> Result<Delegation> {
-		self.delegate_mode(task_id, node, agent, None).await
-	}
-	pub async fn delegate_pinned(
-		&self,
-		task_id: Uuid,
-		node: &str,
-		agent: &EntityRef,
-		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
-	) -> Result<Delegation> {
-		snapshot.validate()?;
-		if snapshot.agent.registry_node != node
-			|| snapshot.agent.local() != *agent
-			|| node == self.node_id
-		{
-			return Err(Error::Forbidden);
-		}
-		self.delegate_mode(task_id, node, agent, Some(snapshot))
-			.await
-	}
-	async fn delegate_mode(
-		&self,
-		task_id: Uuid,
-		node: &str,
-		agent: &EntityRef,
-		snapshot: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
-	) -> Result<Delegation> {
-		let task = self.repository.task(task_id).await?;
-		self.repository
-			.require_legacy_workspace(task.workspace_id)
-			.await?;
-		if task.status != TaskStatus::Open
-			&& task.owner.as_deref() != Some(&qualified_agent(node, &agent.id, &agent.version))
-		{
-			return Err(Error::Conflict("task is already assigned".into()));
-		}
-		if node == self.node_id {
-			self.repository.require_legacy_agent(agent).await?;
-			let entry = self.repository.agent(agent).await?;
-			let _: AgentConfig = serde_json::from_value(entry.config.clone())
-				.map_err(|_| Error::Invalid("executor must be an agent".into()))?;
-			let requirements: Search = serde_json::from_value(task.requirements.clone())?;
-			if entry.kind != "agent" || !requirements.matches(&entry) {
-				return Err(Error::Invalid(
-					"agent does not satisfy task requirements".into(),
-				));
-			}
-		} else {
-			let mut requirements: Search = serde_json::from_value(task.requirements.clone())?;
-			requirements.kind = Some("agent".into());
-			let entry: Entry = if let Some(snapshot) = snapshot {
-				snapshot
-					.definitions
-					.iter()
-					.find(|definition| definition.identity == snapshot.agent)
-					.ok_or(Error::Forbidden)?
-					.definition
-					.clone()
-			} else {
-				self.request(
-					node,
-					"GET",
-					&format!("/discover/{}/{}", agent.id, agent.version),
-					None,
-				)
-				.await?
-			};
-			if entry.id != agent.id
-				|| entry.version != agent.version
-				|| !requirements.matches(&entry)
-			{
-				return Err(Error::Invalid(
-					"remote agent is missing or does not satisfy task requirements".into(),
-				));
-			}
-		}
-		let mut delegation = if let Some(snapshot) = snapshot {
-			self.repository
-				.reserve_pinned_delegation(&task, node, agent, snapshot)
-				.await?
-		} else {
-			self.repository
-				.reserve_delegation(&task, node, agent)
-				.await?
-		};
-		match self.deliver(&delegation).await {
-			Ok(()) => delegation.delivered = true,
-			Err(error) => tracing::warn!(%error,%task_id,"delegation queued for retry"),
-		}
-		Ok(delegation)
-	}
-	pub async fn deliver(&self, delegation: &Delegation) -> Result<()> {
-		if delegation.delivered {
-			return Ok(());
-		}
-		let task = self.repository.task(delegation.task_id).await?;
-		let agent = EntityRef {
-			id: delegation.agent_id.clone(),
-			version: delegation.agent_version.clone(),
-		};
-		if delegation.node_id == self.node_id {
-			self.repository.accept_local_run(&task, &agent).await?;
-		} else {
-			let binding_snapshot = self
-				.repository
-				.delegation_snapshot(delegation.task_id)
-				.await?;
-			if let Some(snapshot) = &binding_snapshot {
-				snapshot.validate()?;
-				if snapshot.agent.registry_node != delegation.node_id
-					|| snapshot.agent.local() != agent
-				{
-					return Err(Error::Forbidden);
-				}
-			}
-			self.request::<Run>(
-				&delegation.node_id,
-				"POST",
-				"/offers",
-				Some(&json!(Offer {
-					task,
-					agent,
-					binding_snapshot
-				})),
-			)
-			.await?;
-		}
-		self.repository.mark_delivered(delegation.task_id).await
-	}
-	pub async fn retry_deliveries(&self) -> Result<()> {
-		let batch = self.repository.claim_retries().await?;
-		let pending = batch.pending().to_vec();
-		let mut deliveries = stream::iter(pending.into_iter().map(|delegation| async move {
-			let result = self.deliver(&delegation).await;
-			(delegation, result)
-		}))
-		.buffer_unordered(8);
-		while let Some((delegation, result)) = deliveries.next().await {
-			if let Err(error) = result {
-				tracing::warn!(task_id=%delegation.task_id,%error,"peer delivery pending");
-			}
-		}
-		drop(batch);
-		Ok(())
-	}
-}
-
-pub fn map_workspace_chunk_bad_request(
-	path: &str,
-	request: Option<&Value>,
-	error: &Value,
-) -> Option<Error> {
-	if path != "/workspace"
-		|| request.is_none_or(|body| body["operation"] != "workspace_record_chunk")
-	{
-		return None;
-	}
-	Some(Error::Invalid(
-		error["error"]
-			.as_str()
-			.unwrap_or("invalid remote workspace record chunk")
-			.to_owned(),
-	))
 }
 
 #[cfg(test)]

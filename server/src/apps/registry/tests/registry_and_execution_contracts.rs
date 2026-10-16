@@ -176,7 +176,11 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
-	let workspace = f.store.create_workspace("tree", "goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "tree", "goal")
+		.await
+		.unwrap();
 	let input = NewTask {
 		title: "task".into(),
 		description: "work".into(),
@@ -321,7 +325,11 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f.store.create_workspace("operator", "goal").await.unwrap();
+	let workspace = f
+		.store
+		.create_workspace("acme", "alice", "operator", "goal")
+		.await
+		.unwrap();
 	let task = f
 		.store
 		.create_task(
@@ -823,7 +831,11 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 			.count(),
 		2
 	);
-	let other = f.store.create_workspace("other", "goal").await.unwrap();
+	let other = f
+		.store
+		.create_workspace("acme", "alice", "other", "goal")
+		.await
+		.unwrap();
 	assert_eq!(
 		request(
 			&app,

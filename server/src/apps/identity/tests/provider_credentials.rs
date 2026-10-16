@@ -710,9 +710,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_application::provider_access::{Context, ProviderAccess, Source};
-	use aidash_server::apps::identity::models::{
-		AuthorizationWorkspace, provider_credentials::RunProviderCredential as Pin,
-	};
+	use aidash_server::apps::identity::models::provider_credentials::RunProviderCredential as Pin;
 	use aidash_server::apps::knowledge::models::SemanticIndexe;
 	use reinhardt::db::orm::{Json, Model};
 	let mut f = endpoint.await;
@@ -781,19 +779,10 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let workspace = f
 		.runtime
 		.store
-		.create_workspace("BYOK retrieval", "Test admission")
+		.create_workspace("beta", "actor", "BYOK retrieval", "Test admission")
 		.await
 		.unwrap();
 	let mut tx = f.database.connection.begin().await.unwrap();
-	let authority = AuthorizationWorkspace::build()
-		.workspace_id(workspace.id)
-		.tenant("beta")
-		.owner_subject("actor")
-		.finish();
-	AuthorizationWorkspace::objects()
-		.insert_with_executor(tx.as_mut(), &authority)
-		.await
-		.unwrap();
 	let index = SemanticIndexe::build()
 		.workspace_id(workspace.id).tenant("beta").revision(1)
 		.spec(Json(json!({

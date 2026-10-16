@@ -747,7 +747,12 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	assert_eq!(grant["revision"], 1);
 	let workspace = federation
 		.store
-		.create_workspace("Browser management", "Pause and cancel an admitted run")
+		.create_workspace(
+			"acme",
+			"alice",
+			"Browser management",
+			"Pause and cancel an admitted run",
+		)
 		.await
 		.unwrap();
 	let task = federation

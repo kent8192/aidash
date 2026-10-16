@@ -83,7 +83,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.await
 		.unwrap();
 	let workspace = store
-		.create_workspace("Isolation", "Healthy progress")
+		.create_workspace("acme", "alice", "Isolation", "Healthy progress")
 		.await
 		.unwrap();
 	let mut damaged = vec![];
@@ -214,7 +214,7 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Controls", "Do not execute")
+		.create_workspace("acme", "alice", "Controls", "Do not execute")
 		.await
 		.unwrap();
 	let paused = create(&store, &agent, workspace.id).await;
@@ -288,7 +288,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Paging", "Later work")
+		.create_workspace("acme", "alice", "Paging", "Later work")
 		.await
 		.unwrap();
 	for _ in 0..129 {
@@ -331,7 +331,7 @@ async fn dependency_release_uses_only_the_authoritative_home(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Dependencies", "Home authority")
+		.create_workspace("acme", "alice", "Dependencies", "Home authority")
 		.await
 		.unwrap();
 	let dependency = running_task(&store, &agent, workspace.id, None).await;
@@ -435,7 +435,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Delivery", "Resume disposition only")
+		.create_workspace("acme", "alice", "Delivery", "Resume disposition only")
 		.await
 		.unwrap();
 	let ordinary = create(&store, &agent, workspace.id).await;

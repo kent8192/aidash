@@ -29,21 +29,15 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		candidates.push(review_delivery::candidate(&store, &bank).await);
 	}
 	let later_workspace = store
-		.create_workspace("Later bank", "Maintenance must reach this bank")
-		.await
-		.unwrap();
-	let mut db = database.lease.handle();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut db,
-			&AuthorizationWorkspace::build()
-				.workspace_id(later_workspace.id)
-				.tenant("acme")
-				.owner_subject("operator")
-				.finish(),
+		.create_workspace(
+			"acme",
+			"operator",
+			"Later bank",
+			"Maintenance must reach this bank",
 		)
 		.await
 		.unwrap();
+	let mut db = database.lease.handle();
 	let index = aidash_server::semantic::service::get_index(&store, &Actor::Operator, workspace)
 		.await
 		.unwrap();
@@ -344,21 +338,15 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	// Admit the bank against a valid index, then remove the disposable search
 	// service. Its source quota is independent of the Run lifetime read journal.
 	let workspace = store
-		.create_workspace("Long Run", "Accumulate admitted recall pages")
+		.create_workspace(
+			"acme",
+			"operator",
+			"Long Run",
+			"Accumulate admitted recall pages",
+		)
 		.await
 		.unwrap()
 		.id;
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(workspace)
-				.tenant("acme")
-				.owner_subject("operator")
-				.finish(),
-		)
-		.await
-		.unwrap();
 	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
 		.await
 		.unwrap();

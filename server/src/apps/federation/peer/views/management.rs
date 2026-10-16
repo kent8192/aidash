@@ -14,8 +14,6 @@ use reinhardt::Response;
 use reinhardt::http::ViewResult;
 use reinhardt::{get, post};
 
-use crate::apps::federation::peer::serializers::management::RemoteControl;
-use crate::apps::federation::peer::serializers::management::WorkspaceCommand;
 use crate::apps::federation::peer::services::management::PeerManagement;
 
 #[post("/api/peers", name = "peer-create", auth = "protected")]
@@ -82,45 +80,10 @@ pub async fn peer_agent_bindings(
 	crate::http::json(service.peer_agent_bindings((id, version)).await)
 }
 
-#[post("/federation/v0.1/offers", name = "peer-offer", auth = "protected")]
-pub async fn peer_offer(
-	#[inject] service: Depends<PeerManagement>,
-	request: Request,
-	Json(offer): Json<Offer>,
-) -> ViewResult<Response> {
-	crate::http::json(service.peer_offer(request.headers.clone(), offer).await)
-}
-
-#[post(
-	"/federation/v0.1/workspace",
-	name = "peer-workspace",
-	auth = "protected"
-)]
-pub async fn peer_workspace(
-	#[inject] service: Depends<PeerManagement>,
-	request: Request,
-	Json(command): Json<WorkspaceCommand>,
-) -> ViewResult<Response> {
-	crate::http::json(
-		service
-			.peer_workspace(request.headers.clone(), command)
-			.await,
-	)
-}
-
 #[get("/federation/v0.1/observe", name = "peer-observe", auth = "protected")]
 pub async fn peer_observe(
 	#[inject] service: Depends<PeerManagement>,
 	request: Request,
 ) -> ViewResult<Response> {
 	crate::http::json(service.peer_observe(request.headers.clone()).await)
-}
-
-#[post("/federation/v0.1/control", name = "peer-control", auth = "protected")]
-pub async fn peer_control(
-	#[inject] service: Depends<PeerManagement>,
-	request: Request,
-	Json(input): Json<RemoteControl>,
-) -> ViewResult<Response> {
-	crate::http::json(service.peer_control(request.headers.clone(), input).await)
 }

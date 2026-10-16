@@ -1,15 +1,13 @@
 //! Management use cases.
 use crate::{
-	Result,
+	Error, Result,
 	authorization::{execution, identity::Actor},
 	federation::{Delegation, Federation},
 };
 use reinhardt::injectable;
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::apps::federation::remote::serializers::management::DelegateInput;
-use crate::apps::federation::remote::serializers::management::RemoteActionInput;
 
 #[derive(Clone)]
 pub struct RemoteManagement {
@@ -26,20 +24,16 @@ impl RemoteManagement {
 		id: Uuid,
 		input: DelegateInput,
 	) -> Result<Delegation> {
-		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return execution::delegate(&f, &identity, id, input.node_id.as_str(), &input.agent)
-				.await;
-		}
-		f.delegate(id, &input.node_id, &input.agent).await
-	}
-	pub(crate) async fn remote_action(&self, input: RemoteActionInput) -> Result<Value> {
-		let f = self.runtime.clone();
-		f.request(
-			&input.node_id,
-			reqwest::Method::POST,
-			"/control",
-			Some(&serde_json::to_value(input.control)?),
+		let Actor::Subject(identity) = actor else {
+			// Tasks belong to Tenants; an Operator delegates none of its own (ADR 0043).
+			return Err(Error::Forbidden);
+		};
+		execution::delegate(
+			&self.runtime,
+			&identity,
+			id,
+			input.node_id.as_str(),
+			&input.agent,
 		)
 		.await
 	}

@@ -990,32 +990,14 @@ async fn trust_run_backlog(
 	wb.register().await;
 	let visible =
 		wb.f.store
-			.create_workspace("Visible history", "Fixture")
+			.create_workspace("acme", "alice", "Visible history", "Fixture")
 			.await
 			.unwrap();
 	let hidden =
 		wb.f.store
-			.create_workspace("Hidden history", "Fixture")
+			.create_workspace("acme", "alice", "Hidden history", "Fixture")
 			.await
 			.unwrap();
-	for workspace in [&visible, &hidden] {
-		let query = Query::insert()
-			.into_table(Alias::new("authorization_workspaces"))
-			.columns(["workspace_id", "tenant", "owner_subject"].map(Alias::new))
-			.from_subquery(
-				reinhardt::query::Query::select()
-					.expr(Expr::cust("$1"))
-					.expr(Expr::cust("'acme'"))
-					.expr(Expr::cust("'alice'"))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder);
-		sqlx::query(&query)
-			.bind(workspace.id)
-			.execute(wb.f.store.pool.driver())
-			.await
-			.unwrap();
-	}
 	let visible = serde_json::to_value(visible).unwrap();
 	let hidden = serde_json::to_value(hidden).unwrap();
 	let mut hidden_runs = Vec::new();

@@ -972,13 +972,11 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			federation: self.federation.clone(),
 			home: self.native_home(),
 		});
-		let authority = if let Some(authority) = &self.authority {
-			authority.guard.binding_authority()
-		} else {
-			Arc::new(super::bindings::OperatorAuthority {
-				federation: self.federation.clone(),
-			}) as Arc<dyn aidash_application::ports::bindings::BindingAuthority>
+		// Only admitted Runs execute, each under its worker authority (ADR 0043).
+		let Some(authority) = &self.authority else {
+			return Err(aidash_application::Error::Forbidden);
 		};
+		let authority = authority.guard.binding_authority();
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,

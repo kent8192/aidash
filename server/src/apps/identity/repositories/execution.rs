@@ -118,24 +118,6 @@ impl ExecutionGrantRepository for Grants<'_> {
 			.map(|grant| grant.map(Into::into))
 			.map_err(Into::into)
 	}
-	async fn require_legacy_remote_task(&self, home: &str, task: Uuid) -> Result<()> {
-		self.store
-			.require_legacy_remote_task(home, task)
-			.await
-			.map_err(Into::into)
-	}
-	async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
-		self.store
-			.require_legacy_execution(workspace)
-			.await
-			.map_err(Into::into)
-	}
-	async fn require_legacy_agent(&self, agent: &str, version: &str) -> Result<()> {
-		self.store
-			.require_legacy_agent(agent, version)
-			.await
-			.map_err(Into::into)
-	}
 }
 
 #[async_trait]

@@ -2,7 +2,7 @@
 use super::DatabaseFixture;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::{AuthorizationBundle, AuthorizationWorkspace},
+	apps::identity::models::AuthorizationBundle,
 	registry::{Entry, Registry},
 	store::Store,
 };
@@ -216,7 +216,7 @@ pub(super) async fn setup_endpoint_policy(
 		registry.register(entry(kind, id, config)).await.unwrap();
 	}
 	let workspace = store
-		.create_workspace("Memory", "Keep current evidence")
+		.create_workspace("acme", "operator", "Memory", "Keep current evidence")
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();
@@ -229,17 +229,6 @@ pub(super) async fn setup_endpoint_policy(
 				.tenant("acme")
 				.revision(1)
 				.document(Json(serde_json::to_value(bundle).unwrap()))
-				.finish(),
-		)
-		.await
-		.unwrap();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut db,
-			&AuthorizationWorkspace::build()
-				.workspace_id(workspace.id)
-				.tenant("acme")
-				.owner_subject("operator")
 				.finish(),
 		)
 		.await

@@ -45,9 +45,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		("GET", "/federation/v0.1/observe"),
 		("GET", "/federation/v0.1/transactions/{id}/authority"),
 		("GET", "/federation/v0.1/transactions/{id}/decision"),
-		("POST", "/federation/v0.1/control"),
 		("POST", "/federation/v0.1/discover"),
-		("POST", "/federation/v0.1/offers"),
 		("POST", "/federation/v0.1/scoped/dependencies/verify"),
 		("POST", "/federation/v0.1/scoped/discover"),
 		("POST", "/federation/v0.1/scoped/execution/admissions"),
@@ -99,7 +97,6 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		("POST", "/federation/v0.1/transactions/preflight"),
 		("POST", "/federation/v0.1/transactions/prepare"),
 		("POST", "/federation/v0.1/transactions/reserve"),
-		("POST", "/federation/v0.1/workspace"),
 	]);
 	// Read the real composed Reinhardt router without mutating its global reverser.
 	let router = super::routes();
@@ -118,4 +115,15 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		.filter(|(method, path)| !actual.contains(&(method.to_string(), path.to_string())))
 		.collect();
 	assert_eq!(missing, Vec::<(&str, &str)>::new());
+	// Unscoped execution routes are gone (ADR 0043).
+	let removed: Vec<_> = [
+		("POST", "/federation/v0.1/control"),
+		("POST", "/federation/v0.1/offers"),
+		("POST", "/federation/v0.1/workspace"),
+		("POST", "/api/remote"),
+	]
+	.into_iter()
+	.filter(|(method, path)| actual.contains(&(method.to_string(), path.to_string())))
+	.collect();
+	assert_eq!(removed, Vec::<(&str, &str)>::new());
 }

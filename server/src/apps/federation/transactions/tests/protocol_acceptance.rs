@@ -168,12 +168,12 @@ fn pair(
 	}
 	let wa =
 		a.f.store
-			.create_workspace("A", "Atomic state")
+			.create_workspace("acme", "alice", "A", "Atomic state")
 			.await
 			.unwrap();
 	let wb =
 		b.f.store
-			.create_workspace("B", "Atomic state")
+			.create_workspace("acme", "alice", "B", "Atomic state")
 			.await
 			.unwrap();
 	let manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();

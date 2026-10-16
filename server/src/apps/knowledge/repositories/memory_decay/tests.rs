@@ -164,24 +164,12 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	#[case] contender_kind: &str,
 	#[case] commit_winner: bool,
 ) {
-	use crate::apps::identity::models::AuthorizationWorkspace;
 	use reinhardt::query::SimpleExpr;
 	use reinhardt::query::prelude::IntoIden;
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace("Other", "Independent workspace lock")
-		.await
-		.unwrap();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(other.id)
-				.tenant("acme")
-				.owner_subject("operator")
-				.finish(),
-		)
+		.create_workspace("acme", "operator", "Other", "Independent workspace lock")
 		.await
 		.unwrap();
 	let index = crate::semantic::service::get_index(&store, &Actor::Operator, workspace)
