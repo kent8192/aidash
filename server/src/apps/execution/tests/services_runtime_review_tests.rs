@@ -66,6 +66,7 @@ async fn interruption_store(
 		provider_clients: crate::semantic::backend::clients().unwrap(),
 		keyless: Default::default(),
 		recovery_cursors: Default::default(),
+		tenancies: Default::default(),
 		tool_slots: aidash_application::ports::execution::ToolSlots::new(1),
 		cache_salt: None,
 		provider_credentials: None,

@@ -60,6 +60,9 @@ pub struct Store {
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
+	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
+	/// clone of this Store.
+	pub(crate) tenancies: std::sync::Arc<tenancies::Tenancies>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
 	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
@@ -250,6 +253,9 @@ impl Store {
 	/// until #265 records the Tenant on the Run. A Run with neither has no
 	/// Tenant; only test fixtures create one.
 	pub(crate) async fn run_tenancy(&self, run: Uuid) -> Result<TenancyScope> {
+		if let Some(tenant) = self.tenancies.run(run) {
+			return Ok(tenant.into());
+		}
 		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let tenant: Option<String> = self
 			.pool
@@ -275,15 +281,22 @@ impl Store {
 			})
 			.await?;
 		match tenant {
-			Some(tenant) => Ok(TenancyScope::tenant(&tenant)?),
+			Some(tenant) => {
+				let tenant = aidash_domain::tenancy::TenantName::new(tenant)?;
+				self.tenancies.remember_run(run, tenant.clone());
+				Ok(tenant.into())
+			}
 			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
 		}
 	}
 
 	/// The Tenant that owns a local workspace; unscoped workspaces have none.
 	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<Option<String>> {
+		if let Some(tenant) = self.tenancies.workspace(workspace) {
+			return Ok(Some(tenant.into_inner()));
+		}
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
-		crate::database::native::query_scalar(
+		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
 				.from(Alias::new("authorization_workspaces"))
@@ -291,7 +304,13 @@ impl Store {
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(self.pool.in_scope(scope))
-		.await
+		.await?;
+		if let Some(tenant) = &tenant
+			&& let Ok(name) = aidash_domain::tenancy::TenantName::new(tenant)
+		{
+			self.tenancies.remember_workspace(workspace, name);
+		}
+		Ok(tenant)
 	}
 
 	/// The scope of a Workspace that a caller names only by id: its Tenant, or
@@ -311,8 +330,14 @@ impl Store {
 		admission: Uuid,
 		grant: Uuid,
 	) -> Result<TenancyScope> {
+		if let Some(tenant) = self.tenancies.run(admission) {
+			return Ok(tenant.into());
+		}
+		if let Some(tenant) = self.tenancies.grant(grant) {
+			return Ok(tenant.into());
+		}
 		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
-		let tenant: Option<String> = self
+		let tenant: Option<(&str, String)> = self
 			.pool
 			.scoped(&lookup, async |tx| {
 				for (table, column, id) in [
@@ -329,21 +354,32 @@ impl Store {
 					)
 					.scalar_optional(&mut **tx)
 					.await?;
-					if tenant.is_some() {
-						return Ok(tenant);
+					if let Some(tenant) = tenant {
+						return Ok(Some((table, tenant)));
 					}
 				}
 				Ok(None)
 			})
 			.await?;
 		match tenant {
-			Some(tenant) => Ok(TenancyScope::tenant(&tenant)?),
+			Some((table, tenant)) => {
+				let tenant = aidash_domain::tenancy::TenantName::new(tenant)?;
+				if table == "authorization_remote_grants" {
+					self.tenancies.remember_grant(grant, tenant.clone());
+				} else {
+					self.tenancies.remember_run(admission, tenant.clone());
+				}
+				Ok(tenant.into())
+			}
 			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
 		}
 	}
 
 	/// The scope of a task that a caller names only by id: its Workspace's.
 	pub(crate) async fn task_tenancy(&self, task: Uuid) -> Result<TenancyScope> {
+		if let Some(workspace) = self.tenancies.task_workspace(task) {
+			return self.workspace_tenancy(workspace).await;
+		}
 		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let workspace: Uuid = crate::database::native::query_scalar(
 			&Query::select()
@@ -355,6 +391,7 @@ impl Store {
 		.scalar_optional(self.pool.in_scope(&lookup))
 		.await?
 		.ok_or_else(|| Error::NotFound("task".into()))?;
+		self.tenancies.remember_task_workspace(task, workspace);
 		self.workspace_tenancy(workspace).await
 	}
 
@@ -412,6 +449,7 @@ impl Store {
 			provider_clients,
 			keyless: Default::default(),
 			recovery_cursors: Default::default(),
+			tenancies: Default::default(),
 			tool_slots,
 			cache_salt: None,
 			provider_credentials: None,
@@ -496,6 +534,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
@@ -538,6 +577,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
@@ -4955,6 +4995,8 @@ impl Store {
 }
 #[path = "store/run_state.rs"]
 pub(crate) mod run_state;
+#[path = "store/tenancies.rs"]
+pub(crate) mod tenancies;
 
 impl Store {
 	async fn ensure_run_response_current_in(
