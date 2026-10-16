@@ -1003,12 +1003,6 @@ impl PublicationScope for Scope {
 		Ok(())
 	}
 }
-struct Secrets;
-impl crate::ports::Credentials for Secrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("publication fixture has no credential references")
-	}
-}
 struct CoreCatalog;
 impl crate::ports::registry::CoreToolCatalog for CoreCatalog {
 	fn specifications(
@@ -1019,7 +1013,7 @@ impl crate::ports::registry::CoreToolCatalog for CoreCatalog {
 	}
 }
 fn validation() -> crate::registry::DefinitionValidation {
-	crate::registry::DefinitionValidation::new(Arc::new(Secrets), Arc::new(CoreCatalog))
+	crate::registry::DefinitionValidation::new(Arc::new(CoreCatalog))
 }
 use crate::registry::workbench::publication;
 #[rstest]

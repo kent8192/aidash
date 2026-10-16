@@ -85,9 +85,7 @@ fn rule() -> RealToolRule {
 	}
 }
 fn tool() -> Entry {
-	let mut tool = crate::test_support::http_tool("aidash://local", "tool", "lookup");
-	tool.config["transport"]["credential_env"] = json!("AIDASH_SECRET_PRODUCTION_TOOL");
-	tool
+	crate::test_support::http_tool("aidash://local", "tool", "lookup")
 }
 fn draft_entry() -> Entry {
 	let mut entry = crate::test_support::agent("agent");
@@ -347,21 +345,17 @@ async fn validated_profiles_forward_the_original_atomic_revision_fence(
 #[rstest]
 #[case("insecure")]
 #[case("production_endpoint")]
-#[case("production_credential")]
 #[case("write_tool")]
 #[case("non_http")]
 #[case("non_tool")]
 #[case("missing_credential")]
-fn real_rule_preserves_endpoint_credential_and_replay_isolation(#[case] denial: &str) {
+fn real_rule_preserves_endpoint_and_replay_isolation(#[case] denial: &str) {
 	let mut rule = rule();
 	let mut tool = tool();
 	let mut config = Configuration::new();
 	match denial {
 		"insecure" => rule.endpoint = "http://test.example/rpc".into(),
 		"production_endpoint" => rule.endpoint = "https://production.example/rpc".into(),
-		"production_credential" => {
-			rule.credential_env = Some("AIDASH_SECRET_PRODUCTION_TOOL".into())
-		}
 		"write_tool" => rule.read_only_verified = false,
 		"non_http" => tool.config = json!({"transport":"native","operation":"read"}),
 		"non_tool" => tool.kind = "model".into(),

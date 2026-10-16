@@ -3,19 +3,13 @@ use super::super::{
 	tests::OperatorFixture,
 };
 use super::*;
-use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::ports::registry::CoreToolCatalog;
 use aidash_domain::{
 	capabilities::CoreCapabilities,
 	provider::ToolSpec,
 	tool::providers::{ToolDescriptor, requires_runner},
 };
 use std::sync::Arc;
-struct CredentialsUnused;
-impl Credentials for CredentialsUnused {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("operator declarations do not load secrets")
-	}
-}
 struct Providers {
 	runner: bool,
 }
@@ -47,7 +41,7 @@ impl CoreToolCatalog for Providers {
 	}
 }
 fn validation(runner: bool) -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(CredentialsUnused), Arc::new(Providers { runner }))
+	DefinitionValidation::new(Arc::new(Providers { runner }))
 }
 fn input(groups: &[&str]) -> HostPackages {
 	HostPackages {

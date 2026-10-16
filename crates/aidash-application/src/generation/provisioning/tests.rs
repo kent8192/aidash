@@ -3,7 +3,6 @@ use crate::{
 	authorization::Snapshot,
 	generation::test_support,
 	ports::{
-		Credentials,
 		generation::{provisioning::*, publication::GenerationPublication},
 		registry::CoreToolCatalog,
 	},
@@ -22,12 +21,6 @@ use std::{
 };
 use uuid::Uuid;
 
-struct NoSecrets;
-impl Credentials for NoSecrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		Err(Error::External("unexpected secret request".into()))
-	}
-}
 struct NoCore;
 impl CoreToolCatalog for NoCore {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
@@ -36,7 +29,7 @@ impl CoreToolCatalog for NoCore {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(NoSecrets), Arc::new(NoCore))
+	DefinitionValidation::new(Arc::new(NoCore))
 }
 
 #[derive(Clone, Copy)]

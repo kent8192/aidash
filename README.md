@@ -256,11 +256,12 @@ Tools are immutable Registry descriptors with provider-owned behavior and a JSON
   "transport": {
     "transport": "http",
     "endpoint": "https://tools.example.com/research",
-    "credential_env": "AIDASH_SECRET_TOOLS",
     "replay": "unsafe"
   }
 }
 ```
+
+HTTP and MCP tool transports never name a Deployment secret: `credential_env` is rejected on registration, import and installation, and a stored Tool that still carries it is refused when it runs (#296). Tenant-owned secrets for tools are planned in the same Issue.
 
 Bind its exact registered identity in the Agent configuration:
 
