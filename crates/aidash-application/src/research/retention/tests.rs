@@ -21,8 +21,10 @@ fn rules(after_run_hours: u32, max_age_hours: u32) -> RetentionRules {
 struct Snapshots {
 	all: Vec<RetainedSnapshot>,
 	purged: Mutex<Vec<Uuid>>,
-	/// Every `retrieved_before` the sweeper asked with.
-	asked: Mutex<Vec<DateTime<Utc>>>,
+	/// Every `(retrieved_before, ended_before)` the sweeper asked with.
+	asked: Mutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
+	/// Tenant periods that a change stored after the candidates were read.
+	changed: Option<RetentionRules>,
 }
 
 impl Snapshots {
@@ -32,6 +34,7 @@ impl Snapshots {
 			all,
 			purged: Mutex::default(),
 			asked: Mutex::default(),
+			changed: None,
 		}
 	}
 }
@@ -42,9 +45,13 @@ impl SnapshotRetention for Snapshots {
 		&self,
 		after: Option<Uuid>,
 		retrieved_before: DateTime<Utc>,
+		ended_before: DateTime<Utc>,
 		limit: u32,
 	) -> Result<Vec<RetainedSnapshot>> {
-		self.asked.lock().unwrap().push(retrieved_before);
+		self.asked
+			.lock()
+			.unwrap()
+			.push((retrieved_before, ended_before));
 		let purged = self.purged.lock().unwrap();
 		Ok(self
 			.all
@@ -52,23 +59,51 @@ impl SnapshotRetention for Snapshots {
 			.filter(|snapshot| after.is_none_or(|after| snapshot.id > after))
 			.filter(|snapshot| !purged.contains(&snapshot.id))
 			.filter(|snapshot| {
-				snapshot.run_ended_at.is_some() || snapshot.fetched_at < retrieved_before
+				snapshot
+					.run_ended_at
+					.is_some_and(|ended| ended < ended_before)
+					|| snapshot.fetched_at < retrieved_before
 			})
 			.take(limit as usize)
 			.cloned()
 			.collect())
 	}
-	async fn shortest_tenant_max_age(&self) -> Result<Option<u32>> {
-		Ok(self
+	async fn shortest_tenant_periods(&self) -> Result<Option<SnapshotPeriods>> {
+		let periods = || {
+			self.all
+				.iter()
+				.filter_map(|snapshot| snapshot.tenant_rules)
+				.map(|rules| rules.document_snapshots)
+		};
+		Ok(periods()
+			.map(|periods| periods.after_run_seconds)
+			.min()
+			.zip(periods().map(|periods| periods.max_age_seconds).min())
+			.map(|(after_run_seconds, max_age_seconds)| SnapshotPeriods {
+				after_run_seconds,
+				max_age_seconds,
+			}))
+	}
+	async fn purge(
+		&self,
+		ids: &[Uuid],
+		expired: &(dyn for<'a> Fn(&'a RetainedSnapshot) -> bool + Sync),
+		_: DateTime<Utc>,
+	) -> Result<u64> {
+		// Read again with the Tenant's current periods.
+		let still = self
 			.all
 			.iter()
-			.filter_map(|snapshot| snapshot.tenant_rules)
-			.map(|rules| rules.document_snapshots.max_age_seconds)
-			.min())
-	}
-	async fn purge(&self, ids: &[Uuid], _: DateTime<Utc>) -> Result<u64> {
-		self.purged.lock().unwrap().extend(ids);
-		Ok(ids.len() as u64)
+			.filter(|snapshot| ids.contains(&snapshot.id))
+			.map(|snapshot| RetainedSnapshot {
+				tenant_rules: self.changed.or(snapshot.tenant_rules),
+				..snapshot.clone()
+			})
+			.filter(|snapshot| expired(snapshot))
+			.map(|snapshot| snapshot.id)
+			.collect::<Vec<_>>();
+		self.purged.lock().unwrap().extend(&still);
+		Ok(still.len() as u64)
 	}
 }
 
@@ -106,15 +141,45 @@ async fn the_sweeper_purges_only_contents_without_a_basis() {
 	let mut ids = snapshots.purged.lock().unwrap().clone();
 	ids.sort();
 	assert_eq!(ids, [2, 4, 5].map(Uuid::from_u128));
-	// Snapshots of active Runs are examined only past the shortest cap.
+	// Snapshots are examined only past the shortest cap, and those of ended
+	// Runs only past the shortest post-run period.
 	assert!(
 		snapshots
 			.asked
 			.lock()
 			.unwrap()
 			.iter()
-			.all(|before| *before == hours(72 - 48))
+			.all(|before| *before == (hours(72 - 48), hours(72 - 1)))
 	);
+}
+
+#[tokio::test]
+async fn a_run_that_ended_within_every_post_run_period_is_not_examined() {
+	let deployment = rules(24, 7 * 24);
+	let snapshots = Snapshots::new(vec![snapshot(1, 0, Some(70), None)]);
+	sweep(&snapshots, &deployment, hours(72), BATCH)
+		.await
+		.unwrap();
+	let asked = snapshots.asked.lock().unwrap().clone();
+	assert_eq!(asked, [(hours(72 - 7 * 24), hours(72 - 24))]);
+	// The fake answers like the store: the Run that ended two hours ago is
+	// not a candidate at all.
+	assert!(snapshots.purged.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn periods_a_tenant_lengthened_after_the_candidates_were_read_still_apply() {
+	// Read under a one-hour post-run period, purged after the Tenant cleared
+	// it, so the Deployment's day applies again.
+	let snapshots = Snapshots {
+		changed: Some(rules(24, 7 * 24)),
+		..Snapshots::new(vec![snapshot(1, 0, Some(70), Some(rules(1, 7 * 24)))])
+	};
+	let purged = sweep(&snapshots, &rules(24, 7 * 24), hours(72), BATCH)
+		.await
+		.unwrap();
+	assert_eq!(purged, 0);
+	assert!(snapshots.purged.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

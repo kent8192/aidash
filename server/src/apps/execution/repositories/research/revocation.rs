@@ -25,8 +25,8 @@ use aidash_domain::{
 use async_trait::async_trait;
 use reinhardt::db::{backends::TransactionExecutor, orm::QueryRow, orm::execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, JoinType, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	TableRef,
+	Alias, Expr, ExprTrait, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, TableRef,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -48,10 +48,13 @@ impl Journal for StoredJournal<'_> {
 }
 
 /// Apply a revoked Run's revocation to its stored projection, so every reader
-/// of `runs.context`, local or remote, sees placeholders. A Run whose worker
-/// holds its lease is left alone: the worker applies the revocation before its
-/// next model request, and the retention sweep catches a projection it saved
-/// meanwhile. `updated_at`, which dates the end of a terminal Run, is kept.
+/// of `runs.context`, local or remote, sees placeholders as soon as the
+/// revocation commits. A Run whose worker holds its lease is scrubbed too, but
+/// keeps its revision, which the worker's own keys derive from; the worker
+/// applies the revocation before its next model request, and the retention
+/// sweep catches a projection it saved meanwhile. A row a worker's step holds
+/// locked is skipped rather than waited on, for the same reasons.
+/// `updated_at`, which dates the end of a terminal Run, is kept.
 pub(crate) async fn scrub_projection(
 	tx: &mut dyn TransactionExecutor,
 	store: &Store,
@@ -59,12 +62,10 @@ pub(crate) async fn scrub_projection(
 ) -> Result<bool> {
 	let (sql, values) = Query::select()
 		.column(Alias::new("context"))
-		.from(Alias::new("runs"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
-		.and_where(Expr::cust(
-			"(lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)",
-		))
+		.from(Alias::new("runs"))
 		.lock(LockType::Update)
+		.lock_behavior(LockBehavior::SkipLocked)
 		.build(PostgresQueryBuilder);
 	let Some(row) = native(
 		tx.fetch_optional(&sql, convert_values(values))
@@ -80,7 +81,13 @@ pub(crate) async fn scrub_projection(
 	let (sql, values) = Query::update()
 		.table(Alias::new("runs"))
 		.value(Alias::new("context"), serde_json::to_value(&context)?)
-		.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+		.value_expr(
+			Alias::new("revision"),
+			Expr::cust(
+				"CASE WHEN lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP \
+				 THEN revision + 1 ELSE revision END",
+			),
+		)
 		.and_where(Expr::col("id").eq(Expr::value(run)))
 		.build(PostgresQueryBuilder);
 	native(
@@ -91,48 +98,64 @@ pub(crate) async fn scrub_projection(
 	Ok(true)
 }
 
+/// Revoked Runs examined per round trip of the sweep.
+const SCRUB_BATCH: u64 = 64;
+
 /// Scrub the stored projections of revoked Runs that still lack the
-/// revocation, such as one a worker saved while it was being revoked.
+/// revocation, such as one a worker saved while it was being revoked. Every
+/// such Run is examined in one pass, in pages ordered by id.
 pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
-	let (sql, values) = Query::select()
-		.column((Alias::new("r"), Alias::new("id")))
-		.from_as(Alias::new("runs"), Alias::new("r"))
-		.join(
-			JoinType::InnerJoin,
-			TableRef::table_alias(Alias::new("research_revocations"), Alias::new("v")),
-			Expr::col((Alias::new("v"), Alias::new("run_id")))
-				.equals((Alias::new("r"), Alias::new("id"))),
-		)
-		.and_where(Expr::cust(
-			"COALESCE(r.context->>'research_revoked', 'false') <> 'true'",
-		))
-		.and_where(Expr::cust(
-			"(r.lease_until IS NULL OR r.lease_until <= CURRENT_TIMESTAMP)",
-		))
-		.limit(64)
-		.build(PostgresQueryBuilder);
-	let runs = native(
-		async {
-			let mut tx = store.database().begin().await?;
-			let rows = tx.fetch_all(&sql, convert_values(values)).await?;
-			tx.commit().await?;
-			Ok(rows)
-		}
-		.await,
-	)?
-	.into_iter()
-	.filter_map(|row| {
-		QueryRow::from_backend_row(row).data["id"]
-			.as_str()
-			.and_then(|id| id.parse::<Uuid>().ok())
-	})
-	.collect::<Vec<_>>();
 	let mut scrubbed = 0;
-	for run in runs {
-		let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
-		let done = scrub_projection(tx.as_mut(), store, run).await?;
-		native(tx.commit().await.map_err(crate::Error::from))?;
-		scrubbed += u32::from(done);
+	let mut after: Option<Uuid> = None;
+	loop {
+		let mut query = Query::select();
+		query
+			.column((Alias::new("r"), Alias::new("id")))
+			.from_as(Alias::new("runs"), Alias::new("r"))
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(Alias::new("research_revocations"), Alias::new("v")),
+				Expr::col((Alias::new("v"), Alias::new("run_id")))
+					.equals((Alias::new("r"), Alias::new("id"))),
+			)
+			.and_where(Expr::cust(
+				"COALESCE(r.context->>'research_revoked', 'false') <> 'true'",
+			))
+			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
+			.limit(SCRUB_BATCH);
+		if let Some(after) = after {
+			query.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).gt(Expr::value(after)));
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		let runs = native(
+			async {
+				let mut tx = store.database().begin().await?;
+				let rows = tx.fetch_all(&sql, convert_values(values)).await?;
+				tx.commit().await?;
+				Ok(rows)
+			}
+			.await,
+		)?
+		.into_iter()
+		.filter_map(|row| {
+			QueryRow::from_backend_row(row).data["id"]
+				.as_str()
+				.and_then(|id| id.parse::<Uuid>().ok())
+		})
+		.collect::<Vec<_>>();
+		let Some(last) = runs.last().copied() else {
+			break;
+		};
+		after = Some(last);
+		for run in &runs {
+			let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
+			let done = scrub_projection(tx.as_mut(), store, *run).await?;
+			native(tx.commit().await.map_err(crate::Error::from))?;
+			scrubbed += u32::from(done);
+		}
+		if (runs.len() as u64) < SCRUB_BATCH {
+			break;
+		}
 	}
 	Ok(scrubbed)
 }

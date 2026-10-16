@@ -1453,6 +1453,17 @@ impl<'a> Executor<'a> {
                     }
                 }
 
+				// Building the request awaited many reads, and evidence revoked
+				// meanwhile must not reach the provider: decide once more right
+				// before dispatch, and redo the step from the redacted projection.
+				if !run.context.research_revoked
+					&& aidash_application::research::revocation::may_carry_research(&context)
+					&& store.research_revoked(run).await?
+				{
+					self.apply_research_revocation(run).await?;
+					store.save_run(run, token, "run.research_revoked").await?;
+					return Ok(());
+				}
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}

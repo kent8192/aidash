@@ -44,7 +44,9 @@ pub async fn read(
 		.snapshot(run, fragment.document_id)
 		.await?
 		.ok_or_else(unavailable)?;
-	if !reader.readable(run).await? {
+	// Authority, and the evidence itself, are decided again after the reads:
+	// a revocation committed meanwhile withholds what was already read.
+	if !reader.readable(run).await? || store.revoked(run).await? {
 		return Err(unavailable());
 	}
 	Ok(CitedEvidence::new(fragment, &document))

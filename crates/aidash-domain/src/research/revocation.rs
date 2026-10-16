@@ -10,7 +10,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -69,9 +69,10 @@ pub fn tombstone(operation: Operation) -> Value {
 
 /// The research operation of a stored tool result, recognized by the shared
 /// result envelope rather than by a tool name, so a result is recognized even
-/// after its tool is no longer bound or loaded.
+/// after its tool is no longer bound or loaded. Only the envelope's contract
+/// marker counts: an unrelated tool may return the other fields too.
 pub fn result_operation(result: &Value) -> Option<Operation> {
-	if result["version"] != json!(1) || !result["limits"].is_object() {
+	if result["contract"] != super::RESULT_CONTRACT {
 		return None;
 	}
 	Operation::parse(result["operation"].as_str()?)
