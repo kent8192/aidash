@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 #[path = "environment.rs"]
 mod environment;
+#[allow(unused_imports)] // Only suites whose tests have hung use the whole-test backstop.
+pub use environment::TEST_BOUND;
 #[allow(unused_imports)] // Sixteen-Node acceptance cases need a separate connection budget.
 pub use environment::isolated_test_environment;
 use environment::postgres;
