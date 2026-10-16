@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
-	generation::test_support,
-	ports::generation::assignment::GenerationAssignmentSession,
-	ports::{Credentials, registry::CoreToolCatalog},
+	generation::test_support, ports::generation::assignment::GenerationAssignmentSession,
+	ports::registry::CoreToolCatalog,
 };
 use aidash_domain::{
 	capabilities::CoreCapabilities,
@@ -19,12 +18,6 @@ use std::{
 	sync::{Arc, Mutex},
 	time::Duration,
 };
-struct NoSecrets;
-impl Credentials for NoSecrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("generation admission must not execute a provider")
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
@@ -33,7 +26,7 @@ impl CoreToolCatalog for CoreContracts {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(NoSecrets), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 #[derive(Default)]
 struct State {

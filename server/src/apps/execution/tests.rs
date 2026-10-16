@@ -5,6 +5,7 @@
 //!
 //! - `commands`
 //! - `context_journal`
+//! - `decision_journal`
 //! - `endpoints`
 //! - `event_bus`
 //! - `framework_regressions`

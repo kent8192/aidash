@@ -280,8 +280,6 @@ export function EntityConfiguration({
   const [alias, setAlias] = useState("integration_invoke");
   const [members, setMembers] = useState<string[]>([]);
   const [endpoint, setEndpoint] = useState("");
-  const [authenticated, setAuthenticated] = useState(false);
-  const [credentialEnv, setCredentialEnv] = useState("AIDASH_SECRET_TOOL");
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
@@ -351,7 +349,6 @@ export function EntityConfiguration({
       : {
           transport,
           endpoint,
-          credential_env: authenticated ? credentialEnv : null,
           replay,
           ...(transport === "mcp"
             ? {
@@ -558,21 +555,6 @@ export function EntityConfiguration({
                   onChange={(event) => setEndpoint(event.target.value)}
                 />
               </Field>
-              <Check
-                checked={authenticated}
-                onChange={(event) => setAuthenticated(event.target.checked)}
-              >
-                {t("configuredCredentials")}
-              </Check>
-              {authenticated && (
-                <Field label={t("credentials")}>
-                  <Input
-                    required
-                    value={credentialEnv}
-                    onChange={(event) => setCredentialEnv(event.target.value)}
-                  />
-                </Field>
-              )}
               {transport === "mcp" && (
                 <Field label={t("toolRemoteName")}>
                   <Input
