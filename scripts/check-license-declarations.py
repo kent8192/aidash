@@ -26,6 +26,10 @@ ROOT_LICENSE_SHA256 = "72fc11963fe4eb1f463f5da9ee62162e28fc12c37d95c1da42311abfa
 README_LICENSE_SHA256 = "ec9f495abc237cd41bb94bbc6ca2da2c101d0a733a559d5e8dad382839fdc1c4"
 THIRD_PARTY = "third_party"
 NOTICES = "THIRD_PARTY_NOTICES.md"
+# SHA-256 of the whole notices file, hashed like the root notice. Any sentence
+# in it can place material under a project's terms, so changing it is a
+# licensing decision. The checks below explain what a change broke.
+NOTICES_SHA256 = "4dce191efa21ea8298c8bda7bf8c9c9722e4a6b7c1c48701cde53d895470a6be"
 # Every project whose adapted material Aidash carries: the notices section that
 # describes it, its upstream provenance, the SHA-256 of its verbatim notice
 # (hashed like the root notice) and the files that hold adapted material. The
@@ -73,6 +77,8 @@ REQUIRED_NOTICES = {
 # Assembled so that this tracked file never contains the markers it rejects.
 SPDX_MARKER = ("SPDX-" + "License-Identifier").encode()
 OCI_MARKER = ("org.opencontainers.image." + "licenses").encode()
+# The Helm chart license annotation that Artifact Hub reads.
+ARTIFACTHUB_MARKER = ("artifacthub.io/" + "license").encode()
 # LICENSE-MIT, License-MIT, MIT-LICENSE, UNLICENSE, COPYING.LESSER or license.md,
 # but not license-screen.tsx, LICENSE-screen.tsx or license.rs: in any case, one
 # dash or underscore prefix or suffix, then only a document extension.
@@ -109,10 +115,12 @@ PROSE_LICENSE = re.compile(
     r"|\bapache[-\s]2(?:\.0)?\b|\bunlicense\b)"
 )
 # The wording with which license headers and texts grant rights, checked in
-# every text file: the Apache and MIT headers, the GPL and MPL headers, the
-# ISC and BUSL grants, the BSD conditions and public-domain dedications.
+# every text file: the Apache and MIT headers and their released or
+# distributed forms, the GPL and MPL headers, the ISC, BUSL and zlib grants,
+# the BSD conditions and public-domain dedications.
 GRANT_WORDING = re.compile(
-    r"(?i:\blicen[cs]ed\s+under\b|\b(?:under|subject\s+to)\s+the\s+terms\s+of\b|\bhereby\s+grant(?:s|ed)?\b"
+    r"(?i:\b(?:licen[cs]ed|released|distributed)\s+under\b|\b(?:under|subject\s+to)\s+the\s+terms\s+of\b"
+    r"|\bhereby\s+grant(?:s|ed)?\b|\bpermission\s+(?:is\s+)?granted\b"
     r"|\bredistribution\s+and\s+use\s+in\s+source\b|\bpublic\s+domain\b)"
 )
 # Docker and shells join a line that ends in the escape character (`\`, or a
@@ -335,12 +343,15 @@ def project_violations(root, tracked, sections, project, expected):
     ]
 
 
-def notice_violations(root, files, required):
+def notice_violations(root, files, required, notices_sha256):
     tracked = set(files)
     if NOTICES not in tracked:
         return [f"{NOTICES} is missing"]
     text = read_text(root / NOTICES)
-    errors = [
+    errors = [] if digest(root / NOTICES) == notices_sha256 else [
+        f"{NOTICES} differs from the pinned notices; licensing changes belong to #255"
+    ]
+    errors += [
         f"{NOTICES}: lists {path}, which is not a tracked file"
         for path in LISTED_PATH.findall(text) if path not in tracked
     ]
@@ -383,7 +394,7 @@ def notice_violations(root, files, required):
     return errors
 
 
-def violations(root, files, required=REQUIRED_NOTICES):
+def violations(root, files, required=REQUIRED_NOTICES, notices_sha256=NOTICES_SHA256):
     errors = []
     if "LICENSE" not in files:
         errors.append("the root LICENSE interim notice is missing")
@@ -421,7 +432,10 @@ def violations(root, files, required=REQUIRED_NOTICES):
             errors.append(f"{path}: contains an SPDX license identifier")
         if OCI_MARKER in content:
             errors.append(f"{path}: declares an OCI image license label")
-    return errors + readme_violations(root, set(files)) + notice_violations(root, files, required)
+        if ARTIFACTHUB_MARKER in content:
+            errors.append(f"{path}: declares an Artifact Hub chart license")
+    return (errors + readme_violations(root, set(files))
+            + notice_violations(root, files, required, notices_sha256))
 
 
 def main(argv):

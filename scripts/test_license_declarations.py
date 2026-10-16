@@ -22,6 +22,10 @@ SPEC.loader.exec_module(LICENSES)
 SPDX = "SPDX-" + "License-Identifier"
 OCI = "org.opencontainers.image." + "licenses"
 GRANTED = "licensed " + "under"
+RELEASED = "Released " + "under"
+DISTRIBUTED = "distributed " + "under"
+PERMISSION = "Permission is " + "granted"
+ARTIFACTHUB = "artifacthub.io/" + "license"
 NOTICES = """# Third-party notices
 
 ## Upstream
@@ -34,6 +38,8 @@ NOTICES = """# Third-party notices
 """
 # Pinned notices are not scanned for markers, so this one may carry one.
 UPSTREAM_NOTICE = f"{SPDX}: MIT\n"
+# The pinned digest of the fixture notices, hashed like the guard hashes them.
+NOTICES_SHA256 = hashlib.sha256(NOTICES.encode()).hexdigest()
 # The third-party inventory the fixtures must carry.
 REQUIRED = {
     "upstream": {
@@ -148,6 +154,10 @@ REJECTED = {
     "an OCI image license label split across lines": (
         {"Dockerfile": "LABEL " + OCI.replace(".licenses", ".\\\n# a comment\nlicenses") + '="MIT"\n'},
         "Dockerfile: declares an OCI image license label",
+    ),
+    "an Artifact Hub chart license": (
+        {"deploy/helm/x/Chart.yaml": f"apiVersion: v2\nname: x\nannotations:\n  {ARTIFACTHUB}: MIT\n"},
+        "deploy/helm/x/Chart.yaml: declares an Artifact Hub chart license",
     ),
     "a license file in a crate": (
         {"crates/other/LICENSE": "MIT License\n"},
@@ -270,6 +280,18 @@ REJECTED = {
         {"src/lib.rs": f"// This file is {GRANTED} the MIT License.\n"},
         f"src/lib.rs: '{GRANTED}' grants a license; licensing changes belong to #255",
     ),
+    "a released-under source header": (
+        {"src/lib.rs": f"// {RELEASED} the MIT License.\n"},
+        f"src/lib.rs: '{RELEASED}' grants a license; licensing changes belong to #255",
+    ),
+    "a distributed-under source header": (
+        {"src/main.ts": f"// This file is {DISTRIBUTED} the MIT License.\n"},
+        f"src/main.ts: '{DISTRIBUTED}' grants a license; licensing changes belong to #255",
+    ),
+    "a zlib-style permission grant": (
+        {"src/zlib.c": f"/* {PERMISSION} to anyone to use this software. */\n"},
+        f"src/zlib.c: '{PERMISSION}' grants a license; licensing changes belong to #255",
+    ),
     "a license grant outside the README License section": (
         {"README.md": f"# Fixture\n\nAidash is {GRANTED} the MIT License.\n\n" + README_LICENSE},
         "README.md: names the license 'MIT'; licensing changes belong to #255",
@@ -341,6 +363,13 @@ REJECTED = {
             "- License: MIT, in [third_party/upstream/LICENSE](third_party/upstream/LICENSE)\n")},
         "THIRD_PARTY_NOTICES.md: names the license 'MIT'; licensing changes belong to #255",
     ),
+    "a file claimed in a project section's prose": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES.replace(
+            "- `src/adapted.rs`: adapted code (lineage)\n",
+            "- `src/adapted.rs`: adapted code (lineage)\n\nThis license also applies to src/original.rs.\n"),
+         "src/original.rs": "fn original() {}\n"},
+        "THIRD_PARTY_NOTICES.md differs from the pinned notices; licensing changes belong to #255",
+    ),
     "a missing project section": (
         {"THIRD_PARTY_NOTICES.md": NOTICES.replace("## Upstream", "## Renamed")},
         "THIRD_PARTY_NOTICES.md has no '## Upstream' section for upstream",
@@ -380,7 +409,7 @@ def repository(directory, changes=None):
 def errors_for(changes=None):
     with tempfile.TemporaryDirectory() as directory:
         root = repository(directory, changes)
-        return LICENSES.violations(root, LICENSES.tracked_files(root), REQUIRED)
+        return LICENSES.violations(root, LICENSES.tracked_files(root), REQUIRED, NOTICES_SHA256)
 
 
 class LicenseDeclarationTests(unittest.TestCase):
