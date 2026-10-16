@@ -88,7 +88,25 @@ PYTHON_MANIFESTS = ("pyproject.toml", "setup.cfg")
 SETUP_LICENSE_KEYWORDS = ("license", "license_file", "license_files", "license_expression")
 README = "README.md"
 SECTION = re.compile(r"^## .*$", re.MULTILINE)
-TAURI_CONFIG = re.compile(r"tauri(\..+)?\.conf\.json")
+# Tauri bundles these keys as package-license metadata (`license-file` is an
+# alias). It reads them from tauri.conf.json, tauri.conf.json5, Tauri.toml and
+# their platform variants, and `tauri --config` accepts any such file, so every
+# JSON, JSON5 and TOML file's top-level bundle table is checked.
+CONFIG_SUFFIXES = (".json", ".json5", ".toml")
+TAURI_LICENSE_KEYS = ("license", "licenseFile", "license-file")
+# Such a key, quoted or bare, in a file that JSON and TOML parsers cannot read,
+# such as JSON5, which Tauri also accepts under a .json name.
+TAURI_LICENSE_KEY = re.compile(r"""(?<![\w$-])(["']?)(license|licenseFile|license-file)\1\s*[:=]""")
+DOCUMENT_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc")
+# A license named in prose, such as the "Community, Apache-2.0" grant that the
+# broker README carried. Documentation may name one only in the pinned texts:
+# the README License section and each notice's pinned License line.
+PROSE_LICENSE = re.compile(
+    r"\b(?:MIT|BSD|ISC|[AL]?GPL|MPL|EPL|BUSL|SSPL|CC0|CC-BY)(?:-[\w.]+)*\b"
+    r"|(?i:\b(?:apache|mozilla|eclipse|elastic|business\s+source|(?:lesser\s+|affero\s+)?general\s+public"
+    r"|server\s+side\s+public)(?:\s+public)?\s+licen[cs]e\b"
+    r"|\bapache[-\s]2(?:\.0)?\b|\blicen[cs]ed\s+under\b|\bunlicense\b|\bpublic\s+domain\b)"
+)
 # A notices list item that starts with a backticked path names a tracked file.
 LISTED_PATH = re.compile(r"^- `([^`]+)`", re.MULTILINE)
 SECTION_HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
@@ -121,11 +139,26 @@ def cargo_violations(path, manifest):
     return errors
 
 
-def json_violations(path, document):
-    if PurePosixPath(path).name == "package.json":
-        return [f"{path}: declares {key}" for key in ("license", "licenses") if key in document]
-    bundle = document.get("bundle", {})
-    return [f"{path}: bundle declares {key}" for key in ("license", "licenseFile") if key in bundle]
+def npm_violations(path, document):
+    return [f"{path}: declares {key}" for key in ("license", "licenses") if key in document]
+
+
+def config_violations(path, text):
+    """Tauri bundle license metadata in a JSON, JSON5 or TOML file."""
+    suffix = PurePosixPath(path).suffix.lower()
+    try:
+        document = tomllib.loads(text) if suffix == ".toml" else json.loads(text) if suffix == ".json" else None
+    except (tomllib.TOMLDecodeError, json.JSONDecodeError):
+        document = None
+    if document is None:
+        # Never fail on an unreadable file, such as a commented tsconfig.json:
+        # look for the keys themselves instead.
+        return [f"{path}: declares {match[1]}" for match in TAURI_LICENSE_KEY.findall(text)]
+    # Only the top-level table: package-lock.json nests dependency licenses.
+    bundle = document.get("bundle") if isinstance(document, dict) else None
+    if not isinstance(bundle, dict):
+        return []
+    return [f"{path}: bundle declares {key}" for key in TAURI_LICENSE_KEYS if key in bundle]
 
 
 def python_violations(path, text):
@@ -168,7 +201,10 @@ def setup_violations(path, text):
         if name != "setup":
             continue
         for keyword in node.keywords:
-            if keyword.arg in SETUP_LICENSE_KEYWORDS:
+            if keyword.arg is None:
+                # setup(**metadata) can carry any of the keywords below.
+                errors.append(f"{path}: setup() expands ** metadata, which cannot be checked")
+            elif keyword.arg in SETUP_LICENSE_KEYWORDS:
                 errors.append(f"{path}: setup() declares {keyword.arg}")
             elif keyword.arg == "classifiers" and any(
                 isinstance(item, ast.Constant) and isinstance(item.value, str)
@@ -179,19 +215,49 @@ def setup_violations(path, text):
     return errors
 
 
+def read_text(path):
+    """A text file with CRLF read as LF, as the notices are hashed."""
+    return path.read_bytes().replace(b"\r\n", b"\n").decode(errors="replace")
+
+
+def readme_license_section(text):
+    """The README's License section, from its heading to the next section."""
+    start = re.search(r"^## License[ \t]*$", text, re.MULTILINE)
+    if start is None:
+        return None
+    following = SECTION.search(text, start.end())
+    return text[start.start():following.start() if following else len(text)].rstrip()
+
+
 def readme_violations(root, tracked):
     """The README's License section must stay the interim wording."""
     if README not in tracked:
         return [f"{README} is missing"]
-    text = (root / README).read_bytes().replace(b"\r\n", b"\n").decode()
-    start = re.search(r"^## License[ \t]*$", text, re.MULTILINE)
-    if start is None:
+    section = readme_license_section(read_text(root / README))
+    if section is None:
         return [f"{README} has no License section"]
-    following = SECTION.search(text, start.end())
-    section = text[start.start():following.start() if following else len(text)].rstrip()
     if hashlib.sha256(section.encode()).hexdigest() != README_LICENSE_SHA256:
         return [f"{README}: the License section differs from the interim wording; licensing changes belong to #255"]
     return []
+
+
+def prose_violations(path, text, required):
+    """Documentation may name a license only in the pinned texts."""
+    if path == README:
+        text = text.replace(readme_license_section(text) or "", "")
+    elif path == NOTICES:
+        for project, expected in required.items():
+            text = text.replace(license_line(project, expected), "")
+    return [
+        f"{path}: names the license '{name}'; licensing changes belong to #255"
+        for name in dict.fromkeys(match.group() for match in PROSE_LICENSE.finditer(text))
+    ]
+
+
+def license_line(project, expected):
+    """The notices line that names a required project's license."""
+    notice = f"{THIRD_PARTY}/{project}/LICENSE"
+    return f"- License: {expected['license']}, in [{notice}]({notice})"
 
 
 def project_violations(root, tracked, sections, project, expected):
@@ -212,7 +278,7 @@ def project_violations(root, tracked, sections, project, expected):
         for line in (
             f"- Source: <{expected['source']}>",
             f"- Revision: `{expected['revision']}`",
-            f"- License: {expected['license']}, in [{notice}]({notice})",
+            license_line(project, expected),
         )
         if line not in lines
     ]
@@ -233,7 +299,7 @@ def notice_violations(root, files, required):
     tracked = set(files)
     if NOTICES not in tracked:
         return [f"{NOTICES} is missing"]
-    text = (root / NOTICES).read_text()
+    text = read_text(root / NOTICES)
     errors = [
         f"{NOTICES}: lists {path}, which is not a tracked file"
         for path in LISTED_PATH.findall(text) if path not in tracked
@@ -241,7 +307,23 @@ def notice_violations(root, files, required):
     # Each project's paths and provenance are read from its own section, so a
     # path moved under another project's heading no longer counts.
     parts = SECTION_HEADING.split(text)
-    sections = dict(zip(parts[1::2], parts[2::2]))
+    headings = parts[1::2]
+    sections = dict(zip(headings, parts[2::2]))
+    # Any other section, a second copy of a pinned one or a path listed before
+    # the first section could place original material under third-party terms.
+    pinned_headings = [expected["heading"] for expected in required.values()]
+    errors += [
+        f"{NOTICES}: '## {heading}' is not the section of a pinned project"
+        for heading in headings if heading not in pinned_headings
+    ]
+    errors += [
+        f"{NOTICES}: '## {heading}' appears more than once"
+        for heading in pinned_headings if headings.count(heading) > 1
+    ]
+    errors += [
+        f"{NOTICES}: lists {path} before the first project section"
+        for path in LISTED_PATH.findall(parts[0])
+    ]
     for project, expected in required.items():
         errors += project_violations(root, tracked, sections, project, expected)
     errors += [
@@ -279,14 +361,19 @@ def violations(root, files, required=REQUIRED_NOTICES):
             continue
         if name == "Cargo.toml":
             errors += cargo_violations(path, tomllib.loads((root / path).read_text()))
-        elif name == "package.json" or TAURI_CONFIG.fullmatch(name):
-            errors += json_violations(path, json.loads((root / path).read_text()))
+        elif name == "package.json":
+            errors += npm_violations(path, json.loads((root / path).read_text()))
         elif name in PYTHON_MANIFESTS:
             errors += python_violations(path, (root / path).read_text())
         elif name == "setup.py":
             errors += setup_violations(path, (root / path).read_text())
+        suffix = PurePosixPath(name).suffix.lower()
+        if suffix in CONFIG_SUFFIXES:
+            errors += config_violations(path, read_text(root / path))
         if path in pinned:
             continue
+        if suffix in DOCUMENT_SUFFIXES:
+            errors += prose_violations(path, read_text(root / path), required)
         content = (root / path).read_bytes()
         if SPDX_MARKER in content:
             errors.append(f"{path}: contains an SPDX license identifier")

@@ -64,6 +64,10 @@ ACCEPTED = {
     "tools/COPYING-tools.py": "pass\n",
     "infra/setup.py": "def setup(name):\n    return name\n\nsetup(name='tool')\n",
     "desktop/src-tauri/tauri.conf.json": '{"bundle": {"active": true}}\n',
+    # Neither parses as JSON or TOML; the guard reads them without failing.
+    "web/tsconfig.json": '{\n  // comments make this JSONC\n  "compilerOptions": {"strict": true}\n}\n',
+    "tests/template.toml": "name = {{ name }}\n",
+    "crates/other/README.md": "# Other\n\nA crate whose documentation names no license.\n",
     "runner/pyproject.toml": '[project]\nname = "runner"\nclassifiers = ["Programming Language :: Python"]\n',
     "tools/setup.cfg": "[metadata]\nname = tools\n",
     "Dockerfile": 'LABEL org.opencontainers.image.title="aidash"\n',
@@ -106,6 +110,26 @@ REJECTED = {
     "a Tauri bundle license file": (
         {"desktop/src-tauri/tauri.conf.json": '{"bundle": {"licenseFile": "../LICENSE"}}\n'},
         "desktop/src-tauri/tauri.conf.json: bundle declares licenseFile",
+    ),
+    "a Tauri bundle license file alias": (
+        {"desktop/src-tauri/tauri.conf.json": '{"bundle": {"license-file": "../LICENSE"}}\n'},
+        "desktop/src-tauri/tauri.conf.json: bundle declares license-file",
+    ),
+    "a Tauri TOML bundle license": (
+        {"desktop/src-tauri/Tauri.toml": '[bundle]\nlicense-file = "../LICENSE"\n'},
+        "desktop/src-tauri/Tauri.toml: bundle declares license-file",
+    ),
+    "a Tauri JSON5 bundle license": (
+        {"desktop/src-tauri/tauri.conf.json5": "{\n  // JSON5\n  bundle: { license: 'MIT' },\n}\n"},
+        "desktop/src-tauri/tauri.conf.json5: declares license",
+    ),
+    "JSON5 under a Tauri .json name": (
+        {"desktop/src-tauri/tauri.conf.json": "{\n  // JSON5\n  bundle: { licenseFile: '../LICENSE' },\n}\n"},
+        "desktop/src-tauri/tauri.conf.json: declares licenseFile",
+    ),
+    "a bundle license in a file for tauri --config": (
+        {"desktop/src-tauri/release.json": '{"bundle": {"license": "MIT"}}\n'},
+        "desktop/src-tauri/release.json: bundle declares license",
     ),
     "an SPDX identifier in own code": (
         {"src/lib.rs": f"// {SPDX}: Apache-2.0\n"},
@@ -209,6 +233,19 @@ REJECTED = {
             "import setuptools\nsetuptools.setup(name='tool', classifiers=['License :: OSI Approved :: MIT License'])\n"},
         "infra/setup.py: setup() declares a License classifier",
     ),
+    "setup.py metadata expanded into setup()": (
+        {"infra/setup.py":
+            "from setuptools import setup\nmetadata = {'name': 'tool', 'license': 'MIT'}\nsetup(**metadata)\n"},
+        "infra/setup.py: setup() expands ** metadata, which cannot be checked",
+    ),
+    "a license grant in a component README": (
+        {"crates/other/README.md": "# Other\n\nCommunity, Apache-2.0. A crate.\n"},
+        "crates/other/README.md: names the license 'Apache-2.0'; licensing changes belong to #255",
+    ),
+    "a license grant outside the README License section": (
+        {"README.md": "# Fixture\n\nAidash is licensed under the MIT License.\n\n" + README_LICENSE},
+        "README.md: names the license 'MIT'; licensing changes belong to #255",
+    ),
     "a README license grant": (
         {"README.md": "# Fixture\n\n## License\n\nAidash is licensed under the MIT License.\n"},
         "README.md: the License section differs from the interim wording; licensing changes belong to #255",
@@ -247,6 +284,27 @@ REJECTED = {
         {"THIRD_PARTY_NOTICES.md": NOTICES + "- `src/original.rs`: not adapted at all\n",
          "src/original.rs": "fn original() {}\n"},
         "THIRD_PARTY_NOTICES.md lists src/original.rs under Upstream, which the pinned inventory does not name",
+    ),
+    "an extra notices section": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES + "\n## Elsewhere\n\n- `src/original.rs`: original code\n",
+         "src/original.rs": "fn original() {}\n"},
+        "THIRD_PARTY_NOTICES.md: '## Elsewhere' is not the section of a pinned project",
+    ),
+    "a duplicate notices section": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES.replace(
+            "## Upstream", "## Upstream\n\n- `src/original.rs`: original code\n\n## Upstream"),
+         "src/original.rs": "fn original() {}\n"},
+        "THIRD_PARTY_NOTICES.md: '## Upstream' appears more than once",
+    ),
+    "a path listed before the first notices section": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES.replace(
+            "# Third-party notices\n", "# Third-party notices\n\n- `src/original.rs`: original code\n"),
+         "src/original.rs": "fn original() {}\n"},
+        "THIRD_PARTY_NOTICES.md: lists src/original.rs before the first project section",
+    ),
+    "a license named outside a pinned License line": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES + "\nThe rest of `src/` is MIT as well.\n"},
+        "THIRD_PARTY_NOTICES.md: names the license 'MIT'; licensing changes belong to #255",
     ),
     "a missing project section": (
         {"THIRD_PARTY_NOTICES.md": NOTICES.replace("## Upstream", "## Renamed")},
@@ -301,7 +359,7 @@ class LicenseDeclarationTests(unittest.TestCase):
         # A Windows checkout with core.autocrlf converts the notices to CRLF.
         crlf = {
             path: ACCEPTED[path].replace("\n", "\r\n")
-            for path in ("LICENSE", "README.md", "third_party/upstream/LICENSE")
+            for path in ("LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "third_party/upstream/LICENSE")
         }
         self.assertEqual(errors_for(crlf), [])
 
