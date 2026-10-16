@@ -51,6 +51,11 @@ pub const TABLES: &[Table] = &[
 	table("execution", "core_requests", Pending(264)),
 	table("execution", "core_runs", Pending(265)),
 	table("execution", "core_task_sessions", Pending(265)),
+	// Decision Evidence (#290) belongs to its Run, like the Context Journal.
+	table("execution", "decision_attempts", Pending(265)),
+	table("execution", "decision_evidence", Pending(265)),
+	table("execution", "decision_outcomes", Pending(265)),
+	table("execution", "decision_states", Pending(265)),
 	// per-model token statistics without Tenant content
 	table("execution", "estimate_calibration_samples", DeploymentWide),
 	table("execution", "events", Pending(265)),
