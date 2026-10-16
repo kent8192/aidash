@@ -573,6 +573,63 @@ async fn table_text(f: &Federation, table: &str) -> String {
 		.unwrap()
 }
 
+/// A disconnect ends every pending attempt, whether it would reconnect or
+/// connect for the first time, so a callback that arrives afterwards
+/// connects nothing.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_disconnect_ends_the_pending_attempts_of_its_owner(
+	#[from(parts)] parts: Parts,
+	#[future(awt)]
+	#[from(plan_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
+) {
+	let fixture = Fixture::new(application, parts);
+	let (status, context) = map(&fixture, "browser-a", "alice").await;
+	assert_eq!(status, 200);
+	// A first-time attempt is pending when the owner disconnects; there is
+	// nothing to disconnect yet, but the attempt still ends.
+	let first = consent(&fixture, "browser-a", &context).await;
+	let none = send(
+		&fixture,
+		"browser-a",
+		&context,
+		"DELETE",
+		PLAN,
+		json!({"expected_revision": 1}),
+	)
+	.await;
+	assert_eq!(none.status(), 404);
+	assert_eq!(
+		complete(&fixture, "browser-a", &context, &first)
+			.await
+			.status(),
+		401
+	);
+	// A reconnect attempt is pending when the owner disconnects.
+	let connected = connect(&fixture, "browser-a", &context).await;
+	let late = consent(&fixture, "browser-a", &context).await;
+	let disconnected = send(
+		&fixture,
+		"browser-a",
+		&context,
+		"DELETE",
+		PLAN,
+		json!({"expected_revision": connected["connection"]["revision"]}),
+	)
+	.await;
+	assert_eq!(disconnected.status(), 200);
+	assert_eq!(
+		complete(&fixture, "browser-a", &context, &late)
+			.await
+			.status(),
+		401
+	);
+	let status = send(&fixture, "browser-a", &context, "GET", PLAN, Value::Null).await;
+	assert_eq!(json_body(&status)["connection"], Value::Null);
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn owners_connect_by_pasting_the_callback_and_plan_tokens_stay_in_the_store(

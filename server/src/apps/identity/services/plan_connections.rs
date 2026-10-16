@@ -210,9 +210,14 @@ impl PlanConnections {
 		provider: String,
 		input: Disconnect,
 	) -> Result<Disconnection> {
-		plan_provider(&provider)?;
+		let provider = plan_provider(&provider)?;
 		let owner = owner(&actor, origin.as_ref(), &tenant)?;
 		let origin = origin.ok_or(Error::Forbidden)?;
+		// Pending attempts end first, so no callback still on its way can
+		// recreate what this disconnect removes.
+		let lease = self.runtime.store.orm_connection()?;
+		PlanAuthorization::cancel(lease.handle(), &owner.tenant, &owner.subject, provider.id())
+			.await?;
 		Ok(self
 			.service()?
 			.disconnect(&owner, input.expected_revision, &actor_label(&origin))

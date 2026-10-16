@@ -163,6 +163,27 @@ impl PlanAuthorization {
 		.await
 	}
 
+	/// Deletes every pending authorization of the owner's provider, in any
+	/// session: a disconnect ends them, so none of their callbacks can bring
+	/// a connection back, a first-time attempt included.
+	pub(crate) async fn cancel(
+		db: DatabaseConnection,
+		tenant: &str,
+		subject: &str,
+		provider: &str,
+	) -> Result<()> {
+		db.atomic(async |tx| {
+			Self::objects()
+				.filter(Self::field_tenant().eq(tenant.to_owned()))
+				.filter(Self::field_subject().eq(subject.to_owned()))
+				.filter(Self::field_provider().eq(provider.to_owned()))
+				.delete_with_conn(tx)
+				.await?;
+			Ok(())
+		})
+		.await
+	}
+
 	/// Deletes and returns the pending row for `state_hash`. Consumption
 	/// commits even when the caller then rejects the row, so a `state` never
 	/// works twice.
