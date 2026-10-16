@@ -288,8 +288,8 @@ const text = {
     registered: "Registryに登録しました。Marketplace公開や実行許可は別です。",
     refresh: "再読み込み",
     loading: "読み込み中…",
-    operatorTenant: "テナント",
-    operatorOwner: "所有者",
+    deploymentAdministratorTenant: "テナント",
+    deploymentAdministratorOwner: "所有者",
     create: "下書きを作成",
     version: "バージョン",
     owner: "所有者",
@@ -359,8 +359,8 @@ const text = {
       "Registered in the Registry. Marketplace publication and execution grants are separate.",
     refresh: "Reload",
     loading: "Loading…",
-    operatorTenant: "Tenant",
-    operatorOwner: "Owner",
+    deploymentAdministratorTenant: "Tenant",
+    deploymentAdministratorOwner: "Owner",
     create: "Create draft",
     version: "Version",
     owner: "Owner",
@@ -583,7 +583,8 @@ export function Workbench({
       active = false;
     };
   }, [testSessions, pendingTestId]);
-  const isOperator = data.access.kind === "operator";
+  const isDeploymentAdministrator =
+    data.access.kind === "deployment_administrator";
   useBlocker({
     disabled: !dirty,
     enableBeforeUnload: false,
@@ -701,7 +702,7 @@ export function Workbench({
   }, [mode, currentId, currentRevision]);
   const canManageDraft =
     !!current &&
-    (isOperator ||
+    (isDeploymentAdministrator ||
       (data.access.kind === "subject" &&
         data.access.subject === current.owner));
   useEffect(() => {
@@ -956,7 +957,7 @@ export function Workbench({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ...(isOperator ? { tenant, owner } : {}),
+          ...(isDeploymentAdministrator ? { tenant, owner } : {}),
           entry: newEntry(models[0]),
           documents: [],
           release_notes: "",
@@ -1108,7 +1109,7 @@ export function Workbench({
         previous.map((draft) => (draft.id === result.id ? result : draft)),
       );
       setTransferOwner("");
-      if (!isOperator) select("");
+      if (!isDeploymentAdministrator) select("");
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -1117,7 +1118,8 @@ export function Workbench({
   };
   const adoptLegacy = async () => {
     const [id, version] = adoptRef.split("@");
-    if (!isOperator || !id || !version || !tenant || !owner) return;
+    if (!isDeploymentAdministrator || !id || !version || !tenant || !owner)
+      return;
     setBusy(true);
     setError("");
     try {
@@ -1255,7 +1257,7 @@ export function Workbench({
     try {
       const selectedOwner =
         incidentOwner ||
-        (!isOperator && data.access.kind === "subject"
+        (!isDeploymentAdministrator && data.access.kind === "subject"
           ? data.access.subject
           : "");
       const result = await apiFetch<Incident>(
@@ -1264,7 +1266,7 @@ export function Workbench({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            ...(isOperator ? { tenant } : {}),
+            ...(isDeploymentAdministrator ? { tenant } : {}),
             owner: selectedOwner,
             severity: incidentSeverity,
             notes: incidentNotes,
@@ -1372,7 +1374,7 @@ export function Workbench({
     selectedAgentId,
     selectedAgentVersion,
     auditOffset,
-    isOperator ? policyTenant : null,
+    isDeploymentAdministrator ? policyTenant : null,
   ]);
   useEffect(() => {
     if (
@@ -1383,7 +1385,7 @@ export function Workbench({
     )
       return;
     let active = true;
-    const path = `/api/workbench/versions/${encodeURIComponent(selectedAgentId)}/${encodeURIComponent(selectedAgentVersion)}/audit?offset=${auditOffset}${isOperator && policyTenant ? `&tenant=${encodeURIComponent(policyTenant)}` : ""}`;
+    const path = `/api/workbench/versions/${encodeURIComponent(selectedAgentId)}/${encodeURIComponent(selectedAgentVersion)}/audit?offset=${auditOffset}${isDeploymentAdministrator && policyTenant ? `&tenant=${encodeURIComponent(policyTenant)}` : ""}`;
     const read = () => {
       void apiFetch<AuditPage>(path)
         .then((value) => {
@@ -1412,7 +1414,7 @@ export function Workbench({
     trustTab,
     auditOffset,
     policyTenant,
-    isOperator,
+    isDeploymentAdministrator,
     selectedAgentId,
     selectedAgentVersion,
     currentAuditKey,
@@ -2872,8 +2874,8 @@ export function Workbench({
       </Section>
       <Section title={ja ? "報告を追加" : "Add a report"}>
         <div className="grid max-w-3xl gap-4 sm:grid-cols-2">
-          {isOperator && (
-            <Field label={t.operatorTenant}>
+          {isDeploymentAdministrator && (
+            <Field label={t.deploymentAdministratorTenant}>
               <Input
                 value={tenant}
                 onChange={(event) => setTenant(event.target.value)}
@@ -2885,7 +2887,7 @@ export function Workbench({
               value={incidentOwner}
               onChange={(event) => setIncidentOwner(event.target.value)}
               placeholder={
-                !isOperator && data.access.kind === "subject"
+                !isDeploymentAdministrator && data.access.kind === "subject"
                   ? data.access.subject
                   : ""
               }
@@ -2973,17 +2975,17 @@ export function Workbench({
           description={t.policyContext}
         >
           <div className="grid max-w-3xl gap-3 sm:grid-cols-3">
-            <Field label={t.operatorTenant}>
+            <Field label={t.deploymentAdministratorTenant}>
               <Input
                 value={policyTenant}
-                disabled={!isOperator}
+                disabled={!isDeploymentAdministrator}
                 onChange={(event) => setPolicyTenant(event.target.value)}
               />
             </Field>
             <Field label={ja ? "主体" : "Subject"}>
               <Input
                 value={policySubject}
-                disabled={!isOperator}
+                disabled={!isDeploymentAdministrator}
                 onChange={(event) => setPolicySubject(event.target.value)}
               />
             </Field>
@@ -3254,10 +3256,10 @@ export function Workbench({
               </NativeSelect>
             </Field>
           </div>
-          {isOperator && (
+          {isDeploymentAdministrator && (
             <>
               <div className="w-[calc(50%-4px)] sm:w-32">
-                <Field label={t.operatorTenant}>
+                <Field label={t.deploymentAdministratorTenant}>
                   <Input
                     value={tenant}
                     onChange={(event) => setTenant(event.target.value)}
@@ -3265,7 +3267,7 @@ export function Workbench({
                 </Field>
               </div>
               <div className="w-[calc(50%-4px)] sm:w-32">
-                <Field label={t.operatorOwner}>
+                <Field label={t.deploymentAdministratorOwner}>
                   <Input
                     value={owner}
                     onChange={(event) => setOwner(event.target.value)}
@@ -3323,7 +3325,7 @@ export function Workbench({
           >
             <RefreshCw aria-hidden />
           </Button>
-          {isOperator && agents.length > 0 && (
+          {isDeploymentAdministrator && agents.length > 0 && (
             <div className="flex w-full flex-wrap items-end gap-2 sm:w-auto lg:ml-auto">
               <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
                 <Field
@@ -3568,9 +3570,9 @@ export function Workbench({
                     setAuditOffset(offset);
                   }}
                   tenantControl={
-                    isOperator ? (
+                    isDeploymentAdministrator ? (
                       <div className="w-full sm:w-48">
-                        <Field label={t.operatorTenant}>
+                        <Field label={t.deploymentAdministratorTenant}>
                           <Input
                             value={policyTenant}
                             onChange={(event) => {

@@ -60,7 +60,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	invalid.push((unknown, 422));
 	for (entry, status) in invalid {
 		let response = app
-			.operator
+			.deployment_administrator
 			.post("/api/registry", &entry, "json")
 			.await
 			.unwrap();
@@ -91,7 +91,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 		valid[field] = json!(["one", "two"]);
 	}
 	let stored = assert_json(
-		app.operator
+		app.deployment_administrator
 			.post("/api/registry", &valid, "json")
 			.await
 			.unwrap(),
@@ -100,7 +100,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	let _: aidash_server::registry::Entry = serde_json::from_value(stored.clone()).unwrap();
 	assert_eq!(
 		assert_json(
-			app.operator
+			app.deployment_administrator
 				.get("/api/registry/endpoint-skill/1.0.0")
 				.await
 				.unwrap(),
@@ -139,7 +139,7 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 			let mut entry = base.clone();
 			entry["config"][field] = json!(blank);
 			let response = app
-				.operator
+				.deployment_administrator
 				.post("/api/registry", &entry, "json")
 				.await
 				.unwrap();
@@ -169,7 +169,7 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 			entry["config"][field] = json!(content);
 			assert_eq!(
 				assert_json(
-					app.operator
+					app.deployment_administrator
 						.post("/api/registry", &entry, "json")
 						.await
 						.unwrap(),

@@ -534,7 +534,7 @@ impl JournalScope for Scope<'_> {
 		let binding = receipt.binding.native().ok_or(Error::Forbidden)?;
 		let tx = self.connection();
 		let capacity = super::remote_memory_reads::capacity(
-			&mut super::access::Lease::BorrowedOperator(&mut *tx),
+			&mut super::access::Lease::BorrowedWithoutSubject(&mut *tx),
 			binding,
 		)
 		.await?;

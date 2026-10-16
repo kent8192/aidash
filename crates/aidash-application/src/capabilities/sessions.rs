@@ -125,7 +125,10 @@ pub async fn prepare_admission(
 		return Ok(None);
 	}
 	if !scope.admission()? {
-		return Err(Error::Conflict("CAPABILITIES_DISABLED: enable the operator execution profile before admitting core work".into()));
+		return Err(Error::Conflict(
+			"CAPABILITIES_DISABLED: enable the Node's execution profile before admitting core work"
+				.into(),
+		));
 	}
 	let explicit = scope.explicit_thread(task.id).await?;
 	let mut thread = explicit.unwrap_or(task.id);

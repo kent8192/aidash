@@ -6,7 +6,7 @@ use upstream_fixtures::{reply, upstream};
 
 #[rstest::rstest]
 #[tokio::test]
-async fn transformed_subject_requires_operator_repair(
+async fn transformed_subject_requires_manual_repair(
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
@@ -233,7 +233,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn header_only_consumer_requires_operator_repair(
+async fn header_only_consumer_requires_manual_repair(
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
@@ -905,10 +905,10 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.unwrap()
 			.failure_delivery()
 	);
-	let operator = &f.config.api_token;
+	let deployment_administrator = &f.config.api_token;
 	let (status, _) = common::request(
 		&app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false}),
@@ -926,7 +926,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	assert!(!f.store.task(task).await.unwrap().status.is_terminal());
 	let (status, _) = common::request(
 		&app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true}),

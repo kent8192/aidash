@@ -19,5 +19,5 @@ headers {
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Peer observes only its own execution state contract", function () { expect(res.getBody()).to.be.an("object");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("operator_token")); });
+  test("Peer observes only its own execution state contract", function () { expect(res.getBody()).to.be.an("object");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token")); });
 }

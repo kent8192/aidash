@@ -1,4 +1,4 @@
-//! Deployment probes must match the operator's immutable execution ceilings.
+//! Deployment probes must match the Node's immutable execution ceilings.
 use serde_json::Value;
 pub struct HealthProfile {
 	pub image: String,

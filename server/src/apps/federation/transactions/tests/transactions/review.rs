@@ -306,21 +306,21 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 			.0,
 		202
 	);
-	let operator = manifest(&f.config.node_id, workspace);
+	let deployment_administrator = manifest(&f.config.node_id, workspace);
 	assert_eq!(
 		request(
 			&app,
 			&f.config.api_token,
 			"POST",
 			"/api/transactions",
-			operator.clone()
+			deployment_administrator.clone()
 		)
 		.await
 		.0,
 		202
 	);
 	// The foreign subject's binding is immutable fixture state. Its transaction
-	// exists and is visible to the operator, but must look absent to Alice.
+	// exists and is visible to the Deployment Administrator, but must look absent to Alice.
 	let foreign = manifest(&f.config.node_id, workspace);
 	assert_eq!(
 		request(
@@ -369,7 +369,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 		)
 		.await;
 		assert_eq!(missing.0, 404);
-		for id in [&operator["id"], &foreign["id"]] {
+		for id in [&deployment_administrator["id"], &foreign["id"]] {
 			let path = format!("/api/transactions/{}{suffix}", id.as_str().unwrap());
 			assert_eq!(
 				request(&app, &token, method, &path, Value::Null).await,

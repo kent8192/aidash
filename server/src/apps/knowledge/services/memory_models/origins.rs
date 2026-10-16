@@ -36,11 +36,7 @@ impl Models {
 		&self,
 		units: impl Iterator<Item = &'a Unit> + Send,
 	) -> Result<()> {
-		let mut lease = Lease::begin(
-			&self.store,
-			&crate::authorization::identity::Actor::Operator,
-		)
-		.await?;
+		let mut lease = Lease::without_subject(&self.store).await?;
 		let result = async {
 			let mut runs = BTreeSet::new();
 			for unit in units {

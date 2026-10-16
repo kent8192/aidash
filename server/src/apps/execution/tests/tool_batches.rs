@@ -264,7 +264,7 @@ impl Batching {
 		};
 		// The batch planner budgets every result at seven times its byte bound
 		// (worst-case escaping). The default 32 KiB search bound alone exceeds
-		// the fixture model's 128000-token window, so lower it as an operator may.
+		// the fixture model's 128000-token window, so lower it as the Node's configuration may.
 		profile.limits.search_bytes = 4096;
 		f.store.capabilities = Runtime::new(profile).unwrap();
 		f.store.tool_slots = ToolSlots::new(slots);
@@ -278,12 +278,19 @@ impl Batching {
 			agent.config["tool_parallelism"] = json!(parallelism);
 		}
 		agent.config["max_steps"] = json!(1000);
-		let operator = f.config.api_token.clone();
-		let (status, body) = request(&app, &operator, "POST", "/api/registry", json!(agent)).await;
+		let deployment_administrator = f.config.api_token.clone();
+		let (status, body) = request(
+			&app,
+			&deployment_administrator,
+			"POST",
+			"/api/registry",
+			json!(agent),
+		)
+		.await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			&app,
-			&operator,
+			&deployment_administrator,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":AGENT_VERSION},"expected_revision":0,"enabled":true}),
@@ -297,7 +304,7 @@ impl Batching {
 		)] = json!({"kind":"agent"});
 		let (status, body) = request(
 			&app,
-			&operator,
+			&deployment_administrator,
 			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy}),

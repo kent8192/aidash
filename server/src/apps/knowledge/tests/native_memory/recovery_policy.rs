@@ -12,7 +12,7 @@ async fn policy_upgrade_retires_full_archive_capacity_and_shorter_retention(
 	let (store, registry, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -27,7 +27,7 @@ async fn policy_upgrade_retires_full_archive_capacity_and_shorter_retention(
 	};
 	memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -72,7 +72,7 @@ async fn policy_upgrade_retires_full_archive_capacity_and_shorter_retention(
 	registry.register(agent).await.unwrap();
 	memory::upgrade_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		bank.clone(),
 		memory::UpgradeParticipant {
 			agent: EntityRef {

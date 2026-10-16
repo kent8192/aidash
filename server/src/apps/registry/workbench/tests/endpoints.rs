@@ -74,7 +74,13 @@ async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
 	let valid = json!({"tenant":"endpoint","max_input_bytes":4096,"max_output_tokens":128,
 		"max_total_tokens":512,"max_steps":4,"max_duration_secs":30,"max_concurrent":1,
 		"payload_days":7,"incident_evidence_days":14});
-	assert_json(app.operator.put(path, &valid, "json").await.unwrap(), 200);
+	assert_json(
+		app.deployment_administrator
+			.put(path, &valid, "json")
+			.await
+			.unwrap(),
+		200,
+	);
 	for (field, rejected) in [
 		("max_input_bytes", 1023),
 		("max_steps", 65),
@@ -82,11 +88,23 @@ async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
 	] {
 		let mut invalid = valid.clone();
 		invalid[field] = json!(rejected);
-		assert_json(app.operator.put(path, &invalid, "json").await.unwrap(), 400);
+		assert_json(
+			app.deployment_administrator
+				.put(path, &invalid, "json")
+				.await
+				.unwrap(),
+			400,
+		);
 	}
 	let mut invalid = valid;
 	invalid["max_output_tokens"] = json!(1024);
-	assert_json(app.operator.put(path, &invalid, "json").await.unwrap(), 400);
+	assert_json(
+		app.deployment_administrator
+			.put(path, &invalid, "json")
+			.await
+			.unwrap(),
+		400,
+	);
 	let saved = AgentTestLimit::objects()
 		.filter(AgentTestLimit::field_tenant().eq("endpoint"))
 		.get_with_db(&mut app.database.lease.handle())

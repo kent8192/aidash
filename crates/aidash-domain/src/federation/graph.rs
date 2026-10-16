@@ -33,7 +33,7 @@ pub struct GraphOptions {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GraphViewer {
 	Subject { tenant: String, subject: String },
-	Operator { id: Uuid },
+	DeploymentAdministrator { id: Uuid },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GraphNode {

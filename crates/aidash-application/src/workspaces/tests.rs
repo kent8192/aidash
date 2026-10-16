@@ -230,11 +230,11 @@ async fn malformed_cluster_coordinator_cannot_publish_a_conversation_or_task() {
 use crate::ports::workspaces::{OperatorConversationTransaction, OperatorConversations};
 use std::sync::{Arc, Mutex};
 
-struct OperatorFixture {
+struct DeploymentAdministratorFixture {
 	operations: Arc<Mutex<Vec<&'static str>>>,
 	fail: Option<&'static str>,
 }
-impl OperatorFixture {
+impl DeploymentAdministratorFixture {
 	fn new(fail: Option<&'static str>) -> Self {
 		Self {
 			operations: Arc::new(Mutex::new(vec![])),
@@ -250,12 +250,12 @@ impl OperatorFixture {
 		}
 	}
 }
-struct OperatorTransactionFixture {
-	fixture: OperatorFixture,
+struct DeploymentAdministratorTransactionFixture {
+	fixture: DeploymentAdministratorFixture,
 	records: Fixture,
 }
 #[async_trait]
-impl OperatorConversations for OperatorFixture {
+impl OperatorConversations for DeploymentAdministratorFixture {
 	async fn definition(&self, reference: &EntityRef) -> Result<Entry> {
 		self.record("definition")?;
 		let mut entry = Fixture::new("agent").target;
@@ -267,8 +267,8 @@ impl OperatorConversations for OperatorFixture {
 	}
 	async fn begin(&self) -> Result<Box<dyn OperatorConversationTransaction>> {
 		self.record("begin")?;
-		Ok(Box::new(OperatorTransactionFixture {
-			fixture: OperatorFixture {
+		Ok(Box::new(DeploymentAdministratorTransactionFixture {
+			fixture: DeploymentAdministratorFixture {
 				operations: self.operations.clone(),
 				fail: self.fail,
 			},
@@ -280,7 +280,7 @@ impl OperatorConversations for OperatorFixture {
 	}
 }
 #[async_trait]
-impl OperatorConversationTransaction for OperatorTransactionFixture {
+impl OperatorConversationTransaction for DeploymentAdministratorTransactionFixture {
 	async fn create_workspace(&mut self, title: &str, goal: &str) -> Result<Workspace> {
 		self.records.create_workspace(title, goal).await
 	}
@@ -318,10 +318,10 @@ impl OperatorConversationTransaction for OperatorTransactionFixture {
 #[case(None)]
 #[case(Some("deliver"))]
 #[tokio::test]
-async fn operator_delivery_runs_after_commit_and_transport_failure_keeps_the_created_result(
+async fn deployment_administrator_delivery_runs_after_commit_and_transport_failure_keeps_the_created_result(
 	#[case] fail: Option<&'static str>,
 ) {
-	let fixture = OperatorFixture::new(fail);
+	let fixture = DeploymentAdministratorFixture::new(fail);
 	let reference = EntityRef {
 		id: "target".into(),
 		version: "1".into(),
@@ -352,8 +352,10 @@ async fn operator_delivery_runs_after_commit_and_transport_failure_keeps_the_cre
 #[case("event")]
 #[case("commit")]
 #[tokio::test]
-async fn operator_transaction_failure_never_attempts_external_delivery(#[case] fail: &'static str) {
-	let fixture = OperatorFixture::new(Some(fail));
+async fn deployment_administrator_transaction_failure_never_attempts_external_delivery(
+	#[case] fail: &'static str,
+) {
+	let fixture = DeploymentAdministratorFixture::new(Some(fail));
 	let reference = EntityRef {
 		id: "target".into(),
 		version: "1".into(),

@@ -382,7 +382,7 @@ fn protocol_runtime(
 		let mut settings = settings_for(&database.url);
 		settings.node.node_id = format!("aidash://atomic-{suffix}");
 		settings.node.endpoint = guard.as_ref().unwrap().url.clone();
-		settings.node.api_token = "atomic-operator-fixture-token".into();
+		settings.node.api_token = "atomic-deployment-administrator-fixture-token".into();
 		settings.node.nats_url = "nats://127.0.0.1:0".into();
 		let f = bootstrap::initialize(&injection_context, &settings, database.connection.clone())
 			.await
@@ -418,12 +418,12 @@ type ProtocolClientFuture = Shared<BoxFuture<'static, Arc<APIClient>>>;
 #[fixture]
 fn protocol_client(
 	protocol_runtime: ProtocolRuntimeFuture,
-	#[default(true)] operator: bool,
+	#[default(true)] deployment_administrator: bool,
 ) -> ProtocolClientFuture {
 	async move {
 		let runtime = protocol_runtime.await;
 		let client = api_client_from_url(&runtime.settings.node.endpoint);
-		if operator {
+		if deployment_administrator {
 			client
 				.set_header(
 					"Authorization",

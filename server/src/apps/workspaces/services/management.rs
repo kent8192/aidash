@@ -36,7 +36,7 @@ impl CollaborationManagement {
 			return scope.task_page(page.offset).await;
 		}
 		let mut page = f.store.task_page(page.offset).await?;
-		let denied = crate::authorization::remote::operator::blocked(
+		let denied = crate::authorization::remote::deployment_administrator::blocked(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			&page
 				.tasks
@@ -66,7 +66,7 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.snapshot(id).await;
 		}
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			id,
 		)
@@ -83,7 +83,7 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.update(id, input.revision, input.state).await;
 		}
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			id,
 		)
@@ -154,7 +154,7 @@ impl CollaborationManagement {
 			return interaction::abandon(&f, &identity, id, input.revision, &input.reason).await;
 		}
 		let existing = f.store.task(id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			existing.workspace_id,
 		)

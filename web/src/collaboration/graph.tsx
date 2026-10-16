@@ -253,7 +253,10 @@ export function Graph({
           relations: supportedRelations,
           hours,
           limit: 80,
-          target_tenant: data.access.kind === "operator" ? targetTenant : null,
+          target_tenant:
+            data.access.kind === "deployment_administrator"
+              ? targetTenant
+              : null,
         };
         try {
           page = await graphPage({ ...options, cursor });
@@ -1028,7 +1031,7 @@ export function Graph({
                         role="group"
                         aria-label={copy.peers}
                       >
-                        {data.access.kind === "operator" && (
+                        {data.access.kind === "deployment_administrator" && (
                           <label className="grid gap-1 text-[11px] text-faint">
                             {copy.peerScope}
                             <Input
@@ -1086,7 +1089,8 @@ export function Graph({
                                   type="button"
                                   onClick={() => togglePeer(peer)}
                                   disabled={
-                                    data.access.kind === "operator" &&
+                                    data.access.kind ===
+                                      "deployment_administrator" &&
                                     !validGraphTenant(targetTenant)
                                   }
                                 >

@@ -62,7 +62,7 @@ test("desktop requests bind credentials to the connection and reject stale JSON 
       name: "One",
       origin: "https://one.example",
     });
-    transport.selectDashboardContext("operator");
+    transport.selectDashboardContext("deployment_administrator");
     document.cookie = "aidash-csrf=browser-csrf";
     const calls = [];
     let body;
@@ -118,7 +118,7 @@ test("desktop requests bind credentials to the connection and reject stale JSON 
         redirect: "error",
         csrf: null,
         bearer: "Bearer aidash_desktop_fixture",
-        context: "operator",
+        context: "deployment_administrator",
       },
     ],
     stale: "rejected",

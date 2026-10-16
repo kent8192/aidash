@@ -25,7 +25,7 @@ export async function installBearerDashboard(
       ? selectedContext
       : subject
         ? "mapping:fixture-mapping"
-        : "operator";
+        : "deployment_administrator";
   await page.addInitScript(
     ({ sessionId, context }) => {
       sessionStorage.setItem("aidash-session-id", sessionId);
@@ -47,7 +47,7 @@ export async function installBearerDashboard(
       contentType: "application/json",
       body: JSON.stringify({
         id: sessionId,
-        operator: !subject,
+        deployment_administrator: !subject,
         mappings: subject
           ? [
               {

@@ -702,7 +702,10 @@ async fn issue_faults_preserve_only_committed_attempts(
 
 #[rstest]
 #[tokio::test]
-async fn operator_recovery_does_not_invent_subject_authority(origin: Origin, manifest: Manifest) {
+async fn deployment_administrator_recovery_does_not_invent_subject_authority(
+	origin: Origin,
+	manifest: Manifest,
+) {
 	let repository = Repository::new(origin);
 	repository.state.lock().unwrap().origin = None;
 	issue(&repository, &manifest, "aidash://peer")

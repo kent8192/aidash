@@ -1,18 +1,15 @@
-//! Persistent authorization_graph_operator_grants records.
+//! Persistent authorization_peer_graph_grants records.
 use chrono::{DateTime, Utc};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
-#[model(
-	app_label = "identity",
-	table_name = "authorization_graph_operator_grants"
-)]
+#[model(app_label = "identity", table_name = "authorization_peer_graph_grants")]
 #[derive(Serialize, Deserialize)]
-pub struct AuthorizationGraphOperatorGrants {
+pub struct AuthorizationPeerGraphGrants {
 	#[field(primary_key = true, field_type = "text")]
 	pub source_node: String,
 	#[field(primary_key = true, field_type = "uuid")]
-	pub source_operator: uuid::Uuid,
+	pub source_identity: uuid::Uuid,
 	#[field(field_type = "text", primary_key = true)]
 	pub tenant: String,
 	#[field]
@@ -23,7 +20,7 @@ pub struct AuthorizationGraphOperatorGrants {
 	pub updated_at: DateTime<Utc>,
 }
 
-impl AuthorizationGraphOperatorGrants {
+impl AuthorizationPeerGraphGrants {
 	pub fn bundle_id(&self) -> String {
 		self.tenant.clone()
 	}

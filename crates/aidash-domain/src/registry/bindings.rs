@@ -724,7 +724,7 @@ pub struct BindingSnapshot {
 	pub remote: bool,
 	pub bindings: Vec<ResolvedBinding>,
 	pub definitions: Vec<ResolvedDefinition>,
-	/// Public operator Agent transports retain the receiver's complete admitted closure.
+	/// Public Deployment Administrator Agent transports retain the receiver's complete admitted closure.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub foreign_agents: Vec<ForeignAgentSnapshot>,
 }

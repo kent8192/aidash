@@ -27,7 +27,7 @@ fn node_qualified_edges_preserve_the_wire_contract(#[case] value: serde_json::Va
 #[rstest]
 fn peer_input_rejects_unrecognized_authority_fields() {
 	let result = serde_json::from_value::<Input>(
-		json!({"tenant":"acme","subject":"alice","reference":{"kind":"registry","node_id":"aidash://home","id":"agent","version":"1.0.0","digest":"approved"},"operator":true}),
+		json!({"tenant":"acme","subject":"alice","reference":{"kind":"registry","node_id":"aidash://home","id":"agent","version":"1.0.0","digest":"approved"},"deployment_administrator":true}),
 	);
 	assert!(result.is_err());
 }

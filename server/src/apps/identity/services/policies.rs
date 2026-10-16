@@ -26,7 +26,7 @@ use crate::apps::identity::serializers::policies::{
 	PolicyReplacement,
 };
 
-/// Mounted inside the management router, behind the existing operator token.
+/// Mounted inside the management router, behind the existing Deployment Administrator token.
 /// Evaluation bodies are simulations of authority, never execution credentials.
 #[derive(Clone)]
 pub struct PolicyAdministration {
@@ -51,7 +51,7 @@ impl PolicyAdministration {
 				&input.entry,
 				input.expected_revision,
 				input.enabled,
-				"operator",
+				"deployment_administrator",
 			)
 			.await
 	}
@@ -66,7 +66,7 @@ impl PolicyAdministration {
 				&tenant,
 				&input.subject,
 				input.expires_in_seconds,
-				"operator",
+				"deployment_administrator",
 			)
 			.await
 	}
@@ -120,7 +120,7 @@ impl PolicyAdministration {
 				&tenant,
 				input.expected_revision,
 				input.bundle,
-				"operator",
+				"deployment_administrator",
 			)
 			.await?;
 		let pending_transactions =

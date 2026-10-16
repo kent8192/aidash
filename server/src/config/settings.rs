@@ -206,7 +206,7 @@ mod tests {
 			)
 			.replace(
 				"[node]\n",
-				"[node]\napi_token = \"isolated-settings-test-operator-0123456789\"\n",
+				"[node]\napi_token = \"isolated-settings-test-deployment-administrator-0123456789\"\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), source).unwrap();
 		directory
@@ -441,7 +441,7 @@ mod tests {
 			)
 			.replace(
 				"[node]\n",
-				"[node]\napi_token = \"isolated-settings-test-operator-0123456789\"\n",
+				"[node]\napi_token = \"isolated-settings-test-deployment-administrator-0123456789\"\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), source).unwrap();
 		std::fs::write(
@@ -483,7 +483,7 @@ mod tests {
 			)
 			.replace(
 				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+				"[node]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
 			);
 		std::fs::write(
 			directory.path().join("base.toml"),
@@ -514,7 +514,7 @@ mod tests {
 			)
 			.replace(
 				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+				"[node]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), base).unwrap();
 		let settings = file_settings_builder("local", directory.path(), directory.path())
@@ -535,7 +535,7 @@ mod tests {
 			)
 			.replace(
 				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+				"[node]\napi_token = 'isolated-settings-test-deployment-administrator-0123456789'\n",
 			);
 		std::fs::write(directory.path().join("base.toml"), base).unwrap();
 		let path = directory.path().join("dashboard.json");

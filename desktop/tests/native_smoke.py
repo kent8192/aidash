@@ -100,7 +100,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path)
         if path.path == "/auth/config":
             self.reply(
-                value={"enabled": True, "provider": "google", "desktop_protocol": 1}
+                value={"enabled": True, "provider": "google", "desktop_protocol": 2}
             )
             return
         if path.path == "/auth/desktop/authorize":
@@ -137,7 +137,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.reply(
                 value={
                     "id": f"session-{self.server.server_port}",
-                    "operator": True,
+                    "deployment_administrator": True,
                     "mappings": [],
                 }
             )
@@ -146,7 +146,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         elif path.path == "/api/session":
             self.reply(
                 value={
-                    "access": {"kind": "operator"},
+                    "access": {"kind": "deployment_administrator"},
                     "node_id": SCENE["data"]["node"]["id"],
                 }
             )
@@ -313,7 +313,7 @@ def run():
         select(browser, first["id"])
         print("First profile selected", flush=True)
         browser.button("Sign in with Google")
-        browser.button("operator")
+        browser.button("Deployment Administrator")
         wait(
             lambda: one.streams and str(one.server_port) in one.streams,
             "SSE reconnect cursor",
@@ -351,7 +351,7 @@ def run():
         # cannot provide this session: the broker only issues Bearer credentials.
         browser.close()
         browser = Browser()
-        browser.button("operator")
+        browser.button("Deployment Administrator")
         print("Process restart restored the session", flush=True)
         assert one.logins == 1 and one.renewals >= 1, (one.logins, one.renewals)
         second = browser.invoke(
@@ -368,7 +368,7 @@ def run():
         print("Second profile ready", flush=True)
         select(browser, second["id"])
         browser.button("Sign in with Google")
-        browser.button("operator")
+        browser.button("Deployment Administrator")
         wait(lambda: len(two.streams) >= 2, "second SSE")
         assert two.streams[0] == "-1", two.streams
         assert str(one.server_port) not in two.streams, two.streams
@@ -376,7 +376,7 @@ def run():
             "desktop leaked cookies"
         )
         select(browser, first["id"])
-        browser.button("operator")
+        browser.button("Deployment Administrator")
         assert one.logins == 1, "switching connections must preserve login"
         # The native window cannot navigate to a remote document.
         before = browser.js("return location.href")

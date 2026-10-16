@@ -1,11 +1,11 @@
 meta {
-  name: 0323 sessions-admin-operator-grants - Malformed bearer syntax is rejected
+  name: 0178 authorization_peer_graph_grants - Malformed bearer syntax is rejected
   type: http
-  seq: 323
+  seq: 178
 }
 
 get {
-  url: {{base_url}}/api/dashboard/operator-grants
+  url: {{base_url}}/api/authorization/{{tenant}}/peer-graph-grants
   body: none
   auth: none
 }

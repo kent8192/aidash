@@ -142,12 +142,12 @@ fn streamed_reply(body: Value, (entered, released): Gates) -> Response {
 /// Admit `research@1.0.1`, whose model `model@1.0.1` streams its replies, as
 /// a subject of the bootstrap `policy`.
 async fn admit_streaming_agent(f: &Federation, app: &common::TestApplication, mut policy: Value) {
-	let operator = &f.config.api_token;
+	let deployment_administrator = &f.config.api_token;
 	let subject = qualified_agent(&f.config.node_id, "research", "1.0.1");
 	policy["subjects"][subject] = json!({"kind":"agent"});
 	let (status, body) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy}),
@@ -162,11 +162,18 @@ async fn admit_streaming_agent(f: &Federation, app: &common::TestApplication, mu
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");
 	for (id, entry) in [("model", json!(model)), ("research", json!(agent))] {
-		let (status, body) = request(app, operator, "POST", "/api/registry", entry).await;
+		let (status, body) = request(
+			app,
+			deployment_administrator,
+			"POST",
+			"/api/registry",
+			entry,
+		)
+		.await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":id,"version":"1.0.1"},"expected_revision":0,"enabled":true}),

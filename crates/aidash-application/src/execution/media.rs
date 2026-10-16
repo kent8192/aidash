@@ -15,7 +15,7 @@ use aidash_domain::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-pub async fn operator(
+pub async fn deployment_administrator(
 	repository: &dyn OperatorMediaRepository,
 	run: &RunMetadata,
 	messages: &[(i64, Uuid, usize)],

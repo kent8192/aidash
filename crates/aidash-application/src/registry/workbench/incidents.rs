@@ -21,7 +21,7 @@ use serde_json::json;
 use uuid::Uuid;
 fn actor_name(principal: Principal) -> String {
 	match principal {
-		Principal::Operator => "operator".into(),
+		Principal::DeploymentAdministrator => "deployment_administrator".into(),
 		Principal::Subject { subject, .. } => subject,
 	}
 }
@@ -102,7 +102,7 @@ pub async fn list(
 	let mut scope = repository.begin().await?;
 	scope.require_inspection(&reference).await?;
 	let tenant = match repository.principal() {
-		Principal::Operator => None,
+		Principal::DeploymentAdministrator => None,
 		Principal::Subject { tenant, .. } => Some(tenant),
 	};
 	let mut visible = Vec::new();

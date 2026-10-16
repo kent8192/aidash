@@ -12,29 +12,40 @@ use serde_json::Value;
 
 use uuid::Uuid;
 
+/// The `subject` a saved authority records for a lease without a Subject.
+pub(crate) const WITHOUT_SUBJECT: &str = "without_subject";
+
 pub(crate) enum Lease<'a> {
-	Operator(crate::database::native::Transaction),
-	BorrowedOperator(&'a mut crate::database::native::Transaction),
+	/// A transaction that no Subject's authority limits, for a Deployment
+	/// Administrator or for Aidash's own work.
+	WithoutSubject(crate::database::native::Transaction),
+	BorrowedWithoutSubject(&'a mut crate::database::native::Transaction),
 	Scoped(Box<Access>),
 	Inherited(&'a mut Access),
 }
 impl Lease<'_> {
 	pub(crate) async fn begin(store: &Store, actor: &Actor) -> Result<Self> {
-		Ok(match actor {
-			Actor::Operator => Self::Operator(crate::database::native::begin(&store.pool).await?),
-			Actor::Subject(identity) => {
-				Self::Scoped(Box::new(Access::begin(store, identity).await?))
-			}
-		})
+		match actor {
+			Actor::DeploymentAdministrator => Self::without_subject(store).await,
+			Actor::Subject(identity) => Ok(Self::Scoped(Box::new(
+				Access::begin(store, identity).await?,
+			))),
+		}
+	}
+	/// Begin Aidash's own work, which acts for no Subject.
+	pub(crate) async fn without_subject(store: &Store) -> Result<Self> {
+		Ok(Self::WithoutSubject(
+			crate::database::native::begin(&store.pool).await?,
+		))
 	}
 	pub(crate) async fn restore(store: &Store, authority: Value) -> Result<Self> {
 		let authority: SavedAuthority = serde_json::from_value(authority)?;
 		match authority.credential {
-			None if authority.subject == "operator"
+			None if authority.subject == WITHOUT_SUBJECT
 				&& authority.tenant.is_empty()
 				&& authority.subjects.is_empty() =>
 			{
-				Self::begin(store, &Actor::Operator).await
+				Self::without_subject(store).await
 			}
 			Some(credential_id) => {
 				let mut access = Access::begin(
@@ -61,15 +72,15 @@ impl Lease<'_> {
 	}
 	pub(crate) fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
-			Self::Operator(tx) => tx,
-			Self::BorrowedOperator(tx) => tx,
+			Self::WithoutSubject(tx) => tx,
+			Self::BorrowedWithoutSubject(tx) => tx,
 			Self::Scoped(a) => &mut a.tx,
 			Self::Inherited(a) => &mut a.tx,
 		}
 	}
 	pub(crate) fn access(&mut self) -> Option<&mut Access> {
 		match self {
-			Self::Operator(_) | Self::BorrowedOperator(_) => None,
+			Self::WithoutSubject(_) | Self::BorrowedWithoutSubject(_) => None,
 			Self::Scoped(a) => Some(a),
 			Self::Inherited(a) => Some(a),
 		}
@@ -84,7 +95,7 @@ impl Lease<'_> {
 			None => SavedAuthority {
 				credential: None,
 				tenant: String::new(),
-				subject: "operator".into(),
+				subject: WITHOUT_SUBJECT.into(),
 				subjects: vec![],
 			},
 			Some(a) => SavedAuthority {
@@ -98,7 +109,7 @@ impl Lease<'_> {
 	}
 	pub(crate) async fn finish<T>(self, result: Result<T>) -> Result<T> {
 		match self {
-			Self::Operator(tx) => {
+			Self::WithoutSubject(tx) => {
 				if result.is_ok() {
 					tx.commit().await?;
 				} else {
@@ -107,12 +118,13 @@ impl Lease<'_> {
 				result
 			}
 			Self::Scoped(a) => a.finish(result).await,
-			Self::Inherited(_) | Self::BorrowedOperator(_) => result,
+			Self::Inherited(_) | Self::BorrowedWithoutSubject(_) => result,
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
 		if self.access().is_none() && action != "semantic.index.manage" {
-			crate::authorization::remote::operator::require(self.tx(), workspace).await?;
+			crate::authorization::remote::deployment_administrator::require(self.tx(), workspace)
+				.await?;
 		}
 		if let Some(a) = self.access() {
 			let resource = a.workspace(workspace).await?;
