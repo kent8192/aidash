@@ -588,6 +588,9 @@ impl Research<'_> {
 				approval_id,
 				expires_at,
 			} => Err(json!({
+				// It carries the disclosed content, so a revocation redacts it
+				// like every other research result.
+				"contract": aidash_domain::research::RESULT_CONTRACT,
 				"version": 1,
 				"operation": operation.as_str(),
 				"status": "approval_required",

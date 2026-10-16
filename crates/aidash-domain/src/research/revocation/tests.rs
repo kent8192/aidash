@@ -98,3 +98,15 @@ fn redaction_replaces_every_research_result_whatever_its_tool_alias() {
 		"a second pass changes nothing"
 	);
 }
+
+#[rstest]
+fn a_pending_approval_result_is_research_too() {
+	let pending = json!({
+		"contract": crate::research::RESULT_CONTRACT,
+		"version": 1,
+		"operation": "search",
+		"status": "approval_required",
+		"data": {"content": "a disclosed query"},
+	});
+	assert_eq!(result_operation(&pending), Some(Operation::Search));
+}

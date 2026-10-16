@@ -322,7 +322,10 @@ impl EvidenceStore for Evidence {
 			async {
 				let mut tx = self.store.database().begin().await?;
 				// Revoked evidence is never delivered: later citations of it are
-				// unknown, and readers get the uniform absence (ADR 0046).
+				// unknown, and readers get the uniform absence (ADR 0046). The
+				// Run's research lock, which a revocation holds, keeps the check
+				// and the read on one side of it.
+				lock(tx.as_mut(), &run_lock(run)).await?;
 				let fragments = if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					Vec::new()
 				} else {
