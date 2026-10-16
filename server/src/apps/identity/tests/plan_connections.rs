@@ -508,7 +508,7 @@ async fn map(fixture: &Fixture, session: &str, subject: &str) -> (u16, String) {
 	.await;
 	let context = mapping["id"]
 		.as_str()
-		.map(|id| format!("mapping:{id}"))
+		.map(|id| format!("mapping:alpha:{id}"))
 		.unwrap_or_default();
 	(status, context)
 }
@@ -912,7 +912,7 @@ async fn disabling_the_owners_mapping_retires_the_connection(
 	// Connection.
 	let (status, _) = map(&fixture, "browser-c", "alice").await;
 	assert_eq!(status, 409);
-	let mapping = context.strip_prefix("mapping:").unwrap();
+	let mapping = context.strip_prefix("mapping:alpha:").unwrap();
 	let (status, _) = common::request(
 		&fixture.app,
 		&fixture.f.config.api_token,
@@ -954,7 +954,7 @@ async fn approvals_retire_a_connection_left_without_a_mapping(
 	let fixture = Fixture::new(application, parts);
 	let (_, context) = map(&fixture, "browser-a", "alice").await;
 	connect(&fixture, "browser-a", &context).await;
-	let mapping = context.strip_prefix("mapping:").unwrap();
+	let mapping = context.strip_prefix("mapping:alpha:").unwrap();
 	// Disable the Mapping behind the service's back, as a failed retirement
 	// would leave it.
 	execute(
@@ -1170,7 +1170,7 @@ async fn context_header(fixture: &Fixture, subject: &str) -> String {
 		.fetch_one(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
-	format!("mapping:{id}")
+	format!("mapping:alpha:{id}")
 }
 
 #[rstest::rstest]
