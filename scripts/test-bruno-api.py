@@ -373,13 +373,13 @@ def node(binary, environment, log):
                     child.wait(timeout=10)
 
 
-def create_tenant(base, operator, label):
+def create_tenant(base, deployment_administrator, label):
     """Create the journey's Tenant; Aidash assigns its name (ADR 0050)."""
     request = urllib.request.Request(
         base + "/api/tenants",
         data=json.dumps({"label": label}).encode(),
         headers={
-            "Authorization": "Bearer " + operator,
+            "Authorization": "Bearer " + deployment_administrator,
             "Content-Type": "application/json",
         },
         method="POST",
@@ -658,7 +658,7 @@ def main():
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
             base = f"http://127.0.0.1:{port}"
-            operator = secrets.token_urlsafe(32)
+            deployment_administrator = secrets.token_urlsafe(32)
             settings = private / "settings"
             settings.mkdir()
             template = (
@@ -693,7 +693,7 @@ def main():
                     "AIDASH_NODE_ID": node_id,
                     "AIDASH_ENDPOINT": base,
                     "AIDASH_LISTEN": f"127.0.0.1:{port}",
-                    "AIDASH_API_TOKEN": operator,
+                    "AIDASH_API_TOKEN": deployment_administrator,
                     "AIDASH_API_RATE_BURST": "10000",
                     "AIDASH_SECRET_BRUNO_PEER": peer_token,
                     "AIDASH_WEB_DIR": str(web),
@@ -725,7 +725,7 @@ def main():
                 listener.bind(("127.0.0.1", 0))
                 peer_port = listener.getsockname()[1]
             peer_base = f"http://127.0.0.1:{peer_port}"
-            peer_operator = secrets.token_urlsafe(32)
+            peer_deployment_administrator = secrets.token_urlsafe(32)
             peer_environment = {
                 key: value
                 for key, value in environment.items()
@@ -736,7 +736,7 @@ def main():
                 AIDASH_NODE_ID=peer_node,
                 AIDASH_ENDPOINT=peer_base,
                 AIDASH_LISTEN=f"127.0.0.1:{peer_port}",
-                AIDASH_API_TOKEN=peer_operator,
+                AIDASH_API_TOKEN=peer_deployment_administrator,
                 AIDASH_SECRET_BRUNO_MAIN=peer_token,
             )
             migrate(
@@ -791,13 +791,13 @@ def main():
             variables = {
                 "base_url": base,
                 "node_id": node_id,
-                "tenant": create_tenant(base, operator, "bruno-" + run_id),
+                "tenant": create_tenant(base, deployment_administrator, "bruno-" + run_id),
                 "issuer": provider.issuer,
-                "operator_token": operator,
+                "deployment_administrator_token": deployment_administrator,
                 "peer_node": peer_node,
                 "peer_token": peer_token,
                 "peer_base": peer_base,
-                "peer_operator_token": peer_operator,
+                "peer_deployment_administrator_token": peer_deployment_administrator,
                 "control_url": control.origin,
                 **{
                     f"stream_base_{number}": value

@@ -41,7 +41,7 @@ async fn policy(f: &Federation, tenant: &str, revision: i64, value: Value) {
 		tenant,
 		revision,
 		serde_json::from_value::<PolicyBundle>(value).unwrap(),
-		"operator",
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();
@@ -51,7 +51,7 @@ async fn token(f: &Federation, tenant: &str, kind: &str) -> String {
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.issue_credential(tenant, "viewer", 3600, "operator")
+	.issue_credential(tenant, "viewer", 3600, "deployment_administrator")
 	.await
 	.unwrap()
 	.token
@@ -66,7 +66,7 @@ async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.set_catalog(tenant, entry, 0, true, "operator")
+	.set_catalog(tenant, entry, 0, true, "deployment_administrator")
 	.await
 	.unwrap();
 }
@@ -233,7 +233,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			},
 			0,
 			true,
-			"operator"
+			"deployment_administrator"
 		)
 		.await
 		.is_err()
@@ -255,7 +255,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 				},
 				1,
 				enabled,
-				"operator"
+				"deployment_administrator"
 			)
 			.await
 			.is_err(),
@@ -1231,7 +1231,13 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		"default file Tools require an admitted working area: {available:?}"
 	);
 	authorization
-		.set_catalog("a", &reference("model"), 1, false, "operator")
+		.set_catalog(
+			"a",
+			&reference("model"),
+			1,
+			false,
+			"deployment_administrator",
+		)
 		.await
 		.unwrap();
 	let denied = request(&app, &a, "GET", &area_path, Value::Null).await;
@@ -1252,7 +1258,13 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		403
 	);
 	authorization
-		.set_catalog("a", &reference("model"), 2, true, "operator")
+		.set_catalog(
+			"a",
+			&reference("model"),
+			2,
+			true,
+			"deployment_administrator",
+		)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1945,7 +1957,13 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 				Authorization {
 					pool: f2.store.pool.clone(),
 				}
-				.set_catalog("c", &reference("race-dependency"), 1, false, "operator")
+				.set_catalog(
+					"c",
+					&reference("race-dependency"),
+					1,
+					false,
+					"deployment_administrator",
+				)
 				.await
 				.unwrap();
 			} else {
@@ -2047,7 +2065,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	let renewed = Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.issue_credential("a", "viewer", 3600, "operator")
+	.issue_credential("a", "viewer", 3600, "deployment_administrator")
 	.await
 	.unwrap()
 	.token;
@@ -2389,8 +2407,8 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 #[case("activation", "logout", true)]
 #[case("administration", "logout", false)]
 #[case("administration", "logout", true)]
-#[case("administration", "operator_grant", false)]
-#[case("administration", "operator_grant", true)]
+#[case("administration", "deployment_administrator_grant", false)]
+#[case("administration", "deployment_administrator_grant", true)]
 #[case("administration", "expiry", false)]
 #[tokio::test]
 async fn browser_authority_is_ordered_with_pending_marketplace_requests(
@@ -2418,7 +2436,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	let issued = Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.issue_credential("a", "viewer", 3600, "operator")
+	.issue_credential("a", "viewer", 3600, "deployment_administrator")
 	.await
 	.unwrap();
 	{
@@ -2528,13 +2546,13 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	.unwrap();
 
-	let operator = operation != "install";
-	if operator {
+	let deployment_administrator = operation != "install";
+	if deployment_administrator {
 		{
 			let query_bind_1 = identity;
 			sqlx::query(
 				&Query::insert()
-					.into_table(Alias::new("dashboard_operator_grants"))
+					.into_table(Alias::new("dashboard_deployment_administrator_grants"))
 					.columns(["identity_id", "enabled", "revision"].map(Alias::new))
 					.from_subquery(
 						Query::select()
@@ -2618,7 +2636,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		.unwrap();
 	}
 	let grant_revoke = Query::update()
-		.table(Alias::new("dashboard_operator_grants"))
+		.table(Alias::new("dashboard_deployment_administrator_grants"))
 		.value_expr(Alias::new("enabled"), Expr::cust("FALSE"))
 		.value_expr(Alias::new("revision"), Expr::cust("revision+1"))
 		.and_where(Expr::cust("identity_id=$1"))
@@ -2632,8 +2650,8 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			.header("x-aidash-csrf", "marketplace-test-csrf")
 			.header(
 				"x-aidash-context",
-				if operator {
-					"operator".into()
+				if deployment_administrator {
+					"deployment_administrator".into()
 				} else {
 					format!("mapping:{mapping}")
 				},
@@ -2657,7 +2675,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		.execute(&mut *barrier)
 		.await
 		.unwrap();
-	} else if revocation == "operator_grant" {
+	} else if revocation == "deployment_administrator_grant" {
 		sqlx::query(&grant_revoke)
 			.bind(identity)
 			.execute(&mut *barrier)
@@ -2693,15 +2711,15 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			} else {
 				"%71003201%"
 			}
-		} else if revocation == "operator_grant" {
-			"%dashboard_operator_grants%"
+		} else if revocation == "deployment_administrator_grant" {
+			"%dashboard_deployment_administrator_grants%"
 		} else {
 			"%dashboard_sessions%"
 		},
 	)
 	.await;
 	let revoking = if mutation_wins {
-		let task = if revocation == "operator_grant" {
+		let task = if revocation == "deployment_administrator_grant" {
 			let pool = f.store.pool.driver().clone();
 			let sql = grant_revoke.clone();
 			tokio::spawn(async move {
@@ -2720,8 +2738,8 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		wait_for_lock(
 			&f,
 			&schema,
-			if revocation == "operator_grant" {
-				"%dashboard_operator_grants%"
+			if revocation == "deployment_administrator_grant" {
+				"%dashboard_deployment_administrator_grants%"
 			} else {
 				"%dashboard_sessions%"
 			},
@@ -2739,7 +2757,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		installing.await.unwrap().status.as_u16(),
 		if mutation_wins {
 			200
-		} else if revocation == "operator_grant" {
+		} else if revocation == "deployment_administrator_grant" {
 			403
 		} else {
 			401
@@ -2748,7 +2766,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	if let Some(task) = revoking {
 		assert_eq!(
 			task.await.unwrap(),
-			if revocation == "operator_grant" {
+			if revocation == "deployment_administrator_grant" {
 				200
 			} else {
 				204

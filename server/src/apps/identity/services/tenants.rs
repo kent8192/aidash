@@ -2,8 +2,8 @@
 //! a signed-in External Identity where the Tenancy Rules allow it, and a
 //! Deployment Administrator always. Subject Credentials, agents and peers never.
 use crate::apps::identity::models::{
-	AdministrationActor, AdministrationEvent, DashboardIdentity, DashboardOperatorGrant, Tenant,
-	database_time,
+	AdministrationActor, AdministrationEvent, DashboardDeploymentAdministratorGrant,
+	DashboardIdentity, Tenant, database_time,
 };
 use crate::apps::identity::oidc::{
 	BrowserOrigin, csrf_allowed, required_config, session_from_headers,
@@ -58,7 +58,7 @@ impl From<Tenant> for TenantRecord {
 
 impl Tenants {
 	/// The Deployment Administrator bearer token, a browser session in the
-	/// `operator` context, or any other browser session as the External
+	/// `deployment_administrator` context, or any other browser session as the External
 	/// Identity itself. A session needs no Mapping. Every other bearer token,
 	/// such as a Subject Credential, is refused.
 	async fn creator(&self, headers: &HeaderMap) -> Result<Creator> {
@@ -80,9 +80,14 @@ impl Tenants {
 		let context = headers
 			.get("x-aidash-context")
 			.and_then(|value| value.to_str().ok());
-		if context == Some("operator") {
+		if context == Some("deployment_administrator") {
 			let lease = f.store.orm_connection()?;
-			if !DashboardOperatorGrant::enabled_for_identity(&mut lease.handle(), identity).await? {
+			if !DashboardDeploymentAdministratorGrant::enabled_for_identity(
+				&mut lease.handle(),
+				identity,
+			)
+			.await?
+			{
 				return Err(Error::Forbidden);
 			}
 			return Ok(Creator::DeploymentAdministrator(Some(identity)));

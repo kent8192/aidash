@@ -817,9 +817,14 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 		aidash_server::domain::qualified_agent(&c.f.config.node_id, &entry.id, &entry.version),
 		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
 	);
-	auth.replace("acme", snapshot.revision, snapshot.bundle, "operator")
-		.await
-		.unwrap();
+	auth.replace(
+		"acme",
+		snapshot.revision,
+		snapshot.bundle,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	let (status,activated)=request(&c.app,&c.f.config.api_token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
         json!({"tenant":"acme","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{activated}");
@@ -868,9 +873,14 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		),
 		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
 	);
-	auth.replace("acme", snapshot.revision, snapshot.bundle, "operator")
-		.await
-		.unwrap();
+	auth.replace(
+		"acme",
+		snapshot.revision,
+		snapshot.bundle,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	let c = TransferFixture {
 		a,
 		b,
@@ -912,7 +922,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		},
 		1,
 		false,
-		"operator",
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();

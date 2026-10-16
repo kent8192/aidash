@@ -50,7 +50,7 @@ pub struct MappingView {
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct SessionView {
 	pub(crate) id: Uuid,
-	pub(crate) operator: bool,
+	pub(crate) deployment_administrator: bool,
 	pub(crate) mappings: Vec<MappingView>,
 	/// True when Aidash made a Personal Tenant for this identity, which may
 	/// request shared Tenant access whether or not its Personal Tenant Mapping
@@ -136,14 +136,14 @@ pub(crate) struct ApprovedMapping {
 
 #[derive(Deserialize, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct OperatorGrantInput {
+pub(crate) struct DeploymentAdministratorGrantInput {
 	pub(crate) enabled: bool,
 	#[validate(range(min = 0))]
 	pub(crate) expected_revision: i64,
 }
 
 #[derive(Serialize, JsonSchema)]
-pub(crate) struct AdminOperatorGrant {
+pub(crate) struct DeploymentAdministratorGrant {
 	pub(crate) identity_id: Uuid,
 	pub(crate) enabled: bool,
 	pub(crate) revision: i64,

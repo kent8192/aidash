@@ -51,7 +51,7 @@ impl TrustScope for TrustUpdate {
 
 #[async_trait]
 impl ManagementRepository for Repository {
-	async fn submit_operator(&self, manifest: &Manifest) -> Result<Status> {
+	async fn submit_deployment_administrator(&self, manifest: &Manifest) -> Result<Status> {
 		admission::submit(
 			&crate::bootstrap::transaction_admission_repository(&self.runtime),
 			manifest,
@@ -143,7 +143,7 @@ impl ManagementRepository for Repository {
 			.collect();
 		Ok((votes, history))
 	}
-	async fn abort_operator(&self, id: Uuid) -> Result<Status> {
+	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status> {
 		crate::bootstrap::transaction_coordinator(&self.runtime)
 			.abort(id)
 			.await

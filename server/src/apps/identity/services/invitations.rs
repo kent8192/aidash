@@ -48,10 +48,14 @@ enum Issuer {
 impl Issuer {
 	fn actor(&self) -> AdministrationActor {
 		match self {
-			Self::DeploymentAdministrator(None) => AdministrationActor::OperatorBearer,
-			Self::DeploymentAdministrator(Some(identity)) => AdministrationActor::Operator {
-				identity: *identity,
-			},
+			Self::DeploymentAdministrator(None) => {
+				AdministrationActor::DeploymentAdministratorBearer
+			}
+			Self::DeploymentAdministrator(Some(identity)) => {
+				AdministrationActor::DeploymentAdministrator {
+					identity: *identity,
+				}
+			}
 			Self::TenantAdministrator(administrator) => {
 				AdministrationActor::TenantAdministrator(administrator.clone())
 			}
@@ -93,7 +97,7 @@ impl Invitations {
 	) -> Result<Issuer> {
 		aidash_domain::policy::identifier(tenant)?;
 		match (actor, origin) {
-			(Actor::Operator, origin) => Ok(Issuer::DeploymentAdministrator(
+			(Actor::DeploymentAdministrator, origin) => Ok(Issuer::DeploymentAdministrator(
 				origin.map(|origin| origin.identity_id),
 			)),
 			(Actor::Subject(identity), Some(origin)) => {

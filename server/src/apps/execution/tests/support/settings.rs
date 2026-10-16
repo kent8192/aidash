@@ -26,7 +26,7 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 					"node",
 					json!({
 						"node_id":"aidash://endpoint-test", "endpoint":"http://localhost",
-						"api_token":"operator-endpoint-fixture", "background_enabled":false
+						"api_token":"deployment-administrator-endpoint-fixture", "background_enabled":false
 					}),
 				)
 				.with_value("dashboard", json!({}))

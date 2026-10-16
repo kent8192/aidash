@@ -3,7 +3,7 @@ SET LOCAL search_path = public, pg_catalog;
 -- it. Personal Tenants named after their identity keep their identity link, so
 -- sign-in does not provision a second one.
 INSERT INTO tenants (name, label, personal, created_at, created_by_kind, created_by_identity)
-SELECT tenant, NULL, tenant LIKE 'personal-%', updated_at, 'operator', NULL
+SELECT tenant, NULL, tenant LIKE 'personal-%', updated_at, 'deployment_administrator', NULL
 FROM authorization_bundles
 ON CONFLICT (name) DO NOTHING;
 INSERT INTO personal_tenants (identity_id, tenant, created_at)

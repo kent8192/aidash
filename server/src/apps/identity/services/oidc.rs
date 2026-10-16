@@ -1,7 +1,7 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
 use crate::apps::identity::models::{
-	AuthorizationCredential, DashboardIdentity, DashboardLoginTransaction, DashboardMapping,
-	DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
+	AuthorizationCredential, DashboardDeploymentAdministratorGrant, DashboardIdentity,
+	DashboardLoginTransaction, DashboardMapping, DashboardRegistrationRequest, DashboardSession,
 };
 use crate::http::validate;
 use http::header;
@@ -311,14 +311,17 @@ pub async fn actor_from_headers(
 		.ok_or(Error::Forbidden)?;
 	let lease = f.store.orm_connection()?;
 	let mut connection = lease.handle();
-	if selector == "operator" {
-		if !DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
-			.await?
+	if selector == "deployment_administrator" {
+		if !DashboardDeploymentAdministratorGrant::enabled_for_identity(
+			&mut connection,
+			session.identity_id(),
+		)
+		.await?
 		{
 			return Err(Error::Forbidden);
 		}
 		return Ok((
-			Actor::Operator,
+			Actor::DeploymentAdministrator,
 			BrowserOrigin {
 				identity_id: session.identity_id(),
 				mapping_id: None,
@@ -354,17 +357,18 @@ pub async fn actor_from_headers(
 	))
 }
 
-/// `/api/dashboard` routes admit only Operators: the bearer token or a browser
-/// session holding an operator grant.
-fn operator_actor(
+/// `/api/dashboard` routes admit only Deployment Administrators: the bearer token or a browser
+/// session holding a Deployment Administrator grant.
+fn deployment_administrator_actor(
 	origin: Option<BrowserOrigin>,
 ) -> crate::apps::identity::models::AdministrationActor {
 	use crate::apps::identity::models::AdministrationActor;
-	origin.map_or(AdministrationActor::OperatorBearer, |origin| {
-		AdministrationActor::Operator {
+	origin.map_or(
+		AdministrationActor::DeploymentAdministratorBearer,
+		|origin| AdministrationActor::DeploymentAdministrator {
 			identity: origin.identity_id,
-		}
-	})
+		},
+	)
 }
 
 impl Registration {
@@ -378,9 +382,10 @@ impl Registration {
 
 pub use crate::apps::identity::serializers::oidc::MappingView;
 pub(crate) use crate::apps::identity::serializers::oidc::{
-	AdminIdentityPage, AdminMapping, AdminMappingPage, AdminOperatorGrant, Approval,
-	ApprovedMapping, BackchannelLogout, CallbackQuery, Configuration, IdentityView, LoginQuery,
-	MappingRevision, OperatorGrantInput, Registration, SessionView,
+	AdminIdentityPage, AdminMapping, AdminMappingPage, Approval, ApprovedMapping,
+	BackchannelLogout, CallbackQuery, Configuration, DeploymentAdministratorGrant,
+	DeploymentAdministratorGrantInput, IdentityView, LoginQuery, MappingRevision, Registration,
+	SessionView,
 };
 
 use http::{HeaderMap, Method};
@@ -401,7 +406,7 @@ impl DashboardSessions {
 		let f = self.runtime.clone();
 		Ok(Configuration {
 			enabled: f.config.dashboard_session().is_some(),
-			desktop_protocol: 1,
+			desktop_protocol: 2,
 			provider: if f.config.gcip.is_some() {
 				"gcip"
 			} else if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
@@ -579,9 +584,11 @@ impl DashboardSessions {
 				.collect(),
 		)
 		.await?;
-		let operator =
-			DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
-				.await?;
+		let deployment_administrator = DashboardDeploymentAdministratorGrant::enabled_for_identity(
+			&mut connection,
+			session.identity_id(),
+		)
+		.await?;
 		let labels = crate::apps::identity::repositories::tenants::labels(
 			&mut connection,
 			mappings
@@ -600,7 +607,7 @@ impl DashboardSessions {
 					external.disabled_at.is_some(),
 				),
 				invitations: f.config.tenancy.invitations,
-				operator,
+				deployment_administrator,
 				mappings: mappings
 					.into_iter()
 					.map(|row| MappingView {
@@ -696,7 +703,7 @@ impl DashboardSessions {
 			id,
 			input,
 			Default::default(),
-			&operator_actor(actor),
+			&deployment_administrator_actor(actor),
 			digest(&random_secret()),
 			self.runtime.config.dashboard_policy(),
 		)
@@ -707,7 +714,7 @@ impl DashboardSessions {
 		actor: Option<BrowserOrigin>,
 		id: Uuid,
 	) -> Result<Registration> {
-		// Bearer Operators may reject requests left from a removed sign-in configuration.
+		// Bearer Deployment Administrators may reject requests left from a removed sign-in configuration.
 		let idle_seconds = self
 			.runtime
 			.config
@@ -717,7 +724,7 @@ impl DashboardSessions {
 		DashboardRegistrationRequest::reject(
 			lease.handle(),
 			id,
-			&operator_actor(actor),
+			&deployment_administrator_actor(actor),
 			idle_seconds,
 		)
 		.await
@@ -728,17 +735,21 @@ impl DashboardSessions {
 		id: Uuid,
 	) -> Result<IdentityView> {
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardIdentity::erase_display(lease.handle(), id, operator_actor(actor).decision_actor())
-			.await
+		DashboardIdentity::erase_display(
+			lease.handle(),
+			id,
+			deployment_administrator_actor(actor).decision_actor(),
+		)
+		.await
 	}
-	pub(crate) async fn admin_operator_grant(
+	pub(crate) async fn deployment_administrator_grant(
 		&self,
 		id: Uuid,
-		input: OperatorGrantInput,
-	) -> Result<AdminOperatorGrant> {
+		input: DeploymentAdministratorGrantInput,
+	) -> Result<DeploymentAdministratorGrant> {
 		validate(&input)?;
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardOperatorGrant::change_enabled(
+		DashboardDeploymentAdministratorGrant::change_enabled(
 			lease.handle(),
 			id,
 			input.enabled,
@@ -746,9 +757,11 @@ impl DashboardSessions {
 		)
 		.await
 	}
-	pub(crate) async fn admin_operator_grants(&self) -> Result<Vec<AdminOperatorGrant>> {
+	pub(crate) async fn deployment_administrator_grants(
+		&self,
+	) -> Result<Vec<DeploymentAdministratorGrant>> {
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardOperatorGrant::list(&mut lease.handle()).await
+		DashboardDeploymentAdministratorGrant::list(&mut lease.handle()).await
 	}
 	pub(crate) async fn admin_disable_mapping(
 		&self,
@@ -762,7 +775,7 @@ impl DashboardSessions {
 			lease.handle(),
 			id,
 			input.expected_revision,
-			&operator_actor(actor),
+			&deployment_administrator_actor(actor),
 		)
 		.await?;
 		Ok(http::StatusCode::NO_CONTENT)
@@ -868,7 +881,7 @@ async fn exchange_identity(
 }
 
 impl BrowserOrigin {
-	pub(crate) async fn require_operator(
+	pub(crate) async fn require_deployment_administrator(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		lock: bool,
@@ -876,7 +889,7 @@ impl BrowserOrigin {
 		if self.mapping_id.is_some() {
 			return Err(Error::Forbidden);
 		}
-		// Operator-grant writes lock the identity before the grant. Retain that
+		// Deployment Administrator grant writes lock the identity before the grant. Retain that
 		// order, followed by the session, through the Marketplace commit.
 		let mut query = Query::select();
 		query
@@ -898,7 +911,7 @@ impl BrowserOrigin {
 		let mut query = Query::select();
 		query
 			.column(Alias::new("enabled"))
-			.from(Alias::new("dashboard_operator_grants"))
+			.from(Alias::new("dashboard_deployment_administrator_grants"))
 			.and_where(
 				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("identity_id")))
 					.eq(Expr::cust("$1")),

@@ -27,7 +27,7 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 		});
 		crate::endpoint::tenant_root(&app.runtime, "acme").await;
 		assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme",
 					&json!({"expected_revision":0,"bundle":policy}),
@@ -38,7 +38,7 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 			200,
 		);
 		let issued = assert_json(
-			app.operator
+			app.deployment_administrator
 				.post(
 					"/api/authorization/acme/credentials",
 					&json!({"subject":"alice"}),

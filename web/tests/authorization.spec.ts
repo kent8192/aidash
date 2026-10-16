@@ -126,7 +126,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     .poll(async () => (await api(`${base}/decisions`)).length)
     .toBe(1);
 
-  // A concurrent operator update must not overwrite the editor's pinned revision.
+  // A concurrent Deployment Administrator update must not overwrite the editor's pinned revision.
   await page
     .getByRole("button", { name: "権限ポリシーを編集", exact: true })
     .click();
@@ -411,7 +411,7 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
   await expect(
     dialog.getByLabel("Source node", { exact: true }),
   ).toBeDisabled();
-  // An operator on another session advances the revision while this form is open.
+  // A Deployment Administrator on another session advances the revision while this form is open.
   const current = (await api(`${base}/peer-mappings`))[0];
   const input = {
     source_node: current.source_node,

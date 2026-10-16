@@ -22,7 +22,7 @@ pub async fn tenant_root_in(pool: &sqlx::PgPool, name: &str) {
 				.expr(Expr::cust("$1"))
 				.expr(Expr::cust("false"))
 				.expr(Expr::cust("clock_timestamp()"))
-				.expr(Expr::cust("'operator'"))
+				.expr(Expr::cust("'deployment_administrator'"))
 				.to_owned(),
 		)
 		.on_conflict(

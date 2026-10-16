@@ -1,4 +1,4 @@
-//! Node identity, operator access, and background execution settings.
+//! Node identity, Deployment Administrator access, and background execution settings.
 use crate::config::{validate_endpoint, validate_node_id};
 use reinhardt::conf::settings::fragment::SettingsValidation;
 use reinhardt::conf::settings::profile::Profile;

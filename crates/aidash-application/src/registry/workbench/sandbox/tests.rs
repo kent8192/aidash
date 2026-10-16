@@ -229,7 +229,7 @@ async fn tenant_limits_require_current_draft_test_authority(#[case] allowed: boo
 #[tokio::test]
 async fn invalid_or_unauthorized_limit_changes_precede_any_transaction(#[case] boundary: &str) {
 	let mut r = Repository::new();
-	r.principal = Principal::Operator;
+	r.principal = Principal::DeploymentAdministrator;
 	let mut input = limits();
 	match boundary {
 		"subject" => {
@@ -252,9 +252,9 @@ async fn invalid_or_unauthorized_limit_changes_precede_any_transaction(#[case] b
 }
 #[rstest]
 #[tokio::test]
-async fn operator_limit_changes_commit_the_exact_validated_configuration() {
+async fn deployment_administrator_limit_changes_commit_the_exact_validated_configuration() {
 	let mut r = Repository::new();
-	r.principal = Principal::Operator;
+	r.principal = Principal::DeploymentAdministrator;
 	let result = set_limits(&r, "tenant".into(), limits()).await.unwrap();
 	assert_eq!(
 		serde_json::to_value(result).unwrap(),

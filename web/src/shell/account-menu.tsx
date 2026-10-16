@@ -25,7 +25,7 @@ export type Account = {
     subject: string;
     personal?: boolean;
   }[];
-  operatorAllowed: boolean;
+  deploymentAdministratorAllowed: boolean;
   /** Whether the Tenancy Rules let this identity create Tenants now. */
   tenantCreation: boolean;
   tenantCreated: (created: CreatedTenant) => void;
@@ -104,8 +104,8 @@ export function AccountPanel({ account }: { account: Account }) {
         <span className="min-w-0">
           <span className="block truncate font-medium">{account.name}</span>
           <span className="block truncate font-mono text-[11px] text-faint">
-            {account.context === "operator"
-              ? auth.operator
+            {account.context === "deployment_administrator"
+              ? auth.deploymentAdministrator
               : account.mappings
                   .filter(
                     (mapping) => account.context === `mapping:${mapping.id}`,
@@ -130,8 +130,10 @@ export function AccountPanel({ account }: { account: Account }) {
                 {mapping.label ?? mapping.tenant} / {mapping.subject}
               </option>
             ))}
-            {account.operatorAllowed && (
-              <option value="operator">{auth.operator}</option>
+            {account.deploymentAdministratorAllowed && (
+              <option value="deployment_administrator">
+                {auth.deploymentAdministrator}
+              </option>
             )}
           </NativeSelect>
         </label>

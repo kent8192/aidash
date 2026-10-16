@@ -26,7 +26,7 @@ pub struct EndpointFixture {
 	#[allow(dead_code)] // Stream revocation tests control polling through the same route context.
 	pub context: Arc<InjectionContext>,
 	pub router: Arc<reinhardt::ServerRouter>,
-	pub operator: Arc<APIClient>,
+	pub deployment_administrator: Arc<APIClient>,
 	pub anonymous: Arc<APIClient>,
 	pub runtime: Federation,
 	pub server: Arc<TestServerGuard>,
@@ -103,13 +103,13 @@ fn endpoint_server(endpoint_runtime: RuntimeFuture) -> ServerFuture {
 
 #[fixture]
 fn endpoint_client(
-	#[default(false)] operator: bool,
+	#[default(false)] deployment_administrator: bool,
 	endpoint_runtime: RuntimeFuture,
 	endpoint_server: ServerFuture,
 ) -> ClientFuture {
 	async move {
 		let client = api_client_from_url(&endpoint_server.await.url);
-		if operator {
+		if deployment_administrator {
 			client
 				.set_header(
 					"Authorization",
@@ -139,7 +139,7 @@ pub fn endpoint(
 	server: ServerFuture,
 	#[from(endpoint_client)]
 	#[with(true, runtime.clone(), server.clone())]
-	operator: ClientFuture,
+	deployment_administrator: ClientFuture,
 	#[from(endpoint_client)]
 	#[with(false, runtime.clone(), server.clone())]
 	anonymous: ClientFuture,
@@ -149,7 +149,7 @@ pub fn endpoint(
 		EndpointFixture {
 			context: runtime.context.clone(),
 			router: _router.await,
-			operator: operator.await,
+			deployment_administrator: deployment_administrator.await,
 			anonymous: anonymous.await,
 			runtime: runtime.runtime.clone(),
 			server: server.await,
@@ -205,7 +205,7 @@ pub async fn subject(
 	let body = json!({"expected_revision":0,"bundle":{"tenant":"endpoint","subjects":{name:{"kind":"user"}},"policies":[{"id":"test-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}});
 	assert_json(
 		fixture
-			.operator
+			.deployment_administrator
 			.post("/api/authorization/endpoint", &body, "json")
 			.await
 			.unwrap(),
@@ -213,7 +213,7 @@ pub async fn subject(
 	);
 	let issued = assert_json(
 		fixture
-			.operator
+			.deployment_administrator
 			.post(
 				"/api/authorization/endpoint/credentials",
 				&json!({"subject":name}),

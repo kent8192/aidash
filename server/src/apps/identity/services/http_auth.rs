@@ -14,7 +14,7 @@ pub(crate) fn peer_node(headers: &HeaderMap) -> Result<&str> {
 }
 pub(crate) fn scoped(f: &Federation, actor: Actor) -> Option<Workspaces> {
 	match actor {
-		Actor::Operator => None,
+		Actor::DeploymentAdministrator => None,
 		Actor::Subject(identity) => Some(Workspaces {
 			store: f.store.clone(),
 			identity,
@@ -29,7 +29,7 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
 		.split_once(' ')?;
 	scheme.eq_ignore_ascii_case("Bearer").then_some(token)
 }
-pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
+pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &str) -> bool {
 	if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
 		return true;
 	}
@@ -78,7 +78,7 @@ pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 		) {
 		return true;
 	}
-	// Browser operator mode administers the installation and may stop work.
+	// Browser Deployment Administrator mode administers the installation and may stop work.
 	// It cannot silently become a tenant subject for new work or resumption.
 	path.starts_with("/dashboard/")
 		|| path.starts_with("/authorization/")

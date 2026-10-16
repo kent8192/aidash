@@ -76,7 +76,7 @@ test("transaction composer keeps the coordinator and uses peer references separa
   await page.route("**/api/state", (route) =>
     route.fulfill({
       json: {
-        access: { kind: "operator" },
+        access: { kind: "deployment_administrator" },
         node: {
           id: "aidash://home",
           endpoint: "http://localhost",

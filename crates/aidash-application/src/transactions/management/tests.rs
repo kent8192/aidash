@@ -142,8 +142,8 @@ impl TrustScope for TrustMutation {
 }
 #[async_trait]
 impl ManagementRepository for Repository {
-	async fn submit_operator(&self, manifest: &Manifest) -> Result<Status> {
-		self.event("submit:operator")?;
+	async fn submit_deployment_administrator(&self, manifest: &Manifest) -> Result<Status> {
+		self.event("submit:deployment_administrator")?;
 		Ok(status(manifest.id))
 	}
 	async fn submit_subject(
@@ -163,7 +163,7 @@ impl ManagementRepository for Repository {
 		self.event(if identity.is_some() {
 			"candidates:subject"
 		} else {
-			"candidates:operator"
+			"candidates:deployment_administrator"
 		})?;
 		let mut state = self.state.lock().unwrap();
 		state.cursors.push(cursor);
@@ -235,8 +235,8 @@ impl ManagementRepository for Repository {
 			}],
 		))
 	}
-	async fn abort_operator(&self, id: Uuid) -> Result<Status> {
-		self.event("abort:operator")?;
+	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status> {
+		self.event("abort:deployment_administrator")?;
 		let mut row = status(id);
 		row.decision = Some("ABORT".into());
 		Ok(row)
@@ -282,7 +282,7 @@ impl ManagementRepository for Repository {
 }
 
 #[rstest]
-#[case::operator(false, "submit:operator")]
+#[case::deployment_administrator(false, "submit:deployment_administrator")]
 #[case::subject(true, "submit:subject")]
 #[tokio::test]
 async fn authenticated_authority_selects_the_shared_submission_workflow(
@@ -384,7 +384,9 @@ async fn keyset_paging_fills_200_visible_rows_in_order_with_eight_live_checks(
 
 #[rstest]
 #[tokio::test]
-async fn operator_list_uses_durable_rows_without_subject_disclosure(repository: Repository) {
+async fn deployment_administrator_list_uses_durable_rows_without_subject_disclosure(
+	repository: Repository,
+) {
 	repository
 		.state
 		.lock()
@@ -392,7 +394,7 @@ async fn operator_list_uses_durable_rows_without_subject_disclosure(repository: 
 		.denials
 		.insert(Uuid::from_u128(1), "forbidden");
 	assert_eq!(list(&repository, None).await.unwrap().len(), 1);
-	assert_eq!(repository.calls(), ["candidates:operator"]);
+	assert_eq!(repository.calls(), ["candidates:deployment_administrator"]);
 }
 
 #[rstest]
@@ -441,7 +443,7 @@ async fn authorized_details_preserve_vote_and_audit_facts(
 
 #[rstest]
 #[case::subject(true, & ["owner", "status", "transaction.abort", "status"])]
-#[case::operator(false, & ["abort:operator"])]
+#[case::deployment_administrator(false, & ["abort:deployment_administrator"])]
 #[tokio::test]
 async fn abort_returns_the_new_decision_after_its_existing_authority_workflow(
 	repository: Repository,

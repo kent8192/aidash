@@ -30,7 +30,7 @@ pub(crate) struct TenantRecord {
 	pub(crate) label: Option<String>,
 	pub(crate) personal: bool,
 	pub(crate) created_at: DateTime<Utc>,
-	/// `identity` for a Tenant Creator, `operator` for a Deployment Administrator.
+	/// `identity` for a Tenant Creator, `deployment_administrator` for a Deployment Administrator.
 	pub(crate) created_by_kind: String,
 }
 

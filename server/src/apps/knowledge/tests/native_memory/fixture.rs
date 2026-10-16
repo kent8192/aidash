@@ -231,7 +231,7 @@ pub(super) async fn setup_endpoint_policy(
 				.label(Some("acme".to_owned()))
 				.personal(false)
 				.created_at(chrono::Utc::now())
-				.created_by_kind("operator".to_owned())
+				.created_by_kind("deployment_administrator".to_owned())
 				.created_by_identity(None)
 				.finish(),
 		)
@@ -254,7 +254,7 @@ pub(super) async fn setup_endpoint_policy(
 			&AuthorizationWorkspace::build()
 				.workspace_id(workspace.id)
 				.tenant("acme")
-				.owner_subject("operator")
+				.owner_subject("deployment_administrator")
 				.finish(),
 		)
 		.await

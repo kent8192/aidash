@@ -14,7 +14,7 @@ async function signedIn(page: Page, session: Record<string, unknown> = {}) {
     route.fulfill({
       json: {
         id: "tenancy-session",
-        operator: false,
+        deployment_administrator: false,
         mappings: [],
         tenant_creation: false,
         invitations: true,

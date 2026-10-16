@@ -14,7 +14,7 @@ async fn project(app: &common::TestApplication, viewer: Value, options: Value) -
 	let mut input = json!({
 		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
 		"kinds":["workspace"],"relations":[],"hours":0,"limit":80,"cursor":null,
-		"target_tenant":if viewer["kind"] == "operator" { Some("acme") } else { None },
+		"target_tenant":if viewer["kind"] == "deployment_administrator" { Some("acme") } else { None },
 	});
 	input
 		.as_object_mut()
@@ -420,26 +420,26 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	}
 	.unwrap();
 	assert_eq!(local_workspace_count, 0);
-	let operator = Uuid::new_v4();
+	let deployment_administrator = Uuid::new_v4();
 	let (status, grant) = request(
 		&app,
 		&f.config.api_token,
 		"POST",
-		"/api/authorization/acme/graph-operator-grants",
+		"/api/authorization/acme/peer-graph-grants",
 		json!({
-			"source_node":SOURCE,"source_operator":operator,"enabled":true,"expected_revision":0,
+			"source_node":SOURCE,"source_identity":deployment_administrator,"enabled":true,"expected_revision":0,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{grant}");
-	let (status, operator_page) = project(
+	let (status, deployment_administrator_page) = project(
 		&app,
-		json!({"kind":"operator","id":operator}),
+		json!({"kind":"deployment_administrator","id":deployment_administrator}),
 		options.clone(),
 	)
 	.await;
-	assert_eq!(status, 200, "{operator_page}");
-	let mut actual = run_ids(&operator_page);
+	assert_eq!(status, 200, "{deployment_administrator_page}");
+	let mut actual = run_ids(&deployment_administrator_page);
 	actual.sort();
 	assert_eq!(actual, expected);
 	let mut paged = options.clone();

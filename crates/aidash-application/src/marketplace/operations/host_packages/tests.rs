@@ -1,6 +1,6 @@
 use super::super::{
 	approval_set::{ApprovalSelection, ApprovalSet, PendingSelection, approve_and_activate},
-	tests::OperatorFixture,
+	tests::DeploymentAdministratorFixture,
 };
 use super::*;
 use crate::ports::{Credentials, registry::CoreToolCatalog};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 struct CredentialsUnused;
 impl Credentials for CredentialsUnused {
 	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("operator declarations do not load secrets")
+		panic!("Node declarations do not load secrets")
 	}
 }
 struct Providers {
@@ -59,7 +59,7 @@ fn input(groups: &[&str]) -> HostPackages {
 
 #[tokio::test]
 async fn host_group_staging_pins_complete_rewritten_lifecycle_without_any_approval() {
-	let mut scope = OperatorFixture::new();
+	let mut scope = DeploymentAdministratorFixture::new();
 	let validation = validation(true);
 	let result = provision(
 		&mut scope,
@@ -127,7 +127,7 @@ async fn host_group_staging_pins_complete_rewritten_lifecycle_without_any_approv
 }
 #[tokio::test]
 async fn unavailable_runner_creates_no_sandbox_revision_and_retry_never_falls_back() {
-	let mut scope = OperatorFixture::new();
+	let mut scope = DeploymentAdministratorFixture::new();
 	let validation = validation(false);
 	let request = input(&["shell", "python", "task_assign"]);
 	let result = provision(
@@ -175,12 +175,13 @@ fn validation_for_retry() -> DefinitionValidation {
 	validation(true)
 }
 #[tokio::test]
-async fn untrusted_operator_spelling_and_stale_source_bytes_fail_before_persistence() {
+async fn untrusted_deployment_administrator_spelling_and_stale_source_bytes_fail_before_persistence()
+ {
 	let validation = validation(true);
-	let mut scope = OperatorFixture::new();
+	let mut scope = DeploymentAdministratorFixture::new();
 	scope.principal = aidash_domain::identity::Principal::Subject {
-		tenant: "operator".into(),
-		subject: "operator".into(),
+		tenant: "deployment_administrator".into(),
+		subject: "deployment_administrator".into(),
 	};
 	assert!(matches!(
 		provision(
@@ -194,7 +195,7 @@ async fn untrusted_operator_spelling_and_stale_source_bytes_fail_before_persiste
 		Err(Error::Forbidden)
 	));
 	assert!(scope.inner.calls.is_empty());
-	scope.principal = aidash_domain::identity::Principal::Operator;
+	scope.principal = aidash_domain::identity::Principal::DeploymentAdministrator;
 	let request = input(&["shell"]);
 	let staged = provision(
 		&mut scope,

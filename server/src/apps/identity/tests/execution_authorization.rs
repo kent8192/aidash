@@ -24,13 +24,13 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let operator = &f.config.api_token;
+	let deployment_administrator = &f.config.api_token;
 	let agent_subject = qualified_agent(&f.config.node_id, "skilled", "1.0.0");
 	policy["subjects"][&agent_subject] = json!({"kind":"agent"});
 	assert_eq!(
 		request(
 			&app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
@@ -52,11 +52,18 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
-		let (status, body) = request(&app, operator, "POST", "/api/registry", entry).await;
+		let (status, body) = request(
+			&app,
+			deployment_administrator,
+			"POST",
+			"/api/registry",
+			entry,
+		)
+		.await;
 		assert_eq!(status, 200, "registry: {body}");
 		let (status, body) = request(
 			&app,
-			operator,
+			deployment_administrator,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -994,7 +1001,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		credential.to_string(),
 		fresh["credential"]["id"].as_str().unwrap()
 	);
-	// Operator cancellation is cleanup and must remain possible after every
+	// Deployment Administrator cancellation is cleanup and must remain possible after every
 	// source credential has been revoked; it must never invoke the provider.
 	assert_eq!(
 		request(
@@ -1164,12 +1171,12 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	// still persist its result and release the lease using its separate pool.
 	for _ in 0..11 {
 		let app = app.clone();
-		let operator = f.config.api_token.clone();
+		let deployment_administrator = f.config.api_token.clone();
 		let policy = policy.clone();
 		replacements.spawn(async move {
 			request(
 				&app,
-				&operator,
+				&deployment_administrator,
 				"POST",
 				"/api/authorization/acme",
 				json!({"expected_revision":1,"bundle":policy}),
@@ -1179,8 +1186,17 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	}
 	let revoke = tokio::spawn({
 		let app = app.clone();
-		let operator = f.config.api_token.clone();
-		async move { request(&app, &operator, "POST", &revoke_path, json!({})).await }
+		let deployment_administrator = f.config.api_token.clone();
+		async move {
+			request(
+				&app,
+				&deployment_administrator,
+				"POST",
+				&revoke_path,
+				json!({}),
+			)
+			.await
+		}
 	});
 	tokio::time::timeout(Duration::from_secs(5),async {
         loop {
@@ -1605,7 +1621,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		.unwrap();
 	// Act
 	let error = authorization
-		.set_catalog("acme", &reference, 1, false, "operator")
+		.set_catalog("acme", &reference, 1, false, "deployment_administrator")
 		.await
 		.unwrap_err();
 	// Assert: the original database constraint, not a synthetic application
@@ -1638,7 +1654,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	assert_eq!(
 		history,
 		vec![
-			(1, true, "operator".into()),
+			(1, true, "deployment_administrator".into()),
 			(2, false, "collision-fixture".into())
 		]
 	);
@@ -1660,7 +1676,13 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		1
 	);
 	let binding = authorization
-		.set_catalog("acme", &reference, 1, false, "operator-retry")
+		.set_catalog(
+			"acme",
+			&reference,
+			1,
+			false,
+			"deployment-administrator-retry",
+		)
 		.await
 		.unwrap();
 	assert_eq!(binding.revision, 2);
@@ -1672,8 +1694,8 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	assert_eq!(
 		history,
 		vec![
-			(1, true, "operator".into()),
-			(2, false, "operator-retry".into())
+			(1, true, "deployment_administrator".into()),
+			(2, false, "deployment-administrator-retry".into())
 		]
 	);
 	cleanup(f, &url, &schema).await;

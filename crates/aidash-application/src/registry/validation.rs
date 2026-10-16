@@ -36,8 +36,8 @@ impl DefinitionValidation {
 		self.provider_credentials_enabled = configured;
 		self
 	}
-	/// Plan Connections are enabled only on Self-hosted Deployments whose
-	/// Operator turned them on (ADR 0007).
+	/// Plan Connections are enabled only on Self-hosted Deployments that
+	/// turned them on in their settings (ADR 0007).
 	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
 		self.plan_connections_enabled = enabled;
 		self

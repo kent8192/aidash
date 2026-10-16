@@ -105,7 +105,7 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	.await;
 	assert_eq!(status, 403, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
-	// The operator route still performs normal deadline validation.
+	// The Deployment Administrator route still performs normal deadline validation.
 	let (status, body) = common::request(
 		&app_a,
 		&a.f.config.api_token,
@@ -140,7 +140,7 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	.await;
 	assert_eq!(
 		retry, 202,
-		"the operator can reuse the corrected ID: {body}"
+		"the Deployment Administrator can reuse the corrected ID: {body}"
 	);
 	a.cleanup().await;
 	b.cleanup().await;

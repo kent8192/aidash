@@ -26,7 +26,7 @@ fn token(claims: &Value) -> String {
 }
 fn claims() -> Value {
 	let now = Utc::now().timestamp();
-	json!({"iss":"https://securetoken.google.com/fixture-project", "aud":"fixture-project", "sub":"person", "iat":now, "exp":now+3600, "auth_time":now, "firebase":{"tenant":"pool-a", "sign_in_provider":"password"}, "email_verified":true, "email":"person@example.test", "name":"Person", "operator":true})
+	json!({"iss":"https://securetoken.google.com/fixture-project", "aud":"fixture-project", "sub":"person", "iat":now, "exp":now+3600, "auth_time":now, "firebase":{"tenant":"pool-a", "sign_in_provider":"password"}, "email_verified":true, "email":"person@example.test", "name":"Person", "deployment_administrator":true})
 }
 #[rstest]
 #[case::issuer("iss", json!("https://issuer.example.test"))]

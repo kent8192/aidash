@@ -22,7 +22,7 @@ pub struct TenantInvitation {
 	pub created_at: DateTime<Utc>,
 	#[field]
 	pub expires_at: DateTime<Utc>,
-	/// `operator` or `tenant_administrator`.
+	/// `deployment_administrator` or `tenant_administrator`.
 	#[field(field_type = "text")]
 	pub issued_by_kind: String,
 	#[field(null = true)]

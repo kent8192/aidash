@@ -27,9 +27,9 @@ function clearResource(mutation: TransactionMutation): TransactionMutation {
 export function TransactionComposer({
   value,
   change,
-  operator = true,
+  deploymentAdministrator = true,
 }: {
-  operator?: boolean;
+  deploymentAdministrator?: boolean;
   value: TransactionManifest;
   change: (value: TransactionManifest) => void;
 }) {
@@ -95,7 +95,7 @@ export function TransactionComposer({
           legend={`${t("transactionParticipant")} ${index + 1}`}
         >
           <Field label={t("node")}>
-            {!operator && index > 0 ? (
+            {!deploymentAdministrator && index > 0 ? (
               <Input
                 required
                 placeholder="aidash://remote-node"
@@ -464,7 +464,7 @@ export function TransactionComposer({
         type="button"
         disabled={
           value.participants.length >=
-          (operator ? Math.min(nodes.length, 16) : 16)
+          (deploymentAdministrator ? Math.min(nodes.length, 16) : 16)
         }
         onClick={() =>
           change({

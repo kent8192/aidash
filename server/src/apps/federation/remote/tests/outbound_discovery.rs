@@ -31,8 +31,14 @@ async fn discover(client: &APIClient, search: Value) -> Value {
 		200,
 	)
 }
-async fn operator(app: &EndpointFixture, path: &str, body: Value) -> Value {
-	assert_json(app.operator.post(path, &body, "json").await.unwrap(), 200)
+async fn deployment_administrator(app: &EndpointFixture, path: &str, body: Value) -> Value {
+	assert_json(
+		app.deployment_administrator
+			.post(path, &body, "json")
+			.await
+			.unwrap(),
+		200,
+	)
 }
 
 #[rstest]
@@ -57,13 +63,13 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		result["errors"][0]["error"],
 		"authorized peer discovery unavailable"
 	);
-	let issued = operator(
+	let issued = deployment_administrator(
 		b,
 		"/api/authorization/acme/credentials",
 		json!({"subject":"alice"}),
 	)
 	.await;
-	operator(
+	deployment_administrator(
 		b,
 		"/api/authorization/acme/peer-mappings",
 		json!({
@@ -80,7 +86,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
         "id":"hide-remote","effect":"deny","subjects":{"any":true},"actions":["registry.read"],
         "resources":{"kinds":["agent"],"ids":[qualified_agent(&b.runtime.config.node_id,"research","1.0.0")]},
     }));
-	operator(
+	deployment_administrator(
 		a,
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy}),
@@ -120,7 +126,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		"id":"no-disclosure","effect":"deny","subjects":{"any":true},
 		"actions":["federation.discover"],"resources":{"kinds":["node"]},
 	}));
-	operator(
+	deployment_administrator(
 		a,
 		"/api/authorization/acme",
 		json!({"expected_revision":2,"bundle":policy}),
@@ -133,13 +139,13 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		"denied discovery must not disclose tenant, subject or query"
 	);
 	policy["policies"].as_array_mut().unwrap().pop();
-	operator(
+	deployment_administrator(
 		a,
 		"/api/authorization/acme",
 		json!({"expected_revision":3,"bundle":policy}),
 	)
 	.await;
-	operator(
+	deployment_administrator(
 		b,
 		"/api/authorization/acme/catalog",
 		json!({
@@ -150,7 +156,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 	let result = discover(subject, json!({})).await;
 	assert_eq!(result["agents"].as_array().unwrap().len(), 1);
 	assert_eq!(result["errors"], json!([]));
-	operator(
+	deployment_administrator(
 		b,
 		&format!(
 			"/api/authorization/acme/credentials/{}/revoke",
@@ -200,7 +206,7 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 		"/api/authorization/acme/credentials/{}/revoke",
 		credential.id
 	);
-	let revoker = app.operator.post(&path, &input, "json");
+	let revoker = app.deployment_administrator.post(&path, &input, "json");
 	tokio::pin!(revoker);
 	// Assert
 	assert!(

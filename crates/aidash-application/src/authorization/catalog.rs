@@ -102,7 +102,7 @@ pub async fn set_catalog(
 	enabled: bool,
 	actor: &str,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
-	super::require_operator(scope.principal())?;
+	super::require_deployment_administrator(scope.principal())?;
 	aidash_domain::identity::catalog::validate_revision(expected_revision)?;
 	scope.load_tenant(tenant).await?;
 	let definition = scope.definition(reference).await?;
@@ -116,7 +116,7 @@ pub async fn administration(
 	scope: &mut dyn crate::ports::catalog::CatalogAdministrationRead,
 	tenant: &str,
 ) -> Result<Vec<aidash_domain::identity::catalog::Binding>> {
-	super::require_operator(scope.principal())?;
+	super::require_deployment_administrator(scope.principal())?;
 	scope.bindings(tenant).await
 }
 

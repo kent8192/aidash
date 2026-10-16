@@ -36,7 +36,7 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::Check {
 					name: "tenants_root".into(),
-					expression: "length(name) BETWEEN 1 AND 256 AND created_by_kind IN ('identity','operator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND (label IS NULL OR length(label) BETWEEN 1 AND 256)".into(),
+					expression: "length(name) BETWEEN 1 AND 256 AND created_by_kind IN ('identity','deployment_administrator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND (label IS NULL OR length(label) BETWEEN 1 AND 256)".into(),
 				},
 			],
 			without_rowid: None,
@@ -118,7 +118,7 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::Check {
 					name: "tenant_invitations_state".into(),
-					expression: "octet_length(token_hash) = 32 AND jsonb_typeof(groups) = 'array' AND expires_at > created_at AND issued_by_kind IN ('operator','tenant_administrator') AND (redeemed_at IS NULL) = (redeemed_by IS NULL)".into(),
+					expression: "octet_length(token_hash) = 32 AND jsonb_typeof(groups) = 'array' AND expires_at > created_at AND issued_by_kind IN ('deployment_administrator','tenant_administrator') AND (redeemed_at IS NULL) = (redeemed_by IS NULL)".into(),
 				},
 			],
 			without_rowid: None,

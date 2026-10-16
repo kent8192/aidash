@@ -1,4 +1,4 @@
-// The Credential Broker image digest is reviewed code, not operator configuration
+// The Credential Broker image digest is reviewed code, not deployment configuration
 // (#151): changing the broker means changing broker-image.json in a pull request.
 // Update it with the procedure in infra/gcp/README.md; null means no image has been
 // approved, so no broker can be enabled. The credential_brokers type has no image

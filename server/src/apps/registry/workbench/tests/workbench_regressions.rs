@@ -90,7 +90,7 @@ impl Workbench {
 		panic!("test session did not finish: {started}");
 	}
 
-	async fn operator_finished(&self, started: &Value) -> Value {
+	async fn deployment_administrator_finished(&self, started: &Value) -> Value {
 		let mut finished = Value::Null;
 		for _ in 0..200 {
 			let (status, sessions) = request(
@@ -829,7 +829,7 @@ async fn pre_dispatch_revocation_is_denied_without_an_unknown_external_outcome(
 		_ => unreachable!(),
 	}
 	wb.model_gate.release.notify_one();
-	let finished = wb.operator_finished(&started).await;
+	let finished = wb.deployment_administrator_finished(&started).await;
 	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 0);
 	assert_eq!(
 		finished["status"], "blocked",
@@ -849,7 +849,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 	let (wb, started) = model_waiting_for_real_tool;
 	wb.effect_reply_invalid.store(true, Ordering::SeqCst);
 	wb.model_gate.release.notify_one();
-	let finished = wb.operator_finished(&started).await;
+	let finished = wb.deployment_administrator_finished(&started).await;
 	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 1);
 	assert_eq!(finished["status"], "outcome_unknown", "session: {finished}");
 	assert_eq!(finished["tool_calls"][0]["outcome"], "outcome_unknown");
@@ -1300,10 +1300,10 @@ async fn visible_draft_backlog(#[future(awt)] workbench: Workbench) -> Workbench
 #[tokio::test]
 async fn draft_pages_reach_older_visible_rows_without_duplicates(
 	#[future(awt)] visible_draft_backlog: Workbench,
-	#[case] operator: bool,
+	#[case] deployment_administrator: bool,
 ) {
 	let wb = visible_draft_backlog;
-	let token = if operator {
+	let token = if deployment_administrator {
 		&wb.f.config.api_token
 	} else {
 		&wb.token
@@ -1500,7 +1500,7 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 		Ok(result) => result.unwrap(),
 		Err(_) => mutation.await.unwrap(),
 	};
-	let finished = wb.operator_finished(&started).await;
+	let finished = wb.deployment_administrator_finished(&started).await;
 	assert!(
 		!finished_early,
 		"{change} committed across the real dispatch lease: {result:?}"

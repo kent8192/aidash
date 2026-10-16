@@ -30,7 +30,7 @@ async fn graph_custom(
 		"kinds":["workspace","goal","task","agent","tool","model"],
 		"relations":["goal","contains","tool","model"],
 		"hours":0,"limit":80,"cursor":null,
-		"target_tenant":if viewer["kind"] == "operator" { Some("acme") } else { None },
+		"target_tenant":if viewer["kind"] == "deployment_administrator" { Some("acme") } else { None },
 	});
 	payload
 		.as_object_mut()
@@ -558,12 +558,12 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["kind"] == "goal")
 	);
-	let operator = Uuid::new_v4();
+	let deployment_administrator = Uuid::new_v4();
 	assert_eq!(
 		graph(
 			&app,
 			&peer_token,
-			json!({"kind":"operator","id":operator}),
+			json!({"kind":"deployment_administrator","id":deployment_administrator}),
 			None,
 			80
 		)
@@ -575,24 +575,24 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		&app,
 		&f.config.api_token,
 		"POST",
-		"/api/authorization/acme/graph-operator-grants",
+		"/api/authorization/acme/peer-graph-grants",
 		json!({
-			"source_node":SOURCE,"source_operator":operator,"enabled":true,"expected_revision":0,
+			"source_node":SOURCE,"source_identity":deployment_administrator,"enabled":true,"expected_revision":0,
 		}),
 	)
 	.await;
 	assert_eq!(status, 200, "{grant}");
-	let (status, operator_page) = graph(
+	let (status, deployment_administrator_page) = graph(
 		&app,
 		&peer_token,
-		json!({"kind":"operator","id":operator}),
+		json!({"kind":"deployment_administrator","id":deployment_administrator}),
 		None,
 		80,
 	)
 	.await;
-	assert_eq!(status, 200, "{operator_page}");
+	assert_eq!(status, 200, "{deployment_administrator_page}");
 	assert!(
-		operator_page["nodes"]
+		deployment_administrator_page["nodes"]
 			.as_array()
 			.unwrap()
 			.iter()
@@ -619,7 +619,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		graph(
 			&app,
 			&peer_token,
-			json!({"kind":"operator","id":operator}),
+			json!({"kind":"deployment_administrator","id":deployment_administrator}),
 			None,
 			80
 		)
@@ -726,9 +726,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		&app,
 		&f.config.api_token,
 		"POST",
-		"/api/authorization/acme/graph-operator-grants",
+		"/api/authorization/acme/peer-graph-grants",
 		json!({
-			"source_node":SOURCE,"source_operator":operator,"enabled":false,"expected_revision":1,
+			"source_node":SOURCE,"source_identity":deployment_administrator,"enabled":false,"expected_revision":1,
 		}),
 	)
 	.await;
@@ -755,7 +755,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		graph(
 			&app,
 			&peer_token,
-			json!({"kind":"operator","id":operator}),
+			json!({"kind":"deployment_administrator","id":deployment_administrator}),
 			None,
 			80
 		)

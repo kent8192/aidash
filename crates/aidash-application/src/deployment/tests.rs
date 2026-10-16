@@ -38,7 +38,7 @@ async fn subject_authority_is_rejected_before_any_external_observation(#[case] e
 
 #[rstest]
 #[tokio::test]
-async fn operator_observation_preserves_enabled_and_disabled_responses() {
+async fn deployment_administrator_observation_preserves_enabled_and_disabled_responses() {
 	// Arrange
 	let observer = Arc::new(Observer(AtomicUsize::new(0)));
 	let service = DeploymentObservations::new(
@@ -48,8 +48,14 @@ async fn operator_observation_preserves_enabled_and_disabled_responses() {
 	);
 	let disabled = DeploymentObservations::new("".into(), "".into(), None);
 	// Act
-	let active = service.status(&Principal::Operator).await.unwrap();
-	let inactive = disabled.status(&Principal::Operator).await.unwrap();
+	let active = service
+		.status(&Principal::DeploymentAdministrator)
+		.await
+		.unwrap();
+	let inactive = disabled
+		.status(&Principal::DeploymentAdministrator)
+		.await
+		.unwrap();
 	// Assert
 	assert!(active.enabled);
 	assert_eq!(active.namespace.as_deref(), Some("tenant-a"));

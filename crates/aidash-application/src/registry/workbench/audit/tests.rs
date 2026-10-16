@@ -408,7 +408,7 @@ async fn offset_paging_counts_only_visible_sources(
 ) {
 	let mut repo = Repository::new();
 	repo.count = 60;
-	repo.principal = Principal::Operator;
+	repo.principal = Principal::DeploymentAdministrator;
 	repo.catalog_allowed = false;
 	repo.incident_denied = true;
 	let page = read(

@@ -31,7 +31,7 @@ impl Creator {
 	fn kind(self) -> &'static str {
 		match self {
 			Self::Identity(_) => "identity",
-			Self::DeploymentAdministrator(_) => "operator",
+			Self::DeploymentAdministrator(_) => "deployment_administrator",
 		}
 	}
 	fn identity(self) -> Option<Uuid> {
@@ -46,7 +46,7 @@ impl Creator {
 	fn revision_actor(self) -> String {
 		match self {
 			Self::Identity(identity) => format!("oidc:{identity}"),
-			Self::DeploymentAdministrator(_) => "operator".into(),
+			Self::DeploymentAdministrator(_) => "deployment_administrator".into(),
 		}
 	}
 }
@@ -181,9 +181,11 @@ pub(crate) async fn create(
 			identity,
 			mapping: None,
 		},
-		Creator::DeploymentAdministrator(None) => AdministrationActor::OperatorBearer,
+		Creator::DeploymentAdministrator(None) => {
+			AdministrationActor::DeploymentAdministratorBearer
+		}
 		Creator::DeploymentAdministrator(Some(identity)) => {
-			AdministrationActor::Operator { identity }
+			AdministrationActor::DeploymentAdministrator { identity }
 		}
 	};
 	actor

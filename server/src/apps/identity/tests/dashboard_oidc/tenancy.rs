@@ -3,7 +3,7 @@
 use super::*;
 use aidash_domain::identity::tenancy::TenancyRules;
 
-const OPERATOR: &str = "operator-execution-fixture";
+const DEPLOYMENT_ADMINISTRATOR: &str = "deployment-administrator-execution-fixture";
 
 /// One deployment with direct Google sign-in and the given Tenancy Rules.
 struct Deployment {
@@ -108,9 +108,21 @@ impl Deployment {
 		(status, body, headers)
 	}
 
-	async fn as_operator(&self, method: &str, path: &str, body: Value) -> (u16, Value) {
+	async fn as_deployment_administrator(
+		&self,
+		method: &str,
+		path: &str,
+		body: Value,
+	) -> (u16, Value) {
 		let (status, body, _) = self
-			.send(method, path, None, None, Some(OPERATOR), body)
+			.send(
+				method,
+				path,
+				None,
+				None,
+				Some(DEPLOYMENT_ADMINISTRATOR),
+				body,
+			)
 			.await;
 		(status, body)
 	}
@@ -184,7 +196,7 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 	let d = Deployment::new(runtime, TenancyRules::default()).await;
 
 	let (status, created) = d
-		.as_operator("POST", "/api/tenants", json!({"label":"  Research  "}))
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"  Research  "}))
 		.await;
 
 	assert_eq!(status, 201, "{created}");
@@ -193,7 +205,7 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 	assert_eq!(created["label"], "Research");
 	assert!(created["mapping_id"].is_null());
 	let (status, policy) = d
-		.as_operator("GET", &format!("/api/authorization/{name}"), Value::Null)
+		.as_deployment_administrator("GET", &format!("/api/authorization/{name}"), Value::Null)
 		.await;
 	assert_eq!(status, 200, "{policy}");
 	assert_eq!(policy["revision"], 1);
@@ -204,26 +216,28 @@ async fn deployment_administrators_create_tenants_under_assigned_names(
 	assert_eq!(policy["bundle"]["groups"]["members"]["assignable"], true);
 	assert!(policy["bundle"]["subjects"].as_object().unwrap().is_empty());
 	let (status, revisions) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"GET",
 			&format!("/api/authorization/{name}/revisions"),
 			Value::Null,
 		)
 		.await;
 	assert_eq!(status, 200, "{revisions}");
-	assert_eq!(revisions[0]["actor"], "operator");
-	let (status, tenants) = d.as_operator("GET", "/api/tenants", Value::Null).await;
+	assert_eq!(revisions[0]["actor"], "deployment_administrator");
+	let (status, tenants) = d
+		.as_deployment_administrator("GET", "/api/tenants", Value::Null)
+		.await;
 	assert_eq!(status, 200, "{tenants}");
 	assert_eq!(tenants[0]["name"], name);
-	assert_eq!(tenants[0]["created_by_kind"], "operator");
+	assert_eq!(tenants[0]["created_by_kind"], "deployment_administrator");
 	// A second Tenant never takes the first one's name.
 	let (_, second) = d
-		.as_operator("POST", "/api/tenants", json!({"label":"Research"}))
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Research"}))
 		.await;
 	assert_ne!(second["name"], name);
 	for label in ["", "   ", "line\nbreak"] {
 		let (status, _) = d
-			.as_operator("POST", "/api/tenants", json!({"label":label}))
+			.as_deployment_administrator("POST", "/api/tenants", json!({"label":label}))
 			.await;
 		assert_eq!(status, 400, "{label:?}");
 	}
@@ -238,7 +252,7 @@ async fn a_policy_needs_a_root_record_so_tenants_are_never_created_implicitly(
 	let d = Deployment::new(runtime, TenancyRules::default()).await;
 
 	let (status, body) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"POST",
 			"/api/authorization/chosen-name",
 			json!({"expected_revision":0,"bundle":{"tenant":"chosen-name","subjects":{},"policies":[]}}),
@@ -321,7 +335,7 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 			.contains(&json!("invitation.create"))
 	);
 	let (status, revisions) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"GET",
 			&format!("/api/authorization/{tenant}/revisions"),
 			Value::Null,
@@ -331,7 +345,7 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 	assert_eq!(revisions[0]["actor"], format!("oidc:{}", alice.identity));
 	// A Subject Credential never creates a Tenant, even with every action.
 	let (status, issued) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"POST",
 			&format!("/api/authorization/{tenant}/credentials"),
 			json!({"subject":"owner"}),
@@ -413,7 +427,7 @@ async fn concurrent_creations_stop_exactly_at_the_total_limit(
 	);
 	// Deployment Administrators are never limited.
 	let (status, _) = d
-		.as_operator("POST", "/api/tenants", json!({"label":"Ops"}))
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Ops"}))
 		.await;
 	assert_eq!(status, 201);
 	d.finish().await;
@@ -689,7 +703,7 @@ impl Deployment {
 	/// the Deployment Administrator, which may create the subject in any group.
 	async fn admit(&self, tenant: &str, person: &Person, subject: &str, groups: Value) -> String {
 		let (status, invitation) = self
-			.as_operator(
+			.as_deployment_administrator(
 				"POST",
 				&format!("/api/tenants/{tenant}/invitations"),
 				json!({"groups":groups}),
@@ -707,7 +721,7 @@ impl Deployment {
 			.await;
 		assert_eq!(status, 200, "{request}");
 		let (status, approved) = self
-			.as_operator(
+			.as_deployment_administrator(
 				"POST",
 				&format!(
 					"/api/dashboard/registrations/{}/approve",
@@ -729,7 +743,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	let d = Deployment::new(runtime, TenancyRules::default()).await;
 	let dana = d.person("dana").await;
 	let (_, created) = d
-		.as_operator("POST", "/api/tenants", json!({"label":"Customer"}))
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Customer"}))
 		.await;
 	let tenant = created["name"].as_str().unwrap().to_owned();
 
@@ -779,7 +793,7 @@ async fn members_cannot_remove_the_last_unconditional_administrator(
 	// Bob's administration now holds only under a condition, so it never
 	// counts as unconditional.
 	let (_, policy) = d
-		.as_operator("GET", &format!("/api/authorization/{tenant}"), Value::Null)
+		.as_deployment_administrator("GET", &format!("/api/authorization/{tenant}"), Value::Null)
 		.await;
 	let mut bundle = policy["bundle"].clone();
 	bundle["subjects"]["bob"]["groups"] = json!([]);
@@ -790,7 +804,7 @@ async fn members_cannot_remove_the_last_unconditional_administrator(
 			"right":{"source":"literal","value":"api"}}
 	}));
 	let (status, replaced) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"POST",
 			&format!("/api/authorization/{tenant}"),
 			json!({"expected_revision":policy["revision"],"bundle":bundle}),
@@ -841,12 +855,12 @@ async fn members_cannot_remove_the_last_unconditional_administrator(
 	// A Deployment Administrator's whole-policy replacement is a deliberate
 	// deployment-wide action and is never blocked.
 	let (_, current) = d
-		.as_operator("GET", &format!("/api/authorization/{tenant}"), Value::Null)
+		.as_deployment_administrator("GET", &format!("/api/authorization/{tenant}"), Value::Null)
 		.await;
 	let mut orphaning = current["bundle"].clone();
 	orphaning["subjects"]["owner"]["groups"] = json!([]);
 	let (status, body) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"POST",
 			&format!("/api/authorization/{tenant}"),
 			json!({"expected_revision":current["revision"],"bundle":orphaning}),
@@ -890,7 +904,7 @@ async fn personal_tenants_follow_the_rules_and_are_never_restored(
 	);
 	// Disabling the Personal Tenant's Mapping is a durable decision.
 	let (status, body) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"POST",
 			&format!(
 				"/api/dashboard/mappings/{}/disable",
@@ -927,11 +941,11 @@ async fn invitations_follow_the_rules(#[from(common::runtime)] runtime: common::
 	)
 	.await;
 	let (_, created) = d
-		.as_operator("POST", "/api/tenants", json!({"label":"Team"}))
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Team"}))
 		.await;
 
 	let (status, body) = d
-		.as_operator(
+		.as_deployment_administrator(
 			"POST",
 			&format!(
 				"/api/tenants/{}/invitations",

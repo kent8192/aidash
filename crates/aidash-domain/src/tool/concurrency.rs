@@ -99,7 +99,7 @@ pub const SKILL_INSTRUCTION_BYTES: usize = 65536;
 pub const SKILL_PACKAGE_FILES: usize = 64;
 pub const SKILL_PAGE_LIMIT: usize = 16;
 
-/// The Node's operator-lowered content ceilings for core read results.
+/// The Node's lowered content ceilings for core read results.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadCeilings {
 	pub read_bytes: usize,

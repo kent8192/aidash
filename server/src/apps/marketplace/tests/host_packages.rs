@@ -1,4 +1,4 @@
-//! Native operator staging and exact review selection on disposable services.
+//! Native Deployment Administrator staging and exact review selection on disposable services.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::authorization::{Authorization, policy::PolicyBundle};
@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 #[rstest]
 #[tokio::test]
-async fn operator_host_packages_remain_pending_until_the_exact_set_is_approved(
+async fn deployment_administrator_host_packages_remain_pending_until_the_exact_set_is_approved(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
@@ -23,11 +23,11 @@ async fn operator_host_packages_remain_pending_until_the_exact_set_is_approved(
 	let bundle:PolicyBundle=serde_json::from_value(json!({"tenant":"owner","subjects":{"viewer":{"kind":"user"}},"policies":[{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap();
 	common::tenant_root_in(f.store.pool.driver(), "owner").await;
 	authorization
-		.replace("owner", 0, bundle, "operator")
+		.replace("owner", 0, bundle, "deployment_administrator")
 		.await
 		.unwrap();
 	let viewer = authorization
-		.issue_credential("owner", "viewer", 3600, "operator")
+		.issue_credential("owner", "viewer", 3600, "deployment_administrator")
 		.await
 		.unwrap()
 		.token;
@@ -140,7 +140,7 @@ async fn research_provider_packages_install_and_activate_like_host_packages(
 		serde_json::from_value(json!({"tenant":"owner","subjects":{},"policies":[]})).unwrap();
 	common::tenant_root_in(f.store.pool.driver(), "owner").await;
 	authorization
-		.replace("owner", 0, bundle, "operator")
+		.replace("owner", 0, bundle, "deployment_administrator")
 		.await
 		.unwrap();
 	// Act

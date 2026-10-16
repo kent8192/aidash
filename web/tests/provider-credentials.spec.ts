@@ -30,7 +30,7 @@ async function setup(
     startedTenant?: string;
     /** Holds the credential list until this settles. */
     holdRows?: Promise<void>;
-    /** Do not open a Tenant through the operator picker. */
+    /** Do not open a Tenant through the Deployment Administrator picker. */
     keepTenant?: boolean;
   } = {},
 ) {
@@ -52,7 +52,7 @@ async function setup(
     );
   const access = options.subject
     ? { kind: "subject", tenant: "alpha", subject: "alice" }
-    : { kind: "operator" };
+    : { kind: "deployment_administrator" };
   let records: (typeof metadata & { key_settings_url?: string | null })[] = [
     { ...metadata, key_settings_url: options.keySettingsUrl ?? null },
   ];
@@ -414,7 +414,7 @@ test("a connection left unbound is not reported as connected", async ({
   await expect(notice).toBeVisible();
   await expect(notice).not.toContainText("OpenRouter is connected.");
 });
-test("an operator returns to the Tenant the authorization started for", async ({
+test("a Deployment Administrator returns to the Tenant the authorization started for", async ({
   page,
 }) => {
   await setup(page, {

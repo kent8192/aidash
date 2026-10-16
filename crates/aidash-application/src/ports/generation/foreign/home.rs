@@ -31,7 +31,9 @@ pub trait HomeGenerationScope: ForeignGenerationGuard {
 
 #[async_trait]
 pub trait HomeGenerationRepository: Send + Sync {
-	fn principal(&self) -> &Principal;
+	/// The local principal, or `None` for a request that a peer Node
+	/// authenticated, which has no local principal.
+	fn principal(&self) -> Option<&Principal>;
 	fn node_id(&self) -> &str;
 	fn credential_id(&self) -> Option<Uuid>;
 	fn now(&self) -> DateTime<Utc>;

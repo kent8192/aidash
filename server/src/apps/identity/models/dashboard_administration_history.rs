@@ -29,10 +29,10 @@ pub struct DashboardAdministrationHistory {
 	pub tenant: Option<String>,
 	#[field(field_type = "text", null = true)]
 	pub subject: Option<String>,
-	/// `operator` or `tenant_administrator`.
+	/// `deployment_administrator` or `tenant_administrator`.
 	#[field(field_type = "text")]
 	pub actor_kind: String,
-	/// The acting External Identity; absent for the operator bearer token.
+	/// The acting External Identity; absent for the Deployment Administrator bearer token.
 	#[field(null = true)]
 	pub actor_identity_id: Option<uuid::Uuid>,
 	/// The Mapping a Tenant Administrator acted through.

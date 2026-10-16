@@ -117,7 +117,7 @@ class ChartsTest(unittest.TestCase):
                          ['app-aidash-metadata-egress'])
         self.assertEqual(select(defaults, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]['image'], 'aidash:0.1.0')
         self.assertNotIn('annotations', select(defaults, 'Deployment', '-aidash-server')['metadata'])
-        # No private origin is permitted unless an Operator lists one.
+        # No private origin is permitted unless a Deployment Administrator lists one.
         self.assertNotIn('AIDASH_KEYLESS_PRIVATE_ORIGINS', [variable['name'] for variable in
                          select(defaults, 'Deployment', '-aidash-worker')['spec']['template']['spec']['containers'][0]['env']])
         self.assertEqual(select(defaults, 'Deployment', '-frontend')['spec']['replicas'], 1)
