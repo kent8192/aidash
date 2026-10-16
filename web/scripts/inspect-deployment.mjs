@@ -14,7 +14,7 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     sessionStorage.setItem("aidash-session-id", "cluster-browser-session");
-    sessionStorage.setItem("aidash-context", "operator");
+    sessionStorage.setItem("aidash-context", "deployment_administrator");
     localStorage.setItem("aidash-locale", "en-US");
   });
   const configResponse = await context.request.get("/auth/config");
@@ -27,7 +27,11 @@ try {
   );
   await page.route("**/auth/session", (route) =>
     route.fulfill({
-      json: { id: "cluster-browser-session", operator: true, mappings: [] },
+      json: {
+        id: "cluster-browser-session",
+        deployment_administrator: true,
+        mappings: [],
+      },
     }),
   );
   await page.route("**/auth/activity", (route) =>

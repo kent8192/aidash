@@ -125,8 +125,9 @@ pub(crate) async fn authorize(lease: &mut Lease<'_>, bank: &Bank, action: &str) 
 		access.require(&resource, action).await?;
 		Ok(())
 	} else {
-		// Operator access is still limited by current Home visibility; no executor bank union.
-		crate::authorization::remote::operator::require(lease.tx(), bank.workspace).await?;
+		// Deployment Administrator access is still limited by current Home visibility; no executor bank union.
+		crate::authorization::remote::deployment_administrator::require(lease.tx(), bank.workspace)
+			.await?;
 		if let Some(id) = bank.participant {
 			let row = native::query(
 				&Query::select()
@@ -347,7 +348,7 @@ pub(crate) fn current_in<'a>(
 						));
 					}
 					// A Run can carry an admitted unit into extracted candidates or
-					// later memory. Preserve this exact dependency for operator
+					// later memory. Preserve this exact dependency for Deployment Administrator
 					// maintenance as well as subject disclosure, within the same
 					// traversal budget and ancestry (no recursive budget reset).
 					let reads = native::query(

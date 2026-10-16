@@ -25,7 +25,7 @@ pub async fn set_limits(
 	tenant: String,
 	input: TestLimits,
 ) -> Result<TestLimits> {
-	if repository.principal() != Principal::Operator {
+	if repository.principal() != Principal::DeploymentAdministrator {
 		return Err(Error::Forbidden);
 	}
 	if tenant != input.tenant {

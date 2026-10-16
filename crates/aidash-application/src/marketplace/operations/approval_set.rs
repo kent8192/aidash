@@ -28,12 +28,12 @@ pub struct ApprovalSet {
 /// The native caller owns a transaction; failures roll back approvals, active
 /// pointers and events together. No member is discovered after writes begin.
 pub async fn approve_and_activate(
-	scope: &mut dyn OperatorScope,
+	scope: &mut dyn DeploymentAdministratorScope,
 	validation: &DefinitionValidation,
 	input: &ApprovalSet,
 	node: &str,
 ) -> Result<Vec<Installation>> {
-	require_operator(scope.principal())?;
+	require_deployment_administrator(scope.principal())?;
 	aidash_domain::configuration::validate_node_id(node)?;
 	aidash_domain::policy::identifier(&input.tenant)?;
 	if input.installations.is_empty()

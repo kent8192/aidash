@@ -7,7 +7,7 @@ fn profile() -> AccountProfile {
 	AccountProfile {
 		account_id: "brave-account".into(),
 		agreement_reference: "approved-contract-record".into(),
-		verified_by: "operator".into(),
+		verified_by: "deployment_administrator".into(),
 		verified_at: now - chrono::Duration::days(1),
 		review_after: now + chrono::Duration::days(1),
 		storage_permitted: true,

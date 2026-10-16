@@ -49,10 +49,10 @@ const phase = (transaction: AtomicTransaction) => {
 
 export function TransactionsPage({
   nodeId,
-  operator = true,
+  deploymentAdministrator = true,
 }: {
   nodeId: string;
-  operator?: boolean;
+  deploymentAdministrator?: boolean;
 }) {
   const { t, locale } = useI18n();
   const nodeLabel = useNodeLabel();
@@ -79,13 +79,13 @@ export function TransactionsPage({
   const participants = useQuery({
     queryKey: ["transactions", "local"],
     queryFn: () => transactionParticipants(),
-    enabled: operator,
+    enabled: deploymentAdministrator,
     refetchInterval: 1000,
   });
   const trust = useQuery({
     queryKey: ["transactions", "trust"],
     queryFn: () => transactionTrustList(),
-    enabled: operator,
+    enabled: deploymentAdministrator,
     refetchInterval: 5000,
   });
   const details = useQuery({
@@ -201,7 +201,7 @@ export function TransactionsPage({
           </ul>
         )}
       </Panel>
-      {operator && (
+      {deploymentAdministrator && (
         <>
           <Panel title={t("transactionLocalParticipants")}>
             {!participants.isError && participants.data?.length === 0 && (
@@ -552,7 +552,7 @@ export function TransactionsPage({
             {review ? (
               <>
                 <Notice tone="warning">{t("transactionReviewHelp")}</Notice>
-                {!operator && (
+                {!deploymentAdministrator && (
                   <ul
                     aria-label={t("transactionParticipant")}
                     className="grid gap-1 font-mono text-xs"
@@ -568,7 +568,7 @@ export function TransactionsPage({
               <TransactionComposer
                 value={draft}
                 change={setDraft}
-                operator={operator}
+                deploymentAdministrator={deploymentAdministrator}
               />
             )}
             <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4">

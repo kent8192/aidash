@@ -67,7 +67,11 @@ impl RunContext {
 			None => {
 				let mut connection =
 					crate::database::native::begin(&self.base.f.store.pool).await?;
-				crate::authorization::remote::operator::event_visible(&mut connection, &probe).await
+				crate::authorization::remote::deployment_administrator::event_visible(
+					&mut connection,
+					&probe,
+				)
+				.await
 			}
 		}
 	}
@@ -212,7 +216,7 @@ impl Service {
 		// Register before validation and the initial read; marker events wake it.
 		let observation = self.register(Some(target.workspace_id));
 		let scope = match actor {
-			Actor::Operator => None,
+			Actor::DeploymentAdministrator => None,
 			Actor::Subject(identity) => Some(Workspaces {
 				store: f.store.clone(),
 				identity,

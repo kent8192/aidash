@@ -122,7 +122,9 @@ export function SemanticPage({
             key={workspace}
             workspace={workspace}
             data={data}
-            operator={data.access.kind === "operator"}
+            deploymentAdministrator={
+              data.access.kind === "deployment_administrator"
+            }
           />
         </>
       ) : (
@@ -134,11 +136,11 @@ export function SemanticPage({
 function SemanticWorkspace({
   data,
   workspace,
-  operator,
+  deploymentAdministrator,
 }: {
   data: State;
   workspace: string;
-  operator: boolean;
+  deploymentAdministrator: boolean;
 }) {
   const { t } = useI18n();
   const labels = useRecordLabels();
@@ -231,7 +233,7 @@ function SemanticWorkspace({
   const cleanup = useQuery({
     queryKey: ["semantic", workspace, "cleanup"],
     queryFn: () => semanticCleanup(workspace),
-    enabled: operator && !!index.data && !index.isError,
+    enabled: deploymentAdministrator && !!index.data && !index.isError,
     refetchInterval: 3000,
   });
   const current = !index.isError ? index.data : null;
@@ -283,7 +285,7 @@ function SemanticWorkspace({
       <Panel
         title={t("semanticIndex")}
         action={
-          operator && (
+          deploymentAdministrator && (
             <Button variant="outline" size="sm" onClick={openConfiguring}>
               {t("semanticConfigure")}
             </Button>
@@ -464,7 +466,7 @@ function SemanticWorkspace({
             )}
             {!entries.isError && entries.data?.length === 0 && <Empty />}
           </Panel>
-          {operator && cleanup.data && !cleanup.isError && (
+          {deploymentAdministrator && cleanup.data && !cleanup.isError && (
             <Panel title={t("semanticCleanup")}>
               <Hint>{t("semanticCleanupHelp")}</Hint>
               <div className="semantic-summary flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">

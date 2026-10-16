@@ -9,7 +9,7 @@ DROP TRIGGER atomic_write_guard ON public.authorization_revisions;
 DROP TRIGGER atomic_write_guard ON public.authorization_remote_outputs;
 DROP TRIGGER atomic_write_guard ON public.authorization_remote_execution;
 DROP TRIGGER atomic_write_guard ON public.authorization_remote_commands;
-DROP TRIGGER atomic_write_guard ON public.authorization_graph_operator_grants;
+DROP TRIGGER atomic_write_guard ON public.authorization_peer_graph_grants;
 DROP TRIGGER atomic_write_guard ON public.authorization_execution;
 DROP TRIGGER atomic_write_guard ON public.authorization_decisions;
 DROP TRIGGER atomic_write_guard ON public.authorization_credentials;

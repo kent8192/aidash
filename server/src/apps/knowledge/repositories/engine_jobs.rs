@@ -306,7 +306,7 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 		crate::authorization::execution::access_for_run(store, &run.metadata(), true).await;
 	let mut lease = match access {
 		Ok(Some(access)) => Lease::Scoped(Box::new(access)),
-		Ok(None) => Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?,
+		Ok(None) => Lease::without_subject(store).await?,
 		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(None),
 		Err(e) => return Err(e),
 	};

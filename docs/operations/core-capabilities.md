@@ -2,7 +2,7 @@
 
 Core capabilities are Node-provided operations declared through immutable
 Registry descriptors. The Node owns their provider contracts and implementation;
-the declarations are distributed as system Builtins or operator Host packages.
+the declarations are distributed as system Builtins or Node Host packages.
 See the [capability glossary](registry-capability-glossary.md) and
 [Registry capability operations](registry-capabilities.md).
 
@@ -81,7 +81,7 @@ Without `AIDASH_CAPABILITY_PROFILE`, admission defaults to disabled and core
 reconciliation workers do not allocate database pools. Agents receive no implicit
 Host packages; installing and binding an approved package is explicit. An explicitly configured profile with
 `admission: false` keeps reconciliation running for rollback. Production
-operators must provision the trusted controller, persistent private
+whoever runs the Deployment must provision the trusted controller, persistent private
 journal/object storage and equivalent
 node isolation before setting the profile path on the API and Worker services.
 The runner token is referenced by environment-variable name in the profile;
@@ -94,7 +94,7 @@ secret bytes belong only in the trusted services' environment.
    reference Sources, create a Binding-only version of a selected Agent and
    approve that exact Registry version. Saving configuration does not grant
    execution or file permissions. Follow the [drained fleet rollout](registry-capabilities.md#drained-fleet-rollout-and-rollback).
-4. Test with a tenant subject credential. Operator configuration access does not
+4. Test with a tenant subject credential. Deployment Administrator configuration access does not
    become access to users' private working files or originals.
 5. Expand Agent/catalog/policy scope explicitly only after the acceptance and
    Binding and isolation evidence passes.
@@ -162,7 +162,7 @@ keeping the deployment's existing runner, storage and resource settings:
 Reference uploads require sequential 4-MiB chunks, except for the final
 remainder; retries at the same offset remain idempotent. This bounds the number
 of staging objects. The 4-MiB chunk frame and bounded management pagination are
-protocol framing limits. Transfer negotiation advertises the operator's lowered file/count/total
+protocol framing limits. Transfer negotiation advertises the Node's lowered file/count/total
 budgets. Configuration and Run admission both enforce reference-set limits;
 lowering a limit never rewrites a published Agent version or deletes originals.
 

@@ -239,7 +239,7 @@ pub(super) async fn setup_endpoint_policy(
 			&AuthorizationWorkspace::build()
 				.workspace_id(workspace.id)
 				.tenant("acme")
-				.owner_subject("operator")
+				.owner_subject("deployment_administrator")
 				.finish(),
 		)
 		.await

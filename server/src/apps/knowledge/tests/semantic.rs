@@ -567,14 +567,14 @@ fn spec(endpoint: &str) -> IndexSpec {
 }
 async fn configure(
 	app: &common::TestApplication,
-	operator: &str,
+	deployment_administrator: &str,
 	workspace: Uuid,
 	spec: &IndexSpec,
 	revision: i64,
 ) -> Value {
 	let (status, index) = request(
 		app,
-		operator,
+		deployment_administrator,
 		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/index"),
 		serde_json::to_value(ConfigureIndex {
@@ -1348,7 +1348,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	)
 	.await;
 	assert!(!entries.to_string().contains(&artifact.id.to_string()));
-	// Even an operator cannot attach a resource from a different workspace.
+	// Even a Deployment Administrator cannot attach a resource from a different workspace.
 	let other = f
 		.store
 		.create_workspace("Other", "Isolation")

@@ -1218,7 +1218,7 @@ async fn step_to_model_request(p: &Pair, count: usize) {
 		p.run().await.state
 	);
 }
-/// Write a Home semantic entry and index it, as a Home operator would.
+/// Write a Home semantic entry and index it, as a Home Deployment Administrator would.
 async fn write_home_entry(
 	p: &Pair,
 	key: &str,
@@ -3795,7 +3795,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_polling_advances_past_hidden_event_pages(
+async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -3853,7 +3853,7 @@ async fn operator_polling_advances_past_hidden_event_pages(
 	assert_eq!(status, 200, "{page}");
 	assert!(
 		page.to_string().contains("after-hidden-burst"),
-		"operator polling stalled behind hidden events: {page}"
+		"Deployment Administrator polling stalled behind hidden events: {page}"
 	);
 	assert!(!page.to_string().contains("\"secret\""));
 	let (status, state) = request(
@@ -3922,7 +3922,7 @@ async fn operator_polling_advances_past_hidden_event_pages(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_content_views_cannot_bypass_both_node_subject_authority(
+async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_authority(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -3966,7 +3966,7 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 			] {
 				assert!(
 					!body.to_string().contains(hidden),
-					"operator path {} {path} leaked {hidden}: {:?}",
+					"Deployment Administrator path {} {path} leaked {hidden}: {:?}",
 					f.config.node_id,
 					body.as_object().map(|fields| fields
 						.iter()
@@ -3982,7 +3982,7 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 			&f.config.api_token,
 			"POST",
 			"/api/workspaces",
-			json!({"title":"operator-stream-tail","goal":"Independent stream marker"}),
+			json!({"title":"deployment-administrator-stream-tail","goal":"Independent stream marker"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -4007,10 +4007,10 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 				] {
 					assert!(
 						!frame.contains(hidden),
-						"operator stream leaked {hidden}: {frame}"
+						"Deployment Administrator stream leaked {hidden}: {frame}"
 					);
 				}
-				if frame.contains("operator-stream-tail") {
+				if frame.contains("deployment-administrator-stream-tail") {
 					break;
 				}
 			}
@@ -4056,14 +4056,14 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 	assert!(control.get("error").is_none());
 	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
-	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"operator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
 	let (status, independent) = request(
 		&p.aa,
 		&p.a.config.api_token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Independent operator work","goal":"Unrelated legacy access"}),
+		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{independent}");

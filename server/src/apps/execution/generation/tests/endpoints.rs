@@ -44,7 +44,7 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 	let mut fixture = execution.await;
 	let app = &fixture.app;
 	let mut template = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get("/api/registry/research/1.0.0")
 			.await
 			.unwrap(),
@@ -57,7 +57,7 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 		"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":400000,
 			"tokens_per_agent":200000,"lifetime_seconds":3600}});
 	assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				"/api/generation/acme/policies/research",
 				&json!({"expected_revision":0,"spec":spec}),

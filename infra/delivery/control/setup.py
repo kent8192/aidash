@@ -2,7 +2,7 @@
 """Plan/apply reviewed delivery stacks and install secrets after live protection checks.
 
 Credentials use process environment/stdin. Private plans/logs stay in the ignored
-operator directory; only resource addresses/actions and protection status print.
+private input directory; only resource addresses/actions and protection status print.
 This tool cannot merge PRs, approve deployments or enable workflows implicitly.
 """
 
@@ -46,7 +46,7 @@ def private_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.is_symlink():
-        raise Refused("Private operator files must not be symlinks")
+        raise Refused("Private input files must not be symlinks")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "w") as output:
         os.chmod(path, 0o600)
@@ -61,7 +61,7 @@ def command(arguments, *, env=None, data=None, log=None):
     try:
         result = subprocess.run(arguments, input=data, capture_output=True, env=environment, timeout=1800)
     except (OSError, subprocess.SubprocessError):
-        raise Refused("Operator command unavailable or timed out; inspect authenticated CLI status") from None
+        raise Refused("Setup command unavailable or timed out; inspect authenticated CLI status") from None
     if log:
         path = Path(log)
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
@@ -72,7 +72,7 @@ def command(arguments, *, env=None, data=None, log=None):
                     raw = raw.replace(value.encode(), b"[redacted]")
             output.write(raw)
     if result.returncode:
-        raise Refused("Operator command failed; inspect its private log or authenticated CLI status")
+        raise Refused("Setup command failed; inspect its private log or authenticated CLI status")
     return result.stdout
 
 
@@ -176,7 +176,7 @@ def private_input(path):
     with os.fdopen(descriptor) as source:
         metadata = os.fstat(source.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise Refused("Operator inputs must be private files owned by the operator")
+            raise Refused("Private inputs must be files owned by the current user")
         return json.load(source)
 
 
@@ -185,7 +185,7 @@ def compose_brokers(bootstrap, output, settings):
 
     Omitting a bootstrap broker would make the controller drain and remove it, so
     every bootstrap-created broker is published; only enablement and signing
-    versions come from the operator, and every broker defaults to disabled.
+    versions come from your inputs, and every broker defaults to disabled.
     """
     accounts = bootstrap.get("broker_service_accounts") or {}
     keys = (output.get("broker_signing_keys") or {}).get("value") or {}
@@ -195,7 +195,7 @@ def compose_brokers(bootstrap, output, settings):
     for identity in sorted(accounts):
         chosen = settings.get(identity, {})
         if not isinstance(chosen, dict) or set(chosen) - BROKER_SETTINGS or not isinstance(chosen.get("enabled", False), bool):
-            raise Refused("Operators may set only broker enablement and signing versions")
+            raise Refused("Inputs may set only broker enablement and signing versions")
         brokers[identity] = dict({"enabled": False}, **chosen, byok_project_id=bootstrap["byok_project_id"], secret_prefix=f"aidash-{identity}-cred-",
                                  broker_service_account_email=accounts[identity], signing_key_id=keys[identity])
     return brokers
@@ -379,7 +379,7 @@ def relocate_production_state(stack, target_bucket):
               "-backend-config=bucket=" + target_bucket, "-backend-config=prefix=" + stack.prefix)
     after = json.loads(stack.run("state", "pull"))
     if before.get("lineage") != after.get("lineage") or before.get("resources") != after.get("resources") or before.get("outputs") != after.get("outputs"):
-        raise Refused("Production backend verification failed; preserve both copies for operator recovery")
+        raise Refused("Production backend verification failed; preserve both copies for manual recovery")
     # Retire only the copied source object's exact generation. Versioned private
     # history remains retained; no bucket, project or unrelated object is deleted.
     request = urllib.request.Request(f"https://storage.googleapis.com/storage/v1/b/{stack.bucket}/o/{object_name}?ifGenerationMatch={int(source['generation'])}",
@@ -502,7 +502,7 @@ def main():
                 result = stack.create_plan(private_input(args.file)) if args.action == "plan" else stack.apply()
         print(json.dumps(result, sort_keys=True))
     except (Refused, OSError, ValueError, KeyError, TypeError) as error:
-        print(str(error) if isinstance(error, Refused) else "Operator setup failed; review private inputs and logs")
+        print(str(error) if isinstance(error, Refused) else "Setup failed; review private inputs and logs")
         raise SystemExit(1) from None
 
 

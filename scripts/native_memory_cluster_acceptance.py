@@ -150,7 +150,7 @@ class NativeMemory(RemoteMemory):
                 "text": text, "kind": "world", "learning": "fact", "verification": "unverified", "occurred": None, "entities": [], "evidence": [], "links": []}}])
             if key == "shared":
                 source = value[0]
-        # Start Home maintenance only to finish these operator-owned projections.
+        # Start Home maintenance only to finish these projections.
         self.scale(0, "worker", 1)
         self.until(lambda: len([entry for entry in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries")) if entry["state"] == "READY"]) == 3, "native index ready")
         self.scale(0, "worker", 0)

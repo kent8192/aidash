@@ -217,7 +217,7 @@ impl Transactions {
 
 fn principal(actor: &Actor) -> Option<ExecutionPrincipal> {
 	match actor {
-		Actor::Operator => None,
+		Actor::DeploymentAdministrator => None,
 		Actor::Subject(identity) => Some(ExecutionPrincipal {
 			credential_id: identity.credential_id,
 			tenant: identity.tenant.clone(),

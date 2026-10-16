@@ -11,7 +11,7 @@ Run `manage migrate` with the normal database configuration, then run
 the stream name, subject, durable consumer name, and creation timestamp. Use the same Node ID,
 namespace, retention, and replication settings as the runtime. The command creates
 missing objects and validates existing ones; it does not delete/reset consumers.
-A mismatch is an operator error and puts runtime activation into recovery.
+A mismatch is a configuration error and puts runtime activation into recovery.
 
 Provisioning selects only `node.node_id` and `node.nats_url` from the same composed
 settings as the runtime: base/profile TOML, interpolated variables and the legacy
@@ -33,7 +33,7 @@ never pull or acknowledge activation messages. No consumer is tied to a Pod name
 | `AIDASH_ACTIVATION_BOOTSTRAP`        | `false`         | Explicit local-development creation of identical objects; production provisions separately.                                                                                  |
 | `AIDASH_ACTIVATION_MAX_AGE_SECONDS`  | `86400`         | Broker retention; unresolved database obligations do not expire.                                                                                                             |
 | `AIDASH_ACTIVATION_MAX_BYTES`        | `1073741824`    | File/WorkQueue capacity with DiscardNew.                                                                                                                                     |
-| `AIDASH_ACTIVATION_REPLICAS`         | `1`             | Broker replicas, 1–5; operator must provision matching JetStream capacity.                                                                                                   |
+| `AIDASH_ACTIVATION_REPLICAS`         | `1`             | Broker replicas, 1–5; whoever runs the Deployment must provision matching JetStream capacity.                                                                                |
 | `AIDASH_WORKER_SLOTS`                | `4`             | 1–4 execution slots per process, preserving the existing database pool budget. Scale replicas for more capacity.                                                             |
 | `AIDASH_TOOL_PARALLELISM`            | `1`             | 1–4 concurrent [read batch](../features/parallel-read-batches.md) calls per process; each holds one data connection, and the worker pool adds one per call beyond the first. |
 
@@ -45,7 +45,7 @@ Provider and domain-event permissions remain
 independent. Database readiness and the existing 20-second drain/30-second Pod
 termination grace period are unchanged; broker failure does not gate readiness.
 
-Provision using an operator identity that can manage the exact activation stream
+Provision using a NATS operator identity that can manage the exact activation stream
 and durable. Runtime publishers require the exact subject, stream-info API, and
 request/reply inbox access. Workers additionally require consumer-info and
 `$JS.API.CONSUMER.MSG.NEXT.<stream>.workers-v1`, the exact consumer ACK subjects,
@@ -102,7 +102,7 @@ instead of rendering them differently.
 ### Persisted-state capabilities
 
 Persisted Run state that older workers cannot decode (new `deny_unknown_fields`
-fields, new wait reasons) is gated at lease time instead of relying on operators
+fields, new wait reasons) is gated at lease time instead of relying on whoever runs the Deployment
 to stop old workers first. Each build advertises the `PersistedCapability` values it
 can load (`PersistedCapability::supported()`); the state a Run persists derives
 which of them it needs, and `encode` stores that as a `requires` array in the

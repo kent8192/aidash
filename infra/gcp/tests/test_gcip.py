@@ -1,4 +1,4 @@
-"""Tenant IAM uses fake REST policies, including concurrent operator changes."""
+"""Tenant IAM uses fake REST policies, including concurrent manual changes."""
 
 from copy import deepcopy
 import json
@@ -38,7 +38,7 @@ class FakeAPI(TenantIAM):
             "bindings": [
                 {
                     "role": "roles/identityplatform.admin",
-                    "members": ["user:operator@example.test"],
+                    "members": ["user:maintainer@example.test"],
                 },
                 {
                     "role": READ_ROLE,
@@ -182,7 +182,7 @@ class AuthorizedDomainTests(unittest.TestCase):
         output = dict(OUTPUT, hostname=hostname, gcip=dict(OUTPUT["gcip"], auth_helper="firebase"))
         configuration = {
             "name": "projects/aidash-fixture/config",
-            "authorizedDomains": ["aidash.run", "operator.example", "aidash-fixture.firebaseapp.com"],
+            "authorizedDomains": ["aidash.run", "maintainer.example", "aidash-fixture.firebaseapp.com"],
             "signIn": {"email": {"enabled": False}},
         }
         original = deepcopy(configuration)
