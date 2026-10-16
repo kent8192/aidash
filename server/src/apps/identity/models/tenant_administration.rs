@@ -18,7 +18,10 @@ use aidash_domain::policy::{Decision, Evaluation, Resource};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{AtomicTransaction, Model, QuerySet};
-use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, IntoValue, JoinType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, TableRef,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -270,60 +273,75 @@ impl TenantAdministrator {
 		bundle: &aidash_domain::policy::PolicyBundle,
 		leaving: Option<Uuid>,
 	) -> Result<()> {
-		let mappings: Vec<_> = DashboardMapping::objects()
-			.filter(DashboardMapping::field_tenant().eq(self.tenant().to_owned()))
-			.filter(DashboardMapping::field_enabled().eq(true))
-			.all_with_db(tx)
-			.await?
-			.into_iter()
-			.filter(|mapping| Some(mapping.id) != leaving)
-			.collect();
-		let enabled: BTreeSet<Uuid> = DashboardIdentity::objects()
-			.filter(
-				DashboardIdentity::field_id().is_in(
-					mappings
-						.iter()
-						.map(|mapping| mapping.identity_id())
-						.collect::<Vec<_>>(),
-				),
-			)
-			.filter(DashboardIdentity::field_disabled_at().is_null())
-			.all_with_db(tx)
-			.await?
-			.into_iter()
-			.map(|identity| identity.id)
-			.collect();
-		// A Mapping whose credential is revoked or expired cannot act.
-		let now = super::dashboard_administration::database_time(tx).await?;
-		let usable: BTreeSet<Uuid> = super::AuthorizationCredential::objects()
-			.filter(
-				super::AuthorizationCredential::field_id().is_in(
-					mappings
-						.iter()
-						.map(|mapping| mapping.credential_id())
-						.collect::<Vec<_>>(),
-				),
-			)
-			.filter(super::AuthorizationCredential::field_revoked_at().is_null())
-			.filter(super::AuthorizationCredential::field_expires_at().gt(now))
-			.all_with_db(tx)
-			.await?
-			.into_iter()
-			.map(|credential| credential.id)
-			.collect();
-		let subjects = mappings
-			.iter()
-			.filter(|mapping| {
-				enabled.contains(&mapping.identity_id())
-					&& usable.contains(&mapping.credential_id())
-			})
-			.map(|mapping| mapping.subject.as_str());
-		if aidash_domain::identity::tenancy::has_unconditional_administrator(bundle, subjects) {
-			Ok(())
-		} else {
+		use aidash_domain::identity::tenancy::has_unconditional_administrator;
+		let refused = || {
 			Err(Error::Conflict(
 				"the Tenant would be left without a Tenant Administrator".into(),
 			))
+		};
+		// Which subjects could be the administrator follows from the bundle
+		// alone, which is bounded; a subject the bundle does not list is
+		// judged like any other unlisted one.
+		let unlisted = format!("unlisted-{}", Uuid::new_v4().simple());
+		let any_subject = !bundle.subjects.contains_key(&unlisted)
+			&& has_unconditional_administrator(bundle, [unlisted.as_str()]);
+		let listed: Vec<String> = bundle
+			.subjects
+			.keys()
+			.filter(|subject| has_unconditional_administrator(bundle, [subject.as_str()]))
+			.cloned()
+			.collect();
+		if !any_subject && listed.is_empty() {
+			return refused();
+		}
+		// One bounded question, however many Mappings the Tenant has: does an
+		// enabled Mapping of an enabled External Identity, whose credential
+		// can still act, map such a subject?
+		let now = super::dashboard_administration::database_time(tx).await?;
+		let mapping = |column: &str| (Alias::new("m"), Alias::new(column));
+		let mut query = Query::select();
+		query
+			.expr(Expr::value(1_i32))
+			.from_as(Alias::new(DashboardMapping::table_name()), Alias::new("m"))
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(
+					Alias::new(DashboardIdentity::table_name()),
+					Alias::new("i"),
+				),
+				Expr::col((Alias::new("i"), Alias::new("id"))).equals(mapping("identity_id")),
+			)
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(
+					Alias::new(super::AuthorizationCredential::table_name()),
+					Alias::new("c"),
+				),
+				Expr::col((Alias::new("c"), Alias::new("id"))).equals(mapping("credential_id")),
+			)
+			.and_where(Expr::col(mapping("tenant")).eq(Expr::value(self.tenant().to_owned())))
+			.and_where(Expr::col(mapping("enabled")).eq(Expr::value(true)))
+			.and_where(Expr::col((Alias::new("i"), Alias::new("disabled_at"))).is_null())
+			// A Mapping whose credential is revoked or expired cannot act.
+			.and_where(Expr::col((Alias::new("c"), Alias::new("revoked_at"))).is_null())
+			.and_where(Expr::col((Alias::new("c"), Alias::new("expires_at"))).gt(Expr::value(now)))
+			.limit(1);
+		if let Some(leaving) = leaving {
+			query.and_where(Expr::col(mapping("id")).ne(Expr::value(leaving)));
+		}
+		if !any_subject {
+			query.and_where(
+				Expr::col(mapping("subject")).is_in(listed.into_iter().map(Expr::value)),
+			);
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		if TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
+			.await?
+			.is_some()
+		{
+			Ok(())
+		} else {
+			refused()
 		}
 	}
 
