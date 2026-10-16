@@ -62,7 +62,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		(
 			"fixture-tool",
 			"tool",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":config});

@@ -122,7 +122,7 @@ impl Definitions for Scope {
 	}
 	fn validation(&self) -> DefinitionValidation {
 		self.trace.lock().unwrap().push("contracts".into());
-		DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts))
+		DefinitionValidation::new(Arc::new(Contracts))
 	}
 	async fn pinned_headroom(&self, _: Uuid) -> Result<usize> {
 		self.trace.lock().unwrap().push("pinned".into());

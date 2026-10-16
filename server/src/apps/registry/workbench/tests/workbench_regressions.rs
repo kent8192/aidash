@@ -155,7 +155,7 @@ fn workbench(
 			(
 				"fixture-tool",
 				"tool",
-				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
+				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 			),
 		] {
 			assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
@@ -859,7 +859,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 #[rstest::fixture]
 async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","replay":"read_only"}}})).await.0, 200);
 	wb
 }
 

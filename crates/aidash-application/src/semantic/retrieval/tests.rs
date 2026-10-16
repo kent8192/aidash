@@ -168,7 +168,7 @@ impl SemanticRetrievalSession for Scope {
 struct Vector {
 	calls: Calls,
 	points: Vec<Point>,
-	available: Option<bool>,
+	presence: fn() -> Result<bool>,
 	failure: Option<Failure>,
 }
 impl Vector {
@@ -176,7 +176,7 @@ impl Vector {
 		Self {
 			calls,
 			points: vec![point()],
-			available: Some(true),
+			presence: || Ok(true),
 			failure: None,
 		}
 	}
@@ -200,8 +200,7 @@ impl VectorIndex for Vector {
 		assert_eq!(config.provider, "postgres");
 		assert_eq!(collection, "collection");
 		assert_eq!(ids, &[entry().point_id]);
-		self.available
-			.ok_or_else(|| Error::External("provider failed".into()))
+		(self.presence)()
 	}
 	async fn query(
 		&self,
@@ -489,25 +488,44 @@ async fn incomplete_authorized_candidates_stop_before_provider_effects(#[case] i
 		]
 	);
 }
+/// Missing points and a backend outage are retried by a Run; a permanent
+/// adapter failure, which reaches the use case as an untyped `Port`, is not.
 #[rstest]
-#[case::missing(Some(false))]
-#[case::provider_error(None)]
+#[case::missing(|| Ok(false), true)]
+#[case::provider_error(|| Err(Error::External("provider failed".into())), true)]
+#[case::transient_database(|| Err(Error::RemoteSemantic(Failure::Unavailable)), true)]
+#[case::permanent_database(
+	|| Err(Error::Port(Box::new(std::io::Error::other("undefined table")))),
+	false
+)]
 #[tokio::test]
-async fn physical_point_check_precedes_embedding_allowance(#[case] available: Option<bool>) {
+async fn physical_point_check_precedes_embedding_allowance(
+	#[case] presence: fn() -> Result<bool>,
+	#[case] transient: bool,
+) {
+	// Arrange
 	let (calls, mut scope, mut vector) = fixture();
-	vector.available = available;
-	assert!(matches!(
-		search(
-			&mut scope,
-			&vector,
-			index().workspace_id,
-			&input(),
-			None,
-			None
-		)
-		.await,
-		Err(Error::SemanticUnavailable)
-	));
+	vector.presence = presence;
+	// Act
+	let error = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await
+	.unwrap_err();
+	// Assert
+	if transient {
+		assert!(
+			matches!(error, Error::RemoteSemantic(Failure::Unavailable)),
+			"{error:?}"
+		);
+	} else {
+		assert!(matches!(error, Error::SemanticUnavailable), "{error:?}");
+	}
 	assert_eq!(scope.embedded, None);
 	assert_eq!(calls.lock().unwrap().last(), Some(&"present"));
 }

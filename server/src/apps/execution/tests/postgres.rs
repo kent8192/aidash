@@ -918,7 +918,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.register(entry(
 			"tool",
 			"retry-tool",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"idempotent"}}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"idempotent"}}),
 		))
 		.await
 		.unwrap();
@@ -1082,7 +1082,7 @@ async fn write_approval(
 		.register(entry(
 			"tool",
 			"managed-write",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"unsafe"}}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
@@ -1376,7 +1376,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.register({ let mut tool = entry(
 			"tool",
 			"web-fetch",
-			json!({"registry_node":federation.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"credential_env":null,"replay":"read_only"}}),
+			json!({"registry_node":federation.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"replay":"read_only"}}),
 		); tool.schema = json!({"type":"object","properties":{"url":{"type":"string","pattern":"^http://127\\.0\\.0\\.1:"}},"required":["url"],"additionalProperties":false}); tool })
 		.await
 		.unwrap();

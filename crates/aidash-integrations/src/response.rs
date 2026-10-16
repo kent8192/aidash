@@ -54,21 +54,37 @@ pub(crate) async fn json<T: DeserializeOwned>(
 		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))
 }
 
-pub(crate) async fn bytes(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+pub(crate) async fn bytes(response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+	within(response, limit)
+		.await?
+		.map_err(|Oversized| Error::External(format!("response exceeds {limit} bytes")))
+}
+
+/// A body that declared or crossed the caller's limit. Unlike a failed
+/// transfer, the provider did answer, so a caller may treat it as a broken
+/// response contract rather than an outage.
+pub(crate) struct Oversized;
+
+/// The body, or `Oversized` once it declares or crosses `limit`. A failed
+/// transfer stays an error.
+pub(crate) async fn within(
+	mut response: reqwest::Response,
+	limit: usize,
+) -> Result<std::result::Result<Vec<u8>, Oversized>> {
 	if response
 		.content_length()
 		.is_some_and(|length| length > limit as u64)
 	{
-		return Err(Error::External(format!("response exceeds {limit} bytes")));
+		return Ok(Err(Oversized));
 	}
 	let mut bytes = Vec::new();
 	while let Some(chunk) = response.chunk().await.map_err(crate::http_error)? {
 		if chunk.len() > limit.saturating_sub(bytes.len()) {
-			return Err(Error::External(format!("response exceeds {limit} bytes")));
+			return Ok(Err(Oversized));
 		}
 		bytes.extend_from_slice(&chunk);
 	}
-	Ok(bytes)
+	Ok(Ok(bytes))
 }
 
 #[cfg(test)]

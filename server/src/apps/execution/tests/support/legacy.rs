@@ -199,7 +199,7 @@ async fn bootstrap_with_resources(
 		(
 			"tool",
 			"http",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"idempotent"}}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"idempotent"}}),
 		),
 		(
 			"agent",

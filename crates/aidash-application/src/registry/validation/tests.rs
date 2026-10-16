@@ -22,7 +22,7 @@ impl CoreToolCatalog for Contracts {
 	}
 }
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts))
+	DefinitionValidation::new(Arc::new(Contracts))
 }
 
 /// An Agent with one large tool and one large Registry Skill under `exposure`;

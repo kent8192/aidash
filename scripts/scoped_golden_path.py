@@ -253,7 +253,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         api_request(base_b, f"/api/authorization/{receiver_tenant}/peer-mappings", {"source_node": node_a, "source_tenant": source_tenant, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
         entries = [
             entity("model", "scoped-model", {"provider": "openrouter", "model_id": "fixture", "endpoint": fixture.url + "/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
-            entity("tool", "scoped-effect", tool_descriptor(node_b, {"transport": "http", "endpoint": fixture.url + "/effect", "credential_env": None, "replay": "unsafe"}, "scoped_effect")),
+            entity("tool", "scoped-effect", tool_descriptor(node_b, {"transport": "http", "endpoint": fixture.url + "/effect", "replay": "unsafe"}, "scoped_effect")),
             entity("agent", agent["id"], {"model": {"id": "scoped-model", "version": "1.0.0"}, "instructions": "Report progress, invoke the approved tool, then publish the result.", "schema_version": 1, "bindings": [tool_binding(node_b, "scoped-effect", "scoped_effect")], "remove_default": [], "max_steps": 16}),
         ]
         entries[1]["schema"] = {"type": "object", "required": ["scenario"], "properties": {"scenario": {"type": "string"}}, "additionalProperties": False}

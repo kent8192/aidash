@@ -19,11 +19,8 @@ pub trait Tool: Send + Sync {
 	async fn invoke(&self, context: &ToolContext, input: Value, key: &str) -> Result<Value>;
 }
 pub fn validate_config(value: &Value) -> Result<()> {
-	validate_config_in(value, true)
-}
-pub(crate) fn validate_config_in(value: &Value, local: bool) -> Result<()> {
 	crate::bootstrap::registry_validation()
-		.validate_tool(value, local)
+		.validate_tool(value)
 		.map_err(Into::into)
 }
 

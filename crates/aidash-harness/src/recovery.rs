@@ -1,6 +1,6 @@
 //! Durable worker recovery. Retrying an outbox never repeats a failed tool.
 use aidash_application::{Result, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
-use aidash_domain::semantic::Failure as SemanticFailure;
+use aidash_domain::semantic::{Failure as SemanticFailure, PENDING_REPLAY_SECONDS};
 use aidash_domain::{FailureTarget, RetryState, RunControl, RunState, WaitingState};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -37,7 +37,17 @@ pub async fn recover(
 			store.save(&current, token, "run.semantic_retrying").await?;
 		} else if reason == SemanticFailure::Pending || (reason.transient() && attempts <= 5) {
 			let delay = if reason == SemanticFailure::Pending {
-				1
+				// Each replay repeats the whole semantic-context step, including
+				// its charged workspace embedding, so only the first check of a
+				// live memory attempt comes after a second; later ones wait
+				// PENDING_REPLAY_SECONDS until the attempt answers or expires.
+				if current.recovery.retry.is_some()
+					&& current.recovery.semantic_reason == Some(SemanticFailure::Pending)
+				{
+					PENDING_REPLAY_SECONDS
+				} else {
+					1
+				}
 			} else {
 				2_i64.pow(attempts)
 			};

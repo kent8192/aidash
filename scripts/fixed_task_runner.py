@@ -172,7 +172,7 @@ def fixture_model_ids(corpus, prefix):
 def tool_config(experiment, endpoint, alias):
     return {"registry_node": experiment.node, "provider": "integration.http@1", "operation": "invoke",
             "default_alias": alias, "tier": "integration", "narrow": {},
-            "transport": {"transport": "http", "endpoint": endpoint, "credential_env": None, "replay": "idempotent"}}
+            "transport": {"transport": "http", "endpoint": endpoint, "replay": "idempotent"}}
 
 
 def agent_config(corpus, task, model_ref, tool_refs, fields):
