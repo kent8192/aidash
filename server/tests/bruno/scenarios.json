@@ -7,210 +7,147 @@
       "file": "journeys/01-health-reports-the-configured-node.bru",
       "endpoint": "GET /health",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "OIDC configuration remains public",
       "file": "journeys/02-oidc-configuration-remains-public.bru",
       "endpoint": "GET /auth/config",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Anonymous task reads are unauthorized",
       "file": "journeys/03-anonymous-task-reads-are-unauthorized.bru",
       "endpoint": "GET /api/tasks",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 401",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 401", "JSON response contract"]
     },
     {
       "name": "Anonymous SSE reconnects are unauthorized",
       "file": "journeys/04-anonymous-sse-reconnects-are-unauthorized.bru",
       "endpoint": "GET /api/events/stream",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 401",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 401", "JSON response contract"]
     },
     {
       "name": "Create the scoped authorization policy",
       "file": "journeys/05-create-the-scoped-authorization-policy.bru",
       "endpoint": "POST /api/authorization/{tenant}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Issue alice credential",
       "file": "journeys/06-issue-alice-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Issue bob credential",
       "file": "journeys/07-issue-bob-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Subject creates an owned workspace",
       "file": "journeys/08-subject-creates-an-owned-workspace.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Denied subject cannot read the workspace",
       "file": "journeys/09-denied-subject-cannot-read-the-workspace.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 403",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 403", "JSON response contract"]
     },
     {
       "name": "Update the owned workspace",
       "file": "journeys/10-update-the-owned-workspace.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Stale updates retain conflict behavior",
       "file": "journeys/11-stale-updates-retain-conflict-behavior.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 409",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 409", "JSON response contract"]
     },
     {
       "name": "Denied writes cannot change the workspace",
       "file": "journeys/12-denied-writes-cannot-change-the-workspace.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 403",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 403", "JSON response contract"]
     },
     {
       "name": "Snapshot retains the committed state",
       "file": "journeys/13-snapshot-retains-the-committed-state.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Create a task through the scoped API",
       "file": "journeys/14-create-a-task-through-the-scoped-api.bru",
       "endpoint": "POST /api/workspaces/{id}/tasks",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Task paging retains the response contract",
       "file": "journeys/15-task-paging-retains-the-response-contract.bru",
       "endpoint": "GET /api/tasks",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Strict JSON rejects unknown input fields",
       "file": "journeys/16-strict-json-rejects-unknown-input-fields.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 422",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 422", "JSON response contract"]
     },
     {
       "name": "Wrong media type retains the rejection",
       "file": "journeys/17-wrong-media-type-retains-the-rejection.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 415",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 415", "JSON response contract"]
     },
     {
       "name": "Revoke the owned bearer credential",
       "file": "journeys/18-revoke-the-owned-bearer-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials/{id}/revoke",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Revocation is applied on subsequent reads",
       "file": "journeys/19-revocation-is-applied-on-subsequent-reads.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 401",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 401", "JSON response contract"]
     },
     {
       "name": "Start the browser login",
       "file": "journeys/20-start-the-browser-login.bru",
       "endpoint": "GET /auth/login",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 307",
-        "Bound browser login redirect"
-      ]
+      "required_checks": ["HTTP 307", "Bound browser login redirect"]
     },
     {
       "name": "Authorize against the local OIDC fixture",
       "file": "journeys/21-authorize-against-the-local-oidc-fixture.bru",
       "endpoint": null,
       "scenario": "external OIDC authorization",
-      "required_checks": [
-        "HTTP 307",
-        "Callback stays on the configured origin"
-      ]
+      "required_checks": ["HTTP 307", "Callback stays on the configured origin"]
     },
     {
       "name": "Exchange code for the opaque browser session",
@@ -228,119 +165,84 @@
       "file": "journeys/23-browser-registration-requires-csrf.bru",
       "endpoint": "POST /auth/registration",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 403",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 403", "JSON response contract"]
     },
     {
       "name": "Create the browser registration",
       "file": "journeys/24-create-the-browser-registration.bru",
       "endpoint": "POST /auth/registration",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
-      "name": "Approve the browser mapping as operator",
-      "file": "journeys/25-approve-the-browser-mapping-as-operator.bru",
+      "name": "Approve the browser mapping as Deployment Administrator",
+      "file": "journeys/25-approve-the-browser-mapping-as-deployment-administrator.bru",
       "endpoint": "POST /api/dashboard/registrations/{id}/approve",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Browser session reports its approved mapping",
       "file": "journeys/26-browser-session-reports-its-approved-mapping.bru",
       "endpoint": "GET /auth/session",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Cookie writes require the CSRF token",
       "file": "journeys/27-cookie-writes-require-the-csrf-token.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 403",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 403", "JSON response contract"]
     },
     {
       "name": "Cookie writes reject another origin",
       "file": "journeys/28-cookie-writes-reject-another-origin.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 403",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 403", "JSON response contract"]
     },
     {
       "name": "Cookie writes accept matching origin and CSRF",
       "file": "journeys/29-cookie-writes-accept-matching-origin-and-csrf.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Cookie reads use the approved authority",
       "file": "journeys/30-cookie-reads-use-the-approved-authority.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 200",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 200", "JSON response contract"]
     },
     {
       "name": "Logout requires CSRF",
       "file": "journeys/31-logout-requires-csrf.bru",
       "endpoint": "POST /auth/logout",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 403",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 403", "JSON response contract"]
     },
     {
       "name": "Logout invalidates the opaque session",
       "file": "journeys/32-logout-invalidates-the-opaque-session.bru",
       "endpoint": "POST /auth/logout",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 204"
-      ]
+      "required_checks": ["HTTP 204"]
     },
     {
       "name": "Logged out cookies cannot authenticate",
       "file": "journeys/33-logged-out-cookies-cannot-authenticate.bru",
       "endpoint": "GET /auth/session",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 401",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 401", "JSON response contract"]
     },
     {
       "name": "Logged out cookies cannot read workspace data",
       "file": "journeys/34-logged-out-cookies-cannot-read-workspace-data.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": [
-        "HTTP 401",
-        "JSON response contract"
-      ]
+      "required_checks": ["HTTP 401", "JSON response contract"]
     },
     {
       "name": "0101 authorization-issue-credential - Issue a fresh subject credential",
@@ -359,20 +261,14 @@
       "file": "contracts/0036-fresh-browser-session.bru",
       "endpoint": "GET /auth/login",
       "scenario": "fresh browser session",
-      "required_checks": [
-        "HTTP 307",
-        "Bound browser login redirect"
-      ]
+      "required_checks": ["HTTP 307", "Bound browser login redirect"]
     },
     {
       "name": "Fresh session: Authorize against the local OIDC fixture",
       "file": "contracts/0037-fresh-browser-session.bru",
       "endpoint": null,
       "scenario": "fresh browser session",
-      "required_checks": [
-        "HTTP 307",
-        "Callback stays on the configured origin"
-      ]
+      "required_checks": ["HTTP 307", "Callback stays on the configured origin"]
     },
     {
       "name": "Fresh session: Exchange code for the opaque browser session",
@@ -1262,9 +1158,9 @@
       ]
     },
     {
-      "name": "0177 authorization_graph_operator_grants - Anonymous request is rejected",
-      "file": "contracts/0177-authorization_graph_operator_grants.bru",
-      "endpoint": "GET /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0177 authorization_peer_graph_grants - Anonymous request is rejected",
+      "file": "contracts/0177-authorization_peer_graph_grants.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
       "required_checks": [
@@ -1273,9 +1169,9 @@
       ]
     },
     {
-      "name": "0178 authorization_graph_operator_grants - Malformed bearer syntax is rejected",
-      "file": "contracts/0178-authorization_graph_operator_grants.bru",
-      "endpoint": "GET /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0178 authorization_peer_graph_grants - Malformed bearer syntax is rejected",
+      "file": "contracts/0178-authorization_peer_graph_grants.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
       "required_checks": [
@@ -1284,9 +1180,9 @@
       ]
     },
     {
-      "name": "0179 authorization_graph_operator_grants - Application read preserves the typed response contract",
-      "file": "contracts/0179-authorization_graph_operator_grants.bru",
-      "endpoint": "GET /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0179 authorization_peer_graph_grants - Application read preserves the typed response contract",
+      "file": "contracts/0179-authorization_peer_graph_grants.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
       "required_checks": [
@@ -1296,9 +1192,9 @@
       ]
     },
     {
-      "name": "0180 authorization_graph_operator_grants - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/0180-authorization_graph_operator_grants.bru",
-      "endpoint": "GET /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0180 authorization_peer_graph_grants - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/0180-authorization_peer_graph_grants.bru",
+      "endpoint": "GET /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
       "required_checks": [
@@ -1307,9 +1203,9 @@
       ]
     },
     {
-      "name": "0181 authorization_set_graph_operator_grant - Anonymous request is rejected",
-      "file": "contracts/0181-authorization_set_graph_operator_grant.bru",
-      "endpoint": "POST /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0181 authorization_set_peer_graph_grant - Anonymous request is rejected",
+      "file": "contracts/0181-authorization_set_peer_graph_grant.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
       "required_checks": [
@@ -1319,9 +1215,9 @@
       ]
     },
     {
-      "name": "0182 authorization_set_graph_operator_grant - Wrong JSON media type is rejected",
-      "file": "contracts/0182-authorization_set_graph_operator_grant.bru",
-      "endpoint": "POST /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0182 authorization_set_peer_graph_grant - Wrong JSON media type is rejected",
+      "file": "contracts/0182-authorization_set_peer_graph_grant.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
       "required_checks": [
@@ -1331,9 +1227,9 @@
       ]
     },
     {
-      "name": "0183 authorization_set_graph_operator_grant - Malformed JSON cannot reach the use case",
-      "file": "contracts/0183-authorization_set_graph_operator_grant.bru",
-      "endpoint": "POST /api/authorization/{tenant}/graph-operator-grants",
+      "name": "0183 authorization_set_peer_graph_grant - Malformed JSON cannot reach the use case",
+      "file": "contracts/0183-authorization_set_peer_graph_grant.bru",
+      "endpoint": "POST /api/authorization/{tenant}/peer-graph-grants",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
       "required_checks": [
@@ -2488,10 +2384,7 @@
       "endpoint": "GET /auth/config",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Public contract contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Public contract contract"]
     },
     {
       "name": "0281 sessions-configuration - Untrusted bearer does not restrict public reads",
@@ -2925,9 +2818,9 @@
       ]
     },
     {
-      "name": "0319 sessions-admin-operator-grant - Anonymous request is rejected",
-      "file": "contracts/0319-sessions-admin-operator-grant.bru",
-      "endpoint": "POST /api/dashboard/identities/{id}/operator-grant",
+      "name": "0319 sessions-deployment-administrator-grant - Anonymous request is rejected",
+      "file": "contracts/0319-sessions-deployment-administrator-grant.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/deployment-administrator-grant",
       "scenario": "Anonymous request is rejected",
       "status": 401,
       "required_checks": [
@@ -2937,9 +2830,9 @@
       ]
     },
     {
-      "name": "0320 sessions-admin-operator-grant - Wrong JSON media type is rejected",
-      "file": "contracts/0320-sessions-admin-operator-grant.bru",
-      "endpoint": "POST /api/dashboard/identities/{id}/operator-grant",
+      "name": "0320 sessions-deployment-administrator-grant - Wrong JSON media type is rejected",
+      "file": "contracts/0320-sessions-deployment-administrator-grant.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/deployment-administrator-grant",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
       "required_checks": [
@@ -2949,9 +2842,9 @@
       ]
     },
     {
-      "name": "0321 sessions-admin-operator-grant - Malformed JSON cannot reach the use case",
-      "file": "contracts/0321-sessions-admin-operator-grant.bru",
-      "endpoint": "POST /api/dashboard/identities/{id}/operator-grant",
+      "name": "0321 sessions-deployment-administrator-grant - Malformed JSON cannot reach the use case",
+      "file": "contracts/0321-sessions-deployment-administrator-grant.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/deployment-administrator-grant",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
       "required_checks": [
@@ -2961,9 +2854,9 @@
       ]
     },
     {
-      "name": "0322 sessions-admin-operator-grants - Anonymous request is rejected",
-      "file": "contracts/0322-sessions-admin-operator-grants.bru",
-      "endpoint": "GET /api/dashboard/operator-grants",
+      "name": "0322 sessions-deployment-administrator-grants - Anonymous request is rejected",
+      "file": "contracts/0322-sessions-deployment-administrator-grants.bru",
+      "endpoint": "GET /api/dashboard/deployment-administrator-grants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
       "required_checks": [
@@ -2972,9 +2865,9 @@
       ]
     },
     {
-      "name": "0323 sessions-admin-operator-grants - Malformed bearer syntax is rejected",
-      "file": "contracts/0323-sessions-admin-operator-grants.bru",
-      "endpoint": "GET /api/dashboard/operator-grants",
+      "name": "0323 sessions-deployment-administrator-grants - Malformed bearer syntax is rejected",
+      "file": "contracts/0323-sessions-deployment-administrator-grants.bru",
+      "endpoint": "GET /api/dashboard/deployment-administrator-grants",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
       "required_checks": [
@@ -2983,9 +2876,9 @@
       ]
     },
     {
-      "name": "0324 sessions-admin-operator-grants - Application read preserves the typed response contract",
-      "file": "contracts/0324-sessions-admin-operator-grants.bru",
-      "endpoint": "GET /api/dashboard/operator-grants",
+      "name": "0324 sessions-deployment-administrator-grants - Application read preserves the typed response contract",
+      "file": "contracts/0324-sessions-deployment-administrator-grants.bru",
+      "endpoint": "GET /api/dashboard/deployment-administrator-grants",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
       "required_checks": [
@@ -6630,10 +6523,7 @@
       "endpoint": "GET /.well-known/aidash",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Public contract contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Public contract contract"]
     },
     {
       "name": "0634 identity - Untrusted bearer does not restrict public reads",
@@ -9816,10 +9706,7 @@
       "endpoint": "GET /live",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Public contract contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Public contract contract"]
     },
     {
       "name": "0906 process-live - Untrusted bearer does not restrict public reads",
@@ -9849,10 +9736,7 @@
       "endpoint": "GET /ready",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Public contract contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Public contract contract"]
     },
     {
       "name": "0909 process-ready - Untrusted bearer does not restrict public reads",
@@ -9882,10 +9766,7 @@
       "endpoint": "GET /api/openapi.json",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Public contract contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Public contract contract"]
     },
     {
       "name": "0912 openapi - Untrusted bearer does not restrict public reads",
@@ -10250,10 +10131,7 @@
       "endpoint": "GET /api/events/stream",
       "scenario": "Initial event replay",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Initial event replay contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Initial event replay contract"]
     },
     {
       "name": "0944 stream - Last-Event-ID overrides the query cursor",
@@ -10328,10 +10206,7 @@
       "endpoint": "GET /health",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Public contract contract"
-      ]
+      "required_checks": ["Exact HTTP 200", "Public contract contract"]
     },
     {
       "name": "0951 health - Untrusted bearer does not restrict public reads",
@@ -10460,9 +10335,7 @@
       "endpoint": "GET /{<path:asset>}",
       "scenario": "Missing asset does not fall back to the SPA",
       "status": 404,
-      "required_checks": [
-        "Exact HTTP 404"
-      ]
+      "required_checks": ["Exact HTTP 404"]
     },
     {
       "name": "0963 frontend-asset - Client route falls back to the SPA",
@@ -10514,9 +10387,7 @@
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Missing asset does not fall back to the SPA",
       "status": 404,
-      "required_checks": [
-        "Exact HTTP 404"
-      ]
+      "required_checks": ["Exact HTTP 404"]
     },
     {
       "name": "0968 frontend-asset-head - Client route falls back to the SPA",
@@ -11330,15 +11201,15 @@
       ]
     },
     {
-      "name": "1038 provider-credential-list - Missing Store fails closed for the operator",
+      "name": "1038 provider-credential-list - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1038-provider-credential-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11387,15 +11258,15 @@
       ]
     },
     {
-      "name": "1043 provider-credential-get - Missing Store fails closed for the operator",
+      "name": "1043 provider-credential-get - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1043-provider-credential-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11445,16 +11316,16 @@
       ]
     },
     {
-      "name": "1048 provider-credential-revoke - Missing Store fails closed for the operator",
+      "name": "1048 provider-credential-revoke - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1048-provider-credential-revoke.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Rejected input preserves committed workspace state",
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11542,16 +11413,16 @@
       ]
     },
     {
-      "name": "1056 provider-credential-delete - Missing Store fails closed for the operator",
+      "name": "1056 provider-credential-delete - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1056-provider-credential-delete.bru",
       "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Rejected input preserves committed workspace state",
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11638,15 +11509,15 @@
       ]
     },
     {
-      "name": "1064 provider-credential-binding-list - Missing Store fails closed for the operator",
+      "name": "1064 provider-credential-binding-list - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1064-provider-credential-binding-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11684,15 +11555,15 @@
       ]
     },
     {
-      "name": "1068 provider-credential-binding-get - Missing Store fails closed for the operator",
+      "name": "1068 provider-credential-binding-get - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1068-provider-credential-binding-get.bru",
       "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11731,16 +11602,16 @@
       ]
     },
     {
-      "name": "1072 provider-credential-binding-update - Missing Store fails closed for the operator",
+      "name": "1072 provider-credential-binding-update - Missing Store fails closed for the Deployment Administrator",
       "file": "contracts/1072-provider-credential-binding-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
-      "scenario": "Missing Store fails closed for the operator",
+      "scenario": "Missing Store fails closed for the Deployment Administrator",
       "status": 404,
       "required_checks": [
         "Rejected input preserves committed workspace state",
         "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Missing Store fails closed for the operator contract"
+        "Missing Store fails closed for the Deployment Administrator contract"
       ]
     },
     {
@@ -11882,10 +11753,10 @@
       ]
     },
     {
-      "name": "1085 tenant-administration - Operator bearer is never a Tenant Administrator",
+      "name": "1085 tenant-administration - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1085-tenant-administration.bru",
       "endpoint": "GET /api/tenants/{tenant}/administration",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",
@@ -11915,10 +11786,10 @@
       ]
     },
     {
-      "name": "1088 tenant-registrations - Operator bearer is never a Tenant Administrator",
+      "name": "1088 tenant-registrations - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1088-tenant-registrations.bru",
       "endpoint": "GET /api/tenants/{tenant}/registrations",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",
@@ -11949,10 +11820,10 @@
       ]
     },
     {
-      "name": "1091 tenant-registration-approve - Operator bearer is never a Tenant Administrator",
+      "name": "1091 tenant-registration-approve - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1091-tenant-registration-approve.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Rejected input preserves committed workspace state",
@@ -12009,10 +11880,10 @@
       ]
     },
     {
-      "name": "1096 tenant-registration-reject - Operator bearer is never a Tenant Administrator",
+      "name": "1096 tenant-registration-reject - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1096-tenant-registration-reject.bru",
       "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Rejected input preserves committed workspace state",
@@ -12056,10 +11927,10 @@
       ]
     },
     {
-      "name": "1100 tenant-mappings - Operator bearer is never a Tenant Administrator",
+      "name": "1100 tenant-mappings - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1100-tenant-mappings.bru",
       "endpoint": "GET /api/tenants/{tenant}/mappings",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Exact HTTP 403",
@@ -12101,10 +11972,10 @@
       ]
     },
     {
-      "name": "1104 tenant-mapping-disable - Operator bearer is never a Tenant Administrator",
+      "name": "1104 tenant-mapping-disable - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1104-tenant-mapping-disable.bru",
       "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Rejected input preserves committed workspace state",
@@ -12161,10 +12032,10 @@
       ]
     },
     {
-      "name": "1109 tenant-subject-groups - Operator bearer is never a Tenant Administrator",
+      "name": "1109 tenant-subject-groups - Deployment Administrator bearer is never a Tenant Administrator",
       "file": "contracts/1109-tenant-subject-groups.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
-      "scenario": "Operator bearer is never a Tenant Administrator",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
       "required_checks": [
         "Rejected input preserves committed workspace state",
@@ -12292,16 +12163,16 @@
       ]
     },
     {
-      "name": "1120 provider-authorization-start - Operator bearer has no browser session to bind",
+      "name": "1120 provider-authorization-start - Deployment Administrator bearer has no browser session to bind",
       "file": "contracts/1120-provider-authorization-start.bru",
       "endpoint": "POST /api/tenants/{tenant}/provider-authorizations/{provider}",
-      "scenario": "Operator bearer has no browser session to bind",
+      "scenario": "Deployment Administrator bearer has no browser session to bind",
       "status": 403,
       "required_checks": [
         "Rejected input preserves committed workspace state",
         "Exact HTTP 403",
         "Stable authorization error envelope",
-        "Operator bearer has no browser session to bind contract"
+        "Deployment Administrator bearer has no browser session to bind contract"
       ]
     },
     {
