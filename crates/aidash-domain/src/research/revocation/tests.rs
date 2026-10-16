@@ -114,6 +114,20 @@ fn an_already_revoked_result_has_its_arguments_redacted() {
 	assert!(!redact(&mut history, &BTreeSet::new()));
 }
 
+/// Another tool's result that happens to hold the placeholder's fields is
+/// neither research nor a placeholder, so its arguments stay.
+#[rstest]
+fn an_unrelated_result_shaped_like_the_placeholder_is_kept() {
+	let lookalike = json!({"revoked": true, "invocation": "read"});
+	let mut history = vec![tool(1, "lookup", lookalike.clone())];
+	assert!(!redact(&mut history, &BTreeSet::new()));
+	let ContextEvent::Tool { call, result } = &history[0].event else {
+		unreachable!()
+	};
+	assert_eq!(result, &lookalike);
+	assert_ne!(call.arguments, ContextEvent::revoked_arguments());
+}
+
 #[rstest]
 fn a_pending_approval_result_is_research_too() {
 	let pending = json!({

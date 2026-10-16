@@ -11,6 +11,10 @@ pub struct MessageReadCoverage {
 	pub ranges: Vec<[usize; 2]>,
 }
 
+/// The contract marker of a revoked research result placeholder, which no
+/// other tool result carries (ADR 0046).
+pub const REVOKED_RESULT_CONTRACT: &str = "aidash.research.revoked/1";
+
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -776,15 +780,19 @@ impl ContextEvent {
 	/// carry this instead; the Context Journal keeps the original (ADR 0046).
 	pub fn revoked_result(call_id: &str) -> Value {
 		json!({
+			"contract": REVOKED_RESULT_CONTRACT,
 			"revoked": true,
 			"invocation": call_id,
 			"explanation": "This Run's Research evidence was revoked. Its content can no longer be read or cited.",
 		})
 	}
 
-	/// Whether this result is already a [`Self::revoked_result`].
+	/// Whether this result is already a [`Self::revoked_result`]. Only its
+	/// contract marker counts: any tool may return the other fields.
 	pub fn is_revoked_result(result: &Value) -> bool {
-		result["revoked"] == json!(true) && result["invocation"].is_string()
+		result["contract"] == REVOKED_RESULT_CONTRACT
+			&& result["revoked"] == json!(true)
+			&& result["invocation"].is_string()
 	}
 
 	/// What replaces a revoked research call's arguments, which name the

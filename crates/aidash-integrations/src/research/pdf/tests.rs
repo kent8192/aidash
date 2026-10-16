@@ -200,3 +200,39 @@ fn an_encrypted_document_that_permits_extraction_is_read() {
 		}]
 	);
 }
+
+/// A reply within the snapshot bounds fits the child's output cap even when
+/// JSON escaping doubles its text.
+#[rstest]
+fn the_reply_cap_holds_an_escaped_text_at_the_snapshot_bounds() {
+	let text = "\\\"".repeat(13);
+	let lines = (0..MAX_LINES)
+		.map(|n| Line {
+			text: text.clone(),
+			page: Some(u32::try_from(n % MAX_PAGES).unwrap() + 1),
+		})
+		.collect::<Vec<_>>();
+	assert!(lines.iter().map(|line| line.text.len()).sum::<usize>() <= MAX_SNAPSHOT_BYTES);
+	let reply = Reply::Text(PdfText {
+		title: Some("\"".repeat(MAX_TITLE_BYTES)),
+		page_count: u32::try_from(MAX_PAGES).unwrap(),
+		lines,
+		pages_without_text: (1..=u32::try_from(MAX_PAGES).unwrap()).collect(),
+		completeness: Completeness::TextLimit,
+	});
+	let serialized = serde_json::to_vec(&reply).unwrap();
+	assert!(serialized.len() > 2 * MAX_SNAPSHOT_BYTES + 64 * 1024);
+	assert!(serialized.len() <= MAX_REPLY_BYTES);
+}
+
+/// Info-dictionary titles without a byte order mark are PDFDocEncoding, which
+/// differs from Latin-1 in its typographic punctuation.
+#[rstest]
+#[case::em_dash_and_quotes(b"\x8dReport\x8e \x84 2026".to_vec(), "\u{201C}Report\u{201D} \u{2014} 2026")]
+#[case::bullet_and_euro(b"\x80 Costs in \xa0".to_vec(), "\u{2022} Costs in \u{20AC}")]
+#[case::latin_1_letters(b"Caf\xe9".to_vec(), "Caf\u{e9}")]
+#[case::utf_16(vec![0xfe, 0xff, 0x20, 0x14], "\u{2014}")]
+#[case::utf_8(b"\xef\xbb\xbf\xe2\x80\x94".to_vec(), "\u{2014}")]
+fn titles_decode_as_pdf_text_strings(#[case] raw: Vec<u8>, #[case] expected: &str) {
+	assert_eq!(decode_text_string(&raw), expected);
+}

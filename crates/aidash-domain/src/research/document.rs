@@ -93,7 +93,9 @@ impl ExtractedPage {
 				.windows(2)
 				.all(|pair| pair[0] < pair[1])
 			|| self.original.as_ref().is_some_and(|original| {
-				self.pages_without_text.is_empty() || original.len() > MAX_ORIGINAL_BYTES
+				self.pages_without_text.is_empty()
+					|| original.is_empty()
+					|| original.len() > MAX_ORIGINAL_BYTES
 			}) || bytes > MAX_SNAPSHOT_BYTES
 			|| self.lines.iter().any(|line| {
 				line.text.len() > MAX_LINE_BYTES
