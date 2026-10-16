@@ -4756,6 +4756,41 @@ async fn oversized_fixed_content_truncates_the_snapshot_to_fit(
 	assert!(requests[0].ensure_fits(128_000).is_ok());
 }
 
+/// URL intents render beside the bounded snapshot, so the snapshot leaves
+/// room for them rather than fitting alone and overflowing the request.
+#[rstest]
+#[tokio::test]
+async fn url_intents_are_reserved_before_the_snapshot_is_bounded(mut canonical: Fixture) {
+	let pages: Vec<String> = (0..5)
+		.map(|n| format!("https://example.com/{n}/{}", "p".repeat(4000)))
+		.collect();
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	// Leaves room for five long pages beside a snapshot bounded with them in
+	// view, but not beside one bounded as if they were absent.
+	state.instructions = "x".repeat(91_000);
+	state.url_intents = vec![aidash_domain::research::intent::UrlIntent {
+		input_key: None,
+		pages: pages.clone(),
+	}];
+	canonical.backend.0.task.lock().unwrap().description = "d".repeat(400_000);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[0].ensure_fits(128_000).is_ok());
+	assert!(
+		requests[0]
+			.input_body()
+			.to_string()
+			.contains("snapshot_truncated")
+	);
+	assert_eq!(
+		step_state(&requests[0])["url_intents"]["pages"],
+		json!(pages)
+	);
+}
+
 /// A semantic read that fills its whole budget must still fit beside fixed
 /// content that leaves less headroom than the Run-fixed semantic budget.
 #[rstest]

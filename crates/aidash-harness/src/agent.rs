@@ -1344,7 +1344,19 @@ impl<'a> Executor<'a> {
 				// through its Estimate Snapshot.
 				let available =
 					estimate.bytes_for_tokens(budget.remaining(&Context::default(), &fixed_context));
-				let message_size = context::estimated_tokens(&json!(run_messages).to_string());
+				// Catch-up only summarizes; it never acts on a request. The URL
+				// intents render beside the snapshot, so they are reserved before
+				// it is bounded, like the run messages.
+				let intent_payload = (!requested_pages.is_empty() && !run_message_catchup).then(|| {
+					json!({
+						"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+						"pages": requested_pages,
+					})
+				});
+				let message_size = context::estimated_tokens(&json!(run_messages).to_string())
+					+ intent_payload
+						.as_ref()
+						.map_or(0, |payload| context::estimated_tokens(&payload.to_string()));
 				let volatile_budget = available.saturating_sub(message_size) / 4;
 				let snapshot_fit = if ordered {
 					// Stable fields use a Run-stable quota so every step renders the
@@ -1375,12 +1387,8 @@ impl<'a> Executor<'a> {
 				if !run_messages.is_empty() {
 					pinned["run_messages"] = json!(run_messages);
 				}
-				// Catch-up only summarizes; it never acts on a request.
-				if !requested_pages.is_empty() && !run_message_catchup {
-					pinned["url_intents"] = json!({
-						"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
-						"pages": requested_pages,
-					});
+				if let Some(payload) = intent_payload {
+					pinned["url_intents"] = payload;
 				}
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);
