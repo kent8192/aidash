@@ -31,13 +31,15 @@ export type Readiness = "ready" | "not_set_up" | "not_approved" | "unknown";
  * offered for Page reading.
  */
 export function useResearch(agent: Agent | undefined, data: State) {
-  const bound = researchBindings(agent, data.registry);
+  const bound = researchBindings(agent, data.registry, data.node.id);
   const providers = useQuery({
     queryKey: ["research-providers"],
     queryFn: ({ signal }) =>
       apiFetch<ResearchProviders>("/api/research/providers", { signal }),
     enabled: bound.length > 0,
-    staleTime: 60_000,
+    // Another administrator may approve or revoke a definition at any time,
+    // and no event announces it here, so readiness is read again.
+    refetchInterval: 30_000,
     retry: false,
   });
   const readiness = (binding: ResearchBinding): Readiness => {

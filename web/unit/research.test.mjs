@@ -185,6 +185,45 @@ test("a URL keeps the closing brackets it opens itself", () => {
   );
 });
 
+test("a URL in angle brackets keeps its trailing punctuation", () => {
+  assert.deepEqual(
+    urlIntents(
+      "Read <https://en.wikipedia.org/wiki/Yahoo!> and https://example.com/page.",
+    ),
+    ["https://en.wikipedia.org/wiki/Yahoo!", "https://example.com/page"],
+  );
+});
+
+test("a binding qualified with another Registry node never resolves a local entry", () => {
+  const remote = agent([
+    {
+      kind: "tool",
+      target: {
+        registry_node: "aidash://peer",
+        id: "aidash.research.page.fetch",
+        version: "1.0.0",
+      },
+    },
+  ]);
+  assert.deepEqual(researchBindings(remote, registry, "aidash://home"), []);
+  const local = agent([
+    {
+      kind: "tool",
+      target: {
+        registry_node: "aidash://home",
+        id: "aidash.research.page.fetch",
+        version: "1.0.0",
+      },
+    },
+  ]);
+  assert.deepEqual(
+    researchBindings(local, registry, "aidash://home").map(
+      (binding) => binding.operation,
+    ),
+    ["fetch"],
+  );
+});
+
 test("a URL longer than the server accepts is not offered", () => {
   const base = "https://example.com/";
   const fits = base + "a".repeat(4096 - base.length);

@@ -20,7 +20,7 @@ export type ResearchBinding = {
   definitions: { id: string; version: string }[];
 };
 
-type Reference = { id: string; version: string };
+type Reference = { id: string; version: string; registry_node?: string };
 type Entry = {
   id: string;
   version: string;
@@ -39,7 +39,14 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function reference(value: unknown): Reference | undefined {
   const item = record(value);
   return typeof item?.id === "string" && typeof item.version === "string"
-    ? { id: item.id, version: item.version }
+    ? {
+        id: item.id,
+        version: item.version,
+        registry_node:
+          typeof item.registry_node === "string"
+            ? item.registry_node
+            : undefined,
+      }
     : undefined;
 }
 
@@ -48,14 +55,20 @@ function reference(value: unknown): Reference | undefined {
  * once, in contract order. A tool is a research operation when its
  * descriptor names a `research.` provider. A bundle Binding exposes only its
  * selected members when it names any, and a nested bundle all of its own,
- * as the server resolves them.
+ * as the server resolves them. `registry` is the entries of the Registry on
+ * `node`: a target qualified with another Registry node is never one of them,
+ * even when an entry here has the same kind, id and version.
  */
 export function researchBindings(
   agent: Entry | undefined,
   registry: Entry[],
+  node?: string,
 ): ResearchBinding[] {
   const find = (kind: string, target: Reference | undefined) =>
     target &&
+    (node === undefined ||
+      target.registry_node === undefined ||
+      target.registry_node === node) &&
     registry.find(
       (entry) =>
         entry.kind === kind &&
@@ -175,12 +188,17 @@ function trimUrl(raw: string): string {
 /**
  * Distinct absolute http(s) URLs in `text`, in order of appearance, that the
  * host would accept as URL intents: no credentials, no fragment and at most
- * `MAX_URL_BYTES` long. Trailing sentence punctuation is not part of a URL.
+ * `MAX_URL_BYTES` long. Trailing sentence punctuation is not part of a URL,
+ * unless the URL is written in angle brackets (`<https://example.com/Yahoo!>`,
+ * RFC 3986 Appendix C), which keep it exactly as written.
  */
 export function urlIntents(text: string): string[] {
   const found: string[] = [];
   for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
-    const candidate = trimUrl(match[0]);
+    const start = match.index ?? 0;
+    const delimited =
+      text[start - 1] === "<" && text[start + match[0].length] === ">";
+    const candidate = delimited ? match[0] : trimUrl(match[0]);
     if (new TextEncoder().encode(candidate).length > MAX_URL_BYTES) continue;
     let url: URL;
     try {
