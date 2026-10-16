@@ -14,7 +14,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{QueryRow, execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, Func, JoinType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SelectStatement, TableRef,
+	QueryStatementBuilder, SelectStatement, SimpleExpr, TableRef,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -67,8 +67,10 @@ struct Candidate {
 	snapshot_max_age_seconds: Option<i64>,
 }
 
-/// A Run's phase once it has ended; terminal Runs never change phase again.
-const ENDED: &str = "r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED')";
+/// The Run has ended; terminal Runs never change phase again.
+fn ended() -> SimpleExpr {
+	Expr::col((Alias::new("r"), Alias::new("phase"))).is_in(["COMPLETED", "FAILED", "CANCELLED"])
+}
 
 fn snapshot(column: &str) -> (Alias, Alias) {
 	(Alias::new("s"), Alias::new(column))
@@ -82,7 +84,9 @@ fn retained() -> SelectStatement {
 		.column(snapshot("fetched_at"))
 		// A terminal Run is saved for the last time when it ends.
 		.expr_as(
-			Expr::cust(format!("CASE WHEN {ENDED} THEN r.updated_at END")),
+			Expr::case()
+				.when(ended(), Expr::col((Alias::new("r"), Alias::new("updated_at"))))
+				.else_result(Expr::null()),
 			Alias::new("run_ended_at"),
 		)
 		.column((Alias::new("t"), Alias::new("snapshot_after_run_seconds")))
@@ -155,7 +159,7 @@ impl SnapshotRetention for Snapshots {
 			// A Run that ended within the shortest post-run period, or a
 			// snapshot younger than the shortest maximum age, keeps its basis.
 			.and_where(
-				Expr::cust(ENDED)
+				ended()
 					.and(Expr::col((Alias::new("r"), Alias::new("updated_at"))).lt(Expr::value(ended_before)))
 					.or(Expr::col(snapshot("fetched_at")).lt(Expr::value(retrieved_before))),
 			)

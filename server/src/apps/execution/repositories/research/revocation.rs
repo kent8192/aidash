@@ -23,6 +23,7 @@ use aidash_domain::{
 	retention::Decider,
 };
 use async_trait::async_trait;
+use chrono::SubsecRound;
 use reinhardt::db::{backends::TransactionExecutor, orm::QueryRow, orm::execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
@@ -53,7 +54,8 @@ impl Journal for StoredJournal<'_> {
 /// keeps its revision, which the worker's own keys derive from; the worker
 /// applies the revocation before its next model request, and the retention
 /// sweep catches a projection it saved meanwhile. A row a worker's step holds
-/// locked is skipped rather than waited on, for the same reasons.
+/// locked is skipped rather than waited on, for the same reasons; the caller
+/// retries it once its own transaction has committed.
 /// `updated_at`, which dates the end of a terminal Run, is kept.
 pub(crate) async fn scrub_projection(
 	tx: &mut dyn TransactionExecutor,
@@ -98,14 +100,41 @@ pub(crate) async fn scrub_projection(
 	Ok(true)
 }
 
+/// Rounds of a scrub retried while a worker's step holds the Run's row, and the
+/// pause between them. A Run still locked after them is left to the worker's
+/// next step and to the next sweep.
+const LOCKED_SCRUB_ROUNDS: u32 = 20;
+const LOCKED_SCRUB_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Scrub a revoked Run's projection in transactions of its own, retrying while
+/// a worker's step holds its row: that step is about to commit a projection
+/// read before the revocation, which the round after it scrubs. Returns
+/// whether a round reached the row.
+async fn scrub_retrying(store: &Store, run: Uuid) -> Result<bool> {
+	for round in 0..LOCKED_SCRUB_ROUNDS {
+		if round > 0 {
+			tokio::time::sleep(LOCKED_SCRUB_PAUSE).await;
+		}
+		let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
+		let done = scrub_projection(tx.as_mut(), store, run).await?;
+		native(tx.commit().await.map_err(crate::Error::from))?;
+		if done {
+			return Ok(true);
+		}
+	}
+	Ok(false)
+}
+
 /// Revoked Runs examined per round trip of the sweep.
 const SCRUB_BATCH: u64 = 64;
 
 /// Scrub the stored projections of revoked Runs that still lack the
 /// revocation, such as one a worker saved while it was being revoked. Every
-/// such Run is examined in one pass, in pages ordered by id.
+/// such Run is examined in one pass, in pages ordered by id; one a worker's
+/// step holds locked is retried at the end of the pass.
 pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 	let mut scrubbed = 0;
+	let mut skipped = Vec::new();
 	let mut after: Option<Uuid> = None;
 	loop {
 		let mut query = Query::select();
@@ -151,11 +180,18 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 			let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
 			let done = scrub_projection(tx.as_mut(), store, *run).await?;
 			native(tx.commit().await.map_err(crate::Error::from))?;
-			scrubbed += u32::from(done);
+			if done {
+				scrubbed += 1;
+			} else {
+				skipped.push(*run);
+			}
 		}
 		if (runs.len() as u64) < SCRUB_BATCH {
 			break;
 		}
+	}
+	for run in skipped {
+		scrubbed += u32::from(scrub_retrying(store, run).await?);
 	}
 	Ok(scrubbed)
 }
@@ -180,6 +216,9 @@ struct Scope<'a> {
 	federation: &'a Federation,
 	decider: Decider,
 	tx: Transaction,
+	/// The revoked Run whose projection a worker's step held locked, scrubbed
+	/// again once the revocation commits.
+	locked: Option<Uuid>,
 }
 
 impl Revocations<'_> {
@@ -213,6 +252,7 @@ impl Revocations<'_> {
 			federation: self.federation,
 			decider,
 			tx,
+			locked: None,
 		})
 	}
 }
@@ -347,7 +387,9 @@ impl RevocationScope for Scope<'_> {
 	}
 	async fn revoke(&mut self, revocation: &EvidenceRevocation) -> Result<EvidenceRevocation> {
 		let run = revocation.run_id;
-		let at = revocation.revoked_at;
+		// PostgreSQL keeps microseconds, so the first answer carries the time
+		// a repeated revocation reads back.
+		let at = revocation.revoked_at.trunc_subsecs(6);
 		let tx = self.executor();
 		// Research writes of the Run take the same lock, so an attempt in
 		// flight records no evidence once this commits.
@@ -361,7 +403,9 @@ impl RevocationScope for Scope<'_> {
 		let attempts = native(ResearchAttempt::revoke(tx, run).await)?;
 		let invocations = native(revoke_invocations(tx, Some(run)).await)?;
 		let store = self.federation.store.clone();
-		scrub_projection(self.executor(), &store, run).await?;
+		if !scrub_projection(self.executor(), &store, run).await? {
+			self.locked = Some(run);
+		}
 		self.close_disclosures(run).await?;
 		let recorded = EvidenceRevocation {
 			removed: Removed {
@@ -372,6 +416,7 @@ impl RevocationScope for Scope<'_> {
 				invocations,
 				snapshot_digests,
 			},
+			revoked_at: at,
 			..revocation.clone()
 		};
 		native(ResearchRevocation::record(self.executor(), &recorded).await)?;
@@ -381,7 +426,16 @@ impl RevocationScope for Scope<'_> {
 		self: Box<Self>,
 		result: Result<EvidenceRevocation>,
 	) -> Result<EvidenceRevocation> {
-		self.complete(result).await
+		let (store, locked) = (self.federation.store.clone(), self.locked);
+		let recorded = self.complete(result).await?;
+		// The revocation has committed; a failed retry leaves the projection
+		// to the worker's next step and the sweep rather than failing it.
+		if let Some(run) = locked
+			&& let Err(error) = scrub_retrying(&store, run).await
+		{
+			tracing::warn!(run_id = %run, %error, "revoked projection was not scrubbed after commit");
+		}
+		Ok(recorded)
 	}
 }
 
