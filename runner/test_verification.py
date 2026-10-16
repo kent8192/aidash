@@ -132,6 +132,37 @@ class DeadlineTest(unittest.TestCase):
             self.assertEqual(self.probe(root, {"cancelled": True, "deadline": 0}), 503)
             self.assertFalse((root / "deadline.expired").exists())
 
+    def watch(self, root, control, kind="verify", connections=0):
+        with patch.multiple(collector, CONTROL=root / "control.json", REQUEST=root / "request.json",
+                            EXPIRED=root / "deadline.expired", OUTPUT=root / "output.bin",
+                            OUTPUT_STATE=root / "output.state", OUTPUT_TAIL=root / "output.tail"):
+            collector.save(collector.CONTROL, control)
+            collector.save(collector.REQUEST, {"kind": kind})
+            collector.save(collector.OUTPUT_STATE, {"total": 0, "stored": 0, "connections": connections})
+            return collector.expire_if_running()
+
+    def test_a_deadline_passed_with_the_command_running_is_recorded_without_a_probe(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.assertFalse(self.watch(root, {"deadline": time.monotonic() + 60, "cancelled": False}, connections=1))
+            self.assertFalse((root / "deadline.expired").exists())
+            self.assertTrue(self.watch(root, {"deadline": time.monotonic() - 1, "cancelled": False}, connections=1))
+            self.assertTrue((root / "deadline.expired").exists())
+
+    def test_a_command_that_exited_before_its_deadline_did_not_time_out(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.assertTrue(self.watch(root, {"deadline": time.monotonic() - 1, "cancelled": False}))
+            self.assertFalse((root / "deadline.expired").exists())
+
+    def test_the_watcher_records_no_timeout_for_cancellations_or_python_sessions(self):
+        for control, kind in (({"deadline": 0, "cancelled": True}, "verify"),
+                              ({"deadline": time.monotonic() - 1, "cancelled": False}, "python")):
+            with tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                self.assertTrue(self.watch(root, control, kind=kind, connections=1))
+                self.assertFalse((root / "deadline.expired").exists())
+
     def test_final_logs_report_the_deadline(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

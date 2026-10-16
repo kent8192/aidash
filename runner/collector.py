@@ -28,7 +28,8 @@ OUTPUT_TAIL = Path("/tmp/output.tail")
 TAIL_LIMIT = 16384
 # Present once the liveness deadline expired while the command still ran. Only
 # that failing probe stops a command at its deadline, so this, not the measured
-# runtime, says whether a Check timed out.
+# runtime, says whether a Check timed out. The probe records it, and so does the
+# deadline watcher when no probe came between the deadline and the command's exit.
 EXPIRED = Path("/tmp/deadline.expired")
 
 
@@ -211,6 +212,31 @@ def logs(limit):
                       "deadline_expired": EXPIRED.exists()}))
 
 
+def expire_if_running():
+    """Record an expired deadline once it has passed while the command's output
+    stream is still open, whether or not a liveness probe arrived after it. The
+    execution container's PID 1 holds that stream until the command and its
+    background jobs exit. Returns whether the deadline is decided."""
+    try:
+        state = json.loads(CONTROL.read_bytes())
+        kind = json.loads(REQUEST.read_bytes())["kind"]
+    except FileNotFoundError:
+        return False
+    # A Python session has no liveness deadline to expire.
+    if state["cancelled"] or kind == "python" or EXPIRED.exists():
+        return True
+    if time.monotonic() < state["deadline"]:
+        return False
+    if append_output(b"")["connections"] > 0:
+        EXPIRED.touch()
+    return True
+
+
+def watch_deadline():
+    while not expire_if_running():
+        time.sleep(0.05)
+
+
 class Output(socketserver.BaseRequestHandler):
     def handle(self):
         append_output(b"", connections=1)
@@ -267,6 +293,7 @@ if __name__ == "__main__":
         threading.Thread(target=python_cells.serve, daemon=True).start()
         output = OutputServer(("127.0.0.1", 7071), Output)
         threading.Thread(target=output.serve_forever, daemon=True).start()
+        threading.Thread(target=watch_deadline, daemon=True).start()
         server = ThreadingHTTPServer(("0.0.0.0", 7070), Health)
         server.startup_deadline = time.monotonic() + 120
         server.serve_forever()
