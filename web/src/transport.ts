@@ -9,12 +9,20 @@ let activeConnection: ConnectionProfile | null = null;
 let lifetime = new AbortController();
 
 /** The context selector for a Mapping names its Tenant, so the server looks
- * the Mapping up within that Tenant only (ADR 0047). */
+ * the Mapping up within that Tenant only (ADR 0047). A header carries only
+ * visible ASCII, so the Tenant name is percent-encoded as the server encodes
+ * it: every UTF-8 byte outside visible ASCII, and `%`, becomes `%XX`. */
 export function mappingContext(mapping: {
   tenant: string;
   id: string;
 }): string {
-  return `mapping:${mapping.tenant}:${mapping.id}`;
+  let tenant = "";
+  for (const byte of new TextEncoder().encode(mapping.tenant))
+    tenant +=
+      byte > 0x20 && byte < 0x7f && byte !== 0x25
+        ? String.fromCharCode(byte)
+        : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  return `mapping:${tenant}:${mapping.id}`;
 }
 export function dashboardContext(): string | null {
   return sessionStorage.getItem(CONTEXT_KEY);
