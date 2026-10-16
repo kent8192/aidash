@@ -31,6 +31,8 @@ pub const MAX_VERIFICATION_SECONDS: u64 = 3600;
 pub const MAX_COMMAND_BYTES: usize = 65_536;
 /// Diagnostics kept per Check invocation: the tail of its output.
 pub const MAX_DIAGNOSTIC_BYTES: usize = 4096;
+/// The tail of an unavailable Check's detail that its review request quotes.
+const MAX_REVIEW_DETAIL_BYTES: usize = 512;
 /// Evidence kept per Run. Older entries can no longer match the content of a
 /// later candidate; each invocation stays durable as its capability operation.
 const MAX_EVIDENCE: usize = 32;
@@ -552,10 +554,21 @@ pub enum ReviewReason {
 }
 
 impl ReviewReason {
-	/// The human request text. Diagnostics stay with the evidence.
+	/// The human request text. Diagnostics stay with the evidence, except an
+	/// unavailable Check's bounded detail: the gate makes that review without
+	/// evidence when the node has no Checks or the Run no Working Area, so the
+	/// request is the only place the reviewer can tell those causes apart.
 	pub fn prompt(&self) -> String {
 		let reason = match self {
-			Self::Unavailable { check, .. } => format!("Check {check} could not run"),
+			Self::Unavailable { check, detail } => {
+				let detail = bounded_tail(detail.trim(), MAX_REVIEW_DETAIL_BYTES);
+				let detail = detail.trim_end_matches('.');
+				if detail.is_empty() {
+					format!("Check {check} could not run")
+				} else {
+					format!("Check {check} could not run: {detail}")
+				}
+			}
 			Self::Unbound { check, capability } => {
 				return format!(
 					"Completion Review: Check {check} could not run because this Run's pinned Bindings do not bind capability {capability}. Neither retry nor a new message changes them. Cancel the Run and start a new one with a corrected Agent or Binding."

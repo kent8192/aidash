@@ -683,6 +683,30 @@ fn reviews_offer_only_actions_that_can_recover() {
 	);
 }
 
+/// A review the gate makes without evidence still tells the reviewer why the
+/// Check could not run, within a bound.
+#[test]
+fn an_unavailable_review_quotes_its_bounded_detail() {
+	let unavailable = |detail: &str| {
+		ReviewReason::Unavailable {
+			check: "tests".into(),
+			detail: detail.into(),
+		}
+		.prompt()
+	};
+	let no_area = unavailable("the Run has no Working Area");
+	assert!(
+		no_area.contains("Check tests could not run: the Run has no Working Area. Answer retry"),
+		"{no_area}"
+	);
+	let long = unavailable(&format!("{}end of detail", "x".repeat(4096)));
+	assert!(
+		long.contains("end of detail") && long.len() < 1024,
+		"{long}"
+	);
+	assert!(unavailable("").contains("Check tests could not run. Answer retry"));
+}
+
 /// Neither retrying nor new input restores spent verification time, so that
 /// review offers neither.
 #[test]
