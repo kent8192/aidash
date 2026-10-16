@@ -169,7 +169,10 @@ const thread: Card[] = [
   },
 ];
 
-async function research(page: Page, { admittedPageReading = true } = {}) {
+async function research(
+  page: Page,
+  { admittedPageReading = true, nextVersionWithoutResearch = false } = {},
+) {
   const fixture = await setup(page, { subject: true, coreCapabilities: true });
   await page.goto("/collaboration?channel=workspace-one");
   const data = await page.evaluate(() =>
@@ -209,6 +212,13 @@ async function research(page: Page, { admittedPageReading = true } = {}) {
       narrow: {},
     },
   ];
+  // A later version of the same Agent that binds no research.
+  if (nextVersionWithoutResearch)
+    data.registry.push({
+      ...data.registry[0],
+      version: "1.1.0",
+      config: { ...data.registry[0].config, bindings: [] },
+    });
   const area = {
     id: "area-one",
     workspace_id: "workspace-one",
@@ -456,6 +466,32 @@ test("an Agent's bound research operations show their availability, the Run's us
     }),
   ).toBeVisible();
   await page.screenshot({ path: info.outputPath("research-panel.png") });
+  expect(errors).toEqual([]);
+});
+
+test("the active Run's research stays with its pinned Agent version when another is selected for the next Run", async ({
+  page,
+}) => {
+  const { errors } = await research(page, { nextVersionWithoutResearch: true });
+  await openThread(page);
+  await page.getByLabel("Agent to run").selectOption("researcher@1.1.0");
+  const panel = page.getByRole("region", { name: "Web research", exact: true });
+  await expect(panel.getByRole("listitem")).toHaveCount(4);
+  await expect(
+    panel.getByText("This Run: searches 3/20", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    panel.getByText("Waiting for Web disclosure approval by bob", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  // The selected version binds no research, so it has no readiness to show.
+  await expect(
+    page.getByRole("region", {
+      name: "Web research for the next Run",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

@@ -81,16 +81,19 @@ const READINESS: Record<Readiness, [string, string]> = {
 };
 
 /**
- * The Web research of the selected Agent in a Thread: its bound research
+ * The Web research of an Agent version in a Thread: its bound research
  * operations, their availability on this Node, the per-Run limits and, for a
- * Run, what it has used and which disclosures it is waiting on.
+ * Run, what it has used and which disclosures it is waiting on. `next` marks
+ * the version selected for the next Run when it differs from the shown Run's.
  */
 export function ResearchPanel({
   research,
   run,
+  next = false,
 }: {
   research: ReturnType<typeof useResearch>;
   run?: string | null;
+  next?: boolean;
 }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
@@ -118,14 +121,16 @@ export function ResearchPanel({
   );
   const of = (value: number | undefined, limit: number | undefined) =>
     used ? `${value}/${limit}` : `${limit}`;
+  const title = next
+    ? ja
+      ? "次の Run の Web 調査"
+      : "Web research for the next Run"
+    : ja
+      ? "Web 調査"
+      : "Web research";
   return (
-    <section
-      aria-label={ja ? "Web 調査" : "Web research"}
-      className="grid min-w-0 gap-1.5"
-    >
-      <h4 className="text-[13px] font-semibold">
-        {ja ? "Web 調査" : "Web research"}
-      </h4>
+    <section aria-label={title} className="grid min-w-0 gap-1.5">
+      <h4 className="text-[13px] font-semibold">{title}</h4>
       <ul className="grid gap-0.5">
         {research.bound.map((binding) => (
           <li key={`${binding.provider} ${binding.operation}`}>

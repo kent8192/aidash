@@ -875,25 +875,28 @@ export function ThreadCapabilities({
   const research = useResearch(target, data);
   // Steering reaches the active Run, which reads pages only through the
   // Agent version it was pinned to, whichever version the selector shows.
+  // The research panel reports on that Run, or else the last one, the same way.
   const activeRunId = area ? (session.data?.active_run_id ?? null) : null;
-  const activeRun = useQuery({
-    queryKey: ["run-agent", activeRunId],
+  const shownRun = useQuery({
+    queryKey: ["run-agent", active],
     // The Run details carry the inspection under `run`.
     queryFn: async ({ signal }) =>
-      (await apiFetch<RunDetails>(`/api/runs/${activeRunId}`, { signal })).run,
-    enabled: !!activeRunId,
+      (await apiFetch<RunDetails>(`/api/runs/${active}`, { signal })).run,
+    enabled: !!active,
     staleTime: Infinity,
     retry: false,
   });
   const pinned = agents.find(
     (e) =>
-      e.id === activeRun.data?.agent_id &&
-      e.version === activeRun.data?.agent_version,
+      e.id === shownRun.data?.agent_id &&
+      e.version === shownRun.data?.agent_version,
   );
   const steering = useResearch(pinned, data);
+  const nextIsPinned =
+    !!pinned && target?.id === pinned.id && target.version === pinned.version;
   // The server records a steering URL intent only when the Run was admitted
   // with Page reading, so a definition approved since then does not count.
-  const activeContext = activeRun.data?.context;
+  const activeContext = activeRunId ? shownRun.data?.context : undefined;
   const steerReads =
     steering.canRead &&
     (!activeContext || snapshotReadsPages(activeContext.binding_snapshot));
@@ -945,7 +948,17 @@ export function ThreadCapabilities({
           </NativeSelect>
         </Field>
       )}
-      <ResearchPanel research={research} run={active} />
+      {/* A Run's usage and disclosures belong to the Agent version it was
+          pinned to; a different version selected for the next Run shows its
+          own readiness apart. */}
+      {pinned && <ResearchPanel research={steering} run={active} />}
+      {!nextIsPinned && (
+        <ResearchPanel
+          research={research}
+          run={pinned ? undefined : active}
+          next={!!pinned}
+        />
+      )}
       <Field label={ja ? "次の指示" : "Next instruction"}>
         <Textarea
           disabled={busy}
