@@ -418,7 +418,7 @@ async fn direct_subject_detail_requires_current_visibility_before_any_ledger_rea
 		!repo
 			.calls()
 			.iter()
-			.any(|c| c == operation || c.starts_with("Deployment Administrator."))
+			.any(|c| c == operation || c.starts_with("deployment_administrator."))
 	);
 	assert_eq!(repo.calls().last().unwrap(), "finish");
 	assert_eq!(repo.state.lock().unwrap().rollbacks, 1);

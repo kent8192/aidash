@@ -95,7 +95,7 @@ export async function startFixture() {
         return reply(200, {
           enabled: true,
           provider: "google",
-          desktop_protocol: 1,
+          desktop_protocol: 2,
         });
       }
       if (url.pathname === "/auth/desktop/authorize") {

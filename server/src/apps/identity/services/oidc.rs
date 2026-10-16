@@ -406,7 +406,7 @@ impl DashboardSessions {
 		let f = self.runtime.clone();
 		Ok(Configuration {
 			enabled: f.config.dashboard_session().is_some(),
-			desktop_protocol: 1,
+			desktop_protocol: 2,
 			provider: if f.config.gcip.is_some() {
 				"gcip"
 			} else if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {

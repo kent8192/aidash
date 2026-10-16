@@ -100,7 +100,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path)
         if path.path == "/auth/config":
             self.reply(
-                value={"enabled": True, "provider": "google", "desktop_protocol": 1}
+                value={"enabled": True, "provider": "google", "desktop_protocol": 2}
             )
             return
         if path.path == "/auth/desktop/authorize":
