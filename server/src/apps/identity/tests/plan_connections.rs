@@ -599,6 +599,7 @@ async fn owners_connect_by_pasting_the_callback_and_plan_tokens_stay_in_the_stor
 	assert!(stored[0].contains("plan-access-1") && !stored[0].contains("id-token"));
 	// Neither Plan Tokens nor the issued client reach a response or PostgreSQL.
 	let status = send(&fixture, "browser-a", &context, "GET", PLAN, Value::Null).await;
+	assert_eq!(status.headers()["cache-control"], "no-store");
 	let text = String::from_utf8_lossy(status.body()).to_string();
 	assert!(
 		!text.contains("plan-access") && !text.contains("oaiapp_"),
@@ -623,6 +624,7 @@ async fn owners_connect_by_pasting_the_callback_and_plan_tokens_stay_in_the_stor
 	)
 	.await;
 	assert_eq!(models.status(), 200);
+	assert_eq!(models.headers()["cache-control"], "no-store");
 	assert_eq!(json_body(&models)["models"][0]["slug"], "gpt-5.5");
 
 	// Reconnecting keeps the connection and its issued client.
@@ -642,6 +644,7 @@ async fn owners_connect_by_pasting_the_callback_and_plan_tokens_stay_in_the_stor
 	)
 	.await;
 	assert_eq!(disconnected.status(), 200);
+	assert_eq!(disconnected.headers()["cache-control"], "no-store");
 	assert_eq!(json_body(&disconnected), json!({"revoked": true}));
 	assert!(fixture.store.plaintexts().is_empty());
 	assert!(

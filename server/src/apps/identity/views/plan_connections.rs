@@ -8,6 +8,12 @@ use super::super::{
 use crate::{authorization::identity::Actor, http::json::Json};
 use reinhardt::{Depends, Path, Request, Response, delete, get, http::ViewResult, post};
 
+/// A Plan Connection response describes one subject's own grant, so no cache
+/// may keep it.
+fn json<T: serde::Serialize>(result: crate::Result<T>) -> ViewResult<Response> {
+	crate::http::json(result).map(|r| r.with_header("Cache-Control", "no-store"))
+}
+
 #[get(
 	"/api/tenants/{tenant}/plan-connections/{provider}",
 	name = "plan-connection-status",
@@ -19,7 +25,7 @@ pub async fn status(
 	#[inject] origin: Option<BrowserOrigin>,
 	Path((tenant, provider)): Path<(String, String)>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.status(actor, origin, tenant, provider).await)
+	json(service.status(actor, origin, tenant, provider).await)
 }
 
 #[post(
@@ -73,7 +79,7 @@ pub async fn disconnect(
 	Path((tenant, provider)): Path<(String, String)>,
 	Json(input): Json<Disconnect>,
 ) -> ViewResult<Response> {
-	crate::http::json(
+	json(
 		service
 			.disconnect(actor, origin, tenant, provider, input)
 			.await,
@@ -91,5 +97,5 @@ pub async fn models(
 	#[inject] origin: Option<BrowserOrigin>,
 	Path((tenant, provider)): Path<(String, String)>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.models(actor, origin, tenant, provider).await)
+	json(service.models(actor, origin, tenant, provider).await)
 }
