@@ -211,10 +211,10 @@ impl Research<'_> {
 			// attempt stays charged.
 			Err(refused) => {
 				let result = failure(operation, refused);
-				self.store
+				return self
+					.store
 					.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-					.await?;
-				return Ok(result);
+					.await;
 			}
 		};
 		if records.len() < page.sources.len() {
@@ -264,8 +264,7 @@ impl Research<'_> {
 		};
 		self.store
 			.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-			.await?;
-		Ok(result)
+			.await
 	}
 
 	pub async fn fetch(
@@ -397,10 +396,10 @@ impl Research<'_> {
 			Ok(snapshot) => snapshot,
 			Err(limit) => {
 				let result = failure(operation, limit);
-				self.store
+				return self
+					.store
 					.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-					.await?;
-				return Ok(result);
+					.await;
 			}
 		};
 		let result = self
@@ -408,8 +407,7 @@ impl Research<'_> {
 			.await?;
 		self.store
 			.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-			.await?;
-		Ok(result)
+			.await
 	}
 
 	/// Locate passages of a retained snapshot. Every match is delivered as an
@@ -675,8 +673,7 @@ impl Research<'_> {
 		};
 		self.store
 			.settle(call.run, call.key, outcome, &result)
-			.await?;
-		Ok(result)
+			.await
 	}
 }
 

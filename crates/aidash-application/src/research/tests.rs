@@ -42,6 +42,8 @@ struct Memory {
 	revoke_after_snapshot_read: AtomicBool,
 	/// A retention purge that commits just after the next snapshot read.
 	purge_after_snapshot_read: AtomicBool,
+	/// A revocation that commits just before the next settle.
+	revoke_at_settle: AtomicBool,
 	/// Revoke the Run's evidence after the nth snapshot read (0: never).
 	revoke_after_snapshot_reads: AtomicUsize,
 	snapshot_reads: AtomicUsize,
@@ -220,7 +222,10 @@ impl EvidenceStore for Memory {
 		key: &str,
 		outcome: AttemptOutcome,
 		result: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
+		if self.revoke_at_settle.swap(false, Ordering::SeqCst) {
+			self.revoke(run);
+		}
 		let mut attempts = self.attempts.lock().unwrap();
 		match attempts.get_mut(&(run, key.into())) {
 			Some(entry) if entry.1 == AttemptState::Dispatched => {
@@ -229,8 +234,11 @@ impl EvidenceStore for Memory {
 				} else {
 					result.clone()
 				};
-				entry.1 = AttemptState::Settled { outcome, result };
-				Ok(())
+				entry.1 = AttemptState::Settled {
+					outcome,
+					result: result.clone(),
+				};
+				Ok(result)
 			}
 			_ => Err(crate::Error::Conflict("attempt is not dispatched".into())),
 		}
@@ -1744,6 +1752,30 @@ async fn an_attempt_in_flight_at_revocation_records_nothing_and_stays_charged() 
 		})
 	);
 	assert_eq!(store.usage(run).await.unwrap().fetch_attempts, 1);
+}
+
+/// A result assembled before a revocation committed is not what the caller
+/// gets: settling records the tombstone, and the caller returns that one, so
+/// the invocation never persists the revoked content.
+#[tokio::test]
+async fn a_result_settled_after_revocation_returns_the_tombstone() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	store.revoke_at_settle.store(true, Ordering::SeqCst);
+	let result = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&Search::new("brave", "api.search.brave.com"),
+			&json!({"query": "rust"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result, revocation::tombstone(Operation::Search));
 }
 
 #[tokio::test]

@@ -120,14 +120,16 @@ pub trait EvidenceStore: Send + Sync {
 	async fn account_spend(&self, account: &str, since: DateTime<Utc>) -> Result<u64>;
 	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved>;
 	/// Settles a dispatched attempt exactly once; settling a missing or
-	/// already settled attempt is a `Conflict`.
+	/// already settled attempt is a `Conflict`. Returns the result it
+	/// recorded, which is the revoked tombstone, not `result`, when the Run's
+	/// evidence was revoked meanwhile; the caller returns that one.
 	async fn settle(
 		&self,
 		run: Uuid,
 		key: &str,
 		outcome: AttemptOutcome,
 		result: &Value,
-	) -> Result<()>;
+	) -> Result<Value>;
 	/// Source records in candidate order.
 	async fn record_sources(
 		&self,

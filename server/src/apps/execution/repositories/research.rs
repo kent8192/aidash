@@ -156,12 +156,13 @@ impl EvidenceStore for Evidence {
 		key: &str,
 		outcome: AttemptOutcome,
 		result: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
 				// An attempt dispatched before its Run was revoked records no
-				// evidence: it settles, still charged, with a tombstone.
+				// evidence: it settles, still charged, with a tombstone, which
+				// is also what its caller returns and persists.
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				let revoked = if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					ResearchAttempt::operation_of(tx.as_mut(), run, key)
@@ -177,7 +178,7 @@ impl EvidenceStore for Evidence {
 					));
 				}
 				tx.commit().await?;
-				Ok(())
+				Ok(result.clone())
 			}
 			.await,
 		)
