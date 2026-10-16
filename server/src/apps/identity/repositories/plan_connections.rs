@@ -123,12 +123,15 @@ pub(crate) async fn held(
 /// A second Mapping to a subject that holds a Plan Connection is refused
 /// until the connection is disconnected (ADR 0007): otherwise another person
 /// could spend the owner's plan. Every path that creates or re-enables a
-/// Mapping calls this in its transaction.
+/// Mapping calls this in its transaction. It takes the owner's lock, which a
+/// connection's registration also holds, so a connection registered
+/// concurrently is either seen here or sees this Mapping.
 pub(crate) async fn refuse_shared_holder(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	subject: &str,
 ) -> crate::Result<()> {
+	lock_owner(tx, tenant, subject).await?;
 	if held(tx, tenant, subject, Provider::Chatgpt)
 		.await?
 		.is_some()

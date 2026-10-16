@@ -1003,7 +1003,6 @@ async fn unreadable_tokens_ask_for_reconnection() {
 		.unwrap();
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::NeedsReconnection);
-	assert!(row.pinned_version.is_none());
 	assert!(matches!(
 		fixture.service.bearer(id).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
@@ -1016,6 +1015,25 @@ async fn unreadable_tokens_ask_for_reconnection() {
 		.await
 		.unwrap();
 	assert_eq!(only_row(&fixture).await.revision, revision);
+	// The Store removed the lost version, so the grant could not be revoked
+	// at OpenAI, and disconnecting says so.
+	let lost = row.pinned_version.clone().expect("the lost pin is kept");
+	fixture.store.destroy(&lost).await.unwrap();
+	let result = fixture
+		.service
+		.disconnect(&owner(), revision, "alice")
+		.await
+		.unwrap();
+	assert!(!result.revoked);
+	assert!(
+		fixture
+			.authorization
+			.calls
+			.lock()
+			.unwrap()
+			.revoked
+			.is_empty()
+	);
 }
 
 #[tokio::test]

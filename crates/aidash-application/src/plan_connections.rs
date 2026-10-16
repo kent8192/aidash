@@ -618,21 +618,21 @@ impl Service {
 
 	/// Records that a connection's pinned Plan Tokens became unreadable with a
 	/// lost Master Key. They cannot be revoked at OpenAI any more, so the
-	/// owner must connect again; the Store removes the versions itself.
+	/// owner must connect again; the Store removes the versions itself. The
+	/// pin is kept although nothing can read it: a later disconnection then
+	/// fails to read the refresh token and reports the grant as not revoked,
+	/// where no pin would claim it had nothing left to revoke.
 	pub async fn mark_unreadable(&self, id: Uuid, actor: &str) -> Result<()> {
 		let Some(owner) = self.repository.owner_of(id).await? else {
 			return Ok(());
 		};
 		let mut scope = self.repository.begin(&owner).await?;
-		let Some(mut row) = scope
-			.owned(Provider::Chatgpt)
-			.await?
-			.filter(|row| row.id == id && row.pinned_version.is_some())
-		else {
+		let Some(mut row) = scope.owned(Provider::Chatgpt).await?.filter(|row| {
+			row.id == id && row.pinned_version.is_some() && row.state != State::NeedsReconnection
+		}) else {
 			return scope.commit().await;
 		};
 		row.state = State::NeedsReconnection;
-		row.pinned_version = None;
 		row.revision += 1;
 		scope
 			.save(&row, "plan_connection.needs_reconnection", actor)

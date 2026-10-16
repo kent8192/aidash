@@ -214,7 +214,9 @@ manage provider-credential-store-recovery --execute
 
 The default is a dry run. Both invocations print only JSON counts:
 `affected_tenants` and `affected_provider_credentials` count active records whose
-pin uses a lost key; `version_rows` and `key_registry_rows` count rows to remove.
+pin uses a lost key; `affected_plan_connections` counts Plan Connections whose
+pinned Plan Tokens use one; `version_rows` and `key_registry_rows` count rows to
+remove.
 Recovery requires a PostgreSQL Store and valid current Master Key and fingerprint
 key. It verifies registered configured keys, so a failed key check refuses both
 dry run and execute without changes. It bypasses the wrong-key startup gate and
@@ -228,7 +230,14 @@ ciphertext. Unaffected Provider Credentials retain every row and state.
 Recovery never decrypts or re-encrypts version payloads. Restart server and worker
 afterward; normal startup registers the current key. Tenants then delete revoked
 credentials and reconnect through Provider Authorization. The command is safe to rerun
-after an interrupted recovery. Plan Token recovery will be added by #159.
+after an interrupted recovery.
+
+Each affected Plan Connection moves to `needs_reconnection` with a
+`plan_connection.needs_reconnection` event, and its Runs fail at their next
+call. Its grant cannot be revoked at OpenAI any more, because the refresh token
+is gone: the owner reconnects from settings with the same ChatGPT account, or
+disconnects, which then reports `revoked: false` so the owner knows to remove
+the grant at OpenAI themselves.
 
 GCP deployment passes this non-secret Store descriptor to the app chart's
 `providerCredentials.settings`, which renders it as a ConfigMap read as a

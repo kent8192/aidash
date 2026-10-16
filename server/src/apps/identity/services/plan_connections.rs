@@ -236,9 +236,12 @@ impl PlanConnections {
 	}
 }
 
-/// Ends the Plan Connection of a subject that no enabled Mapping reaches any
-/// more: its owner's Mapping was disabled, including leaving the Tenant
-/// (ADR 0007). Identity Disablement keeps the Mapping and only pauses the
+/// Ends the Plan Connection of a subject that no enabled Mapping of an
+/// enabled External Identity reaches any more: its owner's Mapping was
+/// disabled, including leaving the Tenant (ADR 0007). A remaining Mapping of
+/// a disabled identity does not keep the connection: that identity never
+/// connected it, and restoring it later must not hand it the owner's plan.
+/// Identity Disablement alone keeps the Mapping and only pauses the
 /// connection, so it never reaches here. Runs after the Mapping change
 /// commits; a connection left behind cannot serve calls, and the next
 /// approval for the subject retries before it may map anyone else.
@@ -248,21 +251,18 @@ pub(crate) async fn retire_unmapped(
 	subject: &str,
 	actor: &str,
 ) -> Result<()> {
-	use crate::apps::identity::models::DashboardMapping;
-	use reinhardt::db::orm::Model;
 	let Some(service) = &f.store.plan_connections else {
 		return Ok(());
 	};
 	let mut tx = f.store.control_pool.connection().begin().await?;
-	let mapped = DashboardMapping::objects()
-		.filter(DashboardMapping::field_tenant().eq(tenant))
-		.filter(DashboardMapping::field_subject().eq(subject))
-		.filter(DashboardMapping::field_enabled().eq(true))
-		.all_with_executor(tx.as_mut())
-		.await
-		.map_err(reinhardt::core::exception::Error::from)?;
+	let reachable = crate::apps::identity::repositories::plan_connections::mapped_identities(
+		tx.as_mut(),
+		tenant,
+		subject,
+	)
+	.await?;
 	tx.commit().await?;
-	if !mapped.is_empty() {
+	if reachable > 0 {
 		return Ok(());
 	}
 	Ok(service

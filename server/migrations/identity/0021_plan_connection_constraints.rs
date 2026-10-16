@@ -1,7 +1,8 @@
 // reinhardt-migration-source: 1
 // Native schema operations enforce Plan Connection ownership, catalog and state
 // invariants (#159). Deleting a Plan Connection deletes its Run pins, so a Run
-// admitted before a disconnection fails at its next call (ADR 0007).
+// admitted before a disconnection fails at its next call (ADR 0007); an index
+// on the pins' referencing columns keeps that cascade from scanning them all.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0021_plan_connection_constraints", "identity")
@@ -14,6 +15,9 @@ pub(super) fn migration() -> Migration {
 .add_operation(Operation::AddConstraintDefinition {table:"plan_connections".to_owned(),constraint:Constraint::Unique {name:"plan_connection_owner_id".to_owned(),columns:vec!["tenant".to_owned(),"subject".to_owned(),"provider".to_owned(),"id".to_owned()]}})
 .add_operation(Operation::AddConstraintDefinition {table:"run_plan_connections".to_owned(),constraint:Constraint::Check {name:"run_plan_connection_identity".to_owned(),expression:r#"id = run_id::text || ':' || provider AND provider = 'chatgpt'"#.to_owned()}})
 .add_operation(Operation::AddConstraintDefinition {table:"run_plan_connections".to_owned(),constraint:Constraint::ForeignKey {name:"run_plan_connections_owner_target".to_owned(),columns:vec!["tenant".to_owned(),"subject".to_owned(),"provider".to_owned(),"plan_connection_id".to_owned()],referenced_table:"plan_connections".to_owned(),referenced_columns:vec!["tenant".to_owned(),"subject".to_owned(),"provider".to_owned(),"id".to_owned()],on_delete:ForeignKeyAction::Cascade,on_update:ForeignKeyAction::NoAction,deferrable:None}})
+// PostgreSQL does not index a foreign key's referencing columns, and the
+// cascade from deleting a connection looks its Run pins up by them.
+.add_operation(Operation::CreateIndex {table:"run_plan_connections".into(),columns:vec!["tenant".into(),"subject".into(),"provider".into(),"plan_connection_id".into()],unique:false,index_type:Some(IndexType::BTree),where_clause:None,concurrently:false,expressions:None,mysql_options:None,operator_class:None})
 .add_operation(Operation::AddConstraintDefinition {table:"plan_authorizations".to_owned(),constraint:Constraint::Check {name:"plan_authorization_identity".to_owned(),expression:r#"provider = 'chatgpt' AND state_hash ~ '^[0-9a-f]{64}$' AND redirect_uri ~ '^http://127\.0\.0\.1:[0-9]{1,5}/auth/callback$'"#.to_owned()}})
 .add_operation(Operation::AddConstraintDefinition {table:"plan_connection_hosts".to_owned(),constraint:Constraint::Check {name:"plan_connection_host_singleton".to_owned(),expression:r#"id = 'deployment'"#.to_owned()}})
 }

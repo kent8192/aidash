@@ -138,29 +138,56 @@ async fn recover(execute: bool) -> Result<Counts> {
 	Ok(counts)
 }
 
-/// Plan Connections pinned to a version whose Master Key is gone.
+/// Plan Connections pinned to a version whose Master Key is gone, scanned in
+/// bounded pages by id like the Provider Credentials above: only matching
+/// ids are kept, and no transaction outlives one page.
 async fn unreadable_plan_connections(
 	pool: &crate::database::native::Pool,
 	lost_pins: &BTreeSet<String>,
 ) -> Result<Vec<uuid::Uuid>> {
-	use super::super::models::plan_connections::PlanConnection;
-	use reinhardt::db::orm::Model;
-	let mut tx = pool.connection().begin().await?;
-	let rows = PlanConnection::objects()
-		.all()
-		.all_with_executor(tx.as_mut())
-		.await
-		.map_err(reinhardt::core::exception::Error::from)?;
-	tx.commit().await?;
-	Ok(rows
-		.into_iter()
-		.filter(|row| {
-			row.pinned_version
-				.as_ref()
-				.is_some_and(|pin| lost_pins.contains(pin))
-		})
-		.map(|row| row.id)
-		.collect())
+	use reinhardt::db::orm::{QueryRow, execution::convert_values};
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
+	let mut found = Vec::new();
+	let mut after: Option<uuid::Uuid> = None;
+	loop {
+		let mut query = Query::select();
+		query
+			.columns([Alias::new("id"), Alias::new("pinned_version")])
+			.from(Alias::new("plan_connections"))
+			.and_where(Expr::col(Alias::new("pinned_version")).is_not_null())
+			.order_by(Alias::new("id"), Order::Asc)
+			.limit(RECONCILIATION_BATCH_SIZE as u64);
+		if let Some(after) = after {
+			query.and_where(Expr::col(Alias::new("id")).gt(Expr::value(after)));
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		let mut tx = pool.connection().begin().await?;
+		let rows = tx.fetch_all(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		let page = rows
+			.into_iter()
+			.map(|row| {
+				let data = QueryRow::from_backend_row(row).data;
+				let id = data["id"]
+					.as_str()
+					.and_then(|id| id.parse::<uuid::Uuid>().ok())
+					.ok_or_else(|| Error::Invalid("unreadable Plan Connection id".into()))?;
+				Ok((id, data["pinned_version"].as_str().map(str::to_owned)))
+			})
+			.collect::<Result<Vec<_>>>()?;
+		after = page.last().map(|(id, _)| *id);
+		let complete = page.len() < RECONCILIATION_BATCH_SIZE;
+		found.extend(
+			page.into_iter()
+				.filter(|(_, pin)| pin.as_ref().is_some_and(|pin| lost_pins.contains(pin)))
+				.map(|(id, _)| id),
+		);
+		if complete {
+			return Ok(found);
+		}
+	}
 }
 
 pub struct Command;
