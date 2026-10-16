@@ -148,7 +148,7 @@ async fn scrub_retrying(store: &Store, run: Uuid) -> Result<bool> {
 		if round > 0 {
 			tokio::time::sleep(LOCKED_SCRUB_PAUSE).await;
 		}
-		let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
+		let mut tx = native(super::retention_transaction(store).await)?;
 		let done = scrub_projection(tx.as_mut(), run).await?;
 		native(tx.commit().await.map_err(crate::Error::from))?;
 		if done {
@@ -191,7 +191,7 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		let (sql, values) = query.build(PostgresQueryBuilder);
 		let runs = native(
 			async {
-				let mut tx = store.database().begin().await?;
+				let mut tx = super::retention_transaction(store).await?;
 				let rows = tx.fetch_all(&sql, convert_values(values)).await?;
 				tx.commit().await?;
 				Ok(rows)
@@ -210,7 +210,7 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		};
 		after = Some(last);
 		for run in &runs {
-			let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
+			let mut tx = native(super::retention_transaction(store).await)?;
 			let done = scrub_projection(tx.as_mut(), *run).await?;
 			native(tx.commit().await.map_err(crate::Error::from))?;
 			if done {
@@ -267,13 +267,18 @@ impl Revocations<'_> {
 				Decider::DeploymentAdministrator {
 					identity: self.administrator,
 				},
+				// A Deployment Administrator revokes any Tenant's Run, as its
+				// other work without a Workspace does.
 				Transaction::Administrator(native(
-					self.federation
-						.store
-						.database()
-						.begin()
-						.await
-						.map_err(Into::into),
+					async {
+						self.federation
+							.store
+							.pool
+							.begin(&self.actor.tenancy()?)
+							.await?
+							.into_executor()
+					}
+					.await,
 				)?),
 			),
 		};

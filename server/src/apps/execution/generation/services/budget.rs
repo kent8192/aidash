@@ -12,9 +12,12 @@ pub(crate) async fn reserve(
 	window: usize,
 	output: u32,
 ) -> Result<Option<Reservation>> {
+	let tenancy = access.tenancy()?;
 	aidash_application::generation::inference::reserve(
 		&mut crate::bootstrap::generation_inference_authority_scope(access),
-		Arc::new(crate::bootstrap::generation_inference_repository(store)),
+		Arc::new(crate::bootstrap::generation_inference_repository(
+			store, tenancy,
+		)),
 		run,
 		attempt,
 		window,
@@ -41,6 +44,8 @@ pub(crate) async fn reserve_many(
 		}
 	}
 	let mut requests = std::collections::BTreeSet::new();
+	// Every lease of one Run belongs to the Run's Tenant.
+	let tenancy = accesses.first().ok_or(crate::Error::Forbidden)?.tenancy()?;
 	for access in accesses {
 		access.resume_inherited().await?;
 		let current = crate::bootstrap::generation_inference_authority_scope(access)
@@ -51,7 +56,9 @@ pub(crate) async fn reserve_many(
 	}
 	aidash_application::generation::inference::reserve(
 		&mut Union(requests.into_iter().collect()),
-		Arc::new(crate::bootstrap::generation_inference_repository(store)),
+		Arc::new(crate::bootstrap::generation_inference_repository(
+			store, tenancy,
+		)),
 		run,
 		attempt,
 		window,

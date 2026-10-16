@@ -41,19 +41,19 @@ impl Store for MemoryStore {
 		*count += 1;
 		Ok(format!("{resource}/versions/{count}"))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		let count = self.0.lock().unwrap().get(resource).copied().unwrap_or(0);
 		Ok((1..=count)
 			.map(|n| format!("{resource}/versions/{n}"))
 			.collect())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, _: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		self.0.lock().unwrap().remove(resource);
 		Ok(())
 	}

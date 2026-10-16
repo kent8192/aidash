@@ -3,7 +3,7 @@ use super::{SemanticCollection, SemanticPoint, index_configuration::clock};
 use crate::Result;
 use crate::apps::knowledge::serializers::contracts::{CleanupCounts, CleanupStatus, VectorConfig};
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{DatabaseConnection, TransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{Model, QueryRow, execution::convert_values};
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait, Func, JoinType, LockBehavior, LockType, Order,
@@ -12,7 +12,7 @@ use reinhardt::query::{
 use uuid::Uuid;
 
 impl SemanticPoint {
-	pub(crate) async fn cleanup_due(db: &DatabaseConnection) -> Result<Vec<Uuid>> {
+	pub(crate) async fn cleanup_due(db: &mut dyn TransactionExecutor) -> Result<Vec<Uuid>> {
 		let (sql, values) = Query::select()
 			.column(("p", "id"))
 			.from_as(Alias::new(Self::table_name()), Alias::new("p"))
@@ -104,7 +104,7 @@ impl SemanticPoint {
 	}
 
 	pub(crate) async fn cleanup_counts(
-		db: &DatabaseConnection,
+		db: &mut dyn TransactionExecutor,
 		workspace: Uuid,
 	) -> Result<CleanupCounts> {
 		let (sql, values) = Query::select()
@@ -154,7 +154,7 @@ impl SemanticPoint {
 }
 
 impl SemanticCollection {
-	pub(crate) async fn cleanup_due(db: &DatabaseConnection) -> Result<Vec<String>> {
+	pub(crate) async fn cleanup_due(db: &mut dyn TransactionExecutor) -> Result<Vec<String>> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("collection"))
 			.from(Alias::new(Self::table_name()))
@@ -222,7 +222,7 @@ impl SemanticCollection {
 	}
 
 	pub(crate) async fn cleanup_counts(
-		db: &DatabaseConnection,
+		db: &mut dyn TransactionExecutor,
 		workspace: Uuid,
 	) -> Result<CleanupCounts> {
 		let (sql, values) = Query::select()
@@ -258,7 +258,10 @@ impl SemanticCollection {
 	}
 }
 
-pub(crate) async fn status(db: &DatabaseConnection, workspace: Uuid) -> Result<CleanupStatus> {
+pub(crate) async fn status(
+	db: &mut dyn TransactionExecutor,
+	workspace: Uuid,
+) -> Result<CleanupStatus> {
 	Ok(CleanupStatus {
 		points: SemanticPoint::cleanup_counts(db, workspace).await?,
 		collections: SemanticCollection::cleanup_counts(db, workspace).await?,

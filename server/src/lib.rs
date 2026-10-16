@@ -1,4 +1,5 @@
 //! Aidash backend, implemented by Reinhardt applications.
+#![cfg_attr(test, allow(clippy::disallowed_methods))] // Unit-test fixtures reach the database outside a tenancy scope.
 extern crate self as aidash_server;
 
 pub mod apps;

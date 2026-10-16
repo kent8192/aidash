@@ -1,5 +1,6 @@
 //! Delivery validates admitted provenance independently of selected-root journaling.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 async fn bank_id(store: &Store, bank: &Bank) -> Uuid {
@@ -10,14 +11,14 @@ async fn bank_id(store: &Store, bank: &Bank) -> Uuid {
 			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap()
 }
 pub(super) async fn candidate(store: &Store, bank: &Bank) -> Uuid {
 	let id = Uuid::now_v7();
 	let now = chrono::Utc::now();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_candidates"))
@@ -162,7 +163,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 				.expr(Expr::value(now));
 		}
 		query.from_subquery(values.to_owned());
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(&query.to_string(PostgresQueryBuilder))
 			.execute(&mut *tx)
 			.await

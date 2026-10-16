@@ -59,7 +59,11 @@ impl InspectionRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn InspectionScope + '_>> {
 		let lease = match &self.actor {
 			Actor::DeploymentAdministrator => Lease::DeploymentAdministrator(Box::new(
-				crate::database::native::begin(&self.runtime.store.pool).await?,
+				self.runtime
+					.store
+					.pool
+					.begin(&self.actor.tenancy()?)
+					.await?,
 			)),
 			Actor::Subject(identity) => Lease::Subject(Box::new(
 				NativeAccess::begin(&self.runtime.store, identity).await?,

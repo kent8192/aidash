@@ -157,7 +157,7 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	}
 	// The stored projection carries the placeholder; the journal keeps the
 	// original until the Run is deleted.
-	let stored = r.c.f.store.run(run.id).await.unwrap();
+	let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(stored.context.research_revoked);
 	assert!(stored.context.events().any(|event| matches!(
 		event,
@@ -239,7 +239,7 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 		.worker_once()
 		.await
 		.unwrap();
-		let stored = r.c.f.store.run(run.id).await.unwrap();
+		let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		let revoked = serde_json::to_value(stored.context.events().collect::<Vec<_>>())
 			.unwrap()
 			.as_array()

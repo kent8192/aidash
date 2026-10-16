@@ -189,6 +189,33 @@ invariants. Use one history throughout; do not run the retired SeaORM migrator.
 `temporary-db` is inappropriate for this baseline because a generic PostgreSQL
 image does not provide its required `pg_jsonschema` extension.
 
+## Tenancy scope settings
+
+Every transaction the server opens carries one tenancy scope (#223, #263),
+written right after `BEGIN` by `server/src/database/scope.rs` with
+`set_config(..., true)`. Row-level policy functions (#264) and the activity
+observer read and write the same strings, so this is a contract across
+workspaces:
+
+| Setting                 | Value                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------- |
+| `aidash.scope`          | `tenant`, `deployment` or `none` (no Tenant)                                                   |
+| `aidash.tenant`         | the Tenant name in a `tenant` scope; empty otherwise                                           |
+| `application_name`      | `deployment:<label>` in a `deployment` scope, where `<label>` is the reason's kebab-case label |
+| `transaction_read_only` | `on` when the Deployment Scope reason only reads                                               |
+
+- A setting that was never written reads as NULL, and one that a returned
+  connection's `RESET ALL` cleared reads as the empty string. Treat both as
+  unset: a policy function raises when `aidash.scope` is unset or `none`.
+- The scope is fixed for the transaction. Only `database/scope.rs` writes
+  `aidash.scope` and `aidash.tenant`; a test rejects any other writer, in Rust
+  or in migration SQL.
+- Every table is classified in `server/src/database/classification.rs` as
+  Tenant-owned (enforced, or pending the Issue that enforces it) or
+  Deployment-wide. The `startup` test target compares the list with the
+  migrated database, so a migration that adds a table classifies it in the same
+  change.
+
 ## Maintenance cutover
 
 1. Stop new writes and request graceful shutdown of every old server and worker.
@@ -293,5 +320,7 @@ pruning or summary, journals those events as `imported`.
 `execution/0027_research_retention` (after `execution/0026_decision_evidence_model_state`) adds `purged_at` and `purge_reason` to `research_snapshots` with typed operations. A check keeps both set or both null, limits the reason to `retention` or `revocation`, and requires a Purged snapshot to keep no contents (`lines = '[]'`, `text_bytes = 0`). A partial index on unpurged snapshot ids serves the retention sweep. It also creates `research_revocations`, keyed by Run with no reference to `runs`, so the audit record of an Evidence Revocation outlives its Run (ADR 0046), with a `(tenant, revoked_at)` index for listing. The generated state-only checkpoint `execution/0028_research_retention_state` records the columns and table in the ORM snapshot without the checks and indexes.
 
 `execution/0029_research_originals` (after `execution/0028_research_retention_state`) records, for a snapshot of a paginated source, its page count, the pages that carry no text, and the digest and size of its original, with typed `AddColumn` operations (#312, ADR 0053). A check keeps the digest and size set together, bounds the size to 16 MiB and allows `original_retained` only while the snapshot is not purged. It creates `research_originals`, keyed by snapshot with a cascading reference to `(run_id, id)` of `research_snapshots`, so that reading a snapshot never loads its original; a purge or an Evidence Revocation deletes the rows, and a `run_id` index serves the per-Run limit. The generated state-only checkpoint `execution/0030_research_originals_state` records the columns and table without the checks and index.
+
+`execution/0031_research_event_run_index` (after `execution/0030_research_originals_state`) adds the partial expression index `events_tool_run` on `(data ->> 'run_id')` for `tool.started` and `tool.completed` events, which Evidence Revocation and the retention sweep redact per Run. It changes no model state, so it has no state-only checkpoint.
 
 `identity/0020_tenant_retention_rules` (after `identity/0019_provider_authorizations`) creates `tenant_retention_rules`, one row per Tenant that keeps its own snapshot periods, and `tenant_retention_rule_history`, one row per change, where a cleared change has no periods (ADR 0045). Checks bound every period to ten years. The tables carry a `tenant` column; their row-level policies come with RLS step 3 (#264). The generated state-only checkpoint `identity/0021_tenant_retention_rules_state` records both tables in the ORM snapshot without the checks and index.

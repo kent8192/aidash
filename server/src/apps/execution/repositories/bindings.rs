@@ -31,6 +31,8 @@ use std::{collections::BTreeMap, sync::Arc};
 pub(crate) struct Providers {
 	pub federation: Federation,
 	pub home: Home,
+	/// The Run's Tenant scope, which every bound tool works in.
+	pub scope: aidash_application::tenancy::TenancyScope,
 }
 impl ProviderCatalog for Providers {
 	fn contract(
@@ -60,6 +62,7 @@ impl ProviderSet for Providers {
 			operation,
 			store: self.federation.store.clone(),
 			home: self.home.clone(),
+			scope: self.scope.clone(),
 		}))
 	}
 }
@@ -126,6 +129,7 @@ struct ProviderTool {
 	operation: Option<String>,
 	store: Store,
 	home: Home,
+	scope: aidash_application::tenancy::TenancyScope,
 }
 #[async_trait]
 impl ExecutionTool for ProviderTool {
@@ -145,6 +149,7 @@ impl ExecutionTool for ProviderTool {
 					home: self.home.clone(),
 					store: self.store.clone(),
 					run: run.clone(),
+					scope: self.scope.clone(),
 				},
 				input,
 				key,

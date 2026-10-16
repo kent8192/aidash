@@ -29,8 +29,12 @@ async fn inference_interruption_poll_errors_do_not_signal_interruption(
 	#[future(awt)] interruption_store: crate::store::Store,
 ) {
 	// Act
-	let interruption =
-		super::wait_for_inference_interruption(&interruption_store, uuid::Uuid::new_v4(), 0);
+	let interruption = super::wait_for_inference_interruption(
+		&interruption_store,
+		&aidash_application::tenancy::TEST_FIXTURE,
+		uuid::Uuid::new_v4(),
+		0,
+	);
 	tokio::pin!(interruption);
 	// Assert
 	for _ in 0..3 {
@@ -63,6 +67,7 @@ async fn interruption_store(
 		keyless: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 		recovery_cursors: Default::default(),
+		tenancies: Default::default(),
 		tool_slots: aidash_application::ports::execution::ToolSlots::new(1),
 		cache_salt: None,
 		provider_credentials: None,

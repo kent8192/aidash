@@ -36,14 +36,23 @@ impl ScopedCancellationRepository for Cancellation<'_> {
 	}
 	async fn save_receiver(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		self.store
-			.save_run(run, token, event)
+			.save_run(
+				&crate::apps::execution::repositories::worker::claimed(),
+				run,
+				token,
+				event,
+			)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn cancel_local(&self, run: &Run, token: Uuid) -> Result<()> {
 		self.store
-			.cancel_execution(run, token)
+			.cancel_execution(
+				&crate::apps::execution::repositories::worker::claimed(),
+				run,
+				token,
+			)
 			.await
 			.map_err(Into::into)
 	}

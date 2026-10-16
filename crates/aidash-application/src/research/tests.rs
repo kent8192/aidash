@@ -1959,6 +1959,44 @@ async fn a_revocation_during_the_evidence_read_withholds_the_evidence() {
 	);
 }
 
+/// Reads the Run until it loses access after its second `readable` check.
+struct LosesAccessAfterSecondCheck {
+	run: Uuid,
+	checks: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl crate::ports::research::RunReader for LosesAccessAfterSecondCheck {
+	async fn readable(&self, run: Uuid) -> Result<bool> {
+		let check = self
+			.checks
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(run == self.run && check < 2)
+	}
+}
+
+#[tokio::test]
+async fn a_reader_losing_access_during_the_last_reads_gets_nothing() {
+	// Arrange: the reader loses access while the context and the revocation
+	// are read, after authority was decided again.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	let reader = LosesAccessAfterSecondCheck {
+		run,
+		checks: Default::default(),
+	};
+
+	// Act
+	let error = reading::read(&reader, &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert: authority is decided after every read.
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+	assert_eq!(reader.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
 #[tokio::test]
 async fn evidence_revoked_during_the_read_is_withheld() {
 	// Arrange: the revocation commits after the fragment and snapshot reads.

@@ -137,7 +137,7 @@ impl SnapshotRetention for Snapshots {
 		}
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = super::retention_transaction(&self.store).await?;
 				let candidates = fetch_retained(tx.as_mut(), &query).await?;
 				tx.commit().await?;
 				Ok(candidates)
@@ -159,7 +159,7 @@ impl SnapshotRetention for Snapshots {
 			.build(PostgresQueryBuilder);
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = super::retention_transaction(&self.store).await?;
 				let row = tx.fetch_one(&sql, convert_values(values)).await?;
 				tx.commit().await?;
 				let data = QueryRow::from_backend_row(row).data;
@@ -197,7 +197,7 @@ impl SnapshotRetention for Snapshots {
 			.and_where(Expr::col(snapshot("id")).is_in(ids.iter().map(|id| Expr::value(*id))));
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = super::retention_transaction(&self.store).await?;
 				// A change of a Tenant's periods holds its lock exclusively, so
 				// the periods read below stay current until the purge commits.
 				let (sql, values) = query.build(PostgresQueryBuilder);
@@ -252,7 +252,7 @@ pub(crate) async fn sweep(store: &Store, rules: &RetentionRules) -> Result<u64> 
 	.await?;
 	native(
 		async {
-			let mut tx = store.database().begin().await?;
+			let mut tx = super::retention_transaction(store).await?;
 			revoke_invocations(tx.as_mut(), None).await?;
 			tx.commit().await?;
 			Ok(())

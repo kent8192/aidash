@@ -7,12 +7,14 @@ use crate::apps::federation::transactions::serializers::{
 	protocol::TransactionHistory,
 };
 use crate::apps::federation::transactions::services::decisions::CoordinatorTransition;
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use chrono::Utc;
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{DatabaseConnection as BackendConnection, TransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor, QueryRow};
+use reinhardt::db::orm::{Model, OrmExecutor, QueryRow};
 use reinhardt::query::{
 	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
@@ -20,13 +22,15 @@ use serde_json::json;
 use uuid::Uuid;
 
 pub async fn transition(
-	connection: DatabaseConnection,
+	connection: &Pool,
 	id: Uuid,
 	change: CoordinatorTransition,
 	detail: &str,
 ) -> Result<bool> {
 	connection
-		.atomic(async |tx| transition_in(tx, id, change, detail).await)
+		.atomic(&TenancyScope::NoTenant, async |tx| {
+			transition_in(tx, id, change, detail).await
+		})
 		.await
 }
 
@@ -157,9 +161,9 @@ pub(crate) async fn admit_in(
 	Ok(contract(saved))
 }
 
-pub(crate) async fn touch(connection: DatabaseConnection, id: Uuid) -> Result<()> {
+pub(crate) async fn touch(connection: &Pool, id: Uuid) -> Result<()> {
 	connection
-		.atomic(async |tx| {
+		.atomic(&TenancyScope::NoTenant, async |tx| {
 			let mut state = locked(tx, id).await?;
 			state.updated_at = Utc::now();
 			AtomicCoordinator::objects()
@@ -170,13 +174,9 @@ pub(crate) async fn touch(connection: DatabaseConnection, id: Uuid) -> Result<()
 		.await
 }
 
-pub(crate) async fn record_error(
-	connection: DatabaseConnection,
-	id: Uuid,
-	error: &str,
-) -> Result<()> {
+pub(crate) async fn record_error(connection: &Pool, id: Uuid, error: &str) -> Result<()> {
 	connection
-		.atomic(async |tx| {
+		.atomic(&TenancyScope::NoTenant, async |tx| {
 			let mut state = locked(tx, id).await?;
 			state.last_error = Some(error.to_owned());
 			AtomicCoordinator::objects()
@@ -189,13 +189,13 @@ pub(crate) async fn record_error(
 
 /// Keep the vote and clearing of its transient error in one transaction.
 pub(crate) async fn acknowledge(
-	connection: DatabaseConnection,
+	connection: &Pool,
 	id: Uuid,
 	node: &str,
 	phase: AtomicVotePhase,
 ) -> Result<()> {
 	connection
-		.atomic(async |tx| {
+		.atomic(&TenancyScope::NoTenant, async |tx| {
 			let mut state = locked(tx, id).await?;
 			let mut vote = AtomicVote::objects()
 				.filter(AtomicVote::field_transaction_id().eq(id))
@@ -257,11 +257,8 @@ pub(super) fn advisory_lock(function: &str, key: String) -> SimpleExpr {
 	SimpleExpr::FunctionCall(Alias::new(function).into_iden(), vec![key])
 }
 
-pub(crate) async fn recovery_lease(
-	db: &BackendConnection,
-	id: Uuid,
-) -> Result<Box<dyn TransactionExecutor>> {
-	let mut tx = db.begin().await?;
+pub(crate) async fn recovery_lease(db: &Pool, id: Uuid) -> Result<Box<dyn TransactionExecutor>> {
+	let mut tx = db.begin(&TenancyScope::NoTenant).await?.into_executor()?;
 	let (sql, values) = Query::select()
 		.expr_as(
 			advisory_lock("pg_try_advisory_xact_lock", format!("atomic:{id}")),

@@ -1,5 +1,6 @@
 //! PostgreSQL dispatch CAS and owned leases preserve the original query boundaries.
 use crate::{federation::Federation, store::Store};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::generation::dispatch::{
@@ -55,6 +56,8 @@ impl From<StoredDispatch> for Record {
 
 pub(crate) struct NativeDispatch {
 	pub store: Store,
+	/// The Tenant scope of the requests this repository settles.
+	pub scope: TenancyScope,
 }
 pub(crate) struct NativeSettlement {
 	pub runtime: Federation,
@@ -130,7 +133,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 	}
 	async fn begin_preparation(&self) -> Result<Box<dyn DispatchPreparation>> {
 		Ok(Box::new(Preparation {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: self.store.pool.begin(&self.scope).await?,
 		}))
 	}
 	async fn record(&self, attempt: Uuid) -> Result<Option<Record>> {
@@ -146,7 +149,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&self.store.pool)
+			.fetch_optional(self.store.pool.in_scope(&self.scope))
 			.await?
 		};
 		Ok(record.map(Into::into))
@@ -176,7 +179,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&self.store.pool)
+			.execute(self.store.pool.in_scope(&self.scope))
 			.await?
 		};
 		Ok(changed.rows_affected())
@@ -213,7 +216,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&self.store.pool)
+			.execute(self.store.pool.in_scope(&self.scope))
 			.await?
 		};
 		Ok(changed.rows_affected())
@@ -237,11 +240,19 @@ impl GenerationDispatchRepository for NativeDispatch {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&self.store.pool)
+			.execute(self.store.pool.in_scope(&self.scope))
 			.await?
 		};
 		Ok(())
 	}
+}
+
+/// Dispatch visibility sweeps stale and unfinalized dispatches of every
+/// Tenant.
+fn reconcile() -> TenancyScope {
+	TenancyScope::Deployment(
+		aidash_application::tenancy::DeploymentScopeReason::GenerationReconcile,
+	)
 }
 
 #[async_trait]
@@ -259,7 +270,7 @@ impl DispatchVisibility for Visibility {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&self.store.pool)
+			.fetch_optional(self.store.pool.in_scope(&reconcile()))
 			.await?
 		};
 		Ok(record.map(Into::into))
@@ -278,7 +289,7 @@ impl DispatchVisibility for Visibility {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&self.store.pool)
+		.execute(self.store.pool.in_scope(&reconcile()))
 		.await?;
 		Ok(())
 	}
@@ -294,7 +305,7 @@ impl DispatchVisibility for Visibility {
 				.limit(16)
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_all(&self.store.pool)
+		.scalar_all(self.store.pool.in_scope(&reconcile()))
 		.await?;
 		Ok(ids)
 	}

@@ -1004,37 +1004,36 @@ fn revoked_arguments() -> Value {
 /// or with none those of every revoked Run, so an event appended just after
 /// a revocation is caught by the next sweep. Idempotent.
 async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>) -> Result<()> {
-	let of_run = || match run {
-		Some(run) => Expr::cust_with_values("(data->>'run_id') = ?", [run.to_string()]),
-		None => Expr::cust(format!(
-			"(data->>'run_id') IN (SELECT run_id::text FROM {})",
-			ResearchRevocation::table_name()
-		)),
+	let of_run = || -> SimpleExpr {
+		let run_id = json_text(Expr::col(Alias::new("data")), "run_id");
+		match run {
+			Some(run) => run_id.eq(Expr::value(run.to_string())),
+			None => Expr::from(run_id)
+				.in_subquery(
+					Query::select()
+						.expr(Expr::col(Alias::new("run_id")).cast_as_text())
+						.from(Alias::new(ResearchRevocation::table_name()))
+						.to_owned(),
+				)
+				.into(),
+		}
 	};
+	let data = || Expr::col(Alias::new("data"));
 	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
 		let tombstone = revoked_result(operation).to_string();
+		let result = || json_field(data(), "result");
 		let (sql, values) = Query::update()
 			.table(Alias::new("events"))
-			.value_expr(
-				Alias::new("data"),
-				Expr::cust_with_values(
-					"jsonb_set(data, '{result}', ?::jsonb)",
-					[tombstone.clone()],
-				),
-			)
+			.value_expr(Alias::new("data"), with_key(data(), "result", &tombstone))
 			.and_where(Expr::col("kind").eq("tool.completed"))
-			.and_where(Expr::cust_with_values(
-				"(data->'result'->>'contract') = ?",
-				[aidash_domain::research::RESULT_CONTRACT],
-			))
-			.and_where(Expr::cust_with_values(
-				"(data->'result'->>'operation') = ?",
-				[operation.as_str()],
-			))
-			.and_where(Expr::cust_with_values(
-				"(data->'result') <> ?::jsonb",
-				[tombstone],
-			))
+			.and_where(
+				json_text(Expr::from(result()), "contract")
+					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+			)
+			.and_where(
+				json_text(Expr::from(result()), "operation").eq(Expr::value(operation.as_str())),
+			)
+			.and_where(result().ne(jsonb(&tombstone)))
 			.and_where(of_run())
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
@@ -1042,31 +1041,84 @@ async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>)
 	// The input of an invocation whose result was redacted, or of an attempt
 	// still in flight, which a research attempt records.
 	let revoked = revoked_arguments().to_string();
+	let events_run = || {
+		json_text(
+			Expr::col((Alias::new("events"), Alias::new("data"))),
+			"run_id",
+		)
+	};
+	let key = || Expr::from(json_text(data(), "idempotency_key"));
+	let redacted = Query::select()
+		.column(Alias::new("idempotency_key"))
+		.from(Alias::new("invocations"))
+		.and_where(
+			Expr::col(Alias::new("run_id"))
+				.cast_as_text()
+				.eq(events_run()),
+		)
+		.and_where(Expr::col(Alias::new("input")).eq(jsonb(&revoked)))
+		.to_owned();
+	let attempted = Query::select()
+		.column(Alias::new("invocation_key"))
+		.from(Alias::new(ResearchAttempt::table_name()))
+		.and_where(
+			Expr::col(Alias::new("run_id"))
+				.cast_as_text()
+				.eq(events_run()),
+		)
+		.to_owned();
 	let (sql, values) = Query::update()
 		.table(Alias::new("events"))
-		.value_expr(
-			Alias::new("data"),
-			Expr::cust_with_values("jsonb_set(data, '{input}', ?::jsonb)", [revoked.clone()]),
-		)
+		.value_expr(Alias::new("data"), with_key(data(), "input", &revoked))
 		.and_where(Expr::col("kind").eq("tool.started"))
-		.and_where(Expr::cust_with_values(
-			"(data->'input') <> ?::jsonb",
-			[revoked.clone()],
-		))
-		.and_where(Expr::cust_with_values(
-			format!(
-				"((data->>'idempotency_key') IN (SELECT idempotency_key FROM invocations \
-				 WHERE run_id::text = events.data->>'run_id' AND input = ?::jsonb) \
-				 OR (data->>'idempotency_key') IN (SELECT invocation_key FROM {} \
-				 WHERE run_id::text = events.data->>'run_id'))",
-				ResearchAttempt::table_name()
-			),
-			[revoked],
-		))
+		.and_where(json_field(data(), "input").ne(jsonb(&revoked)))
+		.and_where(
+			SimpleExpr::from(key().in_subquery(redacted))
+				.or(SimpleExpr::from(key().in_subquery(attempted))),
+		)
 		.and_where(of_run())
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())
+}
+
+/// `json -> key`.
+fn json_field(json: Expr, key: &str) -> SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::JsonGetByIndex,
+		),
+		Expr::value(key),
+	)
+}
+
+/// `json ->> key`.
+fn json_text(json: Expr, key: &str) -> SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::JsonGetAsText,
+		),
+		Expr::value(key),
+	)
+}
+
+/// A JSON text bound as a `jsonb` value.
+fn jsonb(text: &str) -> SimpleExpr {
+	Expr::value(text.to_owned()).cast_as("jsonb")
+}
+
+/// `json || jsonb_build_object(key, value)`: the object with its top-level
+/// `key` set to `value`, as `jsonb_set(json, '{key}', value)` sets it.
+fn with_key(json: Expr, key: &str, value: &str) -> SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::Concatenate,
+		),
+		SimpleExpr::FunctionCall(
+			"jsonb_build_object".into_iden(),
+			vec![Expr::value(key).into(), jsonb(value)],
+		),
+	)
 }
 
 impl ResearchRevocation {

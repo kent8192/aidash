@@ -1,5 +1,6 @@
 use crate::endpoint::{assert_json, endpoint, subject};
 use crate::execution_fixtures::{ExecutionFixture, execution};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::execution::generation::models::{GenerationBudget, GenerationUsage};
 use aidash_server::generation::provision;
 use aidash_server::harness::Harness;
@@ -70,7 +71,7 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 	let workspace = app
 		.runtime
 		.store
-		.task(fixture.task)
+		.task(&TEST_FIXTURE, fixture.task)
 		.await
 		.unwrap()
 		.workspace_id;

@@ -4,6 +4,7 @@ use crate::apps::execution::capabilities::services::core::{
 	contracts::{FileEntry, FileScope},
 };
 use crate::{Error, Result, authorization::access::Access};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::query::{Alias, Expr, IntoValue as _, OnConflict, PostgresQueryBuilder, Query};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -101,7 +102,7 @@ impl Runtime {
 			else {
 				continue;
 			};
-			let mut tx = crate::database::native::begin(pool).await?;
+			let mut tx = pool.begin(&MAINTENANCE).await?;
 			let acquired: bool = {
 				let query_bind_1 = format!("core-object:{id}");
 				crate::database::native::query_scalar(
@@ -763,3 +764,7 @@ impl Runtime {
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+/// The capability worker reaches every Tenant's operations and work areas.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);

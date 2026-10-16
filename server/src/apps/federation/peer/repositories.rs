@@ -8,13 +8,11 @@ use aidash_application::{
 };
 use aidash_domain::{federation::Peer, registry::EntityRef};
 use async_trait::async_trait;
-use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use uuid::Uuid;
 
 pub(crate) struct Configuration(pub(crate) Federation);
 struct Write {
 	records: records::PeerRecords,
-	_lease: DatabaseConnectionLease,
 }
 #[async_trait]
 impl PeerWrite for Write {
@@ -31,10 +29,8 @@ impl PeerWrite for Write {
 #[async_trait]
 impl PeerConfiguration for Configuration {
 	async fn write_scope(&self) -> Result<Box<dyn PeerWrite>> {
-		let lease = self.0.store.orm_connection()?;
 		Ok(Box::new(Write {
-			records: records::PeerRecords::new(lease.handle(), &self.0.config.node_id),
-			_lease: lease,
+			records: records::PeerRecords::new(&self.0.store.pool, &self.0.config.node_id),
 		}))
 	}
 	async fn enabled(&self, node: &str) -> Result<Peer> {
@@ -44,14 +40,20 @@ impl PeerConfiguration for Configuration {
 		self.0.peers().await.map_err(Into::into)
 	}
 	async fn authorized(&self, node: &str, task: Uuid, agent: &EntityRef) -> Result<bool> {
-		let lease = self.0.store.orm_connection()?;
-		crate::apps::federation::remote::models::Delegation::authorized(
-			&mut lease.handle(),
-			task,
-			node,
-			agent,
-		)
-		.await
-		.map_err(Into::into)
+		// An inbound peer names a task, not its Tenant, until #241.
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::FederationInbound,
+		);
+		self.0
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
+				crate::apps::federation::remote::models::Delegation::authorized(
+					tx, task, node, agent,
+				)
+				.await
+			})
+			.await
+			.map_err(Into::into)
 	}
 }

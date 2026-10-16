@@ -6,6 +6,7 @@
 //! from their own table without the event journal's advisory lock.
 use super::*;
 use crate::apps::execution::repositories::inference::{ProgressRow, RunTarget, TEXT, TOOL_CALL};
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::provider::progress::FLUSH_INTERVAL;
 use serde_json::json;
 
@@ -38,6 +39,8 @@ pub(crate) enum Delivery {
 struct RunContext {
 	base: Context,
 	run: Arc<RunTarget>,
+	/// The scope of every read of the Run's progress.
+	tenancy: Arc<TenancyScope>,
 }
 
 impl RunContext {
@@ -65,8 +68,11 @@ impl RunContext {
 		match &self.base.scope {
 			Some(scope) => scope.can_emit(&probe).await,
 			None => {
-				let mut connection =
-					crate::database::native::begin(&self.base.f.store.pool).await?;
+				// The Deployment Administrator's stream observes every Tenant's inference.
+				let scope = aidash_application::tenancy::TenancyScope::Deployment(
+					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+				);
+				let mut connection = self.base.f.store.pool.begin(&scope).await?;
 				crate::authorization::remote::deployment_administrator::event_visible(
 					&mut connection,
 					&probe,
@@ -207,7 +213,13 @@ impl Service {
 		} = request;
 		// Subjects cannot distinguish a missing Run from one they may not read,
 		// matching the subject run-detail read.
-		let target = match f.store.inference_run(run).await {
+		// A subject reads within its own Tenant; a Deployment Administrator
+		// names a Run and reads it in that Run's Tenant.
+		let tenancy = match &actor {
+			Actor::Subject(identity) => identity.tenancy()?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
+		};
+		let target = match f.store.inference_run(&tenancy, run).await {
 			Err(Error::NotFound(_)) if matches!(actor, Actor::Subject(_)) => {
 				return Err(Error::Forbidden);
 			}
@@ -232,6 +244,7 @@ impl Service {
 				service: self.clone(),
 			},
 			run: Arc::new(target),
+			tenancy: Arc::new(tenancy),
 		};
 		context.base.authority(true).await?;
 		let cursor = {
@@ -245,7 +258,7 @@ impl Service {
 					.base
 					.f
 					.store
-					.inference_bounds(run)
+					.inference_bounds(&context.tenancy, run)
 					.await?
 					.0
 					.map_or(0, |first| first - 1),
@@ -289,8 +302,12 @@ async fn read_run(
 			Err(error) => return Err(error),
 		};
 		control.waiting_for_gate(&service, false);
-		let rows = store.inference_page(context.run.id, cursor, PAGE).await?;
-		let (_, pending) = store.inference_bounds(context.run.id).await?;
+		let rows = store
+			.inference_page(&context.tenancy, context.run.id, cursor, PAGE)
+			.await?;
+		let (_, pending) = store
+			.inference_bounds(&context.tenancy, context.run.id)
+			.await?;
 		drop(visibility);
 		let more = rows.len() as u64 == PAGE;
 		let (items, scanned) = deliveries(cursor, rows);

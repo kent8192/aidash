@@ -4,6 +4,7 @@ use crate::{
 	apps::identity::services::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::authorization::{ExecutionGrantRepository, ExecutionGrantSession},
@@ -108,7 +109,10 @@ impl ExecutionGrantRepository for Grants<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&self.store.pool)
+				// A worker learns a Run's Tenant from its grant (#265).
+				.fetch_optional(self.store.pool.in_scope(&TenancyScope::Deployment(
+					DeploymentScopeReason::RunTenant,
+				)))
 				.await?
 			};
 			Ok(grant)

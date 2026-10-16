@@ -266,12 +266,17 @@ impl RetentionRepository for TenantRetention<'_> {
 				Decider::DeploymentAdministrator {
 					identity: self.administrator,
 				},
+				// A Deployment Administrator changes any Tenant's rules, as its
+				// other work without a Workspace does.
 				Transaction::Administrator(native(
-					self.store
-						.database()
-						.begin()
-						.await
-						.map_err(crate::Error::from),
+					async {
+						self.store
+							.pool
+							.begin(&self.actor.tenancy()?)
+							.await?
+							.into_executor()
+					}
+					.await,
 				)?),
 			),
 		};

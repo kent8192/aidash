@@ -1,5 +1,6 @@
 //! Provider timeouts and Projection Version declarations survive registry HTTP
 //! requests, persisted local overrides and the database constraints.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]

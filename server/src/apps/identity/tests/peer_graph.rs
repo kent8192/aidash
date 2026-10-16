@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::{bootstrap, cleanup, request};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -337,7 +339,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	);
 	let workspace_id = f
 		.store
-		.tasks(None)
+		.tasks(&TEST_FIXTURE, None)
 		.await
 		.unwrap()
 		.into_iter()

@@ -105,6 +105,8 @@ impl From<State> for Record {
 }
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
+	/// The Tenant of the Run whose remote semantic operations this journals.
+	pub(crate) scope: aidash_application::tenancy::TenancyScope,
 }
 pub(crate) enum Transaction<'a> {
 	Owned(crate::database::native::Transaction),
@@ -125,7 +127,7 @@ impl Scope<'_> {
 #[async_trait]
 impl JournalRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn JournalScope + '_>> {
-		let tx = crate::database::native::begin(&self.store.pool).await?;
+		let tx = self.store.pool.begin(&self.scope).await?;
 		Ok(Box::new(Scope {
 			store: self.store,
 			transaction: Transaction::Owned(tx),
@@ -142,7 +144,7 @@ impl JournalRepository for Repository<'_> {
 				)
 				.to_owned()))
 			.bind(id)
-			.fetch_optional(&store.pool)
+			.fetch_optional(store.pool.in_scope(&self.scope))
 			.await?
 			.ok_or(NativeError::Forbidden)?;
 			Ok(record)
@@ -166,7 +168,7 @@ impl JournalRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(&store.pool)
+				.execute(store.pool.in_scope(&self.scope))
 				.await?
 			};
 			Ok(())

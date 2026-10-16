@@ -8,6 +8,7 @@ use aidash_application::ports::generation::{
 	reads::{GenerationPages, GenerationReadScope, GenerationReads},
 	visibility::GenerationVisibility,
 };
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::{
 	entities::Task,
 	generation::{
@@ -18,7 +19,6 @@ use aidash_domain::{
 	policy::Resource,
 };
 use async_trait::async_trait;
-use reinhardt::db::orm::connection::{DatabaseConnection, DatabaseConnectionLease};
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, JoinType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	SimpleExpr, TableRef,
@@ -31,8 +31,7 @@ pub(crate) struct NativeReads {
 	pub principal: Principal,
 }
 struct Pages {
-	_lease: DatabaseConnectionLease,
-	connection: DatabaseConnection,
+	store: Store,
 }
 #[async_trait]
 impl GenerationPages for Pages {
@@ -41,13 +40,16 @@ impl GenerationPages for Pages {
 		tenant: &str,
 		offset: usize,
 	) -> aidash_application::Result<Vec<Request>> {
-		crate::apps::execution::generation::models::GenerationRequest::page(
-			&mut self.connection,
-			tenant,
-			offset,
-		)
-		.await
-		.map_err(Into::into)
+		self.store
+			.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				crate::apps::execution::generation::models::GenerationRequest::page(
+					tx, tenant, offset,
+				)
+				.await
+			})
+			.await
+			.map_err(Into::into)
 	}
 }
 struct Scope {
@@ -70,11 +72,8 @@ impl GenerationReads for NativeReads {
 		&self.principal
 	}
 	async fn pages(&self) -> aidash_application::Result<Box<dyn GenerationPages>> {
-		let lease = self.store.orm_connection()?;
-		let connection = lease.handle();
 		Ok(Box::new(Pages {
-			_lease: lease,
-			connection,
+			store: self.store.clone(),
 		}))
 	}
 	async fn begin_subject(&self) -> aidash_application::Result<Box<dyn GenerationReadScope>> {
@@ -93,7 +92,7 @@ impl GenerationReads for NativeReads {
 		Ok(crate::database::query_as(&history_query())
 			.bind(tenant)
 			.bind(id)
-			.fetch_all(&self.store.pool)
+			.fetch_all(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
 			.await?)
 	}
 	async fn deployment_administrator_usage(
@@ -104,7 +103,7 @@ impl GenerationReads for NativeReads {
 		crate::database::query_as(&usage_query())
 			.bind(tenant)
 			.bind(id)
-			.fetch_optional(&self.store.pool)
+			.fetch_optional(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}
@@ -116,7 +115,7 @@ impl GenerationReads for NativeReads {
 		crate::database::native::query_scalar(&spec_query())
 			.bind(tenant)
 			.bind(id)
-			.scalar_optional(&self.store.pool)
+			.scalar_optional(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}

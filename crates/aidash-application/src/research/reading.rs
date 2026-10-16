@@ -11,6 +11,7 @@
 //! read once more after that decision, so a retention purge committed during
 //! the read leaves the fragment without its surrounding context, and the
 //! Run's evidence is checked for revocation only after that last read.
+//! Authority is decided one final time after all of them.
 use crate::{
 	Error, Result,
 	ports::research::{EvidenceStore, RunReader},
@@ -59,6 +60,12 @@ pub async fn read(
 	// The evidence itself is decided last, after every read: a revocation
 	// committed during any of them withholds what was already read.
 	if store.revoked(run).await? {
+		return Err(unavailable());
+	}
+	// Authority is decided once more after every read, the context and the
+	// revocation included, so a reader who lost the Run during them gets
+	// nothing.
+	if !reader.readable(run).await? {
 		return Err(unavailable());
 	}
 	Ok(CitedEvidence::new(fragment, &document))

@@ -2,6 +2,7 @@
 //! Each case maps to a row of `docs/memory-recovery.md#change-matrix`.
 use super::policy_bounds::{recorded_run, run_visible};
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 
 /// The shape a caller chooses for a change is not an exemption. A correction
 /// that keeps the text byte-identical and only edits metadata, or repeats the
@@ -221,6 +222,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 	use aidash_server::database::native;
 	let task = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace,
 			&aidash_domain::NewTask {
 				title: "Second reader".into(),
@@ -235,7 +237,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 		.await
 		.unwrap();
 	let reader = Uuid::now_v7();
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, key, fixed, columns) in [
 		(
 			"runs",
@@ -700,7 +702,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	);
 
 	// Act: the live dependent expires before any sweep
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(&age(&derived[0]))
 		.execute(&mut *tx)
 		.await
@@ -728,7 +730,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	);
 
 	// Act: the root expires before any sweep
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(&age(&source))
 		.execute(&mut *tx)
 		.await

@@ -1,6 +1,7 @@
 //! Context Journal persistence: the append-only original events behind the
 //! lossy `runs.context` projection, and lease-fenced Compaction Attempts.
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::{
 	Run,
 	context::{
@@ -147,6 +148,7 @@ impl Store {
 	/// Original journal entries of `run` with `from <= seq <= through`, in order.
 	pub(crate) async fn context_journal(
 		&self,
+		scope: &TenancyScope,
 		run: Uuid,
 		from: u64,
 		through: u64,
@@ -161,7 +163,7 @@ impl Store {
 				.order_by(Alias::new("seq"), Order::Asc)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&self.pool)
+		.fetch_all(self.pool.in_scope(scope))
 		.await?
 		.into_iter()
 		.map(|row| {
@@ -177,8 +179,13 @@ impl Store {
 
 	/// Journal saved projection entries the journal lacks, under the lease and
 	/// without saving the Run, so imported history survives later pruning.
-	pub(crate) async fn journal_context(&self, run: &Run, worker: Uuid) -> Result<()> {
-		let mut tx = native::begin(&self.pool).await?;
+	pub(crate) async fn journal_context(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
 		fence(&mut tx, run.id, worker).await?;
 		append(&mut tx, run.id, &run.context).await?;
 		tx.commit().await
@@ -188,6 +195,7 @@ impl Store {
 	/// attempts are abandoned even when the stage budget is already spent.
 	pub(crate) async fn begin_compaction(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		attempt: &Attempt,
@@ -198,7 +206,7 @@ impl Store {
 				"compaction attempt belongs to another Run".into(),
 			));
 		}
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		fence(&mut tx, run.id, worker).await?;
 		native::query(&abandon_open(run.id).to_string(PostgresQueryBuilder))
 			.execute(&mut *tx)
@@ -258,6 +266,7 @@ impl Store {
 	/// already settled elsewhere, such as by lease recovery, stays as recorded.
 	pub(crate) async fn settle_compaction(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		attempt: Uuid,
@@ -268,7 +277,7 @@ impl Store {
 				"an adopted attempt settles only with its Run save".into(),
 			));
 		}
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		fence(&mut tx, run.id, worker).await?;
 		settle(&mut tx, run.id, attempt, settlement).await?;
 		tx.commit().await
@@ -277,6 +286,7 @@ impl Store {
 	/// Save the adopted projection and mark its attempt adopted atomically.
 	pub(crate) async fn adopt_compaction(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		attempt: Uuid,
@@ -287,7 +297,7 @@ impl Store {
 				"only an adopted settlement changes the Context Projection".into(),
 			));
 		}
-		let mut tx = native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		// Lock the Run before the attempt, in the order lease recovery uses.
 		fence(&mut tx, run.id, worker).await?;
 		let through: Option<i64> = native::query_scalar(

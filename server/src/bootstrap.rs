@@ -10,7 +10,6 @@ use crate::{
 };
 use reinhardt::InjectionContext;
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
-use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::server::ShutdownCoordinator;
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -112,9 +111,6 @@ pub async fn initialize(
 	// Persist removed GCIP Bindings even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
 	dashboard_authority(&federation).reconcile_policy().await?;
-	let lease = DatabaseConnectionLease::register(connection)?;
-	context.set_singleton(lease.handle());
-	context.set_singleton(lease);
 	context.set_singleton(settings.clone());
 	context.set_singleton(federation.clone());
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
@@ -503,7 +499,7 @@ pub(crate) fn event_inbox(
 	store: &Store,
 ) -> Result<crate::apps::execution::repositories::events::NativeInbox> {
 	Ok(crate::apps::execution::repositories::events::NativeInbox {
-		database: store.orm_connection()?,
+		pool: store.pool.clone(),
 	})
 }
 
@@ -854,10 +850,12 @@ pub(crate) fn generation_provisioning_repository(
 }
 
 pub(crate) fn generation_dispatch_repository(
-	store: &crate::store::Store,
+	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::generation::dispatch::GenerationDispatchRepository {
 	crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 		store: store.clone(),
+		scope,
 	}
 }
 pub(crate) fn generation_dispatch_settlement(
@@ -869,10 +867,12 @@ pub(crate) fn generation_dispatch_settlement(
 }
 
 pub(crate) fn generation_settlement_repository(
-	store: &crate::store::Store,
+	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::generation::settlement::GenerationSettlementRepository {
 	crate::apps::execution::generation::repositories::settlement::NativeSettlementRepository {
 		store: store.clone(),
+		scope,
 	}
 }
 pub(crate) fn generation_usage_authority_scope(
@@ -884,9 +884,11 @@ pub(crate) fn generation_usage_authority_scope(
 }
 pub(crate) fn generation_reservation_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::generation::reservation::GenerationReservationRepository {
 	crate::apps::execution::generation::repositories::reservation::NativeReservation {
 		store: store.clone(),
+		scope,
 	}
 }
 
@@ -897,9 +899,11 @@ pub(crate) fn generation_inference_authority_scope(
 }
 pub(crate) fn generation_inference_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::inference::NativeInferenceRepository {
 	crate::apps::execution::generation::repositories::inference::NativeInferenceRepository {
-		database: store.database(),
+		pool: store.pool.clone(),
+		scope,
 		node_id: store.node_id.clone(),
 	}
 }
@@ -914,9 +918,11 @@ pub(crate) fn generation_embedding_authority_scope(
 
 pub(crate) fn generation_embedding_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::embedding::NativeEmbeddingRepository {
 	crate::apps::execution::generation::repositories::embedding::NativeEmbeddingRepository {
-		database: store.database(),
+		pool: store.pool.clone(),
+		scope,
 		node_id: store.node_id.clone(),
 	}
 }
@@ -930,16 +936,20 @@ pub(crate) fn generation_compaction_authority_scope(
 }
 pub(crate) fn generation_compaction_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
 	crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
 		store: store.clone(),
+		scope,
 	}
 }
 pub(crate) fn generation_summary_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
 	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
 		store: store.clone(),
+		scope,
 	}
 }
 /// Approved compactors call Jev as Decision Attempts of one Run, with the Run's
@@ -1105,9 +1115,11 @@ pub(crate) fn semantic_entries_scope<'a, 'scope>(
 
 pub(crate) fn semantic_configuration_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 	crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 		store: store.clone(),
+		scope,
 	}
 }
 
@@ -1248,8 +1260,9 @@ pub(crate) fn scoped_media(
 }
 pub(crate) fn operator_media_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::workspaces::repositories::media::OperatorMedia<'_> {
-	crate::apps::workspaces::repositories::media::OperatorMedia { store }
+	crate::apps::workspaces::repositories::media::OperatorMedia { store, scope }
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
@@ -1517,8 +1530,9 @@ pub(crate) async fn transaction_recovery_coordinators(
 
 pub(crate) fn operation_withdrawal_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::repositories::withdrawal::Repository<'_> {
-	crate::apps::execution::repositories::withdrawal::Repository { store }
+	crate::apps::execution::repositories::withdrawal::Repository { store, scope }
 }
 
 pub(crate) fn remote_command_scope<'a>(
@@ -1763,8 +1777,9 @@ pub(crate) fn transfer_scope<'a>(
 
 pub(crate) fn semantic_journal_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::remote_journal::Repository<'_> {
-	crate::apps::knowledge::repositories::remote_journal::Repository { store }
+	crate::apps::knowledge::repositories::remote_journal::Repository { store, scope }
 }
 pub(crate) fn semantic_journal_scope<'a>(
 	store: &'a Store,
@@ -1809,8 +1824,9 @@ pub(crate) fn semantic_status_scope<'a>(
 }
 pub(crate) fn semantic_status_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::remote_status::Repository<'_> {
-	crate::apps::knowledge::repositories::remote_status::Repository { store }
+	crate::apps::knowledge::repositories::remote_status::Repository { store, scope }
 }
 
 pub(crate) fn peer_mapping_repository(
@@ -1905,12 +1921,14 @@ pub(crate) fn source_semantic_provenance_scope(
 /// Home semantic disclosure shares the production journal, dispatch, settlement and provider ports.
 pub(crate) fn source_semantic_search_repository(
 	runtime: &Federation,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::identity::repositories::remote_grants::search::Repository<'_> {
 	crate::apps::identity::repositories::remote_grants::search::Repository {
 		runtime,
-		journal: semantic_journal_repository(&runtime.store),
+		journal: semantic_journal_repository(&runtime.store, scope.clone()),
 		dispatch: crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 			store: runtime.store.clone(),
+			scope,
 		},
 		settlement: crate::apps::execution::generation::repositories::dispatch::NativeSettlement {
 			runtime: runtime.clone(),
@@ -2210,9 +2228,9 @@ pub(crate) fn dashboard_logout(
 }
 
 pub(crate) fn dashboard_login(
-	connection: reinhardt::db::orm::DatabaseConnection,
+	pool: crate::database::native::Pool,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(connection)
+	crate::apps::identity::repositories::dashboard::Login(pool)
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(

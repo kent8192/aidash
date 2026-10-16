@@ -44,7 +44,8 @@ pub(crate) async fn run_receipt(
 	if matches!(&result, Err(Error::Forbidden | Error::RemoteSemantic(_))) {
 		// A denied reader cannot erase another subject's valid cache. Recheck the
 		// original worker authority after releasing the reader's transaction.
-		if let Ok(run) = f.store.run(id).await {
+		let scope = f.store.run_tenancy(id).await?;
+		if let Ok(run) = f.store.run(&scope, id).await {
 			match crate::apps::identity::services::peer::admission::worker_lease(
 				&f,
 				&run.metadata(),
@@ -80,8 +81,10 @@ pub(crate) async fn load(
 	binding: &Binding,
 	reason: Option<Failure>,
 ) -> Result<Status> {
+	// Home names only the grant it issued; no admission has the nil id.
+	let scope = store.remote_tenancy(Uuid::nil(), grant).await?;
 	let mut status = aidash_application::semantic::remote_status::load(
-		&crate::bootstrap::semantic_status_repository(store),
+		&crate::bootstrap::semantic_status_repository(store, scope.clone()),
 		grant,
 		binding,
 		reason,
@@ -104,7 +107,7 @@ pub(crate) async fn load(
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_optional(&store.pool)
+	.scalar_optional(store.pool.in_scope(&scope))
 	.await?;
 	Ok(status)
 }

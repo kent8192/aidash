@@ -315,8 +315,6 @@ contract against it and a production-shaped provider.
 
 - No live Brave request has been made; account eligibility, ranking quality and
   billed-cost reconciliation need live verification with a real account.
-- Retained evidence has no separate retention period or revocation endpoint; it
-  lives and is deleted with its Run.
 - Citations from one Run cannot be shown in another Run's text; a parent Run
   that relays a child Run's answer does not carry the child's citations.
 - Third-party providers over the HTTP, MCP or Agent transports cannot declare

@@ -2,7 +2,7 @@
 use crate::{
 	Result,
 	ports::authorization::visibility::{
-		EventVisibilityScope, LocalRunVisibilityScope, RunVisibilityScope,
+		EventVisibilityScope, LocalRunVisibilityScope, RunVerdicts, RunVisibilityScope,
 	},
 };
 use aidash_domain::{Event, RunMetadata, qualified_agent};
@@ -74,6 +74,15 @@ pub async fn run_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) 
 }
 
 pub async fn event_visible(scope: &mut dyn EventVisibilityScope, event: &Event) -> Result<bool> {
+	event_visible_in(scope, event, &mut RunVerdicts::default()).await
+}
+
+/// Event disclosure within one scan; `runs` holds the scan's Run verdicts.
+pub async fn event_visible_in(
+	scope: &mut dyn EventVisibilityScope,
+	event: &Event,
+	runs: &mut RunVerdicts,
+) -> Result<bool> {
 	if event.kind.starts_with("marketplace.") {
 		return scope.marketplace_visible(event).await;
 	}
@@ -136,10 +145,15 @@ pub async fn event_visible(scope: &mut dyn EventVisibilityScope, event: &Event) 
 	else {
 		return Ok(false);
 	};
-	match scope.run(id, event.workspace_id).await? {
-		Some(run) => scope.run_visible(&run).await,
-		None => Ok(false),
+	if let Some(visible) = runs.get(id, event.workspace_id) {
+		return Ok(visible);
 	}
+	let visible = match scope.run(id, event.workspace_id).await? {
+		Some(run) => scope.run_visible(&run).await?,
+		None => false,
+	};
+	runs.remember(id, event.workspace_id, visible);
+	Ok(visible)
 }
 
 #[cfg(test)]
