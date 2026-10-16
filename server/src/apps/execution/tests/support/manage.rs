@@ -176,7 +176,10 @@ async fn native_process(
 	);
 	fixture
 		.client
-		.set_header("Authorization", "Bearer native-command-test-operator")
+		.set_header(
+			"Authorization",
+			"Bearer native-command-test-deployment-administrator",
+		)
 		.await
 		.unwrap();
 	fixture

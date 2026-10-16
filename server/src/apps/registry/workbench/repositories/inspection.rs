@@ -35,7 +35,7 @@ pub(crate) struct Repository<'a> {
 }
 // Opening another audited transaction while this lease is live would wait on its own advisory lock.
 enum Lease {
-	Operator(Box<dyn TransactionExecutor>),
+	DeploymentAdministrator(Box<dyn TransactionExecutor>),
 	Subject(Box<NativeAccess>),
 }
 struct Scope {
@@ -46,7 +46,7 @@ struct Scope {
 impl Scope {
 	fn tx(&mut self) -> &mut dyn TransactionExecutor {
 		match &mut self.lease {
-			Lease::Operator(tx) => tx.as_mut(),
+			Lease::DeploymentAdministrator(tx) => tx.as_mut(),
 			Lease::Subject(access) => access.tx.as_mut(),
 		}
 	}
@@ -58,7 +58,7 @@ impl InspectionRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn InspectionScope + '_>> {
 		let lease = match &self.actor {
-			Actor::Operator => Lease::Operator(Box::new(
+			Actor::DeploymentAdministrator => Lease::DeploymentAdministrator(Box::new(
 				crate::database::native::begin(&self.runtime.store.pool).await?,
 			)),
 			Actor::Subject(identity) => Lease::Subject(Box::new(
@@ -114,21 +114,22 @@ impl InspectionScope for Scope {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		match &mut self.lease {
 			Lease::Subject(access) => access.workspace(id).await.map_err(Into::into),
-			Lease::Operator(_) => Err(aidash_application::Error::Invalid(
-				"operator inspection does not require a subject workspace resource".into(),
+			Lease::DeploymentAdministrator(_) => Err(aidash_application::Error::Invalid(
+				"Deployment Administrator inspection does not require a subject workspace resource"
+					.into(),
 			)),
 		}
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		match &mut self.lease {
 			Lease::Subject(access) => access.decide(resource, action).await.map_err(Into::into),
-			Lease::Operator(_) => Ok(true),
+			Lease::DeploymentAdministrator(_) => Ok(true),
 		}
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		match &mut self.lease {
 			Lease::Subject(access) => access.run_visible(run).await.map_err(Into::into),
-			Lease::Operator(_) => Ok(true),
+			Lease::DeploymentAdministrator(_) => Ok(true),
 		}
 	}
 	async fn workspace_title(&mut self, id: Uuid) -> Result<Option<String>> {
@@ -185,7 +186,7 @@ impl InspectionScope for Scope {
 	}
 	async fn finish(self: Box<Self>, inspection: Inspection) -> Result<Inspection> {
 		match self.lease {
-			Lease::Operator(tx) => {
+			Lease::DeploymentAdministrator(tx) => {
 				tx.commit().await.map_err(crate::Error::from)?;
 				Ok(inspection)
 			}

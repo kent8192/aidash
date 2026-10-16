@@ -88,7 +88,7 @@ pub fn citations(text: &str) -> Citations {
 	result
 }
 
-/// The operator's verdict on an answer's citations.
+/// The Harness's verdict on an answer's citations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
 	/// Publish the answer unchanged.

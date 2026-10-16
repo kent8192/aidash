@@ -75,8 +75,7 @@ fn bypass(store: &Store) -> Store {
 pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let recovery = external(store, &directory)?;
 	let internal = bypass(store);
-	let mut lease =
-		Lease::begin(&internal, &crate::authorization::identity::Actor::Operator).await?;
+	let mut lease = Lease::without_subject(&internal).await?;
 	let result = async {
 		for table in ["memory_banks","memory_participants"] {
 			if native::query(&Query::select().column(Alias::new("id")).from(Alias::new(table))
@@ -150,7 +149,7 @@ async fn configuration(
 pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathBuf> {
 	let recovery = active_external(store, directory)?;
 	recovery.require_serving()?;
-	let mut lease = Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+	let mut lease = Lease::without_subject(store).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, bank.workspace, false).await?;
 		let (settings, policy) = configuration(&mut lease, &bank).await?;
@@ -278,8 +277,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 	// writers then observe this closed gate and roll back without lock inversion.
 	let ledger = recovery.gate(true, ledger.epoch)?;
 	let internal = bypass(store);
-	let mut lease =
-		Lease::begin(&internal, &crate::authorization::identity::Actor::Operator).await?;
+	let mut lease = Lease::without_subject(&internal).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, archive.bank.workspace, true).await?;
 		let (settings, policy) = configuration(&mut lease, &archive.bank).await?;
@@ -364,7 +362,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 }
 
 async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<()> {
-	let mut lookup = Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+	let mut lookup = Lease::without_subject(store).await?;
 	let origin = unit_origins::load(&mut lookup, unit.id)
 		.await?
 		.ok_or(Error::Forbidden)?;
@@ -434,8 +432,7 @@ async fn finish(
 	// Invalid support is cleared before each next pass. A dependent visited
 	// earlier must be reconsidered after its source was withheld later.
 	for pass in 0..=policy.bounds.max_graph_visits {
-		let mut lease =
-			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+		let mut lease = Lease::without_subject(store).await?;
 		let contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 		lease.finish(Ok(())).await?;
 		let mut ledger = recovery.load()?;
@@ -472,8 +469,7 @@ async fn finish(
 			clear(&mut unit);
 			recovery.advance_restore(epoch, &unit)?;
 			ledger.observe(&unit)?;
-			let mut lease =
-				Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+			let mut lease = Lease::without_subject(store).await?;
 			repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 			let bank_id = repository::bank_id(&mut lease, bank, false)
 				.await?
@@ -496,7 +492,7 @@ async fn finish(
 			));
 		}
 	}
-	let mut lease = Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+	let mut lease = Lease::without_subject(store).await?;
 	repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 	let mut contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 	let bank_id = repository::bank_id(&mut lease, bank, false)
@@ -651,7 +647,7 @@ async fn finish(
 	for unit in &contents {
 		aidash_application::semantic::process(&indexing, &transport, unit.id).await?;
 	}
-	let mut lease = Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+	let mut lease = Lease::without_subject(store).await?;
 	let contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 	lease.finish(Ok(())).await?;
 	report.withheld = contents.iter().filter(|unit| !unit.visible()).count();
@@ -706,8 +702,7 @@ pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 	let ledger = recovery.load()?;
 	let archives = directory.join("archives");
 	if archives.exists() {
-		let mut lease =
-			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+		let mut lease = Lease::without_subject(store).await?;
 		let result = prune(
 			&mut lease,
 			&archives,
@@ -722,7 +717,7 @@ pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 	Ok(())
 }
 
-/// Persistently close memory serving before operator recovery work.
+/// Persistently close memory serving before Deployment Administrator recovery work.
 pub fn prepare_restore(store: &Store, directory: &Path) -> Result<Uuid> {
 	let recovery = active_external(store, directory)?;
 	let epoch = recovery.load()?.epoch;

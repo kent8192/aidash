@@ -188,7 +188,7 @@ pub type ApplicationFuture = Shared<BoxFuture<'static, ApplicationFixture>>;
 pub struct ApplicationFixture {
 	pub application: TestApplication,
 	pub runtime: RuntimeFixture,
-	pub operator: Arc<APIClient>,
+	pub deployment_administrator: Arc<APIClient>,
 	pub anonymous: Arc<APIClient>,
 }
 
@@ -274,14 +274,14 @@ fn application_server(
 
 #[fixture]
 fn application_client(
-	#[default(false)] operator: bool,
+	#[default(false)] deployment_administrator: bool,
 	runtime: RuntimeFuture,
 	application_server: ServerFuture,
 ) -> ClientFuture {
 	async move {
 		// Share the client after resolving the owned asynchronous server URL.
 		let client = api_client_from_url(&application_server.await.url);
-		if operator {
+		if deployment_administrator {
 			client
 				.set_header(
 					"Authorization",
@@ -307,7 +307,7 @@ pub type TransportFuture = Shared<BoxFuture<'static, ApplicationTransport>>;
 #[derive(Clone)]
 pub struct ApplicationClients {
 	anonymous: Arc<APIClient>,
-	operator: Arc<APIClient>,
+	deployment_administrator: Arc<APIClient>,
 	raw: reqwest::Client,
 	streaming: reqwest::Client,
 }
@@ -364,14 +364,14 @@ fn application_clients(
 	anonymous: ClientFuture,
 	#[from(application_client)]
 	#[with(true, _runtime.clone(), _server.clone())]
-	operator: ClientFuture,
+	deployment_administrator: ClientFuture,
 	http_client: reqwest::Client,
 	streaming_http_client: reqwest::Client,
 ) -> ClientsFuture {
 	async move {
 		ApplicationClients {
 			anonymous: anonymous.await,
-			operator: operator.await,
+			deployment_administrator: deployment_administrator.await,
 			raw: http_client,
 			streaming: streaming_http_client,
 		}
@@ -407,7 +407,7 @@ pub fn native_application(
 		ApplicationFixture {
 			application,
 			runtime: transport.runtime,
-			operator: clients.operator,
+			deployment_administrator: clients.deployment_administrator,
 			anonymous: clients.anonymous,
 		}
 	}

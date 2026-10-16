@@ -37,7 +37,7 @@ pub trait SearchProvider: Send + Sync {
 	/// The exact outbound content; a query the provider cannot send unchanged
 	/// is rejected here, before any approval is requested.
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure>;
-	/// The Search service operator's current account terms, or `None` for a
+	/// The Search account holder's current account terms, or `None` for a
 	/// provider that sends nothing outside the Node.
 	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure>;
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure>;
@@ -204,7 +204,7 @@ pub enum DisclosureState {
 	Approved {
 		approval_id: Uuid,
 	},
-	/// An eligible person must decide first. The operator waits on this approval.
+	/// An eligible person must decide first. The Run waits on this approval.
 	Pending {
 		approval_id: Uuid,
 		expires_at: Option<DateTime<Utc>>,

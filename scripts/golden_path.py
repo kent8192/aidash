@@ -414,7 +414,7 @@ def main():
     children = []
     files = []
     # Binding defaults include File Tools. Enable only disposable fixture
-    # storage; command runners remain disabled in the operator profile.
+    # storage; command runners remain disabled in the Node's execution profile.
     profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
     profile = pathlib.Path(profile_directory.name) / "profile.json"
     profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))

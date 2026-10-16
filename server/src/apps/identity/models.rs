@@ -40,8 +40,8 @@ mod dashboard_logout_tokens;
 pub use dashboard_logout_tokens::DashboardLogoutToken;
 mod dashboard_mappings;
 pub use dashboard_mappings::DashboardMapping;
-mod dashboard_operator_grants;
-pub use dashboard_operator_grants::DashboardOperatorGrant;
+mod dashboard_deployment_administrator_grants;
+pub use dashboard_deployment_administrator_grants::DashboardDeploymentAdministratorGrant;
 mod dashboard_registration_requests;
 pub use dashboard_registration_requests::DashboardRegistrationRequest;
 mod dashboard_sessions;
@@ -64,8 +64,8 @@ pub use authorization_remote_commands::AuthorizationRemoteCommands;
 mod authorization_remote_outputs;
 pub use authorization_remote_outputs::AuthorizationRemoteOutputs;
 
-mod authorization_graph_operator_grants;
-pub use authorization_graph_operator_grants::AuthorizationGraphOperatorGrants;
+mod authorization_peer_graph_grants;
+pub use authorization_peer_graph_grants::AuthorizationPeerGraphGrants;
 
 pub(crate) use authority::authority_control;
 

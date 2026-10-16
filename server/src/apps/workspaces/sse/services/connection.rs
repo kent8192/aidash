@@ -202,7 +202,7 @@ impl Context {
 					&& current.mapping_id == origin.mapping_id
 					&& matches!(
 						(self.scope.is_none(), actor),
-						(true, Actor::Operator) | (false, Actor::Subject(_))
+						(true, Actor::DeploymentAdministrator) | (false, Actor::Subject(_))
 					)
 			}
 			Err(_) => false,
@@ -270,7 +270,7 @@ impl Watch<Event> for Context {
 							let mut connection = crate::database::native::begin(&self.f.store.pool)
 								.await
 								.map_err(|_| Closed::Database)?;
-							crate::authorization::remote::operator::event_visible(
+							crate::authorization::remote::deployment_administrator::event_visible(
 								&mut connection,
 								event,
 							)
@@ -324,7 +324,7 @@ impl Service {
 		// Register before validation/high-water lookup/initial read.
 		let observation = self.register(workspace);
 		let scope = match actor {
-			Actor::Operator => None,
+			Actor::DeploymentAdministrator => None,
 			Actor::Subject(identity) => Some(Workspaces {
 				store: f.store.clone(),
 				identity,

@@ -20,7 +20,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use uuid::Uuid;
 pub(crate) fn principal(actor: &Actor) -> Principal {
 	match actor {
-		Actor::Operator => Principal::Operator,
+		Actor::DeploymentAdministrator => Principal::DeploymentAdministrator,
 		Actor::Subject(identity) => Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -39,7 +39,7 @@ impl DefinitionLookup for Scope<'_> {
 		node: &str,
 		reference: &aidash_domain::registry::bindings::QualifiedRef,
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		if !matches!(self.actor, Actor::Operator) {
+		if !matches!(self.actor, Actor::DeploymentAdministrator) {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		NativeScope(&mut *self.tx)

@@ -61,7 +61,7 @@ pub struct ResearchAttempt {
 	pub provider: String,
 	#[field(field_type = "text")]
 	pub destination: String,
-	/// The Search service operator's account charged for this attempt.
+	/// The Search account holder's account charged for this attempt.
 	#[field(field_type = "text", null = true)]
 	pub account_id: Option<String>,
 	#[field(null = true)]

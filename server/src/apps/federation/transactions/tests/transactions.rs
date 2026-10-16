@@ -348,7 +348,7 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 		"acme",
 		revision,
 		serde_json::from_value(policy).unwrap(),
-		"operator",
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();

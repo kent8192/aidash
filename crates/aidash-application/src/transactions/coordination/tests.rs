@@ -506,7 +506,9 @@ async fn invalid_acknowledgement_releases_lease_without_settlement(
 
 #[rstest]
 #[tokio::test]
-async fn operator_abort_ignores_recovery_contention_and_preserves_commit(manifest: Manifest) {
+async fn deployment_administrator_abort_ignores_recovery_contention_and_preserves_commit(
+	manifest: Manifest,
+) {
 	let adapter = Adapter::new(&manifest);
 	adapter.state.lock().unwrap().busy = true;
 	assert_eq!(

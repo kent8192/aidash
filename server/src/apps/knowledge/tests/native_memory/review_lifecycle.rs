@@ -29,7 +29,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 	let result = if participant {
 		memory::create_participant(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -40,7 +40,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 	} else {
 		memory::operate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			memory::Operation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
@@ -115,7 +115,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -126,7 +126,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	.bank;
 	let source = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -151,7 +151,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	let input = mutation(&bank, Change::Add { id, content: draft });
 	let memory::Outcome::Units(derived) = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: input.operation_id,
 			provider: reference("p"),
@@ -170,7 +170,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -225,7 +225,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	if exhausted_repair != Some(false) {
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -251,9 +251,13 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	bounds.max_units = 2 * page + 4;
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
-	let index = aidash_server::semantic::service::get_index(&store, &Actor::Operator, workspace)
-		.await
-		.unwrap();
+	let index = aidash_server::semantic::service::get_index(
+		&store,
+		&Actor::DeploymentAdministrator,
+		workspace,
+	)
+	.await
+	.unwrap();
 	let mut spec = index.configuration().unwrap();
 	// Match this regression's admitted bank size within the public index bound.
 	spec.max_sources = 2 * page + 4;
@@ -269,7 +273,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	.unwrap();
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -287,7 +291,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		units.extend(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -323,7 +327,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 					dependencies: vec![],
 					parent_id: None,
 				},
-				"operator",
+				"deployment_administrator",
 				None,
 			)
 			.await
@@ -389,7 +393,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 						.expr(Expr::value(units[0].id))
 						.expr(Expr::value(1_i64))
 						.expr(Expr::value(1_i64))
-						.expr(Expr::value(json!({"kind":"operator"})))
+						.expr(Expr::value(json!({"kind":"deployment_administrator"})))
 						.expr(Expr::value(false))
 						.expr(Expr::value(chrono::Utc::now()))
 						.to_owned(),
@@ -401,7 +405,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		tx.commit().await.unwrap();
 		let quoted = memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -467,7 +471,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	tx.commit().await.unwrap();
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Delete {
@@ -526,7 +530,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	);
 	let remaining = memory::list(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::ReadBank {
 			bank,
 			provider: reference("p"),

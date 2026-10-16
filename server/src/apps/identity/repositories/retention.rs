@@ -239,7 +239,7 @@ impl RetentionRepository for TenantRetention<'_> {
 					NativeAccess::begin(self.store, identity).await,
 				)?)),
 			),
-			Actor::Operator => (
+			Actor::DeploymentAdministrator => (
 				Decider::DeploymentAdministrator {
 					identity: self.administrator,
 				},

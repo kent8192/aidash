@@ -18,10 +18,10 @@ fn same_tenant(principal: &Principal, tenant: &str) -> Result<()> {
 	Ok(())
 }
 pub async fn list(repository: &dyn GenerationReads, tenant: &str) -> Result<Vec<Request>> {
-	// The existing ORM lease is acquired before principal dispatch. Operator
+	// The existing ORM lease is acquired before principal dispatch. Deployment Administrator
 	// reads retain one page; subject reads scan until 200 visible rows or EOF.
 	let mut pages = repository.pages().await?;
-	if matches!(repository.principal(), Principal::Operator) {
+	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
 		return pages.page(tenant, 0).await;
 	}
 	same_tenant(repository.principal(), tenant)?;
@@ -55,8 +55,10 @@ pub async fn history(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Vec<History>> {
-	if matches!(repository.principal(), Principal::Operator) {
-		return repository.operator_history(tenant, id).await;
+	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
+		return repository
+			.deployment_administrator_history(tenant, id)
+			.await;
 	}
 	same_tenant(repository.principal(), tenant)?;
 	let mut scope = repository.begin_subject().await?;
@@ -71,8 +73,8 @@ pub async fn history(
 	scope.finish_history(result).await
 }
 pub async fn usage(repository: &dyn GenerationReads, tenant: &str, id: Uuid) -> Result<Usage> {
-	if matches!(repository.principal(), Principal::Operator) {
-		return repository.operator_usage(tenant, id).await;
+	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
+		return repository.deployment_administrator_usage(tenant, id).await;
 	}
 	same_tenant(repository.principal(), tenant)?;
 	let mut scope = repository.begin_subject().await?;
@@ -91,9 +93,11 @@ pub async fn specification(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Spec> {
-	if matches!(repository.principal(), Principal::Operator) {
+	if matches!(repository.principal(), Principal::DeploymentAdministrator) {
 		return Ok(serde_json::from_value(
-			repository.operator_specification(tenant, id).await?,
+			repository
+				.deployment_administrator_specification(tenant, id)
+				.await?,
 		)?);
 	}
 	same_tenant(repository.principal(), tenant)?;

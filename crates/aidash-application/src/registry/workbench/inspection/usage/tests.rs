@@ -120,7 +120,7 @@ impl InspectionScope for Scope<'_> {
 		Ok(self.0.pages.get(index).cloned().unwrap_or_default())
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		assert_ne!(self.principal(), Principal::Operator);
+		assert_ne!(self.principal(), Principal::DeploymentAdministrator);
 		let mut s = self.0.state.lock().unwrap();
 		assert!(s.active);
 		s.workspace_reads += 1;
@@ -281,9 +281,10 @@ async fn overflow_counts_visible_runs_and_merges_current_and_latest_usage() {
 }
 #[rstest]
 #[tokio::test]
-async fn operator_uses_existing_inspection_authority_without_subject_resource_checks() {
+async fn deployment_administrator_uses_existing_inspection_authority_without_subject_resource_checks()
+ {
 	let mut r = Repository::new();
-	r.principal = Principal::Operator;
+	r.principal = Principal::DeploymentAdministrator;
 	r.forbidden = Some(Uuid::from_u128(1));
 	r.pages = vec![vec![
 		run(1, 1, "READY"),

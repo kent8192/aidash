@@ -172,7 +172,7 @@ impl Revocations<'_> {
 					identity: identity.clone(),
 				},
 			),
-			Actor::Operator => (
+			Actor::DeploymentAdministrator => (
 				Decider::DeploymentAdministrator {
 					identity: self.administrator,
 				},

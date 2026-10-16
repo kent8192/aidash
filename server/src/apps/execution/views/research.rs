@@ -1,5 +1,5 @@
 //! Research evidence retention and revocation endpoints (ADR 0045, ADR 0046).
-//! Subjects act through their Tenant policy; Operators need none.
+//! Subjects act through their Tenant policy; Deployment Administrators need none.
 use crate::apps::execution::serializers::research::{HistoryPage, RetentionInput, RevocationInput};
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::authorization::identity::Actor;

@@ -865,9 +865,9 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 	let now = Utc::now();
 	let mut provider = Search::new("brave", "api.search.brave.com");
 	provider.account = Some(AccountProfile {
-		account_id: "operator-account".into(),
+		account_id: "deployment-administrator-account".into(),
 		agreement_reference: "contract".into(),
-		verified_by: "operator".into(),
+		verified_by: "deployment_administrator".into(),
 		verified_at: now - Duration::days(1),
 		review_after: now + Duration::days(1),
 		storage_permitted: true,
@@ -896,7 +896,7 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 	let (reservation, _) = attempts.values().next().unwrap();
 	assert_eq!(
 		reservation.attribution.as_ref().unwrap().account_id,
-		"operator-account"
+		"deployment-administrator-account"
 	);
 	let exhausted = research
 		.search(

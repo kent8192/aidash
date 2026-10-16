@@ -6,14 +6,14 @@ use serde_json::json;
 use uuid::Uuid;
 
 struct Scope {
-	operator: bool,
+	deployment_administrator: bool,
 	permitted: bool,
 	trace: Vec<String>,
 }
 #[fixture]
 fn scope() -> Scope {
 	Scope {
-		operator: false,
+		deployment_administrator: false,
 		permitted: false,
 		trace: vec![],
 	}
@@ -31,11 +31,11 @@ fn conversation() -> Candidate {
 }
 #[async_trait]
 impl GraphVisibility for Scope {
-	fn operator(&self) -> bool {
-		self.operator
+	fn deployment_administrator(&self) -> bool {
+		self.deployment_administrator
 	}
-	async fn operator_workspace(&mut self, _: Uuid) -> Result<bool> {
-		self.trace.push("operator-workspace".into());
+	async fn deployment_administrator_workspace(&mut self, _: Uuid) -> Result<bool> {
+		self.trace.push("deployment-administrator-workspace".into());
 		Ok(self.permitted)
 	}
 	async fn registry(&mut self, _: &Entry, action: &str) -> Result<bool> {
@@ -79,13 +79,13 @@ async fn subject_requires_workspace_before_conversation_permission(
 
 #[rstest]
 #[tokio::test]
-async fn operator_uses_its_granted_tenant_workspace_scope(
+async fn deployment_administrator_uses_its_granted_tenant_workspace_scope(
 	mut scope: Scope,
 	conversation: Candidate,
 ) {
-	scope.operator = true;
+	scope.deployment_administrator = true;
 	assert!(!visible(&mut scope, &conversation).await.unwrap());
-	assert_eq!(scope.trace, ["operator-workspace"]);
+	assert_eq!(scope.trace, ["deployment-administrator-workspace"]);
 }
 
 #[rstest]
@@ -94,11 +94,11 @@ async fn operator_uses_its_granted_tenant_workspace_scope(
 #[tokio::test]
 async fn catalog_visibility_retains_viewer_specific_permission(
 	mut scope: Scope,
-	#[case] operator: bool,
+	#[case] deployment_administrator: bool,
 	#[case] allowed: bool,
 	#[case] calls: Vec<&str>,
 ) {
-	scope.operator = operator;
+	scope.deployment_administrator = deployment_administrator;
 	let entry: Entry = serde_json::from_value(
 		json!({"id":"agent","version":"1","kind":"agent","name":{},"description":{}}),
 	)

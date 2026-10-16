@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use rstest::rstest;
 use std::collections::BTreeMap;
 
-pub(super) struct OperatorFixture {
+pub(super) struct DeploymentAdministratorFixture {
 	pub(super) inner: Fixture,
 	pub(super) principal: Principal,
 	pub(super) approved: BTreeSet<(String, String)>,
@@ -21,11 +21,11 @@ pub(super) struct OperatorFixture {
 	pub(super) events: Vec<(String, Value)>,
 	pub(super) approvals: Vec<(String, EntityRef, i64, bool)>,
 }
-impl OperatorFixture {
+impl DeploymentAdministratorFixture {
 	pub(super) fn new() -> Self {
 		Self {
 			inner: published(),
-			principal: Principal::Operator,
+			principal: Principal::DeploymentAdministrator,
 			approved: BTreeSet::new(),
 			requests: BTreeMap::new(),
 			events: vec![],
@@ -44,15 +44,15 @@ impl OperatorFixture {
 	}
 }
 #[async_trait]
-impl PrivateKnowledgeRead for OperatorFixture {
+impl PrivateKnowledgeRead for DeploymentAdministratorFixture {
 	async fn documents(&mut self, entry: &Entry) -> Result<Option<Value>> {
 		self.inner.documents(entry).await
 	}
 }
 #[async_trait]
-impl StagingScope for OperatorFixture {
+impl StagingScope for DeploymentAdministratorFixture {
 	fn actor(&self) -> &str {
-		"operator-adoption"
+		"deployment-administrator-adoption"
 	}
 	fn allocate_entry_id(&mut self) -> Uuid {
 		self.inner.allocate_entry_id()
@@ -95,7 +95,7 @@ impl StagingScope for OperatorFixture {
 	}
 }
 #[async_trait]
-impl OperatorScope for OperatorFixture {
+impl DeploymentAdministratorScope for DeploymentAdministratorFixture {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
@@ -242,9 +242,11 @@ fn activation_input(enabled: bool) -> ActivationCommand {
 #[case("activate")]
 #[case("administration")]
 #[tokio::test]
-async fn every_operator_workflow_denies_subjects_before_persistence(#[case] operation: &str) {
-	// Arrange: trusted authentication says this caller is a subject, not an operator.
-	let mut scope = OperatorFixture::new();
+async fn every_deployment_administrator_workflow_denies_subjects_before_persistence(
+	#[case] operation: &str,
+) {
+	// Arrange: trusted authentication says this caller is a subject, not a Deployment Administrator.
+	let mut scope = DeploymentAdministratorFixture::new();
 	scope.principal = Principal::Subject {
 		tenant: "owner".into(),
 		subject: "subject".into(),
@@ -280,7 +282,7 @@ async fn activation_and_revocation_preserve_pointer_semantics_and_effect_order(
 	#[case] expected: Option<i64>,
 ) {
 	// Arrange
-	let (mut scope, id) = OperatorFixture::installed().await;
+	let (mut scope, id) = DeploymentAdministratorFixture::installed().await;
 	scope
 		.inner
 		.installations
@@ -307,12 +309,12 @@ async fn activation_and_revocation_preserve_pointer_semantics_and_effect_order(
 			"event:marketplace.activation_changed",
 		]
 	);
-	assert_eq!(scope.events[0].1["actor"], "operator");
+	assert_eq!(scope.events[0].1["actor"], "deployment_administrator");
 }
 #[rstest]
 #[tokio::test]
 async fn revoked_dependency_prevents_catalog_and_pointer_changes() {
-	let (mut scope, id) = OperatorFixture::installed().await;
+	let (mut scope, id) = DeploymentAdministratorFixture::installed().await;
 	scope
 		.inner
 		.revisions
@@ -332,7 +334,7 @@ async fn revoked_dependency_prevents_catalog_and_pointer_changes() {
 #[rstest]
 #[tokio::test]
 async fn denied_catalog_write_cannot_advance_the_active_pointer_or_emit_an_event() {
-	let (mut scope, id) = OperatorFixture::installed().await;
+	let (mut scope, id) = DeploymentAdministratorFixture::installed().await;
 	scope.inner.denied = Some("set_approval".into());
 	let result = activate(&mut scope, &id, &activation_input(true)).await;
 	assert!(matches!(result, Err(Error::Forbidden)));
@@ -342,7 +344,7 @@ async fn denied_catalog_write_cannot_advance_the_active_pointer_or_emit_an_event
 #[rstest]
 #[tokio::test]
 async fn administration_preserves_candidate_progress_and_has_no_subject_actions() {
-	let (mut scope, id) = OperatorFixture::installed().await;
+	let (mut scope, id) = DeploymentAdministratorFixture::installed().await;
 	let original = scope.inner.revisions[&format!("{id}:1")].clone();
 	scope.inner.revisions.insert(
 		format!("{id}:2"),

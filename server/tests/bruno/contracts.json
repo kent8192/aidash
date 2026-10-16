@@ -2196,8 +2196,8 @@
   },
   {
     "method": "GET",
-    "path": "/api/authorization/{tenant}/graph-operator-grants",
-    "name": "authorization_graph_operator_grants",
+    "path": "/api/authorization/{tenant}/peer-graph-grants",
+    "name": "authorization_peer_graph_grants",
     "source": "server/src/apps/identity/views/graph.rs",
     "json": false,
     "uuid_parameters": [],
@@ -2206,15 +2206,15 @@
       "schema": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/GraphOperatorGrant"
+          "$ref": "#/components/schemas/PeerGraphGrant"
         }
       },
       "definitions": {
-        "GraphOperatorGrant": {
+        "PeerGraphGrant": {
           "type": "object",
           "required": [
             "source_node",
-            "source_operator",
+            "source_identity",
             "tenant",
             "enabled",
             "revision",
@@ -2231,7 +2231,7 @@
             "source_node": {
               "type": "string"
             },
-            "source_operator": {
+            "source_identity": {
               "type": "string",
               "format": "uuid"
             },
@@ -2249,22 +2249,22 @@
   },
   {
     "method": "POST",
-    "path": "/api/authorization/{tenant}/graph-operator-grants",
-    "name": "authorization_set_graph_operator_grant",
+    "path": "/api/authorization/{tenant}/peer-graph-grants",
+    "name": "authorization_set_peer_graph_grant",
     "source": "server/src/apps/identity/views/graph.rs",
     "json": true,
     "uuid_parameters": [],
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/GraphOperatorGrant"
+        "$ref": "#/components/schemas/PeerGraphGrant"
       },
       "definitions": {
-        "GraphOperatorGrant": {
+        "PeerGraphGrant": {
           "type": "object",
           "required": [
             "source_node",
-            "source_operator",
+            "source_identity",
             "tenant",
             "enabled",
             "revision",
@@ -2281,7 +2281,7 @@
             "source_node": {
               "type": "string"
             },
-            "source_operator": {
+            "source_identity": {
               "type": "string",
               "format": "uuid"
             },
@@ -4875,8 +4875,8 @@
   },
   {
     "method": "POST",
-    "path": "/api/dashboard/identities/{id}/operator-grant",
-    "name": "sessions-admin-operator-grant",
+    "path": "/api/dashboard/identities/{id}/deployment-administrator-grant",
+    "name": "sessions-deployment-administrator-grant",
     "source": "server/src/apps/identity/views/sessions.rs",
     "json": true,
     "uuid_parameters": ["id"],
@@ -4884,8 +4884,8 @@
   },
   {
     "method": "GET",
-    "path": "/api/dashboard/operator-grants",
-    "name": "sessions-admin-operator-grants",
+    "path": "/api/dashboard/deployment-administrator-grants",
+    "name": "sessions-deployment-administrator-grants",
     "source": "server/src/apps/identity/views/sessions.rs",
     "json": false,
     "uuid_parameters": [],
@@ -4969,7 +4969,7 @@
               "properties": {
                 "kind": {
                   "type": "string",
-                  "enum": ["operator"]
+                  "enum": ["deployment_administrator"]
                 }
               }
             },
@@ -14643,7 +14643,7 @@
               "items": {
                 "$ref": "#/components/schemas/ForeignAgentSnapshot"
               },
-              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+              "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
             },
             "remote": {
               "type": "boolean",
@@ -22569,7 +22569,7 @@
               "properties": {
                 "kind": {
                   "type": "string",
-                  "enum": ["operator"]
+                  "enum": ["deployment_administrator"]
                 }
               }
             },
@@ -24281,7 +24281,7 @@
               "items": {
                 "$ref": "#/components/schemas/ForeignAgentSnapshot"
               },
-              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+              "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
             },
             "remote": {
               "type": "boolean",
@@ -26394,7 +26394,7 @@
               "items": {
                 "$ref": "#/components/schemas/ForeignAgentSnapshot"
               },
-              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+              "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
             },
             "remote": {
               "type": "boolean",
@@ -28360,7 +28360,7 @@
               "items": {
                 "$ref": "#/components/schemas/ForeignAgentSnapshot"
               },
-              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+              "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
             },
             "remote": {
               "type": "boolean",

@@ -117,7 +117,7 @@ const projected = {
   next_cursor: null,
 };
 
-test("operator tenant input distinguishes invalid IDs from oversized resources", async ({
+test("Deployment Administrator tenant input distinguishes invalid IDs from oversized resources", async ({
   page,
 }) => {
   const scene = meshScene();

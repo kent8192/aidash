@@ -140,9 +140,9 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_graph_operator_grants".to_owned(),
+			table: "authorization_peer_graph_grants".to_owned(),
 			constraint: Constraint::ForeignKey {
-				name: "authorization_graph_operator_grants_tenant_fkey".to_owned(),
+				name: "authorization_peer_graph_grants_tenant_fkey".to_owned(),
 				columns: vec!["tenant".to_owned()],
 				referenced_table: "authorization_bundles".to_owned(),
 				referenced_columns: vec!["tenant".to_owned()],
@@ -344,9 +344,9 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "dashboard_operator_grants".to_owned(),
+			table: "dashboard_deployment_administrator_grants".to_owned(),
 			constraint: Constraint::ForeignKey {
-				name: "dashboard_operator_grants_identity_id_fkey".to_owned(),
+				name: "dashboard_deployment_administrator_grants_identity_id_fkey".to_owned(),
 				columns: vec!["identity_id".to_owned()],
 				referenced_table: "dashboard_identities".to_owned(),
 				referenced_columns: vec!["id".to_owned()],
