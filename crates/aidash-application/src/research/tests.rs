@@ -42,6 +42,9 @@ struct Memory {
 	revoke_after_snapshot_read: AtomicBool,
 	/// A retention purge that commits just after the next snapshot read.
 	purge_after_snapshot_read: AtomicBool,
+	/// Revoke the Run's evidence after the nth snapshot read (0: never).
+	revoke_after_snapshot_reads: AtomicUsize,
+	snapshot_reads: AtomicUsize,
 }
 
 impl Memory {
@@ -355,6 +358,10 @@ impl EvidenceStore for Memory {
 			.revoke_after_snapshot_read
 			.swap(false, Ordering::SeqCst)
 		{
+			self.revoke(run);
+		}
+		let reads = self.snapshot_reads.fetch_add(1, Ordering::SeqCst) + 1;
+		if self.revoke_after_snapshot_reads.load(Ordering::SeqCst) == reads {
 			self.revoke(run);
 		}
 		if self.purge_after_snapshot_read.swap(false, Ordering::SeqCst) {
@@ -1929,6 +1936,27 @@ async fn evidence_revoked_during_the_read_is_withheld() {
 	store
 		.revoke_after_snapshot_read
 		.store(true, Ordering::SeqCst);
+
+	// Act
+	let error = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+}
+
+#[tokio::test]
+async fn evidence_revoked_during_the_last_snapshot_read_is_withheld() {
+	// Arrange: the revocation commits while the context is read, after
+	// authority was decided again.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	let reads = store.snapshot_reads.load(Ordering::SeqCst);
+	store
+		.revoke_after_snapshot_reads
+		.store(reads + 2, Ordering::SeqCst);
 
 	// Act
 	let error = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
