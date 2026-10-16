@@ -25,7 +25,7 @@ fn reference(id: &str) -> EntityRef {
 	}
 }
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only","credential_env":null}}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only"}}})).unwrap()
 }
 fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
@@ -38,7 +38,7 @@ async fn policy(f: &Federation, tenant: &str, revision: i64, value: Value) {
 		tenant,
 		revision,
 		serde_json::from_value::<PolicyBundle>(value).unwrap(),
-		"operator",
+		"deployment_administrator",
 	)
 	.await
 	.unwrap();
@@ -48,7 +48,7 @@ async fn token(f: &Federation, tenant: &str, kind: &str) -> String {
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.issue_credential(tenant, "viewer", 3600, "operator")
+	.issue_credential(tenant, "viewer", 3600, "deployment_administrator")
 	.await
 	.unwrap()
 	.token
@@ -63,7 +63,7 @@ async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.set_catalog(tenant, entry, 0, true, "operator")
+	.set_catalog(tenant, entry, 0, true, "deployment_administrator")
 	.await
 	.unwrap();
 }
@@ -230,7 +230,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			},
 			0,
 			true,
-			"operator"
+			"deployment_administrator"
 		)
 		.await
 		.is_err()
@@ -252,14 +252,14 @@ async fn tenant_publication_pending_installation_and_revisions(
 				},
 				1,
 				enabled,
-				"operator"
+				"deployment_administrator"
 			)
 			.await
 			.is_err(),
 			"projection catalog writes must use activation"
 		);
 	}
-	let change = json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/reconfigured","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()});
+	let change = json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/reconfigured","replay":"read_only"}},"idempotency_key":Uuid::new_v4()});
 	let changed = request(
 		&app,
 		&a,
@@ -354,7 +354,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			.contains("mkt-")
 	);
 	let mut replay_input = input.clone();
-	replay_input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/other","credential_env":null,"replay":"read_only"}});
+	replay_input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/other","replay":"read_only"}});
 	assert_eq!(install(&app, &a, &pa, &replay_input).await.0, 409);
 	policy(
 		&f,
@@ -648,7 +648,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		200
 	);
 	let mut input = install_input(&original);
-	input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/tenant-secret-setting","credential_env":null,"replay":"read_only"}});
+	input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/tenant-secret-setting","replay":"read_only"}});
 	let installed = install(&app, &b, &original, &input).await;
 	assert_eq!(installed.0, 200, "{installed:?}");
 	assert_eq!(
@@ -834,7 +834,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		.0,
 		200
 	);
-	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/retained","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
+	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/retained","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
 	// Unknown event families leak nothing.
 	let events = request(&app, &c, "GET", "/api/events", Value::Null).await;
 	assert!(!events.1.to_string().contains(key));
@@ -1228,7 +1228,13 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		"default file Tools require an admitted working area: {available:?}"
 	);
 	authorization
-		.set_catalog("a", &reference("model"), 1, false, "operator")
+		.set_catalog(
+			"a",
+			&reference("model"),
+			1,
+			false,
+			"deployment_administrator",
+		)
 		.await
 		.unwrap();
 	let denied = request(&app, &a, "GET", &area_path, Value::Null).await;
@@ -1249,7 +1255,13 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		403
 	);
 	authorization
-		.set_catalog("a", &reference("model"), 2, true, "operator")
+		.set_catalog(
+			"a",
+			&reference("model"),
+			2,
+			true,
+			"deployment_administrator",
+		)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1375,7 +1387,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 			"marketplace.install" => install(&app, &a, &package, &install_input(&package)).await,
 			"marketplace.share" => request(&app, &a, "PUT", &format!("{path}/audience"), json!({"expected_revision":1,"tenants":["a","b"]})).await,
 			"marketplace.redistribution.manage" => request(&app, &a, "PUT", &format!("{path}/consents/b"), json!({"expected_revision":0,"tenants":["b"]})).await,
-			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/changed","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await,
+			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/changed","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await,
 			_ => request(&app, &a, "POST", "/api/marketplace/packages", publication.clone()).await,
 		};
 		assert_eq!(result.0, 403, "deny {action}: {result:?}");
@@ -1538,7 +1550,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 		200
 	);
 	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 200);
-	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
+	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(dep_changed.0, 200, "{dep_changed:?}");
 	for config in [
 		json!({"model":reference("model")}),
@@ -1942,7 +1954,13 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 				Authorization {
 					pool: f2.store.pool.clone(),
 				}
-				.set_catalog("c", &reference("race-dependency"), 1, false, "operator")
+				.set_catalog(
+					"c",
+					&reference("race-dependency"),
+					1,
+					false,
+					"deployment_administrator",
+				)
 				.await
 				.unwrap();
 			} else {
@@ -2044,7 +2062,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	let renewed = Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.issue_credential("a", "viewer", 3600, "operator")
+	.issue_credential("a", "viewer", 3600, "deployment_administrator")
 	.await
 	.unwrap()
 	.token;
@@ -2386,8 +2404,8 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 #[case("activation", "logout", true)]
 #[case("administration", "logout", false)]
 #[case("administration", "logout", true)]
-#[case("administration", "operator_grant", false)]
-#[case("administration", "operator_grant", true)]
+#[case("administration", "deployment_administrator_grant", false)]
+#[case("administration", "deployment_administrator_grant", true)]
 #[case("administration", "expiry", false)]
 #[tokio::test]
 async fn browser_authority_is_ordered_with_pending_marketplace_requests(
@@ -2415,7 +2433,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	let issued = Authorization {
 		pool: f.store.pool.clone(),
 	}
-	.issue_credential("a", "viewer", 3600, "operator")
+	.issue_credential("a", "viewer", 3600, "deployment_administrator")
 	.await
 	.unwrap();
 	{
@@ -2525,13 +2543,13 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	.unwrap();
 
-	let operator = operation != "install";
-	if operator {
+	let deployment_administrator = operation != "install";
+	if deployment_administrator {
 		{
 			let query_bind_1 = identity;
 			sqlx::query(
 				&Query::insert()
-					.into_table(Alias::new("dashboard_operator_grants"))
+					.into_table(Alias::new("dashboard_deployment_administrator_grants"))
 					.columns(["identity_id", "enabled", "revision"].map(Alias::new))
 					.from_subquery(
 						Query::select()
@@ -2615,7 +2633,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		.unwrap();
 	}
 	let grant_revoke = Query::update()
-		.table(Alias::new("dashboard_operator_grants"))
+		.table(Alias::new("dashboard_deployment_administrator_grants"))
 		.value_expr(Alias::new("enabled"), Expr::cust("FALSE"))
 		.value_expr(Alias::new("revision"), Expr::cust("revision+1"))
 		.and_where(Expr::cust("identity_id=$1"))
@@ -2629,8 +2647,8 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			.header("x-aidash-csrf", "marketplace-test-csrf")
 			.header(
 				"x-aidash-context",
-				if operator {
-					"operator".into()
+				if deployment_administrator {
+					"deployment_administrator".into()
 				} else {
 					format!("mapping:{mapping}")
 				},
@@ -2654,7 +2672,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		.execute(&mut *barrier)
 		.await
 		.unwrap();
-	} else if revocation == "operator_grant" {
+	} else if revocation == "deployment_administrator_grant" {
 		sqlx::query(&grant_revoke)
 			.bind(identity)
 			.execute(&mut *barrier)
@@ -2690,15 +2708,15 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			} else {
 				"%71003201%"
 			}
-		} else if revocation == "operator_grant" {
-			"%dashboard_operator_grants%"
+		} else if revocation == "deployment_administrator_grant" {
+			"%dashboard_deployment_administrator_grants%"
 		} else {
 			"%dashboard_sessions%"
 		},
 	)
 	.await;
 	let revoking = if mutation_wins {
-		let task = if revocation == "operator_grant" {
+		let task = if revocation == "deployment_administrator_grant" {
 			let pool = f.store.pool.driver().clone();
 			let sql = grant_revoke.clone();
 			tokio::spawn(async move {
@@ -2717,8 +2735,8 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		wait_for_lock(
 			&f,
 			&schema,
-			if revocation == "operator_grant" {
-				"%dashboard_operator_grants%"
+			if revocation == "deployment_administrator_grant" {
+				"%dashboard_deployment_administrator_grants%"
 			} else {
 				"%dashboard_sessions%"
 			},
@@ -2736,7 +2754,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		installing.await.unwrap().status.as_u16(),
 		if mutation_wins {
 			200
-		} else if revocation == "operator_grant" {
+		} else if revocation == "deployment_administrator_grant" {
 			403
 		} else {
 			401
@@ -2745,7 +2763,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	if let Some(task) = revoking {
 		assert_eq!(
 			task.await.unwrap(),
-			if revocation == "operator_grant" {
+			if revocation == "deployment_administrator_grant" {
 				200
 			} else {
 				204
@@ -3077,7 +3095,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 	let installed = install(&app, &a, &package, &install_input(&package)).await;
 	assert_eq!(installed.0, 200, "{installed:?}");
 	let id = installed.1["installation"]["id"].as_str().unwrap();
-	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
+	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(staged.0, 200, "{staged:?}");
 	let first = request(
 		&app,

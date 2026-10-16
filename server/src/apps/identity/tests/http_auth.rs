@@ -1,4 +1,4 @@
-use super::{bearer, browser_operator_allowed};
+use super::{bearer, browser_deployment_administrator_allowed};
 use http::Method;
 use rstest::rstest;
 
@@ -28,8 +28,11 @@ fn bearer_schemes_preserve_case_sensitive_credentials(
 #[case("/api/skills/import", true)]
 #[case("/api/agents/personal", true)]
 #[case("/api/agents", false)]
-fn browser_operator_registry_creation(#[case] path: &str, #[case] permitted: bool) {
-	assert_eq!(browser_operator_allowed(&Method::POST, path), permitted);
+fn browser_deployment_administrator_registry_creation(#[case] path: &str, #[case] permitted: bool) {
+	assert_eq!(
+		browser_deployment_administrator_allowed(&Method::POST, path),
+		permitted
+	);
 }
 
 #[rstest]
@@ -39,7 +42,7 @@ fn browser_operator_registry_creation(#[case] path: &str, #[case] permitted: boo
 #[case("/api/runs/run-id/resume", false)]
 #[case("/api/runs/run-id/management/extra", false)]
 #[case("/api/runs", false)]
-fn browser_operator_run_writes_preserve_management_without_subject_actions(
+fn browser_deployment_administrator_run_writes_preserve_management_without_subject_actions(
 	#[case] path: &str,
 	#[case] permitted: bool,
 ) {
@@ -50,7 +53,7 @@ fn browser_operator_run_writes_preserve_management_without_subject_actions(
 		.unwrap();
 
 	assert_eq!(
-		browser_operator_allowed(&request.method, request.uri.path()),
+		browser_deployment_administrator_allowed(&request.method, request.uri.path()),
 		permitted
 	);
 }

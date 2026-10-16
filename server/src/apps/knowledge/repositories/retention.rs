@@ -53,8 +53,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			id: item.try_get("provider_id")?,
 			version: item.try_get("provider_version")?,
 		};
-		let mut lease =
-			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+		let mut lease = Lease::without_subject(store).await?;
 		let result = async {
 			let row = native::query(
 				&Query::select()

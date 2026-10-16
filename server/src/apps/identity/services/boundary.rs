@@ -1,5 +1,5 @@
 //! Authentication and transaction visibility at the HTTP boundary.
-use super::http_auth::{bearer, browser_operator_allowed, peer_node};
+use super::http_auth::{bearer, browser_deployment_administrator_allowed, peer_node};
 use crate::apps::identity::models::DashboardRegistrationRequest;
 use crate::{
 	Error, Result,
@@ -21,7 +21,7 @@ use std::sync::Arc;
 enum Requirement {
 	Public,
 	Authenticated,
-	Operator,
+	DeploymentAdministrator,
 	Peer,
 }
 
@@ -45,9 +45,9 @@ impl AccessBoundary {
 			visibility: false,
 		}
 	}
-	pub fn operator() -> Self {
+	pub fn deployment_administrator() -> Self {
 		Self {
-			requirement: Requirement::Operator,
+			requirement: Requirement::DeploymentAdministrator,
 			visibility: false,
 		}
 	}
@@ -85,11 +85,11 @@ impl AccessBoundary {
 				));
 				return Ok(());
 			}
-			Requirement::Authenticated | Requirement::Operator => {}
+			Requirement::Authenticated | Requirement::DeploymentAdministrator => {}
 		}
 		let token = bearer(&request.headers);
 		let actor = if token.is_some_and(|token| same_secret(token, &runtime.config.api_token)) {
-			Actor::Operator
+			Actor::DeploymentAdministrator
 		} else if request.headers.contains_key(AUTHORIZATION)
 			&& crate::apps::identity::repositories::desktop::access_token(&request.headers)
 				.is_none()
@@ -106,15 +106,17 @@ impl AccessBoundary {
 			let (actor, origin) =
 				dashboard_auth::actor_from_headers(runtime, &request.headers, &request.method)
 					.await?;
-			if matches!(actor, Actor::Operator)
-				&& !browser_operator_allowed(&request.method, request.uri.path())
+			if matches!(actor, Actor::DeploymentAdministrator)
+				&& !browser_deployment_administrator_allowed(&request.method, request.uri.path())
 			{
 				return Err(Error::Forbidden);
 			}
 			request.extensions.insert(origin);
 			actor
 		};
-		if matches!(self.requirement, Requirement::Operator) && !matches!(actor, Actor::Operator) {
+		if matches!(self.requirement, Requirement::DeploymentAdministrator)
+			&& !matches!(actor, Actor::DeploymentAdministrator)
+		{
 			return Err(Error::Forbidden);
 		}
 		request.extensions.insert(actor);
@@ -151,7 +153,7 @@ impl Middleware for AccessBoundary {
 					.path()
 					.strip_prefix("/api/dashboard/identities/")
 					.and_then(|path| {
-						path.strip_suffix("/operator-grant")
+						path.strip_suffix("/deployment-administrator-grant")
 							.or_else(|| path.strip_suffix("/restore"))
 							.or_else(|| path.strip_suffix("/display-erasure"))
 					})
@@ -174,8 +176,8 @@ impl Middleware for AccessBoundary {
 				&& request.method != Method::GET
 			{
 				// A decision locks the registration's identity for update in its own
-				// transaction, while the operator lease below holds a shared lock on
-				// the operator's identity: deciding one's own request could never finish.
+				// transaction, while the Deployment Administrator lease below holds a shared lock on
+				// the Deployment Administrator's identity: deciding one's own request could never finish.
 				let lease = runtime.store.orm_connection()?;
 				if DashboardRegistrationRequest::identity_of(&mut lease.handle(), registration)
 					.await? == Some(origin.identity_id)
@@ -183,30 +185,33 @@ impl Middleware for AccessBoundary {
 					return Err(Error::Forbidden);
 				}
 			}
-			let mut operator_lease = if matches!(actor, Some(Actor::Operator))
-				&& request.method != Method::GET
-				&& request.method != Method::HEAD
-				&& request.method != Method::OPTIONS
-				&& let Some(origin) = browser
-			{
-				let mut lease = crate::database::native::begin(&runtime.store.pool).await?;
-				origin.require_operator(&mut lease, true).await?;
-				Some(lease)
-			} else {
-				None
-			};
+			let mut deployment_administrator_lease =
+				if matches!(actor, Some(Actor::DeploymentAdministrator))
+					&& request.method != Method::GET
+					&& request.method != Method::HEAD
+					&& request.method != Method::OPTIONS
+					&& let Some(origin) = browser
+				{
+					let mut lease = crate::database::native::begin(&runtime.store.pool).await?;
+					origin
+						.require_deployment_administrator(&mut lease, true)
+						.await?;
+					Some(lease)
+				} else {
+					None
+				};
 			let _visibility = if self.visibility {
 				Some(ReadLease::begin(&runtime.store).await?)
 			} else {
 				None
 			};
 			let mut response = next.handle(request).await?;
-			if let Some(lease) = operator_lease.take() {
+			if let Some(lease) = deployment_administrator_lease.take() {
 				lease.commit().await?;
 			}
 			if matches!(
 				self.requirement,
-				Requirement::Authenticated | Requirement::Operator
+				Requirement::Authenticated | Requirement::DeploymentAdministrator
 			) {
 				response
 					.headers

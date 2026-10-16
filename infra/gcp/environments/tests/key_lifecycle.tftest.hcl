@@ -95,7 +95,7 @@ run "broker_rotation_plan" {
   }
   assert {
     condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/2"
-    error_message = "Managed workers must sign with the operator-selected numeric version."
+    error_message = "Managed workers must sign with the explicitly selected numeric version."
   }
 
 }

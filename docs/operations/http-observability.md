@@ -17,7 +17,7 @@ No cluster-wide quota or automatic request retry is introduced.
 | `AIDASH_SSE_CONNECTIONS`               | `128`   | Active SSE response bodies (1–65536)                                                                                   |
 | `AIDASH_AUTH_RATE_BURST`               | `30`    | `/auth/*` burst per socket peer IP, except discovery; refill one request every 2 seconds                               |
 | `AIDASH_AUTH_DISCOVERY_RATE_BURST`     | `10`    | `POST /auth/login` and `GET /auth/login?org=` burst per client IP, separate from `/auth/*`; refill one every 6 seconds |
-| `AIDASH_API_RATE_BURST`                | `120`   | Authenticated API burst per tenant/subject, or operator; refill 10 requests/second                                     |
+| `AIDASH_API_RATE_BURST`                | `120`   | Authenticated API burst per tenant/subject, or Deployment Administrator; refill 10 requests/second                     |
 | `AIDASH_PEER_RATE_BURST`               | `240`   | Federation burst per authenticated node; refill 20 requests/second                                                     |
 | `AIDASH_AUTH_RATE_PERIOD_MS`           | `2000`  | Refill interval per auth request                                                                                       |
 | `AIDASH_AUTH_DISCOVERY_RATE_PERIOD_MS` | `6000`  | Refill interval per sign-in discovery request                                                                          |

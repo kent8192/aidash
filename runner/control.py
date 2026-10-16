@@ -1,6 +1,6 @@
 """Single-writer, durable Kubernetes runner control service.
 
-The journal is an operator-owned persistent volume. An exclusive process lock
+The journal is a persistent volume owned by whoever runs the Deployment. An exclusive process lock
 prevents two controllers from claiming it. Kubernetes object names are derived
 from operation UUIDs; recovery observes those objects and never recreates a
 missing object after acceptance. No shell command runs on the controller host.

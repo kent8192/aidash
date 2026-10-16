@@ -108,7 +108,7 @@ pub fn reject_owner_definition(entry: &Entry) -> Result<()> {
 				entry.config.clone(),
 			)
 			.is_ok_and(|descriptor| {
-				// Node providers are declared only by the operator's packages.
+				// Node providers are declared only by the Node's packages.
 				descriptor.provider.starts_with("core.")
 					|| descriptor.provider.starts_with("research.")
 			}) {

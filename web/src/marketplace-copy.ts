@@ -54,7 +54,7 @@ export const marketplaceCopy = {
       "Prepare dependencies before installation. Nothing is fetched automatically.",
     reviewInstall: "Review and install",
     installHelp:
-      "Check the exact digest and requested permissions. The installation stays pending until an operator approves it.",
+      "Check the exact digest and requested permissions. The installation stays pending until a Deployment Administrator approves it.",
     cancel: "Cancel",
     colPackage: "Package",
     colKind: "Kind",

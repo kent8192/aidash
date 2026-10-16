@@ -30,7 +30,7 @@ pub async fn provide(#[inject] runtime: Federation) -> TenantAdministrations {
 }
 
 impl TenantAdministrations {
-	/// Bearer Subject Credentials and Operators are never Tenant Administrators.
+	/// Bearer Subject Credentials and Deployment Administrators are never Tenant Administrators.
 	async fn administrator(
 		&self,
 		actor: Actor,

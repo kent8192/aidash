@@ -11,12 +11,15 @@ test.beforeEach(async ({ page }) => {
     if (path === "/api/events/stream") return route.abort();
     if (path === "/api/session")
       return route.fulfill({
-        json: { access: { kind: "operator" }, node_id: "aidash://test" },
+        json: {
+          access: { kind: "deployment_administrator" },
+          node_id: "aidash://test",
+        },
       });
     if (path === "/api/state")
       return route.fulfill({
         json: {
-          access: { kind: "operator" },
+          access: { kind: "deployment_administrator" },
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",
@@ -324,10 +327,8 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
   await expect(
     dialog.getByLabel("Retry behavior").locator("option"),
   ).toHaveCount(1);
-  await dialog.getByLabel("Use configured credentials").check();
-  await dialog
-    .getByLabel("Credential reference", { exact: true })
-    .fill("AIDASH_SECRET_SEARCH");
+  // Tool transports never name a Deployment secret (#296).
+  await expect(dialog.getByLabel("Use configured credentials")).toHaveCount(0);
   await dialog
     .getByRole("button", { name: "Add argument", exact: true })
     .click();
@@ -370,7 +371,6 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
         transport: "mcp",
         endpoint: "https://example.com/mcp",
         tool_name: "search",
-        credential_env: "AIDASH_SECRET_SEARCH",
         replay: "unsafe",
         idempotency_argument: null,
       },
@@ -449,7 +449,6 @@ test("HTTP tools validate duplicate argument names and support typed lists", asy
       transport: {
         transport: "http",
         endpoint: "https://example.com/tool",
-        credential_env: null,
         replay: "unsafe",
       },
     },

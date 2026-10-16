@@ -206,7 +206,7 @@ async fn a_cancelled_run_is_finished_by_a_worker_that_cannot_load_its_state(
 	now: DateTime<Utc>,
 	#[case] stored: fn(DateTime<Utc>) -> RawRun,
 ) {
-	// Arrange: the operator cancelled a Run whose state no live worker can load.
+	// Arrange: the Deployment Administrator cancelled a Run whose state no live worker can load.
 	let mut row = stored(now);
 	row.metadata.control = RunControl::Cancelled;
 	*repository.0.run.lock().unwrap() = Some(row);

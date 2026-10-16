@@ -166,9 +166,9 @@ pub trait MarketplaceRead: InstallationRead {
 	async fn installation_documents(&mut self) -> Result<Vec<serde_json::Value>>;
 }
 
-/// Operator maintenance and adoption preserve one browser/tenant/distribution transaction.
+/// Deployment Administrator maintenance and adoption preserve one browser/tenant/distribution transaction.
 #[async_trait]
-pub trait OperatorScope: StagingScope {
+pub trait DeploymentAdministratorScope: StagingScope {
 	fn principal(&self) -> &aidash_domain::identity::Principal;
 	async fn load_tenant(&mut self, tenant: &str) -> Result<()>;
 	async fn distribution_lock(&mut self, exclusive: bool) -> Result<()>;

@@ -6,7 +6,7 @@ try {
   });
   await page.addInitScript(() => {
     sessionStorage.setItem("aidash-session-id", "acceptance-browser-session");
-    sessionStorage.setItem("aidash-context", "operator");
+    sessionStorage.setItem("aidash-context", "deployment_administrator");
     localStorage.setItem("aidash-locale", "ja-JP");
   });
   await page.route("**/auth/config", (route) =>
@@ -14,7 +14,11 @@ try {
   );
   await page.route("**/auth/session", (route) =>
     route.fulfill({
-      json: { id: "acceptance-browser-session", operator: true, mappings: [] },
+      json: {
+        id: "acceptance-browser-session",
+        deployment_administrator: true,
+        mappings: [],
+      },
     }),
   );
   await page.route("**/auth/activity", (route) =>

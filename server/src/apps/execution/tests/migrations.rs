@@ -34,7 +34,8 @@ use uuid::Uuid;
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0026_remove_legacy_installations"),
 	("registry", "0027_remove_legacy_installations_state"),
-	("registry", "0028_completion_policy"),
+	("registry", "0028_tool_transport_secrets"),
+	("registry", "0029_completion_policy"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -785,7 +786,7 @@ async fn unknown_or_inconsistent_native_history_is_not_adopted(
 	#[case] migration: &str,
 	#[case] message: &str,
 ) {
-	// Arrange: preserve the invalid row as evidence; repair is an operator action.
+	// Arrange: preserve the invalid row as evidence; repair is a manual action.
 	let fixture = fresh_database.await;
 	let recorder = DatabaseMigrationRecorder::new(fixture.connection.clone());
 	recorder.ensure_schema_table().await.unwrap();
@@ -820,7 +821,7 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	#[future] fresh_database: MigrationFixture,
 ) {
-	// Arrange: extension ownership belongs to an operator, before native history.
+	// Arrange: extension ownership belongs to whoever runs the Deployment, before native history.
 	let fixture = fresh_database.await;
 	let create = reinhardt::db::migrations::Operation::CreateExtension {
 		name: "pg_jsonschema".into(),
@@ -1819,7 +1820,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0028_completion_policy")
+			.find(|m| m.app_label == "registry" && m.name == "0029_completion_policy")
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -1887,7 +1888,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.unwrap_err();
 	assert!(
 		error.to_string().contains(
-			"registry 0028_completion_policy cannot be reversed: Agent definitions declare completion"
+			"registry 0029_completion_policy cannot be reversed: Agent definitions declare completion"
 		),
 		"{error}"
 	);

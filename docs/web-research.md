@@ -11,7 +11,7 @@ another without any change to the Harness or the Agent definition.
 The Harness has no research tool names and the Agent configuration has no
 research flags. It reacts only to declared tool behavior:
 
-| Declared behavior            | Operator effect                                                              |
+| Declared behavior            | Harness effect                                                               |
 | ---------------------------- | ---------------------------------------------------------------------------- |
 | `yields: [Search]`           | None; Source records are discovery hints and cannot be cited                 |
 | `yields: [Fetch, Citations]` | The Run's final answer has its Source citations checked                      |
@@ -132,7 +132,7 @@ Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
 
 The reader needs exactly the authority of `GET /api/runs/{run}`, evaluated at
 each read. A Subject needs `workspace.read` and the Run's visibility; an
-Operator needs the Workspace's operator visibility. Each of these returns the
+Deployment Administrator needs the Workspace's Deployment Administrator visibility. Each of these returns the
 same `404 {"error":"evidence unavailable"}`, so a response never reveals
 whether a Run or its evidence exists:
 
@@ -189,8 +189,8 @@ same-host redirect is checked again before any request.
 
 ## Cost attribution and limits
 
-A search provider may name the Search service operator's account. The Brave
-package reads the operator's account profile, which records the agreement,
+A search provider may name the Search account holder's account. The Brave
+package reads the Search account holder's account profile, which records the agreement,
 retention terms, request price and monthly limit. Before dispatch the host
 checks the terms are current and that one more request fits the month's limit
 (base fee plus every charged or still-unknown attempt). The reservation records
@@ -224,7 +224,7 @@ The Brave key is a **tool secret**: the profile's `credential_env` names an
 {
   "account_id": "brave-account",
   "agreement_reference": "contract-2026-10",
-  "verified_by": "operator",
+  "verified_by": "deployment_administrator",
   "verified_at": "2026-10-01T00:00:00Z",
   "review_after": "2027-01-01T00:00:00Z",
   "storage_permitted": true,
@@ -257,7 +257,7 @@ or both ports of `aidash_application::ports::research`:
 
 - `SearchProvider`: `disclosure(query)` returns the exact destination and
   content it will send (or a contract failure if it cannot send the query
-  unchanged), `account()` returns the Search service operator's current terms
+  unchanged), `account()` returns the Search account holder's current terms
   or `None`, and `search(query)` returns raw candidates or a contract
   `Failure`. It must not relax the query's filters; the host filters again.
 - `PageProvider`: `admit(url)` performs literal destination checks before any

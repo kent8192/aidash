@@ -1,1 +1,1 @@
-//! Marketplace is administered through its operator HTTP endpoints.
+//! Marketplace is administered through its Deployment Administrator HTTP endpoints.

@@ -435,7 +435,7 @@ class TriggerAuthorizationTests(unittest.TestCase):
         event = {"repository": {"full_name": "kent8192/aidash"}}
         with patch.dict(
             os.environ,
-            {"GITHUB_REPOSITORY": "kent8192/aidash", "GITHUB_ACTOR": "operator"},
+            {"GITHUB_REPOSITORY": "kent8192/aidash", "GITHUB_ACTOR": "maintainer"},
         ):
             for permission in ("read", "triage", "none"):
                 with (

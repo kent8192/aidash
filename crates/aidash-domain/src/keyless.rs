@@ -4,7 +4,7 @@
 use crate::{Error, Result, capabilities::outbound::public_ip};
 use std::{collections::BTreeSet, net::IpAddr};
 
-/// The private origins a Deployment's Operators permit for Keyless endpoints.
+/// The private origins the Deployment Administrators permit for Keyless endpoints.
 /// Entries are normalized origins (`scheme://host[:port]`), so a default port
 /// such as `:80` for HTTP is omitted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

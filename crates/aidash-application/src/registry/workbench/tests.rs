@@ -147,9 +147,9 @@ async fn sharing_is_not_accepted_for_owner_operations(draft: Draft) {
 }
 #[rstest]
 #[tokio::test]
-async fn operator_authority_does_not_query_subject_grants(draft: Draft) {
+async fn deployment_administrator_authority_does_not_query_subject_grants(draft: Draft) {
 	let mut scope = Fake::new("ignored");
-	scope.principal = Principal::Operator;
+	scope.principal = Principal::DeploymentAdministrator;
 	authorize(&mut scope, &draft, "agent_draft.register", true)
 		.await
 		.unwrap();
@@ -174,13 +174,13 @@ fn subject_identity_cannot_be_overridden(draft: Draft) {
 #[case(None, Some("owner"), "tenant is required")]
 #[case(Some("tenant"), None, "owner is required")]
 #[case(Some(" "), Some("owner"), "tenant is required")]
-fn operator_requires_explicit_identity(
+fn deployment_administrator_requires_explicit_identity(
 	#[case] tenant: Option<&str>,
 	#[case] owner: Option<&str>,
 	#[case] message: &str,
 ) {
 	assert_eq!(
-		author_identity(&Principal::Operator, tenant, owner)
+		author_identity(&Principal::DeploymentAdministrator, tenant, owner)
 			.unwrap_err()
 			.to_string(),
 		message

@@ -40,7 +40,7 @@ struct State {
 #[derive(Clone, Default)]
 struct Repository {
 	state: Arc<Mutex<State>>,
-	operator: bool,
+	deployment_administrator: bool,
 }
 struct Scope {
 	repository: Repository,
@@ -138,7 +138,7 @@ impl HomeRepository for Repository {
 		"aidash://home"
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
-		(!self.operator).then(principal)
+		(!self.deployment_administrator).then(principal)
 	}
 	async fn begin(&self) -> Result<Scope> {
 		self.call("begin");
@@ -724,9 +724,9 @@ async fn hidden_grant_output_prevents_provenance_reads() {
 }
 #[rstest]
 #[tokio::test]
-async fn operator_cannot_create_subject_remote_work() {
+async fn deployment_administrator_cannot_create_subject_remote_work() {
 	let repository = Repository {
-		operator: true,
+		deployment_administrator: true,
 		..Default::default()
 	};
 	assert!(matches!(

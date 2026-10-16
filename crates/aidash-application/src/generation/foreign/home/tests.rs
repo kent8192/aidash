@@ -153,8 +153,8 @@ impl HomeGenerationRepository for Repository {
 	fn credential_id(&self) -> Option<Uuid> {
 		Some(Uuid::from_u128(3))
 	}
-	fn principal(&self) -> &Principal {
-		&self.principal
+	fn principal(&self) -> Option<&Principal> {
+		Some(&self.principal)
 	}
 	fn node_id(&self) -> &str {
 		"aidash://home"
@@ -564,8 +564,8 @@ async fn invalid_input_is_rejected_before_begin(repository: Repository, #[case] 
 }
 #[rstest]
 #[tokio::test]
-async fn operator_cannot_request_a_subject_intent(mut repository: Repository) {
-	repository.principal = Principal::Operator;
+async fn deployment_administrator_cannot_request_a_subject_intent(mut repository: Repository) {
+	repository.principal = Principal::DeploymentAdministrator;
 	assert!(matches!(
 		request(&repository, Uuid::from_u128(1), input()).await,
 		Err(Error::Forbidden)

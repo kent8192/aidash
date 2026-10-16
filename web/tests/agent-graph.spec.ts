@@ -25,7 +25,7 @@ function entity(
 }
 function fixture() {
   return {
-    access: { kind: "operator" },
+    access: { kind: "deployment_administrator" },
     node: {
       id: "aidash://test",
       endpoint: "http://localhost",

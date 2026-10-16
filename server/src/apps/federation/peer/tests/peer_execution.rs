@@ -34,8 +34,13 @@ fn decoded(response: TestResponse) -> (u16, Value) {
 	);
 	(response.status_code(), response.json_value().unwrap())
 }
-async fn operator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
-	decoded(app.operator.post(path, &input, "json").await.unwrap())
+async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
+	decoded(
+		app.deployment_administrator
+			.post(path, &input, "json")
+			.await
+			.unwrap(),
+	)
 }
 
 async fn inspect(app: &EndpointFixture, token: &str, input: Value) -> (u16, Value) {
@@ -89,14 +94,14 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.unwrap();
 	let input = json!({"tenant":"remote","subject":"bob","agent":{"id":"research","version":"1.0.0"},"requirements":{}});
 	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
-	let (_, issued) = operator(
+	let (_, issued) = deployment_administrator(
 		app,
 		"/api/authorization/acme/credentials",
 		json!({"subject":"alice"}),
 	)
 	.await;
 	let credential = &issued["credential"]["id"];
-	assert_eq!(operator(app,"/api/authorization/acme/peer-mappings",json!({"source_node":"aidash://source","source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0})).await.0,200);
+	assert_eq!(deployment_administrator(app,"/api/authorization/acme/peer-mappings",json!({"source_node":"aidash://source","source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0})).await.0,200);
 	for rejected in [
 		issued["token"].as_str().unwrap(),
 		f.config.api_token.as_str(),
@@ -144,7 +149,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			let mut denied = policy.clone();
 			denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny","effect":"deny","subjects":{"ids":[subject]},"actions":[action],"resources":{"kinds":[kind]}}));
 			assert_eq!(
-				operator(
+				deployment_administrator(
 					app,
 					"/api/authorization/acme",
 					json!({"expected_revision":revision,"bundle":denied})
@@ -162,7 +167,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		}
 	}
 	assert_eq!(
-		operator(
+		deployment_administrator(
 			app,
 			"/api/authorization/acme",
 			json!({"expected_revision":revision,"bundle":policy})
@@ -173,7 +178,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	);
 	for id in ["model", "http", "research"] {
 		assert_eq!(
-			operator(
+			deployment_administrator(
 				app,
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":1,"enabled":false})
@@ -184,7 +189,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		);
 		assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
 		assert_eq!(
-			operator(
+			deployment_administrator(
 				app,
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":2,"enabled":true})
@@ -196,7 +201,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	}
 	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 200);
 	assert_eq!(
-		operator(
+		deployment_administrator(
 			app,
 			&format!(
 				"/api/authorization/acme/credentials/{}/revoke",
@@ -247,7 +252,14 @@ async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_d
 	let client = peer_client.await;
 	let path = "/federation/v0.1/discover/public-child/1.0.0/bindings";
 	assert_eq!(app.anonymous.get(path).await.unwrap().status_code(), 400);
-	assert_eq!(app.operator.get(path).await.unwrap().status_code(), 400);
+	assert_eq!(
+		app.deployment_administrator
+			.get(path)
+			.await
+			.unwrap()
+			.status_code(),
+		400
+	);
 	let (status, body) = decoded(client.get(path).await.unwrap());
 	assert_eq!(status, 200, "{body}");
 	let pinned: aidash_domain::registry::bindings::ForeignAgentSnapshot =
@@ -261,8 +273,8 @@ async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_d
 			.any(|binding| binding.alias.as_deref() == Some("task_delegate")
 				&& binding.excluded_reason.is_some())
 	);
-	let workspace = endpoint::workspace(&app.operator, "pinned public child").await;
-	let (status, task) = operator(
+	let workspace = endpoint::workspace(&app.deployment_administrator, "pinned public child").await;
+	let (status, task) = deployment_administrator(
 		&app,
 		&format!(
 			"/api/workspaces/{}/tasks",
@@ -358,7 +370,7 @@ async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_d
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_permission_inspection_resolves_foreign_agents_without_subject_imports(
+async fn deployment_administrator_permission_inspection_resolves_foreign_agents_without_subject_imports(
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-home")]
 	home: endpoint::EndpointFuture,
@@ -391,7 +403,7 @@ async fn operator_permission_inspection_resolves_foreign_agents_without_subject_
 			.unwrap();
 	}
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.node_id,"agent":{"id":"public-child","version":"1.0.0"}}}});
-	let registered = operator(&home, "/api/registry", tool).await;
+	let registered = deployment_administrator(&home, "/api/registry", tool).await;
 	assert_eq!(registered.0, 200, "{}", registered.1);
 	let mut parent = home.runtime.registry.get("parent", "1.0.0").await.unwrap();
 	parent.version = "1.0.1".into();
@@ -401,7 +413,7 @@ async fn operator_permission_inspection_resolves_foreign_agents_without_subject_
 	let subject = endpoint::subject(&home, "reader", reader_client.await).await;
 	let path = "/api/workbench/versions/parent/1.0.1/permissions";
 	let input = json!({"tenant":"endpoint","subject":"reader"});
-	let report = operator(&home, path, input.clone()).await;
+	let report = deployment_administrator(&home, path, input.clone()).await;
 	assert_eq!(report.0, 200, "{}", report.1);
 	assert!(
 		report.1["rows"]

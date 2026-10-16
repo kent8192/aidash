@@ -164,7 +164,7 @@ where
 	let inserted =
 		registry::register_definition(&mut scope, validation, &entry, repository.node_id()).await?;
 	let registered_by = match &actor {
-		Principal::Operator => "operator",
+		Principal::DeploymentAdministrator => "deployment_administrator",
 		Principal::Subject { subject, .. } => subject,
 	};
 	scope

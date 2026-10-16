@@ -62,7 +62,7 @@ pub async fn request(
 	task_id: Uuid,
 	input: Input,
 ) -> Result<Prepared> {
-	let Principal::Subject { tenant, subject } = repository.principal() else {
+	let Some(Principal::Subject { tenant, subject }) = repository.principal() else {
 		return Err(Error::Forbidden);
 	};
 	input.validate(repository.node_id())?;
@@ -175,7 +175,7 @@ pub async fn cancel(
 	task: Uuid,
 	id: Uuid,
 ) -> Result<bool> {
-	let Principal::Subject { tenant, .. } = repository.principal() else {
+	let Some(Principal::Subject { tenant, .. }) = repository.principal() else {
 		return Err(Error::Forbidden);
 	};
 	let record = repository.load(id).await?;

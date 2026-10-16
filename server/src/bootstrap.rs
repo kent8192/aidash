@@ -493,12 +493,9 @@ pub(crate) fn event_inbox(
 	})
 }
 
-/// HTTP and MCP tools resolve credentials for each invocation, including rotation.
+/// HTTP and MCP tools never carry a Deployment secret (#296).
 pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::tools::HttpTools {
-	aidash_integrations::tools::HttpTools {
-		client,
-		credentials: Arc::new(EnvironmentCredentials),
-	}
+	aidash_integrations::tools::HttpTools { client }
 }
 
 /// Discovery and worker retries share the native repository and rotating keys.
@@ -529,16 +526,13 @@ impl aidash_application::ports::Credentials for PeerCredentials {
 
 /// Assemble definition admission for both management and worker paths.
 pub fn registry_validation() -> aidash_application::registry::DefinitionValidation {
-	aidash_application::registry::DefinitionValidation::new(
-		Arc::new(EnvironmentCredentials),
-		Arc::new(NativeCoreToolCatalog),
-	)
-	.with_provider_credentials(
-		crate::config::settings::get_settings()
-			.ok()
-			.and_then(|s| s.resolve().ok())
-			.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
-	)
+	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
+		.with_provider_credentials(
+			crate::config::settings::get_settings()
+				.ok()
+				.and_then(|s| s.resolve().ok())
+				.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
+		)
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -641,7 +635,7 @@ pub(crate) fn marketplace_publication_scope<'a>(
 	}
 }
 
-/// Operator adoption and subject installation use the same staging implementation.
+/// Deployment Administrator adoption and subject installation use the same staging implementation.
 pub(crate) fn marketplace_staging_scope<'a>(
 	store: &'a Store,
 	tx: &'a mut crate::database::native::Transaction,
@@ -651,13 +645,13 @@ pub(crate) fn marketplace_staging_scope<'a>(
 }
 
 /// Trusted transport authority and the original transaction are shared with maintenance use cases.
-pub(crate) fn marketplace_operator_scope<'a>(
+pub(crate) fn marketplace_deployment_administrator_scope<'a>(
 	store: &'a Store,
 	tx: &'a mut crate::database::native::Transaction,
 	principal: aidash_domain::identity::Principal,
-) -> crate::apps::marketplace::repositories::operations::NativeOperator<'a> {
-	crate::apps::marketplace::repositories::operations::NativeOperator {
-		staging: marketplace_staging_scope(store, tx, "operator-adoption"),
+) -> crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator<'a> {
+	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
+		staging: marketplace_staging_scope(store, tx, "deployment-administrator-adoption"),
 		principal,
 	}
 }
@@ -729,7 +723,9 @@ pub(crate) fn generation_policy_repository(
 ) -> crate::apps::execution::generation::repositories::policy::NativePolicies {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -754,7 +750,9 @@ pub(crate) fn generation_read_repository(
 ) -> crate::apps::execution::generation::repositories::reads::NativeReads {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -782,7 +780,9 @@ pub(crate) fn generation_control_repository(
 ) -> crate::apps::execution::generation::repositories::controls::NativeControls {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -1032,7 +1032,9 @@ pub(crate) fn generation_home_repository(
 ) -> crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -1040,8 +1042,18 @@ pub(crate) fn generation_home_repository(
 	};
 	crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 		federation: f.clone(),
-		actor,
-		principal,
+		actor: Some(actor),
+		principal: Some(principal),
+	}
+}
+/// A peer-authenticated request has no local actor; its authority is the intent it names.
+pub(crate) fn peer_generation_home_repository(
+	f: &Federation,
+) -> crate::apps::execution::generation::repositories::foreign::home::NativeHome {
+	crate::apps::execution::generation::repositories::foreign::home::NativeHome {
+		federation: f.clone(),
+		actor: None,
+		principal: None,
 	}
 }
 
@@ -1831,7 +1843,16 @@ pub(crate) fn home_execution_repository(
 ) -> crate::apps::identity::repositories::home_execution::Repository {
 	crate::apps::identity::repositories::home_execution::Repository {
 		runtime: runtime.clone(),
-		actor,
+		actor: Some(actor),
+	}
+}
+/// A peer-authenticated request has no local actor; its authority is the grant it names.
+pub(crate) fn peer_home_execution_repository(
+	runtime: &Federation,
+) -> crate::apps::identity::repositories::home_execution::Repository {
+	crate::apps::identity::repositories::home_execution::Repository {
+		runtime: runtime.clone(),
+		actor: None,
 	}
 }
 
@@ -2213,7 +2234,7 @@ pub(crate) fn desktop_protocol(
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
 }
 
-/// Load private operator keys only at shared server/worker bootstrap.
+/// Load privately supplied keys only at shared server/worker bootstrap.
 pub async fn configure_provider_credentials(
 	store: &mut Store,
 	settings: &crate::apps::identity::serializers::provider_credentials::Settings,

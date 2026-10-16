@@ -9,7 +9,7 @@ test("subject transaction controls survive a barrier and discard revoked detail"
   await setup(page, { subject: true });
   let denied = false;
   let barrier = false;
-  const operatorRequests: string[] = [];
+  const deploymentAdministratorRequests: string[] = [];
   const transaction = {
     id: "50000000-0000-0000-0000-000000000040",
     digest: "a".repeat(64),
@@ -28,7 +28,7 @@ test("subject transaction controls survive a barrier and discard revoked detail"
   await page.route("**/api/transactions**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/participants") || path.endsWith("/trust"))
-      operatorRequests.push(path);
+      deploymentAdministratorRequests.push(path);
     if (path === "/api/transactions")
       return route.fulfill({ json: denied ? [] : [transaction] });
     return denied
@@ -85,7 +85,7 @@ test("subject transaction controls survive a barrier and discard revoked detail"
       exact: true,
     }),
   ).toHaveCount(0);
-  expect(operatorRequests).toEqual([]);
+  expect(deploymentAdministratorRequests).toEqual([]);
 });
 
 test("authority controls distinguish pending revocation while ordinary data is unavailable", async ({
@@ -141,13 +141,13 @@ test("authority controls distinguish pending revocation while ordinary data is u
   await expect(notice).toHaveCount(0);
 });
 
-test("subjects visiting authorization see the restriction without operator controls", async ({
+test("subjects visiting authorization see the restriction without Deployment Administrator controls", async ({
   page,
 }) => {
   await setup(page, { subject: true });
-  const operatorRequests: string[] = [];
+  const deploymentAdministratorRequests: string[] = [];
   await page.route("**/api/authorization/**", (route) => {
-    operatorRequests.push(route.request().url());
+    deploymentAdministratorRequests.push(route.request().url());
     return route.fulfill({ status: 403, json: { error: "forbidden" } });
   });
   await page.goto("/");
@@ -162,7 +162,7 @@ test("subjects visiting authorization see the restriction without operator contr
     page.locator('.collab-settings-select option[value="authorization"]'),
   ).toHaveCount(0);
   await expect(page.locator(".authorization-page")).toHaveCount(0);
-  expect(operatorRequests).toEqual([]);
+  expect(deploymentAdministratorRequests).toEqual([]);
 });
 
 test("peer trust retains pending revocations across refresh and supports checking completion", async ({

@@ -67,7 +67,7 @@ for (const locale of ["en-US", "ja-JP"]) {
     await page.route("**/api/state", (route) =>
       route.fulfill({
         json: {
-          access: { kind: "operator" },
+          access: { kind: "deployment_administrator" },
           node: {
             id: "aidash://home",
             endpoint: "http://localhost",

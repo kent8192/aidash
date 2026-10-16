@@ -414,7 +414,7 @@ def main():
     children = []
     files = []
     # Binding defaults include File Tools. Enable only disposable fixture
-    # storage; command runners remain disabled in the operator profile.
+    # storage; command runners remain disabled in the Node's execution profile.
     profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
     profile = pathlib.Path(profile_directory.name) / "profile.json"
     profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
@@ -523,7 +523,7 @@ def main():
             api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
             model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}})
             api_request(base, "/api/registry", model)
-            tool = entity("tool", "research-http", tool_descriptor(node_a if base == base_a else node_b, {"transport": "http", "endpoint": fixture_url + "/research", "credential_env": None, "replay": "unsafe"}))
+            tool = entity("tool", "research-http", tool_descriptor(node_a if base == base_a else node_b, {"transport": "http", "endpoint": fixture_url + "/research", "replay": "unsafe"}))
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)
             coordinator = "coordinator" if base == base_a else "researcher"
@@ -600,8 +600,8 @@ def main():
         wait_for(lambda: any(e["type"] == "task.completed" and e["subject"] == human_workspace["id"] for e in stream_events), label="human-controlled result SSE")
         plugin_runs = []
         for base, agent_id, tool_config in [
-            (base_b, "http-runner", {"transport": "http", "endpoint": fixture_url + "/echo", "credential_env": None, "replay": "unsafe"}),
-            (base_a, "mcp-runner", {"transport": "mcp", "endpoint": fixture_url + "/mcp", "tool_name": "echo", "replay": "read_only", "credential_env": None, "idempotency_argument": None}),
+            (base_b, "http-runner", {"transport": "http", "endpoint": fixture_url + "/echo", "replay": "unsafe"}),
+            (base_a, "mcp-runner", {"transport": "mcp", "endpoint": fixture_url + "/mcp", "tool_name": "echo", "replay": "read_only", "idempotency_argument": None}),
             (base_a, "agent-runner", {"transport": "agent", "node_id": node_b, "agent": {"id": "http-runner", "version": "1.0.0"}}),
         ]:
             tool_id = agent_id + "-tool"

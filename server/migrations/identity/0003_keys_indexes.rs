@@ -77,12 +77,12 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "authorization_graph_operator_grants".to_owned(),
+			table: "authorization_peer_graph_grants".to_owned(),
 			constraint: Constraint::PrimaryKey {
-				name: "authorization_graph_operator_grants_pkey".to_owned(),
+				name: "authorization_peer_graph_grants_pkey".to_owned(),
 				columns: vec![
 					"source_node".to_owned(),
-					"source_operator".to_owned(),
+					"source_identity".to_owned(),
 					"tenant".to_owned(),
 				],
 			},
@@ -255,9 +255,9 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "dashboard_operator_grants".to_owned(),
+			table: "dashboard_deployment_administrator_grants".to_owned(),
 			constraint: Constraint::PrimaryKey {
-				name: "dashboard_operator_grants_pkey".to_owned(),
+				name: "dashboard_deployment_administrator_grants_pkey".to_owned(),
 				columns: vec!["identity_id".to_owned()],
 			},
 		})

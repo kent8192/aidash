@@ -156,7 +156,7 @@ def private_read(path):
     with os.fdopen(descriptor) as source:
         metadata = os.fstat(source.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise Refused("App input must be a private file owned by the operator")
+            raise Refused("App input must be a private file owned by the current user")
         value = source.read(16385)
     if len(value.encode()) > 16384:
         raise Refused("Private App input is too large")
