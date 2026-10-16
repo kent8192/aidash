@@ -2553,6 +2553,13 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 				Some(admin_identity),
 				Some(admin_mapping)
 			),
+			// Clearing carol's groups changed the policy, so it is audited too.
+			(
+				"subject.group.update".into(),
+				"tenant_administrator".into(),
+				Some(admin_identity),
+				Some(admin_mapping)
+			),
 			(
 				"mapping.disable".into(),
 				"tenant_administrator".into(),
