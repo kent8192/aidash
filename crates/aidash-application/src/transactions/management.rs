@@ -13,7 +13,7 @@ use aidash_domain::{
 use futures_util::{StreamExt, stream};
 use uuid::Uuid;
 
-/// None denotes operator authority established by a trusted authentication adapter.
+/// None denotes Deployment Administrator authority established by a trusted authentication adapter.
 pub async fn submit(
 	repository: &dyn ManagementRepository,
 	identity: Option<&ExecutionPrincipal>,
@@ -21,7 +21,7 @@ pub async fn submit(
 ) -> Result<Status> {
 	match identity {
 		Some(identity) => repository.submit_subject(identity, manifest).await,
-		None => repository.submit_operator(manifest).await,
+		None => repository.submit_deployment_administrator(manifest).await,
 	}
 }
 
@@ -106,7 +106,7 @@ pub async fn abort(
 			.await?;
 		repository.status(id).await
 	} else {
-		repository.abort_operator(id).await
+		repository.abort_deployment_administrator(id).await
 	}
 }
 

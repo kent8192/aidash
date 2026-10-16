@@ -26,7 +26,7 @@ pub trait CoreToolCatalog: Send + Sync {
 #[async_trait]
 pub trait DefinitionLookup: Send {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry>;
-	/// Only an explicit operator adapter may import an authenticated public closure.
+	/// Only an explicit Deployment Administrator adapter may import an authenticated public closure.
 	async fn foreign_agent(
 		&mut self,
 		_: &str,

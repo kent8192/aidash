@@ -1,4 +1,4 @@
-//! Operator deployment observations, independent of HTTP and cluster clients.
+//! Deployment observations for Deployment Administrators, independent of HTTP and cluster clients.
 use crate::{Error, Result, ports::DeploymentObserver};
 use aidash_domain::{deployment::DeploymentStatus, identity::Principal};
 use std::sync::Arc;
@@ -24,7 +24,7 @@ impl DeploymentObservations {
 	}
 
 	pub async fn status(&self, principal: &Principal) -> Result<DeploymentStatus> {
-		if !matches!(principal, Principal::Operator) {
+		if !matches!(principal, Principal::DeploymentAdministrator) {
 			return Err(Error::Forbidden);
 		}
 		let Some(observer) = &self.observer else {

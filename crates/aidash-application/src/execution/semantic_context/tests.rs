@@ -70,7 +70,7 @@ fn task() -> Task {
 		status: TaskStatus::Open,
 		requirements: json!({}),
 		owner: None,
-		created_by: "operator".into(),
+		created_by: "deployment_administrator".into(),
 		dependencies: vec![],
 		parent_id: None,
 		revision: 7,

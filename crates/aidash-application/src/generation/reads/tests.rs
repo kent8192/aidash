@@ -43,7 +43,7 @@ impl Repository {
 					subject: "alice".into(),
 				}
 			} else {
-				Principal::Operator
+				Principal::DeploymentAdministrator
 			},
 			state: Arc::new(Mutex::new(State {
 				rows: vec![],
@@ -187,25 +187,35 @@ impl GenerationReads for Repository {
 			completed: false,
 		}))
 	}
-	async fn operator_history(&self, _tenant: &str, _id: Uuid) -> Result<Vec<History>> {
+	async fn deployment_administrator_history(
+		&self,
+		_tenant: &str,
+		_id: Uuid,
+	) -> Result<Vec<History>> {
 		self.state
 			.lock()
 			.unwrap()
 			.calls
-			.push("operator.history".into());
+			.push("deployment_administrator.history".into());
 		Ok(vec![])
 	}
-	async fn operator_usage(&self, _tenant: &str, _id: Uuid) -> Result<Usage> {
+	async fn deployment_administrator_usage(&self, _tenant: &str, _id: Uuid) -> Result<Usage> {
 		self.state
 			.lock()
 			.unwrap()
 			.calls
-			.push("operator.usage".into());
+			.push("deployment_administrator.usage".into());
 		Ok(usage_value())
 	}
-	async fn operator_specification(&self, _tenant: &str, _id: Uuid) -> Result<Value> {
+	async fn deployment_administrator_specification(
+		&self,
+		_tenant: &str,
+		_id: Uuid,
+	) -> Result<Value> {
 		let mut state = self.state.lock().unwrap();
-		state.calls.push("operator.specification".into());
+		state
+			.calls
+			.push("deployment_administrator.specification".into());
 		Ok(state.document.clone())
 	}
 }
@@ -306,7 +316,7 @@ async fn subject_scan_skips_denied_rows_and_stops_after_200_visible_requests_und
 }
 #[rstest]
 #[tokio::test]
-async fn operator_keeps_one_unfiltered_page_and_does_not_open_subject_authority() {
+async fn deployment_administrator_keeps_one_unfiltered_page_and_does_not_open_subject_authority() {
 	let repo = Repository::new(false);
 	repo.seed(550);
 	repo.state.lock().unwrap().denied = (1..=550).map(Uuid::from_u128).collect();
@@ -408,7 +418,7 @@ async fn direct_subject_detail_requires_current_visibility_before_any_ledger_rea
 		!repo
 			.calls()
 			.iter()
-			.any(|c| c == operation || c.starts_with("operator."))
+			.any(|c| c == operation || c.starts_with("Deployment Administrator."))
 	);
 	assert_eq!(repo.calls().last().unwrap(), "finish");
 	assert_eq!(repo.state.lock().unwrap().rollbacks, 1);
@@ -432,7 +442,9 @@ async fn missing_subject_request_returns_forbidden_and_never_reads_detail(#[case
 #[case("usage")]
 #[case("specification")]
 #[tokio::test]
-async fn cross_tenant_detail_rejects_before_authority_or_operator_query(#[case] operation: &str) {
+async fn cross_tenant_detail_rejects_before_authority_or_deployment_administrator_query(
+	#[case] operation: &str,
+) {
 	let repo = Repository::new(true);
 	assert!(matches!(
 		detail(&repo, "other", operation).await,
@@ -442,7 +454,7 @@ async fn cross_tenant_detail_rejects_before_authority_or_operator_query(#[case] 
 }
 #[rstest]
 #[case::subject(true)]
-#[case::operator(false)]
+#[case::deployment_administrator(false)]
 #[tokio::test]
 async fn usage_and_pinned_specification_preserve_the_saved_contract(#[case] subject: bool) {
 	let repo = Repository::new(subject);
@@ -466,7 +478,7 @@ async fn usage_and_pinned_specification_preserve_the_saved_contract(#[case] subj
 }
 #[rstest]
 #[case::subject(true)]
-#[case::operator(false)]
+#[case::deployment_administrator(false)]
 #[tokio::test]
 async fn malformed_pinned_specification_retains_json_failure(#[case] subject: bool) {
 	let repo = Repository::new(subject);

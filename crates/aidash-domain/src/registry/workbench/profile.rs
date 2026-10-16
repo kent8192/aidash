@@ -7,7 +7,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RealToolRule {
-	/// Operator attestation for the confined test endpoint; never a publisher replay claim.
+	/// Deployment Administrator attestation for the confined test endpoint; never a publisher replay claim.
 	#[serde(default)]
 	pub read_only_verified: bool,
 	pub tool: EntityRef,

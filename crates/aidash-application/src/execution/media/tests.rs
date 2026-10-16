@@ -566,26 +566,26 @@ fn repository() -> Repository {
 }
 #[rstest]
 #[tokio::test]
-async fn an_operator_cannot_open_a_media_transaction_for_a_foreign_run(
+async fn an_deployment_administrator_cannot_open_a_media_transaction_for_a_foreign_run(
 	repository: Repository,
 	mut run: RunMetadata,
 	model: ModelConfig,
 ) {
 	run.home_node = "aidash://other".into();
 	assert!(matches!(
-		operator(&repository, &run, &[(1, id(1), 128000)], &model).await,
+		deployment_administrator(&repository, &run, &[(1, id(1), 128000)], &model).await,
 		Err(Error::Forbidden)
 	));
 	assert!(repository.journal.lock().unwrap().events.is_empty());
 }
 #[rstest]
 #[tokio::test]
-async fn an_operator_commits_before_returning_resolved_media(
+async fn an_deployment_administrator_commits_before_returning_resolved_media(
 	repository: Repository,
 	run: RunMetadata,
 	model: ModelConfig,
 ) {
-	let output = operator(&repository, &run, &[(1, id(1), 128000)], &model)
+	let output = deployment_administrator(&repository, &run, &[(1, id(1), 128000)], &model)
 		.await
 		.unwrap();
 	assert_eq!(output.through_seq, Some(1));
@@ -596,13 +596,13 @@ async fn an_operator_commits_before_returning_resolved_media(
 }
 #[rstest]
 #[tokio::test]
-async fn an_operator_budget_error_rolls_back_without_publishing_a_batch(
+async fn an_deployment_administrator_budget_error_rolls_back_without_publishing_a_batch(
 	repository: Repository,
 	run: RunMetadata,
 	model: ModelConfig,
 ) {
 	assert!(
-		operator(&repository, &run, &[(1, id(1), 0)], &model)
+		deployment_administrator(&repository, &run, &[(1, id(1), 0)], &model)
 			.await
 			.is_err()
 	);
@@ -619,10 +619,11 @@ async fn a_commit_error_preserves_its_identity_and_never_returns_media(
 	model: ModelConfig,
 ) {
 	repository.journal.lock().unwrap().commit_failure = true;
-	let Error::Port(error) = operator(&repository, &run, &[(1, id(1), 128000)], &model)
-		.await
-		.err()
-		.unwrap()
+	let Error::Port(error) =
+		deployment_administrator(&repository, &run, &[(1, id(1), 128000)], &model)
+			.await
+			.err()
+			.unwrap()
 	else {
 		panic!("expected commit fault")
 	};
@@ -637,14 +638,19 @@ async fn a_commit_error_preserves_its_identity_and_never_returns_media(
 }
 #[rstest]
 #[tokio::test]
-async fn cancelling_an_operator_read_releases_the_owned_transaction(
+async fn cancelling_an_deployment_administrator_read_releases_the_owned_transaction(
 	repository: Repository,
 	run: RunMetadata,
 	model: ModelConfig,
 ) {
 	repository.journal.lock().unwrap().stall = true;
 	let messages = [(1, id(1), 128000)];
-	let mut pending = Box::pin(operator(&repository, &run, &messages, &model));
+	let mut pending = Box::pin(deployment_administrator(
+		&repository,
+		&run,
+		&messages,
+		&model,
+	));
 	assert!(futures_util::poll!(pending.as_mut()).is_pending());
 	drop(pending);
 	assert_eq!(

@@ -24,7 +24,7 @@ pub trait TrustScope: Send {
 
 #[async_trait]
 pub trait ManagementRepository: Send + Sync {
-	async fn submit_operator(&self, manifest: &Manifest) -> Result<Status>;
+	async fn submit_deployment_administrator(&self, manifest: &Manifest) -> Result<Status>;
 	async fn submit_subject(
 		&self,
 		identity: &ExecutionPrincipal,
@@ -48,7 +48,7 @@ pub trait ManagementRepository: Send + Sync {
 	async fn status(&self, id: Uuid) -> Result<Status>;
 	/// Read votes then audit while retaining the same connection registration.
 	async fn history(&self, id: Uuid) -> Result<(Vec<Vote>, Vec<History>)>;
-	async fn abort_operator(&self, id: Uuid) -> Result<Status>;
+	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status>;
 	async fn participants(&self) -> Result<Vec<LocalStatus>>;
 	async fn trusts(&self) -> Result<Vec<Trust>>;
 	async fn ensure_peer(&self, node: &str) -> Result<()>;

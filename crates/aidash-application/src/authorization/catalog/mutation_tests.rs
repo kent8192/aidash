@@ -30,7 +30,7 @@ fn binding() -> Binding {
 }
 impl Fixture {
 	fn new() -> Self {
-		Self { principal:Principal::Operator, definition:serde_json::from_value(json!({"id":"skill","version":"1.0.0","kind":"skill","name":{"en":"Skill"},"description":{"en":"Fixture"},"config":{"instructions":"Frozen"}})).unwrap(), registered:true, next:Some(binding()), failure:None, calls:vec![] }
+		Self { principal:Principal::DeploymentAdministrator, definition:serde_json::from_value(json!({"id":"skill","version":"1.0.0","kind":"skill","name":{"en":"Skill"},"description":{"en":"Fixture"},"config":{"instructions":"Frozen"}})).unwrap(), registered:true, next:Some(binding()), failure:None, calls:vec![] }
 	}
 }
 #[async_trait]
@@ -99,19 +99,27 @@ impl CatalogAdministrationRead for Fixture {
 
 #[rstest]
 #[tokio::test]
-async fn operator_history_label_cannot_elevate_a_subject_before_persistence() {
+async fn deployment_administrator_history_label_cannot_elevate_a_subject_before_persistence() {
 	let mut scope = Fixture::new();
 	scope.principal = Principal::Subject {
 		tenant: "tenant".into(),
 		subject: "alice".into(),
 	};
-	let result = set_catalog(&mut scope, "tenant", &reference(), 1, false, "operator").await;
+	let result = set_catalog(
+		&mut scope,
+		"tenant",
+		&reference(),
+		1,
+		false,
+		"deployment_administrator",
+	)
+	.await;
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(scope.calls, Vec::<String>::new());
 }
 #[rstest]
 #[tokio::test]
-async fn administration_read_requires_operator_authority_for_worker_callers_too() {
+async fn administration_read_requires_deployment_administrator_authority_for_worker_callers_too() {
 	let mut scope = Fixture::new();
 	scope.principal = Principal::Subject {
 		tenant: "tenant".into(),
@@ -133,7 +141,7 @@ async fn invalid_revision_cannot_read_or_mutate_catalog(#[case] revision: i64) {
 		&reference(),
 		revision,
 		false,
-		"operator",
+		"deployment_administrator",
 	)
 	.await;
 	assert!(
@@ -146,7 +154,15 @@ async fn invalid_revision_cannot_read_or_mutate_catalog(#[case] revision: i64) {
 async fn missing_definition_cannot_create_approval_or_history() {
 	let mut scope = Fixture::new();
 	scope.registered = false;
-	let result = set_in(&mut scope, "tenant", &reference(), 0, true, "operator").await;
+	let result = set_in(
+		&mut scope,
+		"tenant",
+		&reference(),
+		0,
+		true,
+		"deployment_administrator",
+	)
+	.await;
 	assert!(matches!(result,Err(Error::NotFound(message)) if message=="registry entry"));
 	assert_eq!(scope.calls, vec!["exists:skill:1.0.0"]);
 }
@@ -155,7 +171,15 @@ async fn missing_definition_cannot_create_approval_or_history() {
 async fn lost_revision_race_never_appends_a_new_history_row() {
 	let mut scope = Fixture::new();
 	scope.next = None;
-	let result = set_in(&mut scope, "tenant", &reference(), 1, false, "operator").await;
+	let result = set_in(
+		&mut scope,
+		"tenant",
+		&reference(),
+		1,
+		false,
+		"deployment_administrator",
+	)
+	.await;
 	assert!(matches!(result,Err(Error::Conflict(message)) if message=="catalog revision changed"));
 	assert_eq!(
 		scope.calls,
@@ -167,7 +191,15 @@ async fn lost_revision_race_never_appends_a_new_history_row() {
 async fn failed_update_keeps_its_retry_error_without_history() {
 	let mut scope = Fixture::new();
 	scope.failure = Some("cas");
-	let result = set_in(&mut scope, "tenant", &reference(), 1, false, "operator").await;
+	let result = set_in(
+		&mut scope,
+		"tenant",
+		&reference(),
+		1,
+		false,
+		"deployment_administrator",
+	)
+	.await;
 	assert!(matches!(result,Err(Error::External(message)) if message=="fixture CAS failed"));
 	assert_eq!(
 		scope.calls,
@@ -179,11 +211,19 @@ async fn failed_update_keeps_its_retry_error_without_history() {
 async fn failed_history_returns_the_failure_to_the_transaction_owner() {
 	let mut scope = Fixture::new();
 	scope.failure = Some("history");
-	let result = set_in(&mut scope, "tenant", &reference(), 1, false, "operator").await;
+	let result = set_in(
+		&mut scope,
+		"tenant",
+		&reference(),
+		1,
+		false,
+		"deployment_administrator",
+	)
+	.await;
 	assert!(matches!(result,Err(Error::External(message)) if message=="fixture history failed"));
 	assert_eq!(
 		scope.calls.last().unwrap(),
-		"history:tenant:skill:1.0.0:2:false:operator"
+		"history:tenant:skill:1.0.0:2:false:deployment_administrator"
 	);
 }
 #[rstest]
@@ -228,7 +268,15 @@ async fn projected_catalog_approvals_are_owned_by_marketplace_activation(#[case]
 		installation: "installation".into(),
 		revision: 1,
 	});
-	let result = set_catalog(&mut scope, "tenant", &reference(), 1, enabled, "operator").await;
+	let result = set_catalog(
+		&mut scope,
+		"tenant",
+		&reference(),
+		1,
+		enabled,
+		"deployment_administrator",
+	)
+	.await;
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(scope.calls, vec!["load:tenant", "definition:skill:1.0.0"]);
 }
@@ -242,7 +290,7 @@ async fn marketplace_uses_the_same_cas_inside_its_existing_protected_scope() {
 		&reference(),
 		1,
 		false,
-		"operator-activation",
+		"deployment-administrator-activation",
 	)
 	.await
 	.unwrap();
@@ -252,7 +300,7 @@ async fn marketplace_uses_the_same_cas_inside_its_existing_protected_scope() {
 		vec![
 			"exists:skill:1.0.0",
 			"cas:tenant:skill:1.0.0:1:false",
-			"history:tenant:skill:1.0.0:2:false:operator-activation"
+			"history:tenant:skill:1.0.0:2:false:deployment-administrator-activation"
 		]
 	);
 }

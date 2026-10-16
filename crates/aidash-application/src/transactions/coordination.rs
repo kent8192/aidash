@@ -56,13 +56,13 @@ impl Coordinator {
 	}
 
 	pub async fn abort(&self, id: Uuid) -> Result<Status> {
-		// Peer I/O holds the recovery lease. Operator abort must still compete for
+		// Peer I/O holds the recovery lease. Deployment Administrator abort must still compete for
 		// the immutable decision under the storage row lock, without that lease.
 		self.repository
 			.transition(
 				id,
 				CoordinatorTransition::Decide(CoordinatorDecision::Abort),
-				"operator requested abort",
+				"Deployment Administrator requested abort",
 			)
 			.await?;
 		let existing = self.status(id).await?;
