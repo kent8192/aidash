@@ -18,6 +18,7 @@ use crate::apps::execution::capabilities::{
 use crate::{
 	Error as NativeError, Result as NativeResult, authorization::access::Access, store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	ports::capabilities::cleanup::{
@@ -35,6 +36,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// The capability worker reaches every Tenant's operations and work areas.
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) access: &'a mut Access,
@@ -768,7 +773,7 @@ impl CleanupRepository for Repository<'_> {
 						.limit(8)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&store.pool)
+				.fetch_all(store.pool.in_scope(&MAINTENANCE))
 				.await?
 			};
 			Ok(jobs)
@@ -781,12 +786,12 @@ impl CleanupRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn ErasureScope + '_>> {
 		Ok(Box::new(Erasure {
 			store: self.store,
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: self.store.pool.begin(&MAINTENANCE).await?,
 		}))
 	}
 	async fn failure(&self, id: Uuid, area: Option<Uuid>) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut tx = crate::database::native::begin(&self.store.pool).await?;
+			let mut tx = self.store.pool.begin(&MAINTENANCE).await?;
 			{
 				let query_bind_1 = area;
 				crate::database::native::query(

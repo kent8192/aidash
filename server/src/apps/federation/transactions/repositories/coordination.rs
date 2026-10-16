@@ -6,6 +6,7 @@ use crate::apps::federation::transactions::{
 	services::{authority, fault, participant},
 };
 use crate::{Error, Result, federation::Federation};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result as ApplicationResult,
 	ports::transactions::coordination::{
@@ -19,10 +20,7 @@ use aidash_domain::transactions::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::{
-	backends::TransactionExecutor,
-	orm::{DatabaseConnection, DatabaseConnectionLease},
-};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -30,61 +28,47 @@ pub(crate) struct Repository {
 	pub runtime: Federation,
 }
 
-pub(crate) fn connection(runtime: &Federation) -> Result<DatabaseConnectionLease> {
-	Ok(DatabaseConnectionLease::register(
-		runtime.store.control_pool.connection(),
-	)?)
+/// Cross-node transaction records are Deployment-wide.
+pub(crate) async fn plumbing<T>(
+	runtime: &Federation,
+	work: impl for<'t> AsyncFnOnce(&'t mut reinhardt::db::orm::AtomicTransaction) -> Result<T>,
+) -> Result<T> {
+	runtime
+		.store
+		.control_pool
+		.atomic(&TenancyScope::NoTenant, work)
+		.await
 }
 
 struct Recovery {
 	id: Uuid,
 	runtime: Federation,
-	connection: Option<DatabaseConnectionLease>,
 	lease: Box<dyn TransactionExecutor>,
-}
-
-impl Recovery {
-	fn connection(&mut self) -> Result<DatabaseConnection> {
-		if self.connection.is_none() {
-			self.connection = Some(connection(&self.runtime)?);
-		}
-		Ok(self
-			.connection
-			.as_ref()
-			.expect("connection retained")
-			.handle())
-	}
 }
 
 #[async_trait]
 impl RecoveryScope for Recovery {
 	async fn touch(&mut self) -> ApplicationResult<()> {
-		coordinator_records::touch(self.connection()?, self.id)
+		coordinator_records::touch(&self.runtime.store.control_pool, self.id)
 			.await
 			.map_err(Into::into)
 	}
 
 	async fn acknowledge(&mut self, node: &str, phase: &str) -> ApplicationResult<()> {
 		let phase: AtomicVotePhase = serde_json::from_value(json!(phase))?;
-		coordinator_records::acknowledge(self.connection()?, self.id, node, phase)
+		coordinator_records::acknowledge(&self.runtime.store.control_pool, self.id, node, phase)
 			.await
 			.map_err(Into::into)
 	}
 
 	async fn record_error(&mut self, error: &str) -> ApplicationResult<()> {
-		coordinator_records::record_error(self.connection()?, self.id, error)
+		coordinator_records::record_error(&self.runtime.store.control_pool, self.id, error)
 			.await
 			.map_err(Into::into)
 	}
 
 	async fn release(self: Box<Self>) -> ApplicationResult<()> {
-		let Self {
-			connection, lease, ..
-		} = *self;
-		// Release the registration before committing the advisory transaction,
-		// retaining the connection and lease ownership order on success and failure.
-		// Both owners also release their resources through RAII on cancellation.
-		drop(connection);
+		let Self { lease, .. } = *self;
 		lease
 			.commit()
 			.await
@@ -95,7 +79,6 @@ impl RecoveryScope for Recovery {
 
 struct Batch {
 	ids: Vec<Uuid>,
-	_connection: DatabaseConnectionLease,
 }
 
 impl RecoveryBatch for Batch {
@@ -115,19 +98,21 @@ impl CoordinatorRepository for Repository {
 	}
 
 	async fn status(&self, id: Uuid) -> ApplicationResult<Status> {
-		let lease = connection(&self.runtime)?;
-		coordinator_records::status(&mut lease.handle(), id)
-			.await
-			.map(Into::into)
-			.map_err(Into::into)
+		plumbing(&self.runtime, async |tx| {
+			coordinator_records::status(tx, id).await
+		})
+		.await
+		.map(Into::into)
+		.map_err(Into::into)
 	}
 
 	async fn votes(&self, id: Uuid) -> ApplicationResult<Vec<Vote>> {
-		let lease = connection(&self.runtime)?;
-		coordinator_records::votes(&mut lease.handle(), id)
-			.await
-			.map(|votes| votes.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
+		plumbing(&self.runtime, async |tx| {
+			coordinator_records::votes(tx, id).await
+		})
+		.await
+		.map(|votes| votes.into_iter().map(Into::into).collect())
+		.map_err(Into::into)
 	}
 
 	async fn transition(
@@ -136,32 +121,35 @@ impl CoordinatorRepository for Repository {
 		change: CoordinatorTransition,
 		detail: &str,
 	) -> ApplicationResult<()> {
-		let lease = connection(&self.runtime)?;
 		let point = format!("coordinator.{}", change.phase().to_ascii_lowercase());
 		fault::cut(id, &format!("{point}.before")).await?;
-		coordinator_records::transition(lease.handle(), id, change.into(), detail).await?;
+		coordinator_records::transition(
+			&self.runtime.store.control_pool,
+			id,
+			change.into(),
+			detail,
+		)
+		.await?;
 		fault::cut(id, &format!("{point}.after")).await?;
 		Ok(())
 	}
 
 	async fn acquire_recovery(&self, id: Uuid) -> ApplicationResult<Box<dyn RecoveryScope>> {
-		let backend = self.runtime.store.control_pool.connection();
-		let lease = coordinator_records::recovery_lease(&backend, id).await?;
+		let lease =
+			coordinator_records::recovery_lease(&self.runtime.store.control_pool, id).await?;
 		Ok(Box::new(Recovery {
 			id,
 			runtime: self.runtime.clone(),
-			connection: None,
 			lease,
 		}))
 	}
 
 	async fn recovery_batch(&self, aborted: bool) -> ApplicationResult<Box<dyn RecoveryBatch>> {
-		let lease = connection(&self.runtime)?;
-		let ids = coordinator_records::recovery_candidates(&mut lease.handle(), aborted).await?;
-		Ok(Box::new(Batch {
-			ids,
-			_connection: lease,
-		}))
+		let ids = plumbing(&self.runtime, async |tx| {
+			coordinator_records::recovery_candidates(tx, aborted).await
+		})
+		.await?;
+		Ok(Box::new(Batch { ids }))
 	}
 
 	async fn issue_authority(&self, manifest: &Manifest, node: &str) -> ApplicationResult<()> {

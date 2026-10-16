@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures as upstream;
 use reinhardt::ServerRouter as Router;
 use rstest::fixture;
@@ -115,7 +117,12 @@ async fn controlled_context(
 		.0,
 		200
 	);
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let embedding_endpoint = embeddings.url.clone();
 	// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
 	f.store
@@ -150,6 +157,7 @@ async fn controlled_context(
 	let artifact = f
 		.store
 		.publish_artifact(
+			&TEST_FIXTURE,
 			task,
 			&owner,
 			"controlled-artifact",
@@ -164,6 +172,7 @@ async fn controlled_context(
 	let message = f
 		.store
 		.message_record(
+			&TEST_FIXTURE,
 			workspace,
 			"human",
 			"Vehicle safety",
@@ -223,7 +232,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		contexts.len(),
 		1,
 		"run: {:?}",
-		fixture.f.store.runs().await.unwrap()[0]
+		fixture.f.store.runs(&TEST_FIXTURE).await.unwrap()[0]
 	);
 	let semantic = &contexts[0]["current"]["semantic_memory"]["workspace"];
 	if !memory && !workspace_retrieval {
@@ -315,7 +324,14 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 			0
 		}
 		Unavailable::VectorBackend => {
-			let mut connection = fixture.worker.federation.store.pool.begin().await.unwrap();
+			let mut connection = fixture
+				.worker
+				.federation
+				.store
+				.pool
+				.begin(&TEST_FIXTURE)
+				.await
+				.unwrap();
 			aidash_server::database::native::query(
 				&reinhardt::query::Query::delete()
 					.from_table(reinhardt::query::Alias::new("semantic_vectors"))
@@ -332,7 +348,7 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 
 	// Act: the step that requests semantic context before inference.
 	assert!(fixture.worker.worker_once().await.unwrap());
-	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 
 	// Assert: a scheduled retry with the typed transient reason, no inference.
 	assert_eq!(
@@ -367,7 +383,13 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 		run.state
 	);
 	assert_ne!(
-		fixture.f.store.task(run.task_id).await.unwrap().status,
+		fixture
+			.f
+			.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status,
 		TaskStatus::Failed,
 		"{unavailable:?}"
 	);
@@ -398,7 +420,7 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 			fixture.worker.worker_once().await.unwrap(),
 			"attempt {failure}"
 		);
-		let run = fixture.f.store.runs().await.unwrap().remove(0);
+		let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 		run_id = Some(run.id);
 		assert!(
 			fixture.captured.lock().unwrap().is_empty(),
@@ -439,7 +461,13 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 			assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
 			assert_eq!(reason, "retries_exhausted", "{run:?}");
 			assert_ne!(
-				fixture.f.store.task(run.task_id).await.unwrap().status,
+				fixture
+					.f
+					.store
+					.task(&TEST_FIXTURE, run.task_id)
+					.await
+					.unwrap()
+					.status,
 				TaskStatus::Failed
 			);
 		}
@@ -449,7 +477,7 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 	let resumed = fixture
 		.f
 		.store
-		.control(run_id.unwrap(), RunControlAction::Resume)
+		.control(&TEST_FIXTURE, run_id.unwrap(), RunControlAction::Resume)
 		.await
 		.unwrap();
 	assert_eq!(resumed.control.as_str(), "ACTIVE");
@@ -491,7 +519,7 @@ async fn local_semantic_key_rejection_and_contract_violation_pause_without_retry
 	fixture.fault.set(fault);
 
 	assert!(fixture.worker.worker_once().await.unwrap());
-	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 
 	assert_eq!(fixture.fault.requests() - indexed, 1, "{reason}");
 	assert!(fixture.captured.lock().unwrap().is_empty(), "{reason}");
@@ -502,7 +530,13 @@ async fn local_semantic_key_rejection_and_contract_violation_pause_without_retry
 		reason
 	);
 	assert_ne!(
-		fixture.f.store.task(run.task_id).await.unwrap().status,
+		fixture
+			.f
+			.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status,
 		TaskStatus::Failed
 	);
 
@@ -653,7 +687,12 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let mut config = spec(&endpoint);
 	config.embedding.provider = provider.into();
 	let first = configure(&app, &f.config.api_token, workspace, &config, 0).await;
@@ -793,6 +832,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			.present(
 				&config.vector,
 				second["collection"].as_str().unwrap(),
+				second["tenant"].as_str().unwrap(),
 				&[serde_json::from_value(current_point.clone()).unwrap()]
 			)
 			.await
@@ -816,7 +856,12 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
 	let cars = put(
 		&app,
@@ -942,7 +987,12 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let mut config = spec(&endpoint);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
 	configure(&app, &f.config.api_token, workspace, &config, 0).await;
@@ -1044,7 +1094,12 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 
 	let endpoint = server.url.clone();
 	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	configure(
 		&app,
 		&f.config.api_token,
@@ -1080,7 +1135,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	};
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
@@ -1178,7 +1233,12 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	);
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().control.as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"PAUSED"
 	);
 	assert_eq!(captured.lock().unwrap().len(), 1);
@@ -1204,7 +1264,12 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let endpoint = embeddings.url.clone();
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
 	assert_eq!(
 		request(
@@ -1227,6 +1292,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let artifact = f
 		.store
 		.publish_artifact(
+			&TEST_FIXTURE,
 			task,
 			&qualified_agent(&f.config.node_id, "research", "1.0.0"),
 			"semantic-artifact",
@@ -1240,6 +1306,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.unwrap();
 	f.store
 		.message(
+			&TEST_FIXTURE,
 			workspace,
 			"human",
 			"Vehicle safety",
@@ -1247,7 +1314,13 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		)
 		.await
 		.unwrap();
-	let message = f.store.snapshot(workspace).await.unwrap().messages[0].id;
+	let message = f
+		.store
+		.snapshot(&TEST_FIXTURE, workspace)
+		.await
+		.unwrap()
+		.messages[0]
+		.id;
 	let mut ids = vec![];
 	for (kind, id, agent) in [
 		("artifact", artifact.id, None),
@@ -1351,7 +1424,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	// Even a Deployment Administrator cannot attach a resource from a different workspace.
 	let other = f
 		.store
-		.create_workspace("Other", "Isolation")
+		.create_workspace(&TEST_FIXTURE, "Other", "Isolation")
 		.await
 		.unwrap();
 	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;
@@ -1379,7 +1452,12 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	let embedding = embeddings.url.clone();
 	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
-	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let workspace = f
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let config = spec(&embedding);
 	let index = configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	let entry = put(

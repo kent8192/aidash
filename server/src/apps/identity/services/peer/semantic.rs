@@ -5,15 +5,18 @@ use crate::{
 	federation::Federation,
 	semantic::remote::{Failure, Operation, journal},
 };
+use aidash_application::tenancy::TenancyScope;
 
 use reinhardt::query::{Alias, Expr, OnConflict, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// The receiver's pinned admission Description for a remote Run.
+/// `tenancy` is the receiver's mapped Tenant of the Run.
 pub(crate) async fn admission(
 	f: &Federation,
 	run: &crate::domain::Run,
+	tenancy: &TenancyScope,
 ) -> Result<crate::authorization::remote::Description> {
 	let description: Value = {
 		let query_bind_1 = run.id;
@@ -31,7 +34,7 @@ pub(crate) async fn admission(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(&f.store.pool)
+		.scalar_optional(f.store.pool.in_scope(tenancy))
 		.await?
 	}
 	.ok_or(Error::Forbidden)?;
@@ -41,12 +44,13 @@ pub(crate) async fn admission(
 pub(crate) async fn context(
 	f: &Federation,
 	run: &crate::domain::Run,
+	tenancy: &TenancyScope,
 	task: &crate::domain::Task,
 	inputs: &[(InputRead, String)],
 	query: &str,
 	budget: usize,
 ) -> Result<Option<Value>> {
-	let description = admission(f, run).await?;
+	let description = admission(f, run, tenancy).await?;
 	if description.semantic.disabled() {
 		return Ok(None);
 	}
@@ -76,7 +80,7 @@ pub(crate) async fn context(
 		metadata: json!({}),
 	};
 	operation.set_id()?;
-	journal::prepare(&f.store, &operation, &description.semantic).await?;
+	journal::prepare(&f.store, tenancy, &operation, &description.semantic).await?;
 	let receipt: Receipt = super::authority_request(
 		f,
 		&run.home_node,
@@ -118,7 +122,7 @@ pub(crate) async fn context(
 	let value = serde_json::to_value(&receipt)?;
 	// Persist before this function makes the text available to compaction/model
 	// construction. The Home keeps the accumulated dependencies across replays.
-	let mut tx = crate::database::native::begin(&f.store.pool).await?;
+	let mut tx = f.store.pool.begin(tenancy).await?;
 	crate::apps::knowledge::repositories::receiver_caches::record(&mut tx, run.id, &receipt)
 		.await?;
 	crate::database::native::query(
@@ -207,15 +211,16 @@ pub(crate) async fn verify_in(
 ) -> Result<()> {
 	// The receiver durably fixed these inputs before asking Home. Home cannot
 	// substitute a different query, step, budget, or admission in a callback.
-	let record = journal::bound(&f.store, input, &description.semantic).await?;
+	let scope = f.store.run_tenancy(input.admission_id).await?;
+	let record = journal::bound(&f.store, &scope, input, &description.semantic).await?;
 	if record.digest != input.digest()? {
 		return Err(Error::Forbidden);
 	}
-	let run = f.store.run(input.admission_id).await?;
+	let run = f.store.run(&scope, input.admission_id).await?;
 	if run.step != input.boundary.step {
 		return Err(Error::Forbidden);
 	}
-	let inputs = f.store.run_inputs(run.id).await?;
+	let inputs = f.store.run_inputs(&scope, run.id).await?;
 	for required in &input.inputs {
 		if !inputs.iter().any(|i| {
 			i.seq == required.sequence

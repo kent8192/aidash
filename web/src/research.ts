@@ -187,11 +187,15 @@ function trimUrl(raw: string): string {
 
 /**
  * Distinct absolute http(s) URLs in `text`, in order of appearance, that the
- * host would accept as URL intents: no credentials, no fragment and at most
- * `MAX_URL_BYTES` long. Trailing sentence punctuation is not part of a URL,
+ * host would accept as URL intents: no credentials, no fragment, no control
+ * character and at most `MAX_URL_BYTES` long. Trailing sentence punctuation is not part of a URL,
  * unless the URL is written in angle brackets (`<https://example.com/Yahoo!>`,
  * RFC 3986 Appendix C), which keep it exactly as written.
  */
+// The characters Rust's `char::is_control` matches (Unicode category Cc).
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
 export function urlIntents(text: string): string[] {
   const found: string[] = [];
   for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
@@ -200,6 +204,9 @@ export function urlIntents(text: string): string[] {
       text[start - 1] === "<" && text[start + match[0].length] === ">";
     const candidate = delimited ? match[0] : trimUrl(match[0]);
     if (new TextEncoder().encode(candidate).length > MAX_URL_BYTES) continue;
+    // The host refuses a URL with any control character, which `new URL`
+    // would accept by percent-encoding it.
+    if (CONTROL.test(candidate)) continue;
     let url: URL;
     try {
       url = new URL(candidate);

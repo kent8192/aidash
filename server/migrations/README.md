@@ -189,6 +189,33 @@ invariants. Use one history throughout; do not run the retired SeaORM migrator.
 `temporary-db` is inappropriate for this baseline because a generic PostgreSQL
 image does not provide its required `pg_jsonschema` extension.
 
+## Tenancy scope settings
+
+Every transaction the server opens carries one tenancy scope (#223, #263),
+written right after `BEGIN` by `server/src/database/scope.rs` with
+`set_config(..., true)`. Row-level policy functions (#264) and the activity
+observer read and write the same strings, so this is a contract across
+workspaces:
+
+| Setting                 | Value                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------- |
+| `aidash.scope`          | `tenant`, `deployment` or `none` (no Tenant)                                                   |
+| `aidash.tenant`         | the Tenant name in a `tenant` scope; empty otherwise                                           |
+| `application_name`      | `deployment:<label>` in a `deployment` scope, where `<label>` is the reason's kebab-case label |
+| `transaction_read_only` | `on` when the Deployment Scope reason only reads                                               |
+
+- A setting that was never written reads as NULL, and one that a returned
+  connection's `RESET ALL` cleared reads as the empty string. Treat both as
+  unset: a policy function raises when `aidash.scope` is unset or `none`.
+- The scope is fixed for the transaction. Only `database/scope.rs` writes
+  `aidash.scope` and `aidash.tenant`; a test rejects any other writer, in Rust
+  or in migration SQL.
+- Every table is classified in `server/src/database/classification.rs` as
+  Tenant-owned (enforced, or pending the Issue that enforces it) or
+  Deployment-wide. The `startup` test target compares the list with the
+  migrated database, so a migration that adds a table classifies it in the same
+  change.
+
 ## Maintenance cutover
 
 1. Stop new writes and request graceful shutdown of every old server and worker.

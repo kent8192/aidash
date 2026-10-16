@@ -1,4 +1,5 @@
 //! Workspace pages and snapshots borrow one live authorization and database lease.
+use super::visibility::RunVerdicts;
 use crate::Result;
 use aidash_domain::{
 	Artifact, Event, Message, Task, Workspace, WorkspaceSnapshot, policy::Resource,
@@ -13,7 +14,8 @@ pub trait WorkspaceProjection: Send {
 	async fn task_visible(&mut self, row: &Task) -> Result<bool>;
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool>;
 	async fn message_visible(&mut self, row: &Message) -> Result<bool>;
-	async fn event_visible(&mut self, row: &Event) -> Result<bool>;
+	/// Event disclosure within one scan; `runs` holds the scan's Run verdicts.
+	async fn event_visible(&mut self, row: &Event, runs: &mut RunVerdicts) -> Result<bool>;
 	async fn task_rows(&mut self, workspaces: &[Uuid], cursor: u64) -> Result<Vec<Task>>;
 	async fn event_rows(
 		&mut self,

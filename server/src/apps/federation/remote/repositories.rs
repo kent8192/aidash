@@ -1,5 +1,6 @@
 //! Native adapters for delegation use cases and their durable visibility lease.
 use crate::apps::federation::remote::models::Delegation as DelegationRecord;
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::federation::{DelegationRetries, FederationRepository},
@@ -32,7 +33,11 @@ impl FederationRepository for Repository {
 		self.federation.peer(node).await.map_err(Into::into)
 	}
 	async fn task(&self, id: uuid::Uuid) -> Result<Task> {
-		self.federation.store.task(id).await.map_err(Into::into)
+		let store = &self.federation.store;
+		store
+			.task(&store.task_tenancy(id).await?, id)
+			.await
+			.map_err(Into::into)
 	}
 	async fn require_legacy_workspace(&self, id: uuid::Uuid) -> Result<()> {
 		self.federation
@@ -83,8 +88,13 @@ impl FederationRepository for Repository {
 		&self,
 		task: uuid::Uuid,
 	) -> Result<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>> {
-		let lease = self.federation.store.orm_connection()?;
-		DelegationRecord::snapshot(&mut lease.handle(), task)
+		let store = &self.federation.store;
+		let scope = store.task_tenancy(task).await?;
+		store
+			.pool
+			.atomic(&scope, async |tx| {
+				DelegationRecord::snapshot(tx, task).await
+			})
 			.await
 			.map_err(Into::into)
 	}
@@ -92,6 +102,11 @@ impl FederationRepository for Repository {
 		self.federation
 			.store
 			.accept_run(
+				&self
+					.federation
+					.store
+					.workspace_tenancy(task.workspace_id)
+					.await?,
 				task,
 				&self.federation.config.node_id,
 				&agent.id,
@@ -101,16 +116,20 @@ impl FederationRepository for Repository {
 			.map_err(Into::into)
 	}
 	async fn mark_delivered(&self, task: uuid::Uuid) -> Result<()> {
-		let lease = self.federation.store.orm_connection()?;
-		DelegationRecord::mark_delivered(&mut lease.handle(), task)
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::DelegationRetry);
+		self.federation
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
+				DelegationRecord::mark_delivered(tx, task).await
+			})
 			.await
 			.map_err(Into::into)
 	}
 	async fn claim_retries(&self) -> Result<Box<dyn DelegationRetries>> {
 		let visibility =
 			crate::transactions::gate::ReadLease::begin(&self.federation.store).await?;
-		let lease = self.federation.store.orm_connection()?;
-		let pending = DelegationRecord::claim_retries(lease.handle()).await?;
+		let pending = DelegationRecord::claim_retries(&self.federation.store.pool).await?;
 		Ok(Box::new(Retries {
 			pending,
 			_visibility: visibility,
@@ -125,10 +144,15 @@ impl Repository {
 		agent: &EntityRef,
 		snapshot: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
 	) -> Result<Delegation> {
-		let lease = self.federation.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		let scope = self
+			.federation
+			.store
+			.workspace_tenancy(task.workspace_id)
+			.await?;
+		self.federation
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
 				use reinhardt::db::orm::Model;
 				let scoped = crate::apps::identity::models::AuthorizationWorkspace::objects()
 					.filter(

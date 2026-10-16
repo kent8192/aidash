@@ -187,7 +187,7 @@ impl Store for SecretManager {
 		self.validate_version(&version)?;
 		Ok(version)
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		self.validate_resource(resource)?;
 		let mut versions = Vec::new();
 		let mut page = String::new();
@@ -236,7 +236,7 @@ impl Store for SecretManager {
 		}
 		Ok(versions)
 	}
-	async fn disable(&self, version: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, version: &str) -> Result<()> {
 		self.validate_version(version)?;
 		let Some(metadata) = self.call(reqwest::Method::GET, version, None, true).await? else {
 			return Ok(());
@@ -253,7 +253,7 @@ impl Store for SecretManager {
 		.await?;
 		Ok(())
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, version: &str) -> Result<()> {
 		self.validate_version(version)?;
 		let Some(metadata) = self.call(reqwest::Method::GET, version, None, true).await? else {
 			return Ok(());
@@ -270,7 +270,7 @@ impl Store for SecretManager {
 		.await?;
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		self.validate_resource(resource)?;
 		self.call(reqwest::Method::DELETE, resource, None, true)
 			.await?;

@@ -466,7 +466,13 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 	}
 	.await;
 	let result = access.finish(result).await?;
-	let run = f.store.run(result.accepted_run_id).await?;
+	let run = f
+		.store
+		.run(
+			&aidash_application::tenancy::TenancyScope::tenant(&tenant)?,
+			result.accepted_run_id,
+		)
+		.await?;
 	if let Err(error) = f.deliver_run_messages(&run).await {
 		tracing::warn!(run_id=%run.id, %error, "steer awaits durable delivery");
 	}

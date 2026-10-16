@@ -1,5 +1,6 @@
 //! Runs the actual server executable with deterministic before/after SQL cuts.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::test::fixtures::temp_dir;
 #[cfg(unix)]
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
@@ -404,8 +405,22 @@ async fn real_server_sigkill_at_durable_cut(
 							.expect("workspace snapshot revision");
 						assert!(matches!(revision, 0 | 1));
 						if revision == 1 {
-							assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
-							assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+							assert_eq!(
+								a.f.store
+									.workspace(&TEST_FIXTURE, wa)
+									.await
+									.unwrap()
+									.revision,
+								1
+							);
+							assert_eq!(
+								b.f.store
+									.workspace(&TEST_FIXTURE, wb)
+									.await
+									.unwrap()
+									.revision,
+								1
+							);
 						}
 					}
 					503 => {}
@@ -476,7 +491,12 @@ async fn real_server_sigkill_at_durable_cut(
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
 		let expected = i64::from(!abort);
 		assert_eq!(
-			node.f.store.workspace(workspace).await.unwrap().revision,
+			node.f
+				.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.revision,
 			expected
 		);
 		assert_eq!(

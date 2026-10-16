@@ -26,6 +26,8 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct Evidence {
 	pub store: Store,
+	/// The Run's Tenant scope.
+	pub scope: aidash_application::tenancy::TenancyScope,
 }
 
 fn native<T>(result: crate::Result<T>) -> Result<T> {
@@ -52,9 +54,13 @@ impl RunReader for Readers<'_> {
 			.map(|_| ()),
 			Actor::DeploymentAdministrator => native(
 				async {
-					let inspected = self.federation.store.inspect_run(run).await?;
+					// A Deployment Administrator reads a Run by id, in any Tenant.
+					let scope = aidash_application::tenancy::TenancyScope::Deployment(
+						aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+					);
+					let inspected = self.federation.store.inspect_run(&scope, run).await?;
 					crate::authorization::remote::deployment_administrator::require(
-						&mut crate::database::native::begin(&self.federation.store.pool).await?,
+						&mut self.federation.store.pool.begin(&scope).await?,
 						inspected.workspace_id,
 					)
 					.await
@@ -75,7 +81,12 @@ impl EvidenceStore for Evidence {
 	async fn attempt(&self, run: Uuid, key: &str) -> Result<Option<AttemptState>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let state = ResearchAttempt::find(tx.as_mut(), run, key).await?;
 				tx.commit().await?;
 				Ok(state)
@@ -86,7 +97,12 @@ impl EvidenceStore for Evidence {
 	async fn usage(&self, run: Uuid) -> Result<RunUsage> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let search_attempts =
 					ResearchAttempt::count(tx.as_mut(), run, Operation::Search).await?;
 				let fetch_attempts =
@@ -108,7 +124,12 @@ impl EvidenceStore for Evidence {
 	async fn account_spend(&self, account: &str, since: DateTime<Utc>) -> Result<u64> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let spent = ResearchAttempt::spend(tx.as_mut(), account, since).await?;
 				tx.commit().await?;
 				Ok(spent)
@@ -119,7 +140,12 @@ impl EvidenceStore for Evidence {
 	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let reserved = ResearchAttempt::reserve(tx.as_mut(), run, reservation).await?;
 				tx.commit().await?;
 				Ok(reserved)
@@ -136,7 +162,12 @@ impl EvidenceStore for Evidence {
 	) -> Result<()> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				if !ResearchAttempt::settle(tx.as_mut(), run, key, outcome, result).await? {
 					return Err(crate::Error::Conflict(
 						"research attempt is not dispatched".into(),
@@ -157,7 +188,12 @@ impl EvidenceStore for Evidence {
 	) -> Result<Vec<SourceRecord>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				lock(tx.as_mut(), &format!("research-run:{run}")).await?;
 				let held = ResearchSource::count(tx.as_mut(), run).await?;
 				let room = max_sources.saturating_sub(held) as usize;
@@ -177,7 +213,12 @@ impl EvidenceStore for Evidence {
 	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let source = ResearchSource::get(tx.as_mut(), run, id).await?;
 				tx.commit().await?;
 				Ok(source)
@@ -195,7 +236,12 @@ impl EvidenceStore for Evidence {
 	) -> Result<std::result::Result<DocumentSnapshot, Failure>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				lock(tx.as_mut(), &format!("research-run:{run}")).await?;
 				let (snapshots, held) = ResearchSnapshot::usage(tx.as_mut(), run).await?;
 				let bytes = page
@@ -236,7 +282,12 @@ impl EvidenceStore for Evidence {
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let snapshot = ResearchSnapshot::get(tx.as_mut(), run, id).await?;
 				tx.commit().await?;
 				Ok(snapshot)
@@ -254,7 +305,12 @@ impl EvidenceStore for Evidence {
 			async {
 				let fragment =
 					EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), document, passage);
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				ResearchFragment::record(tx.as_mut(), &fragment).await?;
 				tx.commit().await?;
 				Ok(fragment)
@@ -269,7 +325,12 @@ impl EvidenceStore for Evidence {
 	) -> Result<Vec<EvidenceFragment>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let fragments = ResearchFragment::delivered(tx.as_mut(), run, references).await?;
 				tx.commit().await?;
 				Ok(fragments)
@@ -283,15 +344,21 @@ impl EvidenceStore for Evidence {
 /// already decided that the reader may read the Run.
 pub(crate) async fn run_research(
 	store: &Store,
+	scope: &aidash_application::tenancy::TenancyScope,
 	run: Uuid,
 	limits: Limits,
 ) -> crate::Result<crate::apps::execution::serializers::runs::RunResearch> {
 	let usage = Evidence {
 		store: store.clone(),
+		scope: scope.clone(),
 	}
 	.usage(run)
 	.await?;
-	let mut tx = store.database().begin().await?;
+	let mut tx = store
+		.pool
+		.begin(scope)
+		.await
+		.and_then(crate::database::native::Transaction::into_executor)?;
 	let (estimated_micro_usd, uncertain_attempts, in_flight_attempts) =
 		ResearchAttempt::run_charges(tx.as_mut(), run).await?;
 	let url_intents =

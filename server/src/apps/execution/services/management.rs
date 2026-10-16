@@ -12,6 +12,7 @@ use crate::{
 	federation::Federation,
 	registry::Search,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::provider::progress::MARKER_PREFIX;
 use futures_util::StreamExt;
 use http::HeaderMap;
@@ -38,6 +39,11 @@ pub struct HarnessManagement {
 	event_streams: crate::sse::Service,
 	catalog: std::sync::Arc<dyn aidash_application::ports::ModelCatalog>,
 }
+/// A Deployment Administrator's reads across Tenants.
+fn listing() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList)
+}
+
 #[injectable(scope = "request")]
 pub async fn provide(
 	#[inject] runtime: Federation,
@@ -80,7 +86,7 @@ impl HarnessManagement {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.bind(before)
-			.fetch_all(&f.store.pool)
+			.fetch_all(f.store.pool.in_scope(&listing()))
 			.await?;
 			if batch.is_empty() {
 				break;
@@ -89,7 +95,7 @@ impl HarnessManagement {
 			let exhausted = batch.len() < 500;
 			events.extend(
 				crate::authorization::remote::deployment_administrator::filter_events(
-					&mut crate::database::native::begin(&f.store.pool).await?,
+					&mut f.store.pool.begin(&listing()).await?,
 					batch,
 				)
 				.await?,
@@ -123,7 +129,7 @@ impl HarnessManagement {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let conversations: Vec<Conversation> = crate::database::query_as(
 			&reinhardt::query::Query::select()
@@ -148,7 +154,7 @@ impl HarnessManagement {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let artifacts: Vec<Artifact> = crate::database::query_as(
 			&reinhardt::query::Query::select()
@@ -173,13 +179,13 @@ impl HarnessManagement {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let mut state = StateResponse {
 			access: AccessProfile::DeploymentAdministrator,
 			node: f.config.identity(vec![]),
 			registry: records,
-			workspaces: f.store.workspaces().await?,
+			workspaces: f.store.workspaces(&listing()).await?,
 			tasks: crate::database::query_as(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::ColumnRef::Asterisk)
@@ -203,7 +209,7 @@ impl HarnessManagement {
 					.limit(500)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_all(&f.store.pool)
+			.fetch_all(f.store.pool.in_scope(&listing()))
 			.await?,
 			runs: crate::database::query_as::<crate::domain::run_state::RawRun>(
 				&reinhardt::query::Query::select()
@@ -224,7 +230,7 @@ impl HarnessManagement {
 					.limit(500)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_all(&f.store.pool)
+			.fetch_all(f.store.pool.in_scope(&listing()))
 			.await?
 			.into_iter()
 			.map(crate::domain::run_state::RawRun::inspect)
@@ -236,7 +242,7 @@ impl HarnessManagement {
 			artifacts,
 		};
 		crate::authorization::remote::deployment_administrator::filter_state(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&listing()).await?,
 			&mut state,
 		)
 		.await?;
@@ -260,9 +266,14 @@ impl HarnessManagement {
 			.get(&input.agent.id, &input.agent.version)
 			.await?;
 		let owner = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
-		let task = f.store.claim(id, input.revision, &owner, &entry).await?;
+		// Deployment Administrator execution creates a Run without an execution grant.
+		let legacy = TenancyScope::Deployment(DeploymentScopeReason::LegacyRun);
+		let task = f
+			.store
+			.claim(&legacy, id, input.revision, &owner, &entry)
+			.await?;
 		f.store
-			.accept_run(&task, &f.config.node_id, &entry.id, &entry.version)
+			.accept_run(&legacy, &task, &f.config.node_id, &entry.id, &entry.version)
 			.await?;
 		Ok(task)
 	}
@@ -278,13 +289,14 @@ impl HarnessManagement {
 			details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 			return Ok(details);
 		}
-		let run = f.store.inspect_run(id).await?;
+		let scope = f.store.run_tenancy(id).await?;
+		let run = f.store.inspect_run(&scope, id).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			run.workspace_id,
 		)
 		.await?;
-		let mut details = f.store.run_details(id, page.offset).await?;
+		let mut details = f.store.run_details(&scope, id, page.offset).await?;
 		details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 		Ok(details)
 	}
@@ -301,7 +313,11 @@ impl HarnessManagement {
 			federation: &f,
 			actor: &actor,
 		};
-		let store = crate::research::evidence_store(f.store.clone());
+		let scope = match &actor {
+			Actor::Subject(identity) => identity.tenancy()?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
+		};
+		let store = crate::research::evidence_store(f.store.clone(), scope);
 		Ok(
 			aidash_application::research::reading::read(&readers, &store, run, reference)
 				.await?
@@ -325,13 +341,14 @@ impl HarnessManagement {
 		if let Actor::Subject(identity) = actor {
 			return execution::control(&f, &identity, id, input.action).await;
 		}
-		let existing = f.store.inspect_run(id).await?;
+		let scope = f.store.run_tenancy(id).await?;
+		let existing = f.store.inspect_run(&scope, id).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			existing.workspace_id,
 		)
 		.await?;
-		let r = f.store.control(id, input.action).await?;
+		let r = f.store.control(&scope, id, input.action).await?;
 		f.notify.notify_waiters();
 		Ok(r)
 	}
@@ -351,7 +368,7 @@ impl HarnessManagement {
 				.await?;
 			return Ok(SentResponse { sent: true });
 		}
-		let run = f.store.run(id).await?;
+		let run = f.store.run(&f.store.run_tenancy(id).await?, id).await?;
 		let key = format!(
 			"human:{id}:{}",
 			input.idempotency_key.unwrap_or_else(Uuid::new_v4)
@@ -376,8 +393,9 @@ impl HarnessManagement {
 		if let Actor::Subject(identity) = actor {
 			return interaction::answer(&f, &identity, id, response).await;
 		}
-		let request = f.store.human_request_by_id(id).await?;
-		let run = f.store.run(request.run_id).await?;
+		let request = f.store.human_request_by_id(&listing(), id).await?;
+		let scope = f.store.run_tenancy(request.run_id).await?;
+		let run = f.store.run(&scope, request.run_id).await?;
 		if run.home_node != f.config.node_id
 			&& crate::authorization::peer::admission::run_grant(&f.store, &run.metadata())
 				.await?
@@ -387,7 +405,7 @@ impl HarnessManagement {
 				.answer_home_human(id, response.clone())
 				.await?;
 		}
-		let h = f.store.answer(id, response).await?;
+		let h = f.store.answer(&scope, id, response).await?;
 		f.notify.notify_waiters();
 		Ok(h)
 	}
@@ -407,7 +425,7 @@ impl HarnessManagement {
 		}
 		let mut cursor = q.after.max(0);
 		let mut visible = Vec::new();
-		let mut connection = crate::database::native::begin(&f.store.pool).await?;
+		let mut connection = f.store.pool.begin(&listing()).await?;
 		if let Some(workspace) = q.workspace_id
 			&& !crate::authorization::remote::deployment_administrator::visible(
 				&mut connection,
@@ -422,7 +440,10 @@ impl HarnessManagement {
 			return Ok(response);
 		}
 		loop {
-			let page = f.store.events(cursor, q.workspace_id, 500).await?;
+			let page = f
+				.store
+				.events(&listing(), cursor, q.workspace_id, 500)
+				.await?;
 			let exhausted = page.len() < 500;
 			if let Some(last) = page.last() {
 				cursor = last.sequence;
@@ -517,7 +538,7 @@ impl HarnessManagement {
 				.expr(Expr::cust("1"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?;
 		Ok(json!({"status":"ok","node_id":f.config.node_id}))
 	}
@@ -535,7 +556,9 @@ impl HarnessManagement {
 				let result = access.run_for_interaction(id).await;
 				access.finish(result).await?
 			}
-			Actor::DeploymentAdministrator => f.store.run(id).await?,
+			Actor::DeploymentAdministrator => {
+				f.store.run(&f.store.run_tenancy(id).await?, id).await?
+			}
 		};
 		let external = input.idempotency_key.unwrap_or_else(Uuid::new_v4);
 		let key = match &actor {
@@ -655,13 +678,17 @@ impl HarnessManagement {
 		id: Uuid,
 	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
 		let f = self.runtime.clone();
+		let scope = match &actor {
+			Actor::Subject(identity) => identity.tenancy()?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(id).await?,
+		};
 		let readable = || async {
 			if let Actor::Subject(identity) = &actor {
 				execution::details_page(&f, identity, id, 0).await?;
 			} else {
-				let run = f.store.inspect_run(id).await?;
+				let run = f.store.inspect_run(&scope, id).await?;
 				crate::authorization::remote::deployment_administrator::require(
-					&mut crate::database::native::begin(&f.store.pool).await?,
+					&mut f.store.pool.begin(&scope).await?,
 					run.workspace_id,
 				)
 				.await?;
@@ -671,6 +698,7 @@ impl HarnessManagement {
 		readable().await?;
 		let research = crate::apps::execution::repositories::research::run_research(
 			&f.store,
+			&scope,
 			id,
 			crate::research::providers().limits,
 		)

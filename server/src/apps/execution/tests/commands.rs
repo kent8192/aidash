@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/environment.rs"]
 mod environment;
 use reinhardt::test::fixtures::temp_dir;

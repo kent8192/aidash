@@ -61,7 +61,8 @@ impl Lease {
 				Ok(Self::Scoped(Box::new(access)))
 			}
 			Actor::DeploymentAdministrator => {
-				let mut tx = crate::database::native::begin(&store.pool).await?;
+				let scope = store.workspace_tenancy(workspace).await?;
+				let mut tx = store.pool.begin(&scope).await?;
 				crate::authorization::remote::deployment_administrator::require(&mut tx, workspace)
 					.await?;
 				let exists: Option<Uuid> = {
