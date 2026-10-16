@@ -60,7 +60,8 @@ def hydrate():
     if REQUEST.exists():
         if json.loads(REQUEST.read_bytes())["digest"] != incoming["digest"]:
             raise ValueError("input digest changed")
-        print('{"accepted":true}')
+        state = json.loads(CONTROL.read_bytes()) if CONTROL.exists() else {}
+        print(json.dumps({"accepted": True, "started_at": state.get("started_at")}))
         return
     total = 0
     seen = set()
@@ -84,7 +85,11 @@ def hydrate():
                 digest.update(data)
         if total > incoming["working_bytes"] or digest.hexdigest() != entry["digest"]:
             raise ValueError("file integrity or quota")
-    save(CONTROL, {"deadline": time.monotonic() + incoming["seconds"], "cancelled": False})
+    # The command starts once REQUEST is published below; its deadline and
+    # the start it is charged from are taken together, just before.
+    started_at = time.time()
+    save(CONTROL, {"deadline": time.monotonic() + incoming["seconds"], "cancelled": False,
+                   "started_at": started_at})
     if incoming["kind"] == "python":
         from jupyter_client.connect import write_connection_file
         write_connection_file('/request/kernel.json', ip='127.0.0.1', shell_port=7080,
@@ -92,7 +97,7 @@ def hydrate():
                               key=os.urandom(32).hex().encode('ascii'))
         os.chmod('/request/kernel.json', 0o444)
     save(REQUEST, {k: incoming[k] for k in ("digest", "kind", "code", "processes")})
-    print('{"accepted":true}')
+    print(json.dumps({"accepted": True, "started_at": started_at}))
 
 
 def export():

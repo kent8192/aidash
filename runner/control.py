@@ -808,15 +808,18 @@ class Runner:
                                         break
                     elif prepared["digest"] != record["request"]["digest"]:
                         raise RuntimeError("running input identity changed")
-                    # The collector starts the command's deadline inside
-                    # hydrate, just before it publishes the command, so the
-                    # charged start is taken before the request and kept
-                    # across a restart: a Check is never measured from after
-                    # its command began. The watchdog below counts from when
-                    # hydrate returned, after the deadline was set.
-                    self.update(operation, executed=True, started_at=record.get("started_at") or time.time())
-                    self.exec_collector(operation, ["hydrate"], json.dumps(payload).encode(), timeout=120)
-                    self.update(operation, status="running", running_at=time.time())
+                    self.update(operation, executed=True)
+                    # The collector stamps the start when it sets the deadline
+                    # and publishes the command, after verifying the inputs,
+                    # and returns the same stamp when hydrate is repeated after
+                    # a restart: a Check is charged from its command's start,
+                    # never for input checks or controller downtime. The
+                    # watchdog below counts from when hydrate returned.
+                    hydrated_reply = json.loads(self.exec_collector(
+                        operation, ["hydrate"], json.dumps(payload).encode(), timeout=120).stdout)
+                    now = time.time()
+                    self.update(operation, status="running", running_at=now,
+                                started_at=hydrated_reply.get("started_at") or now)
                     hydrated = True
                 current = self.get(operation)
                 if current["cancel_requested"] and "running" in collector:

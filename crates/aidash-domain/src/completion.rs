@@ -302,12 +302,14 @@ impl PendingCheck {
 		now: DateTime<Utc>,
 	) -> VerificationEvidence {
 		let millis = runtime_millis.unwrap_or_else(|| self.unmeasured_millis(now));
-		let timed_out =
-			deadline_expired.unwrap_or_else(|| millis >= self.timeout_seconds.saturating_mul(1000));
-		let outcome = if passed {
-			CheckOutcome::Passed
-		} else if timed_out {
+		// A command still running at its deadline timed out, even if it then
+		// exited zero before it was stopped.
+		let timed_out = deadline_expired
+			.unwrap_or_else(|| !passed && millis >= self.timeout_seconds.saturating_mul(1000));
+		let outcome = if timed_out {
 			CheckOutcome::TimedOut
+		} else if passed {
+			CheckOutcome::Passed
 		} else {
 			CheckOutcome::Failed
 		};
@@ -665,16 +667,19 @@ pub fn decide<'a>(
 				detail: detail.into(),
 			});
 		}
-		let Some(content) = candidate.content else {
-			return Decision::Review(ReviewReason::Unavailable {
-				check: check.name.clone(),
-				detail: "the Run has no Working Area".into(),
-			});
-		};
+		// An unbound capability is a defect of the Agent's Binding that no
+		// retry can recover, and without it there may be no Working Area
+		// either, so it is reported first.
 		let Some(capability) = candidate.capability else {
 			return Decision::Review(ReviewReason::Unbound {
 				check: check.name.clone(),
 				capability: check.capability.clone(),
+			});
+		};
+		let Some(content) = candidate.content else {
+			return Decision::Review(ReviewReason::Unavailable {
+				check: check.name.clone(),
+				detail: "the Run has no Working Area".into(),
 			});
 		};
 		let subject = CheckSubject {

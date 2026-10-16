@@ -173,3 +173,26 @@ class TerminationTimeTest(unittest.TestCase):
             with self.subTest(terminated=terminated):
                 self.assertEqual(termination_time(terminated, self.STARTED, self.STARTED + 5), self.STARTED + 5)
 
+
+
+class StartStampTest(unittest.TestCase):
+    """A Check is charged from when its command was published, also after a restart."""
+
+    def hydrate(self, root, incoming):
+        stdout = io.StringIO()
+        with patch.multiple(collector, CONTROL=root / "control.json", REQUEST=root / "request.json",
+                            ROOTS={"working": root / "work", "references": root, "received": root}), \
+                patch.object(collector.sys, "stdin", io.StringIO(json.dumps(incoming))), \
+                contextlib.redirect_stdout(stdout):
+            collector.hydrate()
+        return json.loads(stdout.getvalue())
+
+    def test_a_repeated_hydrate_returns_the_original_start(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            incoming = {"digest": "d", "kind": "verify", "code": "make test", "processes": 16,
+                        "files": [], "working_bytes": 1 << 20, "seconds": 60}
+            first = self.hydrate(root, incoming)
+            self.assertTrue(first["accepted"])
+            self.assertIsInstance(first["started_at"], float)
+            self.assertEqual(self.hydrate(root, incoming)["started_at"], first["started_at"])

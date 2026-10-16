@@ -336,6 +336,16 @@ fn refusals_that_need_a_person_pause_for_review() {
 			capability: "shell".into(),
 		})
 	);
+	// Without the capability there may be no Working Area either; the
+	// Binding defect, which no retry recovers, is what the review names.
+	let neither = Candidate {
+		content: None,
+		..unbound
+	};
+	assert!(matches!(
+		decide(&policy, &CompletionProgress::default(), &neither),
+		Decision::Review(ReviewReason::Unbound { .. })
+	));
 	let spent = CompletionProgress {
 		seconds: 600,
 		..Default::default()
@@ -515,6 +525,10 @@ fn pending_checks_time_out_and_keys_are_stable() {
 		(bounded.outcome, bounded.seconds),
 		(CheckOutcome::Failed, 2)
 	);
+	let late_zero = short
+		.clone()
+		.finish(true, Some(0), "ok", Some(1000), Some(true), at(5));
+	assert_eq!(late_zero.outcome, CheckOutcome::TimedOut);
 	let deadline = short.finish(false, None, "", Some(900), Some(true), at(5));
 	assert_eq!(
 		(deadline.outcome, deadline.seconds),
