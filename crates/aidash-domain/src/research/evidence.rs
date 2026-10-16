@@ -36,9 +36,29 @@ pub struct DocumentSnapshot {
 	pub completeness: Completeness,
 	/// Empty once the snapshot is purged.
 	pub lines: Vec<Line>,
+	/// The page count of a paginated source such as a PDF.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub page_count: Option<u32>,
+	/// 1-based pages that carry no text; their images come from the original.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub pages_without_text: Vec<u32>,
+	/// The original document, recorded when some page carries no text.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub original: Option<Original>,
 	/// Set when the contents were removed; identity and digests remain.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub purged: Option<Purge>,
+}
+
+/// The original of a snapshot with pages that carry no text (ADR 0053). Its
+/// bytes are kept apart from the snapshot; `retained` is false when the Run's
+/// limit refused them or they were purged with the contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Original {
+	/// `sha256:` digest of the original bytes.
+	pub digest: String,
+	pub bytes: u64,
+	pub retained: bool,
 }
 
 impl DocumentSnapshot {
@@ -283,6 +303,13 @@ pub struct Limits {
 	pub sources: u32,
 	pub snapshots: u32,
 	pub snapshot_bytes: u64,
+	/// Bytes of originals one Run retains (ADR 0053).
+	#[serde(default = "default_original_bytes")]
+	pub original_bytes: u64,
+}
+
+fn default_original_bytes() -> u64 {
+	64 * 1024 * 1024
 }
 
 impl Default for Limits {
@@ -293,6 +320,7 @@ impl Default for Limits {
 			sources: 100,
 			snapshots: 50,
 			snapshot_bytes: 8 * 1024 * 1024,
+			original_bytes: default_original_bytes(),
 		}
 	}
 }

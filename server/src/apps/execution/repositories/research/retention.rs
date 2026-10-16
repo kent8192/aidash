@@ -1,7 +1,9 @@
 //! The retention sweep of Document snapshot contents (ADR 0045), run in
 //! Deployment Scope on the hourly retention loop.
 use super::native;
-use crate::apps::execution::models::research::{ResearchSnapshot, revoke_invocations};
+use crate::apps::execution::models::research::{
+	ResearchOriginal, ResearchSnapshot, revoke_invocations,
+};
 use crate::store::Store;
 use aidash_application::{
 	Error, Result,
@@ -254,6 +256,8 @@ impl SnapshotRetention for Snapshots {
 					.map(|candidate| candidate.id)
 					.collect::<Vec<_>>();
 				let purged = ResearchSnapshot::purge(tx.as_mut(), &still, at).await?;
+				// An original is part of its snapshot's contents (ADR 0053).
+				ResearchOriginal::purge(tx.as_mut(), &still).await?;
 				tx.commit().await?;
 				Ok(purged)
 			}

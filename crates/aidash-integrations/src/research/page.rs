@@ -235,9 +235,11 @@ impl PageProvider for PageReader {
 	}
 }
 
-/// A parsed PDF as snapshot lines; each line names its physical page.
+/// A parsed PDF as snapshot lines; each line names its physical page. When
+/// some page carries no text, the PDF itself travels with the page so that the
+/// host can retain it for viewing that page (ADR 0053).
 pub fn pdf_page(url: &Url, bytes: &[u8], text: PdfText) -> Result<ExtractedPage, Failure> {
-	if text.lines.is_empty() {
+	if text.lines.is_empty() && text.pages_without_text.is_empty() {
 		return Err(Failure::ExtractionFailed);
 	}
 	Ok(ExtractedPage {
@@ -248,6 +250,9 @@ pub fn pdf_page(url: &Url, bytes: &[u8], text: PdfText) -> Result<ExtractedPage,
 		raw_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
 		completeness: text.completeness,
 		lines: text.lines,
+		page_count: Some(text.page_count),
+		original: (!text.pages_without_text.is_empty()).then(|| bytes.to_vec()),
+		pages_without_text: text.pages_without_text,
 	})
 }
 
@@ -322,6 +327,9 @@ pub fn extract(
 		raw_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
 		completeness,
 		lines,
+		page_count: None,
+		pages_without_text: Vec::new(),
+		original: None,
 	})
 }
 

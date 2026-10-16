@@ -10,7 +10,7 @@ use aidash_domain::research::{
 	account::AccountProfile,
 	citations::EvidenceRef,
 	document::{ExtractedPage, Line},
-	evidence::{EvidenceFragment, Purge, PurgeReason, RunUsage, SourceRecord},
+	evidence::{EvidenceFragment, Original, Purge, PurgeReason, RunUsage, SourceRecord},
 	revocation,
 	search::{ProviderCandidate, ProviderResults, SourceCandidate},
 };
@@ -29,6 +29,8 @@ struct Memory {
 	attempts: Mutex<BTreeMap<(Uuid, String), (Reservation, AttemptState)>>,
 	sources: Mutex<Vec<SourceRecord>>,
 	snapshots: Mutex<Vec<DocumentSnapshot>>,
+	/// Retained originals: Run, snapshot and bytes.
+	originals: Mutex<Vec<(Uuid, Uuid, Vec<u8>)>>,
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
 	revoked: Mutex<BTreeSet<Uuid>>,
@@ -290,8 +292,27 @@ impl EvidenceStore for Memory {
 		{
 			return Ok(Err(Failure::SnapshotLimit));
 		}
+		let id = Uuid::new_v4();
+		// An original is retained within the Run's limit, as the Node's store does.
+		let original = page.original.as_ref().map(|bytes| {
+			let mut originals = self.originals.lock().unwrap();
+			let held = originals
+				.iter()
+				.filter(|(owner, _, _)| *owner == run)
+				.map(|(_, _, held)| held.len() as u64)
+				.sum::<u64>();
+			let retained = held + bytes.len() as u64 <= limits.original_bytes;
+			if retained {
+				originals.push((run, id, bytes.clone()));
+			}
+			Original {
+				digest: format!("sha256:{}", bytes.len()),
+				bytes: bytes.len() as u64,
+				retained,
+			}
+		});
 		let snapshot = DocumentSnapshot {
-			id: Uuid::new_v4(),
+			id,
 			run_id: run,
 			source_id,
 			requested_url: requested_url.into(),
@@ -303,10 +324,22 @@ impl EvidenceStore for Memory {
 			text_digest: document::text_digest(&page.lines),
 			completeness: page.completeness,
 			lines: page.lines.clone(),
+			page_count: page.page_count,
+			pages_without_text: page.pages_without_text.clone(),
+			original,
 			purged: None,
 		};
 		self.snapshots.lock().unwrap().push(snapshot.clone());
 		Ok(Ok(snapshot))
+	}
+	async fn original(&self, run: Uuid, snapshot: Uuid) -> Result<Option<Vec<u8>>> {
+		Ok(self
+			.originals
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|(owner, id, _)| *owner == run && *id == snapshot)
+			.map(|(_, _, bytes)| bytes.clone()))
 	}
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>> {
 		let snapshot = self
@@ -544,6 +577,38 @@ impl PageProvider for Pages {
 			raw_digest: "sha256:raw".into(),
 			completeness: Completeness::Complete,
 			lines: self.lines.clone(),
+			page_count: None,
+			pages_without_text: Vec::new(),
+			original: None,
+		})
+	}
+}
+
+/// A PDF with `pages` pages whose listed pages carry no text, as page reading
+/// returns it: the original travels with the page.
+struct ScannedPdf {
+	lines: Vec<Line>,
+	pages_without_text: Vec<u32>,
+	original_bytes: usize,
+}
+
+#[async_trait]
+impl PageProvider for ScannedPdf {
+	fn admit(&self, _: &Url) -> std::result::Result<(), Failure> {
+		Ok(())
+	}
+	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure> {
+		Ok(ExtractedPage {
+			url: url.to_string(),
+			title: Some("Scanned report".into()),
+			media_type: "application/pdf".into(),
+			fetched_at: Utc::now(),
+			raw_digest: "sha256:pdf".into(),
+			completeness: Completeness::Complete,
+			lines: self.lines.clone(),
+			page_count: Some(3),
+			pages_without_text: self.pages_without_text.clone(),
+			original: Some(vec![b'%'; self.original_bytes]),
 		})
 	}
 }
@@ -2016,4 +2081,121 @@ async fn every_reason_a_reader_cannot_see_evidence_is_the_same_absence() {
 			"{case}"
 		);
 	}
+}
+
+fn scanned(
+	lines: &[(&str, u32)],
+	pages_without_text: Vec<u32>,
+	original_bytes: usize,
+) -> ScannedPdf {
+	ScannedPdf {
+		lines: lines
+			.iter()
+			.map(|(text, page)| Line {
+				text: (*text).into(),
+				page: Some(*page),
+			})
+			.collect(),
+		pages_without_text,
+		original_bytes,
+	}
+}
+
+#[tokio::test]
+async fn pages_without_text_are_reported_with_whether_they_can_be_viewed() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let read = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&scanned(
+				&[("Page one has text.", 1), ("So does page three.", 3)],
+				vec![2],
+				1024,
+			),
+			&json!({"url":"https://example.com/report.pdf"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(read["status"], "ok", "{read}");
+	assert_eq!(read["data"]["pages"], json!([1, 3]));
+	assert_eq!(read["data"]["page_count"], 3);
+	assert_eq!(read["data"]["pages_without_text"]["pages"], json!([2]));
+	assert_eq!(
+		read["data"]["pages_without_text"]["page_images"],
+		"available"
+	);
+	assert_eq!(store.originals.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_document_whose_pages_all_lack_text_delivers_nothing_but_its_pages() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let read = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&scanned(&[], vec![1, 2, 3], 1024),
+			&json!({"url":"https://example.com/scan.pdf"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(read["status"], "empty", "{read}");
+	assert!(read["data"]["evidence_ref"].is_null());
+	assert_eq!(
+		read["data"]["pages_without_text"]["pages"],
+		json!([1, 2, 3])
+	);
+	assert!(store.fragments.lock().unwrap().is_empty());
+	// Reading the snapshot again by its identifier delivers nothing either.
+	let again = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&scanned(&[], vec![1, 2, 3], 1024),
+			&json!({"document_id": read["data"]["document_id"]}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(again["status"], "empty", "{again}");
+}
+
+#[tokio::test]
+async fn originals_beyond_the_run_limit_are_not_retained() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			original_bytes: 1500,
+			..Limits::default()
+		},
+	};
+	let run = Uuid::new_v4();
+	let mut states = Vec::new();
+	for (key, address) in [
+		("k1", "https://example.com/a.pdf"),
+		("k2", "https://example.com/b.pdf"),
+	] {
+		let read = research
+			.fetch(
+				&call(run, key, "research.page@1"),
+				&scanned(&[("Text on page one.", 1)], vec![2], 1024),
+				&json!({"url": address}),
+			)
+			.await
+			.unwrap();
+		states.push(read["data"]["pages_without_text"]["page_images"].clone());
+	}
+	assert_eq!(states, [json!("available"), json!("original_not_retained")]);
+	assert_eq!(store.originals.lock().unwrap().len(), 1);
 }

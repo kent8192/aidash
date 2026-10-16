@@ -150,6 +150,9 @@ pub trait EvidenceStore: Send + Sync {
 	) -> Result<std::result::Result<DocumentSnapshot, Failure>>;
 	/// A Purged snapshot is returned with its purge and without contents.
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>>;
+	/// The retained original of snapshot `snapshot` of `run`, if it is still
+	/// kept (ADR 0053).
+	async fn original(&self, run: Uuid, snapshot: Uuid) -> Result<Option<Vec<u8>>>;
 	async fn record_fragment(
 		&self,
 		run: Uuid,

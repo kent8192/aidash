@@ -23,7 +23,22 @@ pub struct FixturePage {
 	pub url: String,
 	pub title: String,
 	pub lines: Vec<Line>,
+	/// Set when the page is a PDF.
+	pub pdf: Option<FixturePdf>,
 }
+
+/// A fixture page that is a PDF: its page count, the pages that carry no text
+/// and the document itself, which the host retains to view those pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixturePdf {
+	pub page_count: u32,
+	pub pages_without_text: Vec<u32>,
+	pub original: Vec<u8>,
+}
+
+/// A three-page PDF generated with Ghostscript: text on pages 1 and 3, and on
+/// page 2 only filled shapes, standing in for a scanned chart.
+pub const ANNUAL_REPORT_PDF: &[u8] = include_bytes!("pdf/fixtures/annual-report.pdf");
 
 pub struct FixtureResearch {
 	pages: Vec<FixturePage>,
@@ -65,6 +80,7 @@ impl Default for FixtureResearch {
 						None,
 					),
 				],
+				pdf: None,
 			},
 			FixturePage {
 				url: "https://research-fixture.example/strasse".into(),
@@ -74,6 +90,24 @@ impl Default for FixtureResearch {
 					line("Die Straße <script>inert text</script>", Some(2)),
 					line("Omega line", Some(2)),
 				],
+				pdf: None,
+			},
+			FixturePage {
+				url: "https://research-fixture.example/annual-report.pdf".into(),
+				title: "Annual report".into(),
+				lines: vec![
+					line("Annual report: revenue grew by twelve percent.", Some(1)),
+					line("Operating costs fell for the third year.", Some(1)),
+					line(
+						"Appendix: the scanned chart on page two is not text.",
+						Some(3),
+					),
+				],
+				pdf: Some(FixturePdf {
+					page_count: 3,
+					pages_without_text: vec![2],
+					original: ANNUAL_REPORT_PDF.to_vec(),
+				}),
 			},
 		])
 	}
@@ -136,15 +170,34 @@ impl PageProvider for FixtureResearch {
 			.iter()
 			.find(|page| Url::parse(&page.url).is_ok_and(|candidate| candidate == *url))
 			.ok_or(Failure::ProviderRequestRejected)?;
-		let raw = serde_json::to_vec(&page.lines).map_err(|_| Failure::ExtractionFailed)?;
+		let raw = match &page.pdf {
+			Some(pdf) => pdf.original.clone(),
+			None => serde_json::to_vec(&page.lines).map_err(|_| Failure::ExtractionFailed)?,
+		};
 		Ok(ExtractedPage {
 			url: page.url.clone(),
 			title: Some(page.title.clone()),
-			media_type: "text/plain".into(),
+			media_type: if page.pdf.is_some() {
+				"application/pdf"
+			} else {
+				"text/plain"
+			}
+			.into(),
 			fetched_at: self.fetched_at,
-			raw_digest: format!("sha256:{:x}", Sha256::digest(raw)),
+			raw_digest: format!("sha256:{:x}", Sha256::digest(&raw)),
 			completeness: Completeness::Complete,
 			lines: page.lines.clone(),
+			page_count: page.pdf.as_ref().map(|pdf| pdf.page_count),
+			pages_without_text: page
+				.pdf
+				.as_ref()
+				.map(|pdf| pdf.pages_without_text.clone())
+				.unwrap_or_default(),
+			original: page
+				.pdf
+				.as_ref()
+				.filter(|pdf| !pdf.pages_without_text.is_empty())
+				.map(|pdf| pdf.original.clone()),
 		})
 	}
 }
