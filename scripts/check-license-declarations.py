@@ -100,13 +100,24 @@ TAURI_LICENSE_KEY = re.compile(r"""(?<![\w$-])(["']?)(license|licenseFile|licens
 DOCUMENT_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc")
 # A license named in prose, such as the "Community, Apache-2.0" grant that the
 # broker README carried. Documentation may name one only in the pinned texts:
-# the README License section and each notice's pinned License line.
+# the README License section and each notice's pinned License line. Source
+# files are not held to this, because Agent Skills carry license metadata.
 PROSE_LICENSE = re.compile(
     r"\b(?:MIT|BSD|ISC|[AL]?GPL|MPL|EPL|BUSL|SSPL|CC0|CC-BY)(?:-[\w.]+)*\b"
     r"|(?i:\b(?:apache|mozilla|eclipse|elastic|business\s+source|(?:lesser\s+|affero\s+)?general\s+public"
     r"|server\s+side\s+public)(?:\s+public)?\s+licen[cs]e\b"
-    r"|\bapache[-\s]2(?:\.0)?\b|\blicen[cs]ed\s+under\b|\bunlicense\b|\bpublic\s+domain\b)"
+    r"|\bapache[-\s]2(?:\.0)?\b|\bunlicense\b)"
 )
+# The wording with which license headers and texts grant rights, checked in
+# every text file: the Apache and MIT headers, the GPL and MPL headers, the
+# ISC and BUSL grants, the BSD conditions and public-domain dedications.
+GRANT_WORDING = re.compile(
+    r"(?i:\blicen[cs]ed\s+under\b|\b(?:under|subject\s+to)\s+the\s+terms\s+of\b|\bhereby\s+grant(?:s|ed)?\b"
+    r"|\bredistribution\s+and\s+use\s+in\s+source\b|\bpublic\s+domain\b)"
+)
+# Docker and shells join a line that ends in the escape character (`\`, or a
+# backtick after an escape directive) with the next, skipping comment lines.
+CONTINUATION = re.compile(rb"[\\`]\r?\n(?:[ \t]*#[^\n]*\n)*[ \t]*")
 # A notices list item that starts with a backticked path names a tracked file.
 LISTED_PATH = re.compile(r"^- `([^`]+)`", re.MULTILINE)
 SECTION_HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
@@ -188,30 +199,40 @@ def python_violations(path, text):
 
 
 def setup_violations(path, text):
-    """License metadata a setuptools `setup()` call declares in setup.py."""
+    """License metadata in setup.py, however it reaches the `setup()` call.
+
+    License keywords are rejected in any call and as keys of any dict, so a
+    `setup` imported under another name or metadata gathered beforehand is
+    caught too, and so is any License classifier string in the file.
+    """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return [f"{path}: cannot be parsed to check its setup() metadata"]
+    # setup itself and the names it is imported under, such as
+    # `from setuptools import setup as package`.
+    setup_names = {"setup"} | {
+        alias.asname for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        for alias in node.names if alias.name == "setup" and alias.asname
+    }
     errors = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-        if name != "setup":
-            continue
-        for keyword in node.keywords:
-            if keyword.arg is None:
-                # setup(**metadata) can carry any of the keywords below.
-                errors.append(f"{path}: setup() expands ** metadata, which cannot be checked")
-            elif keyword.arg in SETUP_LICENSE_KEYWORDS:
-                errors.append(f"{path}: setup() declares {keyword.arg}")
-            elif keyword.arg == "classifiers" and any(
-                isinstance(item, ast.Constant) and isinstance(item.value, str)
-                and item.value.strip().startswith("License ::")
-                for item in ast.walk(keyword.value)
-            ):
-                errors.append(f"{path}: setup() declares a License classifier")
+        if isinstance(node, ast.Call):
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            for keyword in node.keywords:
+                if keyword.arg in SETUP_LICENSE_KEYWORDS:
+                    errors.append(f"{path}: setup() declares {keyword.arg}")
+                elif keyword.arg is None and name in setup_names:
+                    # setup(**metadata) can carry any of the keywords above.
+                    errors.append(f"{path}: setup() expands ** metadata, which cannot be checked")
+        elif isinstance(node, ast.Dict):
+            errors += [
+                f"{path}: setup() declares {key.value}" for key in node.keys
+                if isinstance(key, ast.Constant) and key.value in SETUP_LICENSE_KEYWORDS
+            ]
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+              and node.value.strip().startswith("License ::")):
+            errors.append(f"{path}: setup() declares a License classifier")
     return errors
 
 
@@ -241,14 +262,33 @@ def readme_violations(root, tracked):
     return []
 
 
+def notice_prose(text, required):
+    """The notices without each project's License line, exempt only once and
+    only inside that project's own section."""
+    pinned_lines = {expected["heading"]: license_line(project, expected) for project, expected in required.items()}
+    parts = SECTION_HEADING.split(text)
+    kept = [parts[0]]
+    for heading, body in zip(parts[1::2], parts[2::2]):
+        lines = body.split("\n")
+        if pinned_lines.get(heading) in lines:
+            lines.remove(pinned_lines[heading])
+        kept += [heading, "\n".join(lines)]
+    return "\n".join(kept)
+
+
 def prose_violations(path, text, required):
-    """Documentation may name a license only in the pinned texts."""
+    """Text may grant a license, and documentation name one, only in the pinned texts."""
     if path == README:
         text = text.replace(readme_license_section(text) or "", "")
     elif path == NOTICES:
-        for project, expected in required.items():
-            text = text.replace(license_line(project, expected), "")
-    return [
+        text = notice_prose(text, required)
+    errors = [
+        f"{path}: '{phrase}' grants a license; licensing changes belong to #255"
+        for phrase in dict.fromkeys(match.group() for match in GRANT_WORDING.finditer(text))
+    ]
+    if PurePosixPath(path).suffix.lower() not in DOCUMENT_SUFFIXES:
+        return errors
+    return errors + [
         f"{path}: names the license '{name}'; licensing changes belong to #255"
         for name in dict.fromkeys(match.group() for match in PROSE_LICENSE.finditer(text))
     ]
@@ -370,11 +410,13 @@ def violations(root, files, required=REQUIRED_NOTICES):
         suffix = PurePosixPath(name).suffix.lower()
         if suffix in CONFIG_SUFFIXES:
             errors += config_violations(path, read_text(root / path))
-        if path in pinned:
+        # The root LICENSE and the pinned notices are checked against digests.
+        if path == "LICENSE" or path in pinned:
             continue
-        if suffix in DOCUMENT_SUFFIXES:
-            errors += prose_violations(path, read_text(root / path), required)
         content = (root / path).read_bytes()
+        if b"\0" not in content:
+            errors += prose_violations(path, content.replace(b"\r\n", b"\n").decode(errors="replace"), required)
+        content = CONTINUATION.sub(b"", content)
         if SPDX_MARKER in content:
             errors.append(f"{path}: contains an SPDX license identifier")
         if OCI_MARKER in content:

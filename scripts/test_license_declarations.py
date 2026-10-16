@@ -21,6 +21,7 @@ SPEC.loader.exec_module(LICENSES)
 
 SPDX = "SPDX-" + "License-Identifier"
 OCI = "org.opencontainers.image." + "licenses"
+GRANTED = "licensed " + "under"
 NOTICES = """# Third-party notices
 
 ## Upstream
@@ -62,7 +63,12 @@ ACCEPTED = {
     "web/src/license-screen.tsx": "export {};\n",
     "web/src/LICENSE-screen.tsx": "export {};\n",
     "tools/COPYING-tools.py": "pass\n",
-    "infra/setup.py": "def setup(name):\n    return name\n\nsetup(name='tool')\n",
+    "infra/setup.py": (
+        "def setup(name):\n    return name\n\noptions = dict({'enabled': False}, **{'name': 'tool'})\n"
+        "setup(name='tool')\n"
+    ),
+    # Source may name a license as data, as Agent Skill metadata does.
+    "web/tests/skill.spec.ts": 'const skill = "---\\nname: research\\nlicense: MIT\\n---\\n";\n',
     "desktop/src-tauri/tauri.conf.json": '{"bundle": {"active": true}}\n',
     # Neither parses as JSON or TOML; the guard reads them without failing.
     "web/tsconfig.json": '{\n  // comments make this JSONC\n  "compilerOptions": {"strict": true}\n}\n',
@@ -137,6 +143,10 @@ REJECTED = {
     ),
     "an OCI image license label": (
         {"Dockerfile": f'LABEL {OCI}="Apache-2.0"\n'},
+        "Dockerfile: declares an OCI image license label",
+    ),
+    "an OCI image license label split across lines": (
+        {"Dockerfile": "LABEL " + OCI.replace(".licenses", ".\\\n# a comment\nlicenses") + '="MIT"\n'},
         "Dockerfile: declares an OCI image license label",
     ),
     "a license file in a crate": (
@@ -238,16 +248,34 @@ REJECTED = {
             "from setuptools import setup\nmetadata = {'name': 'tool', 'license': 'MIT'}\nsetup(**metadata)\n"},
         "infra/setup.py: setup() expands ** metadata, which cannot be checked",
     ),
+    "an aliased setup() license": (
+        {"infra/setup.py": "from setuptools import setup as package\npackage(name='tool', license='MIT')\n"},
+        "infra/setup.py: setup() declares license",
+    ),
+    "metadata expanded into an aliased setup()": (
+        {"infra/setup.py": "import json\nfrom setuptools import setup as package\npackage(**json.load(open('m.json')))\n"},
+        "infra/setup.py: setup() expands ** metadata, which cannot be checked",
+    ),
+    "a License classifier kept in a variable": (
+        {"infra/setup.py":
+            "from setuptools import setup\nCLASSIFIERS = ['License :: OSI Approved :: MIT License']\n"
+            "setup(name='tool', classifiers=CLASSIFIERS)\n"},
+        "infra/setup.py: setup() declares a License classifier",
+    ),
     "a license grant in a component README": (
         {"crates/other/README.md": "# Other\n\nCommunity, Apache-2.0. A crate.\n"},
         "crates/other/README.md: names the license 'Apache-2.0'; licensing changes belong to #255",
     ),
+    "a license grant in a source header": (
+        {"src/lib.rs": f"// This file is {GRANTED} the MIT License.\n"},
+        f"src/lib.rs: '{GRANTED}' grants a license; licensing changes belong to #255",
+    ),
     "a license grant outside the README License section": (
-        {"README.md": "# Fixture\n\nAidash is licensed under the MIT License.\n\n" + README_LICENSE},
+        {"README.md": f"# Fixture\n\nAidash is {GRANTED} the MIT License.\n\n" + README_LICENSE},
         "README.md: names the license 'MIT'; licensing changes belong to #255",
     ),
     "a README license grant": (
-        {"README.md": "# Fixture\n\n## License\n\nAidash is licensed under the MIT License.\n"},
+        {"README.md": f"# Fixture\n\n## License\n\nAidash is {GRANTED} the MIT License.\n"},
         "README.md: the License section differs from the interim wording; licensing changes belong to #255",
     ),
     "an uppercase license qualifier": (
@@ -304,6 +332,13 @@ REJECTED = {
     ),
     "a license named outside a pinned License line": (
         {"THIRD_PARTY_NOTICES.md": NOTICES + "\nThe rest of `src/` is MIT as well.\n"},
+        "THIRD_PARTY_NOTICES.md: names the license 'MIT'; licensing changes belong to #255",
+    ),
+    "a pinned License line copied before the first section": (
+        {"THIRD_PARTY_NOTICES.md": NOTICES.replace(
+            "# Third-party notices\n",
+            "# Third-party notices\n\nOriginal Aidash code is covered by:\n\n"
+            "- License: MIT, in [third_party/upstream/LICENSE](third_party/upstream/LICENSE)\n")},
         "THIRD_PARTY_NOTICES.md: names the license 'MIT'; licensing changes belong to #255",
     ),
     "a missing project section": (
