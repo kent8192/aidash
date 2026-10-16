@@ -147,11 +147,12 @@ impl PeerManagement {
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
 		let f = &self.runtime;
 		f.store.require_legacy_agent(&id, &version).await?;
-		// A peer previews a legacy agent; it names no Tenant until #241.
+		// A peer previews a legacy agent from the shared Registry, whose reads
+		// lock the definition rows they admit.
 		f.store
 			.pool
 			.atomic(
-				&TenancyScope::Deployment(DeploymentScopeReason::FederationInbound),
+				&TenancyScope::Deployment(DeploymentScopeReason::SharedRegistry),
 				async |tx| {
 					let entry =
 						crate::apps::registry::services::admission::definition(tx, &id, &version)
