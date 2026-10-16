@@ -27,6 +27,7 @@ tests {
   });
 
   if (res.getStatus() === 200 && res.getBody().mappings.length === 1) {
-    bru.setVar("browser_context", "mapping:" + res.getBody().mappings[0].id);
+    const mapping = res.getBody().mappings[0];
+    bru.setVar("browser_context", "mapping:" + mapping.tenant + ":" + mapping.id);
   }
 }

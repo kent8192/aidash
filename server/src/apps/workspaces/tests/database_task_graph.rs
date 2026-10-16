@@ -1,4 +1,5 @@
 use crate::native_database::{DatabaseFixture, database};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::workspaces::models::{Task, TaskDependency};
 use aidash_server::{Error, domain::NewTask, store::Store};
 use reinhardt::db::orm::Model;
@@ -30,16 +31,28 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Cycle validation")
+		.create_workspace(&TEST_FIXTURE, "Graph", "Cycle validation")
 		.await
 		.unwrap();
 	let ancestor = store
-		.create_task(workspace.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	task.dependencies = vec![ancestor.id];
 	let dependent = store
-		.create_task(workspace.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	// ancestor -> child -> dependent -> ancestor is a cycle even though the
@@ -48,6 +61,7 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	task.dependencies = vec![dependent.id];
 	let rejected = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&task,
 			"deployment_administrator",
@@ -62,7 +76,14 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	let error = error.database_error().expect("native database constraint");
 	assert_eq!(error.code(), Some("23514"));
 	assert_eq!(error.constraint(), Some("tasks_dependency_cycle"));
-	assert_eq!(store.tasks(Some(workspace.id)).await.unwrap().len(), 2);
+	assert_eq!(
+		store
+			.tasks(&TEST_FIXTURE, Some(workspace.id))
+			.await
+			.unwrap()
+			.len(),
+		2
+	);
 }
 
 #[rstest]
@@ -79,16 +100,23 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Reference projection")
+		.create_workspace(&TEST_FIXTURE, "Graph", "Reference projection")
 		.await
 		.unwrap();
 	let dependency = store
-		.create_task(workspace.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	task.dependencies = vec![dependency.id, dependency.id];
 	let saved = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&task,
 			"deployment_administrator",
@@ -98,6 +126,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 		.unwrap();
 	let repeated = store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&task,
 			"deployment_administrator",
@@ -116,14 +145,26 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	assert_eq!(links[0].workspace_key, workspace.id);
 
 	let other = store
-		.create_workspace("Other", "Keep dependencies local")
+		.create_workspace(&TEST_FIXTURE, "Other", "Keep dependencies local")
 		.await
 		.unwrap();
 	let rejected = store
-		.create_task(other.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			other.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await;
 	assert!(matches!(rejected, Err(Error::Invalid(_))), "{rejected:?}");
-	assert!(store.tasks(Some(other.id)).await.unwrap().is_empty());
+	assert!(
+		store
+			.tasks(&TEST_FIXTURE, Some(other.id))
+			.await
+			.unwrap()
+			.is_empty()
+	);
 }
 
 #[rstest]
@@ -140,20 +181,32 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Reverse relations")
+		.create_workspace(&TEST_FIXTURE, "Graph", "Reverse relations")
 		.await
 		.unwrap();
 	let other = store
-		.create_workspace("Other", "Keep references local")
+		.create_workspace(&TEST_FIXTURE, "Other", "Keep references local")
 		.await
 		.unwrap();
 	let target = store
-		.create_task(workspace.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	task.dependencies = vec![target.id];
 	let source = store
-		.create_task(workspace.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();
@@ -207,11 +260,17 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	.await
 	.unwrap();
 	let workspace = store
-		.create_workspace("Graph", "Concurrent references")
+		.create_workspace(&TEST_FIXTURE, "Graph", "Concurrent references")
 		.await
 		.unwrap();
 	let target = store
-		.create_task(workspace.id, &task, "deployment_administrator", None)
+		.create_task(
+			&TEST_FIXTURE,
+			workspace.id,
+			&task,
+			"deployment_administrator",
+			None,
+		)
 		.await
 		.unwrap();
 	task.dependencies = vec![target.id];
@@ -219,7 +278,13 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	let tasks = Task::objects();
 	let (created, deleted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
 		tokio::join!(
-			store.create_task(workspace.id, &task, "deployment_administrator", None),
+			store.create_task(
+				&TEST_FIXTURE,
+				workspace.id,
+				&task,
+				"deployment_administrator",
+				None
+			),
 			tasks.delete_with_conn(&mut db, target.id)
 		)
 	})

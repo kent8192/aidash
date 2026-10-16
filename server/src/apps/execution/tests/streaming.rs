@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::Stream;

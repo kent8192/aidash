@@ -3,7 +3,7 @@ use super::states::DefinitionKind;
 use super::{AgentKnowledge, Definition, RegistryRequest};
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
-use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{AtomicTransaction, Model, OrmExecutor};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -20,8 +20,8 @@ pub(crate) async fn definition<E: OrmExecutor>(
 		.ok_or_else(|| Error::NotFound(format!("entity {id}@{version}")))
 }
 
-pub(crate) async fn definitions(
-	mut db: DatabaseConnection,
+pub(crate) async fn definitions<E: OrmExecutor>(
+	db: &mut E,
 	kind: Option<&str>,
 	offset: usize,
 	limit: Option<usize>,
@@ -40,7 +40,7 @@ pub(crate) async fn definitions(
 	if let Some(limit) = limit {
 		query = query.limit(limit);
 	}
-	Ok(query.all_with_db(&mut db).await?)
+	Ok(query.all_with_db(db).await?)
 }
 
 /// A conflicting insert waits for the winning transaction before reading it.

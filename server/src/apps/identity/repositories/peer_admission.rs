@@ -2,6 +2,7 @@
 use crate::{
 	Result as NativeResult, authorization::access::Access, federation::Federation, store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::authorization::peer::{
@@ -615,6 +616,12 @@ impl PeerAdmissionScope for Owned {
 			.map_err(Into::into)
 	}
 }
+/// Inbound peer requests name a record, not a Tenant. Until #241 gives every
+/// Node a Tenant, they find it across Tenants.
+fn inbound() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::FederationInbound)
+}
+
 #[async_trait]
 impl PeerAdmissionRecords for Records<'_> {
 	async fn record(&self, id: Uuid) -> Result<Option<State>> {
@@ -637,7 +644,7 @@ impl PeerAdmissionRecords for Records<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&store.pool)
+				.fetch_optional(store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(row.map(Into::into))
@@ -665,7 +672,7 @@ impl PeerAdmissionRecords for Records<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.scalar_one(&f_store.pool)
+				.scalar_one(f_store.pool.in_scope(&inbound()))
 				.await?
 			})
 		}
@@ -711,15 +718,17 @@ impl PeerAdmissionRepository for Repository<'_> {
 	}
 	async fn verify_record(&self, id: Uuid, source: &str) -> Result<Option<State>> {
 		let f = self.runtime;
-		let connection = f.store.orm_connection()?;
-		crate::apps::federation::peer::models::AuthorizationRemoteAdmission::by_id(
-			&mut connection.handle(),
-			id,
-			source,
-		)
-		.await
-		.map(|row| row.map(Into::into))
-		.map_err(Into::into)
+		f.store
+			.pool
+			.atomic(&inbound(), async |tx| {
+				crate::apps::federation::peer::models::AuthorizationRemoteAdmission::by_id(
+					tx, id, source,
+				)
+				.await
+			})
+			.await
+			.map(|row| row.map(Into::into))
+			.map_err(Into::into)
 	}
 	async fn status_record(&self, source: &str, grant: Uuid) -> Result<Option<State>> {
 		let result: NativeResult<Option<State>> = async {
@@ -742,7 +751,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(row.map(Into::into))
@@ -770,7 +779,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(raw.map(crate::domain::run_state::RawRun::inspect))
@@ -800,7 +809,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.fetch_optional(f.store.pool.in_scope(&inbound()))
 				.await?
 			};
 			Ok(row.map(Into::into))
@@ -809,15 +818,20 @@ impl PeerAdmissionRepository for Repository<'_> {
 		result.map_err(Into::into)
 	}
 	async fn run(&self, id: Uuid) -> Result<Run> {
-		self.runtime.store.run(id).await.map_err(Into::into)
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		store.run(&scope, id).await.map_err(Into::into)
 	}
 	async fn inspect_run(&self, id: Uuid) -> Result<RunInspection> {
-		self.runtime.store.inspect_run(id).await.map_err(Into::into)
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		store.inspect_run(&scope, id).await.map_err(Into::into)
 	}
 	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection> {
-		self.runtime
-			.store
-			.control(id, action.action())
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		store
+			.control(&scope, id, action.action())
 			.await
 			.map_err(Into::into)
 	}
@@ -834,11 +848,14 @@ impl PeerAdmissionRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 	async fn message_recorded(&self, id: Uuid, key: &str, content: &str) -> bool {
-		self.runtime
-			.store
-			.run_input_sequence(id, key, content)
-			.await
-			.is_ok()
+		let store = &self.runtime.store;
+		match store.run_tenancy(id).await {
+			Ok(scope) => store
+				.run_input_sequence(&scope, id, key, content)
+				.await
+				.is_ok(),
+			Err(_) => false,
+		}
 	}
 	async fn deliver(&self, run: &Run) -> Result<()> {
 		self.runtime

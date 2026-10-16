@@ -8,6 +8,7 @@ use crate::{
 		identity::repositories::catalog::NativeCatalog,
 	},
 };
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::{
@@ -31,7 +32,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::backends::{DatabaseConnection, TransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
@@ -120,7 +121,9 @@ impl GenerationLive for NativeEmbeddingAuthority<'_> {
 }
 
 pub(crate) struct NativeEmbeddingRepository {
-	pub database: DatabaseConnection,
+	pub pool: crate::database::native::Pool,
+	/// The Tenant scope of the requests this repository reserves.
+	pub scope: TenancyScope,
 	pub node_id: String,
 }
 struct Session {
@@ -133,7 +136,7 @@ impl GenerationEmbeddingRepository for NativeEmbeddingRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationEmbeddingSession>> {
 		Ok(Box::new(Session {
-			transaction: self.database.begin().await.map_err(Error::from)?,
+			transaction: self.pool.begin(&self.scope).await?.into_executor()?,
 		}))
 	}
 }

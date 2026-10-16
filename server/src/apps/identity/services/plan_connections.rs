@@ -12,6 +12,7 @@ use crate::{Error, Result, authorization::identity::Actor, federation::Federatio
 use aidash_application::plan_connections::{
 	self as application, Disconnection, Owner, Pending, Service,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::plan_connections::{self as domain, PASTE_PORT};
 use aidash_domain::provider_credentials::Provider;
 use chrono::{Duration, Utc};
@@ -120,8 +121,8 @@ impl PlanConnections {
 			.to_owned();
 		// Refuses a shared subject before OpenAI issues anything.
 		let saved_client = service.check(&owner).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let host = domain::host_id(PlanConnectionHost::current(lease.handle()).await?)?;
+		let pool = &self.runtime.store.pool;
+		let host = domain::host_id(PlanConnectionHost::current(pool).await?)?;
 		let request = application::begin(
 			&host,
 			input.port.unwrap_or(PASTE_PORT),
@@ -140,7 +141,7 @@ impl PlanConnections {
 			.redirect_uri(request.redirect_uri.clone())
 			.expires_at(Utc::now() + Duration::minutes(application::LIFETIME_MINUTES))
 			.finish()
-			.reserve(lease.handle())
+			.reserve(pool)
 			.await?;
 		let mut response = Response::ok().with_json(&Started {
 			authorization_url: request.url,
@@ -166,8 +167,8 @@ impl PlanConnections {
 		let service = self.enabled()?;
 		let origin = origin.ok_or(Error::Forbidden)?;
 		let state = callback_state(&input.callback_url)?;
-		let lease = self.runtime.store.orm_connection()?;
-		let pending = PlanAuthorization::consume(lease.handle(), hex_digest(&state)).await?;
+		let pending =
+			PlanAuthorization::consume(&self.runtime.store.pool, hex_digest(&state)).await?;
 		if pending.session_id != origin.session.id
 			|| pending.tenant != owner.tenant
 			|| pending.subject != owner.subject
@@ -210,14 +211,9 @@ impl PlanConnections {
 		provider: String,
 		input: Disconnect,
 	) -> Result<Disconnection> {
-		let provider = plan_provider(&provider)?;
+		plan_provider(&provider)?;
 		let owner = owner(&actor, origin.as_ref(), &tenant)?;
 		let origin = origin.ok_or(Error::Forbidden)?;
-		// Pending attempts end first, so no callback still on its way can
-		// recreate what this disconnect removes.
-		let lease = self.runtime.store.orm_connection()?;
-		PlanAuthorization::cancel(lease.handle(), &owner.tenant, &owner.subject, provider.id())
-			.await?;
 		Ok(self
 			.service()?
 			.disconnect(&owner, input.expected_revision, &actor_label(&origin))
@@ -259,7 +255,12 @@ pub(crate) async fn retire_unmapped(
 	let Some(service) = &f.store.plan_connections else {
 		return Ok(());
 	};
-	let mut tx = f.store.control_pool.connection().begin().await?;
+	let mut tx = f
+		.store
+		.control_pool
+		.begin(&TenancyScope::tenant(tenant)?)
+		.await?
+		.into_executor()?;
 	let reachable = crate::apps::identity::repositories::plan_connections::mapped_identities(
 		tx.as_mut(),
 		tenant,
@@ -286,10 +287,15 @@ pub(crate) async fn retire_unmapped(
 /// administrator's.
 pub(crate) async fn retire_disabled_mapping(f: &Federation, mapping: uuid::Uuid, actor: &str) {
 	let result = async {
-		let lease = f.store.orm_connection()?;
-		let Some(mapping) =
-			crate::apps::identity::models::DashboardMapping::find(&mut lease.handle(), mapping)
-				.await?
+		// The disabled Mapping names its Tenant only once it is read.
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
+		let Some(mapping) = f
+			.store
+			.pool
+			.atomic(&scope, async |tx| {
+				crate::apps::identity::models::DashboardMapping::find(tx, mapping).await
+			})
+			.await?
 		else {
 			return Ok(());
 		};

@@ -36,13 +36,8 @@ fn binding(row: BindingRecord) -> Result<Binding> {
 #[async_trait]
 impl Repository for NativeRepository {
 	async fn begin(&self, tenant: &str) -> Result<Box<dyn Scope>> {
-		aidash_domain::policy::identifier(tenant)?;
-		let mut tx = self
-			.pool
-			.connection()
-			.begin()
-			.await
-			.map_err(crate::Error::from)?;
+		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
 		let (sql, values) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				"pg_advisory_xact_lock".into_iden(),
@@ -66,12 +61,10 @@ impl Repository for NativeRepository {
 		after: Option<Uuid>,
 		limit: usize,
 	) -> Result<Vec<ProviderCredential>> {
-		let mut tx = self
-			.pool
-			.connection()
-			.begin()
-			.await
-			.map_err(crate::Error::from)?;
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::CredentialReconcile,
+		);
+		let mut tx = self.pool.begin(&scope).await?.into_executor()?;
 		let mut query = Record::objects()
 			.filter(
 				Record::field_state()
@@ -575,13 +568,13 @@ impl AdmittedAccess {
 				"Provider Credential Store is not configured".into(),
 			));
 		}
+		let scope = aidash_application::tenancy::TenancyScope::tenant(&context.tenant)?;
 		let mut tx = self
 			.store
 			.control_pool
-			.connection()
-			.begin()
-			.await
-			.map_err(crate::Error::from)?;
+			.begin(&scope)
+			.await?
+			.into_executor()?;
 		let pins = super::super::models::provider_credentials::RunProviderCredential::objects()
 			.filter(
 				super::super::models::provider_credentials::RunProviderCredential::field_id()

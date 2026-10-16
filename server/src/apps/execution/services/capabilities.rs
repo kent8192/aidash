@@ -10,6 +10,8 @@ pub struct ToolContext {
 	pub home: Home,
 	pub store: Store,
 	pub run: Run,
+	/// The Run's Tenant scope; every transaction the tool opens uses it.
+	pub scope: aidash_application::tenancy::TenancyScope,
 }
 #[async_trait]
 pub trait Tool: Send + Sync {

@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::http::ViewResult;
 use reinhardt::{Handler, Request, Response, ServerRouter};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -837,7 +838,7 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	)
 	.await;
 	assert_eq!(status, 200, "{admitted}");
-	c.f.store.runs().await.unwrap().remove(0)
+	c.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0)
 }
 
 #[rstest::rstest]

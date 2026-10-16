@@ -107,6 +107,21 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// Event disclosure within one scan; `runs` holds the scan's Run verdicts.
+	pub(crate) async fn event_visible_in(
+		&mut self,
+		event: &Event,
+		runs: &mut aidash_application::ports::authorization::visibility::RunVerdicts,
+	) -> crate::Result<bool> {
+		aidash_application::authorization::visibility::event_visible_in(
+			&mut crate::bootstrap::run_visibility_scope(self),
+			event,
+			runs,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	pub(crate) async fn workspace_snapshot(&mut self, id: Uuid) -> Result<WorkspaceSnapshot> {
 		aidash_application::authorization::projection::snapshot(
 			&mut crate::bootstrap::run_visibility_scope(self),

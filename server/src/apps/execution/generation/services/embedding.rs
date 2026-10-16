@@ -13,9 +13,12 @@ pub(crate) async fn reserve(
 	text: &str,
 	origin: Origin,
 ) -> Result<Option<Reservation>> {
+	let tenancy = access.tenancy()?;
 	aidash_application::generation::embedding::reserve(
 		&mut crate::bootstrap::generation_embedding_authority_scope(access),
-		Arc::new(crate::bootstrap::generation_embedding_repository(store)),
+		Arc::new(crate::bootstrap::generation_embedding_repository(
+			store, tenancy,
+		)),
 		workspace,
 		config,
 		text,
@@ -25,9 +28,12 @@ pub(crate) async fn reserve(
 	.map_err(Into::into)
 }
 
+/// `tenancy` is the scope of the reservation: the Tenant whose bank or Run
+/// asks for the embedding, which holds even when no origin lease applies.
 pub(crate) async fn reserve_many(
 	accesses: &mut [&mut Access],
 	store: &Store,
+	tenancy: aidash_application::tenancy::TenancyScope,
 	workspace: Uuid,
 	config: &EmbeddingConfig,
 	text: &str,
@@ -49,7 +55,9 @@ pub(crate) async fn reserve_many(
 	}
 	aidash_application::generation::embedding::reserve_approved(
 		approved,
-		Arc::new(crate::bootstrap::generation_embedding_repository(store)),
+		Arc::new(crate::bootstrap::generation_embedding_repository(
+			store, tenancy,
+		)),
 		workspace,
 		text,
 		origin,

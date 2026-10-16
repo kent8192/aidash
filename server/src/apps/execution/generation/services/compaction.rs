@@ -33,9 +33,10 @@ impl JevAsker for ApprovedCompactor {
 			access.identity.tenant.clone(),
 			self.run.id,
 		);
+		let tenancy = access.tenancy()?;
 		let transport = aidash_application::generation::compaction::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&crate::bootstrap::generation_compaction_repository(&self.store),
+			&crate::bootstrap::generation_compaction_repository(&self.store, tenancy),
 			&provider,
 			&aidash_domain::generation::compaction::Context {
 				run: self.run.id,

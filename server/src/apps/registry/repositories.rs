@@ -1,6 +1,7 @@
 //! Native adapters for Registry scopes; business admission lives in application.
 use super::models::{records, transaction_records};
 use crate::apps::execution::models::event_records;
+use crate::database::native::Pool;
 use crate::{
 	Result,
 	registry::{AgentPage, Entry, Search},
@@ -8,21 +9,22 @@ use crate::{
 use aidash_application::ports::registry::{
 	DefinitionDocument, DefinitionLookup, DefinitionWriter, RegistrationScope, RegistryRead,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::{
-	AtomicTransaction, DatabaseConnection, DatabaseConnectionLease, OrmExecutor,
-};
+use reinhardt::db::orm::{AtomicTransaction, OrmExecutor};
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) mod bindings;
 pub(crate) mod foreign;
 pub(crate) mod sql;
 
+/// Every Tenant shares the Deployment's single Registry until #265.
+const SHARED: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::SharedRegistry);
+
 #[derive(Clone)]
 pub struct Registry {
-	pub db: DatabaseConnection,
-	_lease: DatabaseConnectionLease,
+	pool: Pool,
 	node_id: String,
 	provider_credentials: bool,
 	plan_connections: bool,
@@ -43,8 +45,9 @@ impl Registry {
 			.with_plan_connections(self.plan_connections)
 	}
 	pub async fn seed_system(&self) -> Result<()> {
-		self.db
-			.atomic(async |tx| {
+		let seeding = TenancyScope::Deployment(DeploymentScopeReason::BuiltInSeeding);
+		self.pool
+			.atomic(&seeding, async |tx| {
 				Ok(aidash_application::registry::system::seed(
 					&mut OrmScope {
 						db: tx,
@@ -57,24 +60,25 @@ impl Registry {
 			})
 			.await
 	}
-	pub fn new(pool: impl Into<crate::database::native::Pool>, node_id: &str) -> Result<Self> {
-		let lease = DatabaseConnectionLease::register(pool.into().connection())?;
+	pub fn new(pool: impl Into<Pool>, node_id: &str) -> Result<Self> {
 		Ok(Self {
-			db: lease.handle(),
-			_lease: lease,
+			pool: pool.into(),
 			node_id: node_id.into(),
 			provider_credentials: false,
 			plan_connections: false,
 		})
 	}
 	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
-		let mut db = self.db;
-		Ok(OrmScope {
-			db: &mut db,
-			node: &self.node_id,
-		}
-		.definition(id, version)
-		.await?)
+		self.pool
+			.atomic(&SHARED, async |tx| {
+				Ok(OrmScope {
+					db: tx,
+					node: &self.node_id,
+				}
+				.definition(id, version)
+				.await?)
+			})
+			.await
 	}
 	pub(crate) async fn get_for_run(
 		&self,
@@ -82,44 +86,54 @@ impl Registry {
 		id: &str,
 		version: &str,
 	) -> Result<Entry> {
-		let mut db = self.db;
-		Ok(aidash_application::registry::get_for_run(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
-			run,
-			id,
-			version,
-		)
-		.await?)
+		let run = run.into();
+		self.pool
+			.atomic(&SHARED, async |tx| {
+				Ok(aidash_application::registry::get_for_run(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					run,
+					id,
+					version,
+				)
+				.await?)
+			})
+			.await
 	}
 	pub async fn list(&self, search: &Search) -> Result<Vec<Entry>> {
-		let mut db = self.db;
-		Ok(aidash_application::registry::list(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
-			search,
-		)
-		.await?)
+		self.pool
+			.atomic(&SHARED, async |tx| {
+				Ok(aidash_application::registry::list(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					search,
+				)
+				.await?)
+			})
+			.await
 	}
 	pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
-		let mut db = self.db;
-		Ok(aidash_application::registry::legacy_agents(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
-			search,
-			offset,
-		)
-		.await?)
+		self.pool
+			.atomic(&SHARED, async |tx| {
+				Ok(aidash_application::registry::legacy_agents(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					search,
+					offset,
+				)
+				.await?)
+			})
+			.await
 	}
 	pub async fn register(&self, entry: Entry) -> Result<Entry> {
-		self.db
-			.atomic(async |tx| {
+		self.pool
+			.atomic(&SHARED, async |tx| {
 				Ok(aidash_application::registry::register(
 					&mut OrmScope {
 						db: tx,
@@ -140,8 +154,8 @@ impl Registry {
 		entry: Entry,
 		key: Option<Uuid>,
 	) -> Result<Entry> {
-		self.db
-			.atomic(async |tx| {
+		self.pool
+			.atomic(&SHARED, async |tx| {
 				Ok(aidash_application::registry::register(
 					&mut OrmScope {
 						db: tx,
@@ -158,8 +172,17 @@ impl Registry {
 			.await
 	}
 	pub async fn validate_references(&self, entry: &Entry) -> Result<()> {
-		let mut db = self.db;
-		validate_references_with(&mut db, entry, &self.node_id, &self.validation()).await
+		self.pool
+			.atomic(&SHARED, async |tx| {
+				validate_references_with(tx, entry, &self.node_id, &self.validation()).await
+			})
+			.await
+	}
+	/// The private documents an Agent's definition carries.
+	pub(crate) async fn private_documents(&self, entry: &Entry) -> Result<Value> {
+		self.pool
+			.atomic(&SHARED, async |tx| private_documents(tx, entry).await)
+			.await
 	}
 }
 
@@ -222,14 +245,14 @@ impl<E: OrmExecutor + TransactionExecutor> RegistrationScope for OrmScope<'_, E>
 	}
 }
 #[async_trait]
-impl RegistryRead for OrmScope<'_, DatabaseConnection> {
+impl<E: OrmExecutor> RegistryRead for OrmScope<'_, E> {
 	async fn definitions(
 		&mut self,
 		kind: Option<&str>,
 		offset: usize,
 		limit: Option<usize>,
 	) -> aidash_application::Result<Vec<DefinitionDocument>> {
-		Ok(records::definitions(*self.db, kind, offset, limit)
+		Ok(records::definitions(self.db, kind, offset, limit)
 			.await?
 			.into_iter()
 			.map(|row| DefinitionDocument {
@@ -240,7 +263,7 @@ impl RegistryRead for OrmScope<'_, DatabaseConnection> {
 			.collect())
 	}
 	async fn generated(&mut self, id: &str, version: &str) -> aidash_application::Result<bool> {
-		crate::apps::execution::generation::models::is_generated_agent(*self.db, id, version)
+		crate::apps::execution::generation::models::is_generated_agent(self.db, id, version)
 			.await
 			.map_err(Into::into)
 	}
@@ -338,19 +361,23 @@ impl Registry {
 		draft: aidash_application::registry::personal::PersonalDraft,
 		key: Uuid,
 	) -> Result<Entry> {
-		let mut db = self.db;
-		let registration = aidash_application::registry::personal::prepare(
-			&mut OrmScope {
-				db: &mut db,
-				node: &self.node_id,
-			},
-			&self.validation(),
-			draft,
-			&self.node_id,
-		)
-		.await?;
-		self.db
-			.atomic(async |tx| {
+		let registration = self
+			.pool
+			.atomic(&SHARED, async |tx| {
+				Ok(aidash_application::registry::personal::prepare(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&self.validation(),
+					draft,
+					&self.node_id,
+				)
+				.await?)
+			})
+			.await?;
+		self.pool
+			.atomic(&SHARED, async |tx| {
 				Ok(aidash_application::registry::personal::register(
 					&mut OrmScope {
 						db: tx,
@@ -366,8 +393,7 @@ impl Registry {
 			.await
 	}
 }
-pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
-	let mut connection = *db;
+async fn private_documents<E: OrmExecutor>(connection: &mut E, entry: &Entry) -> Result<Value> {
 	if entry.kind == "agent" {
 		let input: aidash_domain::registry::bindings::AgentBindings =
 			serde_json::from_value(entry.config.clone())?;
@@ -388,9 +414,12 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 			if binding.target.registry_node != node {
 				return Err(crate::Error::Forbidden);
 			}
-			let source =
-				records::definition(&mut connection, &binding.target.id, &binding.target.version)
-					.await?;
+			let source = records::definition(
+				&mut *connection,
+				&binding.target.id,
+				&binding.target.version,
+			)
+			.await?;
 			let source: Entry = serde_json::from_value(source.metadata.into_inner())?;
 			if source.config.get("schema_version").is_none() {
 				continue;
@@ -405,7 +434,7 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 			}
 			let value = aidash_application::registry::personal::load(
 				&mut OrmScope {
-					db: &mut connection,
+					db: &mut *connection,
 					node,
 				},
 				&source,
@@ -425,7 +454,7 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 	}
 	Ok(aidash_application::registry::personal::load(
 		&mut OrmScope {
-			db: &mut connection,
+			db: &mut *connection,
 			node: "",
 		},
 		entry,

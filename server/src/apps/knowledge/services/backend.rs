@@ -84,10 +84,11 @@ pub async fn present(
 	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
+	tenant: &str,
 	ids: &[Uuid],
 ) -> Result<bool> {
 	crate::bootstrap::semantic_transport(store)
-		.present(config, collection, ids)
+		.present(config, collection, tenant, ids)
 		.await
 		.map_err(Into::into)
 }

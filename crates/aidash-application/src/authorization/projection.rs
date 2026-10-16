@@ -1,5 +1,8 @@
 //! Visibility is applied before pages, snapshots and fitted observations are disclosed.
-use crate::{Result, ports::authorization::projection::WorkspaceProjection};
+use crate::{
+	Result,
+	ports::authorization::{projection::WorkspaceProjection, visibility::RunVerdicts},
+};
 use aidash_domain::{Event, Message, Task, WorkspaceSnapshot, workspaces::TaskPage};
 use serde_json::Value;
 use uuid::Uuid;
@@ -42,6 +45,8 @@ pub async fn latest_visible_events(
 	let mut cursor = i64::MAX;
 	let mut result = vec![];
 	let mut scanned = 0;
+	// Every event of a Run would otherwise repeat that Run's full disclosure check (#292).
+	let mut runs = RunVerdicts::default();
 	while scanned < EVENT_SCAN_LIMIT {
 		let page_size = (EVENT_SCAN_LIMIT - scanned).min(100);
 		let rows = scope
@@ -51,7 +56,7 @@ pub async fn latest_visible_events(
 		scanned += rows.len();
 		for event in rows {
 			cursor = event.sequence;
-			if scope.event_visible(&event).await? {
+			if scope.event_visible(&event, &mut runs).await? {
 				result.push(event);
 			}
 			if result.len() == 100 {

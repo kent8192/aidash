@@ -2,12 +2,14 @@
 //! pins and this Deployment's host ID (#159, ADR 0007, ADR 0031). Plan Tokens
 //! are never ORM fields; they stay in the Provider Credential Store.
 use super::dashboard_administration::database_time;
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model};
 use reinhardt::model;
 use reinhardt::query::{
 	Alias, Expr, IntoIden, IntoValue, OnConflict, PostgresQueryBuilder, Query,
@@ -131,8 +133,8 @@ impl PlanAuthorization {
 	/// Stores this pending authorization. It supersedes any earlier pending
 	/// authorization of the same session, Tenant, subject and provider, so
 	/// only the latest attempt's callback URL completes.
-	pub(crate) async fn reserve(&self, db: DatabaseConnection) -> Result<()> {
-		db.atomic(async |tx| {
+	pub(crate) async fn reserve(&self, db: &Pool) -> Result<()> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let (sql, values) = Query::select()
 				.expr(SimpleExpr::FunctionCall(
 					"pg_advisory_xact_lock".into_iden(),
@@ -163,32 +165,11 @@ impl PlanAuthorization {
 		.await
 	}
 
-	/// Deletes every pending authorization of the owner's provider, in any
-	/// session: a disconnect ends them, so none of their callbacks can bring
-	/// a connection back, a first-time attempt included.
-	pub(crate) async fn cancel(
-		db: DatabaseConnection,
-		tenant: &str,
-		subject: &str,
-		provider: &str,
-	) -> Result<()> {
-		db.atomic(async |tx| {
-			Self::objects()
-				.filter(Self::field_tenant().eq(tenant.to_owned()))
-				.filter(Self::field_subject().eq(subject.to_owned()))
-				.filter(Self::field_provider().eq(provider.to_owned()))
-				.delete_with_conn(tx)
-				.await?;
-			Ok(())
-		})
-		.await
-	}
-
 	/// Deletes and returns the pending row for `state_hash`. Consumption
 	/// commits even when the caller then rejects the row, so a `state` never
 	/// works twice.
-	pub(crate) async fn consume(db: DatabaseConnection, state_hash: String) -> Result<Self> {
-		db.atomic(async |tx| {
+	pub(crate) async fn consume(db: &Pool, state_hash: String) -> Result<Self> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let row = Self::objects()
 				.filter(Self::field_state_hash().eq(state_hash))
 				.select_for_update()
@@ -217,8 +198,8 @@ impl PlanAuthorization {
 impl PlanConnectionHost {
 	/// This Deployment's host ID, created on first use. Concurrent first uses
 	/// agree on one row.
-	pub(crate) async fn current(db: DatabaseConnection) -> Result<Uuid> {
-		db.atomic(async |tx| {
+	pub(crate) async fn current(db: &Pool) -> Result<Uuid> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			let (sql, values) = Query::insert()
 				.into_table(Alias::new(Self::table_name()))

@@ -30,6 +30,7 @@ const SEAL_LEDGER: &str = "DO $$ DECLARE grantee text; BEGIN \
 /// All entry points hold the same transaction-scoped lock for the complete run,
 /// including creation of the native ledger. Dropping the transaction on errors
 /// or cancellation releases it; no session lock can leak into the pool.
+#[allow(clippy::disallowed_methods)] // The owner applies migrations; no Tenant data is read.
 pub async fn run(context: &CommandContext) -> Result<()> {
 	let url = context
 		.option("database")
@@ -134,6 +135,7 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 /// Servers, workers and maintenance commands log in as a role that cannot
 /// change the schema (#262), so only `aidash migrate`, run as the owner of
 /// every table, applies migrations.
+#[allow(clippy::disallowed_methods)] // Reads only the migration ledger.
 pub async fn require_current(url: &str, directory: &std::path::Path) -> Result<()> {
 	let connection = DatabaseConnection::connect_postgres(url)
 		.await

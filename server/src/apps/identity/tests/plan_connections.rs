@@ -2,6 +2,7 @@
 //! ADR 0007, ADR 0031). An in-process fake OpenAI enforces PKCE, the nonce and
 //! single-use codes; the HTTP adapter itself is exercised against a fake
 //! provider in `aidash-integrations`.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_application::{
@@ -194,7 +195,7 @@ impl Store for MemoryStore {
 		entry.push(Some(key.expose_secret().to_owned()));
 		Ok(format!("{resource}/versions/{}", entry.len()))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _: &str, resource: &str) -> Result<Vec<String>> {
 		let versions = self.versions.lock().unwrap();
 		let entry = versions
 			.get(resource)
@@ -206,10 +207,10 @@ impl Store for MemoryStore {
 			.map(|(n, _)| format!("{resource}/versions/{}", n + 1))
 			.collect())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, _: &str, version: &str) -> Result<()> {
 		let (resource, n) = version.rsplit_once("/versions/").unwrap();
 		let n: usize = n.parse().unwrap();
 		if let Some(entry) = self.versions.lock().unwrap().get_mut(resource) {
@@ -217,7 +218,7 @@ impl Store for MemoryStore {
 		}
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _: &str, resource: &str) -> Result<()> {
 		self.versions.lock().unwrap().remove(resource);
 		Ok(())
 	}

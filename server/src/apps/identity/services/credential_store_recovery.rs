@@ -41,11 +41,7 @@ async fn recover(execute: bool) -> Result<Counts> {
 	let (current, retired) = keys.load_postgres_keys().await?;
 	let config = crate::config::Config::from_settings(&settings)?;
 	// Do not migrate or initialize the node: even a dry run must leave the database unchanged.
-	let database = reinhardt::db::backends::DatabaseConnection::connect_postgres_with_pool_size(
-		&config.database_url,
-		Some(8),
-	)
-	.await?;
+	let database = crate::database::runtime::connect(&config.database_url, 8).await?;
 	let pool =
 		crate::database::native::Pool::from(database.into_postgres().ok_or(Error::Forbidden)?);
 	let store = Arc::new(PostgresStore::for_recovery(pool.clone(), current, retired).await?);
@@ -170,7 +166,11 @@ async fn unreadable_plan_connections(
 			query.and_where(Expr::col(Alias::new("id")).gt(Expr::value(after)));
 		}
 		let (sql, values) = query.build(PostgresQueryBuilder);
-		let mut tx = pool.connection().begin().await?;
+		// Recovery reconciles every Tenant's pinned Plan Tokens.
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::CredentialStoreRecovery,
+		);
+		let mut tx = pool.begin(&scope).await?.into_executor()?;
 		let rows = tx.fetch_all(&sql, convert_values(values)).await?;
 		tx.commit().await?;
 		let page = rows

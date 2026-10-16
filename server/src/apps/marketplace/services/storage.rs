@@ -6,7 +6,10 @@ pub(super) async fn deployment_administrator_begin(
 	store: &crate::store::Store,
 	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
 ) -> Result<crate::database::native::Transaction> {
-	let mut tx = crate::database::native::begin(&store.pool).await?;
+	let mut tx = store
+		.pool
+		.begin(&crate::authorization::identity::Actor::DeploymentAdministrator.tenancy()?)
+		.await?;
 	if let Some(browser) = browser {
 		browser
 			.require_deployment_administrator(&mut tx, true)

@@ -19,9 +19,10 @@ use crate::{
 	domain::*,
 	registry::{Entry, Search},
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{DatabaseConnection as BackendConnection, TransactionExecutor};
-use reinhardt::db::orm::{Model, connection::DatabaseConnectionLease};
+use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::Model;
 use reinhardt::query::ColumnRef;
 use reinhardt::query::OnConflict;
 use reinhardt::query::SimpleExpr;
@@ -30,6 +31,14 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use serde_json::{Value, json};
 use std::future::Future;
 use uuid::Uuid;
+
+/// The Store as one Run's executor sees it: every transaction opens in the
+/// Run's Tenant scope, learned from its authority when the step began.
+#[derive(Clone)]
+pub struct RunStore {
+	pub store: Store,
+	pub scope: TenancyScope,
+}
 
 #[derive(Clone)]
 pub struct Store {
@@ -58,6 +67,9 @@ pub struct Store {
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
+	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
+	/// clone of this Store.
+	pub(crate) tenancies: std::sync::Arc<tenancies::Tenancies>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
 	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
@@ -155,6 +167,7 @@ pub(crate) struct FencedRunMessageOutput<'a> {
 impl Store {
 	pub(crate) async fn with_run_response_fence<T, F>(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		worker: Uuid,
 		included_input_seq: i64,
@@ -163,7 +176,11 @@ impl Store {
 	where
 		F: Future<Output = Result<T>>,
 	{
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		RunRecord::ensure_response_current(tx.as_mut(), run_id, worker, included_input_seq).await?;
 		let result = effect.await?;
 		tx.commit().await?;
@@ -171,6 +188,7 @@ impl Store {
 	}
 	pub(crate) async fn response_message_in_run(
 		&self,
+		scope: &TenancyScope,
 		request: RunResponseMessage<'_>,
 	) -> Result<()> {
 		let RunResponseMessage {
@@ -182,7 +200,11 @@ impl Store {
 			key,
 			track_output,
 		} = request;
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		RunRecord::ensure_response_current(tx.as_mut(), run.id, worker, included_input_seq).await?;
 		RunRecord::worker_context(tx.as_mut()).await?;
 		nonempty(content, "message")?;
@@ -212,6 +234,7 @@ impl Store {
 
 	// Legacy admission cannot supply durable scoped execution authority.
 	pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let scoped: bool = {
 			let query_bind_1 = workspace;
 			crate::database::native::query_scalar(
@@ -223,7 +246,7 @@ impl Store {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_one(&self.pool)
+			.scalar_one(self.pool.in_scope(scope))
 			.await?
 		};
 		if scoped {
@@ -232,17 +255,151 @@ impl Store {
 		Ok(())
 	}
 
+	/// The scope of a Run that a caller names only by id: its Tenant from the
+	/// local execution grant or the receiver's admission, found across Tenants
+	/// until #265 records the Tenant on the Run. A Run with neither has no
+	/// Tenant; only test fixtures create one.
+	pub(crate) async fn run_tenancy(&self, run: Uuid) -> Result<TenancyScope> {
+		if let Some(tenant) = self.tenancies.run(run) {
+			return Ok(tenant.into());
+		}
+		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
+		let tenant: Option<String> = self
+			.pool
+			.scoped(&lookup, async |tx| {
+				for (table, column) in [
+					("authorization_execution", "run_id"),
+					("authorization_remote_admissions", "id"),
+				] {
+					let tenant = crate::database::native::query_scalar::<String>(
+						&Query::select()
+							.column(Alias::new("tenant"))
+							.from(Alias::new(table))
+							.and_where(Expr::col(Alias::new(column)).eq(Expr::value(run)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_optional(&mut **tx)
+					.await?;
+					if tenant.is_some() {
+						return Ok(tenant);
+					}
+				}
+				Ok(None)
+			})
+			.await?;
+		match tenant {
+			Some(tenant) => {
+				let tenant = aidash_domain::tenancy::TenantName::new(tenant)?;
+				self.tenancies.remember_run(run, tenant.clone());
+				Ok(tenant.into())
+			}
+			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
+		}
+	}
+
 	/// The Tenant that owns a local workspace; unscoped workspaces have none.
 	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<Option<String>> {
-		crate::database::native::query_scalar(
+		if let Some(tenant) = self.tenancies.workspace(workspace) {
+			return Ok(Some(tenant.into_inner()));
+		}
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
+		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
 				.from(Alias::new("authorization_workspaces"))
 				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(&self.pool)
-		.await
+		.scalar_optional(self.pool.in_scope(scope))
+		.await?;
+		if let Some(tenant) = &tenant
+			&& let Ok(name) = aidash_domain::tenancy::TenantName::new(tenant)
+		{
+			self.tenancies.remember_workspace(workspace, name);
+		}
+		Ok(tenant)
+	}
+
+	/// The scope of a Workspace that a caller names only by id: its Tenant, or
+	/// no Tenant for a legacy Workspace that only test fixtures still create.
+	pub(crate) async fn workspace_tenancy(&self, workspace: Uuid) -> Result<TenancyScope> {
+		match self.workspace_tenant(workspace).await? {
+			Some(tenant) => Ok(TenancyScope::tenant(&tenant)?),
+			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
+		}
+	}
+
+	/// The scope of a cross-node generation or semantic operation, found from
+	/// the local record it names: this node's execution grant or admission of
+	/// the Run, or the remote grant this node issued.
+	pub(crate) async fn remote_tenancy(
+		&self,
+		admission: Uuid,
+		grant: Uuid,
+	) -> Result<TenancyScope> {
+		if let Some(tenant) = self.tenancies.run(admission) {
+			return Ok(tenant.into());
+		}
+		if let Some(tenant) = self.tenancies.grant(grant) {
+			return Ok(tenant.into());
+		}
+		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
+		let tenant: Option<(&str, String)> = self
+			.pool
+			.scoped(&lookup, async |tx| {
+				for (table, column, id) in [
+					("authorization_execution", "run_id", admission),
+					("authorization_remote_admissions", "id", admission),
+					("authorization_remote_grants", "id", grant),
+				] {
+					let tenant = crate::database::native::query_scalar::<String>(
+						&Query::select()
+							.column(Alias::new("tenant"))
+							.from(Alias::new(table))
+							.and_where(Expr::col(Alias::new(column)).eq(Expr::value(id)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_optional(&mut **tx)
+					.await?;
+					if let Some(tenant) = tenant {
+						return Ok(Some((table, tenant)));
+					}
+				}
+				Ok(None)
+			})
+			.await?;
+		match tenant {
+			Some((table, tenant)) => {
+				let tenant = aidash_domain::tenancy::TenantName::new(tenant)?;
+				if table == "authorization_remote_grants" {
+					self.tenancies.remember_grant(grant, tenant.clone());
+				} else {
+					self.tenancies.remember_run(admission, tenant.clone());
+				}
+				Ok(tenant.into())
+			}
+			None => Ok(TenancyScope::Deployment(DeploymentScopeReason::LegacyRun)),
+		}
+	}
+
+	/// The scope of a task that a caller names only by id: its Workspace's.
+	pub(crate) async fn task_tenancy(&self, task: Uuid) -> Result<TenancyScope> {
+		if let Some(workspace) = self.tenancies.task_workspace(task) {
+			return self.workspace_tenancy(workspace).await;
+		}
+		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
+		let workspace: Uuid = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(self.pool.in_scope(&lookup))
+		.await?
+		.ok_or_else(|| Error::NotFound("task".into()))?;
+		self.tenancies.remember_task_workspace(task, workspace);
+		self.workspace_tenancy(workspace).await
 	}
 
 	/// Run creation re-checks the Projection Version pinned by the Binding
@@ -259,14 +416,12 @@ impl Store {
 		require_projection(snapshot, self.cache_salt.is_some(), tenant_scoped)
 	}
 
-	/// Share this store's existing data pool with native persistence operations.
-	pub(crate) fn database(&self) -> BackendConnection {
-		self.pool.connection()
-	}
-
-	/// Borrow this store's existing pool through an owned native ORM scope.
-	pub(crate) fn orm_connection(&self) -> Result<DatabaseConnectionLease> {
-		Ok(DatabaseConnectionLease::register(self.database())?)
+	/// The view of one Run's executor, in the Run's Tenant scope.
+	pub fn for_run(&self, scope: TenancyScope) -> RunStore {
+		RunStore {
+			store: self.clone(),
+			scope,
+		}
 	}
 
 	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
@@ -274,8 +429,6 @@ impl Store {
 			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
 			pool.options().get_max_connections() as usize,
 		)?);
-		let data_pool: Pool = pool.clone().into();
-		crate::semantic::repositories::discard::legacy(&data_pool).await?;
 		let control_pool = pool
 			.options()
 			.clone()
@@ -303,6 +456,7 @@ impl Store {
 			provider_clients,
 			keyless: Default::default(),
 			recovery_cursors: Default::default(),
+			tenancies: Default::default(),
 			tool_slots,
 			cache_salt: None,
 			provider_credentials: None,
@@ -389,6 +543,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
@@ -433,6 +588,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
@@ -505,11 +661,15 @@ impl Store {
 			.await?
 		})
 	}
-	pub async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
-		let connection = self.orm_connection()?;
-		connection
-			.handle()
-			.atomic(async |tx| {
+	pub async fn emit(
+		&self,
+		scope: &TenancyScope,
+		workspace: Option<Uuid>,
+		kind: &str,
+		data: Value,
+	) -> Result<Event> {
+		self.pool
+			.atomic(scope, async |tx| {
 				Ok(
 					event_records::create(tx, &self.node_id, workspace, kind, data)
 						.await?
@@ -518,8 +678,13 @@ impl Store {
 			})
 			.await
 	}
-	pub async fn create_workspace(&self, title: &str, goal: &str) -> Result<Workspace> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub async fn create_workspace(
+		&self,
+		scope: &TenancyScope,
+		title: &str,
+		goal: &str,
+	) -> Result<Workspace> {
+		let mut tx = self.pool.begin(scope).await?;
 		let workspace = self
 			.create_workspace_in(&mut tx, Uuid::new_v4(), title, goal)
 			.await?;
@@ -569,20 +734,30 @@ impl Store {
 			.await?;
 		Ok(w)
 	}
-	pub async fn workspaces(&self) -> Result<Vec<Workspace>> {
-		let lease = self.orm_connection()?;
-		Ok(WorkspaceRecord::newest_first(&mut lease.handle())
+	pub async fn workspaces(&self, scope: &TenancyScope) -> Result<Vec<Workspace>> {
+		Ok(self
+			.pool
+			.atomic(scope, async |tx| WorkspaceRecord::newest_first(tx).await)
 			.await?
 			.into_iter()
 			.map(Into::into)
 			.collect())
 	}
-	pub async fn workspace(&self, id: Uuid) -> Result<Workspace> {
-		let lease = self.orm_connection()?;
-		Ok(WorkspaceRecord::read(&mut lease.handle(), id).await?.into())
+	pub async fn workspace(&self, scope: &TenancyScope, id: Uuid) -> Result<Workspace> {
+		Ok(self
+			.pool
+			.atomic(scope, async |tx| WorkspaceRecord::read(tx, id).await)
+			.await?
+			.into())
 	}
-	pub async fn update_state(&self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub async fn update_state(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		revision: i64,
+		state: Value,
+	) -> Result<Workspace> {
+		let mut tx = self.pool.begin(scope).await?;
 		let workspace = self.update_state_in(&mut tx, id, revision, state).await?;
 		tx.commit().await?;
 		Ok(workspace)
@@ -630,17 +805,24 @@ impl Store {
 			.await?;
 		Ok(w)
 	}
-	pub async fn task(&self, id: Uuid) -> Result<Task> {
-		let lease = self.orm_connection()?;
-		Ok(TaskRecord::read(&mut lease.handle(), id).await?.into())
+	pub async fn task(&self, scope: &TenancyScope, id: Uuid) -> Result<Task> {
+		Ok(self
+			.pool
+			.atomic(scope, async |tx| TaskRecord::read(tx, id).await)
+			.await?
+			.into())
 	}
-	pub async fn task_page(&self, offset: u64) -> Result<TaskPage> {
-		let lease = self.orm_connection()?;
-		TaskRecord::page(&mut lease.handle(), offset).await
+	pub async fn task_page(&self, scope: &TenancyScope, offset: u64) -> Result<TaskPage> {
+		self.pool
+			.atomic(scope, async |tx| TaskRecord::page(tx, offset).await)
+			.await
 	}
-	pub async fn tasks(&self, workspace: Option<Uuid>) -> Result<Vec<Task>> {
-		let lease = self.orm_connection()?;
-		Ok(TaskRecord::chronological(&mut lease.handle(), workspace)
+	pub async fn tasks(&self, scope: &TenancyScope, workspace: Option<Uuid>) -> Result<Vec<Task>> {
+		Ok(self
+			.pool
+			.atomic(scope, async |tx| {
+				TaskRecord::chronological(tx, workspace).await
+			})
 			.await?
 			.into_iter()
 			.map(Into::into)
@@ -648,12 +830,13 @@ impl Store {
 	}
 	pub async fn create_task(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let task = self
 			.create_task_in(&mut tx, workspace, input, creator, key)
 			.await?;
@@ -886,11 +1069,18 @@ impl Store {
 		};
 		Ok(task)
 	}
-	pub async fn claim(&self, id: Uuid, revision: i64, owner: &str, agent: &Entry) -> Result<Task> {
-		let task = self.task(id).await?;
+	pub async fn claim(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		agent: &Entry,
+	) -> Result<Task> {
+		let task = self.task(scope, id).await?;
 		self.require_legacy_execution(task.workspace_id).await?;
 		self.require_legacy_agent(&agent.id, &agent.version).await?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let claimed = self
 			.claim_in(&mut tx, &task, revision, owner, agent, None)
 			.await?;
@@ -1085,12 +1275,13 @@ impl Store {
 	}
 	pub async fn transition(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
 		next: TaskStatus,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let result = self
 			.transition_in(&mut tx, id, revision, owner, next)
 			.await?;
@@ -1150,8 +1341,10 @@ impl Store {
 	}
 	/// Consume this remote run's admitted-message fences and perform an explicit
 	/// cancellation or failure while holding the same authoritative task lock.
+	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	pub async fn transition_remote_run_message_terminal(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -1160,6 +1353,7 @@ impl Store {
 		keys: &[String],
 	) -> Result<Task> {
 		self.transition_remote_run_message_terminal_in(
+			scope,
 			id,
 			revision,
 			owner,
@@ -1169,8 +1363,10 @@ impl Store {
 		)
 		.await
 	}
+	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	pub(crate) async fn transition_remote_run_message_terminal_through(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -1182,6 +1378,7 @@ impl Store {
 			return Err(Error::Invalid("invalid terminal input sequence".into()));
 		}
 		self.transition_remote_run_message_terminal_in(
+			scope,
 			id,
 			revision,
 			owner,
@@ -1191,8 +1388,10 @@ impl Store {
 		)
 		.await
 	}
+	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	async fn transition_remote_run_message_terminal_in(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -1200,7 +1399,7 @@ impl Store {
 		run_id: Uuid,
 		inputs: TerminalRunMessageInputs<'_>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let result = self
 			.transition_remote_terminal_in(&mut tx, id, revision, owner, next, run_id, inputs)
 			.await?;
@@ -1209,8 +1408,14 @@ impl Store {
 	}
 	/// Explicit Deployment Administrator abandonment preserves the failed outcome and reason
 	/// while allowing the parent to finish using the remaining results.
-	pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub async fn abandon_task(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		revision: i64,
+		reason: &str,
+	) -> Result<Task> {
+		let mut tx = self.pool.begin(scope).await?;
 		let task = self
 			.abandon_task_in(&mut tx, id, revision, reason, "human")
 			.await?;
@@ -1299,16 +1504,27 @@ impl Store {
 	}
 	pub async fn complete(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		owner: &str,
 		key: &str,
 		artifact: &ArtifactInput,
 	) -> Result<Task> {
-		self.complete_from_run(id, owner, key, artifact, Publication::default(), None)
-			.await
+		self.complete_from_run(
+			scope,
+			id,
+			owner,
+			key,
+			artifact,
+			Publication::default(),
+			None,
+		)
+		.await
 	}
+	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub(crate) async fn complete_remote_run_message(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		owner: &str,
 		key: &str,
@@ -1320,6 +1536,7 @@ impl Store {
 			return Err(Error::Invalid("invalid terminal input sequence".into()));
 		}
 		self.complete_from_run(
+			scope,
 			id,
 			owner,
 			key,
@@ -1329,8 +1546,10 @@ impl Store {
 		)
 		.await
 	}
+	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub(crate) async fn complete_from_run(
 		&self,
+		scope: &TenancyScope,
 		id: Uuid,
 		owner: &str,
 		key: &str,
@@ -1338,7 +1557,7 @@ impl Store {
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
 	) -> Result<Task> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let result = self
 			.complete_in(
 				&mut tx,
@@ -1601,23 +1820,25 @@ impl Store {
 
 	pub async fn publish_artifact(
 		&self,
+		scope: &TenancyScope,
 		task_id: Uuid,
 		owner: &str,
 		key: &str,
 		input: &ArtifactInput,
 	) -> Result<Artifact> {
-		self.publish_artifact_from_run(task_id, owner, key, input, Publication::default())
+		self.publish_artifact_from_run(scope, task_id, owner, key, input, Publication::default())
 			.await
 	}
 	pub(crate) async fn publish_artifact_from_run(
 		&self,
+		scope: &TenancyScope,
 		task_id: Uuid,
 		owner: &str,
 		key: &str,
 		input: &ArtifactInput,
 		publication: Publication,
 	) -> Result<Artifact> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let result = self
 			.publish_artifact_in(&mut tx, task_id, owner, key, input, publication)
 			.await?;
@@ -1773,102 +1994,121 @@ impl Store {
 
 	pub async fn events(
 		&self,
+		scope: &TenancyScope,
 		after: i64,
 		workspace: Option<Uuid>,
 		limit: i64,
 	) -> Result<Vec<Event>> {
-		let lease = self.orm_connection()?;
-		Ok(
-			EventRecord::after(&mut lease.handle(), after, workspace, limit)
-				.await?
-				.into_iter()
-				.map(Into::into)
-				.collect(),
-		)
+		Ok(self
+			.pool
+			.atomic(scope, async |tx| {
+				EventRecord::after(tx, after, workspace, limit).await
+			})
+			.await?
+			.into_iter()
+			.map(Into::into)
+			.collect())
 	}
 	pub async fn snapshot_page(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		collection: &str,
 		after: Option<Uuid>,
 	) -> Result<SnapshotPage> {
-		let lease = self.orm_connection()?;
-		let rows =
-			WorkspaceRecord::snapshot_rows(&mut lease.handle(), workspace, collection, after)
-				.await?;
+		let rows = self
+			.pool
+			.atomic(scope, async |tx| {
+				WorkspaceRecord::snapshot_rows(tx, workspace, collection, after).await
+			})
+			.await?;
 		snapshots::page(rows, after)
 	}
 	/// Read one exact workspace record without relying on the bounded recent
 	/// event/message collections in `snapshot`.
-	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
-		let lease = self.orm_connection()?;
-		let db = &mut lease.handle();
-		match kind {
-			"workspace" if workspace == id => Ok(json!(Workspace::from(
-				WorkspaceRecord::read(db, workspace).await?
-			))),
-			"workspace" => Err(Error::Invalid("workspace record not available".into())),
-			"event" => Ok(json!(Event::from(
-				EventRecord::in_workspace(db, workspace, id).await?
-			))),
-			_ => WorkspaceRecord::record(db, workspace, kind, id).await,
-		}
+	pub async fn workspace_record(
+		&self,
+		scope: &TenancyScope,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Value> {
+		self.pool
+			.atomic(scope, async |db| match kind {
+				"workspace" if workspace == id => Ok(json!(Workspace::from(
+					WorkspaceRecord::read(db, workspace).await?
+				))),
+				"workspace" => Err(Error::Invalid("workspace record not available".into())),
+				"event" => Ok(json!(Event::from(
+					EventRecord::in_workspace(db, workspace, id).await?
+				))),
+				_ => WorkspaceRecord::record(db, workspace, kind, id).await,
+			})
+			.await
 	}
 
 	pub async fn child_task_summary(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
-		let lease = self.orm_connection()?;
-		TaskRecord::child_summary(&mut lease.handle(), workspace, parent).await
+		self.pool
+			.atomic(scope, async |tx| {
+				TaskRecord::child_summary(tx, workspace, parent).await
+			})
+			.await
 	}
-	pub async fn snapshot(&self, id: Uuid) -> Result<WorkspaceSnapshot> {
-		let lease = self.orm_connection()?;
-		let db = &mut lease.handle();
-		Ok(WorkspaceSnapshot {
-			workspace: WorkspaceRecord::read(db, id).await?.into(),
-			tasks: TaskRecord::chronological(db, Some(id))
-				.await?
-				.into_iter()
-				.map(Into::into)
-				.collect(),
-			artifacts: ArtifactRecord::for_workspace(db, id)
-				.await?
-				.into_iter()
-				.map(Into::into)
-				.collect(),
-			events: EventRecord::recent(db, id)
-				.await?
-				.into_iter()
-				.map(Into::into)
-				.collect(),
-			messages: MessageRecord::recent(db, id)
-				.await?
-				.into_iter()
-				.map(Into::into)
-				.collect(),
-		})
+	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<WorkspaceSnapshot> {
+		self.pool
+			.atomic(scope, async |db| {
+				Ok(WorkspaceSnapshot {
+					workspace: WorkspaceRecord::read(db, id).await?.into(),
+					tasks: TaskRecord::chronological(db, Some(id))
+						.await?
+						.into_iter()
+						.map(Into::into)
+						.collect(),
+					artifacts: ArtifactRecord::for_workspace(db, id)
+						.await?
+						.into_iter()
+						.map(Into::into)
+						.collect(),
+					events: EventRecord::recent(db, id)
+						.await?
+						.into_iter()
+						.map(Into::into)
+						.collect(),
+					messages: MessageRecord::recent(db, id)
+						.await?
+						.into_iter()
+						.map(Into::into)
+						.collect(),
+				})
+			})
+			.await
 	}
 	pub async fn message(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<()> {
-		self.message_record(workspace, sender, content, key)
+		self.message_record(scope, workspace, sender, content, key)
 			.await
 			.map(|_| ())
 	}
 	pub async fn message_record(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let message = self
 			.message_in(&mut tx, workspace, sender, content, key)
 			.await?;
@@ -1877,39 +2117,43 @@ impl Store {
 	}
 	pub(crate) async fn remote_run_message_history(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		peer: &str,
 		task: Uuid,
 		run: Uuid,
 		offset: u64,
 	) -> Result<Vec<Message>> {
-		let lease = self.orm_connection()?;
-		MessageRecord::run_history(&mut lease.handle(), workspace, peer, task, run, offset).await
+		self.pool
+			.atomic(scope, async |tx| {
+				MessageRecord::run_history(tx, workspace, peer, task, run, offset).await
+			})
+			.await
 	}
 	pub(crate) async fn run_message_delivery_record(
 		&self,
+		scope: &TenancyScope,
 		delivery: RunMessageDelivery<'_>,
 	) -> Result<Message> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| RemoteRunMessageFence::deliver(tx, &self.node_id, delivery).await)
+		self.pool
+			.atomic(scope, async |tx| {
+				RemoteRunMessageFence::deliver(tx, &self.node_id, delivery).await
+			})
 			.await
 	}
 	/// Reserve home-task lifetime before the executor admits a remote input.
 	/// The task lock orders this operation with every terminal transition.
 	pub async fn reserve_remote_run_message(
 		&self,
+		scope: &TenancyScope,
 		task_id: Uuid,
 		run_id: Uuid,
 		peer_node: &str,
 		key: &str,
 		content: &str,
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.pool
+			.atomic(scope, async |tx| {
 				RemoteRunMessageFence::reserve(tx, task_id, run_id, peer_node, key, content).await
 			})
 			.await
@@ -1919,41 +2163,40 @@ impl Store {
 	/// matching run atomically completes or transitions the home task.
 	pub async fn commit_remote_run_message(
 		&self,
+		scope: &TenancyScope,
 		task_id: Uuid,
 		run_id: Uuid,
 		key: &str,
 		content: &str,
 	) -> Result<()> {
-		self.commit_remote_run_message_with_sequence(task_id, run_id, key, content, None)
+		self.commit_remote_run_message_with_sequence(scope, task_id, run_id, key, content, None)
 			.await
 	}
 	pub(crate) async fn commit_remote_run_message_with_sequence(
 		&self,
+		scope: &TenancyScope,
 		task_id: Uuid,
 		run_id: Uuid,
 		key: &str,
 		content: &str,
 		input_seq: Option<i64>,
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.pool
+			.atomic(scope, async |tx| {
 				RemoteRunMessageFence::commit(tx, task_id, run_id, key, content, input_seq).await
 			})
 			.await
 	}
 	pub async fn release_remote_run_message(
 		&self,
+		scope: &TenancyScope,
 		task_id: Uuid,
 		run_id: Uuid,
 		peer_node: &str,
 		keys: &[String],
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.pool
+			.atomic(scope, async |tx| {
 				RemoteRunMessageFence::release(tx, task_id, run_id, peer_node, keys).await
 			})
 			.await
@@ -1969,8 +2212,10 @@ impl Store {
 		// stale legacy worker unable to publish or complete the home task.
 		Ok(())
 	}
+	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub(crate) async fn run_message_output_record(
 		&self,
+		scope: &TenancyScope,
 		workspace: Uuid,
 		task_id: Uuid,
 		run_id: Uuid,
@@ -1978,7 +2223,7 @@ impl Store {
 		content: &str,
 		key: &str,
 	) -> Result<Message> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let task: Task = {
 			let query_bind_1 = task_id;
 			aidash_server::database::query_as(
@@ -2032,9 +2277,10 @@ impl Store {
 	/// unconsumed so legacy workers remain unable to publish until terminal state.
 	pub(crate) async fn run_message_output_record_fenced(
 		&self,
+		scope: &TenancyScope,
 		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let result = self.run_message_output_in(&mut tx, output).await?;
 		tx.commit().await?;
 		Ok(result)
@@ -2115,16 +2361,15 @@ impl Store {
 	}
 	pub async fn accept_run_message(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		sender: &str,
 		content: &str,
 		key: &str,
 		max_input_tokens: usize,
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.pool
+			.atomic(scope, async |tx| {
 				InputRecord::admit(
 					tx,
 					&self.node_id,
@@ -2158,27 +2403,37 @@ impl Store {
 		)
 		.await
 	}
-	pub async fn run_inputs(&self, run_id: Uuid) -> Result<Vec<RunInput>> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| InputRecord::for_run(tx, run_id).await)
+	pub async fn run_inputs(&self, scope: &TenancyScope, run_id: Uuid) -> Result<Vec<RunInput>> {
+		self.pool
+			.atomic(scope, async |tx| InputRecord::for_run(tx, run_id).await)
 			.await
 	}
 	pub(crate) async fn run_input_sequence(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		key: &str,
 		content: &str,
 	) -> Result<i64> {
-		let lease = self.orm_connection()?;
-		InputRecord::matching_sequence(&mut lease.handle(), run_id, key, content).await
+		self.pool
+			.atomic(scope, async |tx| {
+				InputRecord::matching_sequence(tx, run_id, key, content).await
+			})
+			.await
 	}
-	pub(crate) async fn run_input_high_watermark(&self, run_id: Uuid) -> Result<i64> {
-		let lease = self.orm_connection()?;
-		InputRecord::high_watermark(&mut lease.handle(), run_id).await
+	pub(crate) async fn run_input_high_watermark(
+		&self,
+		scope: &TenancyScope,
+		run_id: Uuid,
+	) -> Result<i64> {
+		self.pool
+			.atomic(scope, async |tx| {
+				InputRecord::high_watermark(tx, run_id).await
+			})
+			.await
 	}
 	pub async fn pending_terminal_run_message(&self) -> Result<Option<RunMetadata>> {
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
 		Ok({
 			let query_bind_1 = &self.node_id;
 			aidash_server::database::query_as(&reinhardt::query::Query::select()
@@ -2188,35 +2443,45 @@ impl Store {
 				.order_by(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Order::Asc)
 				.limit(1)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_optional(&self.pool)
+		.fetch_optional(self.pool.in_scope(scope))
 		.await?
 		})
 	}
 
-	pub async fn defer_run_message_delivery(&self, run_id: Uuid) -> Result<()> {
-		let lease = self.orm_connection()?;
-		InputRecord::defer_delivery(&mut lease.handle(), run_id).await
+	pub async fn defer_run_message_delivery(
+		&self,
+		scope: &TenancyScope,
+		run_id: Uuid,
+	) -> Result<()> {
+		self.pool
+			.atomic(scope, async |tx| {
+				InputRecord::defer_delivery(tx, run_id).await
+			})
+			.await
 	}
 	pub async fn bind_run_input_message(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		key: &str,
 		message_id: Uuid,
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| InputRecord::bind_message(tx, run_id, key, message_id).await)
+		self.pool
+			.atomic(scope, async |tx| {
+				InputRecord::bind_message(tx, run_id, key, message_id).await
+			})
 			.await
 	}
 	pub async fn import_remote_run_message(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		key: &str,
 		message: &Message,
 		max_input_tokens: usize,
 	) -> Result<()> {
 		self.import_remote_run_messages(
+			scope,
 			run_id,
 			&[(key.to_owned(), message.clone())],
 			max_input_tokens,
@@ -2225,14 +2490,13 @@ impl Store {
 	}
 	pub async fn import_remote_run_messages(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		messages: &[(String, Message)],
 		max_input_tokens: usize,
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.pool
+			.atomic(scope, async |tx| {
 				InputRecord::import_history(tx, run_id, messages, max_input_tokens).await
 			})
 			.await
@@ -2247,8 +2511,10 @@ impl Store {
 		InputRecord::import_history(tx, run_id, messages, max_input_tokens).await
 	}
 	/// Import the remote home's history and new input under one run-row lock.
+	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub async fn import_remote_run_messages_and_accept(
 		&self,
+		scope: &TenancyScope,
 		run_id: Uuid,
 		messages: &[(String, Message)],
 		sender: &str,
@@ -2256,10 +2522,8 @@ impl Store {
 		key: &str,
 		max_input_tokens: usize,
 	) -> Result<()> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.pool
+			.atomic(scope, async |tx| {
 				InputRecord::import_history(tx, run_id, messages, max_input_tokens).await?;
 				InputRecord::admit(
 					tx,
@@ -2274,8 +2538,13 @@ impl Store {
 			})
 			.await
 	}
-	pub async fn begin_final_completion(&self, run: &Run, worker: Uuid) -> Result<bool> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub async fn begin_final_completion(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+	) -> Result<bool> {
+		let mut tx = self.pool.begin(scope).await?;
 		let mut current: Run = {
 			let query_bind_1 = run.id;
 			aidash_server::database::query_as(
@@ -2361,6 +2630,7 @@ impl Store {
 	/// Source citations resolve. Only scoped authority tracks it as Run output.
 	pub(crate) async fn message_from_run(
 		&self,
+		scope: &TenancyScope,
 		run: &RunMetadata,
 		sender: &str,
 		content: &str,
@@ -2368,7 +2638,7 @@ impl Store {
 		track_output: bool,
 	) -> Result<()> {
 		nonempty(content, "message")?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
 			&self.node_id,
@@ -2616,16 +2886,20 @@ impl Store {
 
 impl Store {
 	pub(crate) async fn require_legacy_agent(&self, id: &str, version: &str) -> Result<()> {
-		let lease = self.orm_connection()?;
-		let mut db = lease.handle();
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		// Legacy peer journals can retain references absent from the local Registry.
 		// Reject known scoped projections without requiring a local definition.
-		let installed =
-			match crate::apps::registry::models::records::definition(&mut db, id, version).await {
-				Ok(row) => row.metadata.0.get("installation").is_some(),
-				Err(Error::NotFound(_)) => false,
-				Err(error) => return Err(error),
-			};
+		let installed = match self
+			.pool
+			.atomic(scope, async |tx| {
+				crate::apps::registry::models::records::definition(tx, id, version).await
+			})
+			.await
+		{
+			Ok(row) => row.metadata.0.get("installation").is_some(),
+			Err(Error::NotFound(_)) => false,
+			Err(error) => return Err(error),
+		};
 		if installed {
 			return Err(Error::Forbidden);
 		}
@@ -2636,7 +2910,7 @@ impl Store {
 			crate::database::native::query_scalar(&Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_requests WHERE agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.to_string(PostgresQueryBuilder))
-		.scalar_one(&self.pool)
+		.scalar_one(self.pool.in_scope(scope))
 		.await?
 		};
 		if generated {
@@ -2645,10 +2919,11 @@ impl Store {
 		Ok(())
 	}
 	pub(crate) async fn require_legacy_remote_task(&self, home: &str, task: Uuid) -> Result<()> {
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let admitted: bool = {
 			let query_bind_1 = home;
 			let query_bind_2 = task;
-			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&self.pool).await?
+			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(self.pool.in_scope(scope)).await?
 		};
 		if admitted {
 			return Err(Error::Forbidden);
@@ -2657,16 +2932,18 @@ impl Store {
 	}
 	pub async fn accept_run(
 		&self,
+		scope: &TenancyScope,
 		task: &Task,
 		home_node: &str,
 		agent_id: &str,
 		agent_version: &str,
 	) -> Result<Run> {
-		self.accept_run_pinned(task, home_node, agent_id, agent_version, None)
+		self.accept_run_pinned(scope, task, home_node, agent_id, agent_version, None)
 			.await
 	}
 	pub(crate) async fn accept_run_pinned(
 		&self,
+		scope: &TenancyScope,
 		task: &Task,
 		home_node: &str,
 		agent_id: &str,
@@ -2684,7 +2961,7 @@ impl Store {
 			}
 		}
 		self.require_legacy_execution(task.workspace_id).await?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		// Serialize legacy admission against scoped receiver admission. Neither
 		// mode may appear between the other's check and durable commit.
 		{
@@ -2901,12 +3178,14 @@ impl Store {
 		tx.commit().await?;
 		Ok(run)
 	}
-	pub async fn run(&self, id: Uuid) -> Result<Run> {
-		let lease = self.orm_connection()?;
-		RunRecord::read(&mut lease.handle(), id).await?.try_into()
+	pub async fn run(&self, scope: &TenancyScope, id: Uuid) -> Result<Run> {
+		self.pool
+			.atomic(scope, async |tx| RunRecord::read(tx, id).await)
+			.await?
+			.try_into()
 	}
 	/// List validated executable records. Inspection uses inspect_runs and retains invalid rows.
-	pub async fn runs(&self) -> Result<Vec<Run>> {
+	pub async fn runs(&self, scope: &TenancyScope) -> Result<Vec<Run>> {
 		let rows: Vec<RawRun> = aidash_server::database::query_as(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
@@ -2922,7 +3201,7 @@ impl Store {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&self.pool)
+		.fetch_all(self.pool.in_scope(scope))
 		.await?;
 		Ok(rows
 			.into_iter()
@@ -2930,7 +3209,12 @@ impl Store {
 			.collect())
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
-		let mut tx = self.database().begin().await?;
+		let scope = &TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let mut cursor = self.recovery_cursors.execution.lock().await;
 		let run = Self::lease_run_in(
 			tx.as_mut(),
@@ -2944,21 +3228,37 @@ impl Store {
 		tx.commit().await?;
 		Ok(run)
 	}
-	pub async fn renew_lease(&self, id: Uuid, worker: Uuid, seconds: i32) -> Result<bool> {
-		let mut tx = self.database().begin().await?;
+	pub async fn renew_lease(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		worker: Uuid,
+		seconds: i32,
+	) -> Result<bool> {
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let renewed = RunRecord::renew(tx.as_mut(), id, worker, seconds).await?;
 		tx.commit().await?;
 		Ok(renewed)
 	}
 
-	pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub async fn save_run(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		kind: &str,
+	) -> Result<Run> {
+		let mut tx = self.pool.begin(scope).await?;
 		let (saved, closed) = match self.save_run_in(&mut tx, run, worker, kind).await {
 			// The stale response's attempt closes as discarded once the save
 			// that would have accepted it is rolled back.
 			Err(Error::StaleInference) => {
 				tx.rollback().await?;
-				self.discard_stale_inference(run.id, worker).await;
+				self.discard_stale_inference(scope, run.id, worker).await;
 				return Err(Error::StaleInference);
 			}
 			result => result?,
@@ -3065,8 +3365,12 @@ impl Store {
             json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage})).await?;
 		Ok((saved, closed))
 	}
-	pub async fn release_lease(&self, id: Uuid, worker: Uuid) -> Result<()> {
-		let mut tx = self.database().begin().await?;
+	pub async fn release_lease(&self, scope: &TenancyScope, id: Uuid, worker: Uuid) -> Result<()> {
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		RunRecord::release_worker(tx.as_mut(), id, worker).await?;
 		tx.commit().await?;
 		Ok(())
@@ -3081,8 +3385,13 @@ impl Store {
 		self.pause_for_execution_reason(run, worker, reason, event_kind, None)
 			.await
 	}
-	pub(crate) async fn cancel_execution(&self, run: &Run, worker: Uuid) -> Result<()> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub(crate) async fn cancel_execution(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
 		let valid: Option<Uuid> = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
@@ -3239,8 +3548,13 @@ impl Store {
 		Ok(())
 	}
 
-	pub async fn control(&self, id: Uuid, action: RunControlAction) -> Result<RunInspection> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+	pub async fn control(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		action: RunControlAction,
+	) -> Result<RunInspection> {
+		let mut tx = self.pool.begin(scope).await?;
 		let run = self.control_in(&mut tx, id, action).await?;
 		tx.commit().await?;
 		Ok(run)
@@ -3306,12 +3620,17 @@ impl Store {
 
 	pub async fn human_request(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		kind: &str,
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -3321,6 +3640,7 @@ impl Store {
 
 	pub(crate) async fn cache_home_human(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		request: &HumanRequest,
 		key: &str,
@@ -3328,7 +3648,11 @@ impl Store {
 		if request.run_id != run.id || request.workspace_id != run.workspace_id {
 			return Err(Error::Forbidden);
 		}
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let (cached, created) = HumanRequestRecord::admit_home(tx.as_mut(), request, key).await?;
 		human_interaction::validate_replay(&cached, run, &request.kind, &request.prompt)?;
 		if cached.id != request.id {
@@ -3377,12 +3701,13 @@ impl Store {
 
 	pub(crate) async fn reconciliation_request(
 		&self,
+		scope: &TenancyScope,
 		run: &mut Run,
 		worker: Uuid,
 		key: &str,
 		prompt: &str,
 	) -> Result<()> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		let h = self
 			.human_request_sqlx_in(
 				&mut tx,
@@ -3436,8 +3761,16 @@ impl Store {
 		Ok(())
 	}
 
-	pub(crate) async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
-		let mut tx = self.database().begin().await?;
+	pub(crate) async fn human_request_by_id(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+	) -> Result<HumanRequest> {
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let request = HumanRequestRecord::read_in(tx.as_mut(), id, false)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
@@ -3445,8 +3778,16 @@ impl Store {
 		Ok(request)
 	}
 
-	pub(crate) async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest> {
-		let mut tx = self.database().begin().await?;
+	pub(crate) async fn expire_workbench_approval(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+	) -> Result<HumanRequest> {
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let request = HumanRequestRecord::read_in(tx.as_mut(), id, true)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
@@ -3465,8 +3806,17 @@ impl Store {
 		Ok(result)
 	}
 
-	pub async fn answer(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
-		let mut tx = self.database().begin().await?;
+	pub async fn answer(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		response: Value,
+	) -> Result<HumanRequest> {
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let request = self.answer_in(tx.as_mut(), id, response, "human").await?;
 		tx.commit().await?;
 		Ok(request)
@@ -3502,8 +3852,10 @@ impl Store {
 		.await?;
 		Ok(request)
 	}
+	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub async fn invocation_start(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		key: &str,
@@ -3511,7 +3863,7 @@ impl Store {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<Invocation> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
@@ -3525,11 +3877,12 @@ impl Store {
 	/// records the batch end, and a STARTED row for every replay-safe call.
 	pub async fn invocation_start_batch(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		calls: &[(&str, &str, &Value)],
 	) -> Result<Vec<Invocation>> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let mut tx = self.pool.begin(scope).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
 		self.persist_tool_input_in(&mut tx, run, worker).await?;
@@ -3720,12 +4073,17 @@ impl Store {
 	}
 	pub async fn invocation_finish(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		key: &str,
 		result: &Value,
 	) -> Result<()> {
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost while recording tool result".into(),
@@ -3748,11 +4106,16 @@ impl Store {
 	/// cannot dispatch; this lease supersedes every attempt left dispatched.
 	pub async fn record_usage_dispatch(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		dispatch: &aidash_domain::provider::usage::UsageDispatch,
 	) -> Result<()> {
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		if !RunRecord::hold_worker_lease(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost before dispatching inference".into(),
@@ -3767,11 +4130,16 @@ impl Store {
 	/// a later dispatch has already made an abandoned record unknown.
 	pub async fn complete_usage_record(
 		&self,
+		scope: &TenancyScope,
 		run: &Run,
 		attempt: Uuid,
 		outcome: &aidash_domain::provider::usage::UsageOutcome,
 	) -> Result<bool> {
-		let mut tx = self.database().begin().await?;
+		let mut tx = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let completed = InferenceUsage::complete(tx.as_mut(), run.id, attempt, outcome).await?;
 		tx.commit().await?;
 		Ok(completed)
@@ -3782,19 +4150,29 @@ impl Store {
 		upstream_model: &str,
 		projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
-		let lease = self.orm_connection()?;
-		crate::apps::execution::models::EstimateCalibrationSample::newest(
-			&mut lease.handle(),
-			upstream_model,
-			i32::from(projection_version),
-		)
-		.await
+		// Calibration samples hold per-model counts and no Tenant content.
+		self.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				crate::apps::execution::models::EstimateCalibrationSample::newest(
+					tx,
+					upstream_model,
+					i32::from(projection_version),
+				)
+				.await
+			})
+			.await
 	}
 	// The empty namespace preserves pre-federation local memory. Peer node IDs
 	// are validated nonempty, so no remote home can address this namespace.
-	pub(crate) async fn peer_observation(&self, home: &str) -> Result<PeerObservation> {
-		let lease = self.orm_connection()?;
-		crate::apps::execution::models::journals::observe(&mut lease.handle(), &self.node_id, home)
+	pub(crate) async fn peer_observation(
+		&self,
+		scope: &TenancyScope,
+		home: &str,
+	) -> Result<PeerObservation> {
+		self.pool
+			.atomic(scope, async |tx| {
+				crate::apps::execution::models::journals::observe(tx, &self.node_id, home).await
+			})
 			.await
 	}
 	pub(crate) async fn run_details_in(
@@ -3812,11 +4190,14 @@ impl Store {
 			memory,
 		})
 	}
-	pub(crate) async fn run_details(&self, id: Uuid, offset: u64) -> Result<RunDetails> {
-		let lease = self.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+	pub(crate) async fn run_details(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		offset: u64,
+	) -> Result<RunDetails> {
+		self.pool
+			.atomic(scope, async |tx| {
 				let run = RunRecord::objects()
 					.filter(RunRecord::field_id().eq(id))
 					.all_with_executor(tx)
@@ -4480,7 +4861,11 @@ impl Store {
 		}
 		Ok(())
 	}
-	pub(crate) async fn run_message_has_media(&self, message_ids: &[Uuid]) -> Result<bool> {
+	pub(crate) async fn run_message_has_media(
+		&self,
+		scope: &TenancyScope,
+		message_ids: &[Uuid],
+	) -> Result<bool> {
 		if message_ids.is_empty() {
 			return Ok(false);
 		}
@@ -4508,7 +4893,7 @@ impl Store {
 					.limit(1)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.scalar_optional(&self.pool)
+			.scalar_optional(self.pool.in_scope(scope))
 			.await?
 		};
 		Ok(id.is_some())
@@ -4588,7 +4973,13 @@ impl Store {
 		recovery_reason: Option<(&'static str, Value)>,
 	) -> Result<()> {
 		let run = run.into();
-		let mut tx = crate::database::native::begin(&self.pool).await?;
+		// Pausing a claimed Run is the worker's lease bookkeeping.
+		let mut tx = self
+			.pool
+			.begin(&TenancyScope::Deployment(
+				DeploymentScopeReason::ActivationClaim,
+			))
+			.await?;
 		let (query_bind_4, query_bind_5, query_bind_6) = match recovery_reason {
 			Some((field, value)) => (true, format!("{{recovery,{field}}}"), value),
 			None => (false, "{recovery}".to_owned(), Value::Null),
@@ -4627,6 +5018,8 @@ impl Store {
 }
 #[path = "store/run_state.rs"]
 pub(crate) mod run_state;
+#[path = "store/tenancies.rs"]
+pub(crate) mod tenancies;
 
 impl Store {
 	async fn ensure_run_response_current_in(

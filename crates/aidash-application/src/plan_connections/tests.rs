@@ -11,6 +11,8 @@ struct Data {
 	rows: BTreeMap<Uuid, PlanConnection>,
 	mapped: usize,
 	events: Vec<String>,
+	/// Pending attempts ended by a committed disconnect.
+	cancelled_attempts: usize,
 	/// Commits that fail before applying anything, as a lost database would.
 	failing_commits: usize,
 	/// Commits that succeed before `failing_commits` take effect.
@@ -95,6 +97,10 @@ impl Scope for Lease {
 		self.data.events.push(event.into());
 		Ok(())
 	}
+	async fn cancel_attempts(&mut self, _: Provider) -> Result<()> {
+		self.data.cancelled_attempts += 1;
+		Ok(())
+	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		if self.guard.passing_commits > 0 {
 			self.guard.passing_commits -= 1;
@@ -167,7 +173,7 @@ impl Store for FakeStore {
 		versions.insert(n, key.expose_secret().to_owned());
 		Ok(format!("{resource}/versions/{n}"))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		Ok(self
 			.0
 			.lock()
@@ -181,10 +187,10 @@ impl Store for FakeStore {
 			})
 			.unwrap_or_default())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, version: &str) -> Result<()> {
 		if self.1.lock().unwrap().destroy {
 			return Err(Error::External("store unavailable".into()));
 		}
@@ -194,7 +200,7 @@ impl Store for FakeStore {
 		}
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		if self.1.lock().unwrap().delete {
 			return Err(Error::External("store unavailable".into()));
 		}
@@ -911,12 +917,15 @@ async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
 		fixture.service.disconnect(&owner(), 1, "alice").await,
 		Err(Error::Domain(aidash_domain::Error::Conflict(_)))
 	));
+	// A refused disconnect leaves pending attempts to their callbacks.
+	assert_eq!(fixture.repo.0.lock().await.cancelled_attempts, 0);
 	let result = fixture
 		.service
 		.disconnect(&owner(), 2, "alice")
 		.await
 		.unwrap();
 	assert!(result.revoked);
+	assert_eq!(fixture.repo.0.lock().await.cancelled_attempts, 1);
 	assert_eq!(
 		fixture.authorization.calls.lock().unwrap().revoked,
 		vec!["refresh-1"]
@@ -1046,7 +1055,7 @@ async fn unreadable_tokens_ask_for_reconnection() {
 	// The Store removed the lost version, so the grant could not be revoked
 	// at OpenAI, and disconnecting says so.
 	let lost = row.pinned_version.clone().expect("the lost pin is kept");
-	fixture.store.destroy(&lost).await.unwrap();
+	fixture.store.destroy(TENANT, &lost).await.unwrap();
 	let result = fixture
 		.service
 		.disconnect(&owner(), revision, "alice")

@@ -2,12 +2,14 @@
 use crate::apps::identity::models::{
 	AuthorizationBundle, AuthorizationCredential, DashboardIdentity, DashboardMapping,
 };
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::personal_tenant::{OWNER, PersonalTenant};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::{
 	backends::TransactionExecutor,
-	orm::{DatabaseConnection, Model, execution::convert_values},
+	orm::{Model, execution::convert_values},
 };
 use reinhardt::query::{
 	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
@@ -21,9 +23,9 @@ fn require_google(identity: &DashboardIdentity) -> Result<()> {
 	Ok(())
 }
 
-pub(crate) async fn provision(db: DatabaseConnection, identity: Uuid) -> Result<()> {
+pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
 	let personal = PersonalTenant::for_identity(identity);
-	db.atomic(async |tx| {
+	db.atomic(&TenancyScope::tenant(&personal.tenant)?, async |tx| {
 		// Serialize first sign-ins without taking an identity row lock before
 		// policy authority. Approval and revocation retain policy -> identity order.
 		let (sql, values) = Query::select()

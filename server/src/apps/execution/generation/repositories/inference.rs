@@ -3,6 +3,7 @@ use crate::apps::execution::generation::models::{
 	GenerationBudget, GenerationPolicy, GenerationRequest, GenerationUsage,
 };
 use crate::{Error, authorization::access::Access};
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::generation::inference::{
@@ -10,7 +11,7 @@ use aidash_application::{
 	},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::{DatabaseConnection, TransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, Expr, Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
@@ -40,7 +41,9 @@ impl GenerationInferenceAuthority for NativeInferenceAuthority<'_> {
 	}
 }
 pub(crate) struct NativeInferenceRepository {
-	pub database: DatabaseConnection,
+	pub pool: crate::database::native::Pool,
+	/// The Tenant scope of the requests this repository reserves.
+	pub scope: TenancyScope,
 	pub node_id: String,
 }
 struct Session {
@@ -53,7 +56,7 @@ impl GenerationInferenceRepository for NativeInferenceRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationInferenceSession>> {
 		Ok(Box::new(Session {
-			transaction: self.database.begin().await.map_err(Error::from)?,
+			transaction: self.pool.begin(&self.scope).await?.into_executor()?,
 		}))
 	}
 }

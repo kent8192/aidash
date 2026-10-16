@@ -4,6 +4,7 @@
 use super::super::models::{
 	DashboardIdentity, DashboardMapping, plan_connections::PlanConnection as Record,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	plan_connections::{Owner, Repository, Scope},
@@ -16,7 +17,8 @@ use reinhardt::db::{
 	orm::{Model, execution::convert_values},
 };
 use reinhardt::query::{
-	Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -120,6 +122,14 @@ pub(crate) async fn held(
 	row.map(contract).transpose().map_err(crate::Error::from)
 }
 
+const SHARED_HOLDER: &str = "the subject holds a Plan Connection; it must be disconnected \
+	before another Mapping is made to it";
+
+/// Whether `error` is [`refuse_shared_holder`]'s refusal.
+pub(crate) fn refused_shared_holder(error: &crate::Error) -> bool {
+	matches!(error, crate::Error::Conflict(message) if message == SHARED_HOLDER)
+}
+
 /// A second Mapping to a subject that holds a Plan Connection is refused
 /// until the connection is disconnected (ADR 0007): otherwise another person
 /// could spend the owner's plan. Every path that creates or re-enables a
@@ -136,11 +146,7 @@ pub(crate) async fn refuse_shared_holder(
 		.await?
 		.is_some()
 	{
-		return Err(crate::Error::Conflict(
-			"the subject holds a Plan Connection; it must be disconnected before another \
-			 Mapping is made to it"
-				.into(),
-		));
+		return Err(crate::Error::Conflict(SHARED_HOLDER.into()));
 	}
 	Ok(())
 }
@@ -148,16 +154,15 @@ pub(crate) async fn refuse_shared_holder(
 #[async_trait]
 impl Repository for NativeRepository {
 	async fn begin(&self, owner: &Owner) -> Result<Box<dyn Scope>> {
-		aidash_domain::policy::identifier(&owner.tenant)?;
+		let scope = TenancyScope::tenant(&owner.tenant)?;
 		if owner.subject.is_empty() || owner.subject.len() > 256 {
 			return Err(Error::Invalid("invalid Plan Connection owner".into()));
 		}
 		let mut tx = self
 			.pool
-			.connection()
-			.begin()
+			.begin(&scope)
 			.await
-			.map_err(crate::Error::from)?;
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		lock_owner(tx.as_mut(), &owner.tenant, &owner.subject).await?;
 		Ok(Box::new(NativeScope {
 			tx,
@@ -166,12 +171,12 @@ impl Repository for NativeRepository {
 		}))
 	}
 	async fn owner_of(&self, id: Uuid) -> Result<Option<Owner>> {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::PlanConnectionOwner);
 		let mut tx = self
 			.pool
-			.connection()
-			.begin()
+			.begin(&scope)
 			.await
-			.map_err(crate::Error::from)?;
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let row = Record::objects()
 			.filter(Record::field_id().eq(id))
 			.all_with_executor(tx.as_mut())
@@ -187,10 +192,9 @@ impl Repository for NativeRepository {
 	async fn owners(&self, tenant: &str) -> Result<Vec<Owner>> {
 		let mut tx = self
 			.pool
-			.connection()
-			.begin()
+			.begin(&TenancyScope::tenant(tenant)?)
 			.await
-			.map_err(crate::Error::from)?;
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		let rows = Record::objects()
 			.filter(Record::field_tenant().eq(tenant))
 			.all_with_executor(tx.as_mut())
@@ -278,6 +282,21 @@ impl Scope for NativeScope {
 			.map_err(framework)?;
 		self.event(value, event, actor).await
 	}
+	async fn cancel_attempts(&mut self, provider: Provider) -> Result<()> {
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(
+				super::super::models::plan_connections::PlanAuthorization::table_name(),
+			))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(self.owner.tenant.clone())))
+			.and_where(Expr::col(Alias::new("subject")).eq(Expr::value(self.owner.subject.clone())))
+			.and_where(Expr::col(Alias::new("provider")).eq(Expr::value(provider.id())))
+			.build(PostgresQueryBuilder);
+		self.tx
+			.execute(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		Ok(())
+	}
 	async fn commit(self: Box<Self>) -> Result<()> {
 		Ok(self.tx.commit().await.map_err(crate::Error::from)?)
 	}
@@ -356,7 +375,13 @@ pub async fn pinned(
 	provider: Provider,
 ) -> crate::Result<Uuid> {
 	use super::super::models::plan_connections::RunPlanConnection as Pin;
-	let mut tx = pool.connection().begin().await?;
+	// A caller without the Run's Tenant finds the pin by the Run alone.
+	let scope = if tenant.is_empty() {
+		TenancyScope::Deployment(DeploymentScopeReason::RunTenant)
+	} else {
+		TenancyScope::tenant(tenant)?
+	};
+	let mut tx = pool.begin(&scope).await?.into_executor()?;
 	let pin = Pin::objects()
 		.filter(Pin::field_id().eq(format!("{run}:{}", provider.id())))
 		.all_with_executor(tx.as_mut())

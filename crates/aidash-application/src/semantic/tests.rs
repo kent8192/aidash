@@ -173,7 +173,7 @@ impl SemanticIndexingRepository for Fixture {
 		Ok(s.exists
 			.then(|| (s.entry.workspace_id, s.authority.clone())))
 	}
-	async fn restore(&self, _: &Value) -> Result<Box<dyn SemanticIndexingSession>> {
+	async fn restore(&self, _: Uuid, _: &Value) -> Result<Box<dyn SemanticIndexingSession>> {
 		self.record("restore")?;
 		match self.0.lock().unwrap().restore_denial {
 			Some("forbidden") => return Err(Error::Forbidden),
@@ -398,7 +398,7 @@ impl VectorIndex for Fixture {
 	) -> Result<Vec<Point>> {
 		panic!("indexing cannot query candidates")
 	}
-	async fn present(&self, _: &VectorConfig, _: &str, _: &[Uuid]) -> Result<bool> {
+	async fn present(&self, _: &VectorConfig, _: &str, _: &str, _: &[Uuid]) -> Result<bool> {
 		self.record("present")?;
 		Ok(self.0.lock().unwrap().present)
 	}

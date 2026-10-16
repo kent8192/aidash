@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::authorization::{
 	Authorization,
 	peer::{PeerMappingInput, write},
@@ -51,8 +52,16 @@ async fn scoped_pair(#[future(awt)] pair: Pair) -> ScopedPair {
 	map_subject(&a, &b).await;
 	map_subject(&b, &a).await;
 	for (index, workspace) in [
-		a.f.store.task(task_a).await.unwrap().workspace_id,
-		b.f.store.task(task_b).await.unwrap().workspace_id,
+		a.f.store
+			.task(&TEST_FIXTURE, task_a)
+			.await
+			.unwrap()
+			.workspace_id,
+		b.f.store
+			.task(&TEST_FIXTURE, task_b)
+			.await
+			.unwrap()
+			.workspace_id,
 	]
 	.into_iter()
 	.enumerate()
@@ -399,7 +408,12 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 	}
 	let (_, _, task) = common::bootstrap(&c.f, &c.application, "http://localhost:1").await;
 	map_subject(&a, &c).await;
-	let workspace = c.f.store.task(task).await.unwrap().workspace_id;
+	let workspace =
+		c.f.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let mut third = manifest.participants[0].clone();
 	third.node_id = c.f.config.node_id.clone();
 	third.mutations = vec![aidash_server::transactions::Mutation::WorkspaceState {

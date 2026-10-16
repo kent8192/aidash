@@ -3,7 +3,10 @@ use super::projection::EVENT_SCAN_LIMIT;
 use crate::{
 	Error, Result,
 	authorization::Snapshot,
-	ports::authorization::stream::{StreamAuthorityStore, StreamSession},
+	ports::authorization::{
+		stream::{StreamAuthorityStore, StreamSession},
+		visibility::RunVerdicts,
+	},
 };
 use aidash_domain::{
 	Event,
@@ -76,8 +79,9 @@ where
 	let more = batch.len() == 100;
 	let scanned = batch.last().map_or(after, |event| event.sequence);
 	let mut events = vec![];
+	let mut runs = RunVerdicts::default();
 	for event in batch {
-		if scope.event_visible(&event).await? {
+		if scope.event_visible(&event, &mut runs).await? {
 			events.push(event);
 		}
 	}
@@ -106,6 +110,7 @@ pub async fn read_events(
 	let mut cursor = after.max(0);
 	let mut result = vec![];
 	let mut scanned = 0;
+	let mut runs = RunVerdicts::default();
 	while scanned < EVENT_SCAN_LIMIT {
 		let page_size = (EVENT_SCAN_LIMIT - scanned).min(500);
 		let batch = scope
@@ -115,7 +120,7 @@ pub async fn read_events(
 		scanned += batch.len();
 		for event in batch {
 			cursor = event.sequence;
-			if scope.event_visible(&event).await? {
+			if scope.event_visible(&event, &mut runs).await? {
 				result.push(event);
 			}
 			if result.len() == limit {
@@ -134,12 +139,17 @@ pub async fn can_emit(scope: &mut dyn StreamSession, event: &Event) -> Result<bo
 		&& (event.kind.starts_with("provider_credential.")
 			|| event.kind.starts_with("provider_credential_binding."))
 	{
-		return scope.event_visible(event).await;
+		return scope
+			.event_visible(event, &mut RunVerdicts::default())
+			.await;
 	}
 	let Some(id) = event.workspace_id else {
 		return Ok(false);
 	};
-	Ok(!scope.event_workspaces(Some(id)).await?.is_empty() && scope.event_visible(event).await?)
+	Ok(!scope.event_workspaces(Some(id)).await?.is_empty()
+		&& scope
+			.event_visible(event, &mut RunVerdicts::default())
+			.await?)
 }
 #[cfg(test)]
 mod tests;
