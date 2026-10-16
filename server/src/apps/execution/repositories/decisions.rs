@@ -644,18 +644,20 @@ impl<'a> RunDecisionJournal<'a> {
 		fence(&mut tx, &evidence.boundary).await?;
 		ensure_open(&mut tx, self.run.id, evidence.id).await?;
 		self.check_attempts(&mut tx, evidence).await?;
-		// State whose deadline passed during dispatch keeps only its expired marker.
-		let retained = state.filter(|state| {
-			if state.expires_at > self.now() {
-				return true;
+		// State whose deadline passed during dispatch keeps only its expired
+		// marker. This is decided again right before the write, because the
+		// policy lookup and the Run save below can outlast the deadline.
+		let expire_elapsed = |retained: &mut Option<&RetainedState>, stored: &mut Evidence| {
+			if let Some(state) = retained.take_if(|state| state.expires_at <= self.now()) {
+				stored.state = StateReference::Expired {
+					id: state.id,
+					digest: state.digest.clone(),
+					expired_at: state.expires_at,
+				};
 			}
-			stored.state = StateReference::Expired {
-				id: state.id,
-				digest: state.digest.clone(),
-				expired_at: state.expires_at,
-			};
-			false
-		});
+		};
+		let mut retained = state;
+		expire_elapsed(&mut retained, &mut stored);
 		// Applying context or retaining state needs the admitted pin to be current;
 		// evidence without either effect is still recorded after a revocation.
 		if (context.is_some() || retained.is_some())
@@ -677,6 +679,7 @@ impl<'a> RunDecisionJournal<'a> {
 				.await?;
 			closed = interrupted;
 		}
+		expire_elapsed(&mut retained, &mut stored);
 		let evidence_id = Uuid::new_v4();
 		native::query(
 			&Query::insert()

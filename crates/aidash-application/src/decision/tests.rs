@@ -796,6 +796,49 @@ async fn forbid_apply_policy_changes_are_forbidden_and_shadow_remains_a_proposal
 		}
 	}
 }
+/// A rejection that stopped before branch selection reports no branch and the
+/// context that did not fit, unchanged; one without candidates asked nothing.
+#[tokio::test]
+async fn early_rejections_carry_no_branch_results_or_unasked_questions() {
+	let fixture = Fixture {
+		fail_prepare: true,
+		..Fixture::new(Mode::Enforce)
+	};
+	let _ = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	let failed = fixture.saved.lock().unwrap().evidence[0].clone();
+	assert_eq!(failed.reason, Reason::ProviderFailure);
+	failed.validate_rejection().unwrap();
+	let complete = Fixture::new(Mode::Enforce);
+	evaluate(&complete, Mode::Enforce, 80_000, disclosure())
+		.await
+		.0
+		.unwrap();
+	let applied = complete.saved.lock().unwrap().evidence[0].clone();
+	assert!(!applied.branches.is_empty());
+	let mut premature = failed.clone();
+	premature.branches = applied.branches.clone();
+	let mut shrunk = failed.clone();
+	shrunk.fit.retained -= 1;
+	shrunk.fit.dropped += 1;
+	let mut proposed = failed.clone();
+	proposed.fit.proposed = proposed.fit.window;
+	let mut relabeled = failed.clone();
+	relabeled.reason = Reason::NoCandidates;
+	for (case, corrupt) in [
+		("premature branches", premature),
+		("dropped history", shrunk),
+		("proposed context", proposed),
+		("asked without candidates", relabeled),
+	] {
+		assert!(corrupt.validate_rejection().is_err(), "{case}");
+	}
+	let protected = Fixture::new(Mode::Enforce);
+	let _ = evaluate(&protected, Mode::Enforce, 80_000, Disclosure::default()).await;
+	let none = protected.saved.lock().unwrap().evidence[0].clone();
+	assert_eq!(none.reason, Reason::NoCandidates);
+	none.validate_rejection().unwrap();
+}
+
 #[tokio::test]
 async fn history_without_disclosure_proof_stays_protected_with_zero_attempts() {
 	let fixture = Fixture::new(Mode::Enforce);
