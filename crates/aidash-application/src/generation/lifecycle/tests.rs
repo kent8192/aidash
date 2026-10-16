@@ -394,7 +394,7 @@ async fn deployment_administrator_takes_the_policy_lock_before_job_load_and_noti
 			"authority:8:deployment_administrator",
 			"retirement:37:deployment_administrator",
 			"status:STOPPED",
-			"history:STOPPED:deployment_administrator:deployment_administrator request",
+			"history:STOPPED:deployment_administrator:Deployment Administrator request",
 			"event"
 		]
 	);

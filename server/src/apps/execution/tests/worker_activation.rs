@@ -1815,7 +1815,7 @@ async fn scoped_nats(
 port: 4222
 jetstream {{ store_dir: "/tmp/jetstream" }}
 authorization {{ users: [
- {{ user: "Deployment Administrator", password: "fixture-deployment-administrator" }},
+ {{ user: "operator", password: "fixture-operator" }},
  {{ user: "server", password: "fixture-server", permissions: {{
    publish: {{ allow: ["{subject}","$JS.API.STREAM.INFO.{stream}"] }}, subscribe: {{allow:["_INBOX.>"]}}
  }} }},
