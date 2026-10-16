@@ -1,7 +1,7 @@
 # Credential Broker
 
-Community, Apache-2.0. `aidash-capability` contains portable Capability Token
-contracts; `aidash-broker` is a persistence-free Cloud Run binary. Production
+`aidash-capability` contains portable Capability Token contracts;
+`aidash-broker` is a persistence-free Cloud Run binary. Production
 composition uses `aidash-integrations::capability` for minimal GCP REST calls.
 There is no self-hosted broker mode and no GCP SDK dependency. Self-hosted
 workers continue to use environment credentials directly.

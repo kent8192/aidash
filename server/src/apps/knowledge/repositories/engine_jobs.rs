@@ -13,6 +13,8 @@ use uuid::Uuid;
 mod completion;
 mod consolidation;
 mod discovery;
+#[cfg(test)]
+mod tests;
 pub(crate) use completion::completion_ready;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -462,31 +464,17 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 		row.try_get("authority")?,
 	)
 	.await;
-	let backpressure = matches!(&outcome, Err(Error::Conflict(message)) if message == super::candidates::QUEUE_FULL);
-	let (state, error) = match &outcome {
-		Ok(()) => ("complete", None),
-		Err(Error::Conflict(_)) if backpressure => ("pending", Some("candidate_queue_full")),
-		Err(Error::Forbidden | Error::Conflict(_)) => {
-			("blocked", Some("authority_or_source_changed"))
-		}
-		Err(Error::Invalid(_)) => ("failed", Some("invalid_or_exhausted_work")),
-		Err(_) => (
-			if attempts + 1 >= limit {
-				"failed"
-			} else {
-				"pending"
-			},
-			Some("engine_unavailable"),
-		),
-	};
+	let (state, error, consumed) = settled(&outcome, attempts + 1 >= limit);
 	let mut tx = native::begin(&store.pool).await?;
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))
 			.value(Alias::new("state"), state)
 			.value(Alias::new("last_error"), error)
-			// Waiting for human review does not consume a model failure attempt.
-			.value(Alias::new("attempts"), (attempts + usize::from(!backpressure)) as i32)
+			.value(
+				Alias::new("attempts"),
+				(attempts + usize::from(consumed)) as i32,
+			)
 			.value(
 				Alias::new("next_attempt"),
 				Utc::now() + Duration::seconds(30),
@@ -501,6 +489,36 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	.await?;
 	tx.commit().await?;
 	Ok(outcome.is_ok())
+}
+
+/// The job state and error an execution outcome leaves, and whether it used up
+/// one of the job's model attempts. `last` is true on the job's final attempt.
+fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static str>, bool) {
+	match outcome {
+		Ok(()) => ("complete", None, true),
+		// Waiting for human review does not consume a model failure attempt.
+		Err(Error::Conflict(message)) if message == super::candidates::QUEUE_FULL => {
+			("pending", Some("candidate_queue_full"), false)
+		}
+		// An earlier model attempt is still inside its call deadline. Waiting
+		// for it makes no provider call, so it does not consume one either.
+		Err(Error::RemoteSemantic(crate::semantic::remote::Failure::Pending)) => {
+			("pending", Some("model_call_pending"), false)
+		}
+		Err(Error::Forbidden | Error::Conflict(_)) => {
+			("blocked", Some("authority_or_source_changed"), true)
+		}
+		// A model call whose retry ledger is spent cannot succeed on a later claim.
+		Err(
+			Error::Invalid(_)
+			| Error::RemoteSemantic(crate::semantic::remote::Failure::RetriesExhausted),
+		) => ("failed", Some("invalid_or_exhausted_work"), true),
+		Err(_) => (
+			if last { "failed" } else { "pending" },
+			Some("engine_unavailable"),
+			true,
+		),
+	}
 }
 
 async fn execute(
