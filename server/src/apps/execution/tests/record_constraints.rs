@@ -1043,8 +1043,16 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 	for invalid in [
 		json!({}),
 		json!({"provider":"wrong"}),
-		json!({"provider":"typesafe-system-one","endpoint":"http://localhost","model":"m","credential_env":"AIDASH_SECRET_X","max_request_bytes":1024,"max_questions":1,"max_response_bytes":"128"}),
-		json!({"provider":"typesafe-system-one","endpoint":"http://localhost","model":"m","credential_env":"AIDASH_SECRET_X","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128,"unexpected":true}),
+		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":"128"}),
+		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128,"unexpected":true}),
+		// ADR 0041: no TypeSafe endpoint, environment key, other provider or alias.
+		json!({"provider":"typesafe-system-one","endpoint":"http://localhost","model":"typesafe/jev-1.13","credential_env":"AIDASH_SECRET_JEV","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
+		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13","credential_env":"AIDASH_SECRET_JEV","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
+		json!({"provider_credential":"typesafe","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
+		json!({"provider_credential":"openrouter","model":"~typesafe/jev-latest","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
+		json!({"provider_credential":"openrouter","model":"jev-latest","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
+		// A Capability Token carries at most 256 bytes of model ID.
+		json!({"provider_credential":"openrouter","model":format!("typesafe/jev-1.{}", "1".repeat(256)),"max_request_bytes":1024,"max_questions":1,"max_response_bytes":128}),
 	] {
 		entry["config"] = invalid;
 		check_rejected(
@@ -1053,10 +1061,8 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 		);
 	}
 	entry["config"] = json!({
-		"provider":"typesafe-system-one",
-		"endpoint":"http://localhost:9999/v1",
-		"model":"jev-latest",
-		"credential_env":"AIDASH_SECRET_JEV",
+		"provider_credential":"openrouter",
+		"model":"typesafe/jev-1.13",
 		"max_request_bytes":65536,
 		"max_questions":8,
 		"max_response_bytes":16384
@@ -1695,7 +1701,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 				Expr::value(json!({
 					"credential": null,
 					"tenant": "",
-					"subject": "operator",
+					"subject": "without_subject",
 					"subjects": [],
 				}))
 				.into(),
@@ -1707,9 +1713,9 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	for invalid in [
 		json!({}),
 		json!([]),
-		json!({"credential":null,"tenant":"","subject":"operator","subjects":[7]}),
-		json!({"credential":"not-a-uuid","tenant":"","subject":"operator","subjects":[]}),
-		json!({"credential":null,"tenant":7,"subject":"operator","subjects":[]}),
+		json!({"credential":null,"tenant":"","subject":"without_subject","subjects":[7]}),
+		json!({"credential":"not-a-uuid","tenant":"","subject":"without_subject","subjects":[]}),
+		json!({"credential":null,"tenant":7,"subject":"without_subject","subjects":[]}),
 	] {
 		check_rejected(
 			update(

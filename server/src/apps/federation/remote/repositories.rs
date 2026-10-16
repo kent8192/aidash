@@ -1,4 +1,4 @@
-//! Native adapters for Operator Agent discovery across peers.
+//! Native adapters for Deployment Administrator Agent discovery across peers.
 use aidash_application::{Result, ports::federation::FederationRepository};
 use aidash_domain::{
 	federation::Peer,

@@ -23,7 +23,7 @@ pub fn permitted_origin(url: &str, origins: &[String]) -> Result<(url::Url, Stri
 	}
 	let origin = parsed.origin().ascii_serialization();
 	if !origins.contains(&origin) {
-		return Err(Error::Conflict("OUTBOUND_OPERATOR_DENIED".into()));
+		return Err(Error::Conflict("OUTBOUND_ORIGIN_DENIED".into()));
 	}
 	Ok((parsed, origin))
 }

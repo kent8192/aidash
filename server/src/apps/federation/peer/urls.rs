@@ -7,11 +7,11 @@ pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
 			.endpoint(management::peer_create)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
+			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::discover)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::mesh)
-			.with_route_middleware(AccessBoundary::operator().with_visibility())
+			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::identity)
 			.with_route_middleware(AccessBoundary::public().with_visibility())
 			.endpoint(management::peer_discover)

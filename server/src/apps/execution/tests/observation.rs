@@ -27,7 +27,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	endpoint_fixtures::register_fixture_agent(&app, "lead").await;
 	let f = &app.runtime;
 	let workspace: Workspace = serde_json::from_value(assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				"/api/workspaces",
 				&json!({"title":"Airline","goal":"航空会社の新規事業計画"}),
@@ -39,7 +39,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	))
 	.unwrap();
 	let task: Task = serde_json::from_value(assert_json(
-		app.operator
+		app.deployment_administrator
 			.post(
 				&format!("/api/workspaces/{}/tasks", workspace.id),
 				&json!({"title":"Plan","description":"Coordinate specialists"}),
@@ -231,6 +231,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.content(json!("record query regression").into())
 		.created_by("reviewer")
 		.idempotency_key("review-artifact")
+		.run_id(None)
 		.finish();
 	let artifact_id = Artifact::objects()
 		.create_with_conn(&mut db, &artifact)

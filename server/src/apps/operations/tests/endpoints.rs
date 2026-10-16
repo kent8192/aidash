@@ -3,7 +3,7 @@ use rstest::rstest;
 
 #[rstest]
 #[tokio::test]
-async fn deployment_observations_are_restricted_to_operators(
+async fn deployment_observations_are_restricted_to_deployment_administrators(
 	endpoint: crate::endpoint::EndpointFuture,
 	#[from(crate::endpoint::anonymous_client)]
 	#[with(endpoint.clone())]

@@ -9,8 +9,8 @@ export const collaborationCopy = {
     createAndStart: "ゴールを作成して実行",
     noChannel: "チャンネルを選択してください",
     unavailable: "この対象は現在の権限で取得できません。",
-    operatorExecution:
-      "オペレーターはテナントの外で作業を実行できません。マッピングを選んでテナント内で操作してください。",
+    deploymentAdministratorExecution:
+      "デプロイメント管理者はテナントの外で作業を実行できません。マッピングを選んでテナント内で操作してください。",
     channelHelp: "一つのゴールに向けて、人間とエージェントで会話する場所です。",
     conversation: "会話",
     work: "タスクと成果物",
@@ -104,8 +104,8 @@ export const collaborationCopy = {
     createAndStart: "Create and run a goal",
     noChannel: "Choose a channel",
     unavailable: "This resource is unavailable under your current access.",
-    operatorExecution:
-      "Operators do not run work outside a Tenant. Choose a Mapping to work inside a Tenant.",
+    deploymentAdministratorExecution:
+      "Deployment Administrators do not run work outside a Tenant. Choose a Mapping to work inside a Tenant.",
     channelHelp:
       "A shared conversation for people and agents working toward one goal.",
     conversation: "Conversation",

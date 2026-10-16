@@ -38,6 +38,7 @@ fn snapshot() -> WorkspaceSnapshot {
 			created_by: "saved".into(),
 			idempotency_key: "artifact".into(),
 			created_at: Utc::now(),
+			run_id: None,
 		}],
 		messages: vec![Message {
 			id: Uuid::from_u128(5),
@@ -46,6 +47,7 @@ fn snapshot() -> WorkspaceSnapshot {
 			content: "saved".into(),
 			idempotency_key: None,
 			created_at: Utc::now(),
+			run_id: None,
 		}],
 		events: vec![],
 	}
@@ -437,7 +439,7 @@ async fn registry_membership_keeps_id_version_pairs_and_duplicate_input_order(mu
 	);
 }
 #[rstest]
-#[case::operator(None, None, false)]
+#[case::deployment_administrator(None, None, false)]
 #[case::grant(None, Some(Uuid::from_u128(8)), false)]
 #[case::run(Some(Uuid::from_u128(42)), None, true)]
 #[case::both(Some(Uuid::from_u128(42)), Some(Uuid::from_u128(8)), true)]

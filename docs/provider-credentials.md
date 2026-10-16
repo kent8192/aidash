@@ -17,15 +17,30 @@ has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
 Every model-provider key therefore comes from a Provider Credential Store, on
 Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
-store references keep their `AIDASH_SECRET_*` configuration; compactors move to
-OpenRouter with Jev (see the #158 PR).
+store references keep their `AIDASH_SECRET_*` configuration.
+
+Jev also runs through OpenRouter, at `POST {base}/systemone` with
+`provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
+`provider_credential = "openrouter"` and an exact release such as
+`typesafe/jev-1.13`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
+`AIDASH_JEV_MODEL` are gone, and the `registry_compactor_config` constraint
+rejects the old shape. Each request is a Decision Attempt of the Run whose
+context it reduces, and it uses the Provider Credential that the Tenant's
+OpenRouter binding names at the time of the call, not the Run's admitted
+inference pin: Runs on a Plan Connection or a Keyless endpoint have no such
+pin. On Cloud its Capability Token names the Run as subject with the Decision
+Attempt as `call`, carries only the `decision` operation and no output bound,
+and the broker admits a body of exactly `model`, `state`, `questions` and
+`provider: {"zdr": true}`. Before reserving remote compaction allowances, the
+caller checks that the binding is usable without minting a token or reading
+Key Material.
 
 ## Keyless endpoints
 
 A model or embedding configuration without `provider_credential` is a Keyless
 endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
 and Aidash promises nothing about what it retains (ADR 0036). It may connect
-only to public addresses unless the Deployment's Operators list its exact
+only to public addresses unless the Deployment Administrators list its exact
 origin in `[keyless_endpoints] permitted_private_origins` (Helm:
 `keylessEndpoints.permittedPrivateOrigins`; environment:
 `AIDASH_KEYLESS_PRIVATE_ORIGINS`, comma-separated). An origin is
@@ -87,7 +102,7 @@ Reconnect for OpenRouter. The server runs OpenRouter's OAuth PKCE flow:
    with `provider_authorization=connected|unbound|reconnected|denied|failed`
    (and the parameters below) added to its query, before any fragment. The
    dashboard reopens the Tenant the authorization started for, including an
-   operator's selected Tenant, and shows the outcome only there.
+   Deployment Administrator's selected Tenant, and shows the outcome only there.
    A connection reports `connected` only when the new Provider Credential is
    bound afterwards; when another active binding wins (for example a
    concurrent connection) or the actor may not update the binding, the key is
@@ -234,7 +249,7 @@ Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
 callback; these are the Provider Credential management permissions. Resources
 carry the provider attribute and UUID or Provider Catalog ID respectively.
 Authenticated Subjects may operate only within their Tenant; authenticated
-operators retain explicit policy decision audits. Responses use
+Deployment Administrators retain explicit policy decision audits. Responses use
 `Cache-Control: no-store`.
 
 Tenant settings show Provider connections (Connect, Reconnect), metadata,

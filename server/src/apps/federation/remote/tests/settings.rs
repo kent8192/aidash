@@ -13,7 +13,7 @@ fn settings_source() -> Value {
 		}}},
 		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{}, "provider_credentials":{}, "cache_salt":{}, "keyless_endpoints":{},
 		"node":{"node_id":"aidash://test-settings", "endpoint":"http://localhost",
-			"api_token":"test-only-operator-secret"}
+			"api_token":"test-only-deployment-administrator-secret"}
 	})
 }
 
@@ -47,7 +47,7 @@ fn settings_defaults_and_runtime_share_the_native_database(settings_source: Valu
 	assert_eq!(settings.node.worker_count, 4);
 	assert!(runtime.oidc.is_none());
 	assert!(settings.provider_credentials.store.is_none());
-	assert!(!format!("{:?}", settings.node).contains("test-only-operator-secret"));
+	assert!(!format!("{:?}", settings.node).contains("test-only-deployment-administrator-secret"));
 }
 
 #[rstest]

@@ -1368,21 +1368,21 @@ def positive_int(value):
 
 
 def check_approval(approval, corpus_sha256, models, ceiling, now):
-    """Type-check and time-check the operator's disclosure approval; every failure is a GuardRefusal."""
+    """Type-check and time-check the evaluator's disclosure approval; every failure is a GuardRefusal."""
     if not isinstance(approval, dict) or not approval:
         raise GuardRefusal("a disclosure approval document is required")
     for field in ("approver", "approved_at", "expires_at", "corpus_sha256", "models", "max_spend_nanocredits",
                   "disclosure", "external_compaction"):
         if field not in approval:
             raise GuardRefusal(f"disclosure approval is missing {field}")
-    # Ordinary Runs call the Node's environment-configured Jev compactor whenever a request
-    # outgrows the window. Nothing bounds or prices those calls and the Node does not expose
-    # whether Jev is configured, so the operator must attest that the Node has no Jev
-    # credential: compaction then fails before any request (crates/aidash-integrations/src/compaction.rs).
+    # Ordinary Runs are never pruned (ADR 0041); only a Run whose generation policy names an
+    # approved compactor calls Jev, on the Tenant's own OpenRouter credential. Nothing here bounds
+    # or prices those calls and the Node does not expose its approvals, so the evaluator must attest
+    # that the evaluated Tenant approves no compactor.
     if approval["external_compaction"] != "disabled":
         raise GuardRefusal("disclosure approval external_compaction must be \"disabled\": the live tier cannot "
-                           "reserve or price the Node's Jev compaction calls, so the evaluated Node must have no "
-                           "Jev credential (AIDASH_SECRET_JEV unset)")
+                           "reserve or price Jev compaction calls, so the evaluated Tenant must approve no "
+                           "compactor")
     for field in ("approver", "corpus_sha256", "disclosure"):
         if not isinstance(approval[field], str) or not approval[field].strip():
             raise GuardRefusal(f"disclosure approval {field} must be a non-empty string")
@@ -1432,7 +1432,7 @@ def require_live_authorization(credential, binding, approval, corpus_sha256, mod
 
     credential is the named Tenant Provider Credential metadata read from the
     server and binding the Tenant's Provider Credential Binding for its
-    provider, which is what Run admission pins; approval is the operator's
+    provider, which is what Run admission pins; approval is the evaluator's
     disclosure approval document; models maps each Registry model the
     experiment uses to its configuration; now is an aware datetime (the
     injectable wall clock). Returns the approval's expiry.

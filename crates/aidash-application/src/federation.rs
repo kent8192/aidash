@@ -1,4 +1,4 @@
-//! Operator Agent discovery across enabled peers.
+//! Deployment Administrator Agent discovery across enabled peers.
 use crate::{
 	Error, Result,
 	ports::federation::{FederationRepository, PeerTransport},

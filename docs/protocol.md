@@ -6,9 +6,9 @@ This document describes implemented runtime and recovery contracts. Cross-node t
 
 A node publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, capabilities, clusters and protocol version. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
 
-The operator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043). Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
+The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043). Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
 
-Federation retains the `/federation/v0.1` path namespace. A node advertises protocol `0.3` and accepts peers registered at `0.2` or `0.3`; `0.2` is the minimum for Binding contract 1, so earlier peers cannot admit new execution (drain in-flight work before upgrading). Protocol `0.3` adds one thing: the Home's reply to `scoped/execution/grants/describe` carries the current `corpus_digest` of the grant's Workspace when the grant gives the receiver Home semantic access. A node that sends `X-Aidash-Protocol: 0.2` receives the reply it always did, and a reply without the field is valid. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol` set to the version the receiving peer was registered with. Register a peer at `0.3` only after it runs `0.3`; its `/.well-known/aidash` must advertise the version you register. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
+Federation retains the `/federation/v0.1` path namespace. A node advertises protocol `0.3` and accepts peers registered at `0.2` or `0.3`; `0.2` is the minimum for Binding contract 1, so earlier peers cannot admit new execution (drain in-flight work before upgrading). Protocol `0.3` adds one thing: the Home's reply to `scoped/execution/grants/describe` carries the current `corpus_digest` of the grant's Workspace when the grant gives the receiver Home semantic access. A node that sends `X-Aidash-Protocol: 0.2` receives the reply it always did, and a reply without the field is valid. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol` set to the version the receiving peer was registered with. Register a peer at `0.3` only after it runs `0.3`; its `/.well-known/aidash` must advertise the version you register. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted tools managed by whoever runs the Deployment. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint             | Purpose                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
@@ -17,7 +17,7 @@ Federation retains the `/federation/v0.1` path namespace. A node advertises prot
 | `POST /scoped/graph` | Return a bounded, receiver-authorized Graph View projection for one mapped viewer |
 
 The scoped graph endpoint authenticates the source Peer before resolving its
-exact Subject mapping or named operator grant. It returns display metadata and
+exact Subject mapping or named Deployment Administrator grant. It returns display metadata and
 evidence-backed edges for B-owned resources after B's current read decisions;
 it never returns raw State. Requests bound the mode, kinds, relations, activity
 window, page size and traversal depth. Depth is exactly one direct Peer hop; a
@@ -62,13 +62,13 @@ Workers lease one run at a time with a random lease token and a 30-second expiry
 
 The tool invocation record is committed before sending the request. Each tool call has a key derived from run ID, inference step and call index. Its result is committed before advancing that cursor. Replayed completed invocations return the stored result. Task completion and its final artifact are one transaction with an idempotency key and input consistency checks.
 
-For an external effect, exactly-once behavior requires cooperation from the target. An HTTP tool declared `idempotent` must honor `Idempotency-Key`; MCP tools must honor the configured idempotency argument. Declaring an adapter idempotent does not make an arbitrary server idempotent. For `unsafe` adapters, a missing result after an attempt is treated as uncertain and the effect is not repeated. An operator verifies the external outcome and answers the confirmation with `{"result": ...}`. This restores the journal without executing the effect again.
+For an external effect, exactly-once behavior requires cooperation from the target. An HTTP tool declared `idempotent` must honor `Idempotency-Key`; MCP tools must honor the configured idempotency argument. Declaring an adapter idempotent does not make an arbitrary server idempotent. For `unsafe` adapters, a missing result after an attempt is treated as uncertain and the effect is not repeated. A Deployment Administrator verifies the external outcome and answers the confirmation with `{"result": ...}`. This restores the journal without executing the effect again.
 
 Controls are cooperative at persisted step boundaries. Pause lets an in-flight call finish and persist before stopping the next step. Cancel cannot undo an already performed effect. Human questions and answers are durable. A normal human answer returns the agent to inference; remaining tool calls from the pre-question response are discarded, so a rejected approval cannot release a queued effect.
 
 Transient execution errors have a bounded retry budget per persisted operation. A successful operation resets the counter. Exhausted or permanent failures persist a `terminal_transition` intent in a waiting run. The worker retries home-node delivery across outages and restarts and only finalizes its local journal after the home acknowledges that outcome. It does not re-execute the failed tool while delivering this intent.
 
-A coordinator's final response remains gated while a child is unresolved. An operator can call `POST /api/tasks/{id}/abandon` with the current revision and a nonempty reason for a failed, blocked, or cancelled child. Nested children must be completed or abandoned first. The home records `ABANDONED` with the prior status and reason; a resumed parent can finish with remaining artifacts. Dependencies still require actual completion: abandonment does not satisfy a task dependency.
+A coordinator's final response remains gated while a child is unresolved. A Deployment Administrator can call `POST /api/tasks/{id}/abandon` with the current revision and a nonempty reason for a failed, blocked, or cancelled child. Nested children must be completed or abandoned first. The home records `ABANDONED` with the prior status and reason; a resumed parent can finish with remaining artifacts. Dependencies still require actual completion: abandonment does not satisfy a task dependency.
 
 ### Context compaction
 
@@ -77,16 +77,44 @@ Decider pins and historical replay contracts for #108. Native execution still
 uses the compaction path described below until its separate integration lands.
 
 The compaction trigger, post-compaction fit check and final preflight use the
-same complete-request estimate: UTF-8 bytes of the serialized model-visible
-messages and tool definitions, plus `max_output_tokens`, plus 1,024 framing
-tokens. This deliberately conservative estimate is not the provider's actual
-token count. It includes the JSON escaping of context inside message text.
+same complete-request estimate, the Request Estimate (ADR 0017). Its upper
+bound is the byte estimate: the UTF-8 bytes of the serialized model-visible
+messages and tool definitions (the byte basis, including the JSON escaping of
+context inside message text and the cache-salt reserve), plus the media
+allowance, `max_output_tokens` and 1,024 framing tokens. It is not the
+provider's actual token count.
 Output fits inside the registered context window; it is not extra input space.
 Failure to fit leaves saved context unchanged, prevents inference I/O and pauses
 the Run with the typed reason `context_unreducible`.
 New model registrations capture OpenRouter's advertised maximum completion
 tokens as `max_output_tokens`; model versions created before this field existed
 retain their previous output allowance until re-registered.
+
+A model definition that sets `request_estimator: calibrated` scales only the
+byte basis. The ratio is the nearest-rank 99th percentile of reported
+`prompt_tokens` per byte of basis over the newest 200 samples of the same
+upstream model slug and Projection Version, plus a 10% margin. The media
+allowance, output reservation and framing are added unscaled, and the result
+never exceeds the byte estimate. With fewer than 20 samples the estimate stays
+the byte estimate. Omitting the field means `bytes`; new registrations write
+`calibrated`. Samples come only from complete, media-free Inference Attempts
+of Run steps. They are kept Deployment-wide in `estimate_calibration_samples`,
+which holds no Run, Tenant or attempt identifier, and are written in the same
+transaction that completes the Usage Record. Deployment Administrators read per-key aggregates
+with `manage diagnostics calibration`.
+
+Each Run step pins an Estimate Snapshot (estimator, version, ratio and margin)
+in the Run's context before the step relies on it. A resumed step reuses it,
+so it makes the same fitting and compaction decisions even after calibration
+data changed. Run inspection shows the pinned snapshot without its sample
+count. Snapshot quotas are byte budgets that convert through the snapshot's
+ratio, while the Ordered Stable Prefix quota and the semantic budget always use
+the byte estimate, so calibration never changes the Stable Prefix or the
+Retrieval Key. Summary Stage requests, Jev, Registry workbench requests, the
+run-message limit and the media headroom keep the byte estimate.
+Every Usage Record keeps its Request Estimate with the byte basis, the output
+reservation and the snapshot ratio, so the estimation error of an attempt is
+`estimated_tokens - output_reservation - input_tokens`.
 
 Under a `deferred@1` [Exposure policy](operations/registry-capabilities.md#deferred-capability-exposure),
 the model-visible tool definitions are only the request's Exposure set, and the
@@ -117,13 +145,13 @@ the working context. This changes only observation representation; human
 records, other tool results and the underlying audit journal are preserved.
 The conversion commits only when the complete request fits.
 
-Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events. Jev receives a fitted classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events, non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch sees the same fitted state, with bounded request size and four concurrent requests. Invalid answers, missing credentials or insufficient compaction leave the original context unchanged. Compaction uses `AIDASH_SECRET_JEV`, with endpoint/model overrides in `.env.example`, independently of the explicitly selected inference model. Token estimates are conservative and are not provider tokenization.
+Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events. Jev receives a fitted classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events, non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch sees the same fitted state, with bounded request size and four concurrent requests. Invalid answers, a missing OpenRouter binding or insufficient compaction leave the original context unchanged. Only a Run with an approved compactor is pruned; any other Run that outgrows its window stops with `prune_unavailable` (ADR 0041). Compaction uses the compactor's exact Jev release and the Tenant's current OpenRouter Provider Credential, independently of the explicitly selected inference model and of whichever grant serves it. Token estimates are conservative and are not provider tokenization.
 
 The default retention threshold is 0.5: keep the complete pair when the result probability reaches the threshold; otherwise retain the call with the first 300 result characters and a notice when the call probability reaches it; otherwise drop the pair. Results up to 420 characters are unchanged. The first and latest six history events are pinned.
 
-The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
+The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens, below the 32,000-token context OpenRouter lists for Jev. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
 
-The default endpoint is `https://api.typesafe.ai/v1/systemone` and the default model is `jev-latest`. Bearer-authenticated requests send `{model,state,questions}`. The upstream MIT notice is included in [LICENSE](../LICENSE).
+Requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.13`; aliases are refused. Each request is a Decision Attempt with its own identifier: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.13-20260917`). The reported `usage.cost` is logged with the Decision Attempt and is not a Usage Record. The upstream MIT notice is included in [LICENSE](../LICENSE).
 
 ### Context recovery
 
@@ -148,7 +176,7 @@ versions. The opt-in `context-recovery/1` policy accepts:
 
 | Field                 | Default | Bounds                | Meaning                                                                                           |
 | --------------------- | ------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `preserve_recent`     | 6       | 6–1000                | Latest events that are never pruned or summarized                                                 |
+| `preserve_recent`     | 6       | 6–1000                | Latest events (Model Turns on `native`) that are never pruned or summarized                       |
 | `overflow_retries`    | 2       | 0–4                   | Compact-and-retry attempts after a provider Context Overflow                                      |
 | `overflow_shrink`     | 0.75    | 0.5–0.9               | Factor applied to the effective window on each overflow retry                                     |
 | `summary.model`       | none    | exact model reference | Separately approved summarizer; enables the Summary Stage                                         |
@@ -165,7 +193,10 @@ inference request. Human answers, corrections, continuation markers and
 `model_media_observation` events, whose source messages a summary could not
 recheck, always stay verbatim. So do `workspace_observe` pages and workspace
 record reads other than message reads, whose records are visible one by one
-while a summary rechecks only message sources. The summarizer receives only the
+while a summary rechecks only message sources. On the `native` Projection
+Version the unit is a Model Turn: an `assistant` event and the `tool` events of
+its calls are absorbed together or not at all, and Jev elides a dropped result
+under its call instead of removing the call. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 copies the previous goal verbatim and
@@ -240,7 +271,12 @@ without that proof, such as a media payload limit, is not.
 Only a Context Overflow enters compact-and-retry. Each retry shrinks the
 effective window for the rest of the Run, re-runs the pipeline, and must send a
 smaller request than the previous overflowing one; otherwise, or once the retry
-allowance is spent, the Run pauses with `overflow_retries_exhausted`. Output
+allowance is spent, the Run pauses with `overflow_retries_exhausted`. An
+overflow that follows a calibrated Request Estimate is an estimator defect: the
+Run is demoted to the byte estimate for its remaining steps, in the same save,
+and the overflowing request is recorded by its byte estimate so the next
+comparison uses the same unit. `aidash_context_overflow_total` carries the
+estimator as its `estimator` label. Output
 truncation (`output_truncated`) and refusals (`refused`) pause immediately and
 never dispatch the response's tool calls; their reported usage still settles
 the call's token reservation. A paused Run's typed reason is reported as
@@ -256,8 +292,9 @@ Metrics: `aidash_context_compaction_total{stage,outcome}` counts prune and
 summary outcomes (`applied`, `insufficient`, `unavailable`, `invalid`,
 `unauthorized`, `revoked`), `aidash_context_compaction_tokens{stage,phase}`
 records estimated sizes before and after, and
-`aidash_context_overflow_total{outcome}` counts `retried` and `exhausted`
-overflow recoveries. Labels never contain Run identifiers or content.
+`aidash_context_overflow_total{outcome,estimator}` counts `retried` and
+`exhausted` overflow recoveries by the estimator (`bytes` or `calibrated`)
+whose request overflowed. Labels never contain Run identifiers or content.
 
 ## Marketplace and localization
 

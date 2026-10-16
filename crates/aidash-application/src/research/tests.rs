@@ -2,7 +2,10 @@
 //! provider-package contract. Two different search providers run through the
 //! same host implementation without any change to it.
 use super::*;
-use crate::ports::research::{EvidenceStore, Reservation, Reserved};
+use crate::{
+	Error,
+	ports::research::{EvidenceStore, Reservation, Reserved},
+};
 use aidash_domain::research::{
 	account::AccountProfile,
 	citations::EvidenceRef,
@@ -795,9 +798,9 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 	let now = Utc::now();
 	let mut provider = Search::new("brave", "api.search.brave.com");
 	provider.account = Some(AccountProfile {
-		account_id: "operator-account".into(),
+		account_id: "deployment-administrator-account".into(),
 		agreement_reference: "contract".into(),
-		verified_by: "operator".into(),
+		verified_by: "deployment_administrator".into(),
 		verified_at: now - Duration::days(1),
 		review_after: now + Duration::days(1),
 		storage_permitted: true,
@@ -826,7 +829,7 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 	let (reservation, _) = attempts.values().next().unwrap();
 	assert_eq!(
 		reservation.attribution.as_ref().unwrap().account_id,
-		"operator-account"
+		"deployment-administrator-account"
 	);
 	let exhausted = research
 		.search(
@@ -1438,4 +1441,175 @@ async fn recorded_redirect_and_retry_outcomes_never_repeat_the_old_request(
 		1,
 		"no second disclosure"
 	);
+}
+
+/// Reads Runs as a fixed set; every other Run, existing or not, is unreadable.
+struct Readers(Vec<Uuid>);
+
+#[async_trait]
+impl crate::ports::research::RunReader for Readers {
+	async fn readable(&self, run: Uuid) -> Result<bool> {
+		Ok(self.0.contains(&run))
+	}
+}
+
+/// A Run that fetched one page and found one of its lines, as evidence to cite.
+async fn cited(store: &Memory, run: Uuid) -> EvidenceRef {
+	let (gate, pages) = (Gate::permitting(), Pages::new());
+	let research = Research {
+		store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let fetched = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source","max_bytes":5}),
+		)
+		.await
+		.unwrap();
+	let found = research
+		.find(
+			&call(run, "k2", "research.page@1"),
+			&json!({"document_id":fetched["data"]["document_id"],"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	found["data"]["matches"][0]["evidence_ref"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap()
+}
+
+#[tokio::test]
+async fn a_reader_of_the_run_opens_its_cited_fragment_with_snapshot_context() {
+	// Arrange
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+
+	// Act
+	let evidence = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(evidence.fragment.reference, reference);
+	assert_eq!(evidence.fragment.run_id, run);
+	assert_eq!(
+		evidence.fragment.text,
+		"Die Straße <script>inert text</script>"
+	);
+	assert_eq!(
+		(evidence.fragment.line_start, evidence.fragment.line_end),
+		(2, 2)
+	);
+	assert_eq!(evidence.url, "https://example.com/source");
+	assert_eq!(evidence.title.as_deref(), Some("Source"));
+	let context = evidence.context.unwrap();
+	assert_eq!(context.before, [Pages::new().lines[0].clone()]);
+	assert_eq!(context.after, [Pages::new().lines[2].clone()]);
+}
+
+/// Reads the Run until a revocation lands after its first `readable` check.
+struct RevokedAfterFirstCheck {
+	run: Uuid,
+	checks: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl crate::ports::research::RunReader for RevokedAfterFirstCheck {
+	async fn readable(&self, run: Uuid) -> Result<bool> {
+		let check = self
+			.checks
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(run == self.run && check == 0)
+	}
+}
+
+#[tokio::test]
+async fn a_revocation_during_the_evidence_read_withholds_the_evidence() {
+	// Arrange: the reader loses access after the first readability decision.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	let reader = RevokedAfterFirstCheck {
+		run,
+		checks: Default::default(),
+	};
+
+	// Act
+	let error = reading::read(&reader, &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert: the same absence as any other unreadable evidence.
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+	assert_eq!(
+		reader.checks.load(std::sync::atomic::Ordering::SeqCst),
+		2,
+		"readability is decided again after the evidence read"
+	);
+}
+
+#[tokio::test]
+async fn every_reason_a_reader_cannot_see_evidence_is_the_same_absence() {
+	// Arrange: one Run with evidence, another readable Run, and an unknown Run.
+	let store = Memory::default();
+	let (run, other) = (Uuid::new_v4(), Uuid::new_v4());
+	let reference = cited(&store, run).await.to_string();
+	let unknown = EvidenceRef(Uuid::new_v4()).to_string();
+	let readable = Readers(vec![run, other]);
+	let cases = [
+		(
+			"the reader cannot read the Run",
+			Readers(vec![other]),
+			run,
+			reference.clone(),
+		),
+		(
+			"the Run does not exist",
+			Readers(vec![]),
+			Uuid::new_v4(),
+			reference.clone(),
+		),
+		(
+			"the reference is another Run's",
+			readable,
+			other,
+			reference.clone(),
+		),
+		(
+			"the reference does not exist",
+			Readers(vec![run]),
+			run,
+			unknown,
+		),
+		(
+			"the reference is malformed",
+			Readers(vec![run]),
+			run,
+			"ev_nope".into(),
+		),
+	];
+
+	for (case, reader, run, reference) in cases {
+		// Act
+		let error = reading::read(&reader, &store, run, &reference)
+			.await
+			.unwrap_err();
+
+		// Assert: identical, and indistinguishable from any other absence.
+		assert!(
+			matches!(&error, Error::NotFound(message) if message == "evidence unavailable"),
+			"{case}: {error:?}"
+		);
+		assert_eq!(
+			error.to_string(),
+			reading::unavailable().to_string(),
+			"{case}"
+		);
+	}
 }

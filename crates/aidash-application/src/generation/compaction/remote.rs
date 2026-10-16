@@ -49,20 +49,23 @@ pub async fn ask(
 	let transport = provider
 		.approved_remote(config)
 		.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
-	transport.check_credential()?;
+	transport.check_credential().await?;
 	transport
 		.check_request(state, questions)
 		.map_err(|_| Error::RemoteSemantic(Failure::ContextBudget))?;
 	authority.suspend().await?;
+	// The admitted attempt is also the provider call, so the broker audit and
+	// reported cost correlate with this charge.
+	let attempt = Uuid::new_v4();
 	let reservation = authority
 		.admit(
 			run,
-			Uuid::new_v4(),
+			attempt,
 			digest(&json!({"state":state,"questions":questions})),
 			reserved_tokens,
 		)
 		.await?;
-	let response = transport.ask(state, questions).await;
+	let response = transport.ask(attempt, state, questions).await;
 	authority.settle(&reservation).await?;
 	if !authority.refresh(run).await? {
 		return Err(Error::Forbidden);

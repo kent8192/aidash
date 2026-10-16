@@ -153,7 +153,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 				&& item["input"]["preview"].as_str().unwrap().len() == 1024)
 	);
 	let first = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!("/api/runs/{observed_run}"))
 			.await
 			.unwrap(),
@@ -165,7 +165,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		"aidash://journal-home:000"
 	);
 	let next = assert_json(
-		app.operator
+		app.deployment_administrator
 			.get(&format!("/api/runs/{observed_run}?offset=100"))
 			.await
 			.unwrap(),

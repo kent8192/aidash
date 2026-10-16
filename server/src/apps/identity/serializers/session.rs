@@ -5,7 +5,7 @@ use serde::Serialize;
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AccessProfile {
-	Operator,
+	DeploymentAdministrator,
 	Subject { tenant: String, subject: String },
 }
 

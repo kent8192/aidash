@@ -95,7 +95,12 @@ impl TokenIssuer for CapabilityIssuer {
 				.iter()
 				.enumerate()
 				.any(|(i, op)| request.operations[..i].contains(op))
-			|| request.max_output_tokens == 0
+			// A Decision Attempt is alone in its token and has no completion bound.
+			|| (request.operations.contains(&Operation::Decision)
+				&& (request.operations.len() != 1
+					|| request.max_output_tokens != 0
+					|| request.cache_breakpoints))
+			|| (!context.is_decision() && request.max_output_tokens == 0)
 			|| context.tenant != credential.tenant
 			|| credential.id.is_nil()
 		{
@@ -124,7 +129,10 @@ impl TokenIssuer for CapabilityIssuer {
 		let sub = match (context.run, context.maintenance) {
 			(Some(run), None) if !run.is_nil() => TokenSubject::Run {
 				run: run.to_string(),
-				call: uuid::Uuid::new_v4(),
+				call: request
+					.call
+					.filter(|call| !call.is_nil())
+					.unwrap_or_else(uuid::Uuid::new_v4),
 			},
 			(None, Some(purpose)) => TokenSubject::Maintenance {
 				maintenance: match purpose {
@@ -164,6 +172,7 @@ impl TokenIssuer for CapabilityIssuer {
 					Operation::Chat => aidash_capability::Operation::Chat,
 					Operation::Discovery => aidash_capability::Operation::Discovery,
 					Operation::Embeddings => aidash_capability::Operation::Embeddings,
+					Operation::Decision => aidash_capability::Operation::Decision,
 				})
 				.collect(),
 			model: request.model.clone(),

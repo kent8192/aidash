@@ -15,7 +15,7 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 async fn run_visible(scope: &mut dyn InspectionScope, run: &RunMetadata) -> Result<bool> {
-	if scope.principal() == Principal::Operator {
+	if scope.principal() == Principal::DeploymentAdministrator {
 		return Ok(true);
 	}
 	let result = async {

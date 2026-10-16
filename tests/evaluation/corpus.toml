@@ -22,7 +22,9 @@ context_window = 128000
 max_output_tokens = 4096
 
 # Sized so the base request plus seven reference pages fits and plus eight does
-# not: the eighth page forces Legacy prune-only compaction in both arms.
+# not: the eighth page outgrows the window in both arms. Ordinary Runs are not
+# pruned until #108 binds the built-in compaction Decider (ADR 0041), so the
+# Run stops there with `prune_unavailable`.
 [models.small-window]
 context_window = 62000
 max_output_tokens = 1024
@@ -212,9 +214,10 @@ outcome = "success"
 claimed_success = true
 
 # ------------------------------------------------- long conversation, context
-# Corrections arrive as human answers; filler reference pages force the small
-# context window to compact. The fixture Jev classifier drops every prunable
-# tool result, so only the human answers carry the corrections forward.
+# Corrections arrive as human answers; filler reference pages outgrow the small
+# context window. With pruning, only the human answers would carry the
+# corrections forward. Until #108 binds the built-in compaction Decider, an
+# ordinary Run is not pruned and stops unresolved at the eighth page.
 [[tasks]]
 id = "long-conversation-corrections"
 kind = "long-context"
@@ -238,13 +241,12 @@ kind = "constraint-retention"
 budget_usd = 300
 excluded_vendors = ["Contoso", "Northwind"]
 [tasks.expected]
-outcome = "success"
-claimed_success = true
-long_context = "pruning"
-constraint_retention = true
+outcome = "unresolved"
+long_context = "none"
 
-# The same correction arrives only inside an early tool result. Pruning drops
-# it, so a retention failure must be detected rather than graded as success.
+# The same correction arrives only inside an early tool result. Pruning would
+# drop it, so a retention failure must be detected rather than graded as
+# success. Until #108 the Run stops unresolved at the eighth page instead.
 [[tasks]]
 id = "correction-lost-in-pruned-tool-result"
 kind = "long-context"
@@ -267,13 +269,12 @@ kind = "constraint-retention"
 budget_usd = 300
 excluded_vendors = ["Contoso", "Northwind"]
 [tasks.expected]
-outcome = "false_completion"
-claimed_success = true
-long_context = "pruning"
-constraint_retention = false
+outcome = "unresolved"
+long_context = "none"
 
 # Retained content (the human answer) cannot fit the window even after every
-# prunable tool result is dropped: compaction must fail as a terminal overflow.
+# prunable tool result is dropped: with pruning, compaction must fail as a
+# terminal overflow. Until #108 the Run stops unresolved before any pruning.
 [[tasks]]
 id = "terminal-context-overflow"
 kind = "long-context"
@@ -294,8 +295,8 @@ kind = "constraint-retention"
 budget_usd = 500
 excluded_vendors = []
 [tasks.expected]
-outcome = "overflow_failure"
-long_context = "terminal_overflow"
+outcome = "unresolved"
+long_context = "none"
 
 # ------------------------------------------------------- tool and Skill choice
 [[tasks]]

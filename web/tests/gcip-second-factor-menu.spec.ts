@@ -1,11 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 
-async function openAccount(page: Page, provider: string, operator = false) {
+async function openAccount(
+  page: Page,
+  provider: string,
+  deploymentAdministrator = false,
+) {
   await installBearerDashboard(
     page,
     "acceptance-access-token",
-    operator ? undefined : { tenant: "acme", name: "alice" },
+    deploymentAdministrator ? undefined : { tenant: "acme", name: "alice" },
   );
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
@@ -50,7 +54,7 @@ test("the setup entry is offered only to GCIP sessions that have a tenant", asyn
   await expect(setup(page)).toHaveCount(0);
 });
 
-test("an operator authority has no GCIP tenant to enroll through", async ({
+test("a Deployment Administrator authority has no GCIP tenant to enroll through", async ({
   page,
 }) => {
   await openAccount(page, "gcip", true);

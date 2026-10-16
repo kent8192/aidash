@@ -6,8 +6,8 @@ use upstream_fixtures::reply;
 mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
 mod native_memory;
-#[path = "scoped_remote_execution/tenant_embedding.rs"]
-mod tenant_embedding;
+#[path = "../../execution/tests/support/tenant_openrouter.rs"]
+mod tenant_openrouter;
 use aidash_server::{
 	domain::{NewTask, qualified_agent},
 	federation::{Federation, Home},
@@ -130,7 +130,8 @@ struct Pair {
 	native: Option<Value>,
 	generation: Option<(Value, Value)>,
 	_memory_recovery_directories: Vec<Arc<tempfile::TempDir>>,
-	tenant_embedding: Option<tenant_embedding::TenantEmbedding>,
+	tenant_embedding: Option<tenant_openrouter::TenantOpenRouter>,
+	receiver_openrouter: tenant_openrouter::TenantOpenRouter,
 }
 struct SemanticFixture {
 	requests: Arc<Mutex<Vec<Value>>>,
@@ -341,17 +342,21 @@ mod scoped_pair_composition {
 		let source = _aa;
 		let receiver = _ba;
 		let (mut a, au, aschema) = source.runtime.parts();
-		let (b, bu, bschema) = receiver.runtime.parts();
+		let (mut b, bu, bschema) = receiver.runtime.parts();
 		let owners = vec![source.runtime, receiver.runtime];
 		let aa = source.application;
 		// The Home performs required-Home embeddings with its Tenant's Provider
 		// Credential; its application serves the same reconfigured runtime.
 		let tenant_embedding = tenant_embedding.then(|| {
-			let embedding = tenant_embedding::install(&mut a);
+			let embedding = tenant_openrouter::install(&mut a);
 			aa.context.set_singleton(a.clone());
 			embedding
 		});
 		let ba = receiver.application;
+		// The receiver's approved compactor calls Jev with its Tenant's OpenRouter
+		// Provider Credential (ADR 0041); the fake issuer routes to the model fixture.
+		let receiver_openrouter = tenant_openrouter::install(&mut b);
+		ba.context.set_singleton(b.clone());
 		let memory_recovery_directories = if native {
 			vec![source_directory, receiver_directory]
 		} else {
@@ -364,7 +369,9 @@ mod scoped_pair_composition {
 			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
 		let (receiver_policy, _, _) =
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
-		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
+		receiver_openrouter.connect("acme").await;
+		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
+		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
 		let (status, body) = request(
 			&ba,
 			&b.config.api_token,
@@ -598,6 +605,7 @@ mod scoped_pair_composition {
 			generation,
 			_memory_recovery_directories: memory_recovery_directories,
 			tenant_embedding,
+			receiver_openrouter,
 		}
 	}
 }
@@ -975,7 +983,7 @@ async fn configure_semantic(
 	executor: &str,
 	memory_mode: (bool, bool),
 	provider: EmbeddingProvider,
-	tenant: Option<&tenant_embedding::TenantEmbedding>,
+	tenant: Option<&tenant_openrouter::TenantOpenRouter>,
 ) -> (
 	SemanticFixture,
 	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
@@ -1210,7 +1218,7 @@ async fn step_to_model_request(p: &Pair, count: usize) {
 		p.run().await.state
 	);
 }
-/// Write a Home semantic entry and index it, as a Home operator would.
+/// Write a Home semantic entry and index it, as a Home Deployment Administrator would.
 async fn write_home_entry(
 	p: &Pair,
 	key: &str,
@@ -3787,7 +3795,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_polling_advances_past_hidden_event_pages(
+async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -3845,7 +3853,7 @@ async fn operator_polling_advances_past_hidden_event_pages(
 	assert_eq!(status, 200, "{page}");
 	assert!(
 		page.to_string().contains("after-hidden-burst"),
-		"operator polling stalled behind hidden events: {page}"
+		"Deployment Administrator polling stalled behind hidden events: {page}"
 	);
 	assert!(!page.to_string().contains("\"secret\""));
 	let (status, state) = request(
@@ -3914,7 +3922,7 @@ async fn operator_polling_advances_past_hidden_event_pages(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_content_views_cannot_bypass_both_node_subject_authority(
+async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_authority(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -3958,7 +3966,7 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 			] {
 				assert!(
 					!body.to_string().contains(hidden),
-					"operator path {} {path} leaked {hidden}: {:?}",
+					"Deployment Administrator path {} {path} leaked {hidden}: {:?}",
 					f.config.node_id,
 					body.as_object().map(|fields| fields
 						.iter()
@@ -3974,7 +3982,7 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 			&f.config.api_token,
 			"POST",
 			"/api/workspaces",
-			json!({"title":"operator-stream-tail","goal":"Independent stream marker"}),
+			json!({"title":"deployment-administrator-stream-tail","goal":"Independent stream marker"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -3999,10 +4007,10 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 				] {
 					assert!(
 						!frame.contains(hidden),
-						"operator stream leaked {hidden}: {frame}"
+						"Deployment Administrator stream leaked {hidden}: {frame}"
 					);
 				}
-				if frame.contains("operator-stream-tail") {
+				if frame.contains("deployment-administrator-stream-tail") {
 					break;
 				}
 			}
@@ -4048,14 +4056,14 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 	assert!(control.get("error").is_none());
 	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
-	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"operator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
 	let (status, independent) = request(
 		&p.aa,
 		&p.a.config.api_token,
 		"POST",
 		"/api/workspaces",
-		json!({"title":"Independent operator work","goal":"Unrelated legacy access"}),
+		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{independent}");
@@ -5067,6 +5075,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 #[case("outage", 503, Some("unavailable"))]
 #[case("bad_answers", 1, Some("provider_contract"))]
 #[case("credential_rejected", 401, Some("configuration"))]
+#[case("unbound", 0, Some("configuration"))]
 #[tokio::test]
 async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	#[future(awt)]
@@ -5104,6 +5113,11 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	}
 	if scenario == "catalog_revoked" {
 		assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
+	}
+	if scenario == "unbound" {
+		// Without a usable OpenRouter binding the receiver stops before any
+		// allowance is reserved or Jev is called (ADR 0041).
+		p.receiver_openrouter.unbind("acme").await;
 	}
 	for _ in 0..4 {
 		p.step().await;
@@ -5148,7 +5162,8 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	let calls = p.model.compactions.lock().await;
 	assert_eq!(calls.len(), count);
 	if let Some(call) = calls.first() {
-		assert_eq!(call["model"], "fixture-jev");
+		assert_eq!(call["model"], "typesafe/jev-1.13");
+		assert_eq!(call["provider"], json!({"zdr": true}));
 		assert!(
 			call.to_string().contains("ochre falcon"),
 			"approved context must reach the exact compactor"
@@ -5965,10 +5980,11 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
 		match script.compaction_status.load(Ordering::Acquire) {
 			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
 			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
-			1 => reinhardt::Response::ok().with_json(&json!({"answers":{}})).unwrap(),
+			// OpenRouter names the dated snapshot that served the pinned release.
+			1 => reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":{}})).unwrap(),
 			_ => {
 				let answers:serde_json::Map<_,_>=input["questions"].as_object().unwrap().keys().map(|name|(name.clone(),json!({"noul":0.0}))).collect();
-				reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
+				reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":answers})).unwrap()
 			}
 		}
 	}}})).into_server_router();

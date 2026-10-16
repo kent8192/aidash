@@ -6,7 +6,7 @@ Subcommands:
   deterministic  Run the whole corpus against a disposable local Node, PostgreSQL
                  and NATS with the scripted fixture provider. Needs Docker and a
                  Cargo build; needs no credentials and makes no paid calls.
-  live           Opt-in measurement against an operator-chosen Node and model.
+  live           Opt-in measurement against a Node and model the evaluator chooses.
                  Refuses to start without an explicitly connected Tenant Provider
                  Credential, a disclosure approval and hard spend/time limits.
   validate       Validate an existing result manifest.
@@ -57,7 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "The Jev compaction classifier is a fixture that drops every prunable tool result.",
+    "Ordinary Runs are not pruned until #108 binds the built-in compaction Decider (ADR 0041), so long-context "
+    "tasks stop at the window instead of measuring pruning.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -73,8 +74,9 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
     "(--network none, no host environment, no parent process visibility).",
-    "External Jev compaction is excluded by the operator's attestation that the Node has no Jev credential: the "
-    "Node does not report its compactor over HTTP. A Run that applied a compaction stops all further dispatch.",
+    "External Jev compaction is excluded by the evaluator's attestation that the evaluated Tenant approves no "
+    "compactor: the Node does not report its approvals over HTTP. A Run that applied a compaction stops all "
+    "further dispatch.",
 ]
 
 
@@ -122,7 +124,7 @@ def require_https(base_url):
         except ValueError:
             pass
     raise evaluation.GuardRefusal(f"--base-url must be https:// (plain http:// only for a loopback Node), got "
-                                  f"{base_url!r}; the operator and Tenant subject tokens would travel unencrypted")
+                                  f"{base_url!r}; the Deployment Administrator and Tenant subject tokens would travel unencrypted")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -307,7 +309,7 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
                 workspace = api.post("/api/workspaces", {"title": f"{experiment.prefix} memory {scenario['id']} "
                                                                   f"{variant['id']}", "goal": "Memory scenario"},
                                      experiment.token)["id"]
-                # Memory banks require an enabled Workspace index (operator-configured); its embeddings
+                # Memory banks require an enabled Workspace index (enabled per Workspace); its embeddings
                 # come from the fixture.
                 api.post(f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
                     "embedding": embedding_config, "vector": {"provider": "postgres", "endpoint": "local",
@@ -543,7 +545,7 @@ def run_deterministic(args, binary_directory):
             print("evaluation: disposable PostgreSQL and NATS ready", flush=True)
             port = free_port()
             base = f"http://127.0.0.1:{port}"
-            operator = secrets.token_urlsafe(32)
+            deployment_administrator = secrets.token_urlsafe(32)
             node_id = f"aidash://fixed-task-{tag}"
             web = private / "web"
             web.mkdir()
@@ -557,13 +559,12 @@ def run_deterministic(args, binary_directory):
                 "DATABASE_URL": f"postgres://aidash_server:{urllib.parse.quote(password, safe='')}@127.0.0.1:"
                                 f"{published_port(postgres, 5432)}/aidash_evaluation",
                 "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
-                "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": operator,
+                "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": deployment_administrator,
                 "AIDASH_API_RATE_BURST": "100000", "AIDASH_WEB_DIR": str(web),
                 # A loaded host can exceed the default request deadline on reads that poll Runs.
                 "AIDASH_HTTP_TIMEOUT_SECONDS": "120",
                 # This disposable Node ID owns its JetStream streams and consumers.
                 "AIDASH_ACTIVATION_BOOTSTRAP": "true",
-                "AIDASH_JEV_ENDPOINT": fixture_url + "/jev", "AIDASH_SECRET_JEV": "fixture-classifier-not-a-secret",
                 # The loopback model and embedding fixture is a Keyless endpoint.
                 "AIDASH_KEYLESS_PRIVATE_ORIGINS": fixture_url,
                 "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
@@ -587,7 +588,7 @@ def run_deterministic(args, binary_directory):
                     return response.status == 200
             wait(healthy, 180, "Aidash health")
             print(f"evaluation: Node healthy; {len(planned_runs) * args.repeats} Runs planned", flush=True)
-            api = runner.Api(http_transport(base), operator)
+            api = runner.Api(http_transport(base), deployment_administrator)
             experiment = runner.Experiment(api, node_id, "evaluation", prefix)
             agent_ids = [runner.agent_id(prefix, planned) for planned in planned_runs]
             agent_ids += [f"{prefix}-memory-agent-{variant['id']}" for variant in memory_corpus["variants"]]
@@ -654,8 +655,8 @@ def run_deterministic(args, binary_directory):
         error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
-    harness = {"compaction": "legacy prune-only Context Policy with fixture Jev classifier", "cache_salt": True,
-               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "fixture: drop all prunable"}
+    harness = {"compaction": "none: ordinary Runs are not pruned until #108 (ADR 0041)", "cache_salt": True,
+               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": max(1.0, time.monotonic() - started),
               "max_output_tokens": max(spec["max_output_tokens"] for spec in corpus["models"].values()),
               "spend_ceiling_nanocredits": None}
@@ -717,10 +718,10 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     for index, task in enumerate(corpus["tasks"]):
         task["_index"] = index
     read_json = read_json or (lambda path: json.loads(Path(path).read_text()))
-    operator = os.environ.get(args.token_env)
+    deployment_administrator = os.environ.get(args.token_env)
     subject = os.environ.get(args.subject_token_env)
-    if not operator or not subject:
-        raise evaluation.GuardRefusal(f"{args.token_env} (operator) and {args.subject_token_env} (Tenant subject) "
+    if not deployment_administrator or not subject:
+        raise evaluation.GuardRefusal(f"{args.token_env} (Deployment Administrator) and {args.subject_token_env} (Tenant subject) "
                                       "must both be set")
     if not args.server_revision or not SERVER_REVISION.fullmatch(args.server_revision):
         raise evaluation.GuardRefusal("--server-revision must be the evaluated Node's source fingerprint: 7 to 64 "
@@ -736,7 +737,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     if not mapping:
         raise evaluation.GuardRefusal("at least one --model mapping is required")
     require_https(args.base_url)
-    api = runner.Api(transport or http_transport(args.base_url), operator)
+    api = runner.Api(transport or http_transport(args.base_url), deployment_administrator)
     credential = api.get(f"/api/tenants/{args.tenant}/provider-credentials/{args.provider_credential}")
     binding = None
     if isinstance(credential, dict) and credential.get("provider"):
@@ -814,7 +815,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                                             (binding["provider_credential_id"], binding["revision"])))
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
-        error = f"interrupted by the operator ({type(stop).__name__})"
+        error = f"interrupted by the evaluator ({type(stop).__name__})"
     except Exception as failure:  # Recorded; the ledger and any finished Runs are still written.
         error = f"{type(failure).__name__}: {failure}"
     if signal.getsignal(signal.SIGTERM) is raise_terminated:
@@ -847,7 +848,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         harness = {"compaction": "server-configured", "cache_salt": True,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": "excluded: the approval attests the Node has no Jev credential"}
+                   "jev_classifier": "excluded: the approval attests the Tenant approves no compactor"}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
                   "spend_ceiling_nanocredits": args.max_spend_nanocredits}
@@ -921,7 +922,7 @@ def main(argv=None):
     live_command = commands.choices["live"]
     live_command.add_argument("--base-url", required=True)
     live_command.add_argument("--tenant", required=True)
-    live_command.add_argument("--token-env", default="AIDASH_EVALUATION_TOKEN", help="operator bearer token variable")
+    live_command.add_argument("--token-env", default="AIDASH_EVALUATION_TOKEN", help="Deployment Administrator bearer token variable")
     live_command.add_argument("--subject-token-env", default="AIDASH_EVALUATION_SUBJECT_TOKEN",
                               help="Tenant subject bearer token variable used to create and run Tasks")
     live_command.add_argument("--server-revision", required=True,

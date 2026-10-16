@@ -96,11 +96,11 @@ pub(crate) mod persistence;
 pub(crate) struct Visibility<'a, 'scope>(pub(crate) &'a mut GraphAuthority<'scope>);
 #[async_trait]
 impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
-	fn operator(&self) -> bool {
-		matches!(self.0, GraphAuthority::Operator { .. })
+	fn deployment_administrator(&self) -> bool {
+		matches!(self.0, GraphAuthority::DeploymentAdministrator { .. })
 	}
-	async fn operator_workspace(&mut self, id: Uuid) -> Result<bool> {
-		crate::authorization::remote::operator::visible(self.0.connection(), id)
+	async fn deployment_administrator_workspace(&mut self, id: Uuid) -> Result<bool> {
+		crate::authorization::remote::deployment_administrator::visible(self.0.connection(), id)
 			.await
 			.map_err(Into::into)
 	}

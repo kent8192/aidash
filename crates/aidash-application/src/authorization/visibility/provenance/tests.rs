@@ -533,6 +533,7 @@ fn artifact() -> Artifact {
 		created_by: "stored-artifact-author".into(),
 		idempotency_key: "key".into(),
 		created_at: chrono::Utc::now(),
+		run_id: None,
 	}
 }
 
@@ -544,5 +545,6 @@ fn message(id: u128, sender: &str) -> Message {
 		content: "same content".into(),
 		idempotency_key: None,
 		created_at: chrono::Utc::now(),
+		run_id: None,
 	}
 }

@@ -431,23 +431,6 @@ pub fn deployment_observations(
 	)
 }
 
-/// Bind the classifier to the same rotating credential resolver as inference.
-pub fn compaction_transport(
-	client: reqwest::Client,
-	endpoint: String,
-	model: String,
-	credential_env: String,
-) -> Result<aidash_integrations::compaction::JevClient> {
-	aidash_integrations::compaction::JevClient::new(
-		client,
-		endpoint,
-		model,
-		credential_env,
-		Arc::new(EnvironmentCredentials),
-	)
-	.map_err(Into::into)
-}
-
 /// Semantic transports share rotating credentials with inference and compaction.
 pub fn semantic_transport(
 	store: &Store,
@@ -638,7 +621,7 @@ pub(crate) fn marketplace_publication_scope<'a>(
 	}
 }
 
-/// Operator adoption and subject installation use the same staging implementation.
+/// Deployment Administrator adoption and subject installation use the same staging implementation.
 pub(crate) fn marketplace_staging_scope<'a>(
 	store: &'a Store,
 	tx: &'a mut crate::database::native::Transaction,
@@ -648,13 +631,13 @@ pub(crate) fn marketplace_staging_scope<'a>(
 }
 
 /// Trusted transport authority and the original transaction are shared with maintenance use cases.
-pub(crate) fn marketplace_operator_scope<'a>(
+pub(crate) fn marketplace_deployment_administrator_scope<'a>(
 	store: &'a Store,
 	tx: &'a mut crate::database::native::Transaction,
 	principal: aidash_domain::identity::Principal,
-) -> crate::apps::marketplace::repositories::operations::NativeOperator<'a> {
-	crate::apps::marketplace::repositories::operations::NativeOperator {
-		staging: marketplace_staging_scope(store, tx, "operator-adoption"),
+) -> crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator<'a> {
+	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
+		staging: marketplace_staging_scope(store, tx, "deployment-administrator-adoption"),
 		principal,
 	}
 }
@@ -726,7 +709,9 @@ pub(crate) fn generation_policy_repository(
 ) -> crate::apps::execution::generation::repositories::policy::NativePolicies {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -751,7 +736,9 @@ pub(crate) fn generation_read_repository(
 ) -> crate::apps::execution::generation::repositories::reads::NativeReads {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -779,7 +766,9 @@ pub(crate) fn generation_control_repository(
 ) -> crate::apps::execution::generation::repositories::controls::NativeControls {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -925,7 +914,29 @@ pub(crate) fn generation_summary_repository(
 		store: store.clone(),
 	}
 }
-pub(crate) struct ApprovedCompactionProvider;
+/// Approved compactors call Jev as Decision Attempts of one Run, with the Run's
+/// Tenant's current OpenRouter Provider Credential (ADR 0041).
+pub(crate) struct ApprovedCompactionProvider {
+	store: Store,
+	context: aidash_application::provider_access::Context,
+}
+impl ApprovedCompactionProvider {
+	fn transport(
+		&self,
+		config: aidash_domain::registry::CompactorConfig,
+	) -> aidash_application::Result<crate::context::jev::JevClient> {
+		registry_validation_for(&self.store).validate_compactor(&config, true)?;
+		Ok(crate::context::jev::JevClient::approved(
+			config,
+			Arc::new(
+				crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+					store: self.store.clone(),
+				},
+			),
+			self.context.clone(),
+		)?)
+	}
+}
 impl aidash_application::ports::generation::compaction::GenerationCompactionProvider
 	for ApprovedCompactionProvider
 {
@@ -935,11 +946,22 @@ impl aidash_application::ports::generation::compaction::GenerationCompactionProv
 	) -> aidash_application::Result<
 		Arc<dyn aidash_application::ports::generation::compaction::ApprovedCompactionTransport>,
 	> {
-		Ok(Arc::new(crate::context::jev::JevClient::approved(config)?))
+		Ok(Arc::new(self.transport(config)?))
 	}
 }
-pub(crate) fn generation_compaction_provider() -> ApprovedCompactionProvider {
-	ApprovedCompactionProvider
+pub(crate) fn generation_compaction_provider(
+	store: &Store,
+	tenant: String,
+	run: uuid::Uuid,
+) -> ApprovedCompactionProvider {
+	ApprovedCompactionProvider {
+		store: store.clone(),
+		context: aidash_application::provider_access::Context {
+			tenant,
+			run: Some(run),
+			..Default::default()
+		},
+	}
 }
 
 pub(crate) fn generation_protocol_authority(
@@ -971,7 +993,7 @@ impl aidash_application::ports::generation::compaction::remote::RemoteCompaction
 	for ApprovedCompactionProvider
 {
 	fn approved_remote(&self, config: aidash_domain::registry::CompactorConfig) -> aidash_application::Result<Arc<dyn aidash_application::ports::generation::compaction::remote::RemoteCompactionTransport>>{
-		Ok(Arc::new(crate::context::jev::JevClient::approved(config)?))
+		Ok(Arc::new(self.transport(config)?))
 	}
 }
 
@@ -996,7 +1018,9 @@ pub(crate) fn generation_home_repository(
 ) -> crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 	use crate::authorization::identity::Actor;
 	let principal = match &actor {
-		Actor::Operator => aidash_domain::identity::Principal::Operator,
+		Actor::DeploymentAdministrator => {
+			aidash_domain::identity::Principal::DeploymentAdministrator
+		}
 		Actor::Subject(identity) => aidash_domain::identity::Principal::Subject {
 			tenant: identity.tenant.clone(),
 			subject: identity.subject.clone(),
@@ -1004,8 +1028,18 @@ pub(crate) fn generation_home_repository(
 	};
 	crate::apps::execution::generation::repositories::foreign::home::NativeHome {
 		federation: f.clone(),
-		actor,
-		principal,
+		actor: Some(actor),
+		principal: Some(principal),
+	}
+}
+/// A peer-authenticated request has no local actor; its authority is the intent it names.
+pub(crate) fn peer_generation_home_repository(
+	f: &Federation,
+) -> crate::apps::execution::generation::repositories::foreign::home::NativeHome {
+	crate::apps::execution::generation::repositories::foreign::home::NativeHome {
+		federation: f.clone(),
+		actor: None,
+		principal: None,
 	}
 }
 
@@ -1795,7 +1829,16 @@ pub(crate) fn home_execution_repository(
 ) -> crate::apps::identity::repositories::home_execution::Repository {
 	crate::apps::identity::repositories::home_execution::Repository {
 		runtime: runtime.clone(),
-		actor,
+		actor: Some(actor),
+	}
+}
+/// A peer-authenticated request has no local actor; its authority is the grant it names.
+pub(crate) fn peer_home_execution_repository(
+	runtime: &Federation,
+) -> crate::apps::identity::repositories::home_execution::Repository {
+	crate::apps::identity::repositories::home_execution::Repository {
+		runtime: runtime.clone(),
+		actor: None,
 	}
 }
 
@@ -2177,7 +2220,7 @@ pub(crate) fn desktop_protocol(
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
 }
 
-/// Load private operator keys only at shared server/worker bootstrap.
+/// Load privately supplied keys only at shared server/worker bootstrap.
 pub async fn configure_provider_credentials(
 	store: &mut Store,
 	settings: &crate::apps::identity::serializers::provider_credentials::Settings,

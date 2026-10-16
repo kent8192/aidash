@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import runpy
+import secrets
 import signal
 import select
 import socket
@@ -413,10 +414,21 @@ def main():
     children = []
     files = []
     # Binding defaults include File Tools. Enable only disposable fixture
-    # storage; command runners remain disabled in the operator profile.
+    # storage; command runners remain disabled in the Node's execution profile.
     profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
     profile = pathlib.Path(profile_directory.name) / "profile.json"
     profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
+    # Approved compactors name the Tenant's OpenRouter Provider Credential
+    # (ADR 0041), so each Node runs a disposable PostgreSQL Provider Credential
+    # Store whose keys exist only for this run.
+    provider_credentials = pathlib.Path(profile_directory.name) / "provider-credentials.json"
+    provider_credentials.write_text(json.dumps({"provider_credentials": {
+        "fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"},
+        "store": {"kind": "postgres", "master_key": {"env": "AIDASH_PROVIDER_STORE_MASTER_KEY"}},
+    }}))
+    provider_credential_keys = {"AIDASH_PROVIDER_CREDENTIAL_SETTINGS": str(provider_credentials),
+                                "AIDASH_PROVIDER_FINGERPRINT_KEY": secrets.token_hex(32),
+                                "AIDASH_PROVIDER_STORE_MASTER_KEY": secrets.token_hex(32)}
     fixture = Fixture(node_a, node_b)
     fixture_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.handler())
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
@@ -462,10 +474,11 @@ def main():
                     approval_errors.append(str(error))
 
     def node_env(node, database, port, login):
-        env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
+        env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
         env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
+        env.update(provider_credential_keys)
         # These disposable Node IDs own their JetStream streams and consumers.
         # When the outage proxy opens, recover real activation delivery as well
         # as event publication instead of retaining fallback for the whole run.

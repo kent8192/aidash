@@ -17,7 +17,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	for _ in 0..32 {
 		let bank = memory::create_participant(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -31,14 +31,14 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	let later_workspace = store
 		.create_workspace(
 			"acme",
-			"operator",
+			"deployment_administrator",
 			"Later bank",
 			"Maintenance must reach this bank",
 		)
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();
-	let index = aidash_server::semantic::service::get_index(&store, &Actor::Operator, workspace)
+	let index = aidash_server::semantic::service::get_index(&store, &Actor::DeploymentAdministrator, workspace)
 		.await
 		.unwrap();
 	aidash_server::semantic::service::configure(
@@ -53,7 +53,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	.unwrap();
 	let later_bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		later_workspace.id,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -186,7 +186,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -197,7 +197,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	.bank;
 	let source = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -222,7 +222,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	let input = mutation(&bank, Change::Add { id, content: draft });
 	let memory::Outcome::Units(derived) = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: input.operation_id,
 			provider: reference("p"),
@@ -251,7 +251,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	);
 	let result = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: reviewed.operation_id,
 			provider: reference("p"),
@@ -274,19 +274,25 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
         {"id":"allow","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
         {"id":"write-only","effect":"deny","subjects":{"any":true},"actions":["memory.read","memory.derive"],"resources":{"kinds":["*"]}}
-    ]})).unwrap(), "operator").await.unwrap();
+    ]})).unwrap(), "deployment_administrator").await.unwrap();
 	for entry in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(entry), 0, true, "operator")
+			.set_catalog(
+				"acme",
+				&reference(entry),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
 	let credential = authorization
-		.issue_credential("acme", "alice", 3600, "operator")
+		.issue_credential("acme", "alice", 3600, "deployment_administrator")
 		.await
 		.unwrap();
 	let writer = authorization.authenticate(&credential.token).await.unwrap();
-	for actor in [&Actor::Operator, &writer] {
+	for actor in [&Actor::DeploymentAdministrator, &writer] {
 		let mut body = derived[0].content.clone();
 		body.kind = replacement;
 		body.mental_model = None;
@@ -313,7 +319,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	));
 	let current = memory::list(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::ReadBank {
 			provider: reference("p"),
 			bank,
@@ -340,14 +346,14 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	let workspace = store
 		.create_workspace(
 			"acme",
-			"operator",
+			"deployment_administrator",
 			"Long Run",
 			"Accumulate admitted recall pages",
 		)
 		.await
 		.unwrap()
 		.id;
-	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
+	let configured = aidash_server::semantic::service::get_index(&store, &Actor::DeploymentAdministrator, indexed)
 		.await
 		.unwrap();
 	let mut spec = configured.configuration().unwrap();
@@ -364,7 +370,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	.unwrap();
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -391,7 +397,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	for batch in ids.chunks(32) {
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			Mutation {
 				operation_id: Uuid::now_v7(),
 				provider: reference("p"),
@@ -415,7 +421,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	);
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -446,21 +452,27 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"allow","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "operator").await.unwrap();
+	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"allow","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "deployment_administrator").await.unwrap();
 	for entry in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(entry), 0, true, "operator")
+			.set_catalog(
+				"acme",
+				&reference(entry),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
 	let credential = authorization
-		.issue_credential("acme", "alice", 3600, "operator")
+		.issue_credential("acme", "alice", 3600, "deployment_administrator")
 		.await
 		.unwrap();
 	let writer = authorization.authenticate(&credential.token).await.unwrap();
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -490,7 +502,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 				Query::select()
 					.expr(Expr::value(message))
 					.expr(Expr::value(workspace))
-					.expr(Expr::value("operator"))
+					.expr(Expr::value("deployment_administrator"))
 					.expr(Expr::value(body))
 					.expr(Expr::value(format!("primary-{message}")))
 					.expr(Expr::value(chrono::Utc::now()))
@@ -516,7 +528,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 			if offset == 0 {
 				&writer
 			} else {
-				&Actor::Operator
+				&Actor::DeploymentAdministrator
 			},
 			mutation(
 				&bank,
@@ -541,7 +553,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	authorization.replace("acme", 2, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
         {"id":"allow","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
         {"id":"revoke-root-reader","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["*"]}}
-    ]})).unwrap(), "operator").await.unwrap();
+    ]})).unwrap(), "deployment_administrator").await.unwrap();
 	let report = recovery::restore(&store, directory, &archive)
 		.await
 		.unwrap();
@@ -549,7 +561,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	assert!(
 		memory::list(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank
@@ -586,7 +598,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -597,7 +609,7 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	.bank;
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -765,7 +777,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -776,7 +788,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	.bank;
 	let root = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -793,7 +805,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	dependent.evidence = vec![root.evidence()];
 	let dependent = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -807,7 +819,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	.remove(0);
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -865,7 +877,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	assert_eq!(state, "purged");
 	let replaced = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -880,7 +892,7 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	assert_eq!(
 		memory::list(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			memory::ReadBank {
 				provider: reference("p"),
 				bank

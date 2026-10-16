@@ -11,7 +11,7 @@ another without any change to the Harness or the Agent definition.
 The Harness has no research tool names and the Agent configuration has no
 research flags. It reacts only to declared tool behavior:
 
-| Declared behavior            | Operator effect                                                              |
+| Declared behavior            | Harness effect                                                               |
 | ---------------------------- | ---------------------------------------------------------------------------- |
 | `yields: [Search]`           | None; Source records are discovery hints and cannot be cited                 |
 | `yields: [Fetch, Citations]` | The Run's final answer has its Source citations checked                      |
@@ -109,6 +109,44 @@ reach the progress stream; the verified final answer is published as usual.
 A Run that binds only `search` has no citable evidence, so its answers are not
 checked; search snippets are never evidence.
 
+## Reading cited evidence
+
+A Source citation binds to the Run that published it. The Node records that
+Run on each message and result Artifact the Run publishes (`run_id` on
+`Message` and `Artifact`). People, peers and other Nodes cannot set it, and
+the dashboard never infers it from an idempotency key. Text without a
+publishing Run, such as a person's message or an answer another Node
+delivered, has no citations: its markers stay literal text.
+
+`GET /api/runs/{run}/evidence/{evidence_ref}` reads one Evidence fragment of that
+Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
+
+- the passage exactly as delivered to the Agent, with its lines, pages and the
+  snapshot's `text_digest`;
+- the Document snapshot's final `url` (and `requested_url` when a redirect
+  changed it), title, media type, `fetched_at` and completeness;
+- `context`: up to 20 whole snapshot lines and 4 KiB of text on each side of
+  the passage. The Agent never received these lines; they let a reader judge
+  the passage in its place. `context` is `null` once the snapshot's text is no
+  longer retained, while the passage itself stays readable.
+
+The reader needs exactly the authority of `GET /api/runs/{run}`, evaluated at
+each read. A Subject needs `workspace.read` and the Run's visibility; an
+Deployment Administrator needs the Workspace's Deployment Administrator visibility. Each of these returns the
+same `404 {"error":"evidence unavailable"}`, so a response never reveals
+whether a Run or its evidence exists:
+
+- a reader who may not read the Run;
+- a Run or reference that does not exist, including evidence deleted with its
+  Run;
+- a reference that belongs to another Run;
+- a malformed reference.
+
+The dashboard shows the citations in channel and thread messages and in a
+Task's text result as numbered chips. A repeated reference keeps its number.
+Opening a chip reads that one fragment. Every 404 renders as "This source is
+unavailable", never as an error.
+
 ## Web disclosure approval
 
 `search` and `fetch` declare `disclosure_approval`: the exact query or page
@@ -151,8 +189,8 @@ same-host redirect is checked again before any request.
 
 ## Cost attribution and limits
 
-A search provider may name the Search service operator's account. The Brave
-package reads the operator's account profile, which records the agreement,
+A search provider may name the Search account holder's account. The Brave
+package reads the Search account holder's account profile, which records the agreement,
 retention terms, request price and monthly limit. Before dispatch the host
 checks the terms are current and that one more request fits the month's limit
 (base fee plus every charged or still-unknown attempt). The reservation records
@@ -186,7 +224,7 @@ The Brave key is a **tool secret**: the profile's `credential_env` names an
 {
   "account_id": "brave-account",
   "agreement_reference": "contract-2026-10",
-  "verified_by": "operator",
+  "verified_by": "deployment_administrator",
   "verified_at": "2026-10-01T00:00:00Z",
   "review_after": "2027-01-01T00:00:00Z",
   "storage_permitted": true,
@@ -219,7 +257,7 @@ or both ports of `aidash_application::ports::research`:
 
 - `SearchProvider`: `disclosure(query)` returns the exact destination and
   content it will send (or a contract failure if it cannot send the query
-  unchanged), `account()` returns the Search service operator's current terms
+  unchanged), `account()` returns the Search account holder's current terms
   or `None`, and `search(query)` returns raw candidates or a contract
   `Failure`. It must not relax the query's filters; the host filters again.
 - `PageProvider`: `admit(url)` performs literal destination checks before any
@@ -242,7 +280,7 @@ contract against it and a production-shaped provider.
   billed-cost reconciliation need live verification with a real account.
 - Retained evidence has no separate retention period or revocation endpoint; it
   lives and is deleted with its Run.
-- There is no evidence viewer in the dashboard; citations appear as their
-  markers in the published answer.
+- Citations from one Run cannot be shown in another Run's text; a parent Run
+  that relays a child Run's answer does not carry the child's citations.
 - Third-party providers over the HTTP, MCP or Agent transports cannot declare
   research operations yet; providers are Node implementations.

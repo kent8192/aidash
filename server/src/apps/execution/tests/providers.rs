@@ -39,6 +39,7 @@ fn config(
 		cost: json!({}),
 		projection_versions: vec![],
 		cache_mode: None,
+		request_estimator: None,
 	}
 }
 
@@ -167,6 +168,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 						cache_scope: None,
 						cache_breakpoints: false,
 						disable_provider_transforms: false,
+						estimate: Default::default(),
 					},
 					&NoProgress,
 				)
@@ -213,6 +215,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 ) {
 	use aidash_domain::{
 		model::CacheMode,
+		projection::ProjectionVersion,
 		provider::{ModelContext, OrderedContext},
 	};
 	let mut fixture = completion_server.await;
@@ -230,10 +233,12 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 		cache_scope: None,
 		cache_breakpoints,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	};
 	let mut explicit = config("openrouter", endpoint.clone());
 	explicit.model_id = "anthropic/claude-fixture".into();
 	explicit.cache_mode = Some(CacheMode::Explicit);
+	explicit.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
 	let model = fixture_provider(http_client.clone(), explicit).unwrap();
 
 	model.infer(ordered(true), &NoProgress).await.unwrap();
@@ -258,6 +263,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 
 	let mut automatic = config("openrouter", endpoint);
 	automatic.cache_mode = Some(CacheMode::Automatic);
+	automatic.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
 	let model = fixture_provider(http_client, automatic).unwrap();
 	assert!(model.infer(ordered(true), &NoProgress).await.is_err());
 	assert!(
@@ -317,6 +323,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts(
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&NoProgress,
 		)
@@ -419,6 +426,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline(
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&NoProgress,
 		),
@@ -516,6 +524,7 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 					cache_scope: None,
 					cache_breakpoints: false,
 					disable_provider_transforms: false,
+					estimate: Default::default(),
 				},
 				&NoProgress,
 			)
@@ -553,6 +562,7 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason(
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&NoProgress,
 		)
@@ -588,6 +598,7 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data(
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&NoProgress,
 		)
@@ -732,6 +743,7 @@ async fn keyless_inference_to_an_unpermitted_private_origin_sends_nothing(
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			},
 			&NoProgress,
 		)

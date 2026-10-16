@@ -35,7 +35,7 @@ pub trait SearchProvider: Send + Sync {
 	/// The exact outbound content; a query the provider cannot send unchanged
 	/// is rejected here, before any approval is requested.
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure>;
-	/// The Search service operator's current account terms, or `None` for a
+	/// The Search account holder's current account terms, or `None` for a
 	/// provider that sends nothing outside the Node.
 	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure>;
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure>;
@@ -149,6 +149,14 @@ pub trait EvidenceStore: Send + Sync {
 	) -> Result<Vec<EvidenceFragment>>;
 }
 
+/// Whether the current reader may read a Run now, decided exactly as Run
+/// inspection decides it for that reader. A Run that does not exist is not
+/// readable.
+#[async_trait]
+pub trait RunReader: Send + Sync {
+	async fn readable(&self, run: Uuid) -> Result<bool>;
+}
+
 /// One Web disclosure: Run-derived content leaving the Node through a provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebDisclosure {
@@ -183,7 +191,7 @@ pub enum DisclosureState {
 	Approved {
 		approval_id: Uuid,
 	},
-	/// An eligible person must decide first. The operator waits on this approval.
+	/// An eligible person must decide first. The Run waits on this approval.
 	Pending {
 		approval_id: Uuid,
 		expires_at: Option<DateTime<Utc>>,

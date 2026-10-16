@@ -1,6 +1,8 @@
-//! Operator-only activation and Tenant installation administration.
+//! Deployment Administrator-only activation and Tenant installation administration.
 use super::definitions;
-use crate::{Error, Result, ports::marketplace::OperatorScope, registry::DefinitionValidation};
+use crate::{
+	Error, Result, ports::marketplace::DeploymentAdministratorScope, registry::DefinitionValidation,
+};
 use aidash_domain::{
 	marketplace::definitions::{content, key, manifest, prospective_installation, reference},
 	marketplace::installations::activation,
@@ -33,11 +35,11 @@ fn conflict() -> Error {
 	Error::Conflict("revision or immutable content changed".into())
 }
 pub async fn activate(
-	scope: &mut dyn OperatorScope,
+	scope: &mut dyn DeploymentAdministratorScope,
 	id: &str,
 	input: &ActivationCommand,
 ) -> Result<Installation> {
-	require_operator(scope.principal())?;
+	require_deployment_administrator(scope.principal())?;
 	scope.load_tenant(&input.tenant).await?;
 	scope.distribution_lock(true).await?;
 	scope.enable_writer().await?;
@@ -66,14 +68,14 @@ pub async fn activate(
 		.await?;
 	let install = activation(install, input.revision, input.enabled);
 	scope.save_installation(&install).await?;
-	scope.event("marketplace.activation_changed", json!({"installation":id,"tenant":input.tenant,"revision":input.revision,"enabled":input.enabled,"actor":"operator"})).await?;
+	scope.event("marketplace.activation_changed", json!({"installation":id,"tenant":input.tenant,"revision":input.revision,"enabled":input.enabled,"actor":"deployment_administrator"})).await?;
 	Ok(install)
 }
 pub async fn administration(
-	scope: &mut dyn OperatorScope,
+	scope: &mut dyn DeploymentAdministratorScope,
 	input: &AdministrationQuery,
 ) -> Result<AdministrationPage> {
-	require_operator(scope.principal())?;
+	require_deployment_administrator(scope.principal())?;
 	aidash_domain::policy::identifier(&input.tenant)?;
 	scope.distribution_lock(false).await?;
 	let mut rows = scope
@@ -108,7 +110,7 @@ pub async fn administration(
 #[cfg(test)]
 mod tests;
 
-pub use crate::authorization::require_operator;
+pub use crate::authorization::require_deployment_administrator;
 
 pub mod approval_set;
 pub mod host_packages;

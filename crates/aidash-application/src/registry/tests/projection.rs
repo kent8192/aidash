@@ -47,6 +47,8 @@ fn is_invalid(error: &Error) -> bool {
 #[rstest]
 #[case::declared_ordered(Some(json!(["legacy","ordered"])), Some("ordered"))]
 #[case::declared_legacy(Some(json!(["legacy","ordered"])), Some("legacy"))]
+#[case::declared_native(Some(json!(["legacy","ordered","native"])), Some("native"))]
+#[case::native_only(Some(json!(["native"])), Some("native"))]
 #[case::undeclared_legacy(None, None)]
 #[case::explicit_legacy(None, Some("legacy"))]
 #[tokio::test]
@@ -78,8 +80,8 @@ async fn registration_accepts_versions_the_model_declares(
 #[case::undeclared_ordered(None, "ordered")]
 #[case::ordered_not_listed(Some(json!(["legacy"])), "ordered")]
 #[case::legacy_not_listed(Some(json!(["ordered"])), "legacy")]
-#[case::native_agent(Some(json!(["legacy","ordered"])), "native")]
-#[case::native_declared_by_stored_model(Some(json!(["legacy","ordered","native"])), "native")]
+#[case::native_not_listed(Some(json!(["legacy","ordered"])), "native")]
+#[case::undeclared_native(None, "native")]
 #[tokio::test]
 async fn registration_rejects_versions_the_model_cannot_render(
 	validation: DefinitionValidation,
@@ -100,7 +102,6 @@ async fn registration_rejects_versions_the_model_cannot_render(
 }
 
 #[rstest]
-#[case::native(json!(["legacy","native"]))]
 #[case::duplicate(json!(["legacy","ordered","legacy"]))]
 #[case::unknown(json!(["legacy","v4"]))]
 fn model_definitions_reject_unrenderable_declarations(
@@ -116,6 +117,7 @@ fn model_definitions_reject_unrenderable_declarations(
 #[case::omitted(None)]
 #[case::legacy_and_ordered(Some(json!(["legacy","ordered"])))]
 #[case::ordered_only(Some(json!(["ordered"])))]
+#[case::with_native(Some(json!(["legacy","ordered","native"])))]
 fn model_definitions_accept_implemented_declarations(
 	validation: DefinitionValidation,
 	#[case] versions: Option<Value>,
@@ -163,7 +165,7 @@ fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_legacy(
 
 /// An Ordered-capable model on `model_id`, declaring `cache_mode` if given.
 fn cache_model(model_id: &str, cache_mode: Option<&str>) -> Value {
-	let mut config = model_config(Some(json!(["legacy", "ordered"])));
+	let mut config = model_config(Some(json!(["legacy", "ordered", "native"])));
 	config["model_id"] = json!(model_id);
 	if let Some(mode) = cache_mode {
 		config["cache_mode"] = json!(mode);
@@ -185,10 +187,11 @@ fn cache_agent(version: Option<&str>) -> Value {
 async fn registration_accepts_prompt_cache_on_an_ordered_agent_and_explicit_model(
 	validation: DefinitionValidation,
 	#[case] prompt_cache: Option<&str>,
+	#[values("ordered", "native")] version: &str,
 ) {
 	// Arrange
 	let mut scope = scope_with(cache_model("anthropic/claude-fixture", Some("explicit")));
-	let mut config = agent_config(Some("ordered"));
+	let mut config = agent_config(Some(version));
 	if let Some(cache) = prompt_cache {
 		config["prompt_cache"] = json!(cache);
 	}

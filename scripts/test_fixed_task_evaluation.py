@@ -489,10 +489,6 @@ class FixtureTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             chat(self.fixture, "unknown-task")
 
-    def test_jev_fixture_drops_every_prunable_result(self):
-        status, payload = self.fixture.jev({"questions": {"q1": {}, "q2": {}}})
-        self.assertEqual(payload["answers"]["q2"], {"type": "noul", "noul": 0.0})
-
 
 class OfflineCalibrationTest(unittest.TestCase):
     """Drive each short task's scripted behavior to its final answer without a Node.
@@ -608,7 +604,7 @@ class RunnerTest(unittest.TestCase):
         self.planned["corpus"] = self.corpus
 
     def experiment(self, node):
-        experiment = runner.Experiment(runner.Api(node.call, "operator"), "aidash://n", "evaluation", "fte000000")
+        experiment = runner.Experiment(runner.Api(node.call, "deployment-administrator"), "aidash://n", "evaluation", "fte000000")
         experiment.token = "subject"
         return experiment
 
@@ -637,7 +633,7 @@ class RunnerTest(unittest.TestCase):
 
     def test_api_failures_are_infrastructure_failures_not_dropped_runs(self):
         experiment = self.experiment(FakeNode(["RUNNING"]))
-        experiment.api = runner.Api(lambda *_: (500, {"error": "down"}), "operator")
+        experiment.api = runner.Api(lambda *_: (500, {"error": "down"}), "deployment-administrator")
         observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"})
         result = evaluation.run_result(self.corpus, self.planned, 1, observed, "live", True)
         self.assertEqual(result["outcome"], "infrastructure_failure")
@@ -654,7 +650,7 @@ class RunnerTest(unittest.TestCase):
             return node.call(method, path, body, token)
         clock = Clock()
         experiment = self.experiment(node)
-        experiment.api = runner.Api(failing_once, "operator")
+        experiment.api = runner.Api(failing_once, "deployment-administrator")
         observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
                                    clock=clock, sleep=clock.sleep)
         self.assertTrue(node.cancelled, "a Run the evaluator stops following must not keep running")
@@ -671,7 +667,7 @@ class RunnerTest(unittest.TestCase):
             return node.call(method, path, body, token)
         clock = Clock()
         experiment = self.experiment(node)
-        experiment.api = runner.Api(unavailable_claim, "operator")
+        experiment.api = runner.Api(unavailable_claim, "deployment-administrator")
         # The first backoff (2 s) would end after the 1.5 s deadline.
         observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
                                    timeout=1.5, clock=clock, sleep=clock.sleep)
@@ -695,7 +691,7 @@ class RunnerTest(unittest.TestCase):
                     return node.call(method, path, body, token)
                 clock = Clock()
                 experiment = self.experiment(node)
-                experiment.api = runner.Api(late, "operator")
+                experiment.api = runner.Api(late, "deployment-administrator")
                 observed = runner.run_task(experiment.api, experiment, self.planned, 1,
                                            {"id": "a", "version": "1.0.0"}, timeout=1.5, clock=clock,
                                            sleep=clock.sleep)
@@ -713,7 +709,7 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(node.cancelled)
         self.assertTrue(observed["interrupted"])
 
-    def test_cancellation_falls_back_to_the_operator_token(self):
+    def test_cancellation_falls_back_to_the_deployment_administrator_token(self):
         node = FakeNode(["RUNNING"])
         failed, controls = [], []
 
@@ -728,10 +724,10 @@ class RunnerTest(unittest.TestCase):
             return node.call(method, path, body, token)
         clock = Clock()
         experiment = self.experiment(node)
-        experiment.api = runner.Api(subject_cannot_cancel, "operator")
+        experiment.api = runner.Api(subject_cannot_cancel, "deployment-administrator")
         observed = runner.run_task(experiment.api, experiment, self.planned, 1, {"id": "a", "version": "1.0.0"},
                                    clock=clock, sleep=clock.sleep)
-        self.assertEqual(controls, ["subject", "operator"])
+        self.assertEqual(controls, ["subject", "deployment-administrator"])
         self.assertTrue(node.cancelled)
         self.assertFalse(observed["cancellation_failed"])
 
@@ -819,10 +815,10 @@ class MemoryTest(unittest.TestCase):
 
 class LiveGuardTest(unittest.TestCase):
     NOW = datetime.datetime(2026, 10, 11, tzinfo=datetime.UTC)
-    ENV = {"AIDASH_EVALUATION_TOKEN": "operator", "AIDASH_EVALUATION_SUBJECT_TOKEN": "subject"}
+    ENV = {"AIDASH_EVALUATION_TOKEN": "deployment-administrator", "AIDASH_EVALUATION_SUBJECT_TOKEN": "subject"}
 
     def approval(self, value, **overrides):
-        approval = {"approver": "operator", "approved_at": "2026-10-10T00:00:00Z",
+        approval = {"approver": "evaluator", "approved_at": "2026-10-10T00:00:00Z",
                     "expires_at": "2026-10-12T00:00:00Z", "corpus_sha256": value["_snapshot"]["sha256"],
                     "models": ["live@1.0.0"], "max_spend_nanocredits": 10_000_000, "disclosure": "synthetic corpus",
                     "prices": {"live@1.0.0": {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 1,
@@ -894,7 +890,7 @@ class LiveGuardTest(unittest.TestCase):
             ("models must be a list", dict(models="live@1.0.0")),
             ("max_spend_nanocredits must be a positive integer", dict(max_spend_nanocredits="10000000")),
             ("max_spend_nanocredits must be a positive integer", dict(max_spend_nanocredits=True)),
-            ("approver must be a non-empty string", dict(approver=["operator"])),
+            ("approver must be a non-empty string", dict(approver=["evaluator"])),
             ("prices must be an object", dict(prices=[])),
             ("prices for live@1.0.0 must be an object", dict(prices={"live@1.0.0": 5})),
         ]
@@ -2115,7 +2111,7 @@ class DeadlineTest(unittest.TestCase):
         def unavailable(method, path, body, token, timeout):
             timeouts.append(timeout)
             return 503, {"error": "busy"}
-        api = runner.Api(unavailable, "operator", sleep=clock.sleep, clock=clock).until(3.0)
+        api = runner.Api(unavailable, "deployment-administrator", sleep=clock.sleep, clock=clock).until(3.0)
         with self.assertRaises(runner.ApiError):
             api.get("/api/state")
         self.assertEqual(timeouts, [3.0, 1.0], "each timeout is the time left; no backoff crosses the deadline")
@@ -2138,7 +2134,7 @@ class DeadlineTest(unittest.TestCase):
                 clock.now += timeout  # the transport times out exactly at the deadline
                 raise TimeoutError("timed out")
             return node.call(method, path, body, token)
-        experiment = runner.Experiment(runner.Api(stalling, "operator", clock=clock), "aidash://n", "evaluation", "fte0")
+        experiment = runner.Experiment(runner.Api(stalling, "deployment-administrator", clock=clock), "aidash://n", "evaluation", "fte0")
         experiment.token = "subject"
         observed = runner.run_task(experiment.api, experiment, planned, 1, {"id": "a", "version": "1.0.0"},
                                    timeout=5.0, clock=clock, sleep=clock.sleep)

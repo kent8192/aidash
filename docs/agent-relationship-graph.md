@@ -150,7 +150,7 @@ kind and version. Missing exact references stay unavailable.
 
 Graph View asks the local Node for directly authorized Peer boundaries. Subjects
 can use Topology when their local policy grants `federation.graph.read`; named
-operators can select one authorized receiving tenant. Expand a Peer to fetch a
+Deployment Administrators can select one authorized receiving tenant. Expand a Peer to fetch a
 versioned, bounded projection from that Node. **Configured** describes a Peer
 boundary, not its health. An authorized empty projection, a denial, an
 unavailable Peer and an older Peer without the graph endpoint have distinct

@@ -602,7 +602,7 @@ impl Home {
 					&self.owner(),
 					key,
 					artifact,
-					self.authority.as_ref().map(|_| self.run.id),
+					crate::store::Publication::by(self.run.id, self.authority.is_some()),
 					None,
 				)
 				.await
@@ -624,7 +624,7 @@ impl Home {
 					&self.owner(),
 					key,
 					artifact,
-					self.authority.as_ref().map(|_| self.run.id),
+					crate::store::Publication::by(self.run.id, self.authority.is_some()),
 				)
 				.await
 		} else {
@@ -706,15 +706,14 @@ impl Home {
 		.await
 	}
 	pub async fn message(&self, key: &str, content: &str) -> Result<()> {
-		if self.authority.is_some() {
+		if self.authority.is_some() || self.local() {
+			let run = match self.authority {
+				Some(_) => self.execution_run()?.metadata(),
+				None => self.run.clone(),
+			};
 			self.federation
 				.store
-				.message_from_run(self.execution_run()?, &self.owner(), content, key)
-				.await
-		} else if self.local() {
-			self.federation
-				.store
-				.message(self.run.workspace_id, &self.owner(), content, Some(key))
+				.message_from_run(&run, &self.owner(), content, key, self.authority.is_some())
 				.await
 		} else {
 			self.command::<Value>("message", json!({"key":key,"content":content}))

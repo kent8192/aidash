@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn task() -> Task {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"title":"Task","description":"Complete atomically","status":"RUNNING","requirements":{},"owner":"aidash://worker/agents/agent@1","created_by":"operator","dependencies":[],"parent_id":null,"revision":3,"created_at":"2030-01-01T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"title":"Task","description":"Complete atomically","status":"RUNNING","requirements":{},"owner":"aidash://worker/agents/agent@1","created_by":"deployment_administrator","dependencies":[],"parent_id":null,"revision":3,"created_at":"2030-01-01T00:00:00Z"})).unwrap()
 }
 
 #[fixture]
@@ -163,6 +163,7 @@ impl MutationScope for Scope {
 			created_by: task.owner.clone().unwrap(),
 			idempotency_key: key.into(),
 			created_at: task.created_at,
+			run_id: None,
 		};
 		Ok((saved, created))
 	}

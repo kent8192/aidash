@@ -164,7 +164,7 @@ impl Models {
 		}
 		// A human may request learning from a generated Run. Admission still uses
 		// the caller's lease, but model I/O must also retain that Run's current
-		// execution authority and ancestor budgets, including for operator calls.
+		// execution authority and ancestor budgets, including for Deployment Administrator calls.
 		let mut origin = if let Some(id) = run {
 			let record: aidash_domain::Run = crate::database::query_as(
 				&Query::select()
@@ -622,6 +622,7 @@ impl Models {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
+			estimate: Default::default(),
 		};
 		request.ensure_fits(config.context_window)?;
 		let charge = rate.charge(input as u64, output as u64)?;

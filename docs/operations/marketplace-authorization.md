@@ -1,10 +1,10 @@
 # Tenant Marketplace operations
 
-Issue [#74](https://github.com/kent8192/aidash/issues/74) adds tenant-owned distribution alongside the original operator Marketplace. The accepted [design contract](https://github.com/kent8192/aidash/blob/4347688473f4be3fa1a6bad5b83cc2315e07f954/docs/design/2026-09-30-marketplace-authorization-contract.md) defines the policy boundary. Application behavior is covered by the [Marketplace authorization suite](../../server/src/apps/marketplace/tests/marketplace_authorization.rs); the dashboard scenarios are in `web/tests/marketplace.spec.ts`.
+Issue [#74](https://github.com/kent8192/aidash/issues/74) adds tenant-owned distribution alongside the original Deployment-wide Marketplace. The accepted [design contract](https://github.com/kent8192/aidash/blob/4347688473f4be3fa1a6bad5b83cc2315e07f954/docs/design/2026-09-30-marketplace-authorization-contract.md) defines the policy boundary. Application behavior is covered by the [Marketplace authorization suite](../../server/src/apps/marketplace/tests/marketplace_authorization.rs); the dashboard scenarios are in `web/tests/marketplace.spec.ts`.
 
 ## The only Marketplace
 
-Issue [#243](https://github.com/kent8192/aidash/issues/243) removed the original operator Marketplace: its `packages` and `installations` tables, the mutable installation overlays, legacy adoption and the deployment-wide compatibility gate. The tenant-scoped Marketplace below is the only one, and it is always available.
+Issue [#243](https://github.com/kent8192/aidash/issues/243) removed the original Deployment-wide Marketplace: its `packages` and `installations` tables, the mutable installation overlays, legacy adoption and the deployment-wide compatibility gate. The tenant-scoped Marketplace below is the only one, and it is always available.
 
 Every installed Registry document carries an `installation` marker with contract, tenant, installation and revision. Older binaries reject this unknown field. Database triggers reject old writes to projection rows, legacy overlays on these IDs and cross-tenant catalog grants. Projection references are allocated once and persisted with each revision; an existing native ID beginning with `mkt-` remains native. These fences do not make a rolling downgrade safe. A migration rollback refuses to erase populated scoped versions or installation mappings. Keep a compatible binary and restore from a verified backup for disaster recovery; do not strip markers or reuse projection IDs.
 
@@ -24,7 +24,7 @@ Policies are evaluated in the caller's tenant. The package resource kind is `pac
 | Publish registered source          | ordinary approved `registry.read`, `registry.export`, `marketplace.publish`                                        |
 | Change exact-version audience      | owner-tenant `marketplace.share`                                                                                   |
 | Change onward distribution consent | owner-tenant `marketplace.redistribution.manage`                                                                   |
-| Approve/activate/revoke            | explicit operator catalog administration                                                                           |
+| Approve/activate/revoke            | explicit Deployment Administrator catalog administration                                                           |
 | Execute                            | existing exact Agent-subject, catalog, delegation and actual action permissions                                    |
 
 Default deny, explicit deny, role/group inheritance, ABAC and delegated ancestors apply to all subject kinds. A recipient needs both its own policy and a live audience/consent path. Installation does not create a privileged Agent subject. Administrators must explicitly configure the qualified installed Agent identity and its grants before execution.
@@ -56,7 +56,7 @@ Install using `POST /api/marketplace/packages/{key}/install` with source `digest
 
 `GET /api/marketplace/installations` and `/api/marketplace/installations/{id}?revision=N` are management views independent of ordinary Registry discovery. New installs are pending. `POST /api/marketplace/installations/{id}` accepts `expected_revision`, `config`, `bindings` and `idempotency_key`. Identical content returns the existing revision; changed configuration or dependency bindings create a new immutable pending Registry definition. Active content remains unchanged.
 
-Operators inspect retained revisions with `GET /api/marketplace/administration?tenant=...`. Sources and administration accept `offset` (0–10,000) and `limit` (1–100, default 50), retaining their array bodies. A present `x-aidash-next-offset` header identifies the next page, including an empty source page after denied candidates. Source requests traverse at most 256 candidates; administration queries load only the requested tenant and revision page. Approve and activate a prepared revision atomically at `POST /api/marketplace/installations/{id}/activation`:
+Deployment Administrators inspect retained revisions with `GET /api/marketplace/administration?tenant=...`. Sources and administration accept `offset` (0–10,000) and `limit` (1–100, default 50), retaining their array bodies. A present `x-aidash-next-offset` header identifies the next page, including an empty source page after denied candidates. Source requests traverse at most 256 candidates; administration queries load only the requested tenant and revision page. Approve and activate a prepared revision atomically at `POST /api/marketplace/installations/{id}/activation`:
 
 ```json
 {
@@ -78,7 +78,7 @@ Credential/policy, identity/mapping and (for browser requests) session leases pr
 
 Scoped HTTP handlers have a 30-second deadline. Responses are serialized and inserted into a bounded queue (two MiB maximum) while authority remains held; only a successful commit exposes that queue to the transport. SSE uses a bounded per-frame handoff and rechecks each referenced resource. Database locks do not wait for the client's network drain. Bytes already handed off cannot be retracted. Authenticated scoped responses use `Cache-Control: no-store`.
 
-Missing, foreign and unreadable resources/dependencies return generic 403; invalid credentials retain 401 behavior. Resource-independent malformed requests use 400/422. Authorized digest/version/revision conflicts use 409. Operator-only `marketplace.audit` events retain request and idempotency IDs, actor, policy revision, package/installation identity and digests, consulted audience/consent revisions and bounded outcomes. A denial is audited separately after the protected transaction rolls back. Neither bearer values nor configuration/secret contents enter this audit. Detailed policy audits and legacy/unknown events remain unavailable through subject Marketplace responses. Marketplace events disclose only a resource reference and mutation metadata after the current package/installation reader authorizes it. Dashboard caches are keyed by authority context and cleared after relevant 401/403 responses.
+Missing, foreign and unreadable resources/dependencies return generic 403; invalid credentials retain 401 behavior. Resource-independent malformed requests use 400/422. Authorized digest/version/revision conflicts use 409. Deployment Administrator-only `marketplace.audit` events retain request and idempotency IDs, actor, policy revision, package/installation identity and digests, consulted audience/consent revisions and bounded outcomes. A denial is audited separately after the protected transaction rolls back. Neither bearer values nor configuration/secret contents enter this audit. Detailed policy audits and legacy/unknown events remain unavailable through subject Marketplace responses. Marketplace events disclose only a resource reference and mutation metadata after the current package/installation reader authorizes it. Dashboard caches are keyed by authority context and cleared after relevant 401/403 responses.
 
 Subject event queries select tenant/audience candidates before loading documents; audit and unrelated-tenant events do not consume the scan budget. Snapshot and polling requests evaluate at most 4,096 candidates. Polling advances its cursor across denied candidates. HTTP `/api/events` keeps its array body and returns `x-aidash-event-cursor`; clients must use that header as the next `after` value even on an empty page. SSE maintains its own cursor across hidden history. Indexed tenant/package event references and audience membership support this filtering.
 
@@ -86,7 +86,7 @@ The lock deliberately serializes Marketplace mutations for one database. It keep
 
 Browser logout is ordered against pending requests, including SSE frame delivery. Session expiry is rechecked at response handoff. A durable Run reconstructs its credential/subject authority without the originating HTTP session; logout does not silently cancel previously admitted work, while credential, identity, mapping, policy and catalog revocation still apply.
 
-Browser operators retain identity, operator-grant and session leases for administration reads and activation. Reads serialize into a bounded queue under those leases and recheck session expiry before commit; mutations also recheck expiry before commit; a queued request cannot outlive logout or operator-grant revocation.
+Browser Deployment Administrators retain identity, deployment-administrator-grant and session leases for administration reads and activation. Reads serialize into a bounded queue under those leases and recheck session expiry before commit; mutations also recheck expiry before commit; a queued request cannot outlive logout or deployment-administrator-grant revocation.
 
 ## Dashboard examples
 
@@ -116,4 +116,4 @@ Run `cargo test --locked --lib --test marketplace_authorization --test dashboard
 
 Verified locally on 2026-09-30 after integration with the current SSE delivery service: all 21 Marketplace cases, four OIDC cases, 19 SSE cases and 155 library tests passed. The separate SSE load benchmark remains ignored by default. The earlier focused regression run also passed 80 existing policy, execution, Registry, record-constraint and scoped-remote tests. Both dashboard locale cases, API generation/TypeScript/Vite build, Clippy with warnings denied, focused ESLint, formatting and whitespace checks passed. The browser tests use API fixtures; live server authorization is exercised by the database tests. The Vite build retains its existing large-chunk warning.
 
-These checks establish local implementation behavior. The deployment gate remains disabled until an operator verifies and enables a compatible fleet; no hosted CI, deployment or release is implied by local tests.
+These checks establish local implementation behavior; no hosted CI, deployment or release is implied by local tests.

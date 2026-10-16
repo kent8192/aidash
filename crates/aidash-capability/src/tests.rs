@@ -210,3 +210,51 @@ async fn enforces_jws_format_and_key_binding() {
 		);
 	}
 }
+
+#[tokio::test]
+async fn decision_tokens_are_alone_for_a_run_without_an_output_bound() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let decision = || {
+		let mut value = claims();
+		value.ops = vec![Operation::Decision];
+		value.model = "typesafe/jev-1.13".into();
+		value.max_output_tokens = 0;
+		value
+	};
+	let token = mint(&decision(), &signer).await.unwrap();
+	let verified = keys
+		.verify(token.expose_secret(), "worker", "environment", 100)
+		.unwrap();
+	assert_eq!(verified.ops, vec![Operation::Decision]);
+	assert_eq!(
+		serde_json::to_value(&verified.ops).unwrap(),
+		serde_json::json!(["decision"])
+	);
+	for change in 0..4 {
+		let mut value = decision();
+		match change {
+			// A completion bound means nothing for probabilities; refuse rather than ignore it.
+			0 => value.max_output_tokens = 1,
+			// A Decision Attempt never shares a token with inference.
+			1 => value.ops.push(Operation::Chat),
+			2 => value.cache_breakpoints = true,
+			// Jev calls are Run provider calls, never Tenant maintenance (ADR 0041).
+			3 => {
+				value.sub = TokenSubject::Maintenance {
+					maintenance: Maintenance::MemoryIndexing,
+					tenant: value.tenant.clone(),
+				}
+			}
+			_ => unreachable!(),
+		}
+		let token = mint(&value, &signer).await.unwrap();
+		assert_eq!(
+			keys.verify(token.expose_secret(), "worker", "environment", 100)
+				.unwrap_err(),
+			Failure::ClaimViolation,
+			"change {change}"
+		);
+	}
+}

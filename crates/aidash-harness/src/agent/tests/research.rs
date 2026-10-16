@@ -1,4 +1,4 @@
-//! The operator handles Web research only through declared behavior: citation
+//! The Harness handles Web research only through declared behavior: citation
 //! checks follow `yields: Citations` and disclosure waits follow the generic
 //! approval result. No research tool name is consulted.
 use super::*;
@@ -201,6 +201,41 @@ async fn text_beside_tool_calls_is_not_published_with_invalid_citations(mut fixt
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert!(!calls.contains(&"home.output"), "{calls:?}");
 	assert!(calls.contains(&"store.evidence"));
+}
+
+/// Context inspection shows the whole journal, so withheld text never
+/// enters a Native Model Turn either; the turn keeps only its calls.
+#[rstest]
+#[tokio::test]
+async fn a_native_model_turn_records_no_text_the_citation_gate_withheld(mut fixture: Fixture) {
+	// Arrange
+	Arc::get_mut(&mut fixture.backend.0).unwrap().projection = ProjectionVersion::Native;
+	let find = Scripted::research(Operation::Find);
+	*find.outputs.lock().unwrap() = [json!({"status":"ok"})].into();
+	bind(&mut fixture, "lookup", find);
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			text: format!("Interim [[cite:{UNKNOWN}]]"),
+			tool_calls: vec![call("call-0", "lookup", json!({}))],
+			usage_complete: true,
+			..Default::default()
+		},
+		response_epoch: 4,
+		..Default::default()
+	}));
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let calls = fixture.backend.0.calls.lock().unwrap().clone();
+	assert!(!calls.contains(&"home.output"), "{calls:?}");
+	assert_eq!(
+		fixture.run.context.events().next(),
+		Some(&ContextEvent::Assistant {
+			epoch: 4,
+			text: String::new(),
+			calls: vec!["call-0".into()],
+		})
+	);
 }
 
 #[rstest]

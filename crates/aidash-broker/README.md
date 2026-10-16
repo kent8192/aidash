@@ -58,6 +58,7 @@ their existing paths unchanged.
 | Operation  | Method and broker path                 | Success response limit |
 | ---------- | -------------------------------------- | ---------------------- |
 | chat       | `POST /api/v1/chat/completions`        | 1 MiB                  |
+| decision   | `POST /api/v1/systemone`               | 16 MiB                 |
 | discovery  | `GET /api/v1/models/{model}/endpoints` | 2 MiB                  |
 | discovery  | `GET /api/v1/endpoints/zdr`            | 8 MiB                  |
 | embeddings | `POST /api/v1/embeddings`              | 1 MiB                  |
@@ -73,7 +74,9 @@ Provider Credential model-ID validator, including single-segment and multiple-
 segment IDs, and must exactly match the signed claim; ZDR discovery is an
 operation-wide catalog. Chat requests are limited to
 16 MiB so the application's 8 MiB raw-media allowance fits after base64 encoding
-and JSON framing. Other requests remain limited to 1 MiB. Query strings,
+and JSON framing. Decision requests and responses share that limit: a System
+One exchange carries the fitted history and one answer per question, which only
+the provider's capacity bounds. Other requests remain limited to 1 MiB. Query strings,
 absolute URIs, percent-encoded paths, empty segments and
 path traversal are rejected. Violations are rejected, never rewritten.
 OpenRouter's [model fallback list](https://openrouter.ai/docs/guides/routing/model-fallbacks)
@@ -207,7 +210,7 @@ grant in the BYOK project.
 
 Managed `credential_brokers[environment_id]` also accepts `signing_version`
 (default `"1"`) and `verification_versions` (default `["1"]`). After a human
-operator creates and enables a replacement KMS version, set, for example,
+whoever runs the Deployment creates and enables a replacement KMS version, set, for example,
 `signing_version = "2"` and `verification_versions = ["1", "2"]`. The worker
 descriptor selects version 2 while the broker verifies both versions. Keep the
 old public key until all capabilities signed with it expire, then remove it from
@@ -232,9 +235,9 @@ Record the descriptor so reconciliation does not repeat the reload;
 reload failure keeps the release gated. Failed deployments that were
 deliberately gated, stopped hosts and retired hosts remain gated.
 
-### Operators who applied a pre-merge draft
+### If a pre-merge draft was applied
 
-This change has never been applied to a Cloud environment. If an operator applied
+This change has never been applied to a Cloud environment. If anyone applied
 an earlier draft that kept keys in the environments state, pause automation and
 back up both remote Terraform states before switching ownership. Keep the same
 key IDs and `broker_signing_region`; Cloud KMS [key names cannot be reused after
@@ -251,7 +254,7 @@ terraform -chdir=infra/gcp/environments state rm 'module.credential_broker["test
 
 Use the imported `broker_signing_keys` output in `credential_brokers`. Review both
 plans and require no key/key-version destruction or replacement before any apply
-or automation resume. These are operator-only state/import steps; no migration
+or automation resume. These are manual state/import steps; no migration
 automation or Cloud mutation runs as part of this implementation.
 
 ### Runtime composition

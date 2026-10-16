@@ -338,3 +338,213 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	assert_eq!(r.requests.load(Ordering::SeqCst), 3);
 	r.close().await;
 }
+
+const PAGE: &str = "https://research-fixture.example/strasse";
+
+/// The first model request reads the fixture page's first line; once a
+/// delivered fragment is in the conversation, the answer cites it.
+fn citing_router() -> Arc<Router> {
+	let provider = reinhardt::test::stub::StubRouter::new()
+		.route(
+			"/v1/chat/completions",
+			http::Method::POST,
+			reply(move |request: reinhardt::Request| {
+				async move {
+					// Only a delivered fragment puts an `ev_<uuid>` into the request.
+					let body = request.json::<Value>().unwrap().to_string();
+					let delivered = evidence_ref(&body);
+					let (finish, message) = match delivered {
+						Some(reference) => (
+							"stop",
+							json!({"role":"assistant","content":format!("The page opens with Alpha [[cite:{reference}]].")}),
+						),
+						None => (
+							"tool_calls",
+							json!({"role":"assistant","content":null,"tool_calls":[{"id":"fetch-1","type":"function","function":{
+								"name":"research_fetch","arguments":json!({"url":PAGE,"max_bytes":5}).to_string()
+							}}]}),
+						),
+					};
+					reinhardt::Response::ok()
+						.with_json(&json!({
+							"choices":[{"index":0,"finish_reason":finish,"message":message}],
+							"usage":{"prompt_tokens":1,"completion_tokens":1}
+						}))
+						.unwrap()
+				}
+			}),
+		)
+		.into_server_router();
+	Arc::new(provider)
+}
+
+/// The first `ev_<uuid>` in a tool result, as the Agent would cite it.
+fn evidence_ref(content: &str) -> Option<String> {
+	content.match_indices("ev_").find_map(|(start, _)| {
+		let candidate = content.get(start..start + 39)?;
+		Uuid::parse_str(&candidate[3..]).ok()?;
+		Some(candidate.to_owned())
+	})
+}
+
+impl Research {
+	/// Step the real worker until the Run completes.
+	async fn until_completed(&self, id: Uuid) -> Run {
+		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+		loop {
+			Harness {
+				federation: self.c.f.clone(),
+			}
+			.worker_once()
+			.await
+			.unwrap();
+			let run = self.c.f.store.run(id).await.unwrap();
+			if run.phase() == RunPhase::Completed {
+				return run;
+			}
+			if matches!(run.phase(), RunPhase::Failed | RunPhase::Cancelled)
+				|| tokio::time::Instant::now() >= deadline
+			{
+				let results = serde_json::to_value(run.context.events().collect::<Vec<_>>())
+					.unwrap()
+					.as_array()
+					.unwrap()
+					.iter()
+					.filter_map(|event| event.get("result").cloned())
+					.take(3)
+					.collect::<Vec<_>>();
+				panic!(
+					"run did not complete: phase={} error={:?} results={results:?}",
+					run.phase(),
+					run.error
+				);
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	}
+	/// The contents of the Run's own messages or Artifacts.
+	async fn published(&self, table: &str, run: Uuid) -> Vec<Value> {
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let sql = Query::select()
+			.expr(Expr::cust(if table == "messages" {
+				"to_jsonb(content)"
+			} else {
+				"content"
+			}))
+			.from(Alias::new(table))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query_scalar(&sql)
+			.fetch_all(self.c.f.store.pool.driver())
+			.await
+			.unwrap()
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the_same_absence(
+	#[future]
+	#[with(Default::default(), citing_router())]
+	research_fixture: Research,
+) {
+	// Arrange: the Run reads the page and publishes an answer citing it.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.until_completed(run.id).await;
+	let messages = r.published("messages", run.id).await;
+	let answer = messages
+		.iter()
+		.filter_map(Value::as_str)
+		.find(|content| content.contains("[[cite:"))
+		.unwrap_or_else(|| panic!("{messages:?}"));
+	let reference = evidence_ref(answer).unwrap();
+	assert_eq!(
+		r.published("artifacts", run.id).await,
+		[json!(answer)],
+		"the Task's text result records its publishing Run"
+	);
+	let path = format!("/api/runs/{}/evidence/{reference}", run.id);
+
+	// Act
+	let (status, evidence) = request(&r.c.app, &r.c.token, "GET", &path, json!(null)).await;
+
+	// Assert: the fragment as delivered, its snapshot and the undelivered context.
+	assert_eq!(status, 200, "{evidence}");
+	assert_eq!(evidence["evidence_ref"], reference);
+	assert_eq!(evidence["run_id"], json!(run.id));
+	assert_eq!(evidence["text"], "Alpha");
+	assert_eq!(
+		(&evidence["line_start"], &evidence["line_end"]),
+		(&json!(1), &json!(1))
+	);
+	assert_eq!(evidence["url"], PAGE);
+	assert_eq!(evidence["requested_url"], PAGE);
+	assert_eq!(evidence["title"], "Die Straße");
+	assert_eq!(evidence["completeness"], "complete");
+	assert!(evidence["fetched_at"].is_string());
+	assert_eq!(evidence["context"]["before"], json!([]));
+	assert_eq!(
+		evidence["context"]["after"],
+		json!([
+			{"text":"Die Straße <script>inert text</script>","page":2},
+			{"text":"Omega line","page":2}
+		])
+	);
+	let (status, deployment_administrator) =
+		request(&r.c.app, &r.c.f.config.api_token, "GET", &path, json!(null)).await;
+	assert_eq!(
+		status, 200,
+		"a Deployment Administrator reads what run_get discloses"
+	);
+	assert_eq!(deployment_administrator["text"], "Alpha");
+
+	// Everyone else gets one identical absence, whatever the reason. Bob is
+	// a member of the Tenant whose policy no longer lets him read Runs.
+	r.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"bob-reads-no-runs","effect":"deny","subjects":{"ids":["bob"]},"actions":["run.read"],"resources":{"kinds":["run"]}}));
+	let (status, value) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":3,"bundle":r.c.policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{value}");
+	let (_, bob) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	let unknown = format!("ev_{}", Uuid::new_v4());
+	for (case, token, path) in [
+		(
+			"a subject who cannot read the Run",
+			bob["token"].as_str().unwrap().to_owned(),
+			path.clone(),
+		),
+		(
+			"a reference the Run does not hold",
+			r.c.token.clone(),
+			format!("/api/runs/{}/evidence/{unknown}", run.id),
+		),
+		(
+			"a malformed reference",
+			r.c.token.clone(),
+			format!("/api/runs/{}/evidence/ev_nope", run.id),
+		),
+		(
+			"another Run",
+			r.c.token.clone(),
+			format!("/api/runs/{}/evidence/{reference}", Uuid::new_v4()),
+		),
+	] {
+		let (status, body) = request(&r.c.app, &token, "GET", &path, json!(null)).await;
+		assert_eq!(status, 404, "{case}: {body}");
+		assert_eq!(body, json!({"error":"evidence unavailable"}), "{case}");
+	}
+	r.close().await;
+}

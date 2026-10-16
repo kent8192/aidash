@@ -15,7 +15,7 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.
 
-`POST /api/generation/{tenant}/tasks/{task_id}/assign` accepts `policy_id` and a nonempty `reason`. It first discovers a matching approved, executable ordinary agent. Otherwise it reserves a generated definition, concurrency slot and token allowance atomically. The worker's `task_assign` tool exposes the same operation with its inherited tenant identity. Operator credentials cannot originate a generation request; use a tenant subject credential.
+`POST /api/generation/{tenant}/tasks/{task_id}/assign` accepts `policy_id` and a nonempty `reason`. It first discovers a matching approved, executable ordinary agent. Otherwise it reserves a generated definition, concurrency slot and token allowance atomically. The worker's `task_assign` tool exposes the same operation with its inherited tenant identity. Deployment Administrator credentials cannot originate a generation request; use a tenant subject credential.
 
 The task's durable origin chain is inherited even when its root user submits the request through the API. Generated depth is derived from trusted ancestor records. The configured permissions and every originating subject must allow execution; a child cannot remove a parent's denial. Generated definitions are bound to their original task and cannot be executed through the legacy unscoped path.
 
@@ -31,7 +31,7 @@ A running request is `ACTIVE`. Completed, failed, denied, stopped and expired re
 
 ## Dashboard
 
-Open **Agent generation** with a tenant subject credential to manage that tenant. An operator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. Compaction and embedding selectors use tenant-approved providers and expose per-agent and total call limits.
+Open **Agent generation** with a tenant subject credential to manage that tenant. A Deployment Administrator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. Compaction and embedding selectors use tenant-approved providers and expose per-agent and total call limits.
 
 On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, compaction and embedding calls/limits, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
 
@@ -58,7 +58,7 @@ Successful, complete, positive and bounded provider usage refunds unused reserva
 
 ## Approved compaction
 
-Register a `compactor` Registry entry and approve its exact version in the tenant catalog. Its configuration selects `provider: "typesafe-system-one"`, `endpoint`, `model`, `credential_env`, `max_request_bytes` (1024–1048576), `max_questions` (1–1024) and `max_response_bytes` (128–1048576). Credentials use configured `AIDASH_SECRET_*` references. The bilingual Registry form exposes these fields. HTTPS/HTTP endpoints must not contain credentials, query strings or fragments; approved calls never follow redirects, have a 5-second connection timeout and a 30-second request timeout, and enforce response size while reading.
+Register a `compactor` Registry entry and approve its exact version in the tenant catalog. Its configuration names `provider_credential: "openrouter"`, an exact Jev release as `model` (such as `typesafe/jev-1.13`; aliases are refused), `max_request_bytes` (1024–1048576), `max_questions` (1–1024) and `max_response_bytes` (128–1048576). It has no endpoint or key: calls go to OpenRouter's System One API with the Tenant's current OpenRouter Provider Credential and `provider.zdr = true` (ADR 0041). The bilingual Registry form exposes these fields. Approved calls never follow redirects, have a 5-second connection timeout and a 30-second request timeout, and enforce response size while reading.
 
 A policy explicitly references that entry:
 
@@ -76,7 +76,7 @@ The request pins this contract to its immutable policy revision. Each generation
 
 Input bytes and question counts are checked before reservation. The worker then atomically commits one call and an attempt record for every generated ancestor before network I/O. The ledger retains provider/version, run, byte count and question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries reserve new attempts. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after successful compaction and rechecks lifetime before its own HTTP request.
 
-No configured compaction permission is needed when the context already fits. Generated chains never fall back to the node's environment-selected Jev provider. Ordinary agents outside a generated chain retain that provider selection, with bounded 1 MiB request/response payloads and at most 1024 questions per request.
+No configured compaction permission is needed when the context already fits. There is no environment-selected Jev provider: an ordinary agent outside a generated chain is not pruned and stops with `prune_unavailable` when its context outgrows its model, until #108 binds the built-in compaction Decider. A Tenant without an OpenRouter binding fails the same way before any allowance is reserved.
 
 ## Approved Summary Stage model
 
@@ -125,11 +125,11 @@ Select that provider in the generation policy and set per-agent and total call a
 }
 ```
 
-The request pins the provider and limits to its policy revision. Before a query or background indexing call, every generated ancestor must remain active, unexpired and enabled, and approve the same provider version. Current catalog approval, `registry.read` and `embedding.invoke` must allow all originating subjects. Background memory indexing restores the original credential and subject chain instead of borrowing operator authority. Changing a workspace index cannot expand that pinned approval.
+The request pins the provider and limits to its policy revision. Before a query or background indexing call, every generated ancestor must remain active, unexpired and enabled, and approve the same provider version. Current catalog approval, `registry.read` and `embedding.invoke` must allow all originating subjects. Background memory indexing restores the original credential and subject chain instead of borrowing Deployment Administrator authority. Changing a workspace index cannot expand that pinned approval.
 
 One call and an input-token reservation of UTF-8 input bytes plus 1,024 framing tokens commit for every generated ancestor before HTTP. The call allowance is independent, while embedding tokens share the inference token budget. Valid, positive, equal `prompt_tokens` and `total_tokens` refund only unused reserved tokens. Missing or malformed usage keeps the full reservation. Usage above the reserved bound fails execution without a refund. Failed or interrupted calls remain charged; retries require new allowance. Concurrent indexers cannot fund the same attempt twice. Terminal generation releases unused allocation once while retaining consumed calls and tokens.
 
-`generation_embedding_usage` retains the attempt ID, request, workspace, optional run/source, provider version, input byte count, reservation and reported usage. It stores neither source text nor credentials. The dashboard displays pinned approval and charged embedding calls in each request and total allocated calls in its policy. Ordinary callers outside a generated chain keep the operator-configured workspace index behavior.
+`generation_embedding_usage` retains the attempt ID, request, workspace, optional run/source, provider version, input byte count, reservation and reported usage. It stores neither source text nor credentials. The dashboard displays pinned approval and charged embedding calls in each request and total allocated calls in its policy. Ordinary callers outside a generated chain keep the Deployment Administrator-configured workspace index behavior.
 
 ## Foreign Tasks and origin-owned allowances
 

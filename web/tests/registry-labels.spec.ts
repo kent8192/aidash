@@ -67,7 +67,7 @@ for (const locale of ["en-US", "ja-JP"]) {
     await page.route("**/api/state", (route) =>
       route.fulfill({
         json: {
-          access: { kind: "operator" },
+          access: { kind: "deployment_administrator" },
           node: {
             id: "aidash://home",
             endpoint: "http://localhost",
@@ -235,22 +235,5 @@ test("embedding registration defaults to full-dimensional Gemini through OpenRou
       dimensions: 3072,
     });
   await expect(dialog).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
-
-test("package selection uses the exact entity value with a readable label", async ({
-  page,
-}) => {
-  const { errors } = await setup(page);
-  await page.goto("/settings?view=marketplace");
-  await page
-    .getByRole("button", { name: "Publish package", exact: true })
-    .click();
-  const entity = page.getByRole("dialog").getByLabel("Local entity");
-  await expect(entity.locator('option[value="researcher@1.0.0"]')).toHaveText(
-    "Researcher · 1.0.0",
-  );
-  await entity.selectOption("researcher@1.0.0");
-  await expect(entity).toHaveValue("researcher@1.0.0");
   expect(errors).toEqual([]);
 });

@@ -31,8 +31,8 @@ use uuid::Uuid;
 /// them, because reversing an earlier migration from the current head would
 /// reach objects those migrations removed or replaced.
 const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
-	("registry", "0025_remove_legacy_installations"),
-	("registry", "0026_remove_legacy_installations_state"),
+	("registry", "0026_remove_legacy_installations"),
+	("registry", "0027_remove_legacy_installations_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -83,7 +83,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		26
+		27
 	);
 	let tables = migrations
 		.iter()
@@ -298,14 +298,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0023_policy_probe")
+		.get_migration("execution", "0025_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0022_outbound_approval_activation".to_owned()
+			"0024_estimate_calibration_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -400,12 +400,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0008_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0009_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0007_model_state".to_owned())]
+		vec![("workspaces".to_owned(), "0008_publishing_run".to_owned())]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -575,7 +575,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		26
+		27
 	);
 }
 
@@ -783,7 +783,7 @@ async fn unknown_or_inconsistent_native_history_is_not_adopted(
 	#[case] migration: &str,
 	#[case] message: &str,
 ) {
-	// Arrange: preserve the invalid row as evidence; repair is an operator action.
+	// Arrange: preserve the invalid row as evidence; repair is a manual action.
 	let fixture = fresh_database.await;
 	let recorder = DatabaseMigrationRecorder::new(fixture.connection.clone());
 	recorder.ensure_schema_table().await.unwrap();
@@ -818,7 +818,7 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	#[future] fresh_database: MigrationFixture,
 ) {
-	// Arrange: extension ownership belongs to an operator, before native history.
+	// Arrange: extension ownership belongs to whoever runs the Deployment, before native history.
 	let fixture = fresh_database.await;
 	let create = reinhardt::db::migrations::Operation::CreateExtension {
 		name: "pg_jsonschema".into(),
@@ -1075,13 +1075,17 @@ async fn assert_baseline_seed_data(connection: &BackendConnection) {
 	let gate = connection
 		.fetch_all(
 			&Query::select()
-				.expr(Expr::cust("to_regclass('public.marketplace_gate') IS NULL"))
+				.expr_as(
+					Expr::cust("to_regclass('public.marketplace_gate') IS NULL"),
+					Alias::new("absent"),
+				)
 				.to_string(PostgresQueryBuilder),
 			vec![],
 		)
 		.await
 		.unwrap();
 	assert_eq!(gate.len(), 1);
+	assert!(gate[0].get::<bool>("absent").unwrap());
 }
 
 #[rstest]

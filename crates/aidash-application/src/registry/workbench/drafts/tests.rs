@@ -38,7 +38,7 @@ struct Repository {
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
 	pages: Vec<Vec<Draft>>,
-	operator: bool,
+	deployment_administrator: bool,
 	managed: bool,
 	previous: Option<RegistrationEvidence>,
 	completed: bool,
@@ -53,7 +53,7 @@ impl Repository {
 			log: Arc::new(Mutex::new(Vec::new())),
 			deny: false,
 			pages: Vec::new(),
-			operator: false,
+			deployment_administrator: false,
 			managed: false,
 			previous: None,
 			completed: false,
@@ -72,7 +72,7 @@ struct Scope {
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
 	pages: Vec<Vec<Draft>>,
-	operator: bool,
+	deployment_administrator: bool,
 	managed: bool,
 	previous: Option<RegistrationEvidence>,
 	completed: bool,
@@ -88,8 +88,8 @@ impl Scope {
 impl DraftRepository for Repository {
 	type Scope = Scope;
 	fn principal(&self) -> Principal {
-		if self.operator {
-			return Principal::Operator;
+		if self.deployment_administrator {
+			return Principal::DeploymentAdministrator;
 		}
 		Principal::Subject {
 			tenant: "tenant".into(),
@@ -122,7 +122,7 @@ impl DraftRepository for Repository {
 			log: self.log.clone(),
 			deny: self.deny,
 			pages: self.pages.clone(),
-			operator: self.operator,
+			deployment_administrator: self.deployment_administrator,
 			managed: self.managed,
 			previous: self.previous,
 			completed: self.completed,
@@ -151,8 +151,8 @@ impl DefinitionLookup for Scope {
 #[async_trait]
 impl DraftAuthority for Scope {
 	fn principal(&self) -> Principal {
-		if self.operator {
-			return Principal::Operator;
+		if self.deployment_administrator {
+			return Principal::DeploymentAdministrator;
 		}
 		Principal::Subject {
 			tenant: "tenant".into(),
@@ -637,7 +637,7 @@ async fn duplicate_checks_revision_before_allocating_or_writing(draft: Draft) {
 }
 #[rstest]
 #[tokio::test]
-async fn only_operator_can_adopt_existing_agents(draft: Draft) {
+async fn only_deployment_administrator_can_adopt_existing_agents(draft: Draft) {
 	let repository = Repository::new(draft);
 	assert!(matches!(
 		adopt(
@@ -661,7 +661,7 @@ async fn adoption_preserves_registry_identity_and_checks_managed_conflict(
 ) {
 	draft.entry = serde_json::to_value(entry).unwrap();
 	let mut repository = Repository::new(draft);
-	repository.operator = true;
+	repository.deployment_administrator = true;
 	repository.managed = true;
 	assert_eq!(
 		adopt(
@@ -687,7 +687,7 @@ async fn adoption_preserves_registry_identity_and_checks_managed_conflict(
 async fn adopted_agent_keeps_original_version(mut draft: Draft, entry: Entry) {
 	draft.entry = serde_json::to_value(entry).unwrap();
 	let mut repository = Repository::new(draft);
-	repository.operator = true;
+	repository.deployment_administrator = true;
 	let adopted = adopt(
 		&repository,
 		("managed".into(), "1.0.0".into()),
@@ -1242,7 +1242,7 @@ async fn generated_document_sources_follow_current_draft_content(
 		_ => old_documents,
 	};
 	let mut repository = Repository::new(draft.clone());
-	repository.operator = true;
+	repository.deployment_administrator = true;
 	repository.definitions = vec![old_source.clone(), explicit.clone()];
 	let mut scope = repository.begin().await.unwrap();
 	let validated = crate::registry::workbench::validate_content(

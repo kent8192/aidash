@@ -118,7 +118,8 @@ export function OperationsDialog({
       ? mesh?.nodes.find((node) => node.node_id === d.node)?.human_requests
       : data.human_requests
   )?.find((value) => value.id === d.request?.id);
-  const isOperator = data.access.kind === "operator";
+  const isDeploymentAdministrator =
+    data.access.kind === "deployment_administrator";
   const administrative = ["entity", "cluster", "peer"].includes(d.kind);
   // Every workspace, task and Run belongs to a Tenant (ADR 0043).
   const execution = ["workspace", "goal", "task", "assign", "human"].includes(
@@ -168,10 +169,10 @@ export function OperationsDialog({
     >
       {error && <Alert>{error}</Alert>}
       <fieldset disabled={busy} className="m-0 grid min-w-0 gap-4 border-0 p-0">
-        {administrative && !isOperator ? (
+        {administrative && !isDeploymentAdministrator ? (
           <Hint>{copy.unavailable}</Hint>
-        ) : execution && isOperator ? (
-          <Hint>{copy.operatorExecution}</Hint>
+        ) : execution && isDeploymentAdministrator ? (
+          <Hint>{copy.deploymentAdministratorExecution}</Hint>
         ) : (
           <>
             {d.kind === "workspace" && (

@@ -1,6 +1,7 @@
 //! Management use cases.
 use crate::{
 	Error, Result,
+	apps::execution::serializers::research::CitedEvidence,
 	apps::execution::serializers::runs::RunDetails,
 	apps::execution::serializers::state::StateResponse,
 	apps::federation::remote::serializers::actions::SentResponse,
@@ -87,7 +88,7 @@ impl HarnessManagement {
 			before = batch.last().expect("nonempty event batch").sequence;
 			let exhausted = batch.len() < 500;
 			events.extend(
-				crate::authorization::remote::operator::filter_events(
+				crate::authorization::remote::deployment_administrator::filter_events(
 					&mut crate::database::native::begin(&f.store.pool).await?,
 					batch,
 				)
@@ -108,9 +109,11 @@ impl HarnessManagement {
 					reinhardt::query::Alias::new("human_requests"),
 					reinhardt::query::Alias::new("h"),
 				)
-				.and_where(crate::authorization::remote::operator::state_visible(
-					"h.workspace_id",
-				))
+				.and_where(
+					crate::authorization::remote::deployment_administrator::state_visible(
+						"h.workspace_id",
+					),
+				)
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("created_at"),
@@ -131,9 +134,11 @@ impl HarnessManagement {
 					reinhardt::query::Alias::new("conversations"),
 					reinhardt::query::Alias::new("c"),
 				)
-				.and_where(crate::authorization::remote::operator::state_visible(
-					"c.workspace_id",
-				))
+				.and_where(
+					crate::authorization::remote::deployment_administrator::state_visible(
+						"c.workspace_id",
+					),
+				)
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("created_at"),
@@ -154,9 +159,11 @@ impl HarnessManagement {
 					reinhardt::query::Alias::new("artifacts"),
 					reinhardt::query::Alias::new("a"),
 				)
-				.and_where(crate::authorization::remote::operator::state_visible(
-					"a.workspace_id",
-				))
+				.and_where(
+					crate::authorization::remote::deployment_administrator::state_visible(
+						"a.workspace_id",
+					),
+				)
 				.order_by_expr(
 					reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(
 						reinhardt::query::Alias::new("created_at"),
@@ -169,7 +176,7 @@ impl HarnessManagement {
 		.fetch_all(&f.store.pool)
 		.await?;
 		let mut state = StateResponse {
-			access: AccessProfile::Operator,
+			access: AccessProfile::DeploymentAdministrator,
 			node: f.config.identity(vec![]),
 			registry: records,
 			workspaces: f.store.workspaces().await?,
@@ -180,9 +187,11 @@ impl HarnessManagement {
 						reinhardt::query::Alias::new("tasks"),
 						reinhardt::query::Alias::new("t"),
 					)
-					.and_where(crate::authorization::remote::operator::state_visible(
-						"t.workspace_id",
-					))
+					.and_where(
+						crate::authorization::remote::deployment_administrator::state_visible(
+							"t.workspace_id",
+						),
+					)
 					.order_by(
 						reinhardt::query::Alias::new("created_at"),
 						reinhardt::query::Order::Desc,
@@ -203,9 +212,11 @@ impl HarnessManagement {
 						reinhardt::query::Alias::new("runs"),
 						reinhardt::query::Alias::new("r"),
 					)
-					.and_where(crate::authorization::remote::operator::state_visible(
-						"r.workspace_id",
-					))
+					.and_where(
+						crate::authorization::remote::deployment_administrator::state_visible(
+							"r.workspace_id",
+						),
+					)
 					.order_by(
 						reinhardt::query::Alias::new("updated_at"),
 						reinhardt::query::Order::Desc,
@@ -224,7 +235,7 @@ impl HarnessManagement {
 			events,
 			artifacts,
 		};
-		crate::authorization::remote::operator::filter_state(
+		crate::authorization::remote::deployment_administrator::filter_state(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			&mut state,
 		)
@@ -242,7 +253,7 @@ impl HarnessManagement {
 	) -> Result<Task> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		execution::claim(&f, &identity, id, input.revision, &input.agent).await
@@ -260,7 +271,7 @@ impl HarnessManagement {
 			return Ok(details);
 		}
 		let run = f.store.inspect_run(id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			run.workspace_id,
 		)
@@ -268,6 +279,26 @@ impl HarnessManagement {
 		let mut details = f.store.run_details(id, page.offset).await?;
 		details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 		Ok(details)
+	}
+	/// One Source citation of a Run, for a reader who may read that Run now.
+	/// Every reason the reader cannot see it is the same `NotFound`.
+	pub(crate) async fn run_evidence(
+		&self,
+		actor: Actor,
+		run: Uuid,
+		reference: &str,
+	) -> Result<CitedEvidence> {
+		let f = self.runtime.clone();
+		let readers = crate::apps::execution::repositories::research::Readers {
+			federation: &f,
+			actor: &actor,
+		};
+		let store = crate::research::evidence_store(f.store.clone());
+		Ok(
+			aidash_application::research::reading::read(&readers, &store, run, reference)
+				.await?
+				.into(),
+		)
 	}
 	pub(crate) async fn run_control(
 		&self,
@@ -277,7 +308,7 @@ impl HarnessManagement {
 		input: ControlInput,
 	) -> Result<crate::domain::RunInspection> {
 		let f = self.runtime.clone();
-		if matches!(actor, Actor::Operator)
+		if matches!(actor, Actor::DeploymentAdministrator)
 			&& browser.is_some()
 			&& input.action == crate::domain::RunControlAction::Resume
 		{
@@ -287,7 +318,7 @@ impl HarnessManagement {
 			return execution::control(&f, &identity, id, input.action).await;
 		}
 		let existing = f.store.inspect_run(id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			existing.workspace_id,
 		)
@@ -308,7 +339,7 @@ impl HarnessManagement {
 		}
 
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
@@ -323,7 +354,7 @@ impl HarnessManagement {
 	) -> Result<HumanRequest> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		interaction::answer(&f, &identity, id, response).await
@@ -346,7 +377,11 @@ impl HarnessManagement {
 		let mut visible = Vec::new();
 		let mut connection = crate::database::native::begin(&f.store.pool).await?;
 		if let Some(workspace) = q.workspace_id
-			&& !crate::authorization::remote::operator::visible(&mut connection, workspace).await?
+			&& !crate::authorization::remote::deployment_administrator::visible(
+				&mut connection,
+				workspace,
+			)
+			.await?
 		{
 			let mut response = Response::ok().with_json(&visible)?;
 			response
@@ -361,8 +396,11 @@ impl HarnessManagement {
 				cursor = last.sequence;
 			}
 			visible.extend(
-				crate::authorization::remote::operator::filter_events(&mut connection, page)
-					.await?,
+				crate::authorization::remote::deployment_administrator::filter_events(
+					&mut connection,
+					page,
+				)
+				.await?,
 			);
 			if visible.len() >= 500 || exhausted {
 				if visible.len() >= 500 {
@@ -459,7 +497,7 @@ impl HarnessManagement {
 	) -> Result<SentResponse> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = &actor else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		let run = {
@@ -564,6 +602,7 @@ impl HarnessManagement {
 				cache_scope: None,
 				cache_breakpoints: false,
 				disable_provider_transforms: false,
+				estimate: Default::default(),
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;

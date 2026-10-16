@@ -93,7 +93,7 @@ function fixture(reference = false) {
     updated_at: task.created_at,
   }));
   const data = {
-    access: { kind: "operator" },
+    access: { kind: "deployment_administrator" },
     node,
     workspaces,
     tasks,
@@ -219,7 +219,12 @@ type Message = {
   content: string;
   idempotency_key: string | null;
   created_at: string;
+  run_id?: string | null;
 };
+
+/** Evidence the `citations` fixture's Run holds, and a reference it does not. */
+export const CITED = "ev_0b9f6a52-3c1e-4c2a-9d7e-5f0c1a2b3c4d";
+export const UNAVAILABLE = "ev_1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
 
 export async function setup(
   page: Page,
@@ -250,6 +255,8 @@ export async function setup(
     nativeMemory?: boolean;
     nativeMemoryDisabled?: boolean;
     remoteNativeCollision?: boolean;
+    /** Run-published text citing evidence, beside a person's pasted marker. */
+    citations?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -410,6 +417,43 @@ export async function setup(
     ],
     "workspace-two": [],
   };
+  if (options.citations) {
+    const published = messages["workspace-one"].at(-1)!;
+    published.content = `Evidence is ready [[cite:${CITED}]], see also [[cite:${UNAVAILABLE}]] and again [[cite:${CITED}]].`;
+    published.run_id = "run-0";
+    messages["workspace-one"].push({
+      id: "message-pasted",
+      workspace_id: "workspace-one",
+      sender: "alice",
+      content: `Pasted [[cite:${CITED}]] by hand.`,
+      idempotency_key: null,
+      created_at: "2026-09-22T10:12:00Z",
+      run_id: null,
+    });
+    messages["workspace-one"].push({
+      id: "message-formatted",
+      workspace_id: "workspace-one",
+      sender: published.sender,
+      content: `Formatted **important [[cite:${CITED}]] claim** and _aside [[cite:${UNAVAILABLE}]] note_.`,
+      idempotency_key: null,
+      created_at: "2026-09-22T10:12:30Z",
+      run_id: "run-0",
+    });
+    data.artifacts = [
+      {
+        id: "artifact-answer",
+        workspace_id: "workspace-one",
+        task_id: data.tasks[0].id,
+        name: "answer.txt",
+        kind: "text",
+        content: `Final answer [[cite:${CITED}]].`,
+        created_by: "aidash://home/agents/researcher@1.0.0",
+        idempotency_key: "artifact-answer",
+        created_at: "2026-09-22T10:13:00Z",
+        run_id: "run-0",
+      },
+    ];
+  }
   if (options.referenceLayout) {
     messages["workspace-one"] = [
       [

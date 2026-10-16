@@ -36,7 +36,7 @@ impl CollaborationManagement {
 			return scope.task_page(page.offset).await;
 		}
 		let mut page = f.store.task_page(page.offset).await?;
-		let denied = crate::authorization::remote::operator::blocked(
+		let denied = crate::authorization::remote::deployment_administrator::blocked(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			&page
 				.tasks
@@ -57,7 +57,7 @@ impl CollaborationManagement {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope.create(&input.title, &input.goal).await
@@ -67,7 +67,7 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.snapshot(id).await;
 		}
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			id,
 		)
@@ -82,7 +82,7 @@ impl CollaborationManagement {
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope.update(id, input.revision, input.state).await
@@ -96,7 +96,7 @@ impl CollaborationManagement {
 	) -> Result<Task> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope
@@ -120,7 +120,7 @@ impl CollaborationManagement {
 		}
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope
@@ -139,7 +139,7 @@ impl CollaborationManagement {
 			return interaction::abandon(&f, &identity, id, input.revision, &input.reason).await;
 		}
 		let existing = f.store.task(id).await?;
-		crate::authorization::remote::operator::require(
+		crate::authorization::remote::deployment_administrator::require(
 			&mut crate::database::native::begin(&f.store.pool).await?,
 			existing.workspace_id,
 		)
@@ -159,7 +159,7 @@ impl CollaborationManagement {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; an Operator runs none of its own (ADR 0043).
+			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		interaction::conversation(

@@ -1,4 +1,4 @@
--- Reversal requires removal of newly admitted kinds by the operator first.
+-- Reversal requires manual removal of newly admitted kinds first.
 ALTER TABLE packages DROP CONSTRAINT packages_identity;
 ALTER TABLE packages ADD CONSTRAINT packages_identity CHECK (COALESCE(((jsonb_typeof(manifest) = 'object'::text) AND ((manifest #> '{entity,id}'::text[]) = to_jsonb(id)) AND ((manifest #> '{entity,version}'::text[]) = to_jsonb(version)) AND
 						CASE

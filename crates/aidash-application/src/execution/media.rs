@@ -15,7 +15,7 @@ use aidash_domain::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-pub async fn operator(
+pub async fn deployment_administrator(
 	repository: &dyn OperatorMediaRepository,
 	run: &RunMetadata,
 	messages: &[(i64, Uuid, usize)],
@@ -61,6 +61,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 		cache_scope: None,
 		cache_breakpoints: false,
 		disable_provider_transforms: false,
+		estimate: Default::default(),
 	};
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(workspace, *id).await?;

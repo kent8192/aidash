@@ -6,8 +6,9 @@ use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
+	provider::estimate::{EstimateSnapshot, RequestEstimator},
 	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
-	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
+	provider::usage::{UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
@@ -362,26 +363,42 @@ impl<'a> Executor<'a> {
 	/// Record a provider-proven Context Overflow and re-enter Thinking with a
 	/// smaller effective window, or pause once the bounded allowance is spent
 	/// or the retried request did not shrink. Only recovery state is saved.
+	/// An overflow after a calibrated estimate is an estimator defect: the Run
+	/// is demoted to the byte estimate for the rest of its steps (ADR 0017),
+	/// and later overflows are compared in bytes.
 	async fn context_overflowed(
 		&self,
 		run: &mut Run,
 		token: Uuid,
 		request_tokens: usize,
+		request_bytes: usize,
 		policy: &context::policy::Effective,
 	) -> Result<()> {
+		let estimator = run.context.estimate.current().id();
 		let mut recovery = run.context.recovery;
+		let demoted = run.context.estimate.demote();
+		let measured = if demoted {
+			request_bytes
+		} else {
+			request_tokens
+		};
 		if !recovery.overflowed(
-			request_tokens as u64,
+			measured as u64,
 			policy.overflow_retries,
 			policy.overflow_shrink_permille,
 		) {
-			metrics::counter!("aidash_context_overflow_total", "outcome" => "exhausted")
+			metrics::counter!("aidash_context_overflow_total", "outcome" => "exhausted", "estimator" => estimator)
 				.increment(1);
+			// The pause saves no context. Save the demotion first, so a resumed
+			// step never retries the calibrated estimate that overflowed.
+			if demoted {
+				self.environment.store().pin_estimate(run, token).await?;
+			}
 			return Err(Error::Context(
 				context::recovery::Failure::OverflowRetriesExhausted,
 			));
 		}
-		metrics::counter!("aidash_context_overflow_total", "outcome" => "retried").increment(1);
+		metrics::counter!("aidash_context_overflow_total", "outcome" => "retried", "estimator" => estimator).increment(1);
 		run.context.recovery = recovery;
 		self.environment
 			.store()
@@ -420,8 +437,14 @@ impl<'a> Executor<'a> {
 		};
 		// Workspace records other than messages are filtered one by one, and a
 		// summary rechecks only message sources: they stay verbatim instead.
-		plan.absorbed
-			.retain(|entry| summarizable(&entry.event, tools));
+		if fitting.native() {
+			aidash_application::context::retain_summarizable_turns(&mut plan.absorbed, |event| {
+				summarizable(event, tools)
+			});
+		} else {
+			plan.absorbed
+				.retain(|entry| summarizable(&entry.event, tools));
+		}
 		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
@@ -993,14 +1016,37 @@ impl<'a> Executor<'a> {
 					ProjectionVersion::Ordered => {
 						context::RequestProjection::Ordered(self.environment.cache_scope(run).await?)
 					}
-					// Never fall back to Legacy for a pinned version this build cannot render.
 					ProjectionVersion::Native => {
-						return Err(Error::Invalid(
-							"the Native Projection Version is not supported by this node".into(),
-						));
+						context::RequestProjection::Native(self.environment.cache_scope(run).await?)
 					}
 				};
-				let ordered = matches!(projection, context::RequestProjection::Ordered(_));
+				// Pin this step's Estimate Snapshot before any fitting relies on it
+				// (ADR 0017). Only an opted-in, undemoted model needs calibration,
+				// and only its snapshot is saved: a resumed step reuses it even if
+				// the calibration data changed meanwhile. Every other step is
+				// conservative, so its Run keeps the context bytes it had.
+				let estimate = match run.context.estimate.pinned(run.step) {
+					Some(snapshot) => snapshot,
+					None if model_cfg.request_estimator() == RequestEstimator::Calibrated
+						&& !run.context.estimate.demoted =>
+					{
+						let samples = store
+							.calibration_samples(&model_cfg.model_id, agent.projection_version.number())
+							.await?;
+						let snapshot =
+							EstimateSnapshot::choose(run.step, RequestEstimator::Calibrated, false, &samples);
+						run.context.estimate.snapshot = Some(snapshot);
+						store.pin_estimate(run, token).await?;
+						snapshot
+					}
+					None => EstimateSnapshot::conservative(run.step),
+				};
+				// Ordered and Native share the Stable Prefix rules: a Run-stable
+				// snapshot quota and Retrieval Key reuse (ADR 0020). Only Ordered
+				// keeps per-turn paragraphs out of `system`; Native keeps every
+				// harness instruction in `system` and data in envelopes.
+				let ordered = !projection.version().is_legacy();
+				let turn_paragraphs = matches!(projection, context::RequestProjection::Ordered(_));
 				let source_input_seq = inputs.last().map_or(run.observed_input_seq, |input| input.seq);
 				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
@@ -1023,7 +1069,7 @@ impl<'a> Executor<'a> {
 					}
 					None => None,
 				};
-				let mut instructions = context::agent_instructions("");
+				let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
 				if let Some(selection) = &exposure {
 					instructions.push_str(&source_skill_context);
 					instructions.push_str(&selection.index);
@@ -1115,7 +1161,7 @@ impl<'a> Executor<'a> {
 				// Ordered keeps per-turn paragraphs out of the cached system prompt.
 				let mut turn_instructions = String::new();
 				if run_message_catchup {
-					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
@@ -1194,14 +1240,17 @@ impl<'a> Executor<'a> {
 				let media_intake = media.defer_human || media.defer_selected;
 				if media_intake {
 					specifications.clear();
-					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				// Catch-up and media intake send fewer tools; usage measures those sent.
 				if (run_message_catchup || media_intake) && let Some(selection) = exposure.as_mut() {
 					selection.restrict_tools(&specifications)?;
 				}
 				let context_window = window.saturating_sub(
-					aidash_domain::provider::ModelRequest::content_parts_reservation(&media.parts),
+					aidash_domain::provider::ModelRequest::content_parts_reservation(
+						&media.parts,
+						agent.projection_version,
+					),
 				);
 				let private_context = if agent.knowledge_digest.is_some() {
 					json!({"reference_documents":documents.clone()})
@@ -1222,6 +1271,7 @@ impl<'a> Executor<'a> {
 					&specifications,
 					&fixed_context,
 					&projection,
+					estimate,
 				)
 				.map_err(|_| unreducible(guard))?;
 				let mut budget = context::RequestBudget {
@@ -1230,18 +1280,30 @@ impl<'a> Executor<'a> {
 					tools: &specifications,
 					max_output_tokens: output,
 					projection: &projection,
+					estimate,
 				};
-				let minimum_request = budget
-					.request(&Context::default(), &fixed_context)
-					.estimated_total_tokens();
-				budget.window = request_context_window(context_window, minimum_request);
-				if force_read_compaction {
-					budget.window =
-						force_workspace_read_compaction_window(budget.window, minimum_request);
-				}
+				let fit_window = |budget: &context::RequestBudget<'_>| {
+					let minimum_request = budget
+						.request(&Context::default(), &fixed_context)
+						.estimated_total_tokens();
+					let window = request_context_window(context_window, minimum_request);
+					if force_read_compaction {
+						force_workspace_read_compaction_window(window, minimum_request)
+					} else {
+						window
+					}
+				};
+				budget.window = fit_window(&budget);
+				// Run-fixed quotas derive from the conservative fit, so calibration
+				// never moves the Stable Prefix or the semantic budget (ADR 0017).
+				let mut conservative = budget.conservative();
+				conservative.window = fit_window(&conservative);
 				// Keep room for history and JSON message escaping. The final fitting
 				// decision below measures the complete provider input, not this quota.
-				let available = budget.remaining(&Context::default(), &fixed_context);
+				// Snapshot quotas are bytes, so this step's token headroom converts
+				// through its Estimate Snapshot.
+				let available =
+					estimate.bytes_for_tokens(budget.remaining(&Context::default(), &fixed_context));
 				let message_size = context::estimated_tokens(&json!(run_messages).to_string());
 				let volatile_budget = available.saturating_sub(message_size) / 4;
 				let snapshot_fit = if ordered {
@@ -1251,10 +1313,10 @@ impl<'a> Executor<'a> {
 					// and volatile fields (the rest absorbs JSON string escaping and
 					// history), so oversized fixed content truncates the snapshot,
 					// or reports overflow, as Legacy does.
-					let headroom = available
-						.saturating_sub(message_size)
-						.saturating_sub(volatile_budget)
-						/ 2;
+					let stable = conservative
+						.remaining(&Context::default(), &fixed_context)
+							.saturating_sub(message_size);
+					let headroom = stable.saturating_sub(stable / 4) / 2;
 					context::bound_ordered_snapshot(
 						&mut pinned,
 						context::ordered_stable_quota(window, output_limit).min(headroom),
@@ -1308,7 +1370,7 @@ impl<'a> Executor<'a> {
 				// keeps a Run-fixed budget (part of the Retrieval Key) so steps reuse
 				// one read, but never more than that same headroom: pinned semantic
 				// content cannot be compacted away later.
-				let headroom = budget.remaining(&Context::default(), &pinned) / 2;
+				let headroom = conservative.remaining(&Context::default(), &pinned) / 2;
 				let semantic_budget = if ordered {
 					context::sources::ordered_semantic_budget(window, output_limit).min(headroom)
 				} else {
@@ -1384,6 +1446,7 @@ impl<'a> Executor<'a> {
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
 				let request_tokens = request.estimated_total_tokens();
+				let request_bytes = request.byte_estimate().total();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
 				let reservation = if let Some(guard) = guard {
@@ -1408,7 +1471,11 @@ impl<'a> Executor<'a> {
 							model_id: agent.model.id.clone(),
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
-							estimate: RequestEstimate::conservative_bytes(request_tokens),
+							upstream_model: model_cfg.model_id.clone(),
+							estimate: request.request_estimate(),
+							// Media tokens are an allowance, not text, so they never calibrate.
+							calibration_sample: request.content_parts.is_empty(),
+							cache_identity: request.cache_identity(),
 						},
 					)
 					.await?;
@@ -1563,7 +1630,7 @@ impl<'a> Executor<'a> {
 							}
 							recorded?;
 							return self
-								.context_overflowed(run, token, request_tokens, &policy)
+								.context_overflowed(run, token, request_tokens, request_bytes, &policy)
 								.await;
 						}
 						// A failed record write never hides the inference error.
@@ -1866,10 +1933,22 @@ impl<'a> Executor<'a> {
 						.iter()
 						.copied()
 						.collect::<std::collections::BTreeSet<_>>();
-					context.history.retain(|entry| {
-						declared_message_read_range(&tools, &entry.event)
-							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
-					});
+					let summarized = |event: &ContextEvent| {
+						declared_message_read_range(&tools, event)
+							.is_some_and(|(id, _, _, _)| summarized_ids.contains(&id))
+					};
+					if agent.projection_version == ProjectionVersion::Native {
+						// A Model Turn keeps every call it ran (ADR 0015).
+						for entry in &mut context.history {
+							if summarized(&entry.event)
+								&& let ContextEvent::Tool { call, result } = &mut entry.event
+							{
+								*result = ContextEvent::elided_result(&call.id);
+							}
+						}
+					} else {
+						context.history.retain(|entry| !summarized(&entry.event));
+					}
 					for id in &required_reads {
 						context.message_read_coverage.remove(id);
 						context.message_inference_coverage.remove(id);
@@ -1883,10 +1962,15 @@ impl<'a> Executor<'a> {
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
+				// Text beside calls that cites evidence the Run never received is
+				// not published, and its Model Turn records no text, so Context
+				// inspection never shows what the gate withheld.
+				let withheld = !result.tool_calls.is_empty()
+					&& self.cites_invalid_evidence(run, &tools, &result.text).await?;
 				if !run_message_catchup
 					&& !result.tool_calls.is_empty()
 					&& informed_response
-					&& !self.cites_invalid_evidence(run, &tools, &result.text).await?
+					&& !withheld
 				{
 					self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 						.await?;
@@ -1915,7 +1999,16 @@ impl<'a> Executor<'a> {
 						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
-							if !self.cites_invalid_evidence(run, &tools, &result.text).await? {
+							// Not the final answer: gated like text beside calls.
+							let withheld =
+								self.cites_invalid_evidence(run, &tools, &result.text).await?;
+							record_model_turn(
+								run,
+								agent.projection_version,
+								if withheld { "" } else { &result.text },
+								&result.tool_calls,
+							)?;
+							if !withheld {
 								self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 									.await?;
 							}
@@ -1995,6 +2088,14 @@ impl<'a> Executor<'a> {
 							store.save_run(run, token, "run.message_received").await?;
 							return Ok(());
 						}
+						// The final answer is a Model Turn without calls. The citation
+						// gate above already replaced a withheld answer.
+						record_model_turn(
+							run,
+							agent.projection_version,
+							&result.text,
+							&result.tool_calls,
+						)?;
 						self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 							.await?;
 						if let Err(error) = home
@@ -2027,6 +2128,14 @@ impl<'a> Executor<'a> {
 					}
 					return Ok(());
 				}
+				// The response is acted on from here: open its Model Turn before
+				// the first of its Tool events.
+				record_model_turn(
+					run,
+					agent.projection_version,
+					if withheld { "" } else { &result.text },
+					&result.tool_calls,
+				)?;
 				// Tool Batches run only in ordinary mode: no message catch-up, no
 				// pending media selection and a response informed by required reads.
 				let batch_end = match run.state.tool()?.batch_end {
@@ -2461,6 +2570,38 @@ impl<'a> Executor<'a> {
 		}
 		Ok(())
 	}
+}
+
+/// Open the Model Turn of a response, with the text it may keep and its
+/// calls, in a Native Run's Context Journal, once per response epoch however
+/// often this boundary is re-entered. Legacy and Ordered Runs never record
+/// one, so their requests keep their bytes.
+fn record_model_turn(
+	run: &mut Run,
+	version: ProjectionVersion,
+	text: &str,
+	calls: &[aidash_domain::provider::ToolCall],
+) -> Result<()> {
+	if version != ProjectionVersion::Native {
+		return Ok(());
+	}
+	let epoch = run.state.tool()?.response_epoch;
+	let recorded = run.context.events().rev().any(
+		|event| matches!(event, ContextEvent::Assistant { epoch: recorded, .. } if *recorded == epoch),
+	);
+	if recorded {
+		return Ok(());
+	}
+	let event = ContextEvent::Assistant {
+		epoch,
+		text: text.to_owned(),
+		calls: calls.iter().map(|call| call.id.clone()).collect(),
+	};
+	let growth = context::tool_event_growth(&run.context, &event);
+	run.context.push(event);
+	let pending = run.state.tool_mut()?;
+	pending.request_tokens = pending.request_tokens.saturating_add(growth);
+	Ok(())
 }
 
 /// Authority is rechecked at most this often while the provider call runs.

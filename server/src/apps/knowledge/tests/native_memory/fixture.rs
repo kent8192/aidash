@@ -216,7 +216,7 @@ pub(super) async fn setup_endpoint_policy(
 		registry.register(entry(kind, id, config)).await.unwrap();
 	}
 	let workspace = store
-		.create_workspace("acme", "operator", "Memory", "Keep current evidence")
+		.create_workspace("acme", "deployment_administrator", "Memory", "Keep current evidence")
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();

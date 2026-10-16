@@ -221,6 +221,7 @@ fn message(scope: &Scope, key: &str) -> Message {
 		content: "correction".into(),
 		idempotency_key: Some(remote::full_key(scope.node(), scope.run.task_id, key)),
 		created_at: scope.run.updated_at,
+		run_id: None,
 	}
 }
 

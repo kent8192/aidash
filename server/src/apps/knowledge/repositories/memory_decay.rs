@@ -572,8 +572,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 	.await?;
 	let mut processed = 0;
 	for row in rows {
-		let mut lease =
-			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+		let mut lease = Lease::without_subject(store).await?;
 		let result = page(&mut lease, row.try_get("id")?, Utc::now()).await;
 		match lease.finish(result).await {
 			Ok(n) => processed += n,

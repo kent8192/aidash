@@ -62,6 +62,7 @@ pub enum DispatchError {
 	InvalidAnswers,
 }
 
+#[async_trait]
 pub trait DecisionProvider: Send + Sync {
 	/// Opaque identity of this concrete adapter in the trusted Node Provider catalog.
 	/// It must match the admitted implementation, independently of the protocol/config.
@@ -70,11 +71,17 @@ pub trait DecisionProvider: Send + Sync {
 	/// Split only under factual constraints of the pinned external provider.
 	/// All question IDs must occur exactly once; no state/candidate truncation is allowed.
 	fn plan(&self, state: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>>;
-	/// Credential and request construction failures happen before reserving a physical call.
-	/// The returned transport retains the resolved credentials and exact request;
-	/// dispatch must not repeat fallible construction or credential resolution.
-	/// Credentials never enter the planned body or error messages.
-	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>>;
+	/// Credential availability and request construction failures happen before
+	/// reserving a physical call. The returned transport retains the exact request;
+	/// dispatch obtains the short-lived call credential immediately before I/O, so a
+	/// reservation wait never outlives it, and must not repeat request construction.
+	/// Credentials never enter the planned body or error messages. `attempt` is the
+	/// Decision Attempt the physical call will be reserved as, and is its call identity.
+	async fn prepare(
+		&self,
+		request: &PreparedRequest,
+		attempt: Uuid,
+	) -> Result<Box<dyn PreparedDispatch + '_>>;
 }
 
 /// A fully constructed transport consumed by one reserved physical attempt.

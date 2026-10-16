@@ -209,17 +209,18 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
+async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
+	#[values("ordered", "native")] version: &str,
 ) {
-	// Arrange: a model that declares Ordered and an Agent that names it, on a
-	// node without Cache Salt Keys.
+	// Arrange: a model that declares the salted version and an Agent that
+	// names it, on a node without Cache Salt Keys.
 	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
-	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
-	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
+	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
+	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
 	let workspace = store
 		.create_workspace("acme", "alice", "Research", "Compare frameworks")
 		.await
@@ -860,7 +861,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 			.header("authorization", "Bearer test-access-token")
 			.header("content-type", "application/json")
 			.body(
-				json!({"revision":child.revision,"reason":"Operator accepts partial results"})
+				json!({"revision":child.revision,"reason":"Deployment Administrator accepts partial results"})
 					.to_string(),
 			)
 			.send()
@@ -896,7 +897,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		events
 			.iter()
 			.filter(|e| e.kind == "task.abandoned"
-				&& e.data["reason"] == "Operator accepts partial results")
+				&& e.data["reason"] == "Deployment Administrator accepts partial results")
 			.count(),
 		3
 	);
@@ -3214,7 +3215,7 @@ mod research;
 
 #[rstest::rstest]
 #[tokio::test]
-async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction(
+async fn deployment_administrator_remote_humans_live_on_home_and_survive_receiver_reconstruction(
 	#[future(awt)]
 	#[from(common::native_peer)]
 	#[with("aidash://human-home")]

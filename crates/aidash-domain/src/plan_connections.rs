@@ -133,7 +133,7 @@ pub enum Failure {
 	)]
 	NotConnected,
 	#[error(
-		"Plan Connections serve only Runs that their owner admits directly; this Run was admitted through Federation, by an operator or for maintenance"
+		"Plan Connections serve only Runs that their owner admits directly; this Run was admitted through Federation, by a Deployment Administrator or for maintenance"
 	)]
 	NotAdmitted,
 	#[error(

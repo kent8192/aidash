@@ -9,7 +9,11 @@ pub async fn permits(
 	action: &str,
 ) -> Result<bool> {
 	let scoped = scope.scoped();
-	if !scoped && !scope.operator_visible(entry.workspace_id).await? {
+	if !scoped
+		&& !scope
+			.deployment_administrator_visible(entry.workspace_id)
+			.await?
+	{
 		return Ok(false);
 	}
 	if scoped {
@@ -38,7 +42,7 @@ pub async fn source(
 	workspace: Uuid,
 	source: &Source,
 ) -> Result<Option<String>> {
-	if !scope.scoped() && !scope.operator_visible(workspace).await? {
+	if !scope.scoped() && !scope.deployment_administrator_visible(workspace).await? {
 		return Ok(None);
 	}
 	match source {

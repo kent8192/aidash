@@ -28,18 +28,18 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 			"acme",
 			1,
 			serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(),
-			"operator",
+			"deployment_administrator",
 		)
 		.await
 		.unwrap();
 	for id in ["m", "e", "r", "t", "p", "a"] {
 		authorization
-			.set_catalog("acme", &reference(id), 0, true, "operator")
+			.set_catalog("acme", &reference(id), 0, true, "deployment_administrator")
 			.await
 			.unwrap();
 	}
 	let credential = authorization
-		.issue_credential("acme", "alice", 3600, "operator")
+		.issue_credential("acme", "alice", 3600, "deployment_administrator")
 		.await
 		.unwrap();
 	let actor = authorization.authenticate(&credential.token).await.unwrap();
@@ -53,7 +53,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				dependencies: vec![],
 				parent_id: None,
 			},
-			"operator",
+			"deployment_administrator",
 			None,
 		)
 		.await
@@ -158,7 +158,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -171,7 +171,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	let original = content("Rotate the signing key every quarter.");
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -202,13 +202,13 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 		"unchanged" => {}
 		"correction" => {
 			let change = corrected(|next| next.text = "Rotate the signing key monthly.".into());
-			memory::mutate(&store, &Actor::Operator, change)
+			memory::mutate(&store, &Actor::DeploymentAdministrator, change)
 				.await
 				.unwrap();
 		}
 		"withdrawal" => {
 			let change = corrected(|next| next.verification = Verification::Contradicted);
-			memory::mutate(&store, &Actor::Operator, change)
+			memory::mutate(&store, &Actor::DeploymentAdministrator, change)
 				.await
 				.unwrap();
 		}
@@ -220,7 +220,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 					expected_revision: 1,
 				},
 			);
-			memory::mutate(&store, &Actor::Operator, change)
+			memory::mutate(&store, &Actor::DeploymentAdministrator, change)
 				.await
 				.unwrap();
 		}
@@ -250,7 +250,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 					{"id":"no-memory","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["*"]}}
 				]}))
 				.unwrap(),
-				"operator",
+				"deployment_administrator",
 			)
 			.await
 			.unwrap();
@@ -264,4 +264,35 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 		expected,
 		"{change} must report its own cause"
 	);
+}
+
+/// Issue #275: a rejected record rolls back to its savepoint, which may release
+/// the locks behind catalog admissions made inside it, so the transaction's lock
+/// epoch must move although this module does not import `TransactionExecutor`.
+#[tokio::test]
+async fn a_rejected_record_moves_the_lock_epoch_of_its_transaction() {
+	// Arrange
+	let probe = crate::database::native::probe::SavepointProbe::default();
+	let mut tx = probe.transaction(
+		sqlx::postgres::PgPoolOptions::new()
+			.connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+			.unwrap()
+			.into(),
+	);
+
+	// Act
+	let result = record(
+		&mut Lease::BorrowedWithoutSubject(&mut tx),
+		Uuid::new_v4(),
+		&[],
+	)
+	.await;
+
+	// Assert
+	assert!(result.is_err(), "the probe refuses the run read");
+	assert_eq!(
+		probe.statements(),
+		["SAVEPOINT", "ROLLBACK TO SAVEPOINT", "RELEASE SAVEPOINT"]
+	);
+	assert_eq!(tx.lock_epoch(), 1);
 }

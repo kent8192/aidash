@@ -21,7 +21,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 				dependencies: vec![],
 				parent_id: None,
 			},
-			"operator",
+			"deployment_administrator",
 			None,
 		)
 		.await
@@ -169,12 +169,13 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace("acme", "operator", "Other", "Independent workspace lock")
+		.create_workspace("acme", "deployment_administrator", "Other", "Independent workspace lock")
 		.await
 		.unwrap();
-	let index = crate::semantic::service::get_index(&store, &Actor::Operator, workspace)
-		.await
-		.unwrap();
+	let index =
+		crate::semantic::service::get_index(&store, &Actor::DeploymentAdministrator, workspace)
+			.await
+			.unwrap();
 	crate::semantic::service::configure(
 		&store,
 		other.id,
@@ -190,7 +191,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	for workspace in [workspace, other.id] {
 		let bank = memory::create_participant(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -202,7 +203,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		let id = Uuid::now_v7();
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -248,7 +249,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		.fetch_one(&store.pool)
 		.await
 		.unwrap();
-	let mut baseline = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut baseline = Lease::without_subject(&store).await.unwrap();
 	let unit_before = units::load(&mut baseline, losing_id, false)
 		.await
 		.unwrap()
@@ -269,13 +270,13 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		.await
 		.unwrap();
 	baseline.finish(Ok(())).await.unwrap();
-	let mut winner = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut winner = Lease::without_subject(&store).await.unwrap();
 	competing_receipt_request(&store, &mut winner, &requests[0], winner_kind, &bounds)
 		.await
 		.unwrap();
 	let (send, receive) = tokio::sync::oneshot::channel();
 	let contender = async {
-		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let mut lease = Lease::without_subject(&store).await.unwrap();
 		let pid: i32 = native::query_scalar(
 			&Query::select()
 				.expr(SimpleExpr::FunctionCall(
@@ -343,7 +344,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 		.fetch_one(&store.pool)
 		.await
 		.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let unit_after = units::load(&mut lease, losing_id, false)
 		.await
 		.unwrap()
@@ -421,7 +422,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -433,7 +434,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -446,12 +447,12 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	.unwrap();
 	let first = run(&store, &bank).await;
 	for _ in 0..2 {
-		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let mut lease = Lease::without_subject(&store).await.unwrap();
 		let result = super::super::memory_reads::record(&mut lease, first, &admitted).await;
 		lease.finish(result).await.unwrap();
 	}
 	assert_eq!(deliveries(&store, id).await, Some(1));
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_unit_retention"))
@@ -477,7 +478,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	lease.finish(Ok(())).await.unwrap();
 	let corrected = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -491,7 +492,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	.unwrap();
 	// A correction invalidates the old revision journal. The failed new Delivery
 	// rolls back its Usage/reactivation update together with the attempted read.
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	assert!(
 		super::super::memory_reads::record(&mut lease, first, &corrected)
 			.await
@@ -500,7 +501,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	lease.finish(Ok(())).await.unwrap();
 	assert_eq!(deliveries(&store, id).await, Some(1));
 	let second = run(&store, &bank).await;
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -524,7 +525,7 @@ async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_fail
 	assert_eq!(deliveries(&store, id).await, Some(2));
 	// Rolling back the enclosing completed-Delivery transaction rolls back Usage too.
 	let third = run(&store, &bank).await;
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	super::super::memory_reads::record(&mut lease, third, &corrected)
 		.await
 		.unwrap();
@@ -544,7 +545,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	let (store, _, workspace) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -556,7 +557,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -576,18 +577,24 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
         {"id":"default-read","effect":"allow","subjects":{"ids":["reader","person"]},"actions":["workspace.read","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}}
     ]})).unwrap();
 	authorization
-		.replace("acme", 1, bundle, "operator")
+		.replace("acme", 1, bundle, "deployment_administrator")
 		.await
 		.unwrap();
 	for role in ["p", "a", "m", "e", "r", "t"] {
 		authorization
-			.set_catalog("acme", &reference(role), 0, true, "operator")
+			.set_catalog(
+				"acme",
+				&reference(role),
+				0,
+				true,
+				"deployment_administrator",
+			)
 			.await
 			.unwrap();
 	}
 	for subject in ["agent", "reader", "person"] {
 		let credential = authorization
-			.issue_credential("acme", subject, 3600, "operator")
+			.issue_credential("acme", subject, 3600, "deployment_administrator")
 			.await
 			.unwrap();
 		let actor = authorization.authenticate(&credential.token).await.unwrap();
@@ -656,7 +663,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 		}
 	}
 	let credential = authorization
-		.issue_credential("acme", "admin", 3600, "operator")
+		.issue_credential("acme", "admin", 3600, "deployment_administrator")
 		.await
 		.unwrap();
 	let actor = authorization.authenticate(&credential.token).await.unwrap();
@@ -721,7 +728,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -733,7 +740,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	let source = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -744,7 +751,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	)
 	.await
 	.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -787,7 +794,7 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	)
 	.await;
 	lease.finish(result).await.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	assert!(super::live_support(&mut lease, &admitted[0]).await.unwrap());
 	let current_policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	assert_eq!(
@@ -854,7 +861,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		ids.push(id);
 		memory::mutate(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			mutation(
 				&bank,
 				Change::Add {
@@ -866,7 +873,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		.await
 		.unwrap();
 	}
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -942,7 +949,7 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 	disabled.id = "disabled".into();
 	disabled.config["policy"]["decay"] = json!(null);
 	registry.register(disabled).await.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	bank_settings::set(&mut lease, &bank, &reference("disabled"), 1)
 		.await
 		.unwrap();
@@ -1014,7 +1021,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1026,7 +1033,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1038,7 +1045,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	.await
 	.unwrap();
 	let old: DateTime<Utc> = "2024-01-01T00:00:00Z".parse().unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1073,7 +1080,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 	lease.finish(Ok(())).await.unwrap();
 	let outcome = memory::operate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		memory::Operation {
 			operation_id: Uuid::now_v7(),
 			provider: reference("p"),
@@ -1101,7 +1108,7 @@ async fn reactivation_resets_the_dormancy_anchor_without_incrementing_usage(
 		(reactivated_at + Duration::minutes(30), false),
 		(reactivated_at + Duration::days(4), true),
 	] {
-		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let mut lease = Lease::without_subject(&store).await.unwrap();
 		assert_eq!(super::page(&mut lease, bank_id, as_of).await.unwrap(), 1);
 		let flag: Option<serde_json::Value> = native::query_scalar(
 			&Query::select()
@@ -1152,7 +1159,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1164,7 +1171,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	let id = Uuid::now_v7();
 	let admitted = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Add {
@@ -1177,7 +1184,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	.unwrap();
 	let anchor = Utc::now().trunc_subsecs(6);
 	let as_of = anchor + Duration::hours(25) + Duration::nanoseconds(123);
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1207,7 +1214,7 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 	assert_eq!(persisted, as_of.trunc_subsecs(6));
 	lease.finish(Ok(())).await.unwrap();
 	for replay in [false, true] {
-		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let mut lease = Lease::without_subject(&store).await.unwrap();
 		if replay {
 			native::query(
 				&Query::update()
@@ -1276,7 +1283,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1295,7 +1302,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		sources.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1315,7 +1322,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		body.kind = Kind::Observation;
 		body.evidence = vec![source.evidence()];
 		// Derived Units enter through the trusted engine repository boundary.
-		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let mut lease = Lease::without_subject(&store).await.unwrap();
 		let result = repository::mutate(
 			&mut lease,
 			&mutation(
@@ -1332,7 +1339,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	}
 	sources[2] = memory::mutate(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		mutation(
 			&bank,
 			Change::Correct {
@@ -1345,7 +1352,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	.await
 	.unwrap()
 	.remove(0);
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1410,7 +1417,7 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		.update_with_conn(&mut database.lease.handle(), &definition)
 		.await
 		.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let scores = super::scores(
 		&mut lease,
@@ -1457,7 +1464,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1472,7 +1479,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 		admitted.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1486,7 +1493,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 			.remove(0),
 		);
 	}
-	let mut setup = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut setup = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut setup, &bank, false)
 		.await
 		.unwrap()
@@ -1524,7 +1531,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	let (send, receive) = tokio::sync::oneshot::channel();
 	let max_graph_visits = bounds.max_graph_visits;
 	let reader = async {
-		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let mut lease = Lease::without_subject(&store).await.unwrap();
 		let pid: i32 = native::query_scalar(
 			&Query::select()
 				.expr(SimpleExpr::FunctionCall(
@@ -1587,7 +1594,7 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	let ((active, dormant), ()) = tokio::join!(reader, mutation);
 	assert_eq!(active, vec![admitted[0].clone()]);
 	assert_eq!(dormant, vec![admitted[1].clone()]);
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let (active, dormant) =
 		repository::recall_including_dormant(&mut lease, &bank, 1, max_graph_visits)
 			.await
@@ -1643,7 +1650,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	.await;
 	let bank = memory::create_participant(
 		&store,
-		&Actor::Operator,
+		&Actor::DeploymentAdministrator,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -1660,7 +1667,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		admitted.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1675,7 +1682,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		);
 	}
 	crate::semantic::worker::sweep(&store).await.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let bank_id = repository::bank_id(&mut lease, &bank, false)
 		.await
 		.unwrap()
@@ -1707,7 +1714,7 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		.update_with_conn(&mut database.lease.handle(), &definition)
 		.await
 		.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let models = Models::resolve(
 		&store,
@@ -1788,7 +1795,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 	for text in ["Authorized bank fact", "Another participant's fact"] {
 		let bank = memory::create_participant(
 			&store,
-			&Actor::Operator,
+			&Actor::DeploymentAdministrator,
 			workspace,
 			memory::CreateParticipant {
 				agent: reference("a"),
@@ -1800,7 +1807,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 		admitted.push(
 			memory::mutate(
 				&store,
-				&Actor::Operator,
+				&Actor::DeploymentAdministrator,
 				mutation(
 					&bank,
 					Change::Add {
@@ -1816,7 +1823,7 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 		banks.push(bank);
 	}
 	crate::semantic::worker::sweep(&store).await.unwrap();
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let mut lease = Lease::without_subject(&store).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let models = Models::resolve(
 		&store,
