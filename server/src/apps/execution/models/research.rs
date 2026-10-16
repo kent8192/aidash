@@ -954,17 +954,25 @@ pub(crate) async fn revoke_invocations(
 		update
 			.table(Alias::new("invocations"))
 			.value(Alias::new("result"), tombstone.clone())
-			.value(
-				Alias::new("input"),
-				aidash_domain::context::ContextEvent::revoked_arguments(),
-			)
+			.value(Alias::new("input"), revoked_arguments())
+			// Only the shared research envelope counts, as the domain
+			// recognizer requires: another tool may return the other fields.
+			.and_where(Expr::cust_with_values(
+				"(result->>'contract') = ?",
+				[aidash_domain::research::RESULT_CONTRACT],
+			))
 			.and_where(Expr::cust("(result->>'version') = '1'"))
 			.and_where(Expr::cust("jsonb_typeof(result->'limits') = 'object'"))
 			.and_where(Expr::cust_with_values(
 				"(result->>'operation') = ?",
 				[operation.as_str()],
 			))
-			.and_where(Expr::col("result").ne(Expr::value(tombstone)));
+			// A result settled as a tombstone after the revocation still has
+			// its input to redact.
+			.and_where(Expr::cust_with_values(
+				"(result <> ?::jsonb OR input <> ?::jsonb)",
+				[tombstone.to_string(), revoked_arguments().to_string()],
+			));
 		match run {
 			Some(run) => update.and_where(Expr::col("run_id").eq(Expr::value(run))),
 			None => update.and_where(
@@ -982,7 +990,83 @@ pub(crate) async fn revoke_invocations(
 			.await?
 			.rows_affected;
 	}
+	revoke_tool_events(tx, run).await?;
 	Ok(u32::try_from(removed).unwrap_or(u32::MAX))
+}
+
+fn revoked_arguments() -> Value {
+	aidash_domain::context::ContextEvent::revoked_arguments()
+}
+
+/// Redact research invocations in the workspace event log, which
+/// `/api/events` serves: a `tool.completed` event holds the result and a
+/// `tool.started` event the input naming what was disclosed. Those of `run`,
+/// or with none those of every revoked Run, so an event appended just after
+/// a revocation is caught by the next sweep. Idempotent.
+async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>) -> Result<()> {
+	let of_run = || match run {
+		Some(run) => Expr::cust_with_values("(data->>'run_id') = ?", [run.to_string()]),
+		None => Expr::cust(format!(
+			"(data->>'run_id') IN (SELECT run_id::text FROM {})",
+			ResearchRevocation::table_name()
+		)),
+	};
+	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		let tombstone = revoked_result(operation).to_string();
+		let (sql, values) = Query::update()
+			.table(Alias::new("events"))
+			.value_expr(
+				Alias::new("data"),
+				Expr::cust_with_values(
+					"jsonb_set(data, '{result}', ?::jsonb)",
+					[tombstone.clone()],
+				),
+			)
+			.and_where(Expr::col("kind").eq("tool.completed"))
+			.and_where(Expr::cust_with_values(
+				"(data->'result'->>'contract') = ?",
+				[aidash_domain::research::RESULT_CONTRACT],
+			))
+			.and_where(Expr::cust_with_values(
+				"(data->'result'->>'operation') = ?",
+				[operation.as_str()],
+			))
+			.and_where(Expr::cust_with_values(
+				"(data->'result') <> ?::jsonb",
+				[tombstone],
+			))
+			.and_where(of_run())
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+	}
+	// The input of an invocation whose result was redacted, or of an attempt
+	// still in flight, which a research attempt records.
+	let revoked = revoked_arguments().to_string();
+	let (sql, values) = Query::update()
+		.table(Alias::new("events"))
+		.value_expr(
+			Alias::new("data"),
+			Expr::cust_with_values("jsonb_set(data, '{input}', ?::jsonb)", [revoked.clone()]),
+		)
+		.and_where(Expr::col("kind").eq("tool.started"))
+		.and_where(Expr::cust_with_values(
+			"(data->'input') <> ?::jsonb",
+			[revoked.clone()],
+		))
+		.and_where(Expr::cust_with_values(
+			format!(
+				"((data->>'idempotency_key') IN (SELECT idempotency_key FROM invocations \
+				 WHERE run_id::text = events.data->>'run_id' AND input = ?::jsonb) \
+				 OR (data->>'idempotency_key') IN (SELECT invocation_key FROM {} \
+				 WHERE run_id::text = events.data->>'run_id'))",
+				ResearchAttempt::table_name()
+			),
+			[revoked],
+		))
+		.and_where(of_run())
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
 }
 
 impl ResearchRevocation {

@@ -202,6 +202,21 @@ fn pdf_page(lines: Vec<Line>, pages_without_text: Vec<u32>) -> ExtractedPage {
 	}
 }
 
+/// A stored page count is at least one, so a provider claiming none is
+/// refused as invalid output, not left to the database to reject.
+#[rstest::rstest]
+fn a_page_count_of_zero_is_invalid(lines: Vec<Line>) {
+	let mut page = pdf_page(
+		lines
+			.into_iter()
+			.map(|line| Line { page: None, ..line })
+			.collect(),
+		vec![],
+	);
+	page.page_count = Some(0);
+	assert!(page.validate().is_err());
+}
+
 #[rstest::rstest]
 fn a_pdf_whose_pages_carry_no_text_is_a_valid_page_without_lines() {
 	assert!(pdf_page(vec![], vec![1, 2, 3]).validate().is_ok());

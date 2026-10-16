@@ -80,6 +80,7 @@ impl ExtractedPage {
 		let bytes = self.lines.iter().map(|line| line.text.len()).sum::<usize>();
 		let within = |page: u32| page > 0 && self.page_count.is_none_or(|count| page <= count);
 		if (self.lines.is_empty() && self.pages_without_text.is_empty())
+			|| self.page_count == Some(0)
 			|| self.lines.len() > MAX_LINES
 			|| self
 				.lines
