@@ -150,7 +150,7 @@ the workspace semantic index. PostgreSQL also holds canonical content and durabl
 retry/deletion records. Native memory's PGroonga crash-safe worker settings are
 included in the database image; recovery and index reconciliation run after a
 database outage.
-The default chart connects to operator-managed dependencies. The optional
+The default chart connects to externally managed dependencies. The optional
 [GCP Environment chart](../infra/gcp/helm/environment/README.md) supplies retained
 PostgreSQL 17, JetStream and edge workloads within the shared cluster. The acceptance
 runner supplies disposable StatefulSets and PVCs for PostgreSQL and JetStream;
@@ -210,9 +210,9 @@ semantic execution recovery cases; the other section-12 acceptance gates remain
 separate.
 
 The observer has namespaced `list` access only to Deployments, Pods and Events,
-and returns resources for its configured Helm release. Only Aidash operators can
+and returns resources for its configured Helm release. Only Deployment Administrators can
 read `/api/deployment`. It cannot read Secrets or mutate workloads. Do not share
-the namespace across mutually untrusted operators, since Kubernetes list RBAC
+the namespace across mutually untrusted teams, since Kubernetes list RBAC
 cannot restrict objects by label. Set `observability.enabled=false` to remove
 that Role/RoleBinding and token mount. Observation is disabled outside a
 configured Kubernetes namespace. Tokens are reread on each request for rotation.

@@ -27,8 +27,8 @@ python3 scripts/evaluate-capability-exposure.py \
 ```
 
 Supply the bearer token in `AIDASH_EVALUATION_TOKEN`, or name another variable
-with `--token-env`. Registry writes are operator-only, so it must be the
-operator token. The token is never copied into the report. The output file is
+with `--token-env`. Registry writes are Deployment Administrator-only, so it must be the
+Deployment Administrator token. The token is never copied into the report. The output file is
 created exclusively with mode 0600 and contains raw Task text, tool arguments
 and model-visible results.
 
