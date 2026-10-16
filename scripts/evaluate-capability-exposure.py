@@ -78,8 +78,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         api("/api/registry", entry("tool", identifier, alias, tool["description"], json.loads(tool["schema"]), {
             "registry_node": node, "provider": "integration.http@1", "operation": "invoke",
             "default_alias": alias, "tier": "integration", "narrow": {},
-            "transport": {"transport": "http", "endpoint": endpoint, "credential_env": None,
-                          "replay": "idempotent"}}))
+            "transport": {"transport": "http", "endpoint": endpoint, "replay": "idempotent"}}))
         return identifier
 
     def register_skill(case_id, skill_id):
