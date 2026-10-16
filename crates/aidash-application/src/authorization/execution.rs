@@ -95,7 +95,8 @@ pub enum Inherited {
 	None,
 	/// A Run on this node created the task.
 	Local,
-	/// The task is the output of a remote grant: it arrived through Federation.
+	/// The task's chain arrived through Federation: the task is the output of
+	/// a remote grant, or a local Run descended from one created it.
 	Remote,
 }
 
@@ -107,6 +108,9 @@ pub async fn inherit_task(scope: &mut dyn ExecutionGrantSession, task: Uuid) -> 
 /// came from.
 pub async fn inherit(scope: &mut dyn ExecutionGrantSession, task: Uuid) -> Result<Inherited> {
 	let (origin, inherited) = match scope.local_origin(task).await? {
+		// A local task keeps the Federation provenance of the chain that
+		// created it, or one local hop would shed it.
+		Some(origin) if scope.federated_origin(task).await? => (Some(origin), Inherited::Remote),
 		Some(origin) => (Some(origin), Inherited::Local),
 		None => (scope.remote_origin(task).await?, Inherited::Remote),
 	};

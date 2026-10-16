@@ -30,6 +30,10 @@ pub trait ExecutionGrantSession: Send {
 	async fn optional_grant(&mut self, run: Uuid) -> Result<Option<ExecutionGrant>>;
 	async fn local_origin(&mut self, task: Uuid) -> Result<Option<TaskOrigin>>;
 	async fn remote_origin(&mut self, task: Uuid) -> Result<Option<TaskOrigin>>;
+	/// Whether a remote grant's output starts the task's local creation chain:
+	/// a Run admitted on such an output created it, or created a task whose Run
+	/// did, at any depth.
+	async fn federated_origin(&mut self, task: Uuid) -> Result<bool>;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	fn set_context(&mut self, context: Value);
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

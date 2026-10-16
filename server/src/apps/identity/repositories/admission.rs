@@ -86,6 +86,13 @@ impl ExecutionGrantSession for Admission<'_> {
 		.remote_origin(task)
 		.await
 	}
+	async fn federated_origin(&mut self, task: Uuid) -> Result<bool> {
+		GrantScope {
+			access: self.access,
+		}
+		.federated_origin(task)
+		.await
+	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.workspace(id).await.map_err(Into::into)
 	}

@@ -21,6 +21,7 @@ struct Scope {
 	active: bool,
 	origin: Option<TaskOrigin>,
 	remote: Option<TaskOrigin>,
+	federated: bool,
 	plan_admissions: Vec<bool>,
 	mapping: bool,
 	grants: Vec<ExecutionGrant>,
@@ -30,7 +31,7 @@ struct Scope {
 impl Scope {
 	fn new() -> Self {
 		let subject = qualified_agent("aidash://node", "agent", "1.0.0");
-		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None}
+		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());
@@ -75,6 +76,10 @@ impl ExecutionGrantSession for Scope {
 	async fn remote_origin(&mut self, _: Uuid) -> Result<Option<TaskOrigin>> {
 		self.call("remote_origin")?;
 		Ok(self.remote.clone())
+	}
+	async fn federated_origin(&mut self, _: Uuid) -> Result<bool> {
+		self.call("federated_origin")?;
+		Ok(self.federated)
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.call("workspace")?;
@@ -422,6 +427,23 @@ async fn remote_origins_are_reported_to_plan_admission() {
 		root_subject: "root".into(),
 		subject_chain: vec!["root".into()],
 	});
+	admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
+		.await
+		.unwrap();
+	assert_eq!(s.plan_admissions, [true]);
+}
+
+/// A Run admitted on a remote grant's output that creates a task locally
+/// passes that provenance on: the child's Run is still federated.
+#[tokio::test]
+async fn local_descendants_of_remote_origins_stay_federated() {
+	let mut s = Scope::new();
+	s.origin = Some(TaskOrigin {
+		tenant: "tenant".into(),
+		root_subject: "root".into(),
+		subject_chain: vec!["root".into()],
+	});
+	s.federated = true;
 	admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
 		.await
 		.unwrap();
