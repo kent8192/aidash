@@ -81,25 +81,29 @@ pub(crate) async fn lock_creator(tx: &mut dyn TransactionExecutor, identity: Uui
 
 /// The creation times within the last hour, and the number not purged, of the
 /// Tenants `identity` created through the Tenant creation API. Personal
-/// Tenants never count.
+/// Tenants never count. Both are bounded queries: the total is counted in
+/// the database and only the last hour's rows are read, so the work held
+/// under the creator's lock does not grow with every Tenant it ever made.
 pub(crate) async fn creations(
 	tx: &mut AtomicTransaction,
 	identity: Uuid,
 	now: DateTime<Utc>,
 ) -> Result<(Vec<DateTime<Utc>>, u32)> {
-	let created = Tenant::objects()
-		.filter(Tenant::field_created_by_kind().eq("identity".to_owned()))
-		.filter(Tenant::field_created_by_identity().eq(Some(identity)))
-		.filter(Tenant::field_personal().eq(false))
+	let created = || {
+		Tenant::objects()
+			.filter(Tenant::field_created_by_kind().eq("identity".to_owned()))
+			.filter(Tenant::field_created_by_identity().eq(Some(identity)))
+			.filter(Tenant::field_personal().eq(false))
+	};
+	let total = created().count_with_db(tx).await?;
+	let recent = created()
+		.filter(Tenant::field_created_at().gt(now - chrono::Duration::hours(1)))
 		.all_with_db(tx)
-		.await?;
-	let total = u32::try_from(created.len()).unwrap_or(u32::MAX);
-	let recent = created
+		.await?
 		.into_iter()
 		.map(|tenant| tenant.created_at)
-		.filter(|time| *time > now - chrono::Duration::hours(1))
 		.collect();
-	Ok((recent, total))
+	Ok((recent, u32::try_from(total).unwrap_or(u32::MAX)))
 }
 
 /// Inserts a root record under a freshly drawn name. A collision draws again;
@@ -193,7 +197,12 @@ pub(crate) async fn create(
 			tx,
 			AdministrationEvent {
 				action: "tenant.create",
-				identity: creator.identity(),
+				// Only a Tenant Creator is the identity the creation concerns;
+				// a Deployment Administrator's identity is the actor alone.
+				identity: match creator {
+					Creator::Identity(identity) => Some(identity),
+					Creator::DeploymentAdministrator(_) => None,
+				},
 				registration: None,
 				mapping,
 				tenant: Some(&name),

@@ -20,6 +20,7 @@ use crate::{Error, Result};
 use aidash_domain::identity::tenancy::{self, TENANT_UPDATE};
 use aidash_domain::policy::Resource;
 use http::{HeaderMap, Method};
+use reinhardt::db::orm::Model as _;
 use reinhardt::injectable;
 use serde_json::json;
 
@@ -110,7 +111,16 @@ impl Tenants {
 			.atomic(async |tx| {
 				if let Creator::Identity(identity) = creator {
 					tenants::lock_creator(tx, identity).await?;
-					let account = DashboardIdentity::find(tx, identity).await?;
+					// Locked as Personal Tenant provisioning locks it: a
+					// disablement committing meanwhile waits, or is seen here.
+					let account = DashboardIdentity::objects()
+						.filter(DashboardIdentity::field_id().eq(identity))
+						.select_for_update()
+						.all_with_executor(tx)
+						.await
+						.map_err(reinhardt::core::exception::Error::from)?
+						.pop()
+						.ok_or(Error::Unauthorized)?;
 					let pool =
 						(!account.gcip_tenant.is_empty()).then_some(account.gcip_tenant.as_str());
 					if account.disabled_at.is_some()

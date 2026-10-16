@@ -86,6 +86,7 @@ import {
   CreateTenantForm,
   InvitationLanding,
   invitationTenant,
+  SESSION_CHANGED,
   type CreatedTenant,
 } from "./tenancy";
 
@@ -511,11 +512,13 @@ function Dashboard({
       if (document.visibilityState === "visible") void refresh();
     };
     window.addEventListener("focus", refresh);
+    window.addEventListener(SESSION_CHANGED, refresh);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(SESSION_CHANGED, refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [browserSessionId, client]);
@@ -685,8 +688,12 @@ function Dashboard({
                 )}
               </div>
             )}
-            {browserSession.tenant_creation && (
+            {(browserSession.tenant_creation ||
+              browserSession.deployment_administrator) && (
               <CreateTenantForm
+                // Tenancy Rules govern only an External Identity's own
+                // creations; a Deployment Administrator may always create.
+                asDeploymentAdministrator={!browserSession.tenant_creation}
                 onCreated={(created) => void tenantCreated(created)}
               />
             )}
@@ -852,7 +859,10 @@ function Dashboard({
             deploymentAdministratorAllowed:
               browserSession?.deployment_administrator ?? false,
             personalAccount: browserSession?.personal_account ?? false,
-            tenantCreation: browserSession?.tenant_creation ?? false,
+            tenantCreation:
+              (browserSession?.tenant_creation ?? false) ||
+              (context === "deployment_administrator" &&
+                (browserSession?.deployment_administrator ?? false)),
             tenantCreated: (created) => void tenantCreated(created),
             sharedAccess: {
               status: registration.data?.status,

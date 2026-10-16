@@ -38,12 +38,28 @@ type Mapping = {
 type Grant = { identity_id: string; enabled: boolean; revision: number };
 const MAPPING_PAGE_SIZE = 200;
 
+/** The distinct, non-empty groups named in a comma-separated field. */
+function approvalGroups(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .split(",")
+        .map((group) => group.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 export function DashboardIdentityAdministration() {
   const { locale } = useI18n();
   const english = locale === "en-US";
   const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   const [subject, setSubject] = useState("");
+  // Groups for a subject the approval creates; a Tenant a Deployment
+  // Administrator created has none yet, so its first administrator is made
+  // here, in `administrators`.
+  const [groups, setGroups] = useState("administrators");
   const [mappingOffset, setMappingOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -157,10 +173,19 @@ export function DashboardIdentityAdministration() {
                   />
                 </label>
                 <label className={field}>
-                  {english ? "Existing user subject" : "既存の user subject"}
+                  {english ? "User subject" : "user subject"}
                   <Input
                     value={subject}
                     onChange={(event) => setSubject(event.target.value)}
+                  />
+                </label>
+                <label className={field}>
+                  {english
+                    ? "Groups, if the subject is new (comma-separated)"
+                    : "subject が新しい場合のグループ（カンマ区切り）"}
+                  <Input
+                    value={groups}
+                    onChange={(event) => setGroups(event.target.value)}
                   />
                 </label>
                 <div className="flex gap-2 sm:col-span-2">
@@ -177,6 +202,10 @@ export function DashboardIdentityAdministration() {
                             body: JSON.stringify({
                               tenant: request.tenant ?? tenant,
                               subject,
+                              // Used only when the subject does not exist yet.
+                              ...(approvalGroups(groups).length
+                                ? { groups: approvalGroups(groups) }
+                                : {}),
                             }),
                           },
                         ),

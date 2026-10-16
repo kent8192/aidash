@@ -74,7 +74,16 @@ impl TenantAdministrations {
 	) -> Result<TenantAdministration> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let lease = self.runtime.store.orm_connection()?;
-		administrator.overview(lease.handle()).await
+		let mut overview = administrator.overview(lease.handle()).await?;
+		// With Invitations turned off for the Deployment nobody may issue one,
+		// whatever the policy allows, so the page offers no issue form;
+		// existing links stay listed and revocable.
+		if !self.runtime.config.tenancy.invitations {
+			overview.actions.retain(|action| {
+				action != aidash_domain::identity::tenant_administration::INVITATION_CREATE
+			});
+		}
+		Ok(overview)
 	}
 
 	pub(crate) async fn registrations(

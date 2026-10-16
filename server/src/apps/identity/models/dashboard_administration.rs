@@ -119,8 +119,10 @@ impl DashboardRegistrationRequest {
 		tenant: &str,
 		invitation: Option<Uuid>,
 	) -> Result<Self> {
-		// The identity lock serializes requests, as `submit` does.
-		DashboardIdentity::objects()
+		// The identity lock serializes requests, as `submit` does. A
+		// disablement that committed since the holder was checked is seen
+		// here, before the Invitation is spent.
+		let account = DashboardIdentity::objects()
 			.filter(DashboardIdentity::field_id().eq(identity))
 			.select_for_update()
 			.all_with_executor(tx)
@@ -128,6 +130,9 @@ impl DashboardRegistrationRequest {
 			.map_err(FrameworkError::from)?
 			.pop()
 			.ok_or(Error::Unauthorized)?;
+		if account.disabled_at.is_some() {
+			return Err(Error::Forbidden);
+		}
 		let now = database_time(tx).await?;
 		if Self::objects()
 			.filter(Self::field_identity_id().eq(identity))
@@ -511,7 +516,8 @@ impl DashboardRegistrationRequest {
 						mapping: Some(mapping_id),
 						tenant: Some(&input.tenant),
 						subject: Some(&input.subject),
-						invitation: None,
+						// Correlates the decision with the Invitation it came from.
+						invitation: registration.invitation_id,
 					},
 				)
 				.await?;
@@ -588,7 +594,7 @@ impl DashboardRegistrationRequest {
 						mapping: None,
 						tenant: administrator.map(TenantAdministrator::tenant),
 						subject: None,
-						invitation: None,
+						invitation: row.invitation_id,
 					},
 				)
 				.await?;

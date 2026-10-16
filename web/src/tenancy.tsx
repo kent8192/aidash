@@ -59,10 +59,18 @@ async function failure(response: Response, english: boolean): Promise<string> {
 }
 
 /** Creates a Tenant under a name Aidash assigns; the label is the readable one. */
+/** Dispatched after a change the browser session's Mappings show, such as a
+ *  Tenant label, so every context selector reads the session again. */
+export const SESSION_CHANGED = "aidash:session-changed";
+
 export function CreateTenantForm({
   onCreated,
+  asDeploymentAdministrator = false,
 }: {
   onCreated: (tenant: CreatedTenant) => void;
+  /** Create as a Deployment Administrator before any context is chosen;
+   *  once one is, the request carries it anyway. */
+  asDeploymentAdministrator?: boolean;
 }) {
   const { locale } = useI18n();
   const english = locale === "en-US";
@@ -79,7 +87,12 @@ export function CreateTenantForm({
         setError("");
         void sessionFetch("/api/tenants", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            ...(asDeploymentAdministrator
+              ? { "x-aidash-context": "deployment_administrator" }
+              : {}),
+          },
           body: JSON.stringify({ label }),
         })
           .then(async (response) => {
@@ -147,11 +160,14 @@ export function TenantLabelForm({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ label: value }),
         })
-          .then(() =>
-            client.invalidateQueries({
+          .then(() => {
+            // The Tenant switcher and account menu read labels from the
+            // session's Mappings, not from this page's query.
+            window.dispatchEvent(new Event(SESSION_CHANGED));
+            return client.invalidateQueries({
               queryKey: ["tenant-administration", tenant],
-            }),
-          )
+            });
+          })
           .catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
           )
@@ -383,7 +399,14 @@ const SECRET_KEY = "aidash-invitation";
 /** The Tenant name in an Invitation link path, if this page is one. */
 export function invitationTenant(pathname: string): string | null {
   const match = /^\/invitations\/([^/]+)\/?$/.exec(pathname);
-  return match ? decodeURIComponent(match[1]) : null;
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // A truncated or malformed link names no Tenant; the landing page shows
+    // it as an invalid Invitation instead of failing to render.
+    return match[1];
+  }
 }
 
 /** The secret travels in the fragment, so it never reaches server logs. It is
