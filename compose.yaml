@@ -65,7 +65,7 @@ services:
       args:
         CARGO_PROFILE: dev
     environment:
-      DATABASE_URL: postgres://aidash_owner:aidash-owner-local@postgres:5432/aidash_a
+      DATABASE_URL: postgres://aidash_server:aidash-server-local@postgres:5432/aidash_a
       AIDASH_NODE_ID: ${AIDASH_NODE_ID:-aidash://node-a}
       AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
     command:
