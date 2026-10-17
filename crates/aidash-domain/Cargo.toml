@@ -25,6 +25,16 @@ url = "2"
 
 http = "1"
 
+# Token Encodings (ADR 0017): pure-Rust counting of the embedded tokenizer
+# files. Only the server enables it, so other binaries carry neither file.
+tokenizers = { version = "0.23", default-features = false, features = [
+  "fancy-regex",
+], optional = true }
+ruzstd = { version = "0.9", optional = true }
+
+[features]
+token-encodings = ["dep:tokenizers", "dep:ruzstd"]
+
 [dev-dependencies]
 toml = "1.1"
 rstest.workspace = true
