@@ -14,6 +14,9 @@ pub struct MessageReadCoverage {
 /// The contract marker of a revoked research result placeholder, which no
 /// other tool result carries (ADR 0046).
 pub const REVOKED_RESULT_CONTRACT: &str = "aidash.research.revoked/1";
+/// Marks the placeholder of a research result the Research account terms no
+/// longer keep (ADR 0058).
+pub const EXPIRED_RESULT_CONTRACT: &str = "aidash.research.expired/1";
 
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
@@ -63,6 +66,11 @@ pub struct Context {
 	/// Journal keeps the originals.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub research_revoked: bool,
+	/// The latest purge under the Research account terms already applied
+	/// here (ADR 0058): research results it expired are placeholders and no
+	/// Execution Summary holds them. A purge after it is applied next.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
@@ -117,6 +125,8 @@ struct StoredContext {
 	revoked_summary_dependencies: Option<summary::SummaryDependencies>,
 	#[serde(default)]
 	research_revoked: bool,
+	#[serde(default)]
+	research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
 	#[serde(default, rename = "summary")]
 	legacy_summary: Option<String>,
 	run_message_summary: String,
@@ -214,6 +224,7 @@ impl<'de> Deserialize<'de> for Context {
 			execution_summary: stored.execution_summary,
 			revoked_summary_dependencies: stored.revoked_summary_dependencies,
 			research_revoked: stored.research_revoked,
+			research_expired_through: stored.research_expired_through,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
 			media_inferred_seq: stored.media_inferred_seq,
@@ -854,6 +865,27 @@ impl ContextEvent {
 	pub fn is_revoked_result(result: &Value) -> bool {
 		result["contract"] == REVOKED_RESULT_CONTRACT
 			&& result["revoked"] == json!(true)
+			&& result["invocation"].is_string()
+	}
+
+	/// A research result the Research account terms no longer keep. Later
+	/// model requests carry this instead; the Context Journal keeps the
+	/// original (ADR 0058). Unlike a revoked result, its call's arguments,
+	/// which Aidash itself sent, stay.
+	pub fn expired_result(call_id: &str) -> Value {
+		json!({
+			"contract": EXPIRED_RESULT_CONTRACT,
+			"expired": true,
+			"invocation": call_id,
+			"explanation": "The research service's account terms no longer let this result be kept. Search or read again if it is still needed.",
+		})
+	}
+
+	/// Whether this result is already an [`Self::expired_result`]. Only its
+	/// contract marker counts: any tool may return the other fields.
+	pub fn is_expired_result(result: &Value) -> bool {
+		result["contract"] == EXPIRED_RESULT_CONTRACT
+			&& result["expired"] == json!(true)
 			&& result["invocation"].is_string()
 	}
 

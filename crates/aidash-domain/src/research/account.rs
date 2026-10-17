@@ -1,7 +1,7 @@
 //! The Research account holder's account terms. Every search attempt is
 //! attributed to this account and priced before dispatch.
 use crate::{Error, Result};
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +24,15 @@ pub struct AccountProfile {
 	pub storage_permitted: bool,
 	pub query_training_prohibited: bool,
 	pub evaluation_permitted: bool,
+	/// How long the service's results may be stored after retrieval.
 	pub retention_days: u16,
+	/// How soon after the agreement ends its results must be deleted.
 	pub deletion_after_termination_days: u16,
+	/// When the agreement ended, if it has. From then on the account admits
+	/// no request, and its Provider results are deleted within
+	/// `deletion_after_termination_days` (ADR 0058).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub terminated_at: Option<DateTime<Utc>>,
 	/// The `AIDASH_SECRET_*` tool secret holding the provider key.
 	pub credential_env: String,
 	pub price_effective_at: DateTime<Utc>,
@@ -51,6 +58,7 @@ impl AccountProfile {
 			|| !self.evaluation_permitted
 			|| self.retention_days == 0
 			|| self.deletion_after_termination_days == 0
+			|| self.terminated_at.is_some_and(|terminated_at| terminated_at <= now)
 			|| self.request_price_micro_usd == 0
 			// The limit also bounds the base fee and the request price.
 			|| self.monthly_limit_micro_usd > MAX_MICRO_USD
@@ -64,6 +72,15 @@ impl AccountProfile {
 			));
 		}
 		crate::configuration::validate_secret_reference(&self.credential_env)
+	}
+
+	/// The account's termination, if its agreement has an end date.
+	pub fn termination(&self) -> Option<Termination> {
+		self.terminated_at.map(|terminated_at| Termination {
+			account_id: self.account_id.clone(),
+			terminated_at,
+			deletion_after_termination_days: self.deletion_after_termination_days,
+		})
 	}
 
 	pub fn attribution(&self) -> CostAttribution {
@@ -88,6 +105,40 @@ impl AccountProfile {
 pub struct CostAttribution {
 	pub account_id: String,
 	pub price_micro_usd: u64,
+}
+
+/// The recorded end of one account's agreement. Once recorded it outlives
+/// the account's declaration, so removing the declaration never undoes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Termination {
+	pub account_id: String,
+	pub terminated_at: DateTime<Utc>,
+	/// The deletion period of the terms in force when the end was recorded.
+	pub deletion_after_termination_days: u16,
+}
+
+/// When a Provider result loses its basis under the Research account terms
+/// (ADR 0058): `retrieved_at` plus the shorter of the `retention_days`
+/// recorded at retrieval and the account's current ones, if it is still
+/// declared, and never after the account's termination plus its deletion
+/// period. Shorter terms therefore apply to what is already kept, and longer
+/// ones never extend it.
+pub fn basis_ends_at(
+	retrieved_at: DateTime<Utc>,
+	recorded_retention_days: u16,
+	current_retention_days: Option<u16>,
+	termination: Option<&Termination>,
+) -> DateTime<Utc> {
+	let days = current_retention_days.map_or(recorded_retention_days, |current| {
+		current.min(recorded_retention_days)
+	});
+	let retained = retrieved_at + Duration::days(i64::from(days));
+	termination.map_or(retained, |termination| {
+		retained.min(
+			termination.terminated_at
+				+ Duration::days(i64::from(termination.deletion_after_termination_days)),
+		)
+	})
 }
 
 /// Start of the UTC calendar month containing `now`; monthly limits reset here.
