@@ -643,7 +643,7 @@ async fn ordered_receiver_agent(
 	let fetch = |id: &'static str| async move {
 		let (status, mut entry) = request(
 			ba,
-			&b.config.api_token,
+			&common::tenant_token(&b.store, "acme").await,
 			"GET",
 			&format!("/api/registry/{id}/1.0.0"),
 			Value::Null,
@@ -713,7 +713,7 @@ async fn native_remote_fixture(
 ) -> Value {
 	let (_, home_agent) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"GET",
 		"/api/registry/research/1.0.0",
 		Value::Null,
@@ -721,7 +721,7 @@ async fn native_remote_fixture(
 	.await;
 	let (_, embedding) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"GET",
 		"/api/registry/home-embedding/1.0.0",
 		Value::Null,
@@ -768,11 +768,11 @@ async fn native_remote_fixture(
 			);
 		}
 		for (kind, id, config) in roles {
-			let (status,body)=request(app,&runtime.config.api_token,"POST","/api/registry",json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native remote fixture"},"config":config})).await;
+			let (status,body)=request(app,&common::tenant_token(&runtime.store, "acme").await,"POST","/api/registry",json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native remote fixture"},"config":config})).await;
 			assert_eq!(status, 200, "{body}");
 			let (status, body) = request(
 				app,
-				&runtime.config.api_token,
+				&common::tenant_token(&runtime.store, "acme").await,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":reference(id),"expected_revision":0,"enabled":true}),
@@ -782,7 +782,7 @@ async fn native_remote_fixture(
 		}
 		let (_, mut agent) = request(
 			app,
-			&runtime.config.api_token,
+			&common::tenant_token(&runtime.store, "acme").await,
 			"GET",
 			"/api/registry/research/1.0.0",
 			Value::Null,
@@ -806,7 +806,7 @@ async fn native_remote_fixture(
 		let id = agent["id"].as_str().unwrap().to_owned();
 		let (status, body) = request(
 			app,
-			&runtime.config.api_token,
+			&common::tenant_token(&runtime.store, "acme").await,
 			"POST",
 			"/api/registry",
 			agent,
@@ -815,7 +815,7 @@ async fn native_remote_fixture(
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			app,
-			&runtime.config.api_token,
+			&common::tenant_token(&runtime.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
@@ -2616,18 +2616,21 @@ async fn a_changed_execution_boundary_stops_before_inference(
 			.unwrap();
 		}
 		"disabled_agent" => {
-			assert_eq!(
-				request(
-					&p.ba,
-					&p.b.config.api_token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false})
-				)
-				.await
-				.0,
-				200
-			);
+			aidash_server::authorization::Authorization {
+				pool: p.b.store.pool.clone(),
+			}
+			.set_catalog(
+				"acme",
+				&aidash_server::registry::EntityRef {
+					id: "research".into(),
+					version: "1.0.0".into(),
+				},
+				1,
+				false,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
 		}
 		"definition_substitution" => {
 			{
@@ -3078,7 +3081,7 @@ async fn prepare_generated_pair(
 		.workspace_id;
 	let (_, mut parent_template) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"GET",
 		"/api/registry/research/1.0.0",
 		Value::Null,
@@ -3100,7 +3103,7 @@ async fn prepare_generated_pair(
 	let model_ref = child_template["config"]["model"].clone();
 	let (_, model) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"GET",
 		&format!(
 			"/api/registry/{}/{}",
@@ -3114,7 +3117,7 @@ async fn prepare_generated_pair(
 	let embedding_descriptor = if semantic {
 		let (status, embedding) = request(
 			aa,
-			&a.config.api_token,
+			&common::tenant_token(&a.store, "acme").await,
 			"GET",
 			"/api/registry/home-embedding/1.0.0",
 			Value::Null,
@@ -3128,7 +3131,7 @@ async fn prepare_generated_pair(
 	let model_descriptor = descriptor(&b.config.node_id, &model);
 	let (_, compactor) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"GET",
 		"/api/registry/remote-compactor/1.0.0",
 		Value::Null,
@@ -4088,7 +4091,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		// delivery, including receiver Run events without a Workspace FK.
 		let (status, body) = request(
 			app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/workspaces",
 			json!({"title":"deployment-administrator-stream-tail","goal":"Independent stream marker"}),
