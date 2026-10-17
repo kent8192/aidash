@@ -136,8 +136,8 @@ Issuer changes require a maintenance window and a coordinated stop/start. This a
 | POST   | `/api/authorization/{tenant}/credentials`             | Issue a subject bearer token, returned once                               |
 | GET    | `/api/authorization/{tenant}/credentials`             | List the latest 200 credential metadata records, without tokens or hashes |
 | POST   | `/api/authorization/{tenant}/credentials/{id}/revoke` | Idempotently revoke a credential in the named tenant                      |
-| GET    | `/api/authorization/{tenant}/catalog`                 | List tenant Registry approvals and revisions                              |
-| POST   | `/api/authorization/{tenant}/catalog`                 | Approve or disable an exact Registry version using `expected_revision`    |
+
+These routes are a Deployment Administrator's. The catalog routes below belong to the Tenant: a Deployment Administrator reaches no Tenant's Registry or catalog (ADR 0029).
 
 Creation requires `expected_revision: 0`. Subsequent changes require the current revision. Concurrent updates with the same revision cannot both succeed; the loser receives HTTP 409. Revisions and their full policy documents are committed together. History pages default to 100 records and are capped at 200.
 
@@ -222,9 +222,29 @@ SSE validates scope before sending HTTP 200 and reloads credential/policy author
 
 ## Tenant catalog and local execution
 
-A Deployment Administrator must approve every exact agent, model, tool, skill and cluster version needed by a tenant. For example, POST `{"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":0}` to `/api/authorization/acme/catalog`. Approval changes use optimistic revisions and retain history in PostgreSQL. Approval alone does not grant a policy action; policy permission alone does not expose an unapproved entry. Scoped Registry reads and discovery return only approved entries satisfying `registry.read`. Scoped API and worker discovery search the local node and source-authorized peers. Worker decisions intersect every subject in the originating execution chain.
+Every Tenant has its own Registry. A definition's identity is `(tenant, id, version)`, and versions are immutable: editing a definition registers a new version. Built-in definitions (`aidash.` and `core.` identifiers) are written into every Tenant's Registry when the Tenant is created and again at startup (ADR 0033). References resolve only within the Tenant's Registry and its built-ins.
 
-Register the executor as an enabled policy subject with kind `agent` and its canonical ID, such as `aidash://node-a/agents/research@1.0.0`. A subject can POST `{"revision":0,"agent":{"id":"research","version":"1.0.0"}}` to `/api/tasks/{id}/claim`, or delegate to the local node through `/api/tasks/{id}/delegate`. The task must be OPEN with completed dependencies. Admission checks workspace access, `agent.execute` and `task.execute`, then commits the task claim, run and execution grant together. Local delegation additionally requires `task.delegate` for the originating chain and records its delivery atomically.
+| Method | Path                                             | Required action                                                    |
+| ------ | ------------------------------------------------ | ------------------------------------------------------------------ |
+| POST   | `/api/registry`                                  | `registry.create` on `registry` `{kind}/{id}`                      |
+| GET    | `/api/registry/versions`                         | `registry.read`: every version with its approval state and history |
+| GET    | `/api/authorization/{tenant}/catalog`            | `registry.read`: the Tenant's Catalog Approvals                    |
+| POST   | `/api/authorization/{tenant}/catalog`            | `catalog.approve` on `registry` `{kind}/{id}@{version}`            |
+| POST   | `/api/authorization/{tenant}/catalog/approvals`  | `catalog.approve` for each version of one dependency closure       |
+| POST   | `/api/marketplace/installations/{id}/activation` | `catalog.approve` on the activated revision's definition           |
+| POST   | `/api/marketplace/approval-sets`                 | `catalog.approve` on every definition of the set                   |
+
+Every path that writes a version also needs `registry.create`, besides its own action: agent configuration (`agent.configure`), workbench registration (`agent_draft.register`), Marketplace installation (`marketplace.install`) and skill import. Idempotency keys belong to `(tenant, principal, key)`; a replay decides the action again, and the same key with different input returns 409. A denial or a failure leaves no definition, approval, document, idempotency row or event.
+
+A Catalog Approval decides that one exact version may be used in the Tenant. Approval changes use optimistic revisions and keep their history, with the deciding subject as actor. An approval is refused while any dependency (an agent's model and bindings, a bundle's members, a cluster's coordinator) is neither approved nor an ordinary built-in; one `/catalog/approvals` request can approve the whole closure. Withdrawing an approval is never blocked, and execution then refuses the version. Built-in tools need no approval, except Sandboxed tools, Research providers and Deciders, which each Tenant approves before use (ADR 0034).
+
+Approving an agent version also makes the agent a subject of the Tenant's policy, `aidash://<node>/agents/<id>@<version>`, so that it can run (ADR 0062). The subject joins `members` when the policy marks it Assignable; naming other Assignable Groups in `groups` also needs `subject.group.update`. It has no delegator: its authority is its groups intersected with each Run's chain. Approving again leaves an existing subject unchanged, so it never re-enables a disabled one, and naming groups for an existing subject returns 409. `PUT /api/tenants/{tenant}/subjects/{subject}/groups` moves agent subjects between Assignable Groups like user subjects.
+
+Approval alone does not grant a policy action; policy permission alone does not expose an unapproved entry. Discovery and execution see only approved versions satisfying `registry.read`. Scoped API and worker discovery search the local node and source-authorized peers. Worker decisions intersect every subject in the originating execution chain.
+
+Approving a generation needs `generation.approve` and `catalog.approve`, and a Deployment Administrator cannot approve one. At publication the generated version is approved only while its approver still holds `catalog.approve`; otherwise, and on the receiving Node of a foreign generation, it is registered unapproved.
+
+A subject can POST `{"revision":0,"agent":{"id":"research","version":"1.0.0"}}` to `/api/tasks/{id}/claim`, or delegate to the local node through `/api/tasks/{id}/delegate`. The task must be OPEN with completed dependencies. Admission checks workspace access, `agent.execute` and `task.execute`, then commits the task claim, run and execution grant together. Local delegation additionally requires `task.delegate` for the originating chain and records its delivery atomically.
 
 The grant stores tenant, workspace, root subject, credential ID and the complete runtime agent chain; it contains no bearer secret. Every execution decision must allow both the originating subject and every agent in that chain, including each subject's policy-defined delegation ancestors. A child cannot escape a parent's denial. The chain is bounded to 32 subjects, including the root.
 

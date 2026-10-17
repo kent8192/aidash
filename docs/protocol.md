@@ -312,10 +312,8 @@ explicit `truncated` marker and text preview. Durable execution records retain
 original values. Credential inventories use `?offset=N` pages of 200 records.
 Scoped collections fill pages after authorization checks.
 
-Federation discovery returns `entries` and `next_offset`, with at most 64 entries
-and 3 MB of metadata per response. Exact delegation validation uses
-`GET /federation/v0.1/discover/{id}/{version}`. Generated task-bound agents are
-excluded from these legacy discovery routes. Observation returns at most 100
+Scoped federation discovery returns `entries` and `next_offset`, with at most 64
+entries and 3 MB of metadata per response. Observation returns at most 100
 runs, human requests and invocation previews; run context and pending payloads
 remain available through the authorized run detail API.
 
