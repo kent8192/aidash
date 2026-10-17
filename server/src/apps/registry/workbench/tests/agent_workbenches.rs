@@ -493,7 +493,7 @@ async fn draft_conflict_register_and_factual_inspection(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

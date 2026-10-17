@@ -37,18 +37,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		)
 		.await
 		.unwrap();
-	let mut db = database.lease.handle();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut db,
-			&AuthorizationWorkspace::build()
-				.workspace_id(later_workspace.id)
-				.tenant("acme")
-				.owner_subject("deployment_administrator")
-				.finish(),
-		)
-		.await
-		.unwrap();
+	own_workspace(&store, later_workspace.id).await;
 	let index = aidash_server::semantic::service::get_index(
 		&store,
 		&Actor::DeploymentAdministrator,
@@ -367,17 +356,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 		.await
 		.unwrap()
 		.id;
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(workspace)
-				.tenant("acme")
-				.owner_subject("deployment_administrator")
-				.finish(),
-		)
-		.await
-		.unwrap();
+	own_workspace(&store, workspace).await;
 	let configured = aidash_server::semantic::service::get_index(
 		&store,
 		&Actor::DeploymentAdministrator,

@@ -70,10 +70,16 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 				.is_err()
 		);
 	}
+	// The index holds a row-level policy, so only a scoped write reaches the limit.
 	assert!(
-		SemanticIndexe::objects()
-			.filter(SemanticIndexe::field_revision().eq(1))
-			.update_fields_with_conn(&mut db, [(SemanticIndexe::field_revision(), i64::MAX)])
+		store
+			.pool
+			.atomic(&TEST_FIXTURE, async |tx| {
+				Ok(SemanticIndexe::objects()
+					.filter(SemanticIndexe::field_revision().eq(1))
+					.update_fields_with_conn(tx, [(SemanticIndexe::field_revision(), i64::MAX)])
+					.await?)
+			})
 			.await
 			.is_err()
 	);

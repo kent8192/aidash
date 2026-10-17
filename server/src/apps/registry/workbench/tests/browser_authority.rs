@@ -1,5 +1,6 @@
 //! Recheck browser authority after authentication and before a native mutation.
 use super::{Workbench, captured_actor_application, common, request, workbench};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::identity::models::{
 	DashboardIdentity, DashboardMapping, DashboardSession,
 };
@@ -86,8 +87,15 @@ async fn browser_workbench(
 		.enabled(true)
 		.revision(1)
 		.finish();
-	DashboardMapping::objects()
-		.create_with_conn(&mut db, &mapping)
+	// Mappings hold a row-level policy; seed this one in the fixture scope.
+	wb.f.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			DashboardMapping::objects()
+				.create_with_conn(tx, &mapping)
+				.await?;
+			Ok(())
+		})
 		.await
 		.unwrap();
 	let mut headers = HeaderMap::new();

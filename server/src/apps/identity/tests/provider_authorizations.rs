@@ -188,7 +188,7 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&query)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 }
@@ -235,7 +235,7 @@ fn authorization_runtime(
 				.to_string(PostgresQueryBuilder),
 		] {
 			sqlx::query(&query)
-				.execute(f.store.pool.driver())
+				.execute(f.store.pool.fixture_driver())
 				.await
 				.unwrap();
 		}
@@ -245,7 +245,7 @@ fn authorization_runtime(
 			"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[]
 		}))
 		.unwrap();
-		common::tenant_root_in(f.store.pool.driver(), "alpha").await;
+		common::tenant_root_in(f.store.pool.fixture_driver(), "alpha").await;
 		Authorization {
 			pool: f.store.pool.clone(),
 		}
@@ -525,7 +525,7 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 			.from_as(Alias::new(table), Alias::new("record"))
 			.to_string(PostgresQueryBuilder);
 		let text: Vec<String> = sqlx::query_scalar(&query)
-			.fetch_all(fixture.f.store.pool.driver())
+			.fetch_all(fixture.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		let text = text.concat();
@@ -720,7 +720,7 @@ async fn replayed_cross_session_and_expired_states_and_rejected_codes_store_noth
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let response = callback(
@@ -866,7 +866,7 @@ async fn pending_authorizations(fixture: &Fixture) -> i64 {
 		.from(Alias::new("provider_authorizations"))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }

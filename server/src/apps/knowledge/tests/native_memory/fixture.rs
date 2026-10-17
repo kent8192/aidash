@@ -67,6 +67,25 @@ pub(super) fn bounds() -> Bounds {
 		max_call_seconds: 30,
 	}
 }
+/// Give `workspace` to Tenant `acme`. Its authorization row holds a row-level
+/// policy, so the fixture writes it in the test-fixture scope.
+pub(super) async fn own_workspace(store: &Store, workspace: Uuid) {
+	let owner = AuthorizationWorkspace::build()
+		.workspace_id(workspace)
+		.tenant("acme")
+		.owner_subject("deployment_administrator")
+		.finish();
+	store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			AuthorizationWorkspace::objects()
+				.create_with_conn(tx, &owner)
+				.await?;
+			Ok(())
+		})
+		.await
+		.unwrap();
+}
 pub(super) async fn setup(database: &DatabaseFixture, bounds: Bounds) -> (Store, Registry, Uuid) {
 	setup_endpoint(database, bounds, "http://127.0.0.1:9/v1").await
 }
@@ -220,46 +239,35 @@ pub(super) async fn setup_endpoint_policy(
 		.create_workspace(&TEST_FIXTURE, "Memory", "Keep current evidence")
 		.await
 		.unwrap();
-	let mut db = database.lease.handle();
 	let bundle: aidash_domain::policy::PolicyBundle =
 		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
 	// A policy references its Tenant's root record (ADR 0050).
-	Tenant::objects()
-		.create_with_conn(
-			&mut db,
-			&Tenant::build()
-				.name("acme".to_owned())
-				.label(Some("acme".to_owned()))
-				.personal(false)
-				.created_at(chrono::Utc::now())
-				.created_by_kind("deployment_administrator".to_owned())
-				.created_by_identity(None)
-				.finish(),
-		)
+	let tenant = Tenant::build()
+		.name("acme".to_owned())
+		.label(Some("acme".to_owned()))
+		.personal(false)
+		.created_at(chrono::Utc::now())
+		.created_by_kind("deployment_administrator".to_owned())
+		.created_by_identity(None)
+		.finish();
+	let authority = AuthorizationBundle::build()
+		.tenant("acme")
+		.revision(1)
+		.document(Json(serde_json::to_value(bundle).unwrap()))
+		.finish();
+	// Authorization tables hold row-level policies, so seed them in a scope.
+	store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			Tenant::objects().create_with_conn(tx, &tenant).await?;
+			AuthorizationBundle::objects()
+				.create_with_conn(tx, &authority)
+				.await?;
+			Ok(())
+		})
 		.await
 		.unwrap();
-	AuthorizationBundle::objects()
-		.create_with_conn(
-			&mut db,
-			&AuthorizationBundle::build()
-				.tenant("acme")
-				.revision(1)
-				.document(Json(serde_json::to_value(bundle).unwrap()))
-				.finish(),
-		)
-		.await
-		.unwrap();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut db,
-			&AuthorizationWorkspace::build()
-				.workspace_id(workspace.id)
-				.tenant("acme")
-				.owner_subject("deployment_administrator")
-				.finish(),
-		)
-		.await
-		.unwrap();
+	own_workspace(&store, workspace.id).await;
 	aidash_server::semantic::service::configure(
 		&store,
 		workspace.id,

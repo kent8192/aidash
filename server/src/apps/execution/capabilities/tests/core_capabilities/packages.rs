@@ -73,7 +73,7 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(c.f.store.pool.driver())
+	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let quota = Query::update()
@@ -86,7 +86,7 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&quota)
 		.bind(c.f.store.capabilities.0.retained_bytes as i64 - 1)
-		.execute(c.f.store.pool.driver())
+		.execute(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (status, op) = request(&c.app, &c.token, "POST", &path, install.clone()).await;
@@ -130,7 +130,7 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 	);
 	sqlx::query(&quota)
 		.bind(used)
-		.execute(c.f.store.pool.driver())
+		.execute(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let installed =

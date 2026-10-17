@@ -198,7 +198,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let listed = request(
@@ -547,7 +547,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -596,7 +596,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 		.bind(source_id)
 		.bind(source_version)
 		.bind(&source_content)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}
@@ -620,7 +620,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(audit["operation"], "marketplace.browse");
@@ -874,7 +874,7 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -923,7 +923,7 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 	);
 	// Revocation wins: hold the same distribution lock before the installing
 	// request reaches it, change the audience, then commit the barrier.
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
 			.expr(Expr::cust("pg_advisory_xact_lock(74003201)"))
@@ -1017,7 +1017,7 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 			.0,
 		200
 	);
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
 			.expr(Expr::cust("pg_advisory_xact_lock(71003201)"))
@@ -1131,7 +1131,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	f.registry.register(tool("revocation")).await.unwrap();
 	approve(&f, "a", &reference("revocation")).await;
 	let package = publish(&app, &a, "revocation").await;
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
 	let query = if authority == "credential" {
 		Query::update()
 			.table(Alias::new("authorization_credentials"))
@@ -1566,7 +1566,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 			.and_where(Expr::col(Alias::new("key")).eq(Expr::value(agent["key"].as_str().unwrap())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -1966,7 +1966,7 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 			200
 		);
 	}
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
 	if installation_wins || boundary == "consent" {
 		let lock = if installation_wins {
 			"pg_advisory_xact_lock(71003201)"
@@ -2131,7 +2131,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	// Migrations run as the table owner, as a deployment's migration Job does.
 	let connection = reinhardt::db::backends::DatabaseConnection::new(Arc::new(
 		reinhardt::db::backends::dialect::PostgresBackend::new(
-			common::owner_pool(f.store.pool.driver()).await,
+			common::owner_pool(f.store.pool.fixture_driver()).await,
 		),
 	));
 	let migrations = reinhardt::db::migrations::FilesystemSource::new(
@@ -2311,21 +2311,21 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	assert!(
 		sqlx::query(&update)
 			.bind(key)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.is_err()
 	);
 	// Fault injection only: SeaQuery has no ALTER TRIGGER API. A corrupted
 	// backing store must still fail digest verification before sending bytes.
 	// Only the table owner can disable its trigger.
-	let owner = common::owner_pool(f.store.pool.driver()).await;
+	let owner = common::owner_pool(f.store.pool.fixture_driver()).await;
 	sqlx::query("ALTER TABLE marketplace_versions DISABLE TRIGGER marketplace_immutable")
 		.execute(&owner)
 		.await
 		.unwrap();
 	sqlx::query(&update)
 		.bind(key)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	sqlx::query("ALTER TABLE marketplace_versions ENABLE TRIGGER marketplace_immutable")
@@ -2552,7 +2552,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2601,7 +2601,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2635,7 +2635,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2660,7 +2660,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -2724,7 +2724,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -2754,7 +2754,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 			.body(bytes::Bytes::from(value.to_string()))
 			.unwrap()
 	};
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
 	let wait_at_commit = mutation_wins || revocation == "expiry";
 	if wait_at_commit {
 		sqlx::query(
@@ -2814,7 +2814,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	.await;
 	let revoking = if mutation_wins {
 		let task = if revocation == "deployment_administrator_grant" {
-			let pool = f.store.pool.driver().clone();
+			let pool = f.store.pool.fixture_driver().clone();
 			let sql = grant_revoke.clone();
 			tokio::spawn(async move {
 				sqlx::query(&sql)
@@ -3115,7 +3115,7 @@ async fn installation_rejects_missing_private_knowledge(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3138,7 +3138,7 @@ async fn installation_rejects_missing_private_knowledge(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

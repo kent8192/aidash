@@ -941,17 +941,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 		.await
 		.unwrap()
 		.id;
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(workspace)
-				.tenant("acme")
-				.owner_subject("deployment_administrator")
-				.finish(),
-		)
-		.await
-		.unwrap();
+	own_workspace(&store, workspace).await;
 	let configured = aidash_server::semantic::service::get_index(
 		&store,
 		&Actor::DeploymentAdministrator,

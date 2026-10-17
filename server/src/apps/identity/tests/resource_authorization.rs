@@ -48,7 +48,7 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 	sqlx::query("UPDATE tasks SET status = 'ABANDONED' WHERE workspace_id = $1 AND parent_id = $2")
 		.bind(parent.workspace_id)
 		.bind(parent_id)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
@@ -56,13 +56,13 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 	)
 	.bind(parent.workspace_id)
 	.bind(parent_id)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let open_children = [ids[ids.len() - 2], ids[ids.len() - 1]];
 	sqlx::query("UPDATE tasks SET status = 'OPEN' WHERE id = ANY($1)")
 		.bind(open_children.as_slice())
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let authorization = aidash_server::authorization::Authorization {
@@ -393,7 +393,7 @@ async fn retained_snapshot_revocation(
 		.unwrap();
 	sqlx::query("UPDATE artifacts SET created_at = '2000-01-01T00:00:00Z' WHERE id = $1")
 		.bind(artifact.id)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	for index in 0..25 {
@@ -543,7 +543,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -574,7 +574,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -620,7 +620,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 				.limit(100)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -664,7 +664,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 			.from(reinhardt::query::Alias::new("authorization_run_reads"))
 			.and_where(SimpleExpr::CustomWithExpr("(run_id = ? AND workspace_id = ? AND resource_kind = 'message' AND resource_id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 			.to_string(reinhardt::query::PostgresQueryBuilder))
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await }
 	.unwrap();
 	assert_eq!(
@@ -876,7 +876,7 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(denied > 0);
@@ -1147,7 +1147,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1164,7 +1164,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.find(|m| m.content == "Visible work completed")
 		.unwrap();
 	let recorded: i64 = { let query_bind_1 = run.id; let query_bind_2 = output.id; let query_bind_3 = message.id; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(SimpleExpr::CustomWithExpr("(run_id = ? AND ((resource_kind = 'artifact' AND resource_id = ?) OR (resource_kind = 'message' AND resource_id = ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
-    .fetch_one(f.store.pool.driver())
+    .fetch_one(f.store.pool.fixture_driver())
     .await }
     .unwrap();
 	assert_eq!(
@@ -1280,7 +1280,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1324,7 +1324,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1418,7 +1418,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1503,7 +1503,7 @@ fn retained_snapshot_revocation_provider_router(
 	let f = runtime.await.federation;
 
 	let seen = calls.clone();
-	let pool = f.store.pool.driver().clone();
+	let pool = f.store.pool.fixture_driver().clone();
 	let server=reinhardt::test::stub::StubRouter::new()
 .route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
         let seen=seen.clone();let pool=pool.clone();async move {

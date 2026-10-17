@@ -14,7 +14,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 	let fixture = root;
 	let ws = fixture.workspaces[0];
 	let event = fixture.emit(ws, 1).await;
-	let mut barrier = fixture.f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
 			.expr(Expr::cust("pg_advisory_xact_lock(71003202)"))
@@ -28,7 +28,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 		.from(Alias::new("authorization_decisions_sequence_seq"))
 		.to_string(PostgresQueryBuilder);
 	let before: i64 = sqlx::query_scalar(&sequence_sql)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let mut observers = Vec::new();
@@ -59,7 +59,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(fixture.f.store.pool.driver())
+			.fetch_one(fixture.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			if waiting == 2 {
@@ -71,7 +71,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 	.await
 	.expect("both per-frame audits must wait for serialization");
 	let blocked: i64 = sqlx::query_scalar(&sequence_sql)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -94,7 +94,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 			.order_by(Alias::new("sequence"), reinhardt::query::Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(fixture.f.store.pool.driver())
+	.fetch_all(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -229,12 +229,12 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 		.from(Alias::new("authorization_decisions"))
 		.to_string(PostgresQueryBuilder);
 	let audit_before: i64 = sqlx::query_scalar(&audit_sql)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	until(|| fixture.service.snapshot().query_causes[3] >= 4).await;
 	let audit_after: i64 = sqlx::query_scalar(&audit_sql)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -287,7 +287,7 @@ async fn notification_during_initial_authority_read_is_retained(
 	let (stop, subscriber) = subscription;
 	let ws = fixture.workspaces[0];
 	let before = fixture.emit(ws, 1).await;
-	let mut ownership = fixture.f.store.pool.driver().begin().await.unwrap();
+	let mut ownership = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("workspace_id"))
@@ -360,7 +360,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -409,7 +409,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -434,7 +434,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -455,7 +455,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(fixture.f.store.pool.driver())
+			.execute(fixture.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -512,7 +512,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 				.and_where(Expr::col(Alias::new(key)).eq(Expr::value(query_bind_1.to_owned())))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
