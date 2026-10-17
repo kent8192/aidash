@@ -148,6 +148,7 @@ fn workbench(
 		let endpoint = server.url.clone();
 		// The model fixture is a Keyless endpoint on loopback (ADR 0036).
 		f.store.keyless.permit_origin_of(&endpoint).unwrap();
+		common::tenant_root(&f, "acme").await;
 		for (id, kind, config) in [
 			(
 				"fixture-model",
@@ -160,9 +161,14 @@ fn workbench(
 				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 			),
 		] {
-			assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
+			f.registry
+				.register(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap(),
+				)
+				.await
+				.unwrap();
 		}
-		common::tenant_root(&f, "acme").await;
 		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
 		let (status, credential) = request(
 			&app,

@@ -142,7 +142,12 @@ fn streamed_reply(body: Value, (entered, released): Gates) -> Response {
 
 /// Admit `research@1.0.1`, whose model `model@1.0.1` streams its replies, as
 /// a subject of the bootstrap `policy`.
-async fn admit_streaming_agent(f: &Federation, app: &common::TestApplication, mut policy: Value) {
+async fn admit_streaming_agent(
+	f: &Federation,
+	app: &common::TestApplication,
+	token: &str,
+	mut policy: Value,
+) {
 	let deployment_administrator = &f.config.api_token;
 	let subject = qualified_agent(&f.config.node_id, "research", "1.0.1");
 	policy["subjects"][subject] = json!({"kind":"agent"});
@@ -179,18 +184,11 @@ async fn admit_streaming_agent(f: &Federation, app: &common::TestApplication, mu
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");
 	for (id, entry) in [("model", json!(model)), ("research", json!(agent))] {
-		let (status, body) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/registry",
-			entry,
-		)
-		.await;
+		let (status, body) = request(app, token, "POST", "/api/registry", entry).await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			app,
-			deployment_administrator,
+			token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":id,"version":"1.0.1"},"expected_revision":0,"enabled":true}),
@@ -228,7 +226,7 @@ async fn a_streamed_reply_is_shown_live_and_accepted_once(
 	let app = fixture.application.clone();
 	let mut provider = provider;
 	let (policy, token, task_id) = bootstrap(&f, &app, &provider.endpoint).await;
-	admit_streaming_agent(&f, &app, policy).await;
+	admit_streaming_agent(&f, &app, &token, policy).await;
 	let (status, claimed) = request(
 		&app,
 		&token,

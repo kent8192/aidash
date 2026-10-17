@@ -23,7 +23,7 @@ fn model() -> Entry {
 }
 
 async fn seed_executor(f: &aidash_server::federation::Federation) {
-	f.registry.seed_system().await.unwrap();
+	common::tenant_scope(&f.store, "acme").await;
 	let mut definition = model();
 	definition.config["context_window"] = json!(128000);
 	f.registry
@@ -60,9 +60,10 @@ async fn insert_entry(pool: &sqlx::PgPool, entry: &Value) -> Result<(), sqlx::Er
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("registry"))
-				.columns(["id", "version", "kind", "metadata"].map(Alias::new))
+				.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
 				.from_subquery(
 					Query::select()
+						.expr(Expr::value("acme"))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],

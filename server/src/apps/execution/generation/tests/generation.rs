@@ -40,7 +40,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let spec = definition(&app, &f.config.api_token).await;
+	let spec = definition(&app, &token).await;
 	let (status, created) = request(
 		&app,
 		&f.config.api_token,
@@ -127,7 +127,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let spec = definition(&app, &f.config.api_token).await;
+	let spec = definition(&app, &token).await;
 	assert_eq!(
 		request(
 			&app,
@@ -295,7 +295,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	let endpoint = server.url.clone();
 
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	assert_eq!(
 		request(
@@ -463,7 +463,7 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["limits"]["max_concurrent"] = json!(1);
 	spec["limits"]["token_budget"] = json!(200000);
 	assert_eq!(
@@ -543,7 +543,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	let endpoint = server.url.clone();
 
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	spec["limits"]["max_depth"] = json!(1);
 	assert_eq!(
@@ -651,7 +651,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	assert_eq!(
 		request(
@@ -735,7 +735,7 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	let endpoint = server.url.clone();
 	let calls = fixture.calls;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	assert_eq!(
 		request(
@@ -813,36 +813,9 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let endpoint = server.url.clone();
 
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let (status, pending) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/marketplace/host-packages",
-		json!({"tenant":"acme","groups":["task_assign"],"idempotency_key":uuid::Uuid::new_v4()}),
-	)
-	.await;
-	assert_eq!(status, 200, "{pending}");
-	let installations = pending["installations"].as_array().unwrap();
-	let assignment_tool = installations
-		.iter()
-		.find(|row| {
-			row["entry"]["kind"] == "tool" && row["entry"]["config"]["operation"] == "task_assign"
-		})
-		.unwrap()["entry"]
-		.clone();
-	let selection = json!({"tenant":"acme",
-		"installations":installations.iter().map(|row|json!({"installation":row["installation"]["id"],"revision":row["revision"],"digest":row["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),
-		"approvals":installations.iter().map(|row|json!({"reference":{"id":row["entry"]["id"],"version":row["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
-	let (status, active) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/marketplace/approval-sets",
-		selection,
-	)
-	.await;
-	assert_eq!(status, 200, "{active}");
-	let mut spec = definition(&app, &f.config.api_token).await;
+	// task_assign is an ordinary built-in of every Tenant; it needs no approval.
+	let assignment_tool = json!({"id":"aidash.task_assign","version":"1.0.0"});
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	spec["template"]["binding_normalization"] = Value::Null;
 	spec["template"]["config"]["bindings"].as_array_mut().unwrap().push(json!({
@@ -922,7 +895,7 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let spec = definition(&app, &f.config.api_token).await;
+	let spec = definition(&app, &token).await;
 	assert_eq!(
 		request(
 			&app,
@@ -1078,7 +1051,7 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	assert_eq!(
 		request(
@@ -1175,7 +1148,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	let entered = fixture.entered;
 	let release = fixture.release;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	assert_eq!(
 		request(
@@ -1289,7 +1262,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	let release = fixture.release;
 	let calls = fixture.calls;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	let (status, response) = request(
 		&app,
@@ -1428,7 +1401,7 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 		.0,
 		200
 	);
-	let spec = definition(&app, &f.config.api_token).await;
+	let spec = definition(&app, &token).await;
 	assert_eq!(
 		request(
 			&app,
@@ -1480,7 +1453,7 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	assert_eq!(
 		request(
 			&app,
@@ -1496,7 +1469,7 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false})
@@ -1551,7 +1524,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let actor = if subject { &token } else { &f.config.api_token };
-	let spec = definition(&app, &f.config.api_token).await;
+	let spec = definition(&app, &token).await;
 	let path = "/api/generation/acme/policies/research";
 	let (status, initial) = request(
 		&app,
@@ -1671,7 +1644,7 @@ async fn count_concurrency_and_total_token_limits_are_independent(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["limits"][limit] = json!(if limit == "token_budget" { 200000 } else { 1 });
 	if limit == "max_agents" {
 		spec["limits"]["max_concurrent"] = json!(1);
@@ -1783,7 +1756,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		.0,
 		200
 	);
-	let mut spec = definition(&app, &f.config.api_token).await;
+	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);
 	assert_eq!(
 		request(
@@ -1898,7 +1871,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, other_task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let spec = definition(&app, &f.config.api_token).await;
+	let spec = definition(&app, &token).await;
 	assert_eq!(
 		request(
 			&app,

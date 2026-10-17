@@ -148,6 +148,27 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");
 	assert_eq!(personal(subject, Uuid::new_v4(), invalid).await.0, 400);
+	// A registered version runs once the Tenant approves it and its graph;
+	// approving the agent version makes it a subject of the Tenant (ADR 0062).
+	let approvals: Vec<Value> = [
+		json!({"id":"writing","version":"1.0.0"}),
+		source.clone(),
+		json!({"id":entry.id,"version":entry.version}),
+	]
+	.into_iter()
+	.map(|reference| json!({"entry":{"id":reference["id"],"version":reference["version"]},"enabled":true,"expected_revision":0}))
+	.collect();
+	assert_json(
+		subject
+			.post(
+				"/api/authorization/acme/catalog/approvals",
+				&json!({ "approvals": approvals }),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
 	let claimed = subject
 		.post(
 			&format!("/api/tasks/{}/claim", execution.task),

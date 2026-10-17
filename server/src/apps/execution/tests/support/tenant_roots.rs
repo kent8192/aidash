@@ -44,7 +44,7 @@ pub async fn tenant_root_in(pool: &sqlx::PgPool, name: &str) {
 }
 
 /// Writes a Tenant whose policy allows its subjects every action, seeds its
-/// built-ins and returns its scope. Every workspace belongs to a Tenant
+/// built-ins and returns its scope; a Tenant whose policy exists is reused. Every workspace belongs to a Tenant
 /// (ADR 0043), so Store fixtures own their workspaces in one.
 #[allow(dead_code)]
 pub async fn tenant_scope(
@@ -52,6 +52,18 @@ pub async fn tenant_scope(
 	name: &str,
 ) -> aidash_application::tenancy::TenancyScope {
 	tenant_root_in(store.pool.driver(), name).await;
+	let tenant = aidash_domain::tenancy::TenantName::new(name).unwrap();
+	let scope = aidash_application::tenancy::TenancyScope::Tenant(tenant.clone());
+	// Suites may share one fixture Tenant between a fixture and its tests.
+	let written: bool =
+		sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_bundles WHERE tenant = $1)")
+			.bind(name)
+			.fetch_one(store.pool.driver())
+			.await
+			.unwrap();
+	if written {
+		return scope;
+	}
 	let bundle = serde_json::json!({"tenant":name,"subjects":{"alice":{"kind":"user"}},
 		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	aidash_server::authorization::Authorization {
@@ -65,13 +77,12 @@ pub async fn tenant_scope(
 	)
 	.await
 	.expect("the Tenant policy is written");
-	let tenant = aidash_domain::tenancy::TenantName::new(name).unwrap();
 	aidash_server::registry::Registry::new(store.pool.clone(), &store.node_id)
 		.unwrap()
 		.seed(&tenant)
 		.await
 		.expect("the built-in definitions are seeded");
-	aidash_application::tenancy::TenancyScope::Tenant(tenant)
+	scope
 }
 
 /// Queues a local Run of `agent` for `task` through the claim primitive, the
@@ -133,7 +144,7 @@ pub async fn remote_run(
 				.expr(Expr::cust("$4"))
 				.expr(Expr::cust("$5"))
 				.expr(Expr::cust("$6"))
-				.expr(Expr::cust("'{}'::jsonb"))
+				.expr(Expr::cust("$7"))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
@@ -144,6 +155,7 @@ pub async fn remote_run(
 		.bind(home)
 		.bind(agent_id)
 		.bind(agent_version)
+		.bind(serde_json::json!(aidash_server::context::Context::default()))
 		.execute(store.pool.driver())
 		.await
 		.expect("the admitted remote Run is written");
@@ -151,4 +163,19 @@ pub async fn remote_run(
 		.run(&aidash_application::tenancy::TEST_FIXTURE, id)
 		.await
 		.expect("the remote Run is readable")
+}
+
+/// Writes the Tenant as [`tenant_scope`] does and returns a Subject Credential
+/// for its `alice`, for suites that call Tenant routes and do work, which a
+/// Deployment Administrator no longer does (ADR 0043).
+#[allow(dead_code)]
+pub async fn tenant_token(store: &aidash_server::store::Store, tenant: &str) -> String {
+	tenant_scope(store, tenant).await;
+	aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	}
+	.issue_credential(tenant, "alice", 3600, "deployment_administrator")
+	.await
+	.expect("the Subject Credential is issued")
+	.token
 }

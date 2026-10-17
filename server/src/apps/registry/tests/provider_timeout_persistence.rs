@@ -10,7 +10,7 @@ use aidash_domain::tenancy::TenantName;
 use aidash_server::apps::registry::models::Definition;
 use aidash_server::apps::registry::models::states::DefinitionKind;
 use aidash_server::registry::{Entry, ModelConfig};
-use endpoint_fixtures::{EndpointFixture, assert_json, endpoint, tenant_subject};
+use endpoint_fixtures::{EndpointFixture, approve, assert_json, endpoint, tenant_subject};
 use reinhardt::core::exception::DatabaseErrorKind;
 use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
@@ -82,6 +82,7 @@ async fn configured_timeouts_round_trip_through_the_registry_api(
 				.unwrap(),
 			200,
 		);
+		approve(&app, "endpoint", &id, "1.0.0").await;
 		let found = assert_json(
 			registrar
 				.get(&format!("/api/registry/{id}/1.0.0"))

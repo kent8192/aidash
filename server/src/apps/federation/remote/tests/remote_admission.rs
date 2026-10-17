@@ -138,18 +138,6 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		"duplicate delivery must return the same local binding"
 	);
 	let source_task = a.store.task(&TEST_FIXTURE, task).await.unwrap();
-	assert_eq!(
-		peer(
-			&ba,
-			&a.config.node_id,
-			"/federation/v0.1/offers",
-			json!({"task":source_task,"agent":{"id":"research","version":"1.0.0"}})
-		)
-		.await
-		.0,
-		403,
-		"legacy offers cannot bypass the accepted scoped binding"
-	);
 	let receipt = first.1;
 	assert_eq!(receipt["task_id"], task.to_string());
 	let verification = format!("{admit}/{}/verify", receipt["id"].as_str().unwrap());

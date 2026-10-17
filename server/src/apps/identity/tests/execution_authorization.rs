@@ -54,18 +54,11 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
-		let (status, body) = request(
-			&app,
-			deployment_administrator,
-			"POST",
-			"/api/registry",
-			entry,
-		)
-		.await;
+		let (status, body) = request(&app, &token, "POST", "/api/registry", entry).await;
 		assert_eq!(status, 200, "registry: {body}");
 		let (status, body) = request(
 			&app,
-			deployment_administrator,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -403,7 +396,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			catalog.clone()
@@ -450,7 +443,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":2})
@@ -462,7 +455,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			catalog
@@ -812,7 +805,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.unwrap()
 		.remove("binding_normalization");
 	assert_eq!(
-		request(&app, &f.config.api_token, "POST", "/api/registry", entry)
+		request(&app, &token, "POST", "/api/registry", entry)
 			.await
 			.0,
 		200
@@ -820,7 +813,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"child","version":"1.0.0"},"expected_revision":0,"enabled":true})

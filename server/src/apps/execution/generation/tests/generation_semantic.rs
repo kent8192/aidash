@@ -2086,7 +2086,7 @@ mod semantic_fixture_composition {
 		let workspace = f.store.task(&TEST_FIXTURE, original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"GET",
 			"/api/registry/research/1.0.0",
 			Value::Null,
@@ -2096,12 +2096,12 @@ mod semantic_fixture_composition {
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
 		{
-			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
+			let (status, response) = request(&app, &token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
 				request(
 					&app,
-					&f.config.api_token,
+					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
 					json!({"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -2135,12 +2135,12 @@ mod semantic_fixture_composition {
 				json!({"scope":"workspace","memory":{"id":"memory","version":"1.0.0"},"max_tokens":4096}),
 			),
 		] {
-			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
+			let (status, response) = request(&app, &token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
 				request(
 					&app,
-					&f.config.api_token,
+					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
 					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})

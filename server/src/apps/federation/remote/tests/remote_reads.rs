@@ -40,7 +40,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let b_app = destination.application;
 	let endpoint = model_server.url.clone();
 	let (a_policy, token, task) = bootstrap(&a, &a_app, &endpoint).await;
-	let (b_policy, _, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
+	let (b_policy, b_token, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
 	let mut entry = b
 		.registry
 		.get(
@@ -65,7 +65,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	assert_eq!(
 		request(
 			&b_app,
-			&b.config.api_token,
+			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -279,7 +279,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	assert_eq!(
 		request(
 			&b_app,
-			&b.config.api_token,
+			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
@@ -314,7 +314,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	assert_eq!(
 		request(
 			&b_app,
-			&b.config.api_token,
+			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":2,"enabled":true})

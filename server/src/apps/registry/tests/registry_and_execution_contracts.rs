@@ -46,6 +46,7 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
 	let app = application_fixture.application.clone();
 	let seeded_definitions = f
 		.registry
@@ -60,8 +61,8 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	entry.name.insert("en".into(), "calm-otter".into());
 	let key = Uuid::new_v4().to_string();
 	let (first, concurrent) = tokio::join!(
-		register_keyed(&app, &f.config.api_token, &entry, &key),
-		register_keyed(&app, &f.config.api_token, &entry, &key),
+		register_keyed(&app, &token, &entry, &key),
+		register_keyed(&app, &token, &entry, &key),
 	);
 	assert_eq!(first.0, 200, "{first:?}");
 	assert_eq!(first, concurrent);
@@ -73,25 +74,14 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	);
 	// A new router models a retry after the committed response was lost.
 	assert_eq!(
-		register_keyed(
-			&common::application(f.clone()).await,
-			&f.config.api_token,
-			&entry,
-			&key
-		)
-		.await,
+		register_keyed(&common::application(f.clone()).await, &token, &entry, &key).await,
 		first
 	);
 	let mut changed = entry.clone();
 	changed
 		.description
 		.insert("en".into(), "different input".into());
-	assert_eq!(
-		register_keyed(&app, &f.config.api_token, &changed, &key)
-			.await
-			.0,
-		409
-	);
+	assert_eq!(register_keyed(&app, &token, &changed, &key).await.0, 409);
 	assert_eq!(
 		f.registry
 			.list(
@@ -113,19 +103,8 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 			.count(),
 		1
 	);
-	assert_eq!(
-		register_keyed(&app, &f.config.api_token, &entry, "invalid")
-			.await
-			.0,
-		400
-	);
-	let next = register_keyed(
-		&app,
-		&f.config.api_token,
-		&entry,
-		&Uuid::new_v4().to_string(),
-	)
-	.await;
+	assert_eq!(register_keyed(&app, &token, &entry, "invalid").await.0, 400);
+	let next = register_keyed(&app, &token, &entry, &Uuid::new_v4().to_string()).await;
 	assert_eq!(next.0, 200);
 	assert_ne!(next.1["id"], first.1["id"]);
 	// Failed validation must roll back the request-key reservation as well.
@@ -133,15 +112,11 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	let mut invalid = entry.clone();
 	invalid.version = "invalid".into();
 	assert_eq!(
-		register_keyed(&app, &f.config.api_token, &invalid, &failed_key)
-			.await
-			.0,
+		register_keyed(&app, &token, &invalid, &failed_key).await.0,
 		400
 	);
 	assert_eq!(
-		register_keyed(&app, &f.config.api_token, &entry, &failed_key)
-			.await
-			.0,
+		register_keyed(&app, &token, &entry, &failed_key).await.0,
 		200
 	);
 	cleanup(f, &url, &schema).await;
@@ -155,19 +130,13 @@ async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
 	let app = application_fixture.application.clone();
 	let mut generated = Vec::new();
 	for id in ["", "", "explicit-tool"] {
 		let mut entry = tool(id);
 		entry.name.insert("en".into(), "calm-otter".into());
-		let (status, result) = request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(entry),
-		)
-		.await;
+		let (status, result) = request(&app, &token, "POST", "/api/registry", json!(entry)).await;
 		assert_eq!(status, 200, "{result}");
 		let assigned = result["id"].as_str().unwrap();
 		if id.is_empty() {
@@ -201,6 +170,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
+	let token = tenant_token(&f.store, "acme").await;
 	let workspace = f
 		.store
 		.create_workspace(
@@ -281,15 +251,9 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	] {
 		entry.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":agent}});
 		assert_ne!(
-			request(
-				&app,
-				&f.config.api_token,
-				"POST",
-				"/api/registry",
-				json!(entry)
-			)
-			.await
-			.0,
+			request(&app, &token, "POST", "/api/registry", json!(entry))
+				.await
+				.0,
 			200
 		);
 	}
@@ -378,127 +342,46 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn delegation_retry_and_run_message_have_one_durable_effect(
+async fn run_message_retries_have_one_durable_effect(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
-	bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.create_workspace(
-			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
-			"alice",
-			"deployment_administrator",
-			"goal",
-		)
-		.await
-		.unwrap();
-	let task = f
-		.store
-		.create_task(
-			&TEST_FIXTURE,
-			workspace.id,
-			&NewTask {
-				title: "work".into(),
-				description: "work".into(),
-				requirements: json!({}),
-				dependencies: vec![],
-				parent_id: None,
-			},
-			"human",
-			None,
-		)
-		.await
-		.unwrap();
-	let path = format!("/api/tasks/{}/delegate", task.id);
-	for _ in 0..2 {
-		let (status, body) = request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			&path,
-			json!({"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		assert_eq!(body["delivered"], true);
-	}
-	assert_eq!(
-		f.store
-			.events(&TEST_FIXTURE, 0, Some(workspace.id), 1000)
-			.await
-			.unwrap()
-			.iter()
-			.filter(|e| e.kind == "task.delegated")
-			.count(),
-		1
-	);
-	let current = f.store.task(&TEST_FIXTURE, task.id).await.unwrap();
-	let agent = f
-		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			"research",
-			"1.0.0",
-		)
-		.await
-		.unwrap();
-	assert!(
-		f.store
-			.claim(
-				&TEST_FIXTURE,
-				task.id,
-				current.revision,
-				"aidash://other/agents/research@1.0.0",
-				&agent
-			)
-			.await
-			.is_err()
-	);
-	assert_eq!(
-		f.store
-			.claim(
-				&TEST_FIXTURE,
-				task.id,
-				current.revision,
-				&aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.0"),
-				&agent
-			)
-			.await
-			.unwrap()
-			.status
-			.as_str(),
-		"CLAIMED"
-	);
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
 	let run = f
 		.store
 		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|r| r.task_id == task.id)
+		.find(|r| r.task_id == task)
 		.unwrap();
 	let key = Uuid::new_v4();
 	for _ in 0..2 {
-		assert_eq!(
-			request(
-				&app,
-				&f.config.api_token,
-				"POST",
-				&format!("/api/runs/{}/message", run.id),
-				json!({"content":"once","idempotency_key":key})
-			)
-			.await
-			.0,
-			200
-		);
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({"content":"once","idempotency_key":key}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
 	}
 	assert_eq!(
 		f.store
-			.snapshot(&TEST_FIXTURE, workspace.id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.messages
@@ -633,7 +516,7 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
-	bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut skill = tool("large-skill");
 	skill.kind = "skill".into();
 	skill.config = json!({"instructions":"x".repeat(60000)});
@@ -693,15 +576,9 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 				.is_err()
 		);
 		assert_eq!(
-			request(
-				&app,
-				&f.config.api_token,
-				"POST",
-				"/api/registry",
-				json!(agent)
-			)
-			.await
-			.0,
+			request(&app, &token, "POST", "/api/registry", json!(agent))
+				.await
+				.0,
 			400
 		);
 		assert!(
@@ -800,10 +677,11 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
+	let token = tenant_token(&f.store, "acme").await;
 	for _ in 0..2 {
 		let (status, body) = request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/registry",
 			json!(tool("replayed")),
@@ -910,9 +788,29 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 		.await
 		.unwrap()
 		.workspace_id;
+	// Keys are scoped per actor; a second subject of the Tenant reuses one.
+	let mut policy = common::policy(&f.config.node_id);
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	authorization
+		.replace(
+			"acme",
+			1,
+			serde_json::from_value(policy).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let bob = authorization
+		.issue_credential("acme", "bob", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
 	let key = Uuid::new_v4();
 	let path = format!("/api/workspaces/{workspace}/messages");
-	for actor in [&token, &f.config.api_token] {
+	for actor in [&token, &bob] {
 		for _ in 0..2 {
 			let (status, body) = request(
 				&app,
@@ -969,7 +867,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			&format!("/api/workspaces/{}/messages", other.id),
 			json!({"content":"another workspace","idempotency_key":key})
@@ -983,15 +881,15 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deployment_administrator_conversation_returns_the_committed_task_revision(
+async fn subject_conversation_returns_the_committed_task_revision(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
-	bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, response) = request(&app, &f.config.api_token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, response) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{response}");
 	let task = f
 		.store

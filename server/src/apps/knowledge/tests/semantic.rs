@@ -89,7 +89,7 @@ async fn controlled_context(
 		assert_eq!(
 			request(
 				&app,
-				&f.config.api_token,
+				&token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -125,7 +125,7 @@ async fn controlled_context(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})

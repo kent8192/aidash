@@ -44,7 +44,9 @@ pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, nat
 #[path = "tenant_roots.rs"]
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
-pub use tenant_roots::{local_run, remote_run, tenant_root, tenant_root_in, tenant_scope};
+pub use tenant_roots::{
+	local_run, remote_run, tenant_root, tenant_root_in, tenant_scope, tenant_token,
+};
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
 pub async fn http_response(

@@ -59,7 +59,7 @@ async fn working_files_require_explicit_agent_settings(
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
@@ -303,11 +303,11 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		aidash_server::registry::digest(&json!({"instructions":instructions,"files":files}));
 	let source = json!({"id":"fixture-skills","version":"1.0.0","kind":"source","name":{"en":"Fixture Skills"},"description":{"en":"Explicit immutable Skill attachments"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"skill_attachments","attachments":[{"skill_id":Uuid::new_v4(),"origin":"fixture:project","digest":digest,"instructions":instructions,"files":files},{"skill_id":Uuid::new_v4(),"origin":"fixture:user","digest":digest,"instructions":instructions,"files":files}]}}});
 	let (status, response) =
-		request(&app, &f.config.api_token, "POST", "/api/registry", source).await;
+		request(&app, &token, "POST", "/api/registry", source).await;
 	assert_eq!(status, 200, "{response}");
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -318,7 +318,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/registry",
 		json!(entry),
@@ -327,7 +327,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	assert_eq!(status, 200, "{response}");
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),

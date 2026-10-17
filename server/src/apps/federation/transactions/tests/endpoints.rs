@@ -19,8 +19,9 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let subject = subject(&app, "alice", _credential_client_0.await).await;
-	let created = workspace(&app.deployment_administrator, "Atomic validation").await;
+	let created = workspace(&member, "Atomic validation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,
@@ -104,7 +105,8 @@ async fn submit_replay_abort_and_history_preserve_the_manifest(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.deployment_administrator, "Atomic mutation").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Atomic mutation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":workspace["id"],"expected_revision":0,"state":{"committed":true}}]}]});
 	let path = format!("/api/transactions/{id}");
@@ -174,7 +176,8 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.deployment_administrator, "Concurrent admission").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Concurrent admission").await;
 	let id = Uuid::new_v4();
 	let first = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
@@ -247,7 +250,8 @@ async fn deployment_administrator_abort_is_durable_while_recovery_owns_the_lease
 	};
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.deployment_administrator, "Abort during recovery").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Abort during recovery").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
         "deadline":Utc::now()+Duration::minutes(5),
@@ -408,7 +412,8 @@ async fn visibility_lock_blocks_protected_reads_but_leaves_recovery_routes_avail
 	use reinhardt::query::{Alias, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder};
 	// Arrange
 	let app = endpoint.await;
-	let created = workspace(&app.deployment_administrator, "Visibility barrier").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let created = workspace(&member, "Visibility barrier").await;
 	let path = format!("/api/workspaces/{}", created["id"].as_str().unwrap());
 	let mut held = app.database.connection.begin().await.unwrap();
 	let sql = Query::select()
@@ -450,7 +455,8 @@ async fn pending_visibility_and_commit_epoch_prevent_stale_inference(
 	};
 	// Arrange
 	let app = endpoint.await;
-	let created = workspace(&app.deployment_administrator, "Pending visibility").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let created = workspace(&member, "Pending visibility").await;
 	let path = format!("/api/workspaces/{}", created["id"].as_str().unwrap());
 	let mut db = app.database.lease.handle();
 	let mut lease = ReadLease::begin(&app.runtime.store).await.unwrap();

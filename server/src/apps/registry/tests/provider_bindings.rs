@@ -168,7 +168,18 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		.await
 		.unwrap();
 	let operations = aidash_application::registry::system::operations().collect::<Vec<_>>();
-	assert_eq!(listed.len(), operations.len());
+	// The Sandboxed and research tools the Deployment offers are built-ins too.
+	let validation = aidash_server::bootstrap::registry_validation();
+	let offered: usize = aidash_application::registry::system::packages::offered(
+		&validation,
+		&validation,
+		"aidash://node",
+	)
+	.unwrap()
+	.iter()
+	.map(|group| group.operations.len())
+	.sum();
+	assert_eq!(listed.len(), operations.len() + offered);
 	for operation in operations {
 		let identity = QualifiedRef::builtin("aidash://node", operation);
 		let entry = registry
@@ -192,6 +203,14 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 				.is_err()
 		);
 	}
+	let definitions = registry
+		.list(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&Search::default(),
+		)
+		.await
+		.unwrap()
+		.len();
 	let invalid:Entry=serde_json::from_value(json!({"id":"unsupported","version":"1.0.0","kind":"tool","name":{"en":"Test"},"description":{"en":"Test"},"config":{"registry_node":"aidash://node","provider":"integration.http@2","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://example.invalid","replay":"unsafe"}}})).unwrap();
 	assert!(
 		registry
@@ -211,7 +230,7 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 			.await
 			.unwrap()
 			.len(),
-		listed.len()
+		definitions
 	);
 }
 #[rstest]

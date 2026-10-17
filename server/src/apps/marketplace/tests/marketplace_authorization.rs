@@ -135,14 +135,14 @@ async fn tenant_publication_pending_installation_and_revisions(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("source-a"),
 		)
 		.await
 		.unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("source-b"),
 		)
 		.await
@@ -307,7 +307,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 	assert_eq!(
 		f.registry
 			.get(
-				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 				&entry.id,
 				&entry.version
 			)
@@ -425,7 +425,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			model,
 		)
 		.await
@@ -433,7 +433,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			agent,
 		)
 		.await
@@ -507,7 +507,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	assert!(
 		!f.registry
 			.list(
-				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&aidash_domain::tenancy::TenantName::new("b").unwrap(),
 				&Default::default()
 			)
 			.await
@@ -564,7 +564,7 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("paged-source"),
 		)
 		.await
@@ -682,7 +682,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("original"),
 		)
 		.await
@@ -949,7 +949,7 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("racing"),
 		)
 		.await
@@ -1179,7 +1179,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("revocation"),
 		)
 		.await
@@ -1230,7 +1230,7 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	assert!(
 		!f.registry
 			.list(
-				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 				&Default::default()
 			)
 			.await
@@ -1265,7 +1265,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			model,
 		)
 		.await
@@ -1273,7 +1273,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			agent,
 		)
 		.await
@@ -1433,7 +1433,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	assert_eq!(
 		f.registry
 			.get(
-				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 				&old_ref.id,
 				&old_ref.version
 			)
@@ -1512,7 +1512,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("policy-source"),
 		)
 		.await
@@ -1631,14 +1631,14 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			model,
 		)
 		.await
 		.unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("dependency"),
 		)
 		.await
@@ -1646,7 +1646,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			agent,
 		)
 		.await
@@ -1858,7 +1858,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("handoff"),
 		)
 		.await
@@ -2013,14 +2013,14 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("race-root"),
 		)
 		.await
 		.unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("race-dependency"),
 		)
 		.await
@@ -2264,7 +2264,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("immutable-source"),
 		)
 		.await
@@ -2272,7 +2272,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	approve(&f, "a", &reference("immutable-source")).await;
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("published-later"),
 		)
 		.await
@@ -2343,7 +2343,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	second.version = "2.0.0".into();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			second,
 		)
 		.await
@@ -2502,7 +2502,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("events"),
 		)
 		.await
@@ -2663,7 +2663,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("browser-source"),
 		)
 		.await
@@ -3078,7 +3078,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("cursor-source"),
 		)
 		.await
@@ -3167,7 +3167,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			model,
 		)
 		.await
@@ -3175,7 +3175,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			agent.clone(),
 		)
 		.await
@@ -3184,7 +3184,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	replacement.id = "replacement".into();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			replacement,
 		)
 		.await
@@ -3193,7 +3193,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	bridge.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":reference("nested")}});
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			bridge,
 		)
 		.await
@@ -3203,10 +3203,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	root.binding_normalization = None;
 	root.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"bridge","version":"1.0.0"},"narrow":{}}]);
 	f.registry
-		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			root,
-		)
+		.register(&aidash_domain::tenancy::TenantName::new("a").unwrap(), root)
 		.await
 		.unwrap();
 	for id in ["model", "nested", "replacement", "bridge", "root"] {
@@ -3262,7 +3259,7 @@ async fn installation_rejects_missing_private_knowledge(
 	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			model,
 		)
 		.await
@@ -3272,7 +3269,7 @@ async fn installation_rejects_missing_private_knowledge(
 	let agent: Entry = serde_json::from_value(json!({"id":"private-agent","version":"1.0.0","kind":"source","name":{"en":"Private Source"},"description":{"en":"fixture"},"config":{"schema_version":1,"source":{"adapter":"private_references","digest":digest}}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			agent,
 		)
 		.await
@@ -3358,7 +3355,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 		let id = format!("page-{i}");
 		f.registry
 			.register(
-				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 				tool(&id),
 			)
 			.await
@@ -3449,7 +3446,7 @@ async fn owner_can_reload_and_restore_a_withdrawn_audience(
 	trace_errors();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
 			tool("recover-audience"),
 		)
 		.await
