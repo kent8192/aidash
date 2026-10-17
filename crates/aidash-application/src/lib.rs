@@ -3,6 +3,7 @@ pub mod authorization;
 pub mod context;
 pub mod decision;
 pub mod deployment;
+pub mod diag_timing;
 pub mod execution;
 pub mod federation;
 pub mod lifecycle;

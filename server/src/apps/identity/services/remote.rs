@@ -150,6 +150,7 @@ impl RemoteGrants {
 		headers: HeaderMap,
 		input: VerifyInput,
 	) -> Result<Described> {
+		let mut timer = aidash_application::diag_timing::PhaseTimer::new("home.describe");
 		let f = self.runtime.clone();
 		let (access, description) = description_lease(
 			&f,
@@ -157,7 +158,9 @@ impl RemoteGrants {
 			input.grant_id,
 		)
 		.await?;
+		timer.mark("description");
 		let description = access.finish(Ok(description)).await?;
+		timer.mark("finish");
 		let corpus_digest = if headers
 			.get("x-aidash-protocol")
 			.and_then(|value| value.to_str().ok())
@@ -167,6 +170,7 @@ impl RemoteGrants {
 		} else {
 			None
 		};
+		timer.mark("corpus_digest");
 		Ok(Described {
 			description,
 			corpus_digest,

@@ -46,12 +46,16 @@ async fn inspect<R: GrantRepository>(
 	node: &str,
 	input: InspectInput,
 ) -> Result<Inspection> {
+	let mut timer = crate::diag_timing::PhaseTimer::new("home.inspect");
 	let resource = scope.source_resource("node", node, json!({"remote_node":node}));
 	scope
 		.source_require(&resource, "federation.execute")
 		.await?;
+	timer.mark("source_require");
 	require_peer(scope, node, repository.protocol_version()).await?;
+	timer.mark("require_peer");
 	let inspection:Inspection=repository.source_request(node,"/scoped/execution/inspect",&json!({"tenant":input.tenant,"subject":input.subject,"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"compactor":input.compactor})).await?;
+	timer.mark("rpc");
 	crate::federation::admission::validate_inspection(
 		&repository.validation(),
 		&inspection,
@@ -59,6 +63,7 @@ async fn inspect<R: GrantRepository>(
 		&input.agent,
 		&input.requirements,
 	)?;
+	timer.mark("validate");
 	if inspection.compactor != input.compactor {
 		return Err(Error::Forbidden);
 	}
@@ -237,10 +242,16 @@ pub async fn description_mode<R: GrantRepository>(
 	command: bool,
 	revision_race: &mut bool,
 ) -> Result<(R::Scope, Description)> {
+	let mut timer = crate::diag_timing::PhaseTimer::new(if command {
+		"home.description.command"
+	} else {
+		"home.description"
+	});
 	let grant = repository
 		.source_grant(id, node)
 		.await?
 		.ok_or(Error::Forbidden)?;
+	timer.mark("source_grant");
 	let mut scope = repository.begin_grant(&grant).await.map_err(|error| {
 		if matches!(error, Error::Unauthorized) {
 			Error::Forbidden
@@ -248,32 +259,43 @@ pub async fn description_mode<R: GrantRepository>(
 			error
 		}
 	})?;
+	timer.mark("begin_grant");
 	let result = async {
 		// Serialize journals before task row locks so simultaneous shared leases cannot upgrade together.
 		if command {
 			scope.command_lock(id).await?;
 		}
+		timer.mark("command_lock");
 		let current = scope.current_grant(grant.id).await?;
+		timer.mark("current_grant");
 		if !scope.live(current.id).await? {
 			return Err(Error::Forbidden);
 		}
+		timer.mark("live");
 		scope.replace_subjects(current.subject_chain.clone());
 		let task = scope.task_read(current.task_id).await?;
+		timer.mark("task_read");
 		let locked = scope.locked_task(task.id).await?;
+		timer.mark("locked_task");
 		if locked.revision != task.revision {
 			*revision_race = true;
 			return Err(Error::Forbidden);
 		}
 		let binding = scope.binding(current.id).await?;
+		timer.mark("binding");
 		let admitted = current
 			.admitted_task(&task, binding.as_ref())?
 			.ok_or(Error::Forbidden)?;
 		let inspection: Inspection = serde_json::from_value(current.inspection)?;
+		timer.mark("decode");
 		super::authorize(&mut scope, &task, node, &inspection).await?;
+		timer.mark("authorize");
 		scope.remote_semantic_sources(current.id).await?;
+		timer.mark("semantic_sources");
 		if !scope.grant_reads_visible(current.id).await? {
 			return Err(Error::Forbidden);
 		}
+		timer.mark("reads_visible");
 		let agent = EntityRef {
 			id: inspection.agent.id.clone(),
 			version: inspection.agent.version.clone(),
@@ -283,18 +305,21 @@ pub async fn description_mode<R: GrantRepository>(
 		let request = semantic.request();
 		let input = inspection_input(&scope, task.id, &agent, requirements, request.compactor());
 		let fresh = inspect(repository, &mut scope, node, input).await?;
+		timer.mark("inspect");
 		if !fresh.satisfies(&inspection) {
 			return Err(Error::Forbidden);
 		}
 		if !scope.live(current.id).await? {
 			return Err(Error::Forbidden);
 		}
+		timer.mark("live2");
 		if scope
 			.semantic_binding(&task, node, &fresh, &request)
 			.await? != semantic
 		{
 			return Err(Error::RemoteSemantic(Failure::Configuration));
 		}
+		timer.mark("semantic_binding");
 		Ok(Description {
 			grant_id: current.id,
 			source_node: repository.source_node_id().into(),

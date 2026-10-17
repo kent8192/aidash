@@ -41,9 +41,11 @@ async fn inspect_in(
 	input: &InspectInput,
 	pinned: Option<&Inspection>,
 ) -> Result<Inspection> {
+	let mut timer = crate::diag_timing::PhaseTimer::new("peer.inspect_in");
 	// Receiving external execution is separate from advertising metadata.
 	let resource = access.resource("node", access.node_id(), json!({}));
 	access.require(&resource, "federation.execute").await?;
+	timer.mark("require1");
 	let executor = qualified_agent(access.node_id(), &input.agent.id, &input.agent.version);
 	if access
 		.bundle()
@@ -54,8 +56,10 @@ async fn inspect_in(
 		return Err(Error::Forbidden);
 	}
 	let generation = access.generation(node, input).await?;
+	timer.mark("generation");
 	access.push_subject(executor);
 	access.require(&resource, "federation.execute").await?;
+	timer.mark("require2");
 	let mut definitions = BTreeMap::new();
 	let entry = definition(
 		access,
@@ -65,10 +69,13 @@ async fn inspect_in(
 		&mut definitions,
 	)
 	.await?;
+	timer.mark("agent_definition");
 	if pinned.is_none() && !access.active_installation(&entry).await? {
 		return Err(Error::Forbidden);
 	}
+	timer.mark("active_installation");
 	access.pinned_installation(&entry).await?;
+	timer.mark("pinned_installation");
 	if !input.requirements.matches(&entry) {
 		return Err(Error::Invalid(
 			"executor does not satisfy task requirements".into(),
@@ -80,6 +87,7 @@ async fn inspect_in(
 	} else {
 		access.bindings(&entry).await?
 	};
+	timer.mark("bindings");
 	if !snapshot.remote
 		|| snapshot.agent.registry_node != access.node_id()
 		|| snapshot.agent.local() != input.agent
@@ -117,6 +125,7 @@ async fn inspect_in(
 			return Err(Error::Forbidden);
 		}
 	}
+	timer.mark("pinned_definitions");
 	if let Some(compactor) = &input.compactor {
 		definition(
 			access,
@@ -127,10 +136,13 @@ async fn inspect_in(
 		)
 		.await?;
 	}
+	timer.mark("compactor");
+	let lineage = access.lineage().await?;
+	timer.mark("lineage");
 	Ok(Inspection {
 		binding_snapshot: snapshot,
 		generation,
-		lineage: access.lineage().await?,
+		lineage,
 		node_id: access.node_id().to_owned(),
 		authority_digest: digest(
 			&json!({"source_node":node,"source_tenant":input.tenant,"source_subject":input.subject,"tenant":access.identity().tenant,"credential_id":access.identity().credential_id,"subjects":access.subjects()}),
