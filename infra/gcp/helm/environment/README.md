@@ -100,7 +100,10 @@ built PostgreSQL, admission, observer and collector images must be supplied.
 `activity.existingSecret` supplies the observer's `DATABASE_URL`, which must name
 a role limited to `SELECT` on the tables it reads plus `pg_read_all_stats`, never the
 application's login,
-and `AIDASH_CORE_RUNNER_TOKEN`. The CronJob reads database work, the private edge
+and `AIDASH_CORE_RUNNER_TOKEN`. The role has no `BYPASSRLS`: the observer opens a
+read-only Deployment Scope for the `activity-observer` reason before it reads, as
+"Tenancy scope settings" in `server/migrations/README.md` describes, and the
+forced row-level policies refuse its reads without one. The CronJob reads database work, the private edge
 activity endpoint, and the Runner's authenticated `/v1/activity`; it gets/patches
 only `<release>-environment-activity`. The Pod disables automatic token mounting
 and projects that ServiceAccount token only into the collector, so the
