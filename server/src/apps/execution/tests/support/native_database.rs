@@ -99,6 +99,34 @@ impl DatabaseFixture {
 		)
 	}
 
+	/// Run ORM `work` in the test-fixture Deployment Scope, for fixtures that
+	/// seed or inspect rows of tables with row-level policies.
+	pub async fn fixture<T>(
+		&self,
+		work: impl for<'t> AsyncFnOnce(
+			&'t mut reinhardt::db::orm::AtomicTransaction,
+		) -> aidash_server::Result<T>,
+	) -> T {
+		self.server_pool()
+			.atomic(&aidash_application::tenancy::TEST_FIXTURE, work)
+			.await
+			.unwrap()
+	}
+
+	/// Begin a transaction in the test-fixture Deployment Scope.
+	pub async fn begin_fixture(&self) -> aidash_server::database::native::Transaction {
+		self.server_pool()
+			.begin(&aidash_application::tenancy::TEST_FIXTURE)
+			.await
+			.unwrap()
+	}
+
+	fn server_pool(&self) -> aidash_server::database::native::Pool {
+		aidash_server::database::native::Pool::from(
+			self.connection.clone().into_postgres().unwrap(),
+		)
+	}
+
 	/// Crash only this fixture's isolated server after committed writes.
 	pub async fn kill_and_restart(
 		&self,

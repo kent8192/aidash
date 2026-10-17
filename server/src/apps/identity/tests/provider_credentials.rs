@@ -124,7 +124,7 @@ async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
 }
 
 async fn all_database_text(f: &EndpointFixture) -> String {
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let (sql, values) = Query::select()
 		.column(Alias::new("tablename"))
 		.from(Alias::new("pg_tables"))
@@ -157,7 +157,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 	use aidash_server::apps::identity::models::AuthorizationDecision;
 	use reinhardt::db::orm::Model;
 	async fn decisions(f: &EndpointFixture) -> Vec<AuthorizationDecision> {
-		let mut tx = f.database.connection.begin().await.unwrap();
+		let mut tx = f.database.begin_fixture().await;
 		let rows = AuthorizationDecision::objects()
 			.filter(AuthorizationDecision::field_tenant().eq("alpha"))
 			.filter(AuthorizationDecision::field_subject().eq("alice"))
@@ -789,7 +789,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.create_workspace(&TEST_FIXTURE, "BYOK retrieval", "Test admission")
 		.await
 		.unwrap();
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let authority = AuthorizationWorkspace::build()
 		.workspace_id(workspace.id)
 		.tenant("beta")
@@ -1577,7 +1577,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	assert!(store.versions("alpha", &resource).await.unwrap().is_empty());
 	use aidash_server::apps::identity::models::credential_store::{Resource, Version};
 	use reinhardt::db::orm::Model;
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	assert!(
 		Resource::objects()
 			.all()
@@ -1685,7 +1685,7 @@ async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
 			.await
 			.unwrap()
 	};
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let rows = Version::objects()
 		.order_by(&["created_at"])
 		.all_with_executor(tx.as_mut())
@@ -2160,7 +2160,7 @@ async fn recovery_command(
 }
 
 async fn recovery_snapshot(f: &EndpointFixture) -> Value {
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let mut snapshot = serde_json::Map::new();
 	for name in [
 		"credential_store_resources",
@@ -2327,7 +2327,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 		let mut scope = known_service.repository.begin("gamma").await.unwrap();
 		unaffected = Some(serde_json::to_value(scope.get(gamma.id).await.unwrap()).unwrap());
 		scope.commit().await.unwrap();
-		let mut tx = f.database.connection.begin().await.unwrap();
+		let mut tx = f.database.begin_fixture().await;
 		known_before = Version::objects()
 			.all()
 			.all_with_executor(tx.as_mut())
@@ -2367,7 +2367,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	let before = recovery_snapshot(&f).await;
 	let affected_count = expected_revocations.len();
 	let counts = json!({"affected_tenants":affected_count,"affected_provider_credentials":affected_count,"affected_plan_connections":0,"version_rows":affected_count + usize::from(partial),"key_registry_rows":1});
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let mut private_values = Vec::new();
 	for row in Version::objects()
 		.all()
@@ -2442,7 +2442,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 		);
 		scope.commit().await.unwrap();
 	}
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let remaining = Version::objects()
 		.all()
 		.all_with_executor(tx.as_mut())
@@ -2970,7 +2970,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	assert!(tombstone.require_active().is_err());
 	scope.commit().await.unwrap();
 	assert!(store.secrets.lock().unwrap().is_empty());
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let decisions = AuthorizationDecision::objects()
 		.filter(AuthorizationDecision::field_subject().eq("alice"))
 		.all_with_executor(tx.as_mut())
@@ -3116,7 +3116,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		seen.insert(row.id);
 		scope.commit().await.unwrap();
 		assert!(store.secrets.lock().unwrap().is_empty());
-		let mut tx = f.database.connection.begin().await.unwrap();
+		let mut tx = f.database.begin_fixture().await;
 		let decisions = AuthorizationDecision::objects()
 			.filter(AuthorizationDecision::field_subject().eq("alice"))
 			.filter(AuthorizationDecision::field_action().eq("provider_credential.create"))

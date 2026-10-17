@@ -348,12 +348,15 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert!(!credentials.to_string().contains(token));
 	assert!(!credentials.to_string().contains("token_hash"));
 	assert_eq!(credentials[0]["id"], tokens[0]["credential"]["id"]);
-	let mut db = app.database.lease.handle();
-	let credentials = AuthorizationCredential::objects()
-		.all()
-		.all_with_db(&mut db)
-		.await
-		.unwrap();
+	let credentials = app
+		.database
+		.fixture(async |tx| {
+			Ok(AuthorizationCredential::objects()
+				.all()
+				.all_with_db(tx)
+				.await?)
+		})
+		.await;
 	let count = credentials
 		.iter()
 		.filter(|record| record.token_hash == token.as_bytes())
@@ -688,7 +691,7 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 			.to_string(PostgresQueryBuilder),
 	] {
-		let mut attempt = app.database.connection.begin().await.unwrap();
+		let mut attempt = app.database.begin_fixture().await;
 		attempt.execute(&lock_timeout_sql(), vec![]).await.unwrap();
 		let error = attempt.execute(&statement, vec![]).await.unwrap_err();
 		assert_eq!(
@@ -799,18 +802,21 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 			.0,
 		403
 	);
-	let mut db = app.database.lease.handle();
-	let mut expired = AuthorizationCredential::objects()
-		.filter(AuthorizationCredential::field_id().eq(Uuid::parse_str(id).unwrap()))
-		.get_with_db(&mut db)
-		.await
-		.unwrap();
-	expired.created_at = chrono::Utc::now() - chrono::Duration::hours(2);
-	expired.expires_at = chrono::Utc::now() - chrono::Duration::hours(1);
-	AuthorizationCredential::objects()
-		.update_with_conn(&mut db, &expired)
-		.await
-		.unwrap();
+	let id = Uuid::parse_str(id).unwrap();
+	app.database
+		.fixture(async |tx| {
+			let mut expired = AuthorizationCredential::objects()
+				.filter(AuthorizationCredential::field_id().eq(id))
+				.get_with_db(tx)
+				.await?;
+			expired.created_at = chrono::Utc::now() - chrono::Duration::hours(2);
+			expired.expires_at = chrono::Utc::now() - chrono::Duration::hours(1);
+			AuthorizationCredential::objects()
+				.update_with_conn(tx, &expired)
+				.await?;
+			Ok(())
+		})
+		.await;
 	assert_eq!(
 		scoped_request(&app, token, "GET", "/api/state", Value::Null)
 			.await
@@ -858,12 +864,15 @@ async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses(
 	let unchanged = store.workspace(&TEST_FIXTURE, id).await.unwrap();
 	assert_eq!(unchanged.revision, 0);
 	assert_eq!(unchanged.state, json!({}));
-	let mut db = app.database.lease.handle();
-	let decisions = AuthorizationDecision::objects()
-		.filter(AuthorizationDecision::field_action().eq("workspace.read"))
-		.all_with_db(&mut db)
-		.await
-		.unwrap();
+	let decisions = app
+		.database
+		.fixture(async |tx| {
+			Ok(AuthorizationDecision::objects()
+				.filter(AuthorizationDecision::field_action().eq("workspace.read"))
+				.all_with_db(tx)
+				.await?)
+		})
+		.await;
 	let rejected = decisions
 		.iter()
 		.filter(|record| record.decision.0["reason"] == "explicit_deny")
@@ -911,21 +920,19 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 	let mut absent = evaluation();
 	absent["resource"]["attributes"] = json!({});
 	assert_eq!(request(&app, path, absent, true).await.1["allowed"], false);
-	let mut db = app.database.lease.handle();
-	let count = AuthorizationDecision::objects()
-		.count_with_conn(&mut db)
-		.await
-		.unwrap();
+	let decisions = async || {
+		app.database
+			.fixture(async |tx| Ok(AuthorizationDecision::objects().count_with_conn(tx).await?))
+			.await
+	};
+	let count = decisions().await;
 	assert_eq!(
 		request(&app, "/api/authorization/acme/simulate", evaluation(), true)
 			.await
 			.1["allowed"],
 		true
 	);
-	let after = AuthorizationDecision::objects()
-		.count_with_conn(&mut db)
-		.await
-		.unwrap();
+	let after = decisions().await;
 	assert_eq!(count, after, "dry-run must not add an audit record");
 
 	policy["policies"].as_array_mut().unwrap().push(json!({
@@ -974,10 +981,10 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit(
 		request(&app, path, evaluation(), true).await.1["reason"],
 		"subject_disabled"
 	);
-	let history = AuthorizationRevision::objects()
-		.count_with_conn(&mut db)
-		.await
-		.unwrap();
+	let history = app
+		.database
+		.fixture(async |tx| Ok(AuthorizationRevision::objects().count_with_conn(tx).await?))
+		.await;
 	assert_eq!(history, 3);
 	let (status, snapshot) = get(&app, "/api/authorization/acme").await;
 	assert_eq!(status, 200);
@@ -1021,7 +1028,7 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 		.await
 		.unwrap();
 	assert!(decision.allowed);
-	let mut concurrent = app.database.connection.begin().await.unwrap();
+	let mut concurrent = app.database.begin_fixture().await;
 	concurrent
 		.execute(&lock_timeout_sql(), vec![])
 		.await

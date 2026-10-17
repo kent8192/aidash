@@ -183,11 +183,15 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 	let fixture = Box::pin(mock_discovery).await;
 	let app = &fixture.execution.app;
 	fixture.pause.store(true, Ordering::SeqCst);
-	let credential = AuthorizationCredential::objects()
-		.filter(AuthorizationCredential::field_subject().eq("alice".to_owned()))
-		.get_with_db(&mut app.database.lease.handle())
-		.await
-		.unwrap();
+	let credential = app
+		.database
+		.fixture(async |tx| {
+			Ok(AuthorizationCredential::objects()
+				.filter(AuthorizationCredential::field_subject().eq("alice".to_owned()))
+				.get_with_db(tx)
+				.await?)
+		})
+		.await;
 	let input = json!({});
 	let active = fixture
 		.execution

@@ -158,7 +158,7 @@ impl Deployment {
 
 	async fn count(&self, sql: &str) -> i64 {
 		sqlx::query_scalar(sql)
-			.fetch_one(self.federation.store.pool.driver())
+			.fetch_one(self.federation.store.pool.fixture_driver())
 			.await
 			.unwrap()
 	}
@@ -750,7 +750,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 		.await;
 	sqlx::query("UPDATE tenant_invitations SET created_at = created_at - interval '2 minutes', expires_at = expires_at - interval '2 minutes' WHERE id = $1")
 		.bind(Uuid::parse_str(expired["id"].as_str().unwrap()).unwrap())
-		.execute(d.federation.store.pool.driver())
+		.execute(d.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (status, _) = d

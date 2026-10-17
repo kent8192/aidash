@@ -209,15 +209,11 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			assert_json(response, 400);
 		}
 	}
-	let mut db = app.database.lease.handle();
-	assert!(
-		SemanticIndexe::objects()
-			.all()
-			.all_with_db(&mut db)
-			.await
-			.unwrap()
-			.is_empty()
-	);
+	let indexes = app
+		.database
+		.fixture(async |tx| Ok(SemanticIndexe::objects().all().all_with_db(tx).await?))
+		.await;
+	assert!(indexes.is_empty());
 	let mut revision = 0;
 	for (field, min, max) in bounds {
 		for value in [min, max] {

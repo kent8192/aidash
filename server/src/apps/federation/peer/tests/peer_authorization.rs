@@ -313,11 +313,15 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 			.0,
 		200
 	);
-	let count = AuthorizationPeerMappingHistory::objects()
-		.all()
-		.all_with_db(&mut app.database.lease.handle())
+	let count = app
+		.database
+		.fixture(async |tx| {
+			Ok(AuthorizationPeerMappingHistory::objects()
+				.all()
+				.all_with_db(tx)
+				.await?)
+		})
 		.await
-		.unwrap()
 		.len();
 	assert_eq!(count, 4, "failed writes must not create history");
 	let (status, first) = request(
@@ -503,21 +507,21 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 		200
 	);
 	// Expiry is a durable database clock check, including for active mappings.
-	let mut connection = app.database.lease.handle();
-	let mut credential = AuthorizationCredential::objects()
-		.filter(
-			AuthorizationCredential::field_id()
-				.eq(Uuid::parse_str(credential.as_str().unwrap()).unwrap()),
-		)
-		.get_with_db(&mut connection)
-		.await
-		.unwrap();
-	credential.created_at = Utc::now() - Duration::hours(2);
-	credential.expires_at = Utc::now() - Duration::hours(1);
-	AuthorizationCredential::objects()
-		.update_with_conn(&mut connection, &credential)
-		.await
-		.unwrap();
+	let id = Uuid::parse_str(credential.as_str().unwrap()).unwrap();
+	app.database
+		.fixture(async |tx| {
+			let mut credential = AuthorizationCredential::objects()
+				.filter(AuthorizationCredential::field_id().eq(id))
+				.get_with_db(tx)
+				.await?;
+			credential.created_at = Utc::now() - Duration::hours(2);
+			credential.expires_at = Utc::now() - Duration::hours(1);
+			AuthorizationCredential::objects()
+				.update_with_conn(tx, &credential)
+				.await?;
+			Ok(())
+		})
+		.await;
 	assert_eq!(
 		discover(app, SOURCE, peer_token, "remote", "bob").await.0,
 		403
