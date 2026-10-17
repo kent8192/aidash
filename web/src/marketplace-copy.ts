@@ -40,7 +40,9 @@ export const marketplaceCopy = {
     activeRevision: "Active revision",
     saved: "Saved",
     conflict: "The revision changed. Reload before applying another change.",
-    admin: "Tenant installation approval",
+    admin: "Installations by Tenant",
+    adminHelp:
+      "Each Tenant approves its own installations through Catalog Approval. This list is read-only.",
     tenant: "Tenant",
     load: "Load",
     approve: "Approve and activate",
@@ -54,7 +56,7 @@ export const marketplaceCopy = {
       "Prepare dependencies before installation. Nothing is fetched automatically.",
     reviewInstall: "Review and install",
     installHelp:
-      "Check the exact digest and requested permissions. The installation stays pending until a Deployment Administrator approves it.",
+      "Check the exact digest and requested permissions. The installation stays pending until a member with Catalog Approval approves it.",
     cancel: "Cancel",
     colPackage: "Package",
     colKind: "Kind",
@@ -106,7 +108,9 @@ export const marketplaceCopy = {
     activeRevision: "有効なrevision",
     saved: "保存しました",
     conflict: "Revisionが更新されました。再読み込み後に変更してください。",
-    admin: "テナント導入の承認",
+    admin: "テナント別の導入一覧",
+    adminHelp:
+      "導入の承認は各テナントがカタログ承認で行います。この一覧は閲覧専用です。",
     tenant: "テナント",
     load: "読み込み",
     approve: "承認して有効化",
@@ -119,7 +123,7 @@ export const marketplaceCopy = {
     dependencies: "依存関係は導入前に準備してください。自動取得は行いません。",
     reviewInstall: "確認して導入",
     installHelp:
-      "ダイジェストと要求される権限を確認してください。管理者が承認するまで導入は承認待ちのままです。",
+      "ダイジェストと要求される権限を確認してください。カタログ承認の権限を持つメンバーが承認するまで、導入は承認待ちのままです。",
     cancel: "キャンセル",
     colPackage: "パッケージ",
     colKind: "種類",
