@@ -10,6 +10,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::registry_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::registry_versions)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::registry_get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::registry_create)

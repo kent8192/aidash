@@ -451,8 +451,8 @@ impl TenantAdministrator {
 }
 
 impl TenantAdministrator {
-	/// The Tenant Administrator actions this caller holds. Ordinary members
-	/// receive no actions and no policy details.
+	/// The Tenant Administrator and Registry actions this caller holds.
+	/// Ordinary members receive no administration actions and no policy details.
 	pub(crate) async fn overview(&self, db: &Pool) -> Result<TenantAdministration> {
 		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
@@ -466,6 +466,12 @@ impl TenantAdministrator {
 				}
 			}
 			let administrator = !actions.is_empty();
+			// Registry controls follow the same server-computed actions.
+			for action in rules::REGISTRY_ACTIONS {
+				if self.allowed(tx, &snapshot, action, "*", json!({})).await? {
+					actions.push(action.to_owned());
+				}
+			}
 			let tenant = self.tenant().to_owned();
 			if self
 				.allowed(

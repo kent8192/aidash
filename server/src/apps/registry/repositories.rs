@@ -19,6 +19,7 @@ use uuid::Uuid;
 pub(crate) mod bindings;
 pub(crate) mod requests;
 pub(crate) mod sql;
+pub(crate) mod versions;
 
 /// The scope of one Tenant's Registry (ADR 0029).
 fn scope(tenant: &TenantName) -> TenancyScope {
@@ -46,6 +47,15 @@ impl Registry {
 		crate::bootstrap::registry_validation()
 			.with_provider_credentials(self.provider_credentials)
 			.with_plan_connections(self.plan_connections)
+	}
+	/// Writes the built-in definitions into one Tenant's Registry, as Tenant
+	/// creation does.
+	pub async fn seed(&self, tenant: &TenantName) -> Result<()> {
+		self.pool
+			.atomic(&scope(tenant), async |tx| {
+				seed_tenant(tx, &self.node_id, tenant).await
+			})
+			.await
 	}
 	/// Re-seeds the built-in definitions into every Tenant's Registry, one
 	/// Tenant per transaction (ADR 0033).

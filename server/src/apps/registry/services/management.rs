@@ -40,6 +40,22 @@ impl RegistryManagement {
 		let entry = catalog::get(&f.store, &identity, &EntityRef { id, version }).await?;
 		crate::marketplace::registry_response(&f.store, &identity, vec![entry], true).await
 	}
+	/// Every version in the subject's Tenant with its approval state and
+	/// history, under `registry.read` (100 per page).
+	pub(crate) async fn registry_versions(
+		&self,
+		actor: Actor,
+		page: crate::apps::registry::serializers::contracts::VersionPage,
+	) -> Result<Vec<crate::apps::registry::serializers::contracts::RegistryVersion>> {
+		let f = self.runtime.clone();
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let result =
+			crate::apps::registry::repositories::versions::page(&mut access, page.offset).await;
+		access.finish(result).await
+	}
 	/// A new definition or version in the subject's Tenant, under `registry.create`.
 	pub(crate) async fn registry_create(
 		&self,

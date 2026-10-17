@@ -41,6 +41,15 @@ pub const ADMINISTRATION_ACTIONS: [&str; 7] = [
 	INVITATION_CREATE,
 ];
 
+/// Creating a definition or version in the Tenant's Registry.
+pub const REGISTRY_CREATE: &str = "registry.create";
+/// Deciding a Catalog Approval.
+pub const CATALOG_APPROVE: &str = "catalog.approve";
+/// Installing a Marketplace package as the Tenant's own copy.
+pub const MARKETPLACE_INSTALL: &str = "marketplace.install";
+/// The Registry actions the dashboard shows controls for (ADR 0029).
+pub const REGISTRY_ACTIONS: [&str; 3] = [REGISTRY_CREATE, CATALOG_APPROVE, MARKETPLACE_INSTALL];
+
 /// Resource ID used when a capability or collection, not one item, is checked.
 pub const COLLECTION: &str = "all";
 
@@ -51,6 +60,8 @@ pub fn resource_kind(action: &str) -> &'static str {
 		MAPPING_READ | MAPPING_DISABLE => "mapping",
 		INVITATION_CREATE | INVITATION_READ | INVITATION_REVOKE => "invitation",
 		crate::identity::tenancy::TENANT_UPDATE => "tenant",
+		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
+		MARKETPLACE_INSTALL => "package",
 		_ => "subject",
 	}
 }
