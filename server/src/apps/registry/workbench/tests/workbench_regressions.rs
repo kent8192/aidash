@@ -64,6 +64,32 @@ impl Workbench {
 		result
 	}
 
+	/// Approves versions in one request; the approvals route admits a whole
+	/// dependency closure together (ADR 0062).
+	async fn approve(&self, references: &[Value]) {
+		let approvals: Vec<Value> = references
+			.iter()
+			.map(|reference| json!({"entry":{"id":reference["id"],"version":reference["version"]},"enabled":true,"expected_revision":0}))
+			.collect();
+		self.call(
+			"POST",
+			"/api/authorization/acme/catalog/approvals",
+			json!({ "approvals": approvals }),
+		)
+		.await;
+	}
+
+	/// The policy revision, which approving an agent version advances.
+	async fn policy_revision(&self) -> i64 {
+		aidash_server::authorization::Authorization {
+			pool: self.f.store.pool.clone(),
+		}
+		.snapshot("acme")
+		.await
+		.unwrap()
+		.revision
+	}
+
 	async fn register(&self) -> Value {
 		self.call(
 			"POST",
@@ -92,13 +118,13 @@ impl Workbench {
 		panic!("test session did not finish: {started}");
 	}
 
-	/// Polls the session with a credential issued now, so revoking the
-	/// session's own credential does not hide the outcome.
-	async fn observed_finished(&self, started: &Value) -> Value {
+	/// Polls the session as `subject` with a credential issued now, so
+	/// revoking the session's own credential does not hide the outcome.
+	async fn observed_finished(&self, started: &Value, subject: &str) -> Value {
 		let observer = aidash_server::authorization::Authorization {
 			pool: self.f.store.pool.clone(),
 		}
-		.issue_credential("acme", "alice", 3600, "deployment_administrator")
+		.issue_credential("acme", subject, 3600, "deployment_administrator")
 		.await
 		.unwrap()
 		.token;
@@ -540,12 +566,12 @@ async fn trust_permissions_use_worker_transport_and_registry_read(
 ) {
 	let wb = workbench;
 	let registered = wb.register().await;
-	for entry in [
-		&registered["entry"],
-		&json!({"id":"fixture-model","version":"1.0.0"}),
-	] {
-		assert_eq!(request(&wb.app, &wb.token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":entry["id"],"version":entry["version"]},"enabled":true,"expected_revision":0})).await.0, 200);
-	}
+	wb.approve(&[
+		json!({"id":"fixture-tool","version":"1.0.0"}),
+		json!({"id":"fixture-model","version":"1.0.0"}),
+		registered["entry"].clone(),
+	])
+	.await;
 	let mut policies = vec![
 		json!({"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}),
 	];
@@ -555,7 +581,7 @@ async fn trust_permissions_use_worker_transport_and_registry_read(
 	if !registry_allowed {
 		policies.push(json!({"id":"registry","effect":"deny","subjects":{"any":true},"actions":["registry.read"],"resources":{"kinds":["model"]}}));
 	}
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":policies}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":wb.policy_revision().await,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":policies}})).await.0, 200);
 	let path = format!(
 		"/api/workbench/versions/{}/1.0.0/permissions",
 		wb.draft["entry"]["id"].as_str().unwrap()
@@ -633,11 +659,15 @@ async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
 	let (wb, app) = revoked_workbench;
 	let (status, result) = request(&app, &wb.token, "PUT", &wb.path(), json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[],"release_notes":"Must not commit"})).await;
 	assert_eq!(status, 401, "revoked actor: {result}");
-	let unchanged = request(&wb.app, &wb.token, "GET", &wb.path(), Value::Null)
-		.await
-		.1;
-	assert_eq!(unchanged["revision"], 1);
-	assert_eq!(unchanged["release_notes"], "");
+	// The stored draft, read without the revoked credential.
+	let (revision, release_notes): (i64, String) =
+		sqlx::query_as("SELECT revision, release_notes FROM agent_drafts WHERE id = $1")
+			.bind(uuid::Uuid::parse_str(wb.draft["id"].as_str().unwrap()).unwrap())
+			.fetch_one(wb.f.store.pool.driver())
+			.await
+			.unwrap();
+	assert_eq!(revision, 1);
+	assert_eq!(release_notes, "");
 	wb.cleanup().await;
 }
 
@@ -663,24 +693,14 @@ async fn clustered_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 		json!({"expected_revision":2}),
 	)
 	.await;
-	for reference in [
-		json!({"id":wb.draft["entry"]["id"],"version":"1.0.1"}),
+	wb.approve(&[
+		json!({"id":"fixture-tool","version":"1.0.0"}),
 		json!({"id":"fixture-model","version":"1.0.0"}),
+		json!({"id":wb.draft["entry"]["id"],"version":"1.0.0"}),
+		json!({"id":wb.draft["entry"]["id"],"version":"1.0.1"}),
 		entry["config"]["cluster"].clone(),
-	] {
-		assert_eq!(
-			request(
-				&wb.app,
-				&wb.token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"entry":reference,"enabled":true,"expected_revision":0})
-			)
-			.await
-			.0,
-			200
-		);
-	}
+	])
+	.await;
 	wb
 }
 
@@ -693,7 +713,7 @@ async fn trust_reports_the_configured_cluster_and_its_execution_dependencies(
 	#[case] denied_action: &str,
 ) {
 	let wb = clustered_workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"cluster-denial","effect":"deny","subjects":{"any":true},"actions":[denied_action],"resources":{"kinds":["cluster"]}}]}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":wb.policy_revision().await,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"cluster-denial","effect":"deny","subjects":{"any":true},"actions":[denied_action],"resources":{"kinds":["cluster"]}}]}})).await.0, 200);
 	let context = wb
 		.call(
 			"POST",
@@ -865,7 +885,7 @@ async fn pre_dispatch_revocation_is_denied_without_an_unknown_external_outcome(
 		_ => unreachable!(),
 	}
 	wb.model_gate.release.notify_one();
-	let finished = wb.observed_finished(&started).await;
+	let finished = wb.observed_finished(&started, "alice").await;
 	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 0);
 	assert_eq!(
 		finished["status"], "blocked",
@@ -885,7 +905,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 	let (wb, started) = model_waiting_for_real_tool;
 	wb.effect_reply_invalid.store(true, Ordering::SeqCst);
 	wb.model_gate.release.notify_one();
-	let finished = wb.observed_finished(&started).await;
+	let finished = wb.observed_finished(&started, "alice").await;
 	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 1);
 	assert_eq!(finished["status"], "outcome_unknown", "session: {finished}");
 	assert_eq!(finished["tool_calls"][0]["outcome"], "outcome_unknown");
@@ -1529,7 +1549,9 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 		Ok(result) => result.unwrap(),
 		Err(_) => mutation.await.unwrap(),
 	};
-	let finished = wb.observed_finished(&started).await;
+	// A transferred draft's sessions belong to its new owner.
+	let observer = if change == "transfer" { "bob" } else { "alice" };
+	let finished = wb.observed_finished(&started, observer).await;
 	assert!(
 		!finished_early,
 		"{change} committed across the real dispatch lease: {result:?}"

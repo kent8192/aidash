@@ -35,21 +35,34 @@ fn tool(id: &str) -> Entry {
 fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
 }
-async fn policy(f: &Federation, tenant: &str, revision: i64, value: Value) {
-	if revision == 0 {
-		common::tenant_root(f, tenant).await;
-	}
-	Authorization {
+async fn policy(f: &Federation, tenant: &str, revision: i64, mut value: Value) {
+	let authorization = Authorization {
 		pool: f.store.pool.clone(),
-	}
-	.replace(
-		tenant,
-		revision,
-		serde_json::from_value::<PolicyBundle>(value).unwrap(),
-		"deployment_administrator",
-	)
-	.await
-	.unwrap();
+	};
+	let revision = if revision == 0 {
+		common::tenant_root(f, tenant).await;
+		0
+	} else {
+		// Approving an agent version makes it a subject and advances the
+		// revision (ADR 0062); a replacement keeps those agent subjects.
+		let current = authorization.snapshot(tenant).await.unwrap();
+		let existing = serde_json::to_value(&current.bundle).unwrap();
+		for (name, subject) in existing["subjects"].as_object().unwrap() {
+			if subject["kind"] == "agent" && value["subjects"].get(name).is_none() {
+				value["subjects"][name] = subject.clone();
+			}
+		}
+		current.revision
+	};
+	authorization
+		.replace(
+			tenant,
+			revision,
+			serde_json::from_value::<PolicyBundle>(value).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
 }
 async fn token(f: &Federation, tenant: &str, kind: &str) -> String {
 	policy(f, tenant, 0, bundle(tenant, kind)).await;
@@ -2811,7 +2824,9 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	.unwrap();
 
-	let deployment_administrator = operation != "install";
+	// Activation is a Tenant's Catalog Approval; only administration acts
+	// as a Deployment Administrator.
+	let deployment_administrator = operation == "administration";
 	if deployment_administrator {
 		{
 			let query_bind_1 = identity;

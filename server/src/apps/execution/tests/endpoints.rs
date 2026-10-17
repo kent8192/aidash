@@ -72,14 +72,19 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let (member, token) = crate::endpoint::tenant_member(&app).await;
+	let (member, _) = crate::endpoint::tenant_member(&app).await;
 	let selected = workspace(&member, "Stream selection").await;
 	let id = selected["id"].as_str().unwrap();
 	workspace(&member, "Excluded from stream").await;
 	let client = http_client.clone();
 	let url = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
 	// Act
-	let mut response = client.get(&url).bearer_auth(&token).send().await.unwrap();
+	let mut response = client
+		.get(&url)
+		.bearer_auth(&app.runtime.config.api_token)
+		.send()
+		.await
+		.unwrap();
 	// Assert
 	assert_eq!(response.status(), 200);
 	assert_eq!(response.headers()["content-type"], "text/event-stream");
@@ -110,7 +115,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 	drop(response);
 	let mut resumed = client
 		.get(&url)
-		.bearer_auth(&token)
+		.bearer_auth(&app.runtime.config.api_token)
 		.header("Last-Event-ID", cursor)
 		.send()
 		.await

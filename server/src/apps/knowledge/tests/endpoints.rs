@@ -324,8 +324,9 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 		.get_with_db(&mut db)
 		.await
 		.unwrap();
-	assert_eq!(record.authority.0["subject"], "without_subject");
-	assert_eq!(record.authority.0["credential"], Value::Null);
+	// The entry records the subject that wrote it and its credential.
+	assert_eq!(record.authority.0["subject"], "member");
+	assert!(record.authority.0["credential"].is_string());
 }
 
 #[rstest]
@@ -465,7 +466,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		&json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let pending = json!({"points":{"retired":1,"pending":1,"failed":0},"collections":{"retired":1,"pending":1,"failed":0}});
 	assert_eq!(
-		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		pending
 	);
 
@@ -473,7 +480,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	worker::sweep(&app.runtime.store).await.unwrap();
 	let failed = json!({"points":{"retired":1,"pending":1,"failed":1},"collections":{"retired":1,"pending":1,"failed":1}});
 	assert_eq!(
-		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		failed
 	);
 	let mut db = app.database.lease.handle();
@@ -491,7 +504,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		.next_attempt;
 	worker::sweep(&app.runtime.store).await.unwrap();
 	assert_eq!(
-		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		failed
 	);
 	assert_eq!(
@@ -555,7 +574,13 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	// Assert: replay did not duplicate a generation, and acknowledgements keep tombstones.
 	let cleaned = json!({"points":{"retired":1,"pending":0,"failed":0},"collections":{"retired":1,"pending":0,"failed":0}});
 	assert_eq!(
-		assert_json(member.get(&cleanup_path).await.unwrap(), 200),
+		assert_json(
+			app.deployment_administrator
+				.get(&cleanup_path)
+				.await
+				.unwrap(),
+			200
+		),
 		cleaned
 	);
 	let points = SemanticPoint::objects()

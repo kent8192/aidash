@@ -230,7 +230,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
+async fn salted_run_creation_requires_a_cache_salt_key(
 	#[future(awt)]
 	#[from(store)]
 	_store_fixture: StoreFixture,
@@ -269,19 +269,22 @@ async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
 		)
 		.unwrap(),
 	));
-	// A key alone is not enough: this tenantless legacy workspace has no
-	// Tenant to salt with, so the Run could never reach inference.
-	let tenantless = salted.claim(&ACME, task.id, 0, &owner, &agent).await;
-	assert!(
-		matches!(tenantless, Err(aidash_server::Error::Invalid(_))),
-		"{tenantless:?}"
-	);
-	assert_eq!(store.task(&ACME, task.id).await.unwrap().revision, 0);
-	// Legacy Agents in the same workspace are unaffected.
+	// With a key, the workspace's Tenant salts the Run (ADR 0043: every
+	// workspace belongs to a Tenant).
+	let salted_claim = salted
+		.claim(&ACME, task.id, 0, &owner, &agent)
+		.await
+		.unwrap();
+	assert_eq!(salted_claim.revision, 1);
+	// Legacy Agents are unaffected by the missing key.
+	let other = store
+		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.await
+		.unwrap();
 	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
 	let legacy_owner = qualified_agent(&store.node_id, &legacy.id, &legacy.version);
-	let claimed = salted
-		.claim(&ACME, task.id, 0, &legacy_owner, &legacy)
+	let claimed = store
+		.claim(&ACME, other.id, 0, &legacy_owner, &legacy)
 		.await
 		.unwrap();
 	assert_eq!(claimed.revision, 1);
@@ -579,8 +582,9 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	let run = common::local_run(&store, &ACME, &task, &agent).await;
 	let federation = _api_runtime.await.federation;
+	let run = common::admitted_run(&federation, "acme", &task, &agent).await;
+	let token = common::tenant_token(&store, "acme").await;
 	let harness = aidash_server::harness::Harness {
 		federation: federation.clone(),
 	};
@@ -667,7 +671,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 			Method::POST,
 			router.url(format!("/api/runs/{}/message", run.id)),
 		)
-		.header("Authorization", "Bearer test-access-token")
+		.header("Authorization", format!("Bearer {token}"))
 		.header("content-type", "application/json")
 		.body(r#"{"content":"Keep the source citations."}"#)
 		.send()
@@ -765,9 +769,18 @@ async fn running_task(
 		.create_task(&ACME, workspace, &input, "alice", None)
 		.await
 		.unwrap();
-	common::admitted_run(f, "acme", &task, agent).await;
-	let task = store.task(&ACME, task.id).await.unwrap();
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	if parent.is_some() {
+		// A child is claimed under its parent Run's authority, not a fresh
+		// subject admission, which refuses a child behind its active parent.
+		store
+			.claim(&ACME, task.id, task.revision, &owner, agent)
+			.await
+			.unwrap();
+	} else {
+		common::admitted_run(f, "acme", &task, agent).await;
+	}
+	let task = store.task(&ACME, task.id).await.unwrap();
 	store
 		.transition(
 			&ACME,
@@ -1939,7 +1952,10 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
-	seed(&f.registry).await;
+	let agent = seed(&f.registry).await;
+	// Registry writes and conversations are a Tenant subject's (ADR 0043).
+	common::approve_agent(&f, "acme", &agent).await;
+	let token = common::tenant_token(&store, "acme").await;
 	let app = _application.application.clone();
 	// Simulate an event insertion failure after the primary mutation.
 	// SeaQuery cannot add a CHECK constraint to an existing table.
@@ -1953,7 +1969,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	.unwrap();
 	let response = http_client
 		.request(Method::POST, app.url("/api/registry"))
-		.header("authorization", "Bearer test-access-token")
+		.header("authorization", format!("Bearer {token}"))
 		.header("content-type", "application/json")
 		.body(
 			serde_json::to_string(&entry("skill", "rollback", json!({"instructions":"test"})))
@@ -1982,7 +1998,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	.await
 	.unwrap();
 	let response=http_client.request(Method::POST, app.url("/api/conversations"))
-		.header("authorization","Bearer test-access-token")
+		.header("authorization", format!("Bearer {token}"))
 		.header("content-type","application/json")
 		.body(json!({"title":"Atomic","goal":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())
 		.send().await.unwrap();

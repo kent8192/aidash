@@ -278,16 +278,34 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	entry.binding_normalization = None;
 	entry.config["bindings"] = json!([]);
 	entry.config["remove_default"] = json!([]);
-	// The Deployment offers the Sandboxed groups as built-ins of every Tenant,
-	// which the Tenant approves with their members before use (ADR 0034).
-	let groups = aidash_application::registry::system::packages::SANDBOXED_GROUPS;
-	let approvals: Vec<Value> = groups
+	// The Deployment offers the Sandboxed groups it can run as built-ins of
+	// every Tenant, which the Tenant approves with their members (ADR 0034).
+	let offered: Vec<aidash_server::registry::Entry> = f
+		.registry
+		.list(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_server::registry::Search {
+				kind: Some("bundle".into()),
+				..Default::default()
+			},
+		)
+		.await
+		.unwrap()
+		.into_iter()
+		.filter(|bundle| bundle.tags.iter().any(|tag| tag == "sandboxed"))
+		.collect();
+	let approvals: Vec<Value> = offered
 		.iter()
-		.flat_map(|(name, operations)| {
-			std::iter::once(format!("aidash.bundle.{name}"))
-				.chain(operations.iter().map(|operation| format!("aidash.{operation}")))
+		.flat_map(|bundle| {
+			std::iter::once(json!({"id":bundle.id,"version":bundle.version})).chain(
+				bundle.config["members"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.map(|member| json!({"id":member["id"],"version":member["version"]})),
+			)
 		})
-		.map(|id| json!({"entry":{"id":id,"version":"1.0.0"},"enabled":true,"expected_revision":0}))
+		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0}))
 		.collect();
 	let (status, approved) = request(
 		&app,
@@ -298,7 +316,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
-	entry.config["bindings"] = json!(groups.iter().map(|(name, _)| json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":format!("aidash.bundle.{name}"),"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
+	entry.config["bindings"] = json!(offered.iter().map(|bundle| json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":bundle.id,"version":bundle.version},"narrow":{}})).collect::<Vec<_>>());
 	let instructions = "---\nname: analysis\ndescription: Analyze the selected CSV\nlicense: MIT\n---\nLoad this only when selected. Scripts are data.";
 	let files = json!([{"path":"references/guide.md","content":"東京\n"},{"path":"scripts/analyze.py","content":"raise RuntimeError('must never run on activation')"}]);
 	let digest =

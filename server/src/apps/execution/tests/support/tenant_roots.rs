@@ -296,3 +296,32 @@ pub async fn admitted_run(
 		.find(|run| run.task_id == task.id)
 		.expect("admission queues a Run")
 }
+
+/// Replaces a Tenant's policy at its current revision, keeping the agent
+/// subjects that Catalog Approvals of agent versions added (ADR 0062).
+#[allow(dead_code)]
+pub async fn replace_policy(
+	store: &aidash_server::store::Store,
+	tenant: &str,
+	mut bundle: serde_json::Value,
+) {
+	let authorization = aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	};
+	let current = authorization.snapshot(tenant).await.unwrap();
+	let existing = serde_json::to_value(&current.bundle).unwrap();
+	for (name, subject) in existing["subjects"].as_object().unwrap() {
+		if subject["kind"] == "agent" && bundle["subjects"].get(name).is_none() {
+			bundle["subjects"][name] = subject.clone();
+		}
+	}
+	authorization
+		.replace(
+			tenant,
+			current.revision,
+			serde_json::from_value(bundle).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.expect("the Tenant policy is replaced");
+}

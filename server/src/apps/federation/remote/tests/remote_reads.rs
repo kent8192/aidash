@@ -242,18 +242,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	] {
 		let mut denied = original.clone();
 		denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-execution","effect":"deny","subjects":{"ids":["alice"]},"actions":["agent.execute"],"resources":{"kinds":["agent"],"ids":[resource]}}));
-		assert_eq!(
-			request(
-				app,
-				&node.config.api_token,
-				"POST",
-				"/api/authorization/acme",
-				json!({"expected_revision":1,"bundle":denied})
-			)
-			.await
-			.0,
-			200
-		);
+		common::replace_policy(&node.store, "acme", denied).await;
 		assert_eq!(
 			request(&a_app, &token, "GET", &path, Value::Null).await.0,
 			403

@@ -615,7 +615,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		a.f.request::<Value>(
 			&b.f.config.node_id,
 			reqwest::Method::POST,
-			"/discover",
+			"/scoped/discover",
 			Some(&json!({}))
 		)
 		.await,
