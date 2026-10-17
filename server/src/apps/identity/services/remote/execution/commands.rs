@@ -2,11 +2,13 @@
 use super::*;
 use http::HeaderMap;
 pub(crate) async fn handle(f: Federation, headers: HeaderMap, input: Input) -> Result<Value> {
+	let mut timer = aidash_application::diag_timing::PhaseTimer::new("home.commands");
 	let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 	let mut revision_race = false;
 	let (mut access, description) =
 		super::super::description_lease_mode(&f, node, input.grant_id, true, &mut revision_race)
 			.await?;
+	timer.mark("description");
 	access.worker();
 	access.read_grant = Some(input.grant_id);
 	let agent = &description.inspection.agent;
@@ -27,10 +29,13 @@ pub(crate) async fn handle(f: Federation, headers: HeaderMap, input: Input) -> R
 	)
 	.await
 	.map_err(Into::into);
+	timer.mark("execute");
 	if let Err(error) = &result {
 		tracing::warn!(operation=%input.operation,error=%error,"scoped home command rejected");
 	}
-	access.finish(result).await
+	let result = access.finish(result).await;
+	timer.mark("finish");
+	result
 }
 #[derive(Clone)]
 pub struct RemoteCommands {

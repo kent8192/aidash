@@ -31,10 +31,15 @@ impl PeerExecution {
 		headers: HeaderMap,
 		input: InspectInput,
 	) -> Result<Inspection> {
+		let mut timer = aidash_application::diag_timing::PhaseTimer::new("peer.inspect");
 		let f = self.runtime.clone();
 		let node = crate::apps::identity::services::http_auth::peer_node(&headers)?;
 		let mut access = super::access(&f, node, &input.tenant, &input.subject).await?;
+		timer.mark("access");
 		let result = inspect_in(&f, &mut access, node, &input).await;
-		access.finish(result).await
+		timer.mark("inspect_in");
+		let result = access.finish(result).await;
+		timer.mark("finish");
+		result
 	}
 }
