@@ -460,3 +460,91 @@ async fn a_deleted_personal_tenant_is_replaced_only_on_request(
 	assert_eq!(restored["personal"], false);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.tenant_of(&alice, "Team").await;
+	let (status, workspace) = d
+		.as_person(
+			&alice,
+			"POST",
+			"/api/workspaces",
+			Some(&context),
+			json!({"title":"Work","goal":"Run something"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{workspace}");
+	let workspace: Uuid = workspace["id"].as_str().unwrap().parse().unwrap();
+	let (status, task) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("/api/workspaces/{workspace}/tasks"),
+			Some(&context),
+			json!({"title":"work","description":"keep working"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{task}");
+	let task: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+	// A Run of the Tenant as a worker would hold it, recorded directly.
+	let pool = d.federation.store.pool.driver();
+	let run = Uuid::new_v4();
+	let mut tx = pool.begin().await.unwrap();
+	sqlx::query("SELECT set_config('aidash.input_ledger_worker', 'true', true)")
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	sqlx::query(
+		"INSERT INTO runs (id, task_id, workspace_id, home_node, agent_id, agent_version, phase, control, context, pending) \
+		 VALUES ($1, $2, $3, $4, 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb)",
+	)
+	.bind(run)
+	.bind(task)
+	.bind(workspace)
+	.bind(&d.federation.config.node_id)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO authorization_execution (run_id, task_id, workspace_id, tenant, credential_id, root_subject, subject_chain) \
+		 SELECT $1, $2, $3, $4, credential_id, subject, ARRAY[subject, 'agent'] FROM dashboard_mappings WHERE tenant = $4",
+	)
+	.bind(run)
+	.bind(task)
+	.bind(workspace)
+	.bind(&tenant)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let state = || async {
+		sqlx::query_as::<_, (String, Option<String>)>(
+			"SELECT control, error FROM runs WHERE id = $1",
+		)
+		.bind(run)
+		.fetch_one(pool)
+		.await
+		.unwrap()
+	};
+
+	let (status, body) = d.delete(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	// Paused, so no worker reclaims a Run whose authority is now refused.
+	assert_eq!(
+		state().await,
+		("PAUSED".into(), Some("tenant deleted".into()))
+	);
+	let (status, body) = d.restore(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	// Restoring brings the data back, never the work.
+	assert_eq!(
+		state().await,
+		("CANCELLED".into(), Some("tenant deleted".into()))
+	);
+	d.finish().await;
+}
