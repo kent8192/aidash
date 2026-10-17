@@ -1,17 +1,23 @@
 meta {
-  name: 1196 plan-connection-disconnect - Anonymous request is rejected
+  name: 1196 plan-connection-disconnect - Deployment Administrator bearer owns no Plan Connection
   type: http
   seq: 1196
 }
 
 delete {
-  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/__bruno_missing__
-  body: none
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer {{deployment_administrator_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {"expected_revision": 1}
 }
 
 script:pre-request {
@@ -27,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

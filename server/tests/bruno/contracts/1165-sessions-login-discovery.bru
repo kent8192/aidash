@@ -1,5 +1,5 @@
 meta {
-  name: 1165 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain
+  name: 1165 sessions-login-discovery - Discovery without an address reveals nothing
   type: http
   seq: 1165
 }
@@ -17,12 +17,11 @@ headers {
 }
 
 body:form-urlencoded {
-  email: alice@acme.example
   return_to: /
 }
 
 tests {
   test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
   test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
-  test("OIDC deployment cannot route a Sign-in Domain contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
+  test("Discovery without an address reveals nothing contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
 }
