@@ -2207,6 +2207,14 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
 			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
+		}, {
+			// The last-administrator guard also needs someone who can delete the Tenant.
+			"id": "tenant-deletion",
+			"effect": "allow",
+			"subjects": {"groups": ["administrators"]},
+			"actions": ["tenant.delete"],
+			"resources": {"kinds": ["tenant"]},
+			"condition": null
 		}]
 	})
 }
@@ -2275,7 +2283,12 @@ async fn tenant_administrator_cannot_read_or_approve_across_tenants(
 		.unwrap();
 	assert_eq!(
 		overview["actions"],
-		json!(aidash_domain::identity::tenant_administration::ACTIONS)
+		json!(
+			aidash_domain::identity::tenant_administration::ACTIONS
+				.iter()
+				.chain([&aidash_domain::identity::tenancy::TENANT_DELETE])
+				.collect::<Vec<_>>()
+		)
 	);
 	assert_eq!(overview["assignable_groups"], json!(["members"]));
 	let listed = admin

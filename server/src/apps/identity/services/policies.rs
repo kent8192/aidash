@@ -113,6 +113,22 @@ impl PolicyAdministration {
 		input: AuthorizationUpdate,
 	) -> Result<(reinhardt::StatusCode, PolicyReplacement)> {
 		let f = self.runtime.clone();
+		// The replacement itself refuses a deleted Tenant too, but its error
+		// crosses the authorization port as a plain refusal.
+		let deleted = f
+			.store
+			.pool
+			.atomic(
+				&aidash_application::tenancy::TenancyScope::tenant(&tenant)?,
+				async |tx| {
+					crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &tenant)
+						.await
+				},
+			)
+			.await?;
+		if deleted {
+			return Err(crate::Error::TenantDeleted);
+		}
 		// A Tenant without a root record is refused with 404: only the Tenant
 		// creation API makes Tenants (ADR 0050).
 		let snapshot = control_service(f.clone())

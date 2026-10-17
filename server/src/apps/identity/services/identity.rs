@@ -111,6 +111,16 @@ impl Authorization {
 		let (credential_id, tenant, subject) = self
 			.pool
 			.atomic(&TenancyScope::Tenant(name.clone()), async |tx| {
+				// A deleted Tenant's credentials look like an unknown Tenant's,
+				// so nobody outside learns that it was deleted (ADR 0060).
+				if crate::apps::identity::repositories::tenant_deletions::is_deleted(
+					tx,
+					name.as_str(),
+				)
+				.await?
+				{
+					return Err(Error::Unauthorized);
+				}
 				AuthorizationCredential::authenticate(tx, digest(token)).await
 			})
 			.await?;
@@ -211,6 +221,28 @@ impl SubjectIdentity {
 	) -> Result<Snapshot> {
 		super::policy::identifier(&self.tenant)?;
 		let snapshot = AuthorizationBundle::lock_snapshot(tx, &self.tenant, exclusive).await?;
+		self.lock_holder(tx, snapshot, policy).await
+	}
+
+	/// [`Self::lock_native`] for restoring a deleted Tenant: the same checks
+	/// of this subject, against the policy the Tenant was deleted with.
+	pub(crate) async fn lock_deleted(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<Snapshot> {
+		super::policy::identifier(&self.tenant)?;
+		let snapshot = AuthorizationBundle::lock_frozen(tx, &self.tenant, true).await?;
+		self.lock_holder(tx, snapshot, policy).await
+	}
+
+	/// Locks this subject's credential and session under an already-held policy.
+	async fn lock_holder(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		snapshot: Snapshot,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<Snapshot> {
 		AuthorizationCredential::lock_valid(
 			tx,
 			self.credential_id,

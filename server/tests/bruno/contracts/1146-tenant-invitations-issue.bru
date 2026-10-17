@@ -1,0 +1,38 @@
+meta {
+  name: 1146 tenant-invitations-issue - Subject Credential bearer never administers Invitations
+  type: http
+  seq: 1146
+}
+
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/invitations
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+  Content-Type: application/json
+}
+
+body:text {
+  {}
+}
+
+script:pre-request {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
+
+}
+
+script:post-response {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
+
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

@@ -68,6 +68,11 @@ impl AuthorizationBundle {
 			.await?
 			.ok_or_else(|| Error::Conflict("authorization revision changed".into()))?;
 		let revision: i64 = row.get("revision").map_err(FrameworkError::from)?;
+		// Checked once the row is held, so a deletion that committed first is
+		// seen: a deleted Tenant's policy stays as it was deleted (ADR 0060).
+		if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await? {
+			return Err(Error::TenantDeleted);
+		}
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(AuthorizationRevision::table_name()))
 			.columns(["tenant", "revision", "document", "actor"].map(Alias::new))
@@ -82,7 +87,25 @@ impl AuthorizationBundle {
 		Ok(revision)
 	}
 
+	/// Locks the Tenant's policy for an authenticated boundary. A deleted
+	/// Tenant refuses every boundary once its policy is held, so a deletion
+	/// committing meanwhile waits for this transaction or is seen here.
 	pub(crate) async fn lock_snapshot(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		exclusive: bool,
+	) -> Result<Snapshot> {
+		let snapshot = Self::lock_frozen(tx, tenant, exclusive).await?;
+		if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await? {
+			return Err(Error::TenantDeleted);
+		}
+		Ok(snapshot)
+	}
+
+	/// Locks the Tenant's policy whether or not the Tenant is deleted: only
+	/// deleting and restoring a Tenant read a deleted Tenant's policy, which
+	/// stays as it was when the Tenant was deleted.
+	pub(crate) async fn lock_frozen(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 		exclusive: bool,

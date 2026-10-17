@@ -32,6 +32,9 @@ pub struct TenancySettings {
 	/// Let Tenant Administrators and Deployment Administrators issue Invitations.
 	#[setting(default = "true")]
 	pub invitations: bool,
+	/// Days a deleted Tenant stays restorable before its data is purged: 1 to 90.
+	#[setting(default = "30")]
+	pub deletion_grace_days: u32,
 }
 
 impl TenancySettings {
@@ -42,6 +45,7 @@ impl TenancySettings {
 			creation_per_hour: self.creation_per_hour,
 			creation_total: self.creation_total,
 			invitations: self.invitations,
+			deletion_grace_days: self.deletion_grace_days,
 		}
 	}
 }
@@ -53,6 +57,8 @@ impl SettingsValidation for TenancySettings {
 				"tenancy creation limits must be at most 10000 per hour and 100000 in total".into(),
 			));
 		}
+		aidash_domain::identity::tenancy::deletion::grace_days(self.deletion_grace_days)
+			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		Ok(())
 	}
 }
