@@ -376,8 +376,20 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 	};
 	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
-	b.f.registry.register(model).await.unwrap();
-	b.f.registry.register(agent.clone()).await.unwrap();
+	b.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	b.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			agent.clone(),
+		)
+		.await
+		.unwrap();
 
 	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
 	let task =
@@ -425,17 +437,14 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future] pa
 		.create_with_conn(&mut a.database.lease.handle(), &delegation)
 		.await
 		.unwrap();
-	let run =
-		b.f.store
-			.accept_run(
-				&TEST_FIXTURE,
-				&task,
-				&a.f.config.node_id,
-				&agent.id,
-				&agent.version,
-			)
-			.await
-			.unwrap();
+	let run = crate::fixtures::tenant_roots::remote_run(
+		&b.f.store,
+		&task,
+		&a.f.config.node_id,
+		&agent.id,
+		&agent.version,
+	)
+	.await;
 	pending_run(&b, run.id, json!([])).await;
 	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Atomic result","content":"one committed result"}})).unwrap());
 	manifest.participants[1].mutations.push(

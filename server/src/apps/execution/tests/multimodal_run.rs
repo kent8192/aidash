@@ -315,7 +315,15 @@ async fn verify_expired_route_retry(
 	worker: &Harness,
 	deployment_administrator: &str,
 ) {
-	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
 	model.version = "1.0.2".into();
 	model.config["media_routes"][0]["expires_at"] =
 		json!(chrono::Utc::now() + chrono::Duration::seconds(3));
@@ -337,7 +345,15 @@ async fn verify_expired_route_retry(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.0.2".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.2");
@@ -425,7 +441,15 @@ async fn verify_separate_format_routes(
 	received: &mut mpsc::UnboundedReceiver<Value>,
 	deployment_administrator: &str,
 ) {
-	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
 	model.version = "1.0.3".into();
 	model.config["media_routes"] = json!([
 		{"tag":"fixture/png", "formats":["image/png"], "source":"mock provider contract",
@@ -453,7 +477,15 @@ async fn verify_separate_format_routes(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.1",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.0.3".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.3");
@@ -609,7 +641,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let mut model = f.registry.get("model", "1.0.0").await.unwrap();
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	model.version = "1.0.1".into();
 	model.config["context_window"] = json!(64_000);
 	model.config["modalities"] = json!(["text", "image", "audio"]);
@@ -636,7 +676,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.0.1".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");

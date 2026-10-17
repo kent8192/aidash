@@ -745,7 +745,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 			json!({"schema_version":1,"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read"]}),
 		),
 	] {
-		f.runtime.registry.register(serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();
+		f.runtime.registry.register(&aidash_domain::tenancy::TenantName::new("beta").unwrap(), serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();
 	}
 
 	f.context.set_singleton(f.runtime.clone());
@@ -784,7 +784,12 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let workspace = f
 		.runtime
 		.store
-		.create_workspace(&TEST_FIXTURE, "BYOK retrieval", "Test admission")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("beta").unwrap(),
+			"actor",
+			"BYOK retrieval",
+			"Test admission",
+		)
 		.await
 		.unwrap();
 	let mut tx = f.database.connection.begin().await.unwrap();
@@ -951,7 +956,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	assert!(
 		f.runtime
 			.registry
-			.register(model.clone())
+			.register(
+				&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+				model.clone()
+			)
 			.await
 			.unwrap_err()
 			.to_string()
@@ -959,7 +967,14 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	);
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
-	f.runtime.registry.register(model.clone()).await.unwrap();
+	f.runtime
+		.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+			model.clone(),
+		)
+		.await
+		.unwrap();
 	for seconds in [3601_u32, u32::MAX] {
 		let mut invalid = model.clone();
 		invalid.id = format!("byok-too-long-{seconds}");
@@ -967,7 +982,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		assert!(
 			f.runtime
 				.registry
-				.register(invalid)
+				.register(
+					&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+					invalid
+				)
 				.await
 				.unwrap_err()
 				.to_string()
@@ -1026,7 +1044,14 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			id: &str,
 			version: &str,
 		) -> Result<aidash_domain::registry::Entry> {
-			self.0.get(id, version).await.map_err(Into::into)
+			self.0
+				.get(
+					&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+					id,
+					version,
+				)
+				.await
+				.map_err(Into::into)
 		}
 	}
 	let snapshot = aidash_application::registry::bindings::resolve(

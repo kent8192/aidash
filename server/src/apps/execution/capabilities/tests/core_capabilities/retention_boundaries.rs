@@ -433,7 +433,16 @@ fn sharing_generation_fixture(
 		let mut f = recovery_fixture.await;
 		let (status, restored) = request(&f.c.app, &f.c.token, "POST", &format!("/api/working-areas/{}/restore", f.area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"],"thread_id":f.new_thread["id"]})).await;
 		assert_eq!(status, 200, "{restored}");
-		let mut newer = f.c.f.registry.get("research", "1.1.0").await.unwrap();
+		let mut newer =
+			f.c.f
+				.registry
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					"research",
+					"1.1.0",
+				)
+				.await
+				.unwrap();
 		newer.version = "1.2.0".into();
 		newer.binding_normalization = None;
 		let (status, saved) = request(

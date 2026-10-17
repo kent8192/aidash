@@ -155,10 +155,26 @@ async fn admit_streaming_agent(f: &Federation, app: &common::TestApplication, mu
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let mut model = f.registry.get("model", "1.0.0").await.unwrap();
+	let mut model = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"model",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	model.version = "1.0.1".into();
 	model.config["streaming"] = json!(true);
-	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.0.1".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");

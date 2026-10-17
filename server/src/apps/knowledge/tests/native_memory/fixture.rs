@@ -1,9 +1,8 @@
 //! Shared native-memory fixture; integration and repository tests use the same ownership.
 use super::DatabaseFixture;
-use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::{AuthorizationBundle, AuthorizationWorkspace, Tenant},
+	apps::identity::models::{AuthorizationBundle, Tenant},
 	registry::{Entry, Registry},
 	store::Store,
 };
@@ -214,12 +213,14 @@ pub(super) async fn setup_endpoint_policy(
 			json!({"model":reference("m"),"instructions":"Use current evidence","tools":[],"skills":[],"memory":reference("p"),"allow_memory_write":true}),
 		),
 	] {
-		registry.register(entry(kind, id, config)).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				entry(kind, id, config),
+			)
+			.await
+			.unwrap();
 	}
-	let workspace = store
-		.create_workspace(&TEST_FIXTURE, "Memory", "Keep current evidence")
-		.await
-		.unwrap();
 	let mut db = database.lease.handle();
 	let bundle: aidash_domain::policy::PolicyBundle =
 		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
@@ -246,6 +247,15 @@ pub(super) async fn setup_endpoint_policy(
 				.revision(1)
 				.document(Json(serde_json::to_value(bundle).unwrap()))
 				.finish(),
+		)
+		.await
+		.unwrap();
+	let workspace = store
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
+			"Memory",
+			"Keep current evidence",
 		)
 		.await
 		.unwrap();

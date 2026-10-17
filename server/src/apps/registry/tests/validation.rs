@@ -18,10 +18,14 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	skill: Value,
 ) {
 	let app = endpoint.await;
+	let registrar = crate::endpoint::tenant_subject(&app, "registrar").await;
 	let seeded_definitions = app
 		.runtime
 		.registry
-		.list(&Default::default())
+		.list(
+			&aidash_domain::tenancy::TenantName::new("endpoint").unwrap(),
+			&Default::default(),
+		)
 		.await
 		.unwrap();
 	let mut invalid = vec![];
@@ -59,8 +63,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	unknown["unexpected"] = json!(true);
 	invalid.push((unknown, 422));
 	for (entry, status) in invalid {
-		let response = app
-			.deployment_administrator
+		let response = registrar
 			.post("/api/registry", &entry, "json")
 			.await
 			.unwrap();
@@ -73,7 +76,10 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	assert_eq!(
 		app.runtime
 			.registry
-			.list(&Default::default())
+			.list(
+				&aidash_domain::tenancy::TenantName::new("endpoint").unwrap(),
+				&Default::default()
+			)
 			.await
 			.unwrap(),
 		seeded_definitions
@@ -91,7 +97,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 		valid[field] = json!(["one", "two"]);
 	}
 	let stored = assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/registry", &valid, "json")
 			.await
 			.unwrap(),
@@ -100,7 +106,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	let _: aidash_server::registry::Entry = serde_json::from_value(stored.clone()).unwrap();
 	assert_eq!(
 		assert_json(
-			app.deployment_administrator
+			registrar
 				.get("/api/registry/endpoint-skill/1.0.0")
 				.await
 				.unwrap(),
@@ -118,10 +124,14 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 	skill: Value,
 ) {
 	let app = endpoint.await;
+	let registrar = crate::endpoint::tenant_subject(&app, "registrar").await;
 	let seeded_definitions = app
 		.runtime
 		.registry
-		.list(&Default::default())
+		.list(
+			&aidash_domain::tenancy::TenantName::new("endpoint").unwrap(),
+			&Default::default(),
+		)
 		.await
 		.unwrap();
 	let whitespace: Vec<_> = (0..=0x10ffff)
@@ -138,8 +148,7 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 		] {
 			let mut entry = base.clone();
 			entry["config"][field] = json!(blank);
-			let response = app
-				.deployment_administrator
+			let response = registrar
 				.post("/api/registry", &entry, "json")
 				.await
 				.unwrap();
@@ -154,7 +163,10 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 	assert_eq!(
 		app.runtime
 			.registry
-			.list(&Default::default())
+			.list(
+				&aidash_domain::tenancy::TenantName::new("endpoint").unwrap(),
+				&Default::default()
+			)
 			.await
 			.unwrap(),
 		seeded_definitions
@@ -169,7 +181,7 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 			entry["config"][field] = json!(content);
 			assert_eq!(
 				assert_json(
-					app.deployment_administrator
+					registrar
 						.post("/api/registry", &entry, "json")
 						.await
 						.unwrap(),

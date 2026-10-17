@@ -343,7 +343,11 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	assert_eq!(runs.len(), 1);
 	let entry = f
 		.registry
-		.get(&runs[0].agent_id, &runs[0].agent_version)
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&runs[0].agent_id,
+			&runs[0].agent_version,
+		)
 		.await
 		.unwrap();
 	assert_eq!(entry.config["instructions"], "Test approved work");
@@ -699,6 +703,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	assert!(
 		f.registry
 			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 				assignment["generation"]["agent_id"].as_str().unwrap(),
 				"1.0.0"
 			)

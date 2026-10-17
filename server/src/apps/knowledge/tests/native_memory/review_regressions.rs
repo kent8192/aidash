@@ -31,13 +31,13 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	}
 	let later_workspace = store
 		.create_workspace(
-			&TEST_FIXTURE,
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
 			"Later bank",
 			"Maintenance must reach this bank",
 		)
 		.await
 		.unwrap();
-	let mut db = database.lease.handle();
 	let index = aidash_server::semantic::service::get_index(
 		&store,
 		&Actor::DeploymentAdministrator,
@@ -349,7 +349,8 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	// service. Its source quota is independent of the Run lifetime read journal.
 	let workspace = store
 		.create_workspace(
-			&TEST_FIXTURE,
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
 			"Long Run",
 			"Accumulate admitted recall pages",
 		)

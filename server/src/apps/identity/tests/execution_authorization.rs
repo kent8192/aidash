@@ -795,8 +795,17 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.0,
 		200
 	);
-	let mut entry =
-		serde_json::to_value(f.registry.get("research", "1.0.0").await.unwrap()).unwrap();
+	let mut entry = serde_json::to_value(
+		f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.0.0",
+			)
+			.await
+			.unwrap(),
+	)
+	.unwrap();
 	entry["id"] = json!("child");
 	entry
 		.as_object_mut()

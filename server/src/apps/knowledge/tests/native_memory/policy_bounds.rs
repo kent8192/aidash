@@ -128,7 +128,10 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	replacement["policy"]["bounds"]["max_candidates"] = json!(1);
 	replacement["policy"]["bounds"]["max_results"] = json!(1);
 	registry
-		.register(entry("memory", "small-queue", replacement))
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", "small-queue", replacement),
+		)
 		.await
 		.unwrap();
 	let mut agent = entry(
@@ -138,7 +141,13 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 		"instructions":"Keep learning review accessible","memory":reference("small-queue"),"allow_memory_write":true}),
 	);
 	agent.version = "1.1.0".into();
-	registry.register(agent).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	let upgrade = || memory::UpgradeParticipant {
 		agent: EntityRef {
 			id: "a".into(),
@@ -281,7 +290,10 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	let mut replacement = config(&database).await;
 	replacement["policy"]["retention"]["history_versions"] = json!(2);
 	registry
-		.register(entry("memory", "short-history", replacement))
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", "short-history", replacement),
+		)
 		.await
 		.unwrap();
 	if participant {
@@ -292,7 +304,13 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 			"memory":reference("short-history"),"allow_memory_write":true}),
 		);
 		agent.version = "1.1.0".into();
-		registry.register(agent).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				agent,
+			)
+			.await
+			.unwrap();
 		memory::upgrade_participant(
 			&store,
 			&Actor::DeploymentAdministrator,
@@ -436,7 +454,10 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 		replacement["policy"]["retention"]["max_unit_records"] = json!(2);
 	}
 	registry
-		.register(entry("memory", "small", replacement))
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", "small", replacement),
+		)
 		.await
 		.unwrap();
 	let settings = || memory::Operation {
@@ -460,7 +481,13 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 			"tools":[],"skills":[],"memory":reference("small"),"allow_memory_write":true}),
 		);
 		agent.version = "1.1.0".into();
-		registry.register(agent).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				agent,
+			)
+			.await
+			.unwrap();
 		memory::upgrade_participant(
 			&store,
 			&Actor::DeploymentAdministrator,
@@ -646,7 +673,10 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	let mut replacement = config(&database).await;
 	replacement["policy"]["retention"]["max_model_operations"] = json!(2);
 	registry
-		.register(entry("memory", "small", replacement))
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", "small", replacement),
+		)
 		.await
 		.unwrap();
 	let settings = || memory::Operation {
@@ -669,7 +699,13 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 			json!({"model":reference("m"),"instructions":"Use bounded memory","tools":[],"skills":[],"memory":reference("small"),"allow_memory_write":true}),
 		);
 		agent.version = "1.1.0".into();
-		registry.register(agent).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				agent,
+			)
+			.await
+			.unwrap();
 		memory::upgrade_participant(
 			&store,
 			&Actor::DeploymentAdministrator,
@@ -937,7 +973,12 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	let database = database.await;
 	let (store, _, indexed) = setup(&database, bounds).await;
 	let workspace = store
-		.create_workspace(&TEST_FIXTURE, "Late index", "Deletion must remain usable")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
+			"Late index",
+			"Deletion must remain usable",
+		)
 		.await
 		.unwrap()
 		.id;
@@ -1354,7 +1395,10 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	let mut replacement = config(&database).await;
 	replacement["policy"]["bounds"][limit] = json!(if limit == "max_unit_bytes" { 32 } else { 1 });
 	registry
-		.register(entry("memory", "small-content", replacement))
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("memory", "small-content", replacement),
+		)
 		.await
 		.unwrap();
 	let settings = || memory::Operation {
@@ -1377,7 +1421,13 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 			json!({"model":reference("m"),"instructions":"Use bounded memory","memory":reference("small-content"),"allow_memory_write":true}),
 		);
 		agent.version = "1.1.0".into();
-		registry.register(agent).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				agent,
+			)
+			.await
+			.unwrap();
 		memory::upgrade_participant(
 			&store,
 			&Actor::DeploymentAdministrator,

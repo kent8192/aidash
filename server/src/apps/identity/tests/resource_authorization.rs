@@ -1361,13 +1361,27 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	let endpoint = server.url.clone();
 	let _calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut entry = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	entry.id = "discovered-only".into();
 	entry.binding_normalization = None;
 	entry
 		.description
 		.insert("en".into(), "discovered-private-metadata".into());
-	f.registry.register(entry).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry,
+		)
+		.await
+		.unwrap();
 	assert_eq!(
 		request(
 			&app,

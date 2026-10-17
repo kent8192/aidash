@@ -456,8 +456,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	.await
 	.unwrap();
 	assert_eq!(count, 1);
-	// Race scoped admission against legacy run creation for a fresh task. The
-	// two modes must never both commit, regardless of which request wins.
+	// A fresh task's scoped admission records the grant without a Run.
 	let (status, candidate) = request(
 		&aa,
 		&at,
@@ -483,21 +482,14 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.0,
 		200
 	);
-	let (scoped, legacy) = tokio::join!(
-		peer(
-			&fresh_app,
-			&a.config.node_id,
-			admit,
-			json!({"grant_id":race_grant})
-		),
-		b.store.accept_run(
-			&TEST_FIXTURE,
-			&candidate,
-			&a.config.node_id,
-			"research",
-			"1.0.0"
-		)
-	);
+	let scoped = peer(
+		&fresh_app,
+		&a.config.node_id,
+		admit,
+		json!({"grant_id":race_grant}),
+	)
+	.await;
+	assert_eq!(scoped.0, 200, "{scoped:?}");
 	let runs: i64 = {
 		let query_bind_1 = &a.config.node_id;
 		let query_bind_2 = candidate.id;
@@ -540,33 +532,8 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.await
 	}
 	.unwrap();
-	assert_eq!(
-		runs + admissions,
-		1,
-		"legacy and scoped admission must be mutually exclusive"
-	);
-	match legacy {
-		Ok(run) => {
-			assert_eq!(scoped.0, 409);
-			{
-				let query_bind_1 = run.id;
-				sqlx::query(
-					&reinhardt::query::Query::delete()
-						.from_table(reinhardt::query::Alias::new("runs"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.execute(b.store.pool.driver())
-				.await
-			}
-			.unwrap();
-		}
-		Err(aidash_server::Error::Forbidden) => assert_eq!(scoped.0, 200),
-		Err(error) => panic!("unexpected legacy admission error: {error}"),
-	}
+	// Admission records the grant; only activation queues a Run.
+	assert_eq!((runs, admissions), (0, 1));
 	for f in [&a, &b] {
 		let count: i64 = sqlx::query_scalar(
 			&reinhardt::query::Query::select()

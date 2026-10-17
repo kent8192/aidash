@@ -21,7 +21,15 @@ async fn working_files_require_explicit_agent_settings(
 	let (f, url, schema) = application.runtime.parts();
 	let app = application.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://localhost:19999").await;
-	let mut stripped = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut stripped = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	stripped.version = "1.0.1".into();
 	stripped.binding_normalization = None;
 	for name in ["file_read", "file_search"] {
@@ -30,7 +38,13 @@ async fn working_files_require_explicit_agent_settings(
 			removed.push(json!(name));
 		}
 	}
-	f.registry.register(stripped).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			stripped,
+		)
+		.await
+		.unwrap();
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
 		json!({"kind":"agent"});
@@ -259,7 +273,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
-	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut entry = f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.0.0").await.unwrap();
 	entry.version = "1.1.0".into();
 	entry.binding_normalization = None;
 	entry.config["bindings"] = json!([]);
@@ -1168,7 +1182,15 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = capability_fixture.await;
 	let sender = admit(&c).await;
-	let mut reader = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut reader =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	reader.id = "reader".into();
 	reader.binding_normalization = None;
 	let (status, value) = request(
@@ -1397,7 +1419,15 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		.0,
 		200
 	);
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	agent.version = "1.2.0".into();
 	agent.binding_normalization = None;
 	let source = reference_limit_tests::register_reference_source(

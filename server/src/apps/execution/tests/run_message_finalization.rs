@@ -953,7 +953,11 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let agent = f
 		.registry
-		.get(&run.agent_id, &run.agent_version)
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&run.agent_id,
+			&run.agent_version,
+		)
 		.await
 		.unwrap();
 	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
@@ -1103,7 +1107,15 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	);
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	let agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
 		.unwrap()
 		.max_steps;
@@ -1201,7 +1213,15 @@ async fn empty_media_observation_consumes_the_last_available_step(
 	);
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	let agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
 		.unwrap()
 		.max_steps;

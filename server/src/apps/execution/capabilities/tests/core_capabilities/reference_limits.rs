@@ -79,7 +79,15 @@ async fn reference_configuration_enforces_aggregate_and_lowered_limits_without_r
 			bindings.push(json!({"reference_id":upload["reference_id"],"digest":digest}));
 		}
 	}
-	let before = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let before =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	let source = register_reference_source(&c, "fixture-reference-set", &bindings).await;
 	let mut input = json!({"idempotency_key":Uuid::new_v4(),"source_version":"1.1.0","new_version":"1.2.0","bindings":[source],"remove_default":[]});
 	let path = "/api/agents/research/capabilities";
@@ -108,7 +116,17 @@ async fn reference_configuration_enforces_aggregate_and_lowered_limits_without_r
 		saved["entry"]["config"]["bindings"][0]["target"]["id"],
 		json!("fixture-reference-one")
 	);
-	assert_eq!(c.f.registry.get("research", "1.1.0").await.unwrap(), before);
+	assert_eq!(
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0"
+			)
+			.await
+			.unwrap(),
+		before
+	);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.close().await;

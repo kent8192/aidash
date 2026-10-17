@@ -139,7 +139,15 @@ async fn research_fixture(
 		.iter()
 		.find(|row| row["entry"]["kind"] == "bundle")
 		.unwrap();
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	agent.version = VERSION.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Research with the bound tools.");
@@ -211,7 +219,17 @@ impl Research {
 		let node = self.c.f.config.node_id.clone();
 		self.c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&node, "research", "3.1.0")] = json!({"kind":"agent"});
-		let mut agent = self.c.f.registry.get("research", VERSION).await.unwrap();
+		let mut agent = self
+			.c
+			.f
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				VERSION,
+			)
+			.await
+			.unwrap();
 		agent.version = "3.1.0".into();
 		agent.binding_normalization = None;
 		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);

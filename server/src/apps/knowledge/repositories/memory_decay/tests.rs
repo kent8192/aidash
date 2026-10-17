@@ -171,17 +171,11 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace(&TEST_FIXTURE, "Other", "Independent workspace lock")
-		.await
-		.unwrap();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(other.id)
-				.tenant("acme")
-				.owner_subject("deployment_administrator")
-				.finish(),
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
+			"Other",
+			"Independent workspace lock",
 		)
 		.await
 		.unwrap();
@@ -958,10 +952,23 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		ids[..2]
 	);
 	lease.finish(Ok(())).await.unwrap();
-	let mut disabled = registry.get("p", "1.0.0").await.unwrap();
+	let mut disabled = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	disabled.id = "disabled".into();
 	disabled.config["policy"]["decay"] = json!(null);
-	registry.register(disabled).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			disabled,
+		)
+		.await
+		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	bank_settings::set(&mut lease, &bank, &reference("disabled"), 1)
 		.await

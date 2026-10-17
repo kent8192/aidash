@@ -571,7 +571,14 @@ async fn registry_reload_preserves_registered_behavior_flags(#[future(awt)] work
 		serde_json::from_value(registered["entry"].clone()).unwrap();
 	let reloaded = Registry::new(wb.f.store.pool.clone(), &wb.f.config.node_id).unwrap();
 	assert_eq!(
-		reloaded.get(&entry.id, &entry.version).await.unwrap(),
+		reloaded
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&entry.id,
+				&entry.version
+			)
+			.await
+			.unwrap(),
 		entry
 	);
 	wb.cleanup().await;
@@ -994,12 +1001,22 @@ async fn trust_run_backlog(
 	wb.register().await;
 	let visible =
 		wb.f.store
-			.create_workspace(&TEST_FIXTURE, "Visible history", "Fixture")
+			.create_workspace(
+				&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+				"alice",
+				"Visible history",
+				"Fixture",
+			)
 			.await
 			.unwrap();
 	let hidden =
 		wb.f.store
-			.create_workspace(&TEST_FIXTURE, "Hidden history", "Fixture")
+			.create_workspace(
+				&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+				"alice",
+				"Hidden history",
+				"Fixture",
+			)
 			.await
 			.unwrap();
 	let visible = serde_json::to_value(visible).unwrap();

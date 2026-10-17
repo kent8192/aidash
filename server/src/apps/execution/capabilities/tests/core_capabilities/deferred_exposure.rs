@@ -218,7 +218,15 @@ async fn register_agent(c: &CoreFixture, version: &str, deferred: bool) {
 	if deferred {
 		plugin["exposure"] = json!("eager");
 	}
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	agent.version = version.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Follow the scripted capability journey.");

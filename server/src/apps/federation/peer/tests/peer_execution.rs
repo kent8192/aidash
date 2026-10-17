@@ -122,7 +122,11 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	for definition in definitions {
 		let entry = f
 			.registry
-			.get(definition["entry"]["id"].as_str().unwrap(), "1.0.0")
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				definition["entry"]["id"].as_str().unwrap(),
+				"1.0.0",
+			)
 			.await
 			.unwrap();
 		assert_eq!(
@@ -322,11 +326,27 @@ async fn deployment_administrator_permission_inspection_resolves_foreign_agents_
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.node_id,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
 	assert_eq!(registered.0, 200, "{}", registered.1);
-	let mut parent = home.runtime.registry.get("parent", "1.0.0").await.unwrap();
+	let mut parent = home
+		.runtime
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"parent",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	parent.version = "1.0.1".into();
 	parent.binding_normalization = None;
 	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.node_id,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
-	home.runtime.registry.register(parent).await.unwrap();
+	home.runtime
+		.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			parent,
+		)
+		.await
+		.unwrap();
 	let subject = endpoint::subject(&home, "reader", reader_client.await).await;
 	let path = "/api/workbench/versions/parent/1.0.1/permissions";
 	let input = json!({"tenant":"endpoint","subject":"reader"});

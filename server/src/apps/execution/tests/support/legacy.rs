@@ -1,5 +1,9 @@
 use aidash_server::{
-	config::Config, domain::qualified_agent, federation::Federation, registry::Registry,
+	authorization::Authorization,
+	config::Config,
+	domain::qualified_agent,
+	federation::Federation,
+	registry::{EntityRef, Registry},
 	store::Store,
 };
 use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
@@ -40,7 +44,7 @@ pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, nat
 #[path = "tenant_roots.rs"]
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
-pub use tenant_roots::{tenant_root, tenant_root_in};
+pub use tenant_roots::{local_run, remote_run, tenant_root, tenant_root_in, tenant_scope};
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
 pub async fn http_response(
@@ -167,26 +171,32 @@ async fn bootstrap_with_resources(
 	let mut agent_bindings = vec![
 		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let approve = async |id: &str| {
+		authorization
+			.set_catalog(
+				"acme",
+				&EntityRef {
+					id: id.into(),
+					version: "1.0.0".into(),
+				},
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	};
 	if semantic {
 		let memory = json!({"id":"semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Semantic Memory"},"description":{"en":"Explicit retrieval opt-in"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}});
-		let (status, result) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/registry",
-			memory,
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
-		let (status, result) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"semantic-memory","version":"1.0.0"},"enabled":true,"expected_revision":0}),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
+		f.registry
+			.register(&tenant, serde_json::from_value(memory).unwrap())
+			.await
+			.unwrap();
+		approve("semantic-memory").await;
 		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
@@ -210,27 +220,11 @@ async fn bootstrap_with_resources(
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
-		assert_eq!(
-			request(
-				app,
-				deployment_administrator,
-				"POST",
-				"/api/registry",
-				entry
-			)
+		f.registry
+			.register(&tenant, serde_json::from_value(entry).unwrap())
 			.await
-			.0,
-			200
-		);
-		let (status, response) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
-		)
-		.await;
-		assert_eq!(status, 200, "catalog admission: {response}");
+			.unwrap();
+		approve(id).await;
 	}
 	let (status, credential) = request(
 		app,

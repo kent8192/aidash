@@ -54,7 +54,15 @@ async fn controlled_context(
 
 	let endpoint = model_server.url.clone();
 	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.0.1".into();
 	agent.binding_normalization = None;
 	let mut bindings = vec![];
@@ -72,7 +80,10 @@ async fn controlled_context(
 		}
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":adapter}}});
 		f.registry
-			.register(serde_json::from_value(entry).unwrap())
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				serde_json::from_value(entry).unwrap(),
+			)
 			.await
 			.unwrap();
 		assert_eq!(
@@ -90,7 +101,13 @@ async fn controlled_context(
 		bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
 	}
 	agent.config["bindings"] = json!(bindings);
-	f.registry.register(agent).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
 	policy["subjects"][&owner] = json!({"kind":"agent"});
 	assert_eq!(
@@ -1424,7 +1441,12 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	// Even a Deployment Administrator cannot attach a resource from a different workspace.
 	let other = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "Other", "Isolation")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"Other",
+			"Isolation",
+		)
 		.await
 		.unwrap();
 	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;

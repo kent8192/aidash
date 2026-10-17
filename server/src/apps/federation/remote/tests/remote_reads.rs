@@ -41,13 +41,27 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let endpoint = model_server.url.clone();
 	let (a_policy, token, task) = bootstrap(&a, &a_app, &endpoint).await;
 	let (b_policy, _, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
-	let mut entry = b.registry.get("research", "1.0.0").await.unwrap();
+	let mut entry = b
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	entry.id = "remote-only".into();
 	entry.binding_normalization = None;
 	entry
 		.description
 		.insert("en".into(), "remote-private-metadata".into());
-	b.registry.register(entry).await.unwrap();
+	b.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry,
+		)
+		.await
+		.unwrap();
 	assert_eq!(
 		request(
 			&b_app,
@@ -155,8 +169,17 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	);
 	// A misconfigured/replaced peer must not substitute different metadata under
 	// an already copied id/version. Simulate that otherwise forbidden mutation.
-	let original =
-		serde_json::to_value(b.registry.get("remote-only", "1.0.0").await.unwrap()).unwrap();
+	let original = serde_json::to_value(
+		b.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"remote-only",
+				"1.0.0",
+			)
+			.await
+			.unwrap(),
+	)
+	.unwrap();
 	let mut altered = original.clone();
 	altered["description"]["en"] = json!("substituted metadata");
 	{

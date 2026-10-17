@@ -257,7 +257,16 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 #[rstest::fixture]
 async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (SharedThread, Uuid) {
 	let mut f = Box::pin(shared_thread).await;
-	let mut entry = f.c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut entry =
+		f.c.f
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	entry.id = "reviewer".into();
 	entry.binding_normalization = None;
 	assert_eq!(

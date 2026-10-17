@@ -6,10 +6,11 @@ mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
 
+use aidash_domain::tenancy::TenantName;
 use aidash_server::apps::registry::models::Definition;
 use aidash_server::apps::registry::models::states::DefinitionKind;
 use aidash_server::registry::{Entry, ModelConfig};
-use endpoint_fixtures::{EndpointFixture, assert_json, endpoint};
+use endpoint_fixtures::{EndpointFixture, assert_json, endpoint, tenant_subject};
 use reinhardt::core::exception::DatabaseErrorKind;
 use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
@@ -64,6 +65,7 @@ async fn configured_timeouts_round_trip_through_the_registry_api(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
 	let mut connection = app.database.lease.handle();
 	for (index, timeout) in supported_timeouts.into_iter().enumerate() {
 		let id = format!("registered-{index}");
@@ -74,14 +76,14 @@ async fn configured_timeouts_round_trip_through_the_registry_api(
 		}
 		// Act
 		let created = assert_json(
-			app.deployment_administrator
+			registrar
 				.post("/api/registry", &entry, "json")
 				.await
 				.unwrap(),
 			200,
 		);
 		let found = assert_json(
-			app.deployment_administrator
+			registrar
 				.get(&format!("/api/registry/{id}/1.0.0"))
 				.await
 				.unwrap(),
@@ -115,10 +117,12 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
+	let tenant = TenantName::new("endpoint").unwrap();
 	let seeded_definitions = app
 		.runtime
 		.registry
-		.list(&Default::default())
+		.list(&tenant, &Default::default())
 		.await
 		.unwrap();
 	let mut connection = app.database.lease.handle();
@@ -131,12 +135,12 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 			.extend(invalid.as_object().unwrap().clone());
 		let entry: Entry = serde_json::from_value(value).unwrap();
 		// Act
-		let response = app
-			.deployment_administrator
+		let response = registrar
 			.post("/api/registry", &entry, "json")
 			.await
 			.unwrap();
 		let draft = Definition::build()
+			.tenant("endpoint")
 			.id(&entry.id)
 			.version(&entry.version)
 			.kind(DefinitionKind::Model)
@@ -163,7 +167,7 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 	assert_eq!(
 		app.runtime
 			.registry
-			.list(&Default::default())
+			.list(&tenant, &Default::default())
 			.await
 			.unwrap(),
 		seeded_definitions
@@ -199,6 +203,7 @@ async fn database_validates_registered_timeouts(
 			.unwrap()
 			.extend(config.as_object().unwrap().clone());
 		let definition = Definition::build()
+			.tenant("endpoint")
 			.id(entry["id"].as_str().unwrap())
 			.version("1.0.0")
 			.kind(DefinitionKind::Model)
@@ -234,6 +239,7 @@ async fn database_validates_media_route_members_for_models(
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("endpoint")
 				.id("valid-route")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -253,7 +259,7 @@ async fn database_validates_media_route_members_for_models(
 		let mut entry = timeout_model.clone();
 		entry["id"] = json!(format!("invalid-route-{index}"));
 		entry["config"]["media_routes"] = routes.clone();
-		let definition = Definition::build().id(entry["id"].as_str().unwrap()).version("1.0.0")
+		let definition = Definition::build().tenant("endpoint").id(entry["id"].as_str().unwrap()).version("1.0.0")
 			.kind(DefinitionKind::Model).metadata(entry.into()).finish();
 		assert_constraint(Definition::objects().create_with_conn(&mut connection, &definition)
 			.await.unwrap_err(), "registry_model_config");
@@ -276,6 +282,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
 	let mut connection = app.database.lease.handle();
 	let mut declared = timeout_model.clone();
 	declared["id"] = json!("ordered-model");
@@ -285,21 +292,21 @@ async fn projection_versions_persist_and_gate_agent_registration(
 	native_model["config"]["projection_versions"] = json!(["legacy", "native"]);
 	// Act
 	let created = assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/registry", &declared, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/registry", &timeout_model, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	let accepted = assert_json(
-		app.deployment_administrator
+		registrar
 			.post(
 				"/api/registry",
 				&agent_on("ordered-agent", "ordered-model", "ordered"),
@@ -309,8 +316,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 			.unwrap(),
 		200,
 	);
-	let undeclared = app
-		.deployment_administrator
+	let undeclared = registrar
 		.post(
 			"/api/registry",
 			&agent_on("undeclared-agent", "timeout-model", "ordered"),
@@ -318,8 +324,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		)
 		.await
 		.unwrap();
-	let undeclared_native = app
-		.deployment_administrator
+	let undeclared_native = registrar
 		.post(
 			"/api/registry",
 			&agent_on("undeclared-native-agent", "ordered-model", "native"),
@@ -328,14 +333,14 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		.await
 		.unwrap();
 	assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/registry", &native_model, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	let native = assert_json(
-		app.deployment_administrator
+		registrar
 			.post(
 				"/api/registry",
 				&agent_on("native-agent", "native-model", "native"),
@@ -359,6 +364,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		entry["id"] = json!(format!("raw-projection-{index}"));
 		entry["config"]["projection_versions"] = versions;
 		let definition = Definition::build()
+			.tenant("endpoint")
 			.id(entry["id"].as_str().unwrap())
 			.version("1.0.0")
 			.kind(DefinitionKind::Model)
@@ -373,6 +379,7 @@ async fn projection_versions_persist_and_gate_agent_registration(
 		);
 	}
 	let agent = Definition::build()
+		.tenant("endpoint")
 		.id("raw-projection-agent")
 		.version("1.0.0")
 		.kind(DefinitionKind::Agent)

@@ -272,7 +272,15 @@ impl Batching {
 		f.store.tool_slots = ToolSlots::new(slots);
 		let app = common::application(f.clone()).await;
 		let (mut policy, token, task) = common::bootstrap_with_area(&f, &app, &endpoint).await;
-		let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+		let mut agent = f
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
 		agent.version = AGENT_VERSION.into();
 		agent.binding_normalization = None;
 		// A sequential Agent omits the field, as definitions written before it did.

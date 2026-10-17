@@ -11,9 +11,8 @@ mod native_database;
 #[path = "../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
 
-use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::registry::models::AgentKnowledge;
-use aidash_server::{context, domain::NewTask, harness::Harness, knowledge, registry::Entry, tool};
+use aidash_server::{context, harness::Harness, knowledge, registry::Entry, tool};
 use endpoint::assert_json;
 use execution_fixtures::{ExecutionFixture, execution};
 use reinhardt::db::orm::Model;
@@ -52,9 +51,11 @@ async fn admitted_large_private_documents_fit_the_execution_soft_window(
 async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documents: bool) {
 	let app = &execution.app;
 	let f = &app.runtime;
+	let subject = &execution.subject;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let skill = json!({"id":"writing","version":"1.0.0","kind":"skill","name":{"en":"Writing"},"description":{"en":"Writing"},"config":{"instructions":"Use the provided reference documents."}});
 	assert_eq!(
-		app.deployment_administrator
+		subject
 			.post("/api/registry", &skill, "json")
 			.await
 			.unwrap()
@@ -63,10 +64,10 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	);
 	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"bindings":[{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"writing","version":"1.0.0"},"narrow":{}}],"remove_default":[]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
 	if large_documents {
-		let mut model = f.registry.get("model", "1.0.0").await.unwrap();
+		let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
 		model.id = "small-model".into();
 		model.config["context_window"] = json!(32768);
-		f.registry.register(model).await.unwrap();
+		f.registry.register(&tenant, model).await.unwrap();
 		input["entry"]["config"]["model"]["id"] = json!("small-model");
 		let tools = tool::builtins()
 			.values()
@@ -91,22 +92,22 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	for field in ["name", "text"] {
 		let mut invalid = input.clone();
 		invalid["documents"][0][field] = json!("invalid\0document");
-		let rejected = personal(&app.deployment_administrator, Uuid::new_v4(), invalid).await;
+		let rejected = personal(subject, Uuid::new_v4(), invalid).await;
 		assert_eq!(rejected.0, 400, "{rejected:?}");
 		assert!(rejected.1.to_string().contains("NUL"));
 	}
 	let key = Uuid::new_v4();
+	// Reference Document registration is a Tenant route (ADR 0029).
 	assert_eq!(
-		personal(&execution.subject, key, input.clone()).await.0,
+		personal(&app.deployment_administrator, key, input.clone())
+			.await
+			.0,
 		403
 	);
-	let first = personal(&app.deployment_administrator, key, input.clone()).await;
+	let first = personal(subject, key, input.clone()).await;
 	assert_eq!(first.0, 200, "{first:?}");
 	assert!(!first.1.to_string().contains("PRIVATE-REFERENCE"));
-	assert_eq!(
-		first,
-		personal(&app.deployment_administrator, key, input.clone()).await
-	);
+	assert_eq!(first, personal(subject, key, input.clone()).await);
 	let entry: Entry = serde_json::from_value(first.1.clone()).unwrap();
 	let source = entry.config["bindings"]
 		.as_array()
@@ -124,12 +125,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	assert_eq!(documents.documents[0]["text"], expected_text);
 	let mut changed = input.clone();
 	changed["documents"][0]["text"] = json!("Different");
-	assert_eq!(
-		personal(&app.deployment_administrator, key, changed)
-			.await
-			.0,
-		409
-	);
+	assert_eq!(personal(subject, key, changed).await.0, 409);
 	let state = assert_json(
 		app.deployment_administrator
 			.get("/api/state")
@@ -142,45 +138,19 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let mut cloned = entry.clone();
 	cloned.id = "cloned-personal".into();
 	cloned.binding_normalization = None;
-	let cloned = f.registry.register(cloned).await.unwrap();
+	let cloned = f.registry.register(&tenant, cloned).await.unwrap();
 	assert_eq!(
-		knowledge::load(&f.registry, &cloned).await.unwrap(),
-		knowledge::load(&f.registry, &entry).await.unwrap()
+		knowledge::load(&f.registry, &tenant, &cloned)
+			.await
+			.unwrap(),
+		knowledge::load(&f.registry, &tenant, &entry).await.unwrap()
 	);
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");
-	assert_eq!(
-		personal(&app.deployment_administrator, Uuid::new_v4(), invalid)
-			.await
-			.0,
-		400
-	);
-	let workspace = f
-		.store
-		.create_workspace(&TEST_FIXTURE, "Personal", "Use documents")
-		.await
-		.unwrap();
-	let task = f
-		.store
-		.create_task(
-			&TEST_FIXTURE,
-			workspace.id,
-			&NewTask {
-				title: "Read documents".into(),
-				description: "Summarize references".into(),
-				requirements: json!({}),
-				dependencies: vec![],
-				parent_id: None,
-			},
-			"human",
-			None,
-		)
-		.await
-		.unwrap();
-	let claimed = app
-		.deployment_administrator
+	assert_eq!(personal(subject, Uuid::new_v4(), invalid).await.0, 400);
+	let claimed = subject
 		.post(
-			&format!("/api/tasks/{}/claim", task.id),
+			&format!("/api/tasks/{}/claim", execution.task),
 			&json!({"revision":0,"agent":{"id":entry.id,"version":entry.version}}),
 			"json",
 		)

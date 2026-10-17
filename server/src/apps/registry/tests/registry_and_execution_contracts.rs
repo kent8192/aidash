@@ -47,7 +47,15 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
-	let seeded_definitions = f.registry.list(&Default::default()).await.unwrap().len();
+	let seeded_definitions = f
+		.registry
+		.list(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&Default::default(),
+		)
+		.await
+		.unwrap()
+		.len();
 	let mut entry = tool("");
 	entry.name.insert("en".into(), "calm-otter".into());
 	let key = Uuid::new_v4().to_string();
@@ -85,7 +93,14 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 		409
 	);
 	assert_eq!(
-		f.registry.list(&Default::default()).await.unwrap().len(),
+		f.registry
+			.list(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				&Default::default()
+			)
+			.await
+			.unwrap()
+			.len(),
 		seeded_definitions + 1
 	);
 	assert_eq!(
@@ -162,7 +177,15 @@ async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
 			assert_eq!(assigned, id);
 		}
 		assert_eq!(
-			f.registry.get(assigned, "1.0.0").await.unwrap().id,
+			f.registry
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					assigned,
+					"1.0.0"
+				)
+				.await
+				.unwrap()
+				.id,
 			assigned
 		);
 	}
@@ -180,7 +203,12 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let workspace = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "tree", "goal")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"tree",
+			"goal",
+		)
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -360,7 +388,12 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "deployment_administrator", "goal")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"deployment_administrator",
+			"goal",
+		)
 		.await
 		.unwrap();
 	let task = f
@@ -404,7 +437,15 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 		1
 	);
 	let current = f.store.task(&TEST_FIXTURE, task.id).await.unwrap();
-	let agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let agent = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	assert!(
 		f.store
 			.claim(
@@ -596,14 +637,40 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 	let mut skill = tool("large-skill");
 	skill.kind = "skill".into();
 	skill.config = json!({"instructions":"x".repeat(60000)});
-	f.registry.register(skill.clone()).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			skill.clone(),
+		)
+		.await
+		.unwrap();
 	skill.id = "large-skill-second".into();
-	f.registry.register(skill).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			skill,
+		)
+		.await
+		.unwrap();
 	let mut large_tool = tool("large-schema");
 	large_tool.schema = json!({"type":"object","description":"x".repeat(128000)});
-	f.registry.register(large_tool).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			large_tool,
+		)
+		.await
+		.unwrap();
 	for source in ["instructions", "skills", "tools"] {
-		let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+		let mut agent = f
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
 		agent.id = format!("oversized-{source}");
 		agent.binding_normalization = None;
 		if source == "instructions" {
@@ -616,7 +683,15 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 			};
 			agent.config["bindings"] = json!(ids.into_iter().map(|id| json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
 		}
-		assert!(f.registry.register(agent.clone()).await.is_err());
+		assert!(
+			f.registry
+				.register(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					agent.clone()
+				)
+				.await
+				.is_err()
+		);
 		assert_eq!(
 			request(
 				&app,
@@ -629,7 +704,16 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 			.0,
 			400
 		);
-		assert!(f.registry.get(&agent.id, &agent.version).await.is_err());
+		assert!(
+			f.registry
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					&agent.id,
+					&agent.version
+				)
+				.await
+				.is_err()
+		);
 	}
 	cleanup(f, &url, &schema).await;
 }
@@ -874,7 +958,12 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	);
 	let other = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "other", "goal")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"other",
+			"goal",
+		)
 		.await
 		.unwrap();
 	assert_eq!(

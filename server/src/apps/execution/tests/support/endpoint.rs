@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 pub use settings::settings_for;
 use std::sync::Arc;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
-pub use tenant_roots::{tenant_root, tenant_root_in};
+pub use tenant_roots::{local_run, remote_run, tenant_root, tenant_root_in, tenant_scope};
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
 #[derive(Clone)]
@@ -233,6 +233,18 @@ pub async fn subject(
 	client
 }
 
+/// A subject of the `endpoint` Tenant allowed every action, for suites that
+/// call Tenant routes such as the Registry.
+#[allow(dead_code)]
+pub async fn tenant_subject(fixture: &EndpointFixture, name: &str) -> Arc<APIClient> {
+	subject(
+		fixture,
+		name,
+		Arc::new(api_client_from_url(&fixture.server.url)),
+	)
+	.await
+}
+
 #[fixture]
 pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 	async move { Arc::new(api_client_from_url(&endpoint.await.server.url)) }
@@ -256,6 +268,6 @@ pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 			json!({"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Native Run fixture","bindings":[],"remove_default":[]}),
 		),
 	] {
-		fixture.runtime.registry.register(serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
+		fixture.runtime.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
 	}
 }

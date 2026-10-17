@@ -5,7 +5,15 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = Box::pin(capability_fixture).await;
-	let before = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let before =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	let input = json!({"idempotency_key":Uuid::new_v4(),"source_version":"1.1.0","new_version":"1.2.0","bindings":before.config["bindings"],"remove_default":[]});
 	let path = "/api/agents/research/capabilities";
 	// A configured Skill Source cannot remove its required support operations.
@@ -28,7 +36,17 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 		request(&c.app, &c.token, "POST", path, input.clone()).await,
 		(200, saved.clone())
 	);
-	assert_eq!(c.f.registry.get("research", "1.1.0").await.unwrap(), before);
+	assert_eq!(
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0"
+			)
+			.await
+			.unwrap(),
+		before
+	);
 	assert_eq!(saved["entry"]["config"]["model"], before.config["model"]);
 	let mut changed = input.clone();
 	changed["remove_default"] = json!(["file_search"]);

@@ -459,9 +459,9 @@ fn journey_router(
 fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 	async move {
 		let mut c = core.await;
-		let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
+		let mut tool = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "http", "1.0.0").await.unwrap();
 		tool.version = "1.1.0".into();
-		let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+		let mut agent = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
 		agent.binding_normalization = None;
 		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.node_id,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
