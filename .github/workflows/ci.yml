@@ -115,7 +115,9 @@ jobs:
   rust-tests:
     name: Rust tests (${{ matrix.partition }}, ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    # The slowest of 400 successful shards took 47 min (2026-10-17). A hang that
+    # no test bound catches then fails here instead of at the 6 h limit (#320).
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
