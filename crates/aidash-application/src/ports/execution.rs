@@ -142,6 +142,14 @@ pub trait ExecutionStore: Send + Sync {
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
 		Ok(false)
 	}
+	/// The Run's Provider results purged under the Research account terms
+	/// (ADR 0058). A store without research evidence has none.
+	async fn expired_research(
+		&self,
+		_run: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		Ok(Default::default())
+	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
