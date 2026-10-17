@@ -69,13 +69,13 @@ TENANT_ROUTES = {
         "body": {"tenant": "{{tenant}}", "installations": [], "approvals": []},
     },
     "POST /api/discover": {"body": {}},
-    "POST /api/workspaces": {"body": {"title": "Operator workspace", "goal": "Must not persist"}},
+    "POST /api/workspaces": {"body": {"title": "Refused workspace", "goal": "Must not persist"}},
     "PATCH /api/workspaces/{id}": {
-        "body": {"revision": 1, "state": {"operator": True}},
+        "body": {"revision": 1, "state": {"refused": True}},
         "path": "/api/workspaces/{{workspace_id}}",
     },
     "POST /api/workspaces/{id}/tasks": {
-        "body": {"title": "Operator task", "description": "Must not persist", "requirements": {},
+        "body": {"title": "Refused task", "description": "Must not persist", "requirements": {},
                  "dependencies": [], "parent_id": None},
         "path": "/api/workspaces/{{workspace_id}}/tasks",
     },
@@ -84,7 +84,7 @@ TENANT_ROUTES = {
         "path": "/api/workspaces/{{workspace_id}}/messages",
     },
     "POST /api/conversations": {
-        "body": {"title": "Operator conversation", "goal": "Must not persist",
+        "body": {"title": "Refused conversation", "goal": "Must not persist",
                  "target": AGENT, "target_kind": "agent"},
     },
     "POST /api/tasks/{id}/claim": {
