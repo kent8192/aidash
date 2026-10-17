@@ -482,6 +482,14 @@ pub trait ExecutionEnvironment: Send + Sync {
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 	) -> Result<Option<Value>>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
+	/// The pages people asked this Run to read, recorded beside the inputs
+	/// that carried them (ADR 0052). Empty when the Run has none.
+	async fn url_intents(
+		&self,
+		_run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		Ok(vec![])
+	}
 	async fn run_request_headroom(&self, run: &Run) -> Result<usize>;
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()>;
 	async fn reconcile_run_messages(&self, run: &Run) -> Result<()>;

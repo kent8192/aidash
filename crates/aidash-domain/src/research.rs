@@ -8,6 +8,7 @@ pub mod account;
 pub mod citations;
 pub mod document;
 pub mod evidence;
+pub mod intent;
 pub mod search;
 
 /// Upper bound of one research result as recorded in a Run's history.

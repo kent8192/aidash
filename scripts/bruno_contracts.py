@@ -996,6 +996,7 @@ def render():
             "remote_execution_list",
             "federated_graph_peers",
             "run_working_area",
+            "research-providers",
             "core_outbound_history",
             "core_operation_history",
             "generation-usage",

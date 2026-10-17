@@ -9,6 +9,31 @@ pub(crate) struct Page {
 	pub(crate) cursor: Option<Uuid>,
 }
 
+/// Narrows the approvals list to what an inbox needs.
+#[derive(Default, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApprovalQuery {
+	pub(crate) cursor: Option<Uuid>,
+	/// `pending`: approvals awaiting a decision; `active`: unexpired Run
+	/// grants. Both exclude what has expired.
+	pub(crate) state: Option<ApprovalState>,
+	/// `approver`: only records addressed to the reader as approver.
+	pub(crate) role: Option<ApprovalRole>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ApprovalState {
+	Pending,
+	Active,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ApprovalRole {
+	Approver,
+}
+
 #[derive(Default, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AreaQuery {

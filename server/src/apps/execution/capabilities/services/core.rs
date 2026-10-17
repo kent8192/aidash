@@ -101,7 +101,10 @@ impl Runtime {
 			|| !(1..=1800).contains(&profile.idle_seconds)
 			|| profile.recovery_seconds == 0
 			|| profile.recovery_seconds > 365 * 86400
-			|| !(1..=3600).contains(&profile.grant_seconds)
+			// A Run grant lasts at least a minute, so a shorter maximum would
+			// leave no grant an approver could give.
+			|| !(aidash_application::capabilities::approvals::MIN_RUN_GRANT_SECONDS as u64..=3600)
+				.contains(&profile.grant_seconds)
 			|| !(1..=86400).contains(&profile.approval_seconds)
 			|| !(1..=86400).contains(&profile.staging_seconds)
 			|| profile.output_bytes == 0

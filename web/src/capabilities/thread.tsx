@@ -39,6 +39,9 @@ import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
 import { TransferHistory } from "./transfers";
+import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
+import { snapshotReadsPages, urlIntents } from "../research";
+import type { RunDetails } from "../generated/models";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
@@ -787,6 +790,8 @@ export function ThreadCapabilities({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [agent, setAgent] = useState("");
+  const [readPages, setReadPages] = useState<string[]>([]);
+  const [requested, setRequested] = useState<string[]>([]);
   const pendingEnqueue = useRef<{ signature: string; key: string } | undefined>(
     undefined,
   );
@@ -842,15 +847,19 @@ export function ThreadCapabilities({
     }
   };
   const enqueueRun = async (path: string, input: Record<string, unknown>) => {
-    const signature = JSON.stringify([path, input]);
+    const pages = selectedPages.filter((page) => queued.includes(page));
+    const body = pages.length ? { ...input, read_pages: pages } : input;
+    const signature = JSON.stringify([path, body]);
     if (pendingEnqueue.current?.signature !== signature)
       pendingEnqueue.current = { signature, key: crypto.randomUUID() };
     await post(path, {
-      ...input,
+      ...body,
       idempotency_key: pendingEnqueue.current.key,
     });
     pendingEnqueue.current = undefined;
     setPrompt("");
+    setRequested(pages);
+    setReadPages([]);
   };
   const availableAgents = agents.filter((e) => !area || e.id === area.agent_id);
   const effectiveAgent = availableAgents.some(
@@ -862,6 +871,48 @@ export function ThreadCapabilities({
       : "";
   const target = availableAgents.find(
     (e) => `${e.id}@${e.version}` === effectiveAgent,
+  );
+  const research = useResearch(target, data);
+  // Steering reaches the active Run, which reads pages only through the
+  // Agent version it was pinned to, whichever version the selector shows.
+  // The research panel reports on that Run, or else the last one, the same way.
+  const activeRunId = area ? (session.data?.active_run_id ?? null) : null;
+  const shownRun = useQuery({
+    queryKey: ["run-agent", active],
+    // The Run details carry the inspection under `run`.
+    queryFn: async ({ signal }) =>
+      (await apiFetch<RunDetails>(`/api/runs/${active}`, { signal })).run,
+    enabled: !!active,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const pinned = agents.find(
+    (e) =>
+      e.id === shownRun.data?.agent_id &&
+      e.version === shownRun.data?.agent_version,
+  );
+  const steering = useResearch(pinned, data);
+  const nextIsPinned =
+    !!pinned && target?.id === pinned.id && target.version === pinned.version;
+  // The server records a steering URL intent only when the Run was admitted
+  // with Page reading, so a definition approved since then does not count.
+  const activeContext = activeRunId ? shownRun.data?.context : undefined;
+  const steerReads =
+    steering.canRead &&
+    (!activeContext || snapshotReadsPages(activeContext.binding_snapshot));
+  // A URL intent is offered only when an Agent it would reach can read pages
+  // on this Node, and each action sends only the pages its Agent can read.
+  const queued = research.canRead ? urlIntents(prompt) : [];
+  const steered = activeRunId && steerReads ? urlIntents(prompt) : [];
+  const intents = [...new Set([...queued, ...steered])];
+  const selectedPages = readPages.filter((page) => intents.includes(page));
+  // An action whose Agent cannot read a selected page is disabled rather
+  // than sending the text without it.
+  const queueReadsSelection = selectedPages.every((page) =>
+    queued.includes(page),
+  );
+  const steerReadsSelection = selectedPages.every((page) =>
+    steered.includes(page),
   );
   if (!area && agents.length === 0 && !query.isError) return null;
   return (
@@ -897,6 +948,17 @@ export function ThreadCapabilities({
           </NativeSelect>
         </Field>
       )}
+      {/* A Run's usage and disclosures belong to the Agent version it was
+          pinned to; a different version selected for the next Run shows its
+          own readiness apart. */}
+      {pinned && <ResearchPanel research={steering} run={active} />}
+      {!nextIsPinned && (
+        <ResearchPanel
+          research={research}
+          run={pinned ? undefined : active}
+          next={!!pinned}
+        />
+      )}
       <Field label={ja ? "次の指示" : "Next instruction"}>
         <Textarea
           disabled={busy}
@@ -904,11 +966,29 @@ export function ThreadCapabilities({
           onChange={(e) => setPrompt(e.target.value)}
         />
       </Field>
+      <UrlIntentPicker
+        candidates={intents}
+        selected={selectedPages}
+        onChange={setReadPages}
+      />
+      {requested.length > 0 && (
+        <Hint role="status">
+          {ja ? "読み取りを依頼しました" : "Asked the Run to read"}:{" "}
+          {requested.join(", ")}
+        </Hint>
+      )}
+      {(!queueReadsSelection || (activeRunId && !steerReadsSelection)) && (
+        <Hint role="status">
+          {ja
+            ? "選んだページを読めない Agent への送信はできません。そのページの選択を外すと送れます。"
+            : "An action whose Agent cannot read a selected page is unavailable; clear that page to use it."}
+        </Hint>
+      )}
       <div className={inlineFormClass}>
         <Button
           variant="outline"
           type="button"
-          disabled={busy || !prompt.trim() || !target}
+          disabled={busy || !prompt.trim() || !target || !queueReadsSelection}
           onClick={() =>
             void act(async () => {
               if (area) {
@@ -946,14 +1026,18 @@ export function ThreadCapabilities({
             <Button
               variant="outline"
               type="button"
-              disabled={busy || !prompt.trim()}
+              disabled={busy || !prompt.trim() || !steerReadsSelection}
               onClick={() =>
                 void act(async () => {
                   const expectedRunId = session.data!.active_run_id!;
+                  const pages = selectedPages.filter((page) =>
+                    steered.includes(page),
+                  );
                   const signature = JSON.stringify([
                     area.id,
                     expectedRunId,
                     prompt,
+                    pages,
                   ]);
                   if (pendingSteer.current?.signature !== signature)
                     pendingSteer.current = {
@@ -964,9 +1048,12 @@ export function ThreadCapabilities({
                     idempotency_key: pendingSteer.current.key,
                     expected_run_id: expectedRunId,
                     content: prompt,
+                    ...(pages.length ? { read_pages: pages } : {}),
                   });
                   pendingSteer.current = undefined;
                   setPrompt("");
+                  setRequested(pages);
+                  setReadPages([]);
                 })
               }
             >

@@ -1,7 +1,7 @@
 /** User-facing notices are derived from authorized snapshots, never raw broker frames. */
 export type NoticeKind = "approval" | "input" | "completed" | "failed";
 export type NoticeTarget = {
-  kind: "human" | "task";
+  kind: "human" | "task" | "approval";
   node: string;
   id: string;
   workspace: string;
@@ -103,8 +103,12 @@ export class NoticeStore {
       [...this.pendingToast].filter(([id]) => current.has(id)),
     );
     this.unread = new Set([...this.unread].filter((id) => current.has(id)));
+    // Capability approvals wait on a person as human requests do.
     this.publish(
-      [...current.values()].filter((item) => item.target.kind === "human"),
+      [...current.values()].filter(
+        (item) =>
+          item.target.kind === "human" || item.target.kind === "approval",
+      ),
       this.recent,
     );
   }

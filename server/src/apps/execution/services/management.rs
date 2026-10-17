@@ -670,6 +670,55 @@ impl HarnessManagement {
 		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
 	}
+	/// A Run's research usage, limits and estimated cost, for a reader who
+	/// may read that Run now, decided exactly as [`Self::run_get`] decides it.
+	pub(crate) async fn run_research(
+		&self,
+		actor: Actor,
+		id: Uuid,
+	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
+		let f = self.runtime.clone();
+		let scope = match &actor {
+			Actor::Subject(identity) => identity.tenancy()?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(id).await?,
+		};
+		let readable = || async {
+			if let Actor::Subject(identity) = &actor {
+				execution::details_page(&f, identity, id, 0).await?;
+			} else {
+				let run = f.store.inspect_run(&scope, id).await?;
+				crate::authorization::remote::deployment_administrator::require(
+					&mut f.store.pool.begin(&scope).await?,
+					run.workspace_id,
+				)
+				.await?;
+			}
+			Ok::<_, crate::Error>(())
+		};
+		readable().await?;
+		let research = crate::apps::execution::repositories::research::run_research(
+			&f.store,
+			&scope,
+			id,
+			crate::research::providers().limits,
+		)
+		.await?;
+		// The research reads are separate transactions: authority revoked
+		// meanwhile withholds them, as for a cited fragment.
+		readable().await?;
+		Ok(research)
+	}
+	/// The Research providers of this Deployment for a Tenant's subject.
+	pub(crate) async fn research_providers(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
+		crate::apps::execution::capabilities::services::endpoints::research_providers(
+			self.runtime.clone(),
+			actor,
+		)
+		.await
+	}
 }
 
 use reinhardt::Response;

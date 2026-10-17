@@ -30,6 +30,9 @@ struct Memory {
 	snapshots: Mutex<Vec<DocumentSnapshot>>,
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
+	/// A result the original call records just before the next settlement,
+	/// as one still running when a replay reads its attempt would.
+	late_settlement: Mutex<Option<Value>>,
 }
 
 #[async_trait]
@@ -153,6 +156,14 @@ impl EvidenceStore for Memory {
 		result: &Value,
 	) -> Result<()> {
 		let mut attempts = self.attempts.lock().unwrap();
+		if let Some(late) = self.late_settlement.lock().unwrap().take()
+			&& let Some(entry) = attempts.get_mut(&(run, key.into()))
+		{
+			entry.1 = AttemptState::Settled {
+				outcome: AttemptOutcome::Completed,
+				result: late,
+			};
+		}
 		match attempts.get_mut(&(run, key.into())) {
 			Some(entry) if entry.1 == AttemptState::Dispatched => {
 				entry.1 = AttemptState::Settled {
@@ -844,6 +855,79 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 }
 
 #[tokio::test]
+async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_they_stood_when_asked()
+ {
+	// Arrange
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let now = Utc::now();
+	let mut provider = Search::new("brave", "api.search.brave.com");
+	provider.account = Some(AccountProfile {
+		account_id: "research-account".into(),
+		agreement_reference: "contract".into(),
+		verified_by: "deployment_administrator".into(),
+		verified_at: now - Duration::days(1),
+		review_after: now + Duration::days(1),
+		storage_permitted: true,
+		query_training_prohibited: true,
+		evaluation_permitted: true,
+		retention_days: 30,
+		deletion_after_termination_days: 30,
+		credential_env: "AIDASH_SECRET_SEARCH".into(),
+		price_effective_at: now - Duration::days(1),
+		price_review_after: now + Duration::days(1),
+		request_price_micro_usd: 5_000,
+		monthly_base_fee_micro_usd: 0,
+		monthly_limit_micro_usd: 50_000,
+	});
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+
+	// Act
+	let searched = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"rust","language":"en","count":3}),
+		)
+		.await
+		.unwrap();
+	let read = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(searched["status"], "approval_required", "{searched}");
+	assert_eq!(read["status"], "approval_required", "{read}");
+	let requests = gate.requests.lock().unwrap().clone();
+	let search = &requests[0];
+	assert_eq!(
+		search.attribution,
+		Some(aidash_domain::research::account::CostAttribution {
+			account_id: "research-account".into(),
+			price_micro_usd: 5_000,
+		})
+	);
+	let query = search.query.as_ref().unwrap();
+	assert_eq!(query["query"], "rust");
+	assert_eq!(query["language"], "en");
+	assert_eq!(query["count"], 3);
+	// A page read has neither a Research account nor a query.
+	assert_eq!(requests[1].attribution, None);
+	assert_eq!(requests[1].query, None);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is_never_repeated() {
 	let (store, gate) = (Memory::default(), Gate::permitting());
 	let research = Research {
@@ -891,6 +975,46 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 		.unwrap();
 	assert_eq!(unknown["status"], "uncertain");
 	assert_eq!(unknown["error"]["code"], "outcome_unknown");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	// The replay settles the stranded attempt as unknown, so it is no longer
+	// reported as in flight, and a later replay returns the same result.
+	assert_eq!(
+		store.attempt(run, "k2").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Unknown,
+			result: unknown.clone(),
+		})
+	);
+	let again = research
+		.search(&call(run, "k2", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(again, unknown);
+	// When the original call settles between the replay's read and its own
+	// settlement, the replay answers with what the original recorded.
+	store
+		.reserve(
+			run,
+			&Reservation {
+				key: "k4".into(),
+				operation: Operation::Search,
+				provider: "research.brave@1".into(),
+				destination: "api.search.brave.com".into(),
+				attribution: None,
+				limits: Limits::default(),
+				budget: None,
+				source_url: None,
+			},
+		)
+		.await
+		.unwrap();
+	let original = json!({"status":"ok","operation":"search"});
+	*store.late_settlement.lock().unwrap() = Some(original.clone());
+	let replayed = research
+		.search(&call(run, "k4", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(replayed, original);
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
 	let mut failing = Search::new("brave", "api.search.brave.com");
@@ -1237,6 +1361,8 @@ impl DisclosureGate for RacedApproval<'_> {
 						content: "other".into(),
 					},
 					context_revision: 0,
+					attribution: None,
+					query: None,
 				},
 			)
 			.await?;
@@ -1612,4 +1738,25 @@ async fn every_reason_a_reader_cannot_see_evidence_is_the_same_absence() {
 			"{case}"
 		);
 	}
+}
+
+#[test]
+fn an_approval_covers_only_the_charge_its_approver_was_shown() {
+	let disclosure = |price_micro_usd| WebDisclosure {
+		operation: Operation::Search,
+		provider: "research.brave@1".into(),
+		outbound: crate::ports::research::Outbound {
+			destination: "api.search.brave.com".into(),
+			content: "rust release".into(),
+		},
+		context_revision: 0,
+		attribution: Some(aidash_domain::research::account::CostAttribution {
+			account_id: "deployment".into(),
+			price_micro_usd,
+		}),
+		query: None,
+	};
+	let run = Uuid::new_v4();
+	assert_eq!(disclosure(5_000).digest(run), disclosure(5_000).digest(run));
+	assert_ne!(disclosure(5_000).digest(run), disclosure(9_000).digest(run));
 }

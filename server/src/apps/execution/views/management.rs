@@ -178,3 +178,28 @@ pub async fn run_inference_stream(
 pub async fn health(#[inject] service: Depends<HarnessManagement>) -> ViewResult<Response> {
 	crate::http::json(service.health().await)
 }
+
+/// The Run's research usage against its limits and its estimated cost, for
+/// anyone who may read the Run.
+#[get("/api/runs/{id}/research", name = "run-research", auth = "protected")]
+pub async fn run_research(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(service.run_research(actor, id).await)
+}
+
+/// The Research providers of this Deployment, whether each is set up and
+/// approved for the reader's Tenant, and the per-Run research limits.
+#[get(
+	"/api/research/providers",
+	name = "research-providers",
+	auth = "protected"
+)]
+pub async fn research_providers(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+) -> ViewResult<Response> {
+	crate::http::json(service.research_providers(actor).await)
+}

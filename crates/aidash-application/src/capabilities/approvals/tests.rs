@@ -204,6 +204,9 @@ fn request() -> DisclosureRequest {
 		destination: "api.search.brave.com".into(),
 		content: "rust release".into(),
 		context_revision: 0,
+		area: None,
+		attribution: None,
+		query: None,
 	}
 }
 
@@ -297,6 +300,50 @@ async fn a_denied_disclosure_stays_denied() {
 		disclose(&mut scope, &run, &request()).await.unwrap(),
 		DisclosureState::Denied
 	);
+}
+
+#[tokio::test]
+async fn the_record_keeps_the_thread_and_what_the_approver_saw_and_who_decided_when() {
+	// Arrange
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let area = Uuid::new_v4();
+	let request = DisclosureRequest {
+		area: Some(area),
+		attribution: Some(aidash_domain::research::account::CostAttribution {
+			account_id: "research-account".into(),
+			price_micro_usd: 5_000,
+		}),
+		query: Some(json!({"query":"rust release","language":"en"})),
+		..request()
+	};
+
+	// Act
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	let before = Utc::now();
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::Deny)
+		.await
+		.unwrap();
+
+	// Assert
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.area_id, Some(area));
+	assert_eq!(
+		record.data["attribution"],
+		json!({"account_id":"research-account","price_micro_usd":5000})
+	);
+	assert_eq!(record.data["query"]["query"], "rust release");
+	assert_eq!(record.data["operation"], "search");
+	assert_eq!(record.data["provider"], "research.brave@1");
+	assert_eq!(record.state, "denied");
+	assert_eq!(record.data["decided_by"], "bob");
+	let decided_at: chrono::DateTime<Utc> =
+		serde_json::from_value(record.data["decided_at"].clone()).unwrap();
+	assert!(decided_at >= before);
 }
 
 /// An approved, not yet consumed disclosure whose admission is about to be
@@ -476,6 +523,47 @@ async fn an_allow_run_grant_covers_later_disclosures_to_the_same_destination() {
 	));
 }
 
+#[rstest::rstest]
+#[case::shorter_than_a_minute(Duration::seconds(30), false)]
+#[case::one_minute(Duration::minutes(1), true)]
+#[case::the_deployment_ceiling(Duration::minutes(60), true)]
+#[case::beyond_the_ceiling(Duration::minutes(61), false)]
+#[tokio::test]
+async fn a_run_grant_lasts_between_one_minute_and_the_deployment_ceiling(
+	#[case] lasting: Duration,
+	#[case] accepted: bool,
+) {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	scope.principal = "bob".into();
+	let revision = scope.records[&approval_id].revision;
+	let result = decide(
+		&mut scope,
+		approval_id,
+		ApprovalDecision {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+			choice: ApprovalChoice::AllowRun,
+			targets: Some(vec!["api.search.brave.com".to_owned()]),
+			expires_at: Some(Utc::now() + lasting),
+		},
+	)
+	.await;
+	match result {
+		Ok(_) => assert!(accepted, "a grant lasting {lasting} was accepted"),
+		Err(Error::Invalid(reason)) => {
+			assert!(!accepted, "a grant lasting {lasting} was refused");
+			assert_eq!(reason, "INVALID_GRANT_SCOPE");
+		}
+		Err(error) => panic!("unexpected {error:?}"),
+	}
+}
+
 #[tokio::test]
 async fn a_disclosure_run_grant_is_visible_to_its_approver_as_a_research_resource() {
 	let mut scope = scope(Value::Null);
@@ -515,6 +603,63 @@ async fn a_run_grant_does_not_cover_disclosures_after_new_user_input() {
 		disclose(&mut scope, &run, &later).await.unwrap(),
 		DisclosureState::Pending { .. }
 	));
+}
+
+#[tokio::test]
+async fn a_run_grant_covers_only_the_operation_and_search_provider_it_was_given_for() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
+		.await
+		.unwrap();
+	// A page read on the search host is not a later search.
+	let mut read = request();
+	read.digest = "sha256:page-read".into();
+	read.operation = Operation::Fetch;
+	read.provider = "research.page@1".into();
+	read.content = "https://api.search.brave.com/".into();
+	// Nor is a search through another provider at the same host.
+	let mut other = request();
+	other.digest = "sha256:other-provider".into();
+	other.provider = "research.other@1".into();
+	// Nor a search charged otherwise than the approver was shown, such as
+	// after the Deployment restarted with another account or price.
+	let mut charged = request();
+	charged.digest = "sha256:other-charge".into();
+	charged.attribution = Some(aidash_domain::research::account::CostAttribution {
+		account_id: "another-account".into(),
+		price_micro_usd: 5_000,
+	});
+	for request in [read, other, charged] {
+		assert!(matches!(
+			disclose(&mut scope, &run, &request).await.unwrap(),
+			DisclosureState::Pending { .. }
+		));
+	}
+}
+
+#[tokio::test]
+async fn deciding_a_disclosure_whose_run_ended_closes_it() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	scope.run.control = RunControl::Cancelled;
+	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	assert_eq!(decided["state"], "closed");
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.state, "closed");
+	assert_eq!(record.data["closed_reason"], "run_ended");
 }
 
 #[tokio::test]
