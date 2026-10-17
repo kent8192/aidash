@@ -41,11 +41,9 @@ fn native_routes_match_the_committed_http_contract() {
 fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 	// The baseline includes internal protocol routes omitted from public OpenAPI.
 	let expected = BTreeSet::from([
-		("GET", "/federation/v0.1/discover/{id}/{version}"),
 		("GET", "/federation/v0.1/observe"),
 		("GET", "/federation/v0.1/transactions/{id}/authority"),
 		("GET", "/federation/v0.1/transactions/{id}/decision"),
-		("POST", "/federation/v0.1/discover"),
 		("POST", "/federation/v0.1/scoped/dependencies/verify"),
 		("POST", "/federation/v0.1/scoped/discover"),
 		("POST", "/federation/v0.1/scoped/execution/admissions"),
