@@ -59,10 +59,12 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     KeylessFixture.scopedAccess,
   );
   try {
-    const api = async (path: string, body?: unknown) => {
-      const options = {
-        headers: { authorization: "Bearer acceptance-access-token" },
-      };
+    const api = async (
+      path: string,
+      body?: unknown,
+      token = "acceptance-access-token",
+    ) => {
+      const options = { headers: { authorization: `Bearer ${token}` } };
       const response =
         body === undefined
           ? await request.get(path, options)
@@ -77,6 +79,29 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       `tenant-${id}`,
     );
     const state = await api("/api/state");
+    await api(`/api/authorization/${tenant}`, {
+      expected_revision: 1,
+      bundle: {
+        tenant,
+        subjects: {
+          alice: { kind: "user" },
+          [`${state.node.id}/agents/${id}@1.0.0`]: { kind: "agent" },
+        },
+        policies: [
+          {
+            id: "approved-work",
+            effect: "allow",
+            subjects: { any: true },
+            actions: ["*"],
+            resources: { kinds: ["*"] },
+          },
+        ],
+      },
+    });
+    const credential = await api(`/api/authorization/${tenant}/credentials`, {
+      subject: "alice",
+    });
+    // Definitions belong to the Tenant: its subject registers and approves them.
     for (const [kind, entryId, config] of [
       [
         "model",
@@ -104,45 +129,32 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         },
       ],
     ] as const) {
-      await api("/api/registry", {
-        kind,
-        id: entryId,
-        version: "1.0.0",
-        name: { en: entryId },
-        description: { en: "Scoped browser fixture" },
-        schema: { type: "object" },
-        config,
-      });
-    }
-    await api(`/api/authorization/${tenant}`, {
-      expected_revision: 1,
-      bundle: {
-        tenant,
-        subjects: {
-          alice: { kind: "user" },
-          [`${state.node.id}/agents/${id}@1.0.0`]: { kind: "agent" },
+      await api(
+        "/api/registry",
+        {
+          kind,
+          id: entryId,
+          version: "1.0.0",
+          name: { en: entryId },
+          description: { en: "Scoped browser fixture" },
+          schema: { type: "object" },
+          config,
         },
-        policies: [
-          {
-            id: "approved-work",
-            effect: "allow",
-            subjects: { any: true },
-            actions: ["*"],
-            resources: { kinds: ["*"] },
-          },
-        ],
-      },
-    });
-    for (const entryId of [id, `${id}-model`]) {
-      await api(`/api/authorization/${tenant}/catalog`, {
-        entry: { id: entryId, version: "1.0.0" },
-        expected_revision: 0,
-        enabled: true,
-      });
+        credential.token,
+      );
     }
-    const credential = await api(`/api/authorization/${tenant}/credentials`, {
-      subject: "alice",
-    });
+    // A version is approved only after the versions it names.
+    for (const entryId of [`${id}-model`, id]) {
+      await api(
+        `/api/authorization/${tenant}/catalog`,
+        {
+          entry: { id: entryId, version: "1.0.0" },
+          expected_revision: 0,
+          enabled: true,
+        },
+        credential.token,
+      );
+    }
     const administrativeRequests: string[] = [];
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
