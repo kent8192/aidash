@@ -265,6 +265,19 @@ impl FileScopePort for Scope<'_> {
 					)
 					.await?
 				}
+				Action::Verify => {
+					operations::prepare_kind(
+						store,
+						self.access,
+						run,
+						&mut native,
+						serde_json::from_value(input)
+							.map_err(|e| NativeError::Invalid(e.to_string()))?,
+						aidash_domain::capabilities::operations::VERIFICATION,
+						serde_json::json!({}),
+					)
+					.await?
+				}
 				Action::Control { kind, cancel } => {
 					operations::poll(
 						store,

@@ -129,9 +129,9 @@ pub struct NativeContext {
 /// Turn. A turn without text or an executed call renders nothing.
 ///
 /// Continuation markers move to the volatile part until a rendered Model
-/// Turn answers them. A citation correction asks for a corrected answer, so
-/// only a turn without calls answers it; tool-call turns that gather the
-/// missing evidence keep it current.
+/// Turn answers them. A citation correction or a Completion Gate repair asks
+/// for a corrected answer, so only a turn without calls answers it; tool-call
+/// turns that gather the missing evidence or repair the files keep it current.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
@@ -164,7 +164,11 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 			}
 			markers.retain(|marker| {
 				!turn.calls.is_empty()
-					&& matches!(marker, ContextEvent::CitationCorrectionRequired { .. })
+					&& matches!(
+						marker,
+						ContextEvent::CitationCorrectionRequired { .. }
+							| ContextEvent::CompletionRepairRequired { .. }
+					)
 			});
 		}
 		for &index in &turn.after {
@@ -319,7 +323,8 @@ fn single<'a>(
 		}),
 		ContextEvent::RunMessageReadRequired { .. }
 		| ContextEvent::RunMessageSummaryRequired { .. }
-		| ContextEvent::CitationCorrectionRequired { .. } => markers.push(&entry.event),
+		| ContextEvent::CitationCorrectionRequired { .. }
+		| ContextEvent::CompletionRepairRequired { .. } => markers.push(&entry.event),
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}
 	}

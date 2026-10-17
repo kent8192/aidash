@@ -4,6 +4,8 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Snapshot {
 	pub operation_id: Uuid,
+	/// Operation kind, such as `shell` or a Completion Gate `verification`.
+	pub kind: String,
 	pub state: String,
 	pub epoch: i64,
 	pub generation: i64,
@@ -28,16 +30,19 @@ impl Snapshot {
 	}
 	pub fn change(&self, stopped: bool) -> Change {
 		let never_dispatched = self.never_dispatched();
+		// A Check never exports `/work`, so once its writer is confirmed
+		// stopped the Area it fenced on an earlier pass is usable again.
+		let fenced_check = self.kind == super::VERIFICATION && self.area_state == "uncertain";
 		Change {
 			state: if stopped { "withdrawn" } else { "cancelling" },
 			result: json!({"termination_confirmed":stopped,"effects_may_have_occurred":!never_dispatched,"error":"AUTHORITY_WITHDRAWN"}),
 			area_state: (self.area_epoch == self.epoch
 				&& self.area_generation == self.generation
-				&& self.area_state == "running")
+				&& (self.area_state == "running" || fenced_check && stopped))
 				.then_some(if never_dispatched {
 					"active"
 				} else {
-					"uncertain"
+					super::lost_area_state(&self.kind, !stopped)
 				}),
 		}
 	}

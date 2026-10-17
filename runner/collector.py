@@ -22,6 +22,15 @@ ROOTS = {"working": Path("/work"), "references": Path("/references"), "received"
 OUTPUT = Path("/tmp/output.bin")
 OUTPUT_STATE = Path("/tmp/output.state")
 OUTPUT_LIMIT = int(os.environ["AIDASH_OUTPUT_BYTES"])
+# The last bytes of the output, kept even after the stored prefix is full: a
+# Completion Check's failure summary comes at the end of a long run.
+OUTPUT_TAIL = Path("/tmp/output.tail")
+TAIL_LIMIT = 16384
+# Present once the liveness deadline expired while the command still ran. Only
+# that failing probe stops a command at its deadline, so this, not the measured
+# runtime, says whether a Check timed out. The probe records it, and so does the
+# deadline watcher when no probe came between the deadline and the command's exit.
+EXPIRED = Path("/tmp/deadline.expired")
 
 
 def save(path, value):
@@ -52,7 +61,8 @@ def hydrate():
     if REQUEST.exists():
         if json.loads(REQUEST.read_bytes())["digest"] != incoming["digest"]:
             raise ValueError("input digest changed")
-        print('{"accepted":true}')
+        state = json.loads(CONTROL.read_bytes()) if CONTROL.exists() else {}
+        print(json.dumps({"accepted": True, "started_at": state.get("started_at")}))
         return
     total = 0
     seen = set()
@@ -76,7 +86,11 @@ def hydrate():
                 digest.update(data)
         if total > incoming["working_bytes"] or digest.hexdigest() != entry["digest"]:
             raise ValueError("file integrity or quota")
-    save(CONTROL, {"deadline": time.monotonic() + incoming["seconds"], "cancelled": False})
+    # The command starts once REQUEST is published below; its deadline and
+    # the start it is charged from are taken together, just before.
+    started_at = time.time()
+    save(CONTROL, {"deadline": time.monotonic() + incoming["seconds"], "cancelled": False,
+                   "started_at": started_at})
     if incoming["kind"] == "python":
         from jupyter_client.connect import write_connection_file
         write_connection_file('/request/kernel.json', ip='127.0.0.1', shell_port=7080,
@@ -84,7 +98,7 @@ def hydrate():
                               key=os.urandom(32).hex().encode('ascii'))
         os.chmod('/request/kernel.json', 0o444)
     save(REQUEST, {k: incoming[k] for k in ("digest", "kind", "code", "processes")})
-    print('{"accepted":true}')
+    print(json.dumps({"accepted": True, "started_at": started_at}))
 
 
 def export():
@@ -170,6 +184,11 @@ def append_output(data, connections=0):
             if captured:
                 output.flush()
                 os.fsync(output.fileno())
+        if data:
+            tail = (OUTPUT_TAIL.read_bytes() if OUTPUT_TAIL.exists() else b"") + data
+            temporary = OUTPUT_TAIL.with_suffix(".new")
+            temporary.write_bytes(tail[-TAIL_LIMIT:])
+            os.replace(temporary, OUTPUT_TAIL)
         if data or connections:
             save(OUTPUT_STATE, state)
         return state
@@ -181,10 +200,66 @@ def logs(limit):
     while "final" in sys.argv and state["connections"] and time.monotonic() < deadline:
         time.sleep(0.01)
         state = append_output(b"")
-    with OUTPUT.open("rb") as output:
-        data = output.read(min(limit, OUTPUT_LIMIT))
+    if "tail" in sys.argv:
+        data = OUTPUT_TAIL.read_bytes()[-min(limit, TAIL_LIMIT):] if OUTPUT_TAIL.exists() else b""
+        cut = state["total"] > len(data)
+    else:
+        with OUTPUT.open("rb") as output:
+            data = output.read(min(limit, OUTPUT_LIMIT))
+        cut = state["total"] > OUTPUT_LIMIT
     print(json.dumps({"stdout": base64.b64encode(data).decode(), "bytes": state["stored"],
-                      "truncated": state["total"] > OUTPUT_LIMIT or ("final" in sys.argv and state["connections"] > 0)}))
+                      "truncated": cut or ("final" in sys.argv and state["connections"] > 0),
+                      "deadline_expired": EXPIRED.exists()}))
+
+
+def prepared():
+    """The published request's digest and the start stamped with it, read
+    only: a controller that restarts after the command ended still learns
+    when it started."""
+    state = json.loads(CONTROL.read_bytes()) if CONTROL.exists() else {}
+    print(json.dumps({"digest": json.loads(REQUEST.read_bytes())["digest"] if REQUEST.exists() else None,
+                      "started_at": state.get("started_at")}))
+
+
+def deadline_state():
+    """The command's liveness deadline, or None when none can expire: before
+    the request is published, after a cancellation, or for a Python session."""
+    try:
+        state = json.loads(CONTROL.read_bytes())
+        kind = json.loads(REQUEST.read_bytes())["kind"]
+    except FileNotFoundError:
+        return None
+    return None if state["cancelled"] or kind == "python" else state["deadline"]
+
+
+def expire_if_running():
+    """Record an expired deadline once it has passed while the command's output
+    stream is still open, whether or not a liveness probe arrived after it. The
+    execution container's PID 1 holds that stream until the command and its
+    background jobs exit. Returns whether the deadline is decided."""
+    if not CONTROL.exists() or not REQUEST.exists():
+        return False
+    deadline = deadline_state()
+    if deadline is None or EXPIRED.exists():
+        return True
+    if time.monotonic() < deadline:
+        return False
+    if append_output(b"")["connections"] > 0:
+        EXPIRED.touch()
+    return True
+
+
+def expire_if_late():
+    """Record an expired deadline when the command's output stream closes after
+    it, which the watcher's sampling could miss."""
+    deadline = deadline_state()
+    if deadline is not None and time.monotonic() >= deadline:
+        EXPIRED.touch()
+
+
+def watch_deadline():
+    while not expire_if_running():
+        time.sleep(0.05)
 
 
 class Output(socketserver.BaseRequestHandler):
@@ -195,6 +270,9 @@ class Output(socketserver.BaseRequestHandler):
             while data := self.request.recv(65536):
                 append_output(data)
         finally:
+            # The stream closes when the command exits: an exit after the
+            # deadline timed out, whenever the watcher last looked.
+            expire_if_late()
             append_output(b"", connections=-1)
 
 
@@ -208,6 +286,10 @@ class Health(BaseHTTPRequestHandler):
         try:
             state = json.loads(CONTROL.read_bytes())
             healthy = not state["cancelled"] and time.monotonic() < state["deadline"]
+            if not healthy and not state["cancelled"]:
+                # Kubelet probes only a running container, so the command was
+                # still running when its deadline passed.
+                EXPIRED.touch()
         except FileNotFoundError:
             healthy = time.monotonic() < self.server.startup_deadline
         self.send_response(200 if healthy else 503)
@@ -228,7 +310,7 @@ if __name__ == "__main__":
     elif mode == "read":
         read_output()
     elif mode == "prepared":
-        print(json.dumps({"digest": json.loads(REQUEST.read_bytes())["digest"] if REQUEST.exists() else None}))
+        prepared()
     elif mode == "cancel":
         save(CONTROL, {"cancelled": True, "deadline": 0})
     elif mode == "logs":
@@ -239,6 +321,7 @@ if __name__ == "__main__":
         threading.Thread(target=python_cells.serve, daemon=True).start()
         output = OutputServer(("127.0.0.1", 7071), Output)
         threading.Thread(target=output.serve_forever, daemon=True).start()
+        threading.Thread(target=watch_deadline, daemon=True).start()
         server = ThreadingHTTPServer(("0.0.0.0", 7070), Health)
         server.startup_deadline = time.monotonic() + 120
         server.serve_forever()
