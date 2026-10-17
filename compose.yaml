@@ -127,6 +127,8 @@ services:
     configs:
       - source: provider-credentials
         target: /run/aidash/provider-credentials.json
+      - source: local-settings
+        target: /app/server/settings/local.toml
     volumes:
       - memory-recovery:/var/lib/aidash/memory-recovery
       - provider-credentials:/var/lib/aidash/provider-credentials:ro
@@ -209,6 +211,12 @@ configs:
         "fingerprint_key": {"file": "/var/lib/aidash/provider-credentials/fingerprint-key"},
         "store": {"kind": "postgres", "master_key": {"file": "/var/lib/aidash/provider-credentials/master-key"}}
       }}
+  # The Self-hosted Tenancy Rules leave Personal Tenants off. The dev stack turns
+  # them on, so a first Google sign-in works without a Deployment Administrator.
+  local-settings:
+    content: |
+      [tenancy]
+      personal_tenants = true
 volumes:
   postgres:
   memory-recovery:
