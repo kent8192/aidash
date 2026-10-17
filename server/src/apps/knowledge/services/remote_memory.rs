@@ -81,8 +81,10 @@ pub(crate) async fn bind(
 		id: row.try_get("agent_id")?,
 		version: row.try_get("agent_version")?,
 	};
-	let agent = memory::definition(lease, &reference, "agent").await?;
-	let config = super::super::repositories::bindings::configuration(lease, &agent, home).await?;
+	let agent = memory::definition(lease, &bank.tenant, &reference, "agent").await?;
+	let config =
+		super::super::repositories::bindings::configuration(lease, &bank.tenant, &agent, home)
+			.await?;
 	if config.memory.as_ref() != Some(&selection.provider)
 		|| config.allow_cross_conversation_memory == Some(false)
 	{
@@ -106,7 +108,7 @@ pub(crate) async fn bind(
 	}
 	let mut declared = vec![(bank.clone(), selection.provider.clone(), usize::MAX)];
 	for source in &config.sources {
-		let entry = memory::definition(lease, source, "source").await?;
+		let entry = memory::definition(lease, &bank.tenant, source, "source").await?;
 		let source: SourceConfig = serde_json::from_value(entry.config)?;
 		if source.max_tokens == 0 {
 			return Err(Error::Invalid(
@@ -133,8 +135,8 @@ pub(crate) async fn bind(
 			super::super::repositories::units::authorize(lease, &bank, action).await?;
 		}
 		memory::bank_provider(lease, &bank, &provider).await?;
-		let policy = memory::policy(lease, &provider).await?;
-		let definition = memory::definition(lease, &provider, "memory").await?;
+		let policy = memory::policy(lease, &bank.tenant, &provider).await?;
+		let definition = memory::definition(lease, &bank.tenant, &provider, "memory").await?;
 		let mut roles = Vec::new();
 		for (reference, kind) in [
 			(&policy.extraction, "model"),
@@ -144,14 +146,14 @@ pub(crate) async fn bind(
 			(&policy.reranker, "reranker"),
 			(&policy.tokenizer, "tokenizer"),
 		] {
-			let entry = memory::definition(lease, reference, kind).await?;
+			let entry = memory::definition(lease, &bank.tenant, reference, kind).await?;
 			if kind == "reranker"
 				&& let RerankerConfig::Model { model } =
 					serde_json::from_value(entry.config.clone())?
 			{
 				roles.push(descriptor(
 					home,
-					&memory::definition(lease, &model, "model").await?,
+					&memory::definition(lease, &bank.tenant, &model, "model").await?,
 				)?);
 			}
 			let descriptor = descriptor(home, &entry)?;
@@ -247,7 +249,7 @@ pub(crate) async fn retrieve(
 	stamp(&runtime.store, lease, binding).await?;
 	let mut context = NativeContext { banks: vec![] };
 	for declared in &binding.banks {
-		let policy = memory::policy(lease, &declared.provider.entry).await?;
+		let policy = memory::policy(lease, &declared.bank.tenant, &declared.provider.entry).await?;
 		let placeholder = NativeRecall {
 			bank: declared.bank.clone(),
 			provider: declared.provider.entry.clone(),

@@ -803,7 +803,9 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	lease.finish(result).await.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	assert!(super::live_support(&mut lease, &admitted[0]).await.unwrap());
-	let current_policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let current_policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	assert_eq!(
 		super::scores(
 			&mut lease,
@@ -1394,7 +1396,9 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		.await
 		.unwrap();
 	}
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	let scores = super::scores(
 		&mut lease,
 		&bank,
@@ -1438,7 +1442,9 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		.await
 		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	let scores = super::scores(
 		&mut lease,
 		&bank,
@@ -1735,7 +1741,9 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		.await
 		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	let models = Models::resolve(
 		&store,
 		&mut lease,
@@ -1844,7 +1852,9 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 	}
 	crate::semantic::worker::sweep(&store).await.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &banks[0].tenant, &reference("p"))
+		.await
+		.unwrap();
 	let models = Models::resolve(
 		&store,
 		&mut lease,

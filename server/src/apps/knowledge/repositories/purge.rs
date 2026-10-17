@@ -148,8 +148,12 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			let settings = super::bank_settings::get(&mut lease, &unit.bank)
 				.await?
 				.ok_or(Error::Forbidden)?;
-			let policy =
-				crate::semantic::native_memory::policy(&mut lease, &settings.provider).await?;
+			let policy = crate::semantic::native_memory::policy(
+				&mut lease,
+				&unit.bank.tenant,
+				&settings.provider,
+			)
+			.await?;
 			max_retries = Some(policy.bounds.max_retries);
 			native::query(
 				&Query::delete()

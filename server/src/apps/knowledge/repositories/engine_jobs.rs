@@ -319,7 +319,12 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 		let binding = super::bindings::load(&mut **lease.tx(), &run.metadata())
 			.await?
 			.ok_or(Error::Forbidden)?;
-		let policy = crate::semantic::native_memory::policy(&mut lease, &binding.provider).await?;
+		let policy = crate::semantic::native_memory::policy(
+			&mut lease,
+			&binding.bank.tenant,
+			&binding.provider,
+		)
+		.await?;
 		let enabled = policy.learn_from_runs;
 		enqueue(
 			&mut lease,
@@ -555,7 +560,8 @@ async fn execute(
 			return Err(Error::Conflict("engine claim was replaced".into()));
 		}
 		crate::semantic::native_memory::bank_provider(&mut lease, bank, provider).await?;
-		let policy = crate::semantic::native_memory::policy(&mut lease, provider).await?;
+		let policy =
+			crate::semantic::native_memory::policy(&mut lease, &bank.tenant, provider).await?;
 		let digest =
 			aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(input)?);
 		let operation = crate::semantic::native_memory::request_id(
