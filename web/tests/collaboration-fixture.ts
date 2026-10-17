@@ -235,7 +235,6 @@ export async function setup(
     dashboardContext?: string | null;
     olderMessages?: number;
     remoteParticipant?: boolean;
-    unpairedRemoteRequest?: boolean;
     meshErrors?: boolean;
     runMemory?: boolean;
     latestMessageChangesOnPoll?: boolean;
@@ -588,33 +587,18 @@ export async function setup(
             ...(labRuns.length
               ? [{ node_id: "aidash://lab", runs: labRuns, human_requests: [] }]
               : []),
-            ...(options.remoteParticipant || options.unpairedRemoteRequest
+            ...(options.remoteParticipant
               ? [
                   {
                     node_id: "aidash://peer",
-                    runs: options.remoteParticipant
-                      ? [
-                          {
-                            ...data.runs[0],
-                            id: "remote-run",
-                            task_id: "remote-task",
-                          },
-                        ]
-                      : [],
-                    human_requests: options.unpairedRemoteRequest
-                      ? [
-                          {
-                            id: "uncached-run-request",
-                            workspace_id: "workspace-one",
-                            run_id: "run-omitted-from-snapshot",
-                            kind: "INFORMATION_REQUEST",
-                            prompt: "The run is outside the capped snapshot.",
-                            response: null,
-                            answered_by: null,
-                            created_at: "2026-09-22T10:12:00Z",
-                          },
-                        ]
-                      : [],
+                    runs: [
+                      {
+                        ...data.runs[0],
+                        id: "remote-run",
+                        task_id: "remote-task",
+                      },
+                    ],
+                    human_requests: [],
                   },
                 ]
               : []),
