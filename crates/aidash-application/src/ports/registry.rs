@@ -13,9 +13,9 @@ pub trait CoreToolCatalog: Send + Sync {
 		&self,
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
 	) -> Result<()> {
-		if descriptor.tier == aidash_domain::tool::providers::ToolTier::Host {
+		if descriptor.tier.needs_approval() {
 			return Err(crate::Error::Invalid(
-				"PROVIDER_UNAVAILABLE: host provider is not admitted".into(),
+				"PROVIDER_UNAVAILABLE: the Deployment offers no such provider".into(),
 			));
 		}
 		Ok(())

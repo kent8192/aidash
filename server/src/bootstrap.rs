@@ -565,7 +565,7 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 		if descriptor.provider.starts_with("research.") {
 			return crate::apps::execution::services::research::providers().available(descriptor);
 		}
-		if descriptor.tier != ToolTier::Host || descriptor.operation == "task_assign" {
+		if descriptor.tier != ToolTier::Sandboxed {
 			return Ok(());
 		}
 		let runtime = crate::capabilities::Runtime::from_env()?;

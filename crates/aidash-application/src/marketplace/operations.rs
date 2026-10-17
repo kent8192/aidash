@@ -4,15 +4,13 @@ use crate::{
 	Error, Result, ports::marketplace::DeploymentAdministratorScope, registry::DefinitionValidation,
 };
 use aidash_domain::{
-	marketplace::definitions::{content, key, manifest, prospective_installation, reference},
+	marketplace::definitions::{key, reference},
 	marketplace::installations::activation,
-	marketplace::{Dependency, Installation, InstallationRevision, Version},
+	marketplace::{Installation, InstallationRevision},
 	registry::EntityRef,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use uuid::Uuid;
 
 pub struct ActivationCommand {
 	pub tenant: String,
@@ -113,4 +111,3 @@ mod tests;
 pub use crate::authorization::require_deployment_administrator;
 
 pub mod approval_set;
-pub mod host_packages;

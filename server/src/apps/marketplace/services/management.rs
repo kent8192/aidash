@@ -325,31 +325,6 @@ impl MarketplaceManagement {
 		deployment_administrator_commit(tx, origin).await?;
 		Ok(result)
 	}
-	pub(crate) async fn host_packages(
-		&self,
-		actor: Actor,
-		browser: Option<BrowserOrigin>,
-		input: aidash_application::marketplace::operations::host_packages::HostPackages,
-	) -> Result<aidash_application::marketplace::operations::host_packages::PendingHostPackages> {
-		deployment_administrator(&actor)?;
-		let origin = browser.as_ref();
-		let mut tx = deployment_administrator_begin(&self.runtime.store, origin).await?;
-		let validation = crate::bootstrap::registry_validation_for(&self.runtime.store);
-		let result = aidash_application::marketplace::operations::host_packages::provision(
-			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-				&self.runtime.store,
-				&mut tx,
-				principal(&actor),
-			),
-			&validation,
-			&validation,
-			&input,
-			&self.runtime.store.node_id,
-		)
-		.await?;
-		deployment_administrator_commit(tx, origin).await?;
-		Ok(result)
-	}
 
 	pub(crate) async fn administration(
 		&self,

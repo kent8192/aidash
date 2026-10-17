@@ -31,7 +31,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::approve_set)
 			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
-			.endpoint(management::host_packages)
 			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 			.endpoint(management::administration)
 			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())

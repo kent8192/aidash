@@ -381,9 +381,6 @@ path = "src/apps/identity/tests/desktop_review.rs"
 name = "registry_provider_bindings"
 path = "src/apps/registry/tests/provider_bindings.rs"
 
-[[test]]
-name = "marketplace_host_packages"
-path = "src/apps/marketplace/tests/host_packages.rs"
 
 [[test]]
 name = "gcip_sign_in"
