@@ -246,16 +246,19 @@ impl WorkerAuthority {
 				async {
 					// A core Run's approval belongs to its Working Area, so its Thread
 					// lists it; other Runs have none.
-					let area =
-						crate::apps::execution::repositories::sessions::run_area(&mut access, run.id)
-							.await?
-							.flatten()
-							.map(|area| area.id);
+					let area = crate::apps::execution::repositories::sessions::run_area(
+						&mut access,
+						run.id,
+					)
+					.await?
+					.flatten()
+					.map(|area| area.id);
 					let request = aidash_application::capabilities::approvals::DisclosureRequest {
 						area,
 						..request.clone()
 					};
-					let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					let mut scope =
+						crate::bootstrap::approval_scope(Some(store), &mut access, None);
 					aidash_application::capabilities::approvals::disclose(
 						&mut scope,
 						&run.metadata(),
@@ -752,6 +755,7 @@ impl Guard {
 		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let workspace_budget = if self.remote.is_some() {
 			budget
@@ -769,6 +773,8 @@ impl Guard {
 			task,
 			inputs,
 			workspace_budget,
+			// Required-Home semantic context never degrades (ADR 0059).
+			degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
 		)
 		.await
 		.map_err(Error::from)?;

@@ -345,6 +345,25 @@ pub struct RecoveryState {
 	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
+	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
+	)]
+	pub degraded: crate::semantic::degraded::DegradedContext,
+}
+impl RecoveryState {
+	/// Whether this attempt may degrade an unavailable workspace slot: it is
+	/// the last one of the bounded outage retry, or an earlier step of the Run
+	/// already degraded and no retrieval has succeeded since (ADR 0059).
+	pub fn degrades_on_outage(&self) -> bool {
+		self.degraded.outage
+			|| (self.semantic_reason == Some(crate::semantic::Failure::Unavailable)
+				&& self
+					.retry
+					.as_ref()
+					.is_some_and(|retry| retry.count >= crate::semantic::OUTAGE_RETRIES))
+	}
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
