@@ -10,7 +10,7 @@ use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
 	configuration::{validate_endpoint, validate_node_id},
 	model::ModelConfig,
-	registry::{AgentConfig, ClusterConfig, CompactorConfig, Entry},
+	registry::{AgentConfig, ClusterConfig, Entry},
 	tool::ToolConfig,
 };
 use serde_json::Value;
@@ -150,11 +150,6 @@ impl DefinitionValidation {
 				&serde_json::from_value(e.config.clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?,
 			)?,
-			"compactor" => self.validate_compactor(
-				&serde_json::from_value(e.config.clone())
-					.map_err(|e| Error::Invalid(e.to_string()))?,
-				local,
-			)?,
 			"model" => {
 				let m: ModelConfig = serde_json::from_value(e.config.clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?;
@@ -265,25 +260,6 @@ impl DefinitionValidation {
 			}
 			"skill" => aidash_domain::registry::rules::validate_skill(e)?,
 			_ => {}
-		}
-		Ok(())
-	}
-
-	pub fn validate_compactor(&self, config: &CompactorConfig, local: bool) -> Result<()> {
-		aidash_domain::decision::validate_provider_credential(&config.provider_credential)?;
-		aidash_domain::decision::validate_model(&config.model)?;
-		if !(1024..=1_048_576).contains(&config.max_request_bytes)
-			|| !(1..=1024).contains(&config.max_questions)
-			|| !(128..=1_048_576).contains(&config.max_response_bytes)
-		{
-			return Err(Error::Invalid(
-				"invalid compactor request/response bounds".into(),
-			));
-		}
-		if local && !self.provider_credentials_enabled {
-			return Err(Error::Invalid(
-				"Provider Credential Store is not configured".into(),
-			));
 		}
 		Ok(())
 	}

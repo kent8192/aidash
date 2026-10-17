@@ -557,6 +557,7 @@ async fn evaluate(
 		input_revision: 2,
 		worker: Uuid::new_v4(),
 		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
+		cycle: 0,
 	};
 	if fixture.corrupt_boundary {
 		boundary.input_digest = format!("sha256:{}", "b".repeat(64));
@@ -1420,6 +1421,7 @@ fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 		input_revision: 1,
 		worker: Uuid::new_v4(),
 		input_digest: format!("sha256:{}", "a".repeat(64)),
+		cycle: 0,
 	};
 	let inputs = |count: usize| -> BTreeMap<usize, Value> {
 		(0..count)
@@ -1589,7 +1591,18 @@ async fn new_worker_reuses_charged_attempts_after_uncommitted_decision() {
 			assert!(matches!(result, Err(Error::Forbidden)));
 			assert_eq!(context.history, original.history);
 		} else {
-			assert!(matches!(result, Err(Error::Conflict(_))));
+			// A changed plan conflicts; a charged attempt whose result is
+			// unknown pauses the Run until a resume starts a new decision.
+			assert!(
+				matches!(
+					result,
+					Err(Error::Conflict(_)
+						| Error::Context(
+							aidash_domain::context::recovery::Failure::DeciderUnavailable
+						))
+				),
+				"{cut}: {result:?}"
+			);
 			assert_eq!(context.history, original.history);
 		}
 		assert_eq!(
@@ -1696,4 +1709,174 @@ async fn bound_decider_restrictions_reach_compaction_without_separate_defaults()
 	assert_eq!(context.history, original.history);
 	assert_eq!(fixture.checks.load(Ordering::SeqCst), 0);
 	assert!(fixture.saved.lock().unwrap().permits.is_empty());
+}
+
+/// Native Runs are pruned by Model Turn: the first and the latest six turns are
+/// never classified, a turn whose calls are all dropped and that has no text
+/// leaves whole, and events outside any turn stay (ADR 0015).
+#[tokio::test]
+async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
+	use aidash_domain::context::RequestProjection;
+	use aidash_domain::projection::{CacheScope, native::model_turns};
+	let fixture = Fixture::new(Mode::Enforce);
+	let correction = ContextEvent::CitationCorrectionRequired {
+		invalid: vec!["ev_unknown".into()],
+		instruction: "Correct the answer once.".into(),
+		through_seq: 1,
+	};
+	let ids = |turn: usize| [format!("t{turn}a"), format!("t{turn}b")];
+	let mut context = Context::default();
+	for turn in 0..12 {
+		context.push(ContextEvent::Assistant {
+			epoch: turn as i64,
+			text: String::new(),
+			calls: ids(turn).to_vec(),
+		});
+		for id in ids(turn) {
+			context.push(ContextEvent::Tool {
+				call: aidash_domain::provider::ToolCall {
+					id: id.clone(),
+					name: "safe_tool".into(),
+					arguments: json!({"query":"permitted"}),
+				},
+				result: json!("r".repeat(4_000)),
+			});
+		}
+		if turn == 2 {
+			context.push(correction.clone());
+		}
+	}
+	let pinned = json!({"task":{"description":"Ship the release"}});
+	let projection = RequestProjection::Native(CacheScope {
+		tenant: "tenant".into(),
+		key_version: 1,
+	});
+	let full = RequestBudget {
+		window: usize::MAX,
+		instructions: "Work on the task",
+		tools: &[],
+		max_output_tokens: 0,
+		projection: &projection,
+		estimate: Default::default(),
+	}
+	.request(&context, &pinned)
+	.estimated_total_tokens();
+	let budget = RequestBudget {
+		window: full * 3 / 4,
+		instructions: "Work on the task",
+		tools: &[],
+		max_output_tokens: 0,
+		projection: &projection,
+		estimate: Default::default(),
+	};
+	let boundary = Boundary {
+		node: "aidash://execution".into(),
+		run: Uuid::new_v4(),
+		step: 1,
+		run_revision: 1,
+		input_revision: 2,
+		worker: Uuid::new_v4(),
+		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
+		cycle: 0,
+	};
+	let definition = definition(Mode::Enforce);
+	let decider = BoundDecider {
+		pin: DeciderPin {
+			identity: aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: boundary.node.clone(),
+				id: definition.id.clone(),
+				version: definition.version.clone(),
+			},
+			definition_digest: digest(&serde_json::to_value(&definition).unwrap()),
+			configuration_digest: config(Mode::Enforce).digest().unwrap(),
+			provider_implementation: "node-decision-adapter:23".into(),
+		},
+		config: config(Mode::Enforce),
+		restrictions: Restrictions::default(),
+	};
+	let view = compaction_disclosure(&context, &pinned);
+	let input = Evaluation {
+		boundary: &boundary,
+		decider: &decider,
+		definition: &definition,
+		disclosure: &view,
+		now: Utc::now(),
+	};
+	// Act
+	let result = fixture
+		.gate()
+		.compact(&mut context, &budget, &pinned, &input)
+		.await;
+	// Assert: the five unprotected turns left whole, the marker stayed.
+	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
+	let turns: Vec<Vec<String>> = {
+		let mut grouped: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+		for (entry, turn) in context.history.iter().zip(model_turns(&context.history)) {
+			if let (Some(turn), ContextEvent::Tool { call, .. }) = (turn, &entry.event) {
+				grouped.entry(turn).or_default().push(call.id.clone());
+			}
+		}
+		grouped.into_values().collect()
+	};
+	assert_eq!(turns.len(), 7);
+	assert_eq!(turns[0], ids(0).to_vec());
+	assert_eq!(turns[1], ids(6).to_vec());
+	assert_eq!(
+		context
+			.events()
+			.filter(|event| **event == correction)
+			.count(),
+		1
+	);
+	let saved = fixture.saved.lock().unwrap();
+	let evidence = saved.evidence.last().unwrap();
+	assert_eq!(evidence.turns, Some(12));
+	assert_eq!(evidence.candidates.len(), 10);
+	assert!(evidence.candidates.iter().all(|c| c.turn.is_some()));
+	assert_eq!(evidence.fit.dropped, 10);
+	assert_eq!(evidence.fit.removed, 15);
+	assert_eq!(evidence.replay().unwrap(), evidence.branches);
+}
+
+/// A resume cycle is part of the decision identity, so a person's resume starts
+/// a new decision instead of meeting an attempt whose result is unknown.
+#[test]
+fn the_resume_cycle_changes_the_decision_identity() {
+	let decider = DeciderPin {
+		identity: aidash_domain::registry::bindings::QualifiedRef {
+			registry_node: "aidash://execution".into(),
+			id: "decider".into(),
+			version: "1.0.0".into(),
+		},
+		definition_digest: format!("sha256:{}", "a".repeat(64)),
+		configuration_digest: format!("sha256:{}", "b".repeat(64)),
+		provider_implementation: "node-decision-adapter:23".into(),
+	};
+	let mut boundary = Boundary {
+		node: "aidash://execution".into(),
+		run: Uuid::from_u128(1),
+		step: 1,
+		run_revision: 1,
+		input_revision: 2,
+		worker: Uuid::from_u128(3),
+		input_digest: format!("sha256:{}", "c".repeat(64)),
+		cycle: 0,
+	};
+	let identity = |boundary: &Boundary| {
+		decision_identity(
+			boundary,
+			&decider,
+			&Restrictions::default(),
+			&format!("sha256:{}", "d".repeat(64)),
+			&[],
+			1_000,
+		)
+	};
+	let first = identity(&boundary);
+	// A recovered lease keeps the decision.
+	boundary.worker = Uuid::from_u128(4);
+	boundary.run_revision = 2;
+	assert_eq!(identity(&boundary), first);
+	boundary.cycle = 1;
+	assert_ne!(identity(&boundary), first);
 }

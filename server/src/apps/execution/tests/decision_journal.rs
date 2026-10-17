@@ -293,6 +293,7 @@ fn boundary_in(
 		input_revision: run.observed_input_seq,
 		worker,
 		input_digest: compaction_input_digest(context, &budget, &json!({})).unwrap(),
+		cycle: 0,
 	}
 }
 
@@ -436,6 +437,7 @@ fn record(
 			input_revision: run.observed_input_seq,
 			worker,
 			input_digest: format!("sha256:{}", "c".repeat(64)),
+			cycle: 0,
 		},
 		decider: decider.pin.clone(),
 		binding_restrictions: Restrictions::default(),
@@ -670,6 +672,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		.await
 		.unwrap()
 		.expect("leased Run");
+	drop(journal);
 	let journal =
 		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
 	let boundary = boundary(&f.store, &run, worker, &run.context);
@@ -681,6 +684,7 @@ async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
 		.release_lease(&TEST_FIXTURE, run.id, worker)
 		.await
 		.unwrap();
+	drop(journal);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -771,6 +775,7 @@ async fn retained_state_expires_to_its_marker(
 		.release_lease(&TEST_FIXTURE, run.id, worker)
 		.await
 		.unwrap();
+	drop(journal);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -932,6 +937,7 @@ async fn a_charged_attempt_is_recovered_and_never_charged_twice(
 		.release_lease(&TEST_FIXTURE, run.id, worker)
 		.await
 		.unwrap();
+	drop(journal);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -996,6 +1002,7 @@ async fn every_charge_rechecks_the_current_allowance(
 		.release_lease(&TEST_FIXTURE, run.id, worker)
 		.await
 		.unwrap();
+	drop(journal);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1101,6 +1108,7 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 		.await
 		.unwrap()
 		.expect("leased Run");
+	drop(journal);
 	let journal =
 		RunDecisionJournal::new(&f.store, leased.clone(), allowance(&decider, 10), &policy)
 			.unwrap();
@@ -1145,6 +1153,8 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 		.release_lease(&TEST_FIXTURE, run.id, successor)
 		.await
 		.unwrap();
+	drop(journal);
+	drop(outdated);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1278,6 +1288,7 @@ async fn a_staged_decision_is_recorded_only_with_the_summary_adopted_from_it(
 		journal.commit(&staged.rejected(), None, None).await,
 		Err(aidash_application::Error::Conflict(_))
 	));
+	drop(journal);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1345,5 +1356,6 @@ async fn evidence_must_attest_to_the_context_and_identity_it_claims(
 		.release_lease(&TEST_FIXTURE, run.id, worker)
 		.await
 		.unwrap();
+	drop(journal);
 	cleanup(f, &url, &schema).await;
 }

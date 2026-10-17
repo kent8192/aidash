@@ -22,6 +22,9 @@ pub struct DecisionAttempt {
 	pub node: String,
 	#[field]
 	pub step: i32,
+	/// The Run's resume cycle the decision identity commits to.
+	#[field]
+	pub cycle: i32,
 	#[field]
 	pub input_revision: i64,
 	#[field(field_type = "text")]

@@ -14,8 +14,6 @@ pub enum Failure {
 		"Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
 	)]
 	ContextUnreducible,
-	#[error("Jev pruning is unavailable for this Context Policy")]
-	PruneUnavailable,
 	#[error("The compaction Decider has no Catalog Approval for its exact version on this Node")]
 	DeciderUnapproved,
 	#[error("The compaction Decider reached its call limit for this Run")]
@@ -41,7 +39,6 @@ impl Failure {
 	pub fn label(self) -> &'static str {
 		match self {
 			Self::ContextUnreducible => "context_unreducible",
-			Self::PruneUnavailable => "prune_unavailable",
 			Self::DeciderUnapproved => "decider_unapproved",
 			Self::DeciderCallsExhausted => "decider_calls_exhausted",
 			Self::DeciderUnavailable => "decider_unavailable",

@@ -398,7 +398,6 @@ async fn repeated_stale_retrievals_pause_after_the_bounded_retries(
 }
 #[rstest]
 #[case(ContextFailure::ContextUnreducible)]
-#[case(ContextFailure::PruneUnavailable)]
 #[case(ContextFailure::DeciderUnapproved)]
 #[case(ContextFailure::DeciderCallsExhausted)]
 #[case(ContextFailure::DeciderUnavailable)]

@@ -72,3 +72,71 @@ impl DecisionAuthority for CatalogAuthority<'_> {
 		Err(aidash_application::Error::Forbidden)
 	}
 }
+
+/// The policy of a generated or RequiredHome Run: the Decider its chain agreed
+/// on when the step began. Every charge rechecks that agreement through its
+/// owners, so a withdrawn approval stops further attempts.
+pub(crate) struct ChainAllowance(pub ExecutionAllowance);
+#[async_trait::async_trait]
+impl CurrentAllowance for ChainAllowance {
+	async fn current(
+		&self,
+		_: &mut native::Transaction,
+		_: &Run,
+	) -> Result<Option<ExecutionAllowance>> {
+		Ok(Some(self.0.clone()))
+	}
+}
+
+/// Every generated ancestor, or the Home of a RequiredHome execution, is
+/// charged for each Decision Attempt before it is dispatched.
+pub(crate) struct ChainOwners<'a> {
+	pub guard: &'a Guard,
+	pub federation: &'a crate::federation::Federation,
+	pub decider: aidash_domain::registry::EntityRef,
+	pub config: DeciderConfig,
+	/// Home reservations kept open while their attempts are dispatched.
+	pub open: std::sync::Mutex<
+		std::collections::BTreeMap<uuid::Uuid, aidash_domain::generation::dispatch::Input>,
+	>,
+}
+#[async_trait::async_trait]
+impl super::DecisionOwners for ChainOwners<'_> {
+	async fn charge(
+		&self,
+		record: &aidash_application::ports::decision::DispatchRecord,
+	) -> Result<std::collections::BTreeMap<String, uuid::Uuid>> {
+		let (receipts, reservation) = self
+			.guard
+			.charge_decision(
+				self.federation,
+				&self.decider,
+				&self.config,
+				record.attempt,
+				&record.request_digest,
+				record.questions.len(),
+			)
+			.await?;
+		if let Some(reservation) = reservation {
+			self.open
+				.lock()
+				.expect("open reservations are never poisoned")
+				.insert(record.attempt, reservation);
+		}
+		Ok(receipts)
+	}
+	async fn settle(
+		&self,
+		record: &aidash_application::ports::decision::DispatchRecord,
+	) -> Result<()> {
+		let reservation = self
+			.open
+			.lock()
+			.expect("open reservations are never poisoned")
+			.remove(&record.attempt);
+		if let Some(reservation) = reservation {
+			self.guard.settle_decision(&reservation).await?;
+		}
+		Ok(())
+	}
+}

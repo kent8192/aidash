@@ -39,6 +39,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0028_tool_transport_secrets"),
 	("registry", "0029_completion_policy"),
 	("registry", "0030_plan_connection_models"),
+	("registry", "0031_decider_kind"),
+	("registry", "0032_decider_kind_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -89,7 +91,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		34
+		35
 	);
 	let tables = migrations
 		.iter()
@@ -590,7 +592,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		34
+		35
 	);
 }
 

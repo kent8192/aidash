@@ -3110,6 +3110,7 @@ async fn compact_decided_execution(
 				input_revision: run.observed_input_seq,
 				worker: token,
 				input_digest: compaction_input_digest(&candidate, fitting.budget, fitting.pinned)?,
+				cycle: run.recovery.decision_cycle,
 			};
 			let disclosure = compaction_disclosure(&candidate, fitting.pinned);
 			let decision = Decision {

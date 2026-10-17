@@ -1,6 +1,7 @@
 // reinhardt-migration-source: 1
 //! Decision Evidence v3 (#108 Part B, ADR 0056). A charged attempt commits to
-//! the definitions of the questions it asked, a decision whose pruning the
+//! the definitions of the questions it asked and records the Run's resume cycle
+//! its decision identity commits to, a decision whose pruning the
 //! Summary Stage completed is `staged`, and incomplete durable answers have a
 //! reason of their own. `staged` is final like `applied` and `shadow`.
 //! Aidash is undeployed, so v2 rows are not migrated: the new attempt column
@@ -17,6 +18,11 @@ pub(super) fn migration() -> Migration {
 			column: ColumnDefinition::new("question_digest", FieldType::Text).with_not_null(true),
 			mysql_options: None,
 		})
+		.add_operation(Operation::AddColumn {
+			table: "decision_attempts".into(),
+			column: ColumnDefinition::new("cycle", FieldType::Integer).with_not_null(true),
+			mysql_options: None,
+		})
 		.add_operation(Operation::DropConstraint {
 			table: "decision_attempts".into(),
 			constraint_name: "decision_attempt_shape".into(),
@@ -25,7 +31,7 @@ pub(super) fn migration() -> Migration {
 			table: "decision_attempts".into(),
 			constraint: Constraint::Check {
 				name: "decision_attempt_shape".into(),
-				expression: "mode IN ('shadow', 'enforce') AND step >= 0 AND input_revision >= 0 AND run_revision >= 0 AND request_digest LIKE 'sha256:%' AND state_digest LIKE 'sha256:%' AND input_digest LIKE 'sha256:%' AND question_digest LIKE 'sha256:%' AND jsonb_typeof(questions) = 'array' AND jsonb_array_length(questions) > 0 AND jsonb_typeof(owner_receipts) = 'object' AND owner_receipts <> '{}'::jsonb AND (answers IS NULL OR jsonb_typeof(answers) = 'object')".into(),
+				expression: "mode IN ('shadow', 'enforce') AND step >= 0 AND cycle >= 0 AND input_revision >= 0 AND run_revision >= 0 AND request_digest LIKE 'sha256:%' AND state_digest LIKE 'sha256:%' AND input_digest LIKE 'sha256:%' AND question_digest LIKE 'sha256:%' AND jsonb_typeof(questions) = 'array' AND jsonb_array_length(questions) > 0 AND jsonb_typeof(owner_receipts) = 'object' AND owner_receipts <> '{}'::jsonb AND (answers IS NULL OR jsonb_typeof(answers) = 'object')".into(),
 			},
 		})
 		.add_operation(Operation::DropConstraint {

@@ -905,13 +905,105 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
-	pub fn compactor(&self, f: &Federation) -> crate::generation::compaction::ApprovedCompactor {
-		crate::generation::compaction::ApprovedCompactor {
-			access: self.access.clone(),
-			store: f.store.clone(),
-			run: self.run.clone(),
-			remote: self.remote.clone(),
+	/// The compaction Decider a remote or generated Run must use instead of its
+	/// Agent's Binding: the Decider pinned for this executing Node, or the one
+	/// every generated ancestor's policy names (ADR 0042).
+	pub(crate) async fn chain_decider(
+		&self,
+		f: &Federation,
+	) -> aidash_application::Result<aidash_application::generation::compaction::Chain> {
+		use aidash_application::generation::compaction::{self, Chain, remote};
+		let mut access = self.access.write().await;
+		if let Some(federation) = &self.remote {
+			let mut scope =
+				crate::bootstrap::generation_remote_compaction_scope(&mut access, federation);
+			return Ok(Chain::Generated(
+				remote::decider(&mut scope, &self.run).await?.map(Box::new),
+			));
 		}
+		compaction::decider(
+			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
+			&f.store.node_id,
+			&self.generation_context(),
+		)
+		.await
+	}
+
+	/// Charge the owners beside the Run itself for one Decision Attempt: the
+	/// Home of a remote Run, or every generated ancestor. Returns their receipts
+	/// and, for a remote Run, the Home's open reservation to settle once the
+	/// attempt's result is kept.
+	pub(crate) async fn charge_decision(
+		&self,
+		f: &Federation,
+		decider: &EntityRef,
+		config: &aidash_domain::decision::DeciderConfig,
+		attempt: Uuid,
+		request_digest: &str,
+		questions: usize,
+	) -> aidash_application::Result<(
+		std::collections::BTreeMap<String, Uuid>,
+		Option<aidash_domain::generation::dispatch::Input>,
+	)> {
+		use aidash_application::generation::compaction::{self, remote};
+		let mut access = self.access.write().await;
+		if let Some(federation) = &self.remote {
+			let mut scope =
+				crate::bootstrap::generation_remote_compaction_scope(&mut access, federation);
+			let reservation = remote::admit(
+				&mut scope,
+				&self.run,
+				attempt,
+				request_digest.to_owned(),
+				config,
+			)
+			.await?;
+			return Ok((
+				std::collections::BTreeMap::from([(
+					format!("home/runs/{}", self.run.id),
+					reservation.usage.admission_id,
+				)]),
+				Some(reservation),
+			));
+		}
+		let tenancy = access.tenancy()?;
+		let bytes = i64::try_from(config.state_budget.max_request_bytes()).map_err(|_| {
+			aidash_application::Error::Invalid("decision request bound overflow".into())
+		})?;
+		let questions = i32::try_from(questions).map_err(|_| {
+			aidash_application::Error::Invalid("too many decision questions".into())
+		})?;
+		let receipts = compaction::charge(
+			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
+			&crate::bootstrap::generation_compaction_repository(&f.store, tenancy),
+			&self.generation_context(),
+			decider,
+			attempt,
+			bytes,
+			questions,
+		)
+		.await?;
+		Ok((receipts, None))
+	}
+
+	/// Settle the Home's reservation of a remote Decision Attempt.
+	pub(crate) async fn settle_decision(
+		&self,
+		reservation: &aidash_domain::generation::dispatch::Input,
+	) -> aidash_application::Result<()> {
+		let federation = self
+			.remote
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let mut access = self.access.write().await;
+		let mut scope =
+			crate::bootstrap::generation_remote_compaction_scope(&mut access, federation);
+		aidash_application::generation::compaction::remote::settle(
+			&mut scope,
+			&self.run,
+			reservation,
+		)
+		.await
 	}
 
 	pub async fn reserve_inference(
@@ -1154,6 +1246,19 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 			summarizer,
 		)
 		.await
+	}
+}
+impl Guard {
+	fn generation_context(&self) -> aidash_domain::generation::compaction::Context {
+		let run = &self.run;
+		aidash_domain::generation::compaction::Context {
+			run: run.id,
+			task: run.task_id,
+			agent: EntityRef {
+				id: run.agent_id.clone(),
+				version: run.agent_version.clone(),
+			},
+		}
 	}
 }
 impl SummaryApproval<'_> {

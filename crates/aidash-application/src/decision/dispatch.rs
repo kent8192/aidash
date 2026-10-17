@@ -39,7 +39,7 @@ pub fn decision_identity(
 ) -> Uuid {
 	stable_id(&json!({
 		"contract":"aidash.decision/1", "node":boundary.node, "run":boundary.run,
-		"step":boundary.step, "input_revision":boundary.input_revision,
+		"step":boundary.step, "cycle":boundary.cycle, "input_revision":boundary.input_revision,
 		"input_digest":boundary.input_digest, "decider":decider,
 		"binding_restrictions":binding_restrictions, "state":state,
 		"sources":sources, "window":window,
@@ -237,9 +237,11 @@ impl BatchResult {
 			AttemptStatus::Failed => Err(Error::Invalid(
 				"recovered decision attempt has invalid answers".into(),
 			)),
-			AttemptStatus::Uncertain | AttemptStatus::NotDispatched => Err(Error::Conflict(
-				"charged decision attempt requires journal recovery; redispatch is forbidden"
-					.into(),
+			// A charged attempt whose result is unknown is never dispatched
+			// again in this decision; the Run pauses, and a resume starts a
+			// new decision in the next cycle.
+			AttemptStatus::Uncertain | AttemptStatus::NotDispatched => Err(Error::Context(
+				aidash_domain::context::recovery::Failure::DeciderUnavailable,
 			)),
 		}
 	}

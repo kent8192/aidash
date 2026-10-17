@@ -1,12 +1,8 @@
 //! Remote compaction releases local authority before bounded allowance RPCs.
-use crate::{
-	Result,
-	ports::{CompactionQuestions, catalog::CatalogScope},
-};
-use aidash_domain::{Run, generation::dispatch::Input, registry::CompactorConfig};
+use crate::{Result, ports::catalog::CatalogScope};
+use aidash_domain::{Run, generation::dispatch::Input};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[async_trait]
@@ -26,25 +22,4 @@ pub trait RemoteCompactionAuthority: Send {
 	) -> Result<Input>;
 	/// Persist and deliver Settled with no reported usage, retaining the charge.
 	async fn settle(&mut self, input: &Input) -> Result<()>;
-}
-
-#[async_trait]
-pub trait RemoteCompactionTransport: Send + Sync {
-	/// Fails before any allowance is reserved when the Tenant has no usable
-	/// binding; it neither mints a token nor reads Key Material.
-	async fn check_credential(&self) -> Result<()>;
-	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize>;
-	/// One provider call as the admitted attempt, which is its call identity.
-	async fn ask(
-		&self,
-		attempt: Uuid,
-		state: &Value,
-		questions: &CompactionQuestions,
-	) -> Result<Value>;
-}
-pub trait RemoteCompactionProvider: Send + Sync {
-	fn approved_remote(
-		&self,
-		config: CompactorConfig,
-	) -> Result<Arc<dyn RemoteCompactionTransport>>;
 }

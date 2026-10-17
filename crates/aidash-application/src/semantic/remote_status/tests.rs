@@ -61,7 +61,7 @@ fn receipt() -> Value {
 				digest: "digest".into(),
 				configuration_digest: "configuration".into()
 			}),
-			compactor: None,
+			decider: None,
 			summarizer: None
 		},
 		retrieved_at: DateTime::from_timestamp(1000, 0).unwrap(),

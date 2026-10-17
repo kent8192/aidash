@@ -17,6 +17,27 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use serde_json::json;
 
+/// A compaction Decider configuration as a definition declares it.
+pub(crate) fn decider_config() -> serde_json::Value {
+	serde_json::to_value(aidash_domain::decision::DeciderConfig {
+		hook: aidash_domain::decision::Hook::Compaction,
+		answer_type: aidash_domain::decision::AnswerType::Noul,
+		description: "Keep needed history".into(),
+		provider_contract: aidash_domain::decision::PROVIDER.into(),
+		provider_credential: "openrouter".into(),
+		model: "typesafe/jev-1.14".into(),
+		builder: aidash_domain::decision::BUILDER.into(),
+		option_source: aidash_domain::decision::OPTION_SOURCE.into(),
+		rule: aidash_domain::decision::RULE.into(),
+		keep_threshold: aidash_domain::decision::Probability::half(),
+		mode: aidash_domain::decision::Mode::Enforce,
+		max_calls_per_run: 20,
+		state_retention: Default::default(),
+		state_budget: Default::default(),
+	})
+	.expect("a Decider configuration serializes")
+}
+
 pub(crate) fn entry(id: &str, kind: &str, config: serde_json::Value) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"schema":{"type":"object"},"config":config})).unwrap()
 }

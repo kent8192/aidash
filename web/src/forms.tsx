@@ -377,13 +377,28 @@ export function EntityForm({
                       model_version: s("model_version"),
                       dimensions: Number(s("dimensions")),
                     }
-                  : kind === "compactor"
+                  : kind === "decider"
                     ? {
+                        // A compaction Decider: only the model, mode, call
+                        // limit and state retention are chosen here; the
+                        // contract and rule are fixed by this Node.
+                        hook: "compaction",
+                        answer_type: "noul",
+                        description: s("description_en"),
+                        provider_contract: "typesafe.jev/1",
                         provider_credential: "openrouter",
                         model: s("model_id"),
-                        max_request_bytes: Number(s("max_request_bytes")),
-                        max_questions: Number(s("max_questions")),
-                        max_response_bytes: Number(s("max_response_bytes")),
+                        builder: "aidash.compaction/2",
+                        option_source: "history_event/1",
+                        rule: "compaction.keep/1",
+                        // The keep threshold 0.5 as binary64 bits.
+                        keep_threshold: "3fe0000000000000",
+                        mode: s("decider_mode"),
+                        max_calls_per_run: Number(s("max_calls_per_run")),
+                        state_retention: {
+                          enabled: d.has("retain_state"),
+                          days: Number(s("retention_days")),
+                        },
                       }
                     : (memoryConfiguration(kind, d) ?? JSON.parse(s("config")));
           const entry = {
@@ -447,7 +462,7 @@ export function EntityForm({
               "bundle",
               "cluster",
               "node",
-              "compactor",
+              "decider",
               "embedding",
               "memory",
               "source",
@@ -620,50 +635,50 @@ export function EntityForm({
               </Field>
             </div>
           </>
-        ) : kind === "compactor" ? (
+        ) : kind === "decider" ? (
           <>
-            <Hint>{t("compactorHelp")}</Hint>
+            <Hint>{t("deciderHelp")}</Hint>
             <Field label={t("model")}>
               <Input
                 name="model_id"
                 required
                 maxLength={128}
                 pattern="typesafe/jev-(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)"
-                defaultValue="typesafe/jev-1.13"
+                defaultValue="typesafe/jev-1.14"
               />
             </Field>
             <div className="grid min-w-0 gap-4 sm:grid-cols-3">
-              <Field label={t("compactorRequestBytes")}>
-                <Input
-                  name="max_request_bytes"
-                  type="number"
-                  required
-                  min={1024}
-                  max={1048576}
-                  defaultValue={200000}
-                />
+              <Field label={t("deciderMode")}>
+                <NativeSelect name="decider_mode" defaultValue="enforce">
+                  <option value="enforce">{t("deciderModeEnforce")}</option>
+                  <option value="shadow">{t("deciderModeShadow")}</option>
+                </NativeSelect>
               </Field>
-              <Field label={t("compactorQuestions")}>
+              <Field label={t("deciderCalls")}>
                 <Input
-                  name="max_questions"
+                  name="max_calls_per_run"
                   type="number"
                   required
                   min={1}
-                  max={1024}
-                  defaultValue={200}
+                  max={1000}
+                  defaultValue={20}
                 />
               </Field>
-              <Field label={t("compactorResponseBytes")}>
+              <Field label={t("deciderRetentionDays")}>
                 <Input
-                  name="max_response_bytes"
+                  name="retention_days"
                   type="number"
                   required
-                  min={128}
-                  max={1048576}
-                  defaultValue={16000}
+                  min={1}
+                  max={30}
+                  defaultValue={7}
                 />
               </Field>
             </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" name="retain_state" />
+              {t("deciderRetainState")}
+            </label>
           </>
         ) : ["reranker", "tokenizer"].includes(kind) ? (
           <MemoryRegistryFields kind={kind} entries={data.registry} />
@@ -799,7 +814,7 @@ export function AssignForm({
               agent: { id: a.entity.id, version: a.entity.version },
             });
           }
-          const compactor = String(d.get("compactor") ?? "").trim();
+          const decider = String(d.get("decider") ?? "").trim();
           const input = request.current
             ? JSON.parse(request.current.binding)
             : {
@@ -813,7 +828,7 @@ export function AssignForm({
                       ...(nativeMemoryRequest(d)
                         ? { native: nativeMemoryRequest(d) }
                         : {}),
-                      ...(compactor ? { compactor: ref(compactor) } : {}),
+                      ...(decider ? { decider: ref(decider) } : {}),
                     }
                   : { mode: "disabled" },
               };
@@ -929,11 +944,11 @@ export function AssignForm({
                 </label>
                 <label className="grid gap-1.5 text-xs font-medium text-muted-foreground">
                   {ja
-                    ? "任意: 実行 Node の承認済み compactor"
-                    : "Optional: approved compactor at the execution node"}
+                    ? "任意: 実行 Node で承認済みの圧縮 Decider"
+                    : "Optional: compaction Decider approved at the execution node"}
                   <Input
-                    name="compactor"
-                    placeholder="compactor-id@1.0.0"
+                    name="decider"
+                    placeholder="decider-id@1.0.0"
                     pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
                     className="font-mono text-xs"
                   />

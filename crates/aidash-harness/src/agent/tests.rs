@@ -1,8 +1,6 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
-use aidash_application::ports::{
-	CompactionClassifier, CompactionQuestions, InferenceProgressSink, ModelProvider,
-};
+use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_domain::capabilities::skills::SkillMetadata;
 use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
@@ -1081,9 +1079,6 @@ impl ExecutionEnvironment for Backend {
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		Ok(Arc::new(self.clone()))
 	}
-	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
-		Ok(Box::new(self.clone()))
-	}
 	async fn compaction_decider(
 		&self,
 		run: &Run,
@@ -1221,20 +1216,6 @@ impl ModelProvider for Backend {
 			},
 			..Default::default()
 		})
-	}
-}
-#[async_trait]
-impl CompactionClassifier for Backend {
-	async fn ask(&self, _state: &Value, questions: &CompactionQuestions) -> Result<Value> {
-		let Some(retention) = self.0.jev_retention else {
-			unexpected("compaction")
-		};
-		self.record("jev.ask");
-		let answers: serde_json::Map<_, _> = questions
-			.keys()
-			.map(|key| (key.clone(), json!({"noul":retention})))
-			.collect();
-		Ok(json!({"answers":answers}))
 	}
 }
 #[async_trait]

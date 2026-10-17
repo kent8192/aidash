@@ -379,7 +379,7 @@ pub fn absorbable(event: &ContextEvent) -> bool {
 }
 
 /// A failed tool call: its result carries a non-null top-level `error`, or the
-/// MCP `is_error`/`isError` flag the compactor and decision views also honor.
+/// MCP `is_error`/`isError` flag the decision view also honors.
 fn failed_result(result: &Value) -> bool {
 	result.get("error").is_some_and(|error| !error.is_null())
 		|| result.get("is_error") == Some(&Value::Bool(true))

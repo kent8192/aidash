@@ -481,7 +481,7 @@ function PolicyEditor({
     config?.cluster ? key(config.cluster) : "",
   );
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
-  const [compactor, setCompactor] = useState(
+  const [decider, setDecider] = useState(
     initial?.compaction ? key(initial.compaction.provider) : "",
   );
   const [embedding, setEmbedding] = useState(
@@ -489,7 +489,7 @@ function PolicyEditor({
   );
   const [error, setError] = useState("");
   const embeddings = entries.filter((entry) => entry.kind === "embedding");
-  const compactors = entries.filter((entry) => entry.kind === "compactor");
+  const deciders = entries.filter((entry) => entry.kind === "decider");
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
   const window = Number(modelEntry?.config.context_window ?? 0);
@@ -561,9 +561,9 @@ function PolicyEditor({
         remote: remote as GenerationRemoteApprovals,
         enabled: form.has("enabled"),
         approval_required: form.has("approval"),
-        compaction: compactor
+        compaction: decider
           ? {
-              provider: entityRef(compactor),
+              provider: entityRef(decider),
               calls_per_agent: Number(text("calls_per_agent")),
               call_budget: Number(text("call_budget")),
             }
@@ -795,27 +795,26 @@ function PolicyEditor({
         title={t("generationCompaction")}
         description={t("generationCompactionHelp")}
       >
-        <Field label={t("generationCompactor")}>
+        <Field label={t("generationDecider")}>
           <NativeSelect
-            name="compactor"
-            value={compactor}
-            onChange={(e) => setCompactor(e.target.value)}
+            name="decider"
+            value={decider}
+            onChange={(e) => setDecider(e.target.value)}
           >
             <option value="">{t("generationCompactionDisabled")}</option>
-            {compactors.map((entry) => (
+            {deciders.map((entry) => (
               <option key={key(entry)} value={key(entry)}>
                 {entityLabel(entry)}
               </option>
             ))}
-            {compactor &&
-              !compactors.some((entry) => key(entry) === compactor) && (
-                <option value={compactor}>
-                  {t("generationReferenceUnavailable")}
-                </option>
-              )}
+            {decider && !deciders.some((entry) => key(entry) === decider) && (
+              <option value={decider}>
+                {t("generationReferenceUnavailable")}
+              </option>
+            )}
           </NativeSelect>
         </Field>
-        {compactor && (
+        {decider && (
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label={t("generationCompactionPerAgent")}>
               <Input
@@ -1023,7 +1022,7 @@ function RequestDetail({
         [t("generationMaxConcurrent"), pinned.data.limits.max_concurrent],
         [t("generationMaxDepth"), pinned.data.limits.max_depth],
         [
-          t("generationCompactor"),
+          t("generationDecider"),
           pinned.data.compaction
             ? entryLabel(pinned.data.compaction.provider)
             : t("generationCompactionDisabled"),

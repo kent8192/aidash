@@ -1,10 +1,9 @@
 use super::*;
-use crate::ports::{
-	catalog::CatalogScope, generation::compaction::remote::RemoteCompactionTransport,
-};
+use crate::ports::catalog::CatalogScope;
 use aidash_domain::{
 	RunControl, Task, TaskStatus,
 	context::Context,
+	decision::DeciderConfig,
 	federation::execution::{Description, Inspection},
 	generation::{
 		dispatch::Input,
@@ -18,6 +17,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rstest::{fixture, rstest};
+use serde_json::{Value, json};
 use std::{
 	collections::VecDeque,
 	sync::{Arc, Mutex},
@@ -36,16 +36,12 @@ struct State {
 	events: Vec<String>,
 	failure: Option<&'static str>,
 	pause: Option<&'static str>,
-	factory_fails: bool,
-	credential_fails: bool,
-	oversized: bool,
-	provider_fails: bool,
 	input: Option<Input>,
 	settled: usize,
 }
 fn reference() -> EntityRef {
 	EntityRef {
-		id: "compactor".into(),
+		id: "decider".into(),
 		version: "1.0.0".into(),
 	}
 }
@@ -73,9 +69,10 @@ fn world() -> World {
 		lease_until: None,
 		updated_at: now,
 	};
-	let entry:Entry=serde_json::from_value(json!({"id":"compactor","version":"1.0.0","kind":"compactor",
-        "name":{"en":"Compactor"},"description":{},"config":{"provider_credential":"openrouter",
-        "model":"typesafe/jev-1.13","max_request_bytes":2048,"max_questions":10,"max_response_bytes":1024}})).unwrap();
+	let entry: Entry =
+		serde_json::from_value(json!({"id":"decider","version":"1.0.0","kind":"decider",
+		"name":{"en":"Decider"},"description":{},"config":crate::test_support::decider_config()}))
+		.unwrap();
 	let provider = Provider {
 		node_id: "aidash://executor".into(),
 		entry: reference(),
@@ -111,7 +108,7 @@ fn world() -> World {
 			agent: entry.clone(),
 			definitions: vec![],
 			semantic_memory: 1,
-			compactor: Some(reference()),
+			decider: Some(reference()),
 		},
 		expires_at: DateTime::from_timestamp(2000, 0).unwrap(),
 		semantic: Binding::RequiredHome {
@@ -122,7 +119,7 @@ fn world() -> World {
 			index_revision: 1,
 			index_digest: digest(&json!({})),
 			embedding: Box::new(provider.clone()),
-			compactor: Some(Box::new(provider)),
+			decider: Some(Box::new(provider)),
 			summarizer: None,
 		},
 	};
@@ -137,10 +134,6 @@ fn world() -> World {
 		events: vec![],
 		failure: None,
 		pause: None,
-		factory_fails: false,
-		credential_fails: false,
-		oversized: false,
-		provider_fails: false,
 		input: None,
 		settled: 0,
 	})))
@@ -207,7 +200,7 @@ impl RemoteCompactionAuthority for Authority {
 		assert!(!attempt.is_nil());
 		let description: Description = serde_json::from_value(state.description.clone()).unwrap();
 		let Binding::RequiredHome {
-			compactor: Some(provider),
+			decider: Some(provider),
 			..
 		} = description.semantic
 		else {
@@ -273,8 +266,8 @@ impl CatalogScope for Authority {
 		}
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
-		assert_eq!(action, "compaction.invoke");
-		self.0.point("compaction.invoke").await?;
+		assert_eq!(action, "decision.invoke");
+		self.0.point("decision.invoke").await?;
 		if self.0.0.lock().unwrap().denied {
 			return Err(Error::Forbidden);
 		}
@@ -290,80 +283,30 @@ impl CatalogScope for Authority {
 		panic!("the approved digests are checked explicitly")
 	}
 }
-struct Factory(World);
-struct Transport(World);
-impl RemoteCompactionProvider for Factory {
-	fn approved_remote(
-		&self,
-		config: CompactorConfig,
-	) -> Result<Arc<dyn RemoteCompactionTransport>> {
-		assert_eq!(config.max_request_bytes, 2048);
-		let mut state = self.0.0.lock().unwrap();
-		state.events.push("provider.approved".into());
-		if state.factory_fails {
-			return Err(Error::Invalid("invalid provider".into()));
-		}
-		Ok(Arc::new(Transport(self.0.clone())))
-	}
+fn config() -> DeciderConfig {
+	serde_json::from_value(crate::test_support::decider_config()).unwrap()
 }
-#[async_trait]
-impl RemoteCompactionTransport for Transport {
-	async fn check_credential(&self) -> Result<()> {
-		let mut state = self.0.0.lock().unwrap();
-		state.events.push("provider.credential".into());
-		if state.credential_fails {
-			return Err(Error::RemoteSemantic(Failure::Configuration));
-		}
-		Ok(())
-	}
-	fn check_request(&self, _: &Value, questions: &CompactionQuestions) -> Result<usize> {
-		assert_eq!(questions.len(), 2);
-		let mut state = self.0.0.lock().unwrap();
-		state.events.push("provider.check".into());
-		if state.oversized {
-			return Err(Error::Invalid("oversized request".into()));
-		}
-		Ok(100)
-	}
-	async fn ask(
-		&self,
-		attempt: Uuid,
-		state: &Value,
-		questions: &CompactionQuestions,
-	) -> Result<Value> {
-		assert_eq!(state, &json!({"history":"bounded"}));
-		assert_eq!(questions.len(), 2);
-		{
-			let data = self.0.0.lock().unwrap();
-			assert!(!data.held);
-			// The provider call is the attempt that Home admitted.
-			assert_eq!(attempt, data.input.as_ref().unwrap().usage.attempt_id);
-		}
-		self.0.point("provider.ask").await?;
-		if self.0.0.lock().unwrap().provider_fails {
-			return Err(Error::RemoteSemantic(Failure::Unavailable));
-		}
-		Ok(json!({"probabilities":[0.25,0.75]}))
-	}
+async fn resolve(world: &World) -> Result<Option<Entry>> {
+	decider(&mut Authority(world.clone()), &world.run()).await
 }
-async fn invoke(world: &World) -> Result<Value> {
-	let questions = json!({"retain":"Keep?","discard":"Drop?"});
-	ask(
+async fn admit_attempt(world: &World) -> Result<Input> {
+	admit(
 		&mut Authority(world.clone()),
-		&Factory(world.clone()),
 		&world.run(),
-		&json!({"history":"bounded"}),
-		questions.as_object().unwrap(),
+		Uuid::from_u128(9),
+		format!("sha256:{}", "a".repeat(64)),
+		&config(),
 	)
 	.await
 }
+async fn settle_attempt(world: &World, input: &Input) -> Result<()> {
+	settle(&mut Authority(world.clone()), &world.run(), input).await
+}
 #[rstest]
 #[tokio::test]
-async fn approved_remote_call_preserves_exact_body_maximum_charge_and_lease_order(world: World) {
-	assert_eq!(
-		invoke(&world).await.unwrap(),
-		json!({"probabilities":[0.25,0.75]})
-	);
+async fn the_pinned_decider_is_resolved_under_a_fresh_lease_and_its_approval(world: World) {
+	let entry = resolve(&world).await.unwrap().unwrap();
+	assert_eq!((&*entry.id, &*entry.kind), ("decider", "decider"));
 	let state = world.0.lock().unwrap();
 	assert_eq!(
 		state.events,
@@ -372,28 +315,10 @@ async fn approved_remote_call_preserves_exact_body_maximum_charge_and_lease_orde
 			"refresh",
 			"description",
 			"catalog",
-			"compaction.invoke",
-			"provider.approved",
-			"provider.credential",
-			"provider.check",
-			"suspend",
-			"admit",
-			"provider.ask",
-			"settle",
-			"refresh"
+			"decision.invoke"
 		]
 	);
-	let input = state.input.as_ref().unwrap();
-	assert_eq!(input.usage.reserved_tokens, 3072);
-	assert_eq!(state.settled, 1);
-	assert!(state.held);
-	assert_eq!(
-		input.usage.input_digest,
-		digest(
-			&json!({"state":{"history":"bounded"},"questions":{"retain":"Keep?","discard":"Drop?"}})
-		)
-	);
-	assert_eq!(input.boundary, json!({"step":7}));
+	assert!(state.input.is_none());
 }
 #[rstest]
 #[case("node")]
@@ -401,57 +326,40 @@ async fn approved_remote_call_preserves_exact_body_maximum_charge_and_lease_orde
 #[case("configuration_digest")]
 #[case("kind")]
 #[tokio::test]
-async fn changed_approved_provider_never_reserves_or_calls(world: World, #[case] changed: &str) {
+async fn a_changed_pinned_decider_is_refused(world: World, #[case] changed: &str) {
 	{
 		let mut state = world.0.lock().unwrap();
 		match changed {
-			"node" => {
-				state.description["semantic"]["compactor"]["node_id"] = json!("aidash://other")
-			}
+			"node" => state.description["semantic"]["decider"]["node_id"] = json!("aidash://other"),
 			"definition_digest" => {
-				state.description["semantic"]["compactor"]["digest"] = json!("wrong")
+				state.description["semantic"]["decider"]["digest"] = json!("wrong")
 			}
 			"configuration_digest" => {
-				state.description["semantic"]["compactor"]["configuration_digest"] = json!("wrong")
+				state.description["semantic"]["decider"]["configuration_digest"] = json!("wrong")
 			}
 			"kind" => state.entry.kind = "model".into(),
 			_ => panic!("case"),
 		}
 	}
 	assert!(matches!(
-		invoke(&world).await,
+		resolve(&world).await,
 		Err(Error::RemoteSemantic(Failure::Configuration))
 	));
-	let state = world.0.lock().unwrap();
-	assert!(state.input.is_none());
-	assert_eq!(state.settled, 0);
-	assert!(
-		!state
-			.events
-			.iter()
-			.any(|event| event == "provider.approved" || event == "provider.ask")
-	);
 }
 #[rstest]
 #[case(false)]
 #[case(true)]
 #[tokio::test]
-async fn missing_home_compactor_preserves_context_budget_failure(
-	world: World,
-	#[case] disabled: bool,
-) {
+async fn a_home_without_a_decider_leaves_the_run_unpruned(world: World, #[case] disabled: bool) {
 	{
 		let mut state = world.0.lock().unwrap();
 		if disabled {
 			state.description["semantic"] = json!({"mode":"disabled"});
 		} else {
-			state.description["semantic"]["compactor"] = Value::Null;
+			state.description["semantic"]["decider"] = Value::Null;
 		}
 	}
-	assert!(matches!(
-		invoke(&world).await,
-		Err(Error::RemoteSemantic(Failure::ContextBudget))
-	));
+	assert!(resolve(&world).await.unwrap().is_none());
 	assert_eq!(
 		world.0.lock().unwrap().events,
 		["suspend", "refresh", "description"]
@@ -461,10 +369,7 @@ async fn missing_home_compactor_preserves_context_budget_failure(
 #[case("approval")]
 #[case("permission")]
 #[tokio::test]
-async fn inherited_and_current_authority_are_required_before_provider_work(
-	world: World,
-	#[case] denied: &str,
-) {
+async fn inherited_and_current_authority_are_required(world: World, #[case] denied: &str) {
 	{
 		let mut state = world.0.lock().unwrap();
 		if denied == "approval" {
@@ -473,112 +378,103 @@ async fn inherited_and_current_authority_are_required_before_provider_work(
 			state.denied = true;
 		}
 	}
-	assert!(matches!(invoke(&world).await, Err(Error::Forbidden)));
-	let state = world.0.lock().unwrap();
-	assert!(state.input.is_none());
-	assert!(
-		!state
-			.events
-			.iter()
-			.any(|event| event == "provider.approved")
-	);
+	assert!(matches!(resolve(&world).await, Err(Error::Forbidden)));
 }
 #[rstest]
-#[case("factory", Failure::Configuration)]
-#[case("credential", Failure::Configuration)]
-#[case("request", Failure::ContextBudget)]
 #[tokio::test]
-async fn provider_preflight_failure_does_not_admit_an_allowance(
-	world: World,
-	#[case] failed: &str,
-	#[case] expected: Failure,
-) {
+async fn lost_worker_authority_resolves_nothing(world: World) {
+	world.0.lock().unwrap().available = VecDeque::from([false]);
+	assert!(matches!(resolve(&world).await, Err(Error::Forbidden)));
+	assert!(!world.0.lock().unwrap().held);
+}
+#[rstest]
+#[tokio::test]
+async fn an_attempt_is_admitted_at_the_largest_request_and_settled_after_its_result(world: World) {
+	let input = admit_attempt(&world).await.unwrap();
 	{
-		let mut state = world.0.lock().unwrap();
-		match failed {
-			"factory" => state.factory_fails = true,
-			"credential" => state.credential_fails = true,
-			"request" => state.oversized = true,
-			_ => panic!("case"),
-		}
+		let state = world.0.lock().unwrap();
+		assert_eq!(state.events, ["suspend", "admit", "refresh"]);
+		assert!(state.held);
+		assert_eq!(input.usage.attempt_id, Uuid::from_u128(9));
+		assert_eq!(input.usage.reserved_tokens, 600_000 + 1024);
+		assert_eq!(
+			input.usage.input_digest,
+			format!("sha256:{}", "a".repeat(64))
+		);
+		assert_eq!(input.boundary, json!({"step":7}));
+		// The reservation stays open while the attempt is dispatched.
+		assert_eq!(state.settled, 0);
 	}
-	assert!(matches!(invoke(&world).await,Err(Error::RemoteSemantic(actual)) if actual==expected));
+	settle_attempt(&world, &input).await.unwrap();
 	let state = world.0.lock().unwrap();
-	assert!(state.input.is_none());
-	assert!(!state.events.iter().any(|event| event == "admit"));
+	assert_eq!(
+		state.events,
+		[
+			"suspend", "admit", "refresh", "suspend", "settle", "refresh"
+		]
+	);
+	assert_eq!(state.settled, 1);
+	assert!(state.held);
 }
 #[rstest]
 #[tokio::test]
-async fn provider_failure_still_settles_the_full_charge_and_refreshes_authority(world: World) {
-	world.0.lock().unwrap().provider_fails = true;
+async fn authority_lost_after_settling_keeps_the_charge(world: World) {
+	world.0.lock().unwrap().available = VecDeque::from([true, false]);
+	let input = admit_attempt(&world).await.unwrap();
 	assert!(matches!(
-		invoke(&world).await,
-		Err(Error::RemoteSemantic(Failure::Unavailable))
+		settle_attempt(&world, &input).await,
+		Err(Error::Forbidden)
 	));
 	let state = world.0.lock().unwrap();
 	assert_eq!(state.settled, 1);
-	assert!(state.held);
-	assert_eq!(state.events.last().unwrap(), "refresh");
-}
-#[rstest]
-#[case(false)]
-#[case(true)]
-#[tokio::test]
-async fn lost_worker_authority_preserves_the_existing_failure_boundary(
-	world: World,
-	#[case] after_call: bool,
-) {
-	world.0.lock().unwrap().available = if after_call {
-		VecDeque::from([true, false])
-	} else {
-		VecDeque::from([false])
-	};
-	assert!(matches!(invoke(&world).await, Err(Error::Forbidden)));
-	let state = world.0.lock().unwrap();
 	assert!(!state.held);
-	assert_eq!(state.settled, usize::from(after_call));
-	assert_eq!(state.input.is_some(), after_call);
 }
 #[rstest]
 #[case("suspend")]
-#[case("refresh")]
-#[case("description")]
-#[case("catalog")]
-#[case("compaction.invoke")]
 #[case("admit")]
-#[case("settle")]
 #[tokio::test]
-async fn boundary_errors_remain_identifiable_without_extra_retries(
+async fn admission_errors_remain_identifiable_without_extra_retries(
 	world: World,
 	#[case] failed: &'static str,
 ) {
 	world.0.lock().unwrap().failure = Some(failed);
 	assert!(
-		matches!(invoke(&world).await,Err(Error::External(message)) if message==format!("{failed} failed"))
+		matches!(admit_attempt(&world).await,Err(Error::External(message)) if message==format!("{failed} failed"))
 	);
 	let state = world.0.lock().unwrap();
 	assert_eq!(state.settled, 0);
 	assert_eq!(state.events.last().unwrap(), failed);
 }
 #[rstest]
-#[case("admit", false)]
-#[case("provider.ask", true)]
-#[case("settle", true)]
 #[tokio::test]
-async fn cancellation_retains_only_the_already_admitted_allowance(
-	world: World,
-	#[case] paused: &'static str,
-	#[case] admitted: bool,
-) {
-	world.0.lock().unwrap().pause = Some(paused);
+async fn authority_lost_after_admission_keeps_the_open_charge(world: World) {
+	world.0.lock().unwrap().available = VecDeque::from([false]);
+	assert!(matches!(admit_attempt(&world).await, Err(Error::Forbidden)));
+	let state = world.0.lock().unwrap();
+	assert!(state.input.is_some());
+	assert!(!state.held);
+}
+#[rstest]
+#[tokio::test]
+async fn a_failed_settlement_is_reported(world: World) {
+	let input = admit_attempt(&world).await.unwrap();
+	world.0.lock().unwrap().failure = Some("settle");
 	assert!(
-		tokio::time::timeout(std::time::Duration::from_millis(10), invoke(&world))
+		matches!(settle_attempt(&world, &input).await,Err(Error::External(message)) if message=="settle failed")
+	);
+	assert_eq!(world.0.lock().unwrap().settled, 0);
+}
+#[rstest]
+#[tokio::test]
+async fn a_cancelled_admission_reserves_nothing(world: World) {
+	world.0.lock().unwrap().pause = Some("admit");
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_millis(10), admit_attempt(&world))
 			.await
 			.is_err()
 	);
 	let state = world.0.lock().unwrap();
 	assert!(!state.held);
-	assert_eq!(state.input.is_some(), admitted);
-	assert_eq!(state.settled, 0);
-	assert_eq!(state.events.last().unwrap(), paused);
+	assert!(state.input.is_none());
+	assert_eq!(state.events.last().unwrap(), "admit");
 }

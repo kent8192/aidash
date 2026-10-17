@@ -13,6 +13,9 @@ pub struct Boundary {
 	pub input_revision: i64,
 	pub worker: Uuid,
 	pub input_digest: String,
+	/// The Run's resume cycle (`RecoveryState::decision_cycle`).
+	#[serde(default)]
+	pub cycle: u32,
 }
 impl Boundary {
 	pub fn validate(&self) -> Result<()> {

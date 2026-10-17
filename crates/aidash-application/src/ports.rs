@@ -78,17 +78,6 @@ pub trait DeploymentObserver: Send + Sync {
 	async fn observe(&self) -> Result<aidash_domain::deployment::DeploymentInventory>;
 }
 
-/// Probability questions contain a bounded classification view, not an execution command.
-pub type CompactionQuestions = serde_json::Map<String, serde_json::Value>;
-#[async_trait]
-pub trait CompactionClassifier: Send + Sync {
-	async fn ask(
-		&self,
-		state: &serde_json::Value,
-		questions: &CompactionQuestions,
-	) -> Result<serde_json::Value>;
-}
-
 /// Embedding output must match the approved model and vector dimensions.
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {

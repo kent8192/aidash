@@ -1,9 +1,6 @@
 //! Durable operations required by the agent use case. Implementations retain
 //! lease/revision fences, transaction-scoped authority, audit, and outbox writes.
-use crate::{
-	Result,
-	ports::{CompactionClassifier, ModelProvider},
-};
+use crate::{Result, ports::ModelProvider};
 use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
@@ -450,7 +447,6 @@ pub trait ExecutionEnvironment: Send + Sync {
 		None
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
-	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
 	/// The Run's compaction Decider and the ports its decisions use under the
 	/// current lease, or `None` when the Run has no compaction Decider.
 	async fn compaction_decider(

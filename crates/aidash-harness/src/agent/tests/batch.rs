@@ -848,9 +848,6 @@ impl ExecutionEnvironment for Bench {
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		unexpected("ExecutionEnvironment.provider")
 	}
-	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
-		unexpected("ExecutionEnvironment.compactor")
-	}
 	fn binding_resolver(&self) -> &dyn BindingResolver {
 		self
 	}

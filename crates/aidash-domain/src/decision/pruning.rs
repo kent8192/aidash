@@ -10,6 +10,17 @@ use std::collections::BTreeMap;
 /// A tool result longer than this many characters is truncated to its head.
 const TRUNCATE_ABOVE: usize = 420;
 const TRUNCATED_HEAD: usize = 300;
+/// How a decision marks a tool result it cut to its head.
+const TRUNCATION_MARK: &str = "[decision compaction truncated ";
+const TRUNCATION_END: &str = "full result remains in the execution journal]";
+
+/// Whether a decision cut `result` to its head. Such a result is a string
+/// whatever its original shape; the Context Journal keeps the original.
+pub fn truncated_result(result: &serde_json::Value) -> bool {
+	result
+		.as_str()
+		.is_some_and(|text| text.contains(TRUNCATION_MARK) && text.ends_with(TRUNCATION_END))
+}
 
 /// The protection units of a history: each event's Model Turn and their number
 /// on the Native Projection Version, or none for Legacy, which counts events.
@@ -131,7 +142,7 @@ pub fn apply(
 					event: ContextEvent::Tool {
 						call: call.clone(),
 						result: json!(format!(
-							"{head}\n[decision compaction truncated {} chars of this tool result; full result remains in the execution journal]",
+							"{head}\n{TRUNCATION_MARK}{} chars of this tool result; {TRUNCATION_END}",
 							length - TRUNCATED_HEAD
 						)),
 					},

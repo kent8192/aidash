@@ -4,8 +4,9 @@
 //! One journal serves one leased Run and the exact Decider pin admitted for it.
 //! Its boundary maps `run_revision` to `runs.revision` and `input_revision` to
 //! `runs.observed_input_seq`; both must still match whenever the journal reserves,
-//! recovers or commits. The Run itself is the only owner charged here: each
-//! Decision Attempt counts against the Decider's per-Run call limit. A staged
+//! recovers or commits. Each Decision Attempt counts against the Decider's
+//! per-Run call limit, and against the `DecisionOwners` of a generated chain or
+//! RequiredHome execution. A staged
 //! decision is recorded in the transaction that adopts its summary (ADR 0056).
 use crate::{Error, Result, database::native, store::Store};
 use aidash_application::decision::StagedDecision;
@@ -34,19 +35,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 mod authority;
-pub(crate) use authority::{AdmittedAllowance, CatalogAuthority};
+pub(crate) use authority::{AdmittedAllowance, CatalogAuthority, ChainAllowance, ChainOwners};
 
 const ATTEMPTS: &str = "decision_attempts";
 const EVIDENCE: &str = "decision_evidence";
 const STATES: &str = "decision_states";
 const OUTCOMES: &str = "decision_outcomes";
 const PENDING: &str = "pending";
-const ATTEMPT_COLUMNS: [&str; 19] = [
+const ATTEMPT_COLUMNS: [&str; 20] = [
 	"id",
 	"decision_id",
 	"run_id",
 	"node",
 	"step",
+	"cycle",
 	"input_revision",
 	"input_digest",
 	"worker",
@@ -89,6 +91,7 @@ fn recovered_status(label: &str) -> Result<AttemptStatus> {
 
 fn stored_record(row: &native::Row) -> Result<(DispatchPermit, String, Option<Value>)> {
 	let questions: Vec<String> = serde_json::from_value(row.try_get("questions")?)?;
+	let cycle: i32 = row.try_get("cycle")?;
 	let record = DispatchRecord {
 		attempt: row.try_get("id")?,
 		decision: row.try_get("decision_id")?,
@@ -100,6 +103,8 @@ fn stored_record(row: &native::Row) -> Result<(DispatchPermit, String, Option<Va
 			input_revision: row.try_get("input_revision")?,
 			worker: row.try_get("worker")?,
 			input_digest: row.try_get("input_digest")?,
+			cycle: u32::try_from(cycle)
+				.map_err(|_| Error::Invalid("negative decision cycle".into()))?,
 		},
 		decider: serde_json::from_value(row.try_get("decider")?)?,
 		binding_restrictions: serde_json::from_value::<Restrictions>(
@@ -186,6 +191,8 @@ fn continues_from(
 }
 
 /// Lock the Run while `boundary.worker` holds its lease and its revisions match.
+/// `FOR NO KEY UPDATE` still orders every write of the Run, yet lets the owners
+/// charged during a reservation insert rows that reference it.
 async fn fence(tx: &mut native::Transaction, boundary: &Boundary) -> Result<()> {
 	let fenced = native::query(
 		&Query::select()
@@ -194,7 +201,7 @@ async fn fence(tx: &mut native::Transaction, boundary: &Boundary) -> Result<()> 
 			.and_where(Expr::col("id").eq(Expr::value(boundary.run)))
 			.and_where(Expr::col("lease_owner").eq(Expr::value(boundary.worker)))
 			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
-			.lock(LockType::Update)
+			.lock(LockType::NoKeyUpdate)
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_optional(&mut **tx)
@@ -287,12 +294,38 @@ pub trait CurrentAllowance: Send + Sync {
 	) -> Result<Option<ExecutionAllowance>>;
 }
 
+#[async_trait::async_trait]
+impl<T: CurrentAllowance + ?Sized> CurrentAllowance for &T {
+	async fn current(
+		&self,
+		tx: &mut native::Transaction,
+		run: &Run,
+	) -> Result<Option<ExecutionAllowance>> {
+		(**self).current(tx, run).await
+	}
+}
+
+/// The owners beside the Run itself that a Decision Attempt is charged to: every
+/// generated ancestor, or the Home of a RequiredHome execution.
+#[async_trait::async_trait]
+pub trait DecisionOwners: Send + Sync {
+	/// Charge one Decision Attempt and return each owner's receipt. A spent
+	/// budget is `decider_calls_exhausted`; nothing is dispatched after an error.
+	async fn charge(&self, record: &DispatchRecord) -> Result<BTreeMap<String, Uuid>>;
+	/// Release what `charge` kept open once the attempt's result is recorded;
+	/// the charge itself is kept.
+	async fn settle(&self, _record: &DispatchRecord) -> Result<()> {
+		Ok(())
+	}
+}
+
 /// Decision Evidence and Decision Attempts of one leased Run and its admitted Decider.
 pub struct RunDecisionJournal<'a> {
 	store: &'a Store,
 	run: Run,
 	allowance: ExecutionAllowance,
-	current: &'a dyn CurrentAllowance,
+	current: Box<dyn CurrentAllowance + 'a>,
+	owners: Option<Box<dyn DecisionOwners + 'a>>,
 }
 
 impl<'a> RunDecisionJournal<'a> {
@@ -303,15 +336,22 @@ impl<'a> RunDecisionJournal<'a> {
 		store: &'a Store,
 		run: Run,
 		allowance: ExecutionAllowance,
-		current: &'a dyn CurrentAllowance,
+		current: impl CurrentAllowance + 'a,
 	) -> Result<Self> {
 		allowance.decider.validate()?;
 		Ok(Self {
 			store,
 			run,
 			allowance,
-			current,
+			current: Box::new(current),
+			owners: None,
 		})
+	}
+
+	/// Charge `owners` too before each Decision Attempt is dispatched.
+	pub fn with_owners(mut self, owners: impl DecisionOwners + 'a) -> Self {
+		self.owners = Some(Box::new(owners));
+		self
 	}
 
 	/// The receipt owner for this Run's own call limit.
@@ -461,17 +501,26 @@ impl<'a> RunDecisionJournal<'a> {
 		if self.allowance.remaining(&current, consumed)? == 0 {
 			return Err(Error::Context(Failure::DeciderCallsExhausted));
 		}
-		let owner_receipts = BTreeMap::from([(self.owner(), Uuid::new_v4())]);
+		let mut owner_receipts = BTreeMap::from([(self.owner(), Uuid::new_v4())]);
+		// Every other owner is charged before the attempt is recorded; a spent
+		// or withdrawn owner leaves nothing to dispatch.
+		if let Some(owners) = &self.owners {
+			owner_receipts.extend(owners.charge(record).await?);
+		}
 		native::query(
 			&Query::insert()
 				.into_table(Alias::new(ATTEMPTS))
-				.columns(ATTEMPT_COLUMNS[..18].iter().copied().map(Alias::new))
+				.columns(ATTEMPT_COLUMNS[..19].iter().copied().map(Alias::new))
 				.values_panic([
 					Expr::value(record.attempt),
 					Expr::value(record.decision),
 					Expr::value(record.boundary.run),
 					Expr::value(record.boundary.node.as_str()),
 					Expr::value(record.boundary.step),
+					Expr::value(
+						i32::try_from(record.boundary.cycle)
+							.map_err(|_| Error::Invalid("decision cycle overflow".into()))?,
+					),
 					Expr::value(record.boundary.input_revision),
 					Expr::value(record.boundary.input_digest.as_str()),
 					Expr::value(record.boundary.worker),
@@ -566,7 +615,12 @@ impl<'a> RunDecisionJournal<'a> {
 		)
 		.execute(&mut *tx)
 		.await?;
-		tx.commit().await
+		tx.commit().await?;
+		// The other owners' reservations close once the result is kept.
+		if let Some(owners) = &self.owners {
+			owners.settle(record).await?;
+		}
+		Ok(())
 	}
 
 	/// The evidence must name exactly the attempts this Run charged for the
@@ -719,7 +773,7 @@ impl<'a> RunDecisionJournal<'a> {
 	}
 
 	/// State whose deadline passed keeps only its expired marker.
-	fn expire_elapsed<'s>(&self, retained: &mut Option<&'s RetainedState>, stored: &mut Evidence) {
+	fn expire_elapsed(&self, retained: &mut Option<&RetainedState>, stored: &mut Evidence) {
 		if let Some(state) = retained.take_if(|state| state.expires_at <= self.now()) {
 			stored.state = StateReference::Expired {
 				id: state.id,

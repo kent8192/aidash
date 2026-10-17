@@ -196,7 +196,7 @@ fn binding() -> Binding {
 			digest: "provider".into(),
 			configuration_digest: "configuration".into(),
 		}),
-		compactor: None,
+		decider: None,
 		summarizer: None,
 	}
 }
@@ -212,7 +212,7 @@ fn description() -> Description {
 		generation: None,
 		lineage: vec![],
 		semantic_memory: 0,
-		compactor: None,
+		decider: None,
 	};
 	Description {
 		grant_id: operation().grant_id,
