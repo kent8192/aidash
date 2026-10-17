@@ -910,16 +910,22 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.unwrap()
 			.failure_delivery()
 	);
-	let deployment_administrator = &f.config.api_token;
-	let (status, _) = common::request(
-		&app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	// The Tenant withdraws or restores its Catalog Approval.
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -940,15 +946,22 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.status
 			.is_terminal()
 	);
-	let (status, _) = common::request(
-		&app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	// The Tenant withdraws or restores its Catalog Approval.
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		2,
+		true,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	let (status, resumed) = common::request(
 		&app,
 		&token,
