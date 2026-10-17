@@ -30,6 +30,9 @@ struct Memory {
 	snapshots: Mutex<Vec<DocumentSnapshot>>,
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
+	/// A result the original call records just before the next settlement,
+	/// as one still running when a replay reads its attempt would.
+	late_settlement: Mutex<Option<Value>>,
 }
 
 #[async_trait]
@@ -153,6 +156,14 @@ impl EvidenceStore for Memory {
 		result: &Value,
 	) -> Result<()> {
 		let mut attempts = self.attempts.lock().unwrap();
+		if let Some(late) = self.late_settlement.lock().unwrap().take()
+			&& let Some(entry) = attempts.get_mut(&(run, key.into()))
+		{
+			entry.1 = AttemptState::Settled {
+				outcome: AttemptOutcome::Completed,
+				result: late,
+			};
+		}
 		match attempts.get_mut(&(run, key.into())) {
 			Some(entry) if entry.1 == AttemptState::Dispatched => {
 				entry.1 = AttemptState::Settled {
@@ -979,6 +990,32 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 		.await
 		.unwrap();
 	assert_eq!(again, unknown);
+	// When the original call settles between the replay's read and its own
+	// settlement, the replay answers with what the original recorded.
+	store
+		.reserve(
+			run,
+			&Reservation {
+				key: "k4".into(),
+				operation: Operation::Search,
+				provider: "research.brave@1".into(),
+				destination: "api.search.brave.com".into(),
+				attribution: None,
+				limits: Limits::default(),
+				budget: None,
+				source_url: None,
+			},
+		)
+		.await
+		.unwrap();
+	let original = json!({"status":"ok","operation":"search"});
+	*store.late_settlement.lock().unwrap() = Some(original.clone());
+	let replayed = research
+		.search(&call(run, "k4", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(replayed, original);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
 	let mut failing = Search::new("brave", "api.search.brave.com");
 	failing.outcome = Some(Failure::Timeout);

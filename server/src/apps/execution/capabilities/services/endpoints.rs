@@ -744,12 +744,42 @@ pub(crate) async fn approval_list(
 				.fetch_all(&mut **access.tx)
 				.await?;
 		let next_cursor = (rows.len() == 51).then(|| rows[49].id);
+		// Every view, not only the inbox, shows a pending disclosure whose Run
+		// has ended as closed, as a decision on it would close it, so no
+		// reader is offered it.
+		let waiting: Vec<Uuid> = rows
+			.iter()
+			.take(50)
+			.filter(|row| row.kind == "disclosure" && row.state == "pending")
+			.filter_map(|row| serde_json::from_value(row.data["run_id"].clone()).ok())
+			.collect();
+		let ended: std::collections::HashSet<Uuid> = if waiting.is_empty() {
+			Default::default()
+		} else {
+			crate::database::native::query_scalar(
+				&reinhardt::query::Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col(Alias::new("id")).is_in(waiting.into_iter().map(Expr::value)))
+					.and_where(
+						Expr::col(Alias::new("phase"))
+							.is_in(["COMPLETED", "FAILED", "CANCELLED"])
+							.or(Expr::col(Alias::new("control")).eq(Expr::value("CANCELLED"))),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut **access.tx)
+			.await?
+			.into_iter()
+			.collect()
+		};
 		let mut items = vec![];
 		for row in rows.into_iter().take(50) {
 			if !super::approvals::visible(&mut access, &row).await? {
 				continue;
 			}
 			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
+			let run_ended = row.kind == "disclosure" && row.state == "pending" && ended.contains(&run);
 			let expired = row.state == "pending" && row.expires_at.is_some_and(|t| t < chrono::Utc::now());
 			let data = &row.data;
 			// Designated approvers see only the scoped card, never Run output.
@@ -758,7 +788,7 @@ pub(crate) async fn approval_list(
 				"kind": row.kind,
 				"run_id": run,
 				"area_id": row.area_id,
-				"state": if expired { "expired" } else { &row.state },
+				"state": if run_ended { "closed" } else if expired { "expired" } else { &row.state },
 				"revision": row.revision,
 				"requester": row.owner,
 				"approver": data["approver"],
@@ -776,7 +806,7 @@ pub(crate) async fn approval_list(
 				"query": data["query"],
 				"decided_by": data["decided_by"],
 				"decided_at": data["decided_at"],
-				"closed_reason": data["closed_reason"],
+				"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
 			}));
 		}
 		Ok(json!({"items": items, "next_cursor": next_cursor}))

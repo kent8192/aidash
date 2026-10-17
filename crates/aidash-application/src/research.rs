@@ -537,11 +537,17 @@ impl Research<'_> {
 					.settle(call.run, call.key, AttemptOutcome::Unknown, &result)
 					.await
 				{
-					// A concurrent replay or a late settlement came first.
-					Ok(()) | Err(Error::Conflict(_)) => {}
+					Ok(()) => Some(result),
+					// A late settlement or a concurrent replay came first:
+					// answer with what it recorded.
+					Err(Error::Conflict(_)) => {
+						match self.store.attempt(call.run, call.key).await? {
+							Some(AttemptState::Settled { result, .. }) => Some(result),
+							_ => Some(result),
+						}
+					}
 					Err(error) => return Err(error),
 				}
-				Some(result)
 			}
 			Some(AttemptState::Settled { result, .. }) => Some(result),
 		})

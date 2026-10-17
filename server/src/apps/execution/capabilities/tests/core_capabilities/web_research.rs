@@ -729,6 +729,69 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 	r.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn a_disclosure_whose_run_ended_is_closed_in_every_view(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the Run waits on a disclosure approval and is then cancelled.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let approval = r.until_waiting(run.id).await;
+	{
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let sql = Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("control"), "CANCELLED")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
+			.execute(r.c.f.store.pool.driver())
+			.await
+			.unwrap();
+	}
+
+	// Act: the Thread reads the unfiltered list; the approver its inbox.
+	let (status, all) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		Value::Null,
+	)
+	.await;
+	let (inbox_status, inbox) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals?state=pending&role=approver",
+		Value::Null,
+	)
+	.await;
+
+	// Assert: no view offers it as pending.
+	assert_eq!(status, 200, "{all}");
+	let card = all["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap_or_else(|| panic!("{all}"));
+	assert_eq!(card["state"], "closed", "{card}");
+	assert_eq!(card["closed_reason"], "run_ended", "{card}");
+	assert_eq!(inbox_status, 200, "{inbox}");
+	assert!(
+		inbox["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|item| item["id"] != json!(approval)),
+		"{inbox}"
+	);
+	r.close().await;
+}
+
 const PAGE: &str = "https://research-fixture.example/strasse";
 
 /// The first model request reads the fixture page's first line; once a
