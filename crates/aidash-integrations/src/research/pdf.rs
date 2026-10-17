@@ -21,6 +21,7 @@ use hayro::{
 	hayro_syntax::{
 		LoadPdfError, Pdf,
 		object::{Dict, Name, Object},
+		reader::{Reader, ReaderExt},
 	},
 	kurbo::{Affine, BezPath, Point, Rect},
 };
@@ -268,9 +269,9 @@ fn open(pdf: &[u8]) -> Result<Pdf, Failure> {
 /// hayro does not expose which trailer names the effective dictionary, so
 /// every standard security dictionary in the file must permit extraction: a
 /// decoy that permits it cannot outvote the real one, and a forbidding decoy
-/// only refuses its own document. A file that names an encryption dictionary
-/// none of which is found, such as one written directly into a trailer, is
-/// refused rather than read.
+/// only refuses its own document. A file whose trailer names an encryption
+/// dictionary none of which is found, such as one written directly into a
+/// classic trailer, is refused rather than read.
 fn extraction_permitted(pdf: &Pdf) -> bool {
 	const EXTRACT: i64 = 1 << 4;
 	let mut found = false;
@@ -291,12 +292,38 @@ fn extraction_permitted(pdf: &Pdf) -> bool {
 			return false;
 		}
 	}
-	found
-		|| !pdf
-			.data()
-			.as_ref()
-			.windows(b"/Encrypt".len())
-			.any(|window| window == b"/Encrypt")
+	found || !names_encryption(pdf)
+}
+
+/// Whether a trailer names an encryption dictionary: a classic `trailer`
+/// dictionary, or the dictionary of a cross-reference stream, with an
+/// `Encrypt` entry. The bytes `/Encrypt` anywhere else, such as in a content
+/// stream or metadata, name nothing.
+fn names_encryption(pdf: &Pdf) -> bool {
+	const TRAILER: &[u8] = b"trailer";
+	let data = pdf.data().as_ref();
+	let classic = data
+		.windows(TRAILER.len())
+		.enumerate()
+		.filter(|(_, window)| *window == TRAILER)
+		.any(|(at, _)| {
+			let mut reader = Reader::new(data);
+			reader.jump(at + TRAILER.len());
+			reader.skip_white_spaces_and_comments();
+			reader
+				.read_without_context::<Dict<'_>>()
+				.is_some_and(|trailer| trailer.contains_key(b"Encrypt"))
+		});
+	classic
+		|| pdf.objects().into_iter().any(|object| match object {
+			Object::Stream(stream) => {
+				let dict = stream.dict();
+				dict.get::<Name<'_>>(b"Type")
+					.is_some_and(|kind| kind.as_ref() == b"XRef")
+					&& dict.contains_key(b"Encrypt")
+			}
+			_ => false,
+		})
 }
 
 fn is_standard_security(dict: &Dict<'_>) -> bool {

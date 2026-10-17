@@ -1,6 +1,30 @@
 //! Retention and Evidence Revocation of Research evidence through the real
 //! Harness and HTTP API (ADR 0045, ADR 0046).
 use super::*;
+use reinhardt::query::{Alias, Expr, ExprTrait, IntoIden, SimpleExpr};
+
+/// A column of the table being read.
+fn col(name: &str) -> SimpleExpr {
+	Expr::col(Alias::new(name)).into()
+}
+
+fn call(function: &str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
+	SimpleExpr::FunctionCall(function.into_iden(), arguments)
+}
+
+/// The values as one JSON array.
+fn array(values: Vec<SimpleExpr>) -> SimpleExpr {
+	call("jsonb_build_array", values)
+}
+
+fn to_jsonb(value: SimpleExpr) -> SimpleExpr {
+	call("to_jsonb", vec![value])
+}
+
+/// Whether the column holds a SHA-256 digest.
+fn digest(name: &str) -> SimpleExpr {
+	Expr::col(Alias::new(name)).like("sha256:%")
+}
 
 impl Research {
 	/// Bob, a member of the Tenant whose policy refuses him `research.revoke`
@@ -42,7 +66,7 @@ impl Research {
 	/// A research call in flight: its attempt is reserved and its stored
 	/// invocation has no result yet.
 	async fn in_flight(&self, run: Uuid, key: &str, input: Value) {
-		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		use reinhardt::query::{PostgresQueryBuilder, Query};
 		let invocation = Query::insert()
 			.into_table(Alias::new("invocations"))
 			.columns(
@@ -91,7 +115,7 @@ impl Research {
 					.expr(Expr::value("research.search@1"))
 					.expr(Expr::value("research-fixture.invalid"))
 					.expr(Expr::value("dispatched"))
-					.expr(Expr::cust("now()"))
+					.expr(call("now", Vec::new()))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder);
@@ -103,10 +127,10 @@ impl Research {
 		}
 	}
 	/// One column of every row of `table` for the Run, as JSON.
-	async fn column(&self, table: &str, expression: &str, run: Uuid) -> Vec<Value> {
-		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	async fn column(&self, table: &str, expression: SimpleExpr, run: Uuid) -> Vec<Value> {
+		use reinhardt::query::{PostgresQueryBuilder, Query};
 		let sql = Query::select()
-			.expr(Expr::cust(expression))
+			.expr(expression)
 			.from(Alias::new(table))
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder);
@@ -192,25 +216,41 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	assert_eq!(body, json!({"error":"evidence unavailable"}));
 	// Stored copies are tombstones; identities, retrieval times and digests stay.
 	assert_eq!(
-		r.column("research_snapshots", "jsonb_build_array(lines, text_bytes, title, purge_reason, text_digest LIKE 'sha256:%', fetched_at IS NOT NULL)", run.id).await,
+		r.column(
+			"research_snapshots",
+			array(vec![
+				col("lines"),
+				col("text_bytes"),
+				col("title"),
+				col("purge_reason"),
+				digest("text_digest"),
+				Expr::col(Alias::new("fetched_at")).is_not_null(),
+			]),
+			run.id
+		)
+		.await,
 		[json!([[], 0, null, "revocation", true, true])]
 	);
 	assert_eq!(
-		r.column("research_fragments", "to_jsonb(text)", run.id)
+		r.column("research_fragments", to_jsonb(col("text")), run.id)
 			.await,
 		[json!("")]
 	);
 	assert_eq!(
-		r.column("research_sources", "jsonb_build_array(title, url)", run.id)
-			.await,
+		r.column(
+			"research_sources",
+			array(vec![col("title"), col("url")]),
+			run.id
+		)
+		.await,
 		[json!(["", PAGE])]
 	);
 	for result in r
-		.column("research_attempts", "result", run.id)
+		.column("research_attempts", col("result"), run.id)
 		.await
 		.into_iter()
 		.chain(
-			r.column("invocations", "result", run.id)
+			r.column("invocations", col("result"), run.id)
 				.await
 				.into_iter()
 				.filter(|result| result["operation"] == "fetch"),
@@ -280,7 +320,11 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 	// Assert: the waiting call's stored invocation, an approval_required
 	// result without `limits`, no longer names the query.
 	let stored = r
-		.column("invocations", "jsonb_build_array(result, input)", run.id)
+		.column(
+			"invocations",
+			array(vec![col("result"), col("input")]),
+			run.id,
+		)
 		.await
 		.into_iter()
 		.filter(|row| row[0]["contract"] == aidash_domain::research::RESULT_CONTRACT)
@@ -413,7 +457,17 @@ async fn revocation_closes_an_approved_disclosure_and_redacts_a_call_in_flight(
 	let in_flight = r
 		.column(
 			"invocations",
-			"jsonb_build_object('key', idempotency_key, 'input', input, 'result', result)",
+			call(
+				"jsonb_build_object",
+				vec![
+					Expr::value("key").into(),
+					col("idempotency_key"),
+					Expr::value("input").into(),
+					col("input"),
+					Expr::value("result").into(),
+					col("result"),
+				],
+			),
 			run.id,
 		)
 		.await
@@ -500,7 +554,11 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(lines, purge_reason, text_digest LIKE 'sha256:%')",
+			array(vec![
+				col("lines"),
+				col("purge_reason"),
+				digest("text_digest")
+			]),
 			run.id
 		)
 		.await,
@@ -539,6 +597,17 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	.await;
 	assert_eq!(status, 200, "{rules}");
 	assert_eq!(rules["effective"], defaults);
+	// Rules are never stored for a Tenant that does not exist, which a Tenant
+	// created later under that name would inherit.
+	let (status, body) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"PUT",
+		"/api/tenants/no-such-tenant/retention",
+		shorter.clone(),
+	)
+	.await;
+	assert_eq!(status, 404, "{body}");
 	let history = "/api/tenants/acme/retention-history";
 	let (status, changes) = request(&r.c.app, &r.c.token, "GET", history, json!(null)).await;
 	assert_eq!(status, 200, "{changes}");
@@ -573,7 +642,12 @@ async fn a_retained_original_goes_with_its_snapshot_contents(
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(page_count, pages_without_text, original_retained, original_bytes)",
+			array(vec![
+				col("page_count"),
+				col("pages_without_text"),
+				col("original_retained"),
+				col("original_bytes"),
+			]),
 			run.id
 		)
 		.await,
@@ -582,7 +656,7 @@ async fn a_retained_original_goes_with_its_snapshot_contents(
 	assert_eq!(
 		r.column(
 			"research_originals",
-			"to_jsonb(octet_length(bytes))",
+			to_jsonb(call("octet_length", vec![col("bytes")])),
 			run.id
 		)
 		.await,
@@ -610,14 +684,18 @@ async fn a_retained_original_goes_with_its_snapshot_contents(
 
 	// Assert: the original went with the contents; its digest stays.
 	assert!(
-		r.column("research_originals", "to_jsonb(snapshot_id)", run.id)
+		r.column("research_originals", to_jsonb(col("snapshot_id")), run.id)
 			.await
 			.is_empty()
 	);
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(original_retained, original_digest LIKE 'sha256:%', purge_reason)",
+			array(vec![
+				col("original_retained"),
+				digest("original_digest"),
+				col("purge_reason"),
+			]),
 			run.id
 		)
 		.await,
@@ -639,7 +717,7 @@ async fn an_evidence_revocation_removes_retained_originals(
 	assert_eq!(
 		r.column(
 			"research_originals",
-			"to_jsonb(octet_length(bytes))",
+			to_jsonb(call("octet_length", vec![col("bytes")])),
 			run.id
 		)
 		.await,
@@ -659,14 +737,18 @@ async fn an_evidence_revocation_removes_retained_originals(
 	// Assert
 	assert_eq!(status, 200, "{record}");
 	assert!(
-		r.column("research_originals", "to_jsonb(snapshot_id)", run.id)
+		r.column("research_originals", to_jsonb(col("snapshot_id")), run.id)
 			.await
 			.is_empty()
 	);
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(original_retained, original_digest LIKE 'sha256:%', purge_reason)",
+			array(vec![
+				col("original_retained"),
+				digest("original_digest"),
+				col("purge_reason"),
+			]),
 			run.id
 		)
 		.await,

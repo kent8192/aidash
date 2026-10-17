@@ -281,6 +281,11 @@ fn an_original_needs_a_page_without_text_and_stays_bounded() {
 	assert!(page.validate().is_ok());
 	page.original = Some(vec![0; MAX_ORIGINAL_BYTES + 1]);
 	assert!(page.validate().is_err());
+	page.original = Some(Vec::new());
+	assert!(page.validate().is_err());
+	// The host, not the provider, decides whether the original is retained.
+	page.original = None;
+	assert!(page.validate().is_err());
 	let mut page = pdf_page(vec![], vec![1, 2, 3]);
 	page.page_count = None;
 	assert!(page.validate().is_err());

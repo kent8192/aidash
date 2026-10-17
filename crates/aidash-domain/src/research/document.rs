@@ -110,11 +110,16 @@ impl ExtractedPage {
 			// A complete paginated source accounts for every page.
 			|| (self.completeness == Completeness::Complete
 				&& self.page_count.is_some_and(|count| !self.covers(count)))
-			|| self.original.as_ref().is_some_and(|original| {
-				self.pages_without_text.is_empty()
-					|| original.is_empty()
-					|| original.len() > MAX_ORIGINAL_BYTES
-			}) || bytes > MAX_SNAPSHOT_BYTES
+			// The original travels exactly when some page carries no text; the
+			// host, not the provider, decides whether it is retained.
+			|| match &self.original {
+				Some(original) => {
+					self.pages_without_text.is_empty()
+						|| original.is_empty()
+						|| original.len() > MAX_ORIGINAL_BYTES
+				}
+				None => !self.pages_without_text.is_empty(),
+			} || bytes > MAX_SNAPSHOT_BYTES
 			|| self.lines.iter().any(|line| {
 				line.text.len() > MAX_LINE_BYTES
 					|| line.page == Some(0)

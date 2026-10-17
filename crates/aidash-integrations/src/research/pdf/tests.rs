@@ -189,6 +189,26 @@ fn a_decoy_security_dictionary_does_not_permit_extraction() {
 	assert_eq!(extract(&bytes), Err(Failure::ExtractionNotPermitted));
 }
 
+/// Only a trailer names an encryption dictionary: the same bytes in page
+/// text leave an unencrypted document readable.
+#[rstest]
+fn encrypt_in_page_text_does_not_make_a_document_encrypted() {
+	let text = extract(&pdf(&[text_page(&["Trailers name /Encrypt << >> here."])])).unwrap();
+	assert_eq!(text.lines[0].text, "Trailers name /Encrypt << >> here.");
+}
+
+/// Encrypted fixtures name their security dictionary from a trailer; plain
+/// documents name none, even when their text spells `/Encrypt`.
+#[rstest]
+#[case::plain(pdf(&[text_page(&["Plain text."])]), false)]
+#[case::encrypt_in_text(pdf(&[text_page(&["See /Encrypt << >> here."])]), false)]
+#[case::extraction_permitted(EXTRACTION_PERMITTED.to_vec(), true)]
+#[case::no_extraction(NO_EXTRACTION.to_vec(), true)]
+fn only_trailers_name_encryption(#[case] bytes: Vec<u8>, #[case] named: bool) {
+	let pdf = Pdf::new(bytes).unwrap();
+	assert_eq!(names_encryption(&pdf), named);
+}
+
 #[rstest]
 fn an_encrypted_document_that_permits_extraction_is_read() {
 	let text = extract(EXTRACTION_PERMITTED).unwrap();
