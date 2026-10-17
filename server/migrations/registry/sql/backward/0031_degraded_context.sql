@@ -8,8 +8,12 @@ DECLARE definition_count bigint; package_count bigint;
 BEGIN
   SELECT count(*) INTO definition_count FROM registry
    WHERE kind = 'source' AND metadata #> '{config,source}' ? 'on_unavailable';
-  SELECT count(*) INTO package_count FROM packages
-   WHERE jsonb_path_exists(manifest, 'lax $.**.on_unavailable');
+  -- Marketplace packages may live in another database.
+  package_count := 0;
+  IF to_regclass('packages') IS NOT NULL THEN
+    EXECUTE $q$SELECT count(*) FROM packages WHERE jsonb_path_exists(manifest, 'lax $.**.on_unavailable')$q$
+      INTO package_count;
+  END IF;
   IF definition_count + package_count > 0 THEN
     RAISE EXCEPTION 'registry 0031_degraded_context cannot be reversed: % Definitions and % packages declare on_unavailable', definition_count, package_count
       USING ERRCODE = '55000',
