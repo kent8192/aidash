@@ -9,19 +9,6 @@ pub struct ClusterConfig {
 	pub coordinator: EntityRef,
 }
 
-/// Exact Jev release and bounds for System One probability classification. The
-/// transport is OpenRouter's System One API with the Tenant's Provider Credential
-/// for `provider_credential` (ADR 0041); no endpoint or key is configured here.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CompactorConfig {
-	pub provider_credential: String,
-	pub model: String,
-	pub max_request_bytes: usize,
-	pub max_questions: usize,
-	pub max_response_bytes: usize,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Package {

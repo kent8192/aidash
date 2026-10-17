@@ -681,7 +681,7 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
     Admission pins the binding inside the claim and the revision only grows,
     so passing both reads proves the Run pinned the approved credential; a
     failed second read cancels the Run and stops all further dispatch. A Run
-    that applied a compaction proves a Jev compactor answered, which the
+    that applied a compaction proves a Jev compaction Decider answered, which the
     approval attests cannot happen, and also stops all further dispatch.
 
     Appends each finished (planned, repeat, observation) to `observations`,
@@ -728,7 +728,7 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                                  "or the Deployment Administrator token")
                 if observation.get("compactions"):
                     stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
-                                 "compactor answered although the approval attests external compaction is disabled")
+                                 "compaction Decider answered although the approval attests external compaction is disabled")
                 if observation["run_id"] and observation.get("workspace"):
                     try:
                         attempt["provider_work"] = observed_provider_work(api, experiment.token,

@@ -44,7 +44,6 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"capability.request",
 	"chatgpt.tokens.use.direct",
 	"cluster.execute",
-	"compaction.invoke",
 	"conversation.create",
 	"conversation.read",
 	"decision.evidence.read",

@@ -1754,8 +1754,9 @@ fn native_memory_binding_preserves_removed_read_operations() {
 fn decider_config() -> Value {
 	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
         "provider_contract":"typesafe.jev/1","provider_credential":"openrouter","model":"typesafe/jev-1.13",
-        "builder":"aidash.compaction/1","option_source":"history_event/1",
-        "rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce"})
+        "builder":"aidash.compaction/2","option_source":"history_event/1",
+        "rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce",
+        "max_calls_per_run":20})
 }
 fn decider_binding(id: &str) -> Binding {
 	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"keep_threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()

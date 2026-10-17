@@ -353,7 +353,7 @@ async fn a_summarizer_not_approved_by_every_ancestor_is_refused_without_charges(
 			),
 			"exhausted_parent" => state.exhausted = Some(parent),
 			"digest" => summarizer.definition_digest = "sha256:other".into(),
-			"kind" => state.document["kind"] = json!("compactor"),
+			"kind" => state.document["kind"] = json!("decider"),
 			action => state.denied = Some(action.into()),
 		}
 	}

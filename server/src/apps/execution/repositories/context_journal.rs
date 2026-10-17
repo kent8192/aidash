@@ -283,14 +283,20 @@ impl Store {
 		tx.commit().await
 	}
 
-	/// Save the adopted projection and mark its attempt adopted atomically.
-	pub(crate) async fn adopt_compaction(
+	/// Save the adopted projection and mark its attempt adopted atomically. A
+	/// staged Decider decision whose pruning the summary completed is recorded
+	/// in the same transaction (ADR 0056).
+	pub async fn adopt_compaction(
 		&self,
 		scope: &TenancyScope,
 		run: &Run,
 		worker: Uuid,
 		attempt: Uuid,
 		settlement: &Settlement,
+		staged: Option<(
+			&super::decisions::RunDecisionJournal<'_>,
+			&aidash_application::decision::StagedDecision,
+		)>,
 	) -> Result<()> {
 		if settlement.outcome != Outcome::Adopted {
 			return Err(Error::Invalid(
@@ -314,9 +320,21 @@ impl Store {
 		.await?;
 		let through = through
 			.ok_or_else(|| Error::Conflict("compaction attempt is no longer open".into()))?;
+		let decision = match staged {
+			Some((journal, staged)) => Some((
+				journal,
+				journal
+					.prepare_staged_in(&mut tx, staged, &run.context)
+					.await?,
+			)),
+			None => None,
+		};
 		let (_, closed) = self
 			.save_run_in(&mut tx, run, worker, "context.compacted")
 			.await?;
+		if let Some((journal, prepared)) = decision {
+			journal.insert_staged_in(&mut tx, prepared).await?;
+		}
 		if signed(head(&mut tx, run.id).await?)? < through {
 			return Err(Error::Conflict(
 				"context journal lacks the compacted source range".into(),

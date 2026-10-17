@@ -47,7 +47,7 @@ fn required_home(summarizer: Option<Provider>) -> Binding {
 			configuration_digest: format!("sha256:{}", "b".repeat(64)),
 		}),
 		native: None,
-		compactor: None,
+		decider: None,
 		summarizer: summarizer.map(Box::new),
 	}
 }
@@ -145,7 +145,7 @@ async fn a_changed_or_non_model_definition_is_unavailable() {
 	let port = Port::local();
 	assert!(unavailable(authorize(&port, &changed, 64).await));
 	let port = Port {
-		kind: "compactor",
+		kind: "decider",
 		..Port::local()
 	};
 	assert!(unavailable(authorize(&port, &summarizer(), 64).await));

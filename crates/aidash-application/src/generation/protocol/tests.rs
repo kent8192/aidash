@@ -103,12 +103,7 @@ fn world() -> World {
         "endpoint":"https://provider.example/v1","context_window":4096,
         "max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 	);
-	let compactor = entry(
-		"compactor",
-		"compactor",
-		json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13",
-        "max_request_bytes":2048,"max_questions":10,"max_response_bytes":1024}),
-	);
+	let decider = entry("decider", "decider", crate::test_support::decider_config());
 	let provider = |node: &str, definition: &Entry| Provider {
 		node_id: node.into(),
 		entry: reference(&definition.id),
@@ -121,7 +116,7 @@ fn world() -> World {
 		digest: digest(),
 		configuration_digest: digest(),
 	};
-	let compactor_provider = provider("aidash://executor", &compactor);
+	let decider_provider = provider("aidash://executor", &decider);
 	let description = Description {
 		grant_id: Uuid::from_u128(104),
 		source_node: run.home_node.clone(),
@@ -153,7 +148,7 @@ fn world() -> World {
 				"agent",
 				json!({"schema_version":1,"bindings":[],"remove_default":[],"model":reference("model"),"instructions":"Work"}),
 			),
-			definitions: [model.clone(), compactor]
+			definitions: [model.clone(), decider]
 				.into_iter()
 				.map(|metadata| Definition {
 					entry: reference(&metadata.id),
@@ -163,7 +158,7 @@ fn world() -> World {
 				})
 				.collect(),
 			semantic_memory: 1,
-			compactor: Some(reference("compactor")),
+			decider: Some(reference("decider")),
 		},
 		expires_at: DateTime::from_timestamp(2000, 0).unwrap(),
 		semantic: Binding::RequiredHome {
@@ -174,7 +169,7 @@ fn world() -> World {
 			index_revision: 3,
 			index_digest: digest(),
 			embedding: Box::new(embedding),
-			compactor: Some(Box::new(compactor_provider)),
+			decider: Some(Box::new(decider_provider)),
 			summarizer: None,
 		},
 	};
@@ -639,9 +634,7 @@ fn summary_usage_requires_the_home_disclosed_summarizer_pin(world: World) {
 fn semantic_provider_must_match_every_pin_and_dispatcher(world: World, #[case] purpose: Purpose) {
 	let state = world.0.lock().unwrap();
 	let Binding::RequiredHome {
-		embedding,
-		compactor,
-		..
+		embedding, decider, ..
 	} = &state.description.semantic
 	else {
 		panic!("binding")
@@ -650,11 +643,11 @@ fn semantic_provider_must_match_every_pin_and_dispatcher(world: World, #[case] p
 	usage.purpose = purpose;
 	usage.provider = match purpose {
 		Purpose::Embedding => (**embedding).clone(),
-		_ => (**compactor.as_ref().unwrap()).clone(),
+		_ => (**decider.as_ref().unwrap()).clone(),
 	};
 	usage.dispatcher_node = usage.provider.node_id.clone();
 	if purpose == Purpose::Compaction {
-		usage.reserved_tokens = 3072;
+		usage.reserved_tokens = 600_000 + 1024;
 	}
 	exact_provider(&state.description, &usage).unwrap();
 	usage.provider.digest = "wrong".into();
@@ -664,7 +657,7 @@ fn semantic_provider_must_match_every_pin_and_dispatcher(world: World, #[case] p
 	));
 	usage.provider = match purpose {
 		Purpose::Embedding => (**embedding).clone(),
-		_ => (**compactor.as_ref().unwrap()).clone(),
+		_ => (**decider.as_ref().unwrap()).clone(),
 	};
 	usage.dispatcher_node = "aidash://other".into();
 	assert!(matches!(

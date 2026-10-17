@@ -92,7 +92,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -196,7 +198,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -354,7 +358,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -362,7 +366,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -885,7 +890,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1003,7 +1010,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1161,7 +1170,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1312,7 +1323,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1528,7 +1541,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -1536,7 +1549,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -1874,7 +1888,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1992,7 +2008,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -4012,7 +4030,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4020,7 +4038,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4392,7 +4411,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4400,7 +4419,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -14650,7 +14670,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -18167,7 +18189,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -18175,7 +18197,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -24288,7 +24311,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -26401,7 +26426,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -28367,7 +28394,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",

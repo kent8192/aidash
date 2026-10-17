@@ -84,7 +84,7 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 				version: description.inspection.agent.version.clone(),
 			},
 			requirements: serde_json::from_value(description.task.requirements.clone())?,
-			compactor: description.semantic.request().compactor().cloned(),
+			decider: description.semantic.request().decider().cloned(),
 		};
 		let retained = if let Some(id) = scope.existing(source, description.grant_id).await? {
 			scope.activation_run(id).await?.is_some_and(|run| {

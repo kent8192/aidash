@@ -99,8 +99,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         .locator("select[name=embedding]")
         .selectOption("home-embedding@1.0.0");
       await dialog
-        .locator("input[name=compactor]")
-        .fill("approved-compactor@2.0.0");
+        .locator("input[name=decider]")
+        .fill("approved-decider@2.0.0");
       await dialog
         .getByRole("button", {
           name: ja ? "担当を割り当て" : "Assign agent",
@@ -124,9 +124,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         } else {
           await expect(dialog.locator("select[name=agent]")).toBeEnabled();
           await expect(dialog.locator("select[name=embedding]")).toBeEnabled();
-          await dialog
-            .locator("input[name=compactor]")
-            .fill("replacement@2.0.0");
+          await dialog.locator("input[name=decider]").fill("replacement@2.0.0");
           await dialog
             .getByRole("button", {
               name: ja ? "担当を割り当て" : "Assign agent",
@@ -144,11 +142,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         semantic: {
           mode: "required_home",
           embedding: { id: "home-embedding", version: "1.0.0" },
-          compactor: {
+          decider: {
             id:
               failure === "create" || failure === "activate"
                 ? "replacement"
-                : "approved-compactor",
+                : "approved-decider",
             version: "2.0.0",
           },
           ...(native

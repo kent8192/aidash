@@ -345,6 +345,14 @@ pub struct RecoveryState {
 	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
+	/// How many times a person resumed this Run from a pause. A compaction
+	/// decision commits to it, so a resume starts a new decision while a
+	/// recovered lease continues the same one (#108).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decision_cycle: u32,
+}
+fn is_zero(value: &u32) -> bool {
+	*value == 0
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
