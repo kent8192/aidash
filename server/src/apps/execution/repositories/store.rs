@@ -361,26 +361,6 @@ impl Store {
 		}
 	}
 
-	/// The scope of a task that a caller names only by id: its Workspace's.
-	pub(crate) async fn task_tenancy(&self, task: Uuid) -> Result<TenancyScope> {
-		if let Some(workspace) = self.tenancies.task_workspace(task) {
-			return self.workspace_tenancy(workspace).await;
-		}
-		let lookup = TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
-		let workspace: Uuid = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("workspace_id"))
-				.from(Alias::new("tasks"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(task)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(self.pool.in_scope(&lookup))
-		.await?
-		.ok_or_else(|| Error::NotFound("task".into()))?;
-		self.tenancies.remember_task_workspace(task, workspace);
-		self.workspace_tenancy(workspace).await
-	}
-
 	/// Run creation re-checks the Projection Version pinned by the Binding
 	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
 	/// pinned model and, when salted, backed by this node's Cache Salt Key and
@@ -1385,31 +1365,6 @@ impl Store {
 		.await
 	}
 	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
-	pub(crate) async fn transition_remote_run_message_terminal_through(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-		revision: i64,
-		owner: &str,
-		next: TaskStatus,
-		run_id: Uuid,
-		through_seq: i64,
-	) -> Result<Task> {
-		if through_seq < 0 {
-			return Err(Error::Invalid("invalid terminal input sequence".into()));
-		}
-		self.transition_remote_run_message_terminal_in(
-			scope,
-			id,
-			revision,
-			owner,
-			next,
-			run_id,
-			TerminalRunMessageInputs::Through(through_seq),
-		)
-		.await
-	}
-	#[allow(clippy::too_many_arguments)] // The scope joins the task, Run and fence arguments.
 	async fn transition_remote_run_message_terminal_in(
 		&self,
 		scope: &TenancyScope,
@@ -1539,31 +1494,6 @@ impl Store {
 			artifact,
 			Publication::default(),
 			None,
-		)
-		.await
-	}
-	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
-	pub(crate) async fn complete_remote_run_message(
-		&self,
-		scope: &TenancyScope,
-		id: Uuid,
-		owner: &str,
-		key: &str,
-		artifact: &ArtifactInput,
-		run_id: Uuid,
-		through_seq: i64,
-	) -> Result<Task> {
-		if through_seq < 0 {
-			return Err(Error::Invalid("invalid terminal input sequence".into()));
-		}
-		self.complete_from_run(
-			scope,
-			id,
-			owner,
-			key,
-			artifact,
-			Publication::default(),
-			Some((run_id, through_seq)),
 		)
 		.await
 	}
@@ -2136,32 +2066,6 @@ impl Store {
 		tx.commit().await?;
 		Ok(message)
 	}
-	pub(crate) async fn remote_run_message_history(
-		&self,
-		scope: &TenancyScope,
-		workspace: Uuid,
-		peer: &str,
-		task: Uuid,
-		run: Uuid,
-		offset: u64,
-	) -> Result<Vec<Message>> {
-		self.pool
-			.atomic(scope, async |tx| {
-				MessageRecord::run_history(tx, workspace, peer, task, run, offset).await
-			})
-			.await
-	}
-	pub(crate) async fn run_message_delivery_record(
-		&self,
-		scope: &TenancyScope,
-		delivery: RunMessageDelivery<'_>,
-	) -> Result<Message> {
-		self.pool
-			.atomic(scope, async |tx| {
-				RemoteRunMessageFence::deliver(tx, &self.node_id, delivery).await
-			})
-			.await
-	}
 	/// Reserve home-task lifetime before the executor admits a remote input.
 	/// The task lock orders this operation with every terminal transition.
 	pub async fn reserve_remote_run_message(
@@ -2232,79 +2136,6 @@ impl Store {
 		// it observed the input. Only an atomic terminal transition can make a
 		// stale legacy worker unable to publish or complete the home task.
 		Ok(())
-	}
-	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
-	pub(crate) async fn run_message_output_record(
-		&self,
-		scope: &TenancyScope,
-		workspace: Uuid,
-		task_id: Uuid,
-		run_id: Uuid,
-		sender: &str,
-		content: &str,
-		key: &str,
-	) -> Result<Message> {
-		let mut tx = self.pool.begin(scope).await?;
-		let task: Task = {
-			let query_bind_1 = task_id;
-			aidash_server::database::query_as(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::Expr::col(
-						reinhardt::query::ColumnRef::Asterisk,
-					))
-					.from(reinhardt::query::Alias::new("tasks"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(reinhardt::query::LockType::Update)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_one(&mut *tx)
-			.await?
-		};
-		if task.workspace_id != workspace {
-			return Err(Error::Unauthorized);
-		}
-		if matches!(
-			task.status,
-			crate::domain::TaskStatus::Completed
-				| crate::domain::TaskStatus::Failed
-				| crate::domain::TaskStatus::Cancelled
-				| crate::domain::TaskStatus::Abandoned
-		) {
-			return Err(Error::Conflict("home task is terminal".into()));
-		}
-		let pending: bool = {
-			let query_bind_1 = task_id;
-			let query_bind_2 = run_id;
-			crate::database::native::query_scalar(&reinhardt::query::Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND run_id = ? AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.scalar_one(&mut *tx)
-		.await?
-		};
-		if pending {
-			return Err(Error::TransactionPending);
-		}
-		let message = self
-			.message_in(&mut tx, workspace, sender, content, Some(key))
-			.await?;
-		tx.commit().await?;
-		Ok(message)
-	}
-	/// Publish output from an upgraded remote worker after verifying that its
-	/// inference included every currently admitted correction. Keep the fences
-	/// unconsumed so legacy workers remain unable to publish until terminal state.
-	pub(crate) async fn run_message_output_record_fenced(
-		&self,
-		scope: &TenancyScope,
-		output: FencedRunMessageOutput<'_>,
-	) -> Result<Message> {
-		let mut tx = self.pool.begin(scope).await?;
-		let result = self.run_message_output_in(&mut tx, output).await?;
-		tx.commit().await?;
-		Ok(result)
 	}
 	pub(crate) async fn run_message_output_in(
 		&self,
@@ -2933,39 +2764,6 @@ impl Store {
 }
 
 impl Store {
-	pub(crate) async fn require_legacy_agent(&self, id: &str, version: &str) -> Result<()> {
-		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
-		// Legacy peer journals can retain references absent from the local Registry.
-		// Reject known scoped projections without requiring a local definition.
-		let installed = match self
-			.pool
-			.atomic(scope, async |tx| {
-				crate::apps::registry::models::records::definition(tx, id, version).await
-			})
-			.await
-		{
-			Ok(row) => row.metadata.0.get("installation").is_some(),
-			Err(Error::NotFound(_)) => false,
-			Err(error) => return Err(error),
-		};
-		if installed {
-			return Err(Error::Forbidden);
-		}
-
-		let generated: bool = {
-			let query_bind_1 = id;
-			let query_bind_2 = version;
-			crate::database::native::query_scalar(&Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_requests WHERE agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-				.to_string(PostgresQueryBuilder))
-		.scalar_one(self.pool.in_scope(scope))
-		.await?
-		};
-		if generated {
-			return Err(Error::Forbidden);
-		}
-		Ok(())
-	}
 	pub async fn run(&self, scope: &TenancyScope, id: Uuid) -> Result<Run> {
 		self.pool
 			.atomic(scope, async |tx| RunRecord::read(tx, id).await)

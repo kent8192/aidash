@@ -1119,21 +1119,6 @@ impl ExecutionEnvironment for Environment<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		crate::authorization::execution::operator_human_message_media(
-			&self.federation.store,
-			run,
-			messages,
-			model,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn summary_dependencies_current(
 		&self,
 		run: &Run,

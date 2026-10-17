@@ -525,22 +525,6 @@ impl WorkerAuthority {
 	}
 }
 
-pub(crate) async fn operator_human_message_media(
-	store: &Store,
-	run: &Run,
-	messages: &[(i64, Uuid, usize)],
-	model: &crate::registry::ModelConfig,
-) -> Result<HumanMediaBatch> {
-	aidash_application::execution::media::deployment_administrator(
-		&crate::bootstrap::operator_media_repository(store, store.run_tenancy(run.id).await?),
-		&run.metadata(),
-		messages,
-		model,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 pub(crate) use aidash_application::ports::execution::HumanMediaBatch;
 
 pub(crate) struct Guard {

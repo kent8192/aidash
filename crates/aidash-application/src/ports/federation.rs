@@ -1,9 +1,6 @@
 //! Federation effects retain native authorization and transaction fences.
 use crate::Result;
-use aidash_domain::{
-	federation::Peer,
-	registry::{AgentPage, Search},
-};
+use aidash_domain::federation::Peer;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -30,7 +27,6 @@ pub trait PeerTransport: Send + Sync {
 pub trait FederationRepository: Send + Sync {
 	async fn peers(&self) -> Result<Vec<Peer>>;
 	async fn peer(&self, node: &str) -> Result<Peer>;
-	async fn agents(&self, search: &Search, offset: u64) -> Result<AgentPage>;
 }
 
 pub mod dependencies;

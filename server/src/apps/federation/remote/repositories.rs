@@ -1,9 +1,6 @@
 //! Native adapters for Deployment Administrator Agent discovery across peers.
 use aidash_application::{Result, ports::federation::FederationRepository};
-use aidash_domain::{
-	federation::Peer,
-	registry::{AgentPage, Search},
-};
+use aidash_domain::federation::Peer;
 use async_trait::async_trait;
 
 pub(crate) struct Repository {
@@ -16,13 +13,6 @@ impl FederationRepository for Repository {
 	}
 	async fn peer(&self, node: &str) -> Result<Peer> {
 		self.federation.peer(node).await.map_err(Into::into)
-	}
-	async fn agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
-		self.federation
-			.registry
-			.legacy_agents(search, offset)
-			.await
-			.map_err(Into::into)
 	}
 }
 

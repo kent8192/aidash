@@ -8,28 +8,25 @@ use reinhardt::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// A scoped admission or a Deployment Administrator's exact task delegation owns the journal.
+/// A scoped admission owns the journal.
 #[derive(Clone, Copy)]
 pub(crate) enum Journal {
 	Scoped(Uuid),
-	Delegation(Uuid),
 }
 impl Journal {
 	fn table(self) -> &'static str {
 		match self {
 			Self::Scoped(_) => "authorization_remote_execution",
-			Self::Delegation(_) => "delegations",
 		}
 	}
 	fn column(self) -> &'static str {
 		match self {
 			Self::Scoped(_) => "grant_id",
-			Self::Delegation(_) => "task_id",
 		}
 	}
 	fn id(self) -> Uuid {
 		match self {
-			Self::Scoped(id) | Self::Delegation(id) => id,
+			Self::Scoped(id) => id,
 		}
 	}
 }

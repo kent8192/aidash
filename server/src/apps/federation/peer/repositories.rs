@@ -6,9 +6,8 @@ use aidash_application::{
 	Result,
 	ports::federation::peers::{PeerConfiguration, PeerWrite},
 };
-use aidash_domain::{federation::Peer, registry::EntityRef};
+use aidash_domain::federation::Peer;
 use async_trait::async_trait;
-use uuid::Uuid;
 
 pub(crate) struct Configuration(pub(crate) Federation);
 struct Write {

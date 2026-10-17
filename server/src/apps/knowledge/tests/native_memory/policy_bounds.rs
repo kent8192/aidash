@@ -941,9 +941,13 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 		.await
 		.unwrap()
 		.id;
-	let configured = aidash_server::semantic::service::get_index(&store, &Actor::DeploymentAdministrator, indexed)
-		.await
-		.unwrap();
+	let configured = aidash_server::semantic::service::get_index(
+		&store,
+		&Actor::DeploymentAdministrator,
+		indexed,
+	)
+	.await
+	.unwrap();
 	let mut spec = configured.configuration().unwrap();
 	spec.max_sources = 1;
 	aidash_server::semantic::service::configure(

@@ -1256,12 +1256,6 @@ pub(crate) fn scoped_media(
 ) -> crate::apps::workspaces::repositories::media::ScopedMedia<'_> {
 	crate::apps::workspaces::repositories::media::ScopedMedia { access }
 }
-pub(crate) fn operator_media_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::workspaces::repositories::media::OperatorMedia<'_> {
-	crate::apps::workspaces::repositories::media::OperatorMedia { store, scope }
-}
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
 pub(crate) fn selected_media<'a>(

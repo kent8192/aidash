@@ -7,17 +7,14 @@ use crate::{
 use aidash_application::{
 	Error, Result,
 	ports::{
-		bindings::{BindingAuthority, ProviderCatalog, ProviderSet},
+		bindings::{ProviderCatalog, ProviderSet},
 		execution::ExecutionTool,
 	},
 };
 use aidash_domain::{
 	Run,
 	provider::ToolSpec,
-	registry::{
-		bindings::{QualifiedRef, ResolvedBinding},
-		rules::digest,
-	},
+	registry::bindings::{QualifiedRef, ResolvedBinding},
 	tool::{
 		ToolContract,
 		concurrency::{ConcurrentCall, ReadCeilings, batchable, core_call},

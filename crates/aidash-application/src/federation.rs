@@ -3,13 +3,8 @@ use crate::{
 	Error, Result,
 	ports::federation::{FederationRepository, PeerTransport},
 };
-use aidash_domain::{
-	federation::{DiscoveredAgent, Discovery, PeerError},
-	registry::{AgentPage, Entry, Search},
-};
-use futures_util::{StreamExt, stream};
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 
 pub struct Federation {
@@ -49,77 +44,6 @@ impl Federation {
 				reply.status_label
 			))),
 		}
-	}
-	async fn discovery_entries(&self, node: &str, search: &Search) -> Result<Vec<Entry>> {
-		let mut offset = 0;
-		let mut entries = Vec::new();
-		loop {
-			let page = if node == self.node_id {
-				self.repository.agents(search, offset).await?
-			} else {
-				self.request::<AgentPage>(
-					node,
-					"POST",
-					&format!("/discover?offset={offset}"),
-					Some(&json!(search)),
-				)
-				.await?
-			};
-			entries.extend(page.entries);
-			match page.next_offset {
-				Some(next) if next > offset => offset = next,
-				Some(_) => return Err(Error::External("discovery cursor did not advance".into())),
-				None => return Ok(entries),
-			}
-		}
-	}
-	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
-		let mut query = search.clone();
-		query.kind = Some("agent".into());
-		let mut result = Discovery {
-			agents: self
-				.discovery_entries(&self.node_id, &query)
-				.await?
-				.into_iter()
-				.map(|entity| DiscoveredAgent {
-					node_id: self.node_id.clone(),
-					entity,
-				})
-				.collect(),
-			errors: Vec::new(),
-		};
-		let peers = self
-			.repository
-			.peers()
-			.await?
-			.into_iter()
-			.filter(|peer| peer.enabled);
-		let mut replies = stream::iter(peers.map(|peer| {
-			let query = &query;
-			async move {
-				let reply = self.discovery_entries(&peer.node_id, query).await;
-				(peer, reply)
-			}
-		}))
-		.buffer_unordered(8);
-		while let Some((peer, reply)) = replies.next().await {
-			match reply {
-				Ok(entries) => result.agents.extend(
-					entries
-						.into_iter()
-						.filter(|entry| query.matches(entry))
-						.map(|entity| DiscoveredAgent {
-							node_id: peer.node_id.clone(),
-							entity,
-						}),
-				),
-				Err(error) => result.errors.push(PeerError {
-					node_id: peer.node_id,
-					error: error.to_string(),
-				}),
-			}
-		}
-		Ok(result)
 	}
 }
 

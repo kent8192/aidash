@@ -1,5 +1,4 @@
 use crate::apps::federation::peer::services::records::PeerRecords;
-use crate::apps::federation::remote::models::Delegation as DelegationRecord;
 use crate::{
 	Error, Result,
 	config::Config,
@@ -12,7 +11,6 @@ use reinhardt::DiError;
 use reinhardt::DiResult;
 use reinhardt::Injectable;
 use reinhardt::InjectionContext;
-use reinhardt::db::backends::TransactionExecutor;
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -215,13 +213,6 @@ impl Federation {
 			.await
 			.map_err(Into::into)
 	}
-
-	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
-		crate::bootstrap::federation(self)
-			.discover(search)
-			.await
-			.map_err(Into::into)
-	}
 }
 
 // All worker operations use this single home-node boundary.
@@ -332,11 +323,10 @@ impl Home {
 		{
 			return Err(Error::Forbidden);
 		}
-		if let Some(authority) = &self.authority {
-			authority.discover(&self.federation, search).await
-		} else {
-			self.federation.discover(search).await
-		}
+		let Some(authority) = &self.authority else {
+			return Err(Error::Forbidden);
+		};
+		authority.discover(&self.federation, search).await
 	}
 	pub fn owner(&self) -> String {
 		qualified_agent(
@@ -569,7 +559,7 @@ impl Home {
 		}
 	}
 	pub async fn claim(&self, task: &Task, agent: &Entry) -> Result<Task> {
-		let scope = self.tenancy().await?;
+		let _scope = self.tenancy().await?;
 		if task.owner.as_deref() == Some(&self.owner())
 			&& task.status != crate::domain::TaskStatus::Open
 		{
@@ -729,7 +719,7 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
-		let scope = self.tenancy().await?;
+		let _scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
 				.delegate(

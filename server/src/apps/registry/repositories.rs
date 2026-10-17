@@ -4,7 +4,7 @@ use crate::apps::execution::models::event_records;
 use crate::database::native::Pool;
 use crate::{
 	Result,
-	registry::{AgentPage, Entry, Search},
+	registry::{Entry, Search},
 };
 use aidash_application::ports::registry::{
 	DefinitionDocument, DefinitionLookup, DefinitionWriter, RegistrationScope, RegistryRead,
@@ -111,21 +111,6 @@ impl Registry {
 						node: &self.node_id,
 					},
 					search,
-				)
-				.await?)
-			})
-			.await
-	}
-	pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
-		self.pool
-			.atomic(&SHARED, async |tx| {
-				Ok(aidash_application::registry::legacy_agents(
-					&mut OrmScope {
-						db: tx,
-						node: &self.node_id,
-					},
-					search,
-					offset,
 				)
 				.await?)
 			})
