@@ -718,10 +718,8 @@ def render():
             else:
                 add(
                     endpoint,
-                    "Unknown admission cannot supply receiving authority"
-                    if route["name"] == "admissions-verify"
-                    else "Unknown legacy agent has no discovery record",
-                    403 if route["name"] == "admissions-verify" else 404,
+                    "Unknown admission cannot supply receiving authority",
+                    403,
                     headers=PEER,
                 )
             continue
@@ -987,8 +985,8 @@ def render():
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,
-        # and Marketplace subject dispatch. Deployment Administrator credentials cannot replace
-        # a subject or browser-bound graph grant.
+        # Marketplace subject dispatch and the Tenant Registry (ADR 0029). Deployment
+        # Administrator credentials cannot replace a subject or browser-bound graph grant.
         denied_reads = {
             "memory-participant-current",
             "remote-semantic-home-provenance",
@@ -1007,6 +1005,7 @@ def render():
             "marketplace-read-consent",
             "marketplace-installations",
             "marketplace-installation",
+            "registry-versions",
         }
         if route["name"] in denied_reads:
             status = 403
