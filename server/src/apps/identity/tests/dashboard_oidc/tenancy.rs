@@ -822,6 +822,19 @@ impl Deployment {
 		assert_eq!(queued["tenant"], tenant);
 		assert_eq!(queued["invitation_id"], invitation["id"]);
 		assert_eq!(queued["proposed_groups"], groups);
+		// The queue is paged; past its end a page is empty.
+		let (status, past) = self
+			.as_deployment_administrator(
+				"GET",
+				&format!(
+					"/api/dashboard/registrations?offset={}",
+					queue.as_array().unwrap().len()
+				),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(status, 200, "{past}");
+		assert_eq!(past, json!([]));
 		let (status, approved) = self
 			.as_deployment_administrator(
 				"POST",
