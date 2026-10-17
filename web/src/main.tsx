@@ -83,6 +83,13 @@ import { authCopy, shellCopy } from "./shell/copy";
 import { takeEmailHint } from "./gcip-email-hint";
 import { markEnrollIntent } from "./gcip-intent";
 import { desktopAvailable } from "./desktop";
+import {
+  CreateTenantForm,
+  InvitationLanding,
+  invitationTenant,
+  SESSION_CHANGED,
+  type CreatedTenant,
+} from "./tenancy";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
 // Move any discovery email handoff out of sessionStorage immediately.
@@ -137,9 +144,14 @@ type BrowserSession = {
   id: string;
   deployment_administrator: boolean;
   personal_account?: boolean;
+  /** Whether the Tenancy Rules let this identity create Tenants now. */
+  tenant_creation?: boolean;
+  /** Whether this Deployment issues Invitations. */
+  invitations?: boolean;
   mappings: {
     id: string;
     tenant: string;
+    label?: string | null;
     subject: string;
     personal?: boolean;
     credential_active?: boolean;
@@ -178,6 +190,10 @@ function App() {
       <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
         {window.location.pathname === "/sign-in" ? (
           <SignInEntry locale={locale} setLocale={setLocale} />
+        ) : invitationTenant(window.location.pathname) ? (
+          <InvitationLanding
+            tenant={invitationTenant(window.location.pathname) ?? ""}
+          />
         ) : (
           <ConnectionGate english={locale === "en-US"}>
             <Dashboard
@@ -400,6 +416,19 @@ function Dashboard({
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  // A new Tenant's Creator works in it right away through its first Mapping.
+  const tenantCreated = async (created: CreatedTenant) => {
+    const response = await sessionFetch("/auth/session", {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const current = (await response.json()) as BrowserSession;
+    setBrowserSession(current);
+    if (created.mapping_id)
+      chooseContext(
+        mappingContext({ tenant: created.name, id: created.mapping_id }),
+      );
+  };
   const disconnect = () => {
     void logOut(false);
   };
@@ -489,11 +518,13 @@ function Dashboard({
       if (document.visibilityState === "visible") void refresh();
     };
     window.addEventListener("focus", refresh);
+    window.addEventListener(SESSION_CHANGED, refresh);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(SESSION_CHANGED, refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [browserSessionId, client]);
@@ -647,7 +678,7 @@ function Dashboard({
                     className="justify-start font-mono text-xs"
                     onClick={() => chooseContext(mappingContext(mapping))}
                   >
-                    {mapping.tenant} / {mapping.subject}
+                    {mapping.label ?? mapping.tenant} / {mapping.subject}
                   </Button>
                 ))}
                 {browserSession.deployment_administrator && (
@@ -662,6 +693,15 @@ function Dashboard({
                   </Button>
                 )}
               </div>
+            )}
+            {(browserSession.tenant_creation ||
+              browserSession.deployment_administrator) && (
+              <CreateTenantForm
+                // Tenancy Rules govern only an External Identity's own
+                // creations; a Deployment Administrator may always create.
+                asDeploymentAdministrator={!browserSession.tenant_creation}
+                onCreated={(created) => void tenantCreated(created)}
+              />
             )}
             {browserSession.mappings.length === 0 &&
               !browserSession.deployment_administrator && (
@@ -825,6 +865,11 @@ function Dashboard({
             deploymentAdministratorAllowed:
               browserSession?.deployment_administrator ?? false,
             personalAccount: browserSession?.personal_account ?? false,
+            tenantCreation:
+              (browserSession?.tenant_creation ?? false) ||
+              (context === "deployment_administrator" &&
+                (browserSession?.deployment_administrator ?? false)),
+            tenantCreated: (created) => void tenantCreated(created),
             sharedAccess: {
               status: registration.data?.status,
               loading: registration.isPending,
@@ -972,6 +1017,7 @@ function Dashboard({
                       <TrustTools
                         entries={data.registry}
                         deploymentAdministrator={deploymentAdministrator}
+                        invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}
                         initiallyOpen={route.integration === "authorization"}
                       />
@@ -1003,6 +1049,7 @@ function Dashboard({
               <TrustTools
                 entries={[]}
                 deploymentAdministrator={deploymentAdministrator}
+                invitations={browserSession?.invitations ?? false}
                 tenant={subjectTenant}
                 initiallyOpen={route.integration === "authorization"}
               />

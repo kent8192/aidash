@@ -89,7 +89,7 @@ impl DashboardAuthority {
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
 		}
-		if policy.google {
+		if policy.provisions_personal(sign_in.gcip_tenant.as_deref()) {
 			scope.provision_personal(account.id).await?;
 		}
 		if let Some(status) = status {

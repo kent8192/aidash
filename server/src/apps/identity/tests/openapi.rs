@@ -35,3 +35,20 @@ fn policy_management_routes_publish_authenticated_typed_contracts() {
 		"recursive conditions must retain their type"
 	);
 }
+
+#[rstest::rstest]
+fn invitation_holder_endpoints_publish_typed_contracts() {
+	let document =
+		serde_json::to_value(aidash_server::config::openapi::openapi().unwrap()).unwrap();
+	for path in ["/auth/invitations/inspect", "/auth/invitations/redeem"] {
+		let operation = &document["paths"][path]["post"];
+		assert!(
+			operation["requestBody"]["content"]["application/json"]["schema"].is_object(),
+			"{path}"
+		);
+		assert!(
+			operation["responses"]["200"]["content"]["application/json"]["schema"].is_object(),
+			"{path}"
+		);
+	}
+}
