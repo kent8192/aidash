@@ -110,7 +110,7 @@ def main():
         }
         for name, text in texts()
     ]
-    OUTPUT.write_text(json.dumps(fixtures, ensure_ascii=False, indent="\t") + "\n")
+    OUTPUT.write_text(json.dumps(fixtures, ensure_ascii=False, indent=2) + "\n")
     print(f"wrote {len(fixtures)} fixtures to {OUTPUT}")
 
 

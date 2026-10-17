@@ -65,6 +65,8 @@ gcp_auth = "0.12.7"
 test-support = []
 
 [dev-dependencies]
+# The live Token Encoding checks count requests (ADR 0017).
+aidash-domain = { workspace = true, features = ["token-encodings"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
   "use_pem",
