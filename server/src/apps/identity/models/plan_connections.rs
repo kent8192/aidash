@@ -28,6 +28,9 @@ pub struct PlanConnection {
 	pub tenant: String,
 	#[field(field_type = "text")]
 	pub subject: String,
+	/// The External Identity that connected it; only it uses the connection.
+	#[field]
+	pub identity_id: Uuid,
 	#[field(field_type = "text")]
 	pub provider: String,
 	/// OpenAI's issued client ID; not secret, reused only for this connection.

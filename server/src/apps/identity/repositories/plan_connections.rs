@@ -9,7 +9,7 @@ use aidash_application::{
 	Error, Result,
 	plan_connections::{Owner, Repository, Scope},
 };
-use aidash_domain::plan_connections::PlanConnection;
+use aidash_domain::plan_connections::{MappedIdentity, PlanConnection};
 use aidash_domain::provider_credentials::Provider;
 use async_trait::async_trait;
 use reinhardt::db::{
@@ -70,13 +70,14 @@ pub(crate) async fn lock_owner(
 	Ok(())
 }
 
-/// External Identities that are not disabled and hold an enabled Mapping to
-/// `subject`. A Plan Connection serves calls only while this is exactly one.
+/// External Identities that hold an enabled Mapping to `subject`, each marked
+/// when disabled. A Plan Connection serves calls only while the identity that
+/// connected it is the only one not disabled.
 pub(crate) async fn mapped_identities(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	subject: &str,
-) -> crate::Result<usize> {
+) -> crate::Result<Vec<MappedIdentity>> {
 	let mut identities: Vec<Uuid> = DashboardMapping::objects()
 		.filter(DashboardMapping::field_tenant().eq(tenant))
 		.filter(DashboardMapping::field_subject().eq(subject))
@@ -89,18 +90,20 @@ pub(crate) async fn mapped_identities(
 		.collect();
 	identities.sort_unstable();
 	identities.dedup();
-	let mut active = 0;
-	for identity in identities {
-		let enabled = DashboardIdentity::objects()
-			.filter(DashboardIdentity::field_id().eq(identity))
+	let mut mapped = Vec::with_capacity(identities.len());
+	for id in identities {
+		// A Mapping always names an existing identity; a missing one counts as
+		// disabled, so it never serves or connects anything.
+		let disabled = DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_id().eq(id))
 			.all_with_executor(tx)
 			.await
 			.map_err(reinhardt::core::exception::Error::from)?
 			.pop()
-			.is_some_and(|row| row.disabled_at.is_none());
-		active += usize::from(enabled);
+			.is_none_or(|row| row.disabled_at.is_some());
+		mapped.push(MappedIdentity { id, disabled });
 	}
-	Ok(active)
+	Ok(mapped)
 }
 
 /// The Plan Connection `subject` holds for `provider`, read in the caller's
@@ -255,7 +258,7 @@ impl Scope for NativeScope {
 		)
 		.await?)
 	}
-	async fn mapped_identities(&mut self) -> Result<usize> {
+	async fn mapped_identities(&mut self) -> Result<Vec<MappedIdentity>> {
 		Ok(mapped_identities(self.tx.as_mut(), &self.owner.tenant, &self.owner.subject).await?)
 	}
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()> {
@@ -334,7 +337,7 @@ pub async fn admit(
 		let row = held(tx, tenant, subject, provider)
 			.await?
 			.ok_or(crate::Error::Plan(Failure::NotConnected))?;
-		if mapped_identities(tx, tenant, subject).await? != 1 {
+		if !row.serves(&mapped_identities(tx, tenant, subject).await?) {
 			return Err(crate::Error::Plan(Failure::NotConnected));
 		}
 		row.require_usable(chrono::Utc::now())

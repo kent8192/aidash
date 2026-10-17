@@ -120,7 +120,7 @@ impl PlanConnections {
 			.ok_or(Error::Forbidden)?
 			.to_owned();
 		// Refuses a shared subject before OpenAI issues anything.
-		let saved_client = service.check(&owner).await?;
+		let saved_client = service.check(&owner, origin.identity_id).await?;
 		let pool = &self.runtime.store.pool;
 		let host = domain::host_id(PlanConnectionHost::current(pool).await?)?;
 		let request = application::begin(
@@ -181,6 +181,7 @@ impl PlanConnections {
 		let outcome = service
 			.complete(
 				&owner,
+				origin.identity_id,
 				Pending {
 					state: &state,
 					verifier: &verifier,
@@ -237,15 +238,14 @@ impl PlanConnections {
 	}
 }
 
-/// Ends the Plan Connection of a subject that no enabled Mapping of an
-/// enabled External Identity reaches any more: its owner's Mapping was
+/// Ends the Plan Connection of a subject once the External Identity that
+/// connected it holds no enabled Mapping to it: its owner's Mapping was
 /// disabled, including leaving the Tenant (ADR 0007). A remaining Mapping of
-/// a disabled identity does not keep the connection: that identity never
-/// connected it, and restoring it later must not hand it the owner's plan.
-/// Identity Disablement alone keeps the Mapping and only pauses the
-/// connection, so it never reaches here. Runs after the Mapping change
-/// commits; a connection left behind cannot serve calls, and the next
-/// approval for the subject retries before it may map anyone else.
+/// another identity does not keep the connection: that identity never
+/// connected it. Identity Disablement alone keeps the Mapping and only pauses
+/// the connection. Runs after the Mapping change commits; a connection left
+/// behind cannot serve calls, and the next approval for the subject retries
+/// before it may map anyone else.
 pub(crate) async fn retire_unmapped(
 	f: &Federation,
 	tenant: &str,
@@ -255,24 +255,8 @@ pub(crate) async fn retire_unmapped(
 	let Some(service) = &f.store.plan_connections else {
 		return Ok(());
 	};
-	let mut tx = f
-		.store
-		.control_pool
-		.begin(&TenancyScope::tenant(tenant)?)
-		.await?
-		.into_executor()?;
-	let reachable = crate::apps::identity::repositories::plan_connections::mapped_identities(
-		tx.as_mut(),
-		tenant,
-		subject,
-	)
-	.await?;
-	tx.commit().await?;
-	if reachable > 0 {
-		return Ok(());
-	}
 	Ok(service
-		.retire(
+		.retire_unmapped(
 			&Owner {
 				tenant: tenant.to_owned(),
 				subject: subject.to_owned(),
