@@ -634,6 +634,18 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 	assert_eq!(pending.as_array().unwrap().len(), 1, "{pending}");
 	assert_eq!(pending[0]["identity"]["verified_email"], "bob@example.com");
 	assert_eq!(pending[0]["proposed_groups"], json!(["members"]));
+	// The queue is paged; the next page after the only request is empty.
+	let (status, next) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/tenants/{tenant}/registrations?offset=1"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{next}");
+	assert_eq!(next, json!([]));
 	let id = pending[0]["id"].as_str().unwrap();
 	let (status, approved) = d
 		.as_person(

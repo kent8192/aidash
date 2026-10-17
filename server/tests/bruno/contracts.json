@@ -30002,7 +30002,7 @@
     "source": "server/src/apps/identity/views/tenant_administration.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": ["offset"]
   },
   {
     "method": "POST",

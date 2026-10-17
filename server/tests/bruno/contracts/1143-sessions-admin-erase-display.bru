@@ -1,17 +1,18 @@
 meta {
-  name: 1108 tenant-subject-groups - Anonymous request is rejected
+  name: 1143 sessions-admin-erase-display - Unrecognized bearer cannot mutate state
   type: http
-  seq: 1108
+  seq: 1143
 }
 
-put {
-  url: {{base_url}}/api/tenants/{{tenant}}/subjects/__bruno_missing__/groups
+post {
+  url: {{base_url}}/api/dashboard/identities/11111111-1111-4111-8111-111111111111/display-erasure
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer invalid
 }
 
 script:pre-request {

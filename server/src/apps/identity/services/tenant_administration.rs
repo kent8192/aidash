@@ -90,9 +90,12 @@ impl TenantAdministrations {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		offset: u64,
 	) -> Result<Vec<TenantRegistration>> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let result = administrator.registrations(&self.runtime.store.pool).await;
+		let result = administrator
+			.registrations(&self.runtime.store.pool, offset)
+			.await;
 		self.finish(&administrator, result).await
 	}
 

@@ -500,10 +500,16 @@ impl TenantAdministrator {
 		.await
 	}
 
-	/// Pending Registration Requests addressed to this Tenant, through a Tenant
-	/// Binding or an Invitation, other than this administrator's own. Requests
-	/// addressed elsewhere or to no Tenant are excluded in SQL.
-	pub(crate) async fn registrations(&self, db: &Pool) -> Result<Vec<TenantRegistration>> {
+	/// One page of pending Registration Requests addressed to this Tenant,
+	/// through a Tenant Binding or an Invitation, other than this
+	/// administrator's own, newest first. Requests addressed elsewhere or to no
+	/// Tenant, and those of hidden identities, are excluded in SQL before
+	/// paging, so a large bound pool never loads its whole queue.
+	pub(crate) async fn registrations(
+		&self,
+		db: &Pool,
+		offset: u64,
+	) -> Result<Vec<TenantRegistration>> {
 		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
 			self.require(
@@ -526,6 +532,8 @@ impl TenantAdministrator {
 					self.visible(identities).values(&["id"])
 				})?
 				.order_by(&["-created_at", "-id"])
+				.limit(200)
+				.offset(offset as usize)
 				.all_with_db(tx)
 				.await?;
 			let identities = self

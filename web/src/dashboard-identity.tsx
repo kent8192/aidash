@@ -40,7 +40,8 @@ type Mapping = {
   revision: number;
 };
 type Grant = { identity_id: string; enabled: boolean; revision: number };
-const MAPPING_PAGE_SIZE = 200;
+/** The server's page size for Mappings and Registration Requests. */
+const PAGE_SIZE = 200;
 
 /** The distinct, non-empty groups named in a comma-separated field. */
 function approvalGroups(text: string): string[] {
@@ -289,17 +290,15 @@ export function DashboardIdentityAdministration() {
       </ul>
       <Pager
         className="justify-start"
-        page={mappingOffset / MAPPING_PAGE_SIZE + 1}
+        page={mappingOffset / PAGE_SIZE + 1}
         previous={{
           disabled: mappingOffset === 0 || mappings.isFetching,
-          go: () =>
-            setMappingOffset(Math.max(0, mappingOffset - MAPPING_PAGE_SIZE)),
+          go: () => setMappingOffset(Math.max(0, mappingOffset - PAGE_SIZE)),
         }}
         next={{
           disabled:
-            (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
-            mappings.isFetching,
-          go: () => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE),
+            (mappings.data?.length ?? 0) < PAGE_SIZE || mappings.isFetching,
+          go: () => setMappingOffset(mappingOffset + PAGE_SIZE),
         }}
       />
       <h3 className={group}>
@@ -518,6 +517,7 @@ export function TenantIdentityAdministration({
   const [subjects, setSubjects] = useState<Record<string, string>>({});
   const [groups, setGroups] = useState<Record<string, string[]>>({});
   const [mappingOffset, setMappingOffset] = useState(0);
+  const [registrationOffset, setRegistrationOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const overview = useQuery({
@@ -527,8 +527,11 @@ export function TenantIdentityAdministration({
   const can = (action: string) =>
     overview.data?.actions.includes(action) ?? false;
   const registrations = useQuery({
-    queryKey: ["tenant-registrations", tenant],
-    queryFn: () => apiFetch<TenantRegistration[]>(`${path}/registrations`),
+    queryKey: ["tenant-registrations", tenant, registrationOffset],
+    queryFn: () =>
+      apiFetch<TenantRegistration[]>(
+        `${path}/registrations?offset=${registrationOffset}`,
+      ),
     enabled: can("registration.read"),
   });
   const mappings = useQuery({
@@ -694,6 +697,23 @@ export function TenantIdentityAdministration({
               </li>
             ))}
           </ul>
+          <Pager
+            className="justify-start"
+            page={registrationOffset / PAGE_SIZE + 1}
+            previous={{
+              disabled: registrationOffset === 0 || registrations.isFetching,
+              go: () =>
+                setRegistrationOffset(
+                  Math.max(0, registrationOffset - PAGE_SIZE),
+                ),
+            }}
+            next={{
+              disabled:
+                (registrations.data?.length ?? 0) < PAGE_SIZE ||
+                registrations.isFetching,
+              go: () => setRegistrationOffset(registrationOffset + PAGE_SIZE),
+            }}
+          />
         </>
       )}
       {can("mapping.read") && (
@@ -768,19 +788,16 @@ export function TenantIdentityAdministration({
           </ul>
           <Pager
             className="justify-start"
-            page={mappingOffset / MAPPING_PAGE_SIZE + 1}
+            page={mappingOffset / PAGE_SIZE + 1}
             previous={{
               disabled: mappingOffset === 0 || mappings.isFetching,
               go: () =>
-                setMappingOffset(
-                  Math.max(0, mappingOffset - MAPPING_PAGE_SIZE),
-                ),
+                setMappingOffset(Math.max(0, mappingOffset - PAGE_SIZE)),
             }}
             next={{
               disabled:
-                (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
-                mappings.isFetching,
-              go: () => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE),
+                (mappings.data?.length ?? 0) < PAGE_SIZE || mappings.isFetching,
+              go: () => setMappingOffset(mappingOffset + PAGE_SIZE),
             }}
           />
         </>

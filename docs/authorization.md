@@ -77,7 +77,7 @@ Subjects created and memberships changed by a Tenant Administrator advance the p
 | Method | Path                                               | Body                                                                                                       |
 | ------ | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | GET    | `/api/tenants/{tenant}/administration`             | Returns the permitted `actions`; for a Tenant Administrator also `assignable_groups` and `policy_revision` |
-| GET    | `/api/tenants/{tenant}/registrations`              |                                                                                                            |
+| GET    | `/api/tenants/{tenant}/registrations?offset=0`     |                                                                                                            |
 | POST   | `/api/tenants/{tenant}/registrations/{id}/approve` | `{"subject":"carol","groups":["members"]}`                                                                 |
 | POST   | `/api/tenants/{tenant}/registrations/{id}/reject`  |                                                                                                            |
 | GET    | `/api/tenants/{tenant}/mappings?offset=0`          |                                                                                                            |
