@@ -96,7 +96,8 @@ pub enum Inherited {
 	/// A Run on this node created the task.
 	Local,
 	/// The task's chain arrived through Federation: the task is the output of
-	/// a remote grant, or a local Run descended from one created it.
+	/// a remote grant, or a local Run descended from one created it. A local
+	/// chain too long to walk to its start is treated the same way.
 	Remote,
 }
 

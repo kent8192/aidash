@@ -22,7 +22,8 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// How many local task hops a Federation provenance walk follows.
+/// How many local task hops a Federation provenance walk follows. A chain
+/// that continues past it counts as federated.
 const MAX_ORIGIN_DEPTH: u32 = 64;
 
 #[derive(Clone)]
@@ -296,7 +297,9 @@ impl ExecutionGrantSession for GrantScope<'_> {
 	async fn federated_origin(&mut self, task: Uuid) -> Result<bool> {
 		use reinhardt::query::{JoinType, TableRef};
 		// Walk the local creation chain: each task's origin names the Run that
-		// created it, and that Run's execution grant names its own task.
+		// created it, and that Run's execution grant names its own task. The
+		// walk takes one hop past the bound, so a row there means the chain
+		// continues and its provenance is unknown.
 		let mut chain = Query::select();
 		chain
 			.column(Alias::new("task_id"))
@@ -324,7 +327,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 						),
 						Expr::cust("e.run_id = o.source_run_id"),
 					)
-					.and_where(Expr::cust(format!("c.depth < {MAX_ORIGIN_DEPTH}")))
+					.and_where(Expr::cust(format!("c.depth <= {MAX_ORIGIN_DEPTH}")))
 					.to_owned(),
 			);
 		let reached = Query::select()
@@ -336,9 +339,14 @@ impl ExecutionGrantSession for GrantScope<'_> {
 				Expr::cust("r.resource_kind = 'task' AND r.resource_id = c.task_id"),
 			)
 			.to_owned();
+		let exhausted = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("chain"))
+			.and_where(Expr::cust(format!("depth > {MAX_ORIGIN_DEPTH}")))
+			.to_owned();
 		let sql = Query::select()
 			.with_recursive_cte(Alias::new("chain"), chain)
-			.expr(Expr::exists(reached))
+			.expr(Expr::exists(reached).or(Expr::exists(exhausted)))
 			.to_string(PostgresQueryBuilder);
 		let federated: NativeResult<bool> = crate::database::native::query_scalar(&sql)
 			.scalar_one(&mut **self.access.tx)
