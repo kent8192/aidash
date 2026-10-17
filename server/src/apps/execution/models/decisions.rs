@@ -41,6 +41,9 @@ pub struct DecisionAttempt {
 	pub state_digest: String,
 	#[field]
 	pub questions: Json<Value>,
+	/// Commits to the definitions of `questions`, which the request carried.
+	#[field(field_type = "text")]
+	pub question_digest: String,
 	#[field(field_type = "text")]
 	pub mode: String,
 	#[field]
@@ -55,8 +58,8 @@ pub struct DecisionAttempt {
 	pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// One immutable Decision Evidence snapshot. A decision has at most one applied
-/// or shadow snapshot; each retry of a rejected decision appends another.
+/// One immutable Decision Evidence snapshot. A decision has at most one applied,
+/// staged or shadow snapshot; each retry of a rejected decision appends another.
 #[model(app_label = "execution", table_name = "decision_evidence")]
 #[derive(Serialize, Deserialize)]
 pub struct DecisionEvidence {

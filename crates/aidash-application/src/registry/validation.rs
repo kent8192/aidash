@@ -551,7 +551,29 @@ fn registration_projection(
 	}
 }
 
+/// The Node's Decision Provider: Jev through OpenRouter's System One API with
+/// the Tenant's Provider Credential (ADR 0041). Admission pins this identity.
+pub fn decision_implementation_id() -> String {
+	format!(
+		"{}:aidash-{}",
+		aidash_domain::decision::PROVIDER,
+		env!("CARGO_PKG_VERSION")
+	)
+}
+
 impl crate::ports::bindings::ProviderCatalog for DefinitionValidation {
+	fn decision_implementation(
+		&self,
+		config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		config.validate()?;
+		if !self.provider_credentials_enabled {
+			return Err(Error::Invalid(
+				"Node has no supported Decision Provider".into(),
+			));
+		}
+		Ok(decision_implementation_id())
+	}
 	fn contract(
 		&self,
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,

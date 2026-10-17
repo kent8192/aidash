@@ -16,6 +16,14 @@ pub enum Failure {
 	ContextUnreducible,
 	#[error("Jev pruning is unavailable for this Context Policy")]
 	PruneUnavailable,
+	#[error("The compaction Decider has no Catalog Approval for its exact version on this Node")]
+	DeciderUnapproved,
+	#[error("The compaction Decider reached its call limit for this Run")]
+	DeciderCallsExhausted,
+	#[error(
+		"The compaction Decider is unavailable: no OpenRouter connection, a provider failure, or more context than it accepts"
+	)]
+	DeciderUnavailable,
 	#[error("The context Summary Stage is unavailable or not approved for this Run")]
 	SummaryUnavailable,
 	#[error("The context summary was invalid or did not reduce the context")]
@@ -34,6 +42,9 @@ impl Failure {
 		match self {
 			Self::ContextUnreducible => "context_unreducible",
 			Self::PruneUnavailable => "prune_unavailable",
+			Self::DeciderUnapproved => "decider_unapproved",
+			Self::DeciderCallsExhausted => "decider_calls_exhausted",
+			Self::DeciderUnavailable => "decider_unavailable",
 			Self::SummaryUnavailable => "summary_unavailable",
 			Self::SummaryInvalid => "summary_invalid",
 			Self::OverflowRetriesExhausted => "overflow_retries_exhausted",

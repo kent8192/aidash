@@ -291,11 +291,49 @@ impl ExecutionStore for RunStore {
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
+		staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
-		Store::adopt_compaction(&self.store, &self.scope, run, token, attempt, settlement)
-			.await
-			.map_err(Into::into)
+		let journal = match staged {
+			Some(_) => Some(decision_journal(&self.store, run)?),
+			None => None,
+		};
+		Store::adopt_compaction(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			attempt,
+			settlement,
+			journal.as_ref().zip(staged),
+		)
+		.await
+		.map_err(Into::into)
 	}
+}
+
+/// The Decision Journal of `run` and the compaction Decider its Binding
+/// snapshot admitted.
+fn decision_journal<'a>(
+	store: &'a Store,
+	run: &Run,
+) -> Result<crate::apps::execution::repositories::decisions::RunDecisionJournal<'a>> {
+	use crate::apps::execution::repositories::decisions::{AdmittedAllowance, RunDecisionJournal};
+	let (bound, _) = run
+		.context
+		.binding_snapshot
+		.as_deref()
+		.map(|snapshot| snapshot.bound_decider(aidash_domain::decision::Hook::Compaction))
+		.transpose()?
+		.flatten()
+		.ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no compaction Decider".into())
+		})?;
+	Ok(RunDecisionJournal::new(
+		store,
+		run.clone(),
+		bound.allowance(),
+		&AdmittedAllowance,
+	)?)
 }
 
 #[async_trait]
@@ -719,6 +757,9 @@ pub(crate) struct Environment<'a> {
 	step_run: Run,
 	run_store: RunStore,
 }
+/// How long one Decision Attempt may wait for Jev.
+const DECIDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl<'a> Environment<'a> {
 	pub(crate) fn new(federation: &'a Federation, guard: Option<&'a Guard>, run: &Run) -> Self {
 		// A Run without a grant has no Tenant; only test fixtures create one.
@@ -814,6 +855,53 @@ impl ExecutionEnvironment for Environment<'_> {
 	}
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
+	}
+	async fn compaction_decider(
+		&self,
+		run: &Run,
+		_token: Uuid,
+	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
+		use crate::apps::execution::repositories::decisions::CatalogAuthority;
+		let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
+			return Ok(None);
+		};
+		let Some((decider, definition)) =
+			snapshot.bound_decider(aidash_domain::decision::Hook::Compaction)?
+		else {
+			return Ok(None);
+		};
+		// Only a worker holding the Run's authority may call a Decider.
+		let Some(authority) = &self.authority else {
+			return Ok(None);
+		};
+		let provider = aidash_integrations::decision::JevDecisionProvider::new(
+			decider.config.clone(),
+			aidash_application::registry::validation::decision_implementation_id(),
+			Arc::new(
+				crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+					store: self.federation.store.clone(),
+				},
+			),
+			aidash_application::provider_access::Context {
+				tenant: authority.guard.tenant().await,
+				run: Some(run.id),
+				..Default::default()
+			},
+			Arc::new(aidash_integrations::decision::ByteBudget(
+				decider.config.state_budget.clone(),
+			)),
+			DECIDER_TIMEOUT,
+		)?;
+		Ok(Some(aidash_application::ports::decision::DecisionPorts {
+			authority: Box::new(CatalogAuthority {
+				guard: authority.guard,
+				config: decider.config.clone(),
+			}),
+			journal: Box::new(decision_journal(&self.federation.store, run)?),
+			provider: Box::new(provider),
+			decider,
+			definition,
+		}))
 	}
 	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
 		self.worker()

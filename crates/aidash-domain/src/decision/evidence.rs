@@ -41,6 +41,8 @@ impl Boundary {
 pub struct Candidate {
 	pub id: String,
 	pub history_index: usize,
+	/// The Model Turn of the event on the Native Projection Version, if any.
+	pub turn: Option<usize>,
 	pub description: String,
 	pub keep_call: String,
 	pub keep_result: String,
@@ -68,6 +70,8 @@ pub struct AttemptEvidence {
 	pub id: Uuid,
 	pub request_digest: String,
 	pub questions: Vec<String>,
+	/// Commits to the exact question definitions the attempt asked.
+	pub question_digest: String,
 	pub status: AttemptStatus,
 	/// Canonical owner receipts are retained by their owners; these exact IDs link them.
 	pub owner_receipts: BTreeMap<String, Uuid>,
@@ -77,6 +81,9 @@ pub struct AttemptEvidence {
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
 	Applied,
+	/// Pruning that was not enough on its own, completed by the Summary Stage
+	/// and recorded together with the adopted summary (ADR 0056).
+	Staged,
 	Shadow,
 	Rejected,
 }
@@ -89,8 +96,23 @@ pub enum Reason {
 	ProviderFailure,
 	AuthorityFailure,
 	JournalFailure,
+	/// The provider returned answers that failed validation.
 	InvalidAnswers,
+	/// The durable answers of every attempt do not cover the questions.
+	IncompleteAnswers,
 	NoCandidates,
+}
+impl Reason {
+	/// Reasons that only arise once candidates and their questions exist.
+	fn after_candidates(self) -> bool {
+		matches!(
+			self,
+			Self::ProviderFailure
+				| Self::JournalFailure
+				| Self::InvalidAnswers
+				| Self::IncompleteAnswers
+		)
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -124,6 +146,9 @@ pub struct FitMetrics {
 	pub proposed: usize,
 	pub window: usize,
 	pub retained: usize,
+	/// History entries the projection no longer holds.
+	pub removed: usize,
+	/// Candidates whose branch is `drop`.
 	pub dropped: usize,
 	pub truncated: usize,
 }
@@ -145,17 +170,25 @@ pub struct Evidence {
 	pub rule: String,
 	pub state_digest: String,
 	pub history_length: usize,
+	/// Model Turns in the history on the Native Projection Version; `None` on
+	/// Legacy, where `preserve_recent` counts events.
+	pub turns: Option<usize>,
 	pub sources: Vec<SourcePin>,
 	pub candidates: Vec<Candidate>,
 	pub questions: Questions,
 	pub answers: BTreeMap<String, Probability>,
 	pub restrictions: Restrictions,
+	/// The Binding restrictions admitted with the Run, which the decision
+	/// identity commits to; `restrictions` may only be stricter.
+	pub binding_restrictions: Restrictions,
 	pub mode: Mode,
 	pub branches: BTreeMap<String, Branch>,
 	pub attempts: Vec<AttemptEvidence>,
 	pub outcome: Outcome,
 	pub reason: Reason,
 	pub fit: FitMetrics,
+	/// Digest of the history an applied or staged decision produced.
+	pub projection_digest: Option<String>,
 	pub state: StateReference,
 	pub state_retention: StateRetentionWitness,
 }
@@ -170,10 +203,12 @@ impl Evidence {
 		} else {
 			Reason::Fits
 		};
+		let changes = matches!(self.outcome, Outcome::Applied | Outcome::Staged);
 		if self.reason != proposed_reason
 			|| self.outcome == Outcome::Rejected
 				&& (self.mode != Mode::Enforce || self.reason == Reason::Fits)
-			|| self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)
+			|| self.fit.retained.checked_add(self.fit.removed) != Some(self.history_length)
+			|| self.turns.is_none() && self.fit.removed != self.fit.dropped
 			|| self.fit.truncated > self.fit.retained
 			|| self.fit.before <= self.fit.window
 			|| self.outcome == Outcome::Applied
@@ -181,7 +216,10 @@ impl Evidence {
 					|| self.reason != Reason::Fits
 					|| self.fit.proposed > self.fit.window
 					|| self.restrictions.forbid_apply)
+			|| self.outcome == Outcome::Staged
+				&& (self.mode != Mode::Enforce || self.reason != Reason::Insufficient)
 			|| self.outcome == Outcome::Shadow && self.mode != Mode::Shadow
+			|| changes != self.projection_digest.is_some()
 		{
 			return Err(Error::Invalid(
 				"corrupt historical application outcome".into(),
@@ -193,20 +231,13 @@ impl Evidence {
 				"unsupported or incomplete historical decision evidence".into(),
 			));
 		}
+		if let Some(digest) = &self.projection_digest {
+			validate_digest(digest)?;
+		}
 		validate_answers(&self.questions, &self.answers)?;
+		self.validate_candidates()?;
 		let mut replay = BTreeMap::new();
-		let mut question_ids = std::collections::BTreeSet::new();
 		for candidate in &self.candidates {
-			if candidate.history_index >= self.history_length
-				|| candidate.id != self.boundary.candidate_id(candidate.history_index)
-				|| candidate.description.trim().is_empty()
-				|| !question_ids.insert(&candidate.keep_call)
-				|| !question_ids.insert(&candidate.keep_result)
-			{
-				return Err(Error::Invalid(
-					"corrupt historical decision candidate".into(),
-				));
-			}
 			let call = *self
 				.answers
 				.get(&candidate.keep_call)
@@ -215,11 +246,13 @@ impl Evidence {
 				.answers
 				.get(&candidate.keep_result)
 				.ok_or_else(|| Error::Invalid("missing result answer".into()))?;
-			let protected = candidate.history_index == 0
-				|| candidate.history_index
-					>= self
-						.history_length
-						.saturating_sub(self.restrictions.preserve_recent);
+			let protected = super::pruning::protected(
+				candidate.history_index,
+				candidate.turn,
+				self.history_length,
+				self.turns,
+				self.restrictions.preserve_recent,
+			);
 			let chosen = if protected {
 				Branch::Keep
 			} else {
@@ -231,8 +264,7 @@ impl Evidence {
 				));
 			}
 		}
-		if question_ids.len() != self.questions.len()
-			|| replay != self.branches
+		if replay != self.branches
 			|| self.fit.dropped
 				!= replay
 					.values()
@@ -248,31 +280,8 @@ impl Evidence {
 				"historical decision branch or question coverage changed".into(),
 			));
 		}
-		let mut coverage = std::collections::BTreeSet::new();
-		let mut attempted_questions = std::collections::BTreeSet::new();
-		let mut attempts = std::collections::BTreeSet::new();
-		for attempt in &self.attempts {
-			validate_digest(&attempt.request_digest)?;
-			if attempt.id.is_nil()
-				|| !attempts.insert(attempt.id)
-				|| attempt.questions.is_empty()
-				|| attempt.owner_receipts.is_empty()
-				|| attempt.owner_receipts.values().any(Uuid::is_nil)
-			{
-				return Err(Error::Invalid("corrupt historical attempt evidence".into()));
-			}
-			for question in &attempt.questions {
-				if !self.questions.contains_key(question) || !attempted_questions.insert(question) {
-					return Err(Error::Invalid(
-						"historical attempts have conflicting question coverage".into(),
-					));
-				}
-				if attempt.status == AttemptStatus::Answered {
-					coverage.insert(question);
-				}
-			}
-		}
-		if coverage.len() != self.questions.len() {
+		let coverage = self.validate_attempts()?;
+		if coverage != self.questions.len() {
 			return Err(Error::Invalid(
 				"historical answers lack durable attempt evidence".into(),
 			));
@@ -303,24 +312,74 @@ impl Evidence {
 			return self.replay().map(|_| ());
 		}
 		self.validate_identity()?;
-		if self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)
-			|| self.fit.truncated > self.fit.retained
+		if self.fit.retained != self.history_length
 			|| self.fit.before <= self.fit.window
 			|| !self.branches.is_empty()
 			|| self.fit.proposed != self.fit.before
+			|| self.fit.removed != 0
 			|| self.fit.dropped != 0
 			|| self.fit.truncated != 0
+			|| self.projection_digest.is_some()
 			|| self.reason == Reason::NoCandidates
-				&& (!self.questions.is_empty()
+				&& (!self.candidates.is_empty()
+					|| !self.questions.is_empty()
 					|| !self.answers.is_empty()
 					|| !self.attempts.is_empty())
+			|| self.reason.after_candidates() && self.candidates.is_empty()
 		{
 			return Err(Error::Invalid(
 				"corrupt historical application outcome".into(),
 			));
 		}
 		self.validate_candidates()?;
+		self.validate_attempts()?;
+		// Only an attempt whose answers failed validation records invalid answers.
+		if self.reason == Reason::InvalidAnswers
+			&& !self
+				.attempts
+				.iter()
+				.any(|attempt| attempt.status == AttemptStatus::Failed)
+		{
+			return Err(Error::Invalid(
+				"invalid answers require the attempt that returned them".into(),
+			));
+		}
 		self.validate_contract()
+	}
+	/// Each attempt is well formed and asks questions of this decision that no
+	/// other attempt asks; returns how many questions an answered attempt covers.
+	fn validate_attempts(&self) -> Result<usize> {
+		let mut coverage = std::collections::BTreeSet::new();
+		let mut attempted_questions = std::collections::BTreeSet::new();
+		let mut attempts = std::collections::BTreeSet::new();
+		for attempt in &self.attempts {
+			validate_digest(&attempt.request_digest)?;
+			validate_digest(&attempt.question_digest)?;
+			if attempt.id.is_nil()
+				|| !attempts.insert(attempt.id)
+				|| attempt.questions.is_empty()
+				|| attempt.owner_receipts.is_empty()
+				|| attempt.owner_receipts.values().any(Uuid::is_nil)
+			{
+				return Err(Error::Invalid("corrupt historical attempt evidence".into()));
+			}
+			for question in &attempt.questions {
+				if !self.questions.contains_key(question) || !attempted_questions.insert(question) {
+					return Err(Error::Invalid(
+						"historical attempts have conflicting question coverage".into(),
+					));
+				}
+				if attempt.status == AttemptStatus::Answered {
+					coverage.insert(question);
+				}
+			}
+			if question_digest(&self.questions, &attempt.questions)? != attempt.question_digest {
+				return Err(Error::Invalid(
+					"historical attempt asked other questions than its evidence names".into(),
+				));
+			}
+		}
+		Ok(coverage.len())
 	}
 	/// Each candidate names an event of the history under the ID its boundary
 	/// derives, with a call and a result question of its own, and every
@@ -328,10 +387,20 @@ impl Evidence {
 	/// questions together, so this holds before any branch is selected.
 	fn validate_candidates(&self) -> Result<()> {
 		let mut question_ids = std::collections::BTreeSet::new();
+		let mut indexes = std::collections::BTreeSet::new();
 		for candidate in &self.candidates {
+			let turn_valid = match (candidate.turn, self.turns) {
+				(None, _) => true,
+				(Some(turn), Some(turns)) => turn < turns,
+				(Some(_), None) => false,
+			};
 			if candidate.history_index >= self.history_length
+				|| !indexes.insert(candidate.history_index)
+				|| !turn_valid
 				|| candidate.id != self.boundary.candidate_id(candidate.history_index)
 				|| candidate.description.trim().is_empty()
+				|| candidate.keep_call.is_empty()
+				|| candidate.keep_result.is_empty()
 				|| !question_ids.insert(&candidate.keep_call)
 				|| !question_ids.insert(&candidate.keep_result)
 			{
@@ -344,6 +413,10 @@ impl Evidence {
 			|| question_ids
 				.iter()
 				.any(|question| !self.questions.contains_key(*question))
+			|| self
+				.questions
+				.values()
+				.any(|question| question.description.trim().is_empty())
 		{
 			return Err(Error::Invalid(
 				"historical decision questions differ from its candidates".into(),
@@ -362,11 +435,23 @@ impl Evidence {
 		validate_digest(&self.state_digest)?;
 		validate_model(&self.model)?;
 		validate_digest(&self.configuration_parameters_digest)?;
-		if model_configuration_digest(&self.model, &self.configuration_parameters_digest)
-			!= self.decider.configuration_digest
+		if model_configuration_digest(
+			&self.model,
+			self.mode,
+			&self.configuration_parameters_digest,
+		) != self.decider.configuration_digest
 		{
 			return Err(Error::Invalid(
-				"historical model differs from the pinned Decider configuration".into(),
+				"historical model or mode differs from the pinned Decider configuration".into(),
+			));
+		}
+		self.binding_restrictions.validate_floor()?;
+		if !self
+			.restrictions
+			.at_least_as_strict(&self.binding_restrictions)
+		{
+			return Err(Error::Invalid(
+				"historical restrictions are looser than the admitted Binding".into(),
 			));
 		}
 		for source in &self.sources {
@@ -424,8 +509,7 @@ impl Evidence {
 			|| self.provider_contract != PROVIDER
 			|| self.builder != BUILDER
 			|| self.option_source != OPTION_SOURCE
-			|| self.restrictions.keep_threshold.value() > 0.5
-			|| self.restrictions.preserve_recent < 6
+			|| self.restrictions.validate_floor().is_err()
 		{
 			return Err(Error::Invalid(
 				"unsupported or incomplete historical decision evidence".into(),
@@ -443,6 +527,18 @@ impl Evidence {
 			fit: self.fit.clone(),
 		}
 	}
+}
+
+/// The commitment an attempt keeps to the definitions of the questions it asked.
+pub fn question_digest(questions: &Questions, asked: &[String]) -> Result<String> {
+	let mut selected = BTreeMap::new();
+	for id in asked {
+		let question = questions.get(id).ok_or_else(|| {
+			Error::Invalid("decision attempt asks a question its catalog lacks".into())
+		})?;
+		selected.insert(id, question);
+	}
+	Ok(digest(&serde_json::to_value(selected)?))
 }
 
 pub fn validate_answers(

@@ -18,6 +18,9 @@ fn config(mode: Mode) -> DeciderConfig {
 		rule: RULE.into(),
 		keep_threshold: Probability::half(),
 		mode,
+		max_calls_per_run: 1_000,
+		state_retention: policy::StateRetention::default(),
+		state_budget: StateBudget::default(),
 	}
 }
 fn definition(mode: Mode) -> aidash_domain::registry::Entry {
@@ -599,7 +602,7 @@ async fn fitting_context_needs_no_authority_provider_or_allowance() {
 	};
 	let (result, context, original) =
 		evaluate(&fixture, Mode::Enforce, 200_000, disclosure()).await;
-	assert_eq!(result.unwrap(), CompactionResult::AlreadyFits);
+	assert!(matches!(result.unwrap(), CompactionResult::AlreadyFits));
 	assert_eq!(
 		serde_json::to_value(context).unwrap(),
 		serde_json::to_value(original).unwrap()
@@ -858,7 +861,9 @@ async fn history_without_disclosure_proof_stays_protected_with_zero_attempts() {
 	let fixture = Fixture::new(Mode::Enforce);
 	let (result, context, original) =
 		evaluate(&fixture, Mode::Enforce, 80_000, Disclosure::default()).await;
-	assert!(result.is_err());
+	// Nothing could be classified, so pruning changes nothing and the Summary
+	// Stage may still reduce the context.
+	assert!(matches!(result, Ok(CompactionResult::Unpruned(_))));
 	assert_eq!(context.history, original.history);
 	assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
 	assert_eq!(
@@ -1176,10 +1181,29 @@ async fn replay_rejects_impossible_reason_fit_and_mode_combinations() {
 	insufficient.outcome = Outcome::Rejected;
 	insufficient.reason = Reason::Insufficient;
 	insufficient.fit.proposed = insufficient.fit.window + 1;
+	// A decision without an effect names no projection.
+	assert!(insufficient.replay().is_err());
+	insufficient.projection_digest = None;
 	assert_eq!(insufficient.replay().unwrap(), insufficient.branches);
+	// The same pruning completed by a summary is staged and names its projection.
+	let mut staged = insufficient.clone();
+	staged.outcome = Outcome::Staged;
+	assert!(staged.replay().is_err());
+	staged.projection_digest = applied.projection_digest.clone();
+	assert_eq!(staged.replay().unwrap(), staged.branches);
+	let mut fitting = staged.clone();
+	fitting.reason = Reason::Fits;
+	fitting.fit.proposed = fitting.fit.window;
+	assert!(
+		fitting.replay().is_err(),
+		"a fitting pruning is applied, not staged"
+	);
+	staged.mode = Mode::Shadow;
+	assert!(staged.replay().is_err());
 	insufficient.mode = Mode::Shadow;
 	assert!(insufficient.replay().is_err());
 	let mut forbidden = applied;
+	forbidden.projection_digest = None;
 	forbidden.outcome = Outcome::Rejected;
 	forbidden.reason = Reason::Forbidden;
 	forbidden.restrictions.forbid_apply = true;
@@ -1286,6 +1310,7 @@ async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_statu
 			corrupt.attempts.push(AttemptEvidence {
 				id: Uuid::new_v4(),
 				request_digest: format!("sha256:{}", "c".repeat(64)),
+				question_digest: format!("sha256:{}", "d".repeat(64)),
 				questions,
 				status,
 				owner_receipts: BTreeMap::from([("run-owner".into(), Uuid::new_v4())]),
@@ -1301,10 +1326,14 @@ async fn live_stricter_protection_replays_the_actual_preserved_branch() {
 		..Fixture::new(Mode::Enforce)
 	};
 	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
-	assert!(result.is_err());
+	// Pruning was not enough: nothing is recorded until a summary completes it.
+	let Ok(CompactionResult::Insufficient(staged)) = result else {
+		panic!("expected a staged decision");
+	};
 	assert_eq!(context.history, original.history);
-	let saved = fixture.saved.lock().unwrap();
-	let evidence = &saved.evidence[0];
+	assert!(fixture.saved.lock().unwrap().evidence.is_empty());
+	staged.rejected().validate_rejection().unwrap();
+	let evidence = &staged.evidence;
 	assert_eq!(evidence.reason, Reason::Insufficient);
 	assert_eq!(evidence.restrictions.preserve_recent, 10);
 	assert!(
@@ -1380,7 +1409,7 @@ async fn state_retention_is_prior_opt_in_and_replay_requires_current_reader_auth
 	assert!(corrupt.replay().is_err());
 }
 #[test]
-fn state_and_question_sizes_have_no_aidash_ceiling() {
+fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 	let mut context = history();
 	context.history = (0..600).map(|_| context.history[0].clone()).collect();
 	let boundary = Boundary {
@@ -1392,21 +1421,68 @@ fn state_and_question_sizes_have_no_aidash_ceiling() {
 		worker: Uuid::new_v4(),
 		input_digest: format!("sha256:{}", "a".repeat(64)),
 	};
-	let view = Disclosure {
-		goal: Some("g".repeat(1_100_000)),
-		tool_inputs: (0..600)
+	let inputs = |count: usize| -> BTreeMap<usize, Value> {
+		(0..count)
 			.map(|i| (i, json!({"query":"permitted".repeat(256)})))
-			.collect(),
+			.collect()
+	};
+	let budget = StateBudget::default();
+	let build = |view: &Disclosure| {
+		build_compaction_state(
+			&context,
+			&boundary,
+			view,
+			&Restrictions::default(),
+			&budget,
+			false,
+		)
+	};
+	// Five complete inputs fit the default mode as they are.
+	let few = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: inputs(5),
 		..Default::default()
 	};
-	let built =
-		build_compaction_state(&context, &boundary, &view, &Restrictions::default()).unwrap();
-	assert!(built.state.to_string().len() > 1_048_576);
-	assert!(built.questions.len() > 1024);
-	assert!(serde_json::to_vec(&built.questions).unwrap().len() > 1_048_576);
-	assert!(serde_json::to_vec(&built.candidates).unwrap().len() > 1_048_576);
-	assert_eq!(built.candidates.len(), 593);
-	assert_eq!(built.state["goal"].as_str().unwrap().len(), 1_100_000);
+	let built = build(&few).unwrap();
+	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
+	assert!(built.state.to_string().contains(&"permitted".repeat(256)));
+	assert_eq!(built.candidates.len(), 4);
+	// Sixty inputs are abridged until the state fits the default mode.
+	let more = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: inputs(60),
+		..Default::default()
+	};
+	let built = build(&more).unwrap();
+	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
+	assert!(!built.state.to_string().contains(&"permitted".repeat(256)));
+	assert_eq!(built.candidates.len(), 59);
+	// The most abridged state may still use the long-context mode.
+	let many = Disclosure {
+		goal: Some("g".repeat(100_000)),
+		tool_inputs: inputs(600),
+		..Default::default()
+	};
+	let built = build(&many).unwrap();
+	let bytes = serde_json::to_vec(&built.state).unwrap().len();
+	assert!(bytes > budget.default_state_bytes);
+	assert_eq!(
+		budget.request_limit(bytes),
+		budget.long_context_request_bytes
+	);
+	// Conversation text is never abridged, so a state beyond the long-context
+	// budget pauses the Run.
+	let too_large = Disclosure {
+		goal: Some("g".repeat(1_100_000)),
+		tool_inputs: inputs(600),
+		..Default::default()
+	};
+	assert!(matches!(
+		build(&too_large),
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::DeciderUnavailable
+		))
+	));
 }
 
 #[tokio::test]
@@ -1591,10 +1667,15 @@ async fn bound_decider_restrictions_reach_compaction_without_separate_defaults()
 		};
 		let (result, context, original) =
 			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
-		assert!(result.is_err());
 		assert_eq!(context.history, original.history);
 		let saved = fixture.saved.lock().unwrap();
-		let evidence = &saved.evidence[0];
+		// A pruning that is not enough is handed back uncommitted.
+		let staged = match &result {
+			Ok(CompactionResult::Insufficient(staged)) => Some(staged.evidence.clone()),
+			Ok(_) => panic!("the protected context cannot fit"),
+			Err(_) => None,
+		};
+		let evidence = staged.as_ref().unwrap_or_else(|| &saved.evidence[0]);
 		assert_eq!(evidence.restrictions, restrictions);
 		if restrictions.forbid_apply {
 			assert!(matches!(result, Err(Error::Forbidden)));

@@ -38,7 +38,8 @@ pub async fn compact(
 	};
 	match aidash_application::context::compact(&mut candidate, &Classifier(asker), &fitting).await?
 	{
-		Compaction::Fits => {}
+		// The classifier never saves the Run itself.
+		Compaction::Fits | Compaction::Saved => {}
 		// A prune-only policy has no Summary Stage.
 		Compaction::NeedsSummary(_) => {
 			return Err(aidash_application::Error::Context(

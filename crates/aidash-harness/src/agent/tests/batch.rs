@@ -637,6 +637,7 @@ impl ExecutionStore for Bench {
 		_token: Uuid,
 		_attempt: Uuid,
 		_settlement: &aidash_domain::context::recovery::Settlement,
+		_staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		unexpected("ExecutionStore.adopt_compaction")
 	}

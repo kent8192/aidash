@@ -1,5 +1,7 @@
-//! Context recovery use case: fit, Jev prune, plan and validate the opt-in
-//! Summary Stage, then accept only a complete request that fits.
+//! Context recovery use case: fit, prune through the compaction Decider, plan
+//! and validate the opt-in Summary Stage, then accept only a complete request
+//! that fits.
+use crate::decision::{CompactionResult, DecisionGate, Evaluation, StagedDecision};
 use crate::{Error, Result};
 use aidash_domain::context::{
 	Context, ContextEvent, HistoryEntry, RequestBudget, compaction_snapshot,
@@ -49,13 +51,114 @@ pub struct SummaryPlan {
 	/// Ordered entries the summary absorbs.
 	pub absorbed: Vec<HistoryEntry>,
 	pub before_tokens: usize,
+	/// The Decider's pruning that `pruned` holds, recorded with the adopted
+	/// summary or rejected when none is adopted (ADR 0056).
+	pub staged: Option<Box<StagedDecision>>,
 }
 
 pub enum Compaction {
 	/// `context` now fits; it may have been pruned.
 	Fits,
+	/// An applied decision saved the pruned context, which ends the step.
+	Saved,
 	/// Pruning alone cannot fit and the policy enables the Summary Stage.
 	NeedsSummary(Box<SummaryPlan>),
+}
+
+/// The compaction Decider bound to a Run and the ports its decisions use.
+pub struct Decision<'a> {
+	pub gate: DecisionGate<'a>,
+	pub evaluation: Evaluation<'a>,
+}
+
+/// Fit check and pruning through the Run's compaction Decider. Without one,
+/// or with one in Shadow, the Summary Stage may run alone. A Decider that is
+/// bound but unavailable pauses the Run; the Summary Stage never stands in
+/// for it (ADR 0010, ADR 0042).
+pub async fn compact_decided(
+	context: &mut Context,
+	decision: Option<&Decision<'_>>,
+	fitting: &Fitting<'_>,
+) -> Result<Compaction> {
+	if fitting.fits(context) {
+		return Ok(Compaction::Fits);
+	}
+	let Some(decision) = decision else {
+		return summary_plan(context.clone(), fitting).map(Compaction::NeedsSummary);
+	};
+	let result = decision
+		.gate
+		.compact(
+			context,
+			fitting.budget,
+			fitting.pinned,
+			&decision.evaluation,
+		)
+		.await;
+	match result {
+		Ok(CompactionResult::AlreadyFits) => Ok(Compaction::Fits),
+		Ok(CompactionResult::Applied(_)) => {
+			record_stage("prune", "applied");
+			Ok(Compaction::Saved)
+		}
+		Ok(CompactionResult::Shadow(_) | CompactionResult::Unpruned(_)) => {
+			record_stage("prune", "unapplied");
+			summary_plan(context.clone(), fitting).map(Compaction::NeedsSummary)
+		}
+		Ok(CompactionResult::Insufficient(staged)) => {
+			record_stage("prune", "insufficient");
+			match summary_plan(staged.pruned.clone(), fitting) {
+				Ok(mut plan) => {
+					plan.staged = Some(staged);
+					Ok(Compaction::NeedsSummary(plan))
+				}
+				Err(error) => {
+					// No summary can complete this pruning, so it changes nothing.
+					decision.gate.reject_staged(&staged).await?;
+					Err(error)
+				}
+			}
+		}
+		Err(error) => {
+			record_stage("prune", "unavailable");
+			Err(decider_failure(error))
+		}
+	}
+}
+
+/// A failure of a bound Decider pauses the Run with a typed reason; authority
+/// and lease failures keep their own class so they are never mistaken for it.
+fn decider_failure(error: Error) -> Error {
+	match error {
+		Error::External(_)
+		| Error::Invalid(_)
+		| Error::ProviderRejected { .. }
+		| Error::Port(_) => Error::Context(Failure::DeciderUnavailable),
+		error => error,
+	}
+}
+
+/// The Summary Stage's work on `candidate`, or `context_unreducible` when the
+/// policy has no Summary Stage or nothing is old enough to absorb.
+fn summary_plan(candidate: Context, fitting: &Fitting<'_>) -> Result<Box<SummaryPlan>> {
+	if fitting.policy.summary.is_none() {
+		return Err(Error::Context(Failure::ContextUnreducible));
+	}
+	let absorbed = if fitting.native() {
+		native_summary_candidates(&candidate, fitting.policy.preserve_recent)
+	} else {
+		summary_candidates(&candidate, fitting.policy.preserve_recent)
+	};
+	if absorbed.is_empty() {
+		return Err(Error::Context(Failure::ContextUnreducible));
+	}
+	let before_tokens = fitting.size(&candidate);
+	Ok(Box::new(SummaryPlan {
+		pruned: candidate,
+		absorbed,
+		before_tokens,
+		staged: None,
+	}))
 }
 
 /// Fit check and Jev pruning. The caller's context changes only when the
@@ -122,6 +225,7 @@ pub async fn compact(
 		pruned: candidate,
 		absorbed,
 		before_tokens: after,
+		staged: None,
 	})))
 }
 

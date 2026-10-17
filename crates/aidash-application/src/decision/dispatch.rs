@@ -46,18 +46,23 @@ pub fn decision_identity(
 	}))
 }
 
+/// The stable identity of one Decision Attempt of a decision. A journal
+/// recomputes it before charging, so an attempt is never charged under another key.
+pub fn attempt_identity(decision: Uuid, request_digest: &str, questions: &[String]) -> Uuid {
+	stable_id(&json!({"decision":decision,"request":request_digest,"questions":questions}))
+}
+
 pub(super) fn record(
 	input: &Evaluation<'_>,
 	decision: Uuid,
 	state: &str,
 	request: &PreparedRequest,
-) -> DispatchRecord {
+) -> Result<DispatchRecord> {
 	let questions: Vec<_> = request.questions.keys().cloned().collect();
 	let request_digest = request.digest();
-	DispatchRecord {
-		attempt: stable_id(
-			&json!({"decision":decision,"request":request_digest,"questions":questions}),
-		),
+	Ok(DispatchRecord {
+		attempt: attempt_identity(decision, &request_digest, &questions),
+		question_digest: question_digest(&request.questions, &questions)?,
 		decision,
 		boundary: input.boundary.clone(),
 		decider: input.decider.pin.clone(),
@@ -66,7 +71,7 @@ pub(super) fn record(
 		state_digest: state.into(),
 		questions,
 		mode: input.decider.config.mode,
-	}
+	})
 }
 
 fn validate_permit(
@@ -113,9 +118,8 @@ pub(super) fn validate_recovered_identity(
 			));
 		}
 		let expected = DispatchRecord {
-			attempt: stable_id(
-				&json!({"decision":decision,"request":saved.request_digest,"questions":saved.questions}),
-			),
+			attempt: attempt_identity(decision, &saved.request_digest, &saved.questions),
+			question_digest: question_digest(questions, &saved.questions)?,
 			decision,
 			boundary: input.boundary.clone(),
 			decider: input.decider.pin.clone(),
@@ -246,6 +250,7 @@ pub(super) fn attempt_evidence(permit: &DispatchPermit, status: AttemptStatus) -
 		id: permit.record.attempt,
 		request_digest: permit.record.request_digest.clone(),
 		questions: permit.record.questions.clone(),
+		question_digest: permit.record.question_digest.clone(),
 		status,
 		owner_receipts: permit.owner_receipts.clone(),
 	}

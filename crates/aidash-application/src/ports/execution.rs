@@ -264,14 +264,17 @@ pub trait ExecutionStore: Send + Sync {
 		settlement: &aidash_domain::context::recovery::Settlement,
 	) -> Result<()>;
 	/// Save `run`, whose context carries the adopted projection, and mark the
-	/// attempt adopted in one lease-fenced transaction. Returns `Conflict` when
-	/// the attempt is no longer open or the journal lacks its source range.
+	/// attempt adopted in one lease-fenced transaction. A `staged` Decider
+	/// decision, whose pruning the summary completed, is recorded in the same
+	/// transaction (ADR 0056). Returns `Conflict` when the attempt is no longer
+	/// open or the journal lacks its source range.
 	async fn adopt_compaction(
 		&self,
 		run: &Run,
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
+		staged: Option<&crate::decision::StagedDecision>,
 	) -> Result<()>;
 }
 #[async_trait]
@@ -448,6 +451,15 @@ pub trait ExecutionEnvironment: Send + Sync {
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
+	/// The Run's compaction Decider and the ports its decisions use under the
+	/// current lease, or `None` when the Run has no compaction Decider.
+	async fn compaction_decider(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
+		Ok(None)
+	}
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
 	/// Runs Completion Gate Checks. `None` makes every applicable Check
 	/// unavailable, so a Run with a Completion Policy pauses for a person.

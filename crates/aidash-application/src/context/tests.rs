@@ -588,6 +588,7 @@ async fn legacy(
 	match super::compact(context, asker, &fitting).await? {
 		Compaction::Fits => Ok(()),
 		Compaction::NeedsSummary(_) => panic!("prune-only policy has no Summary Stage"),
+		Compaction::Saved => panic!("the classifier never saves the Run"),
 	}
 }
 
@@ -748,7 +749,7 @@ impl Scenario {
 fn needs_summary(compaction: Compaction) -> SummaryPlan {
 	match compaction {
 		Compaction::NeedsSummary(plan) => *plan,
-		Compaction::Fits => panic!("expected the Summary Stage"),
+		Compaction::Fits | Compaction::Saved => panic!("expected the Summary Stage"),
 	}
 }
 

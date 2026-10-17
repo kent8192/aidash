@@ -246,16 +246,19 @@ impl WorkerAuthority {
 				async {
 					// A core Run's approval belongs to its Working Area, so its Thread
 					// lists it; other Runs have none.
-					let area =
-						crate::apps::execution::repositories::sessions::run_area(&mut access, run.id)
-							.await?
-							.flatten()
-							.map(|area| area.id);
+					let area = crate::apps::execution::repositories::sessions::run_area(
+						&mut access,
+						run.id,
+					)
+					.await?
+					.flatten()
+					.map(|area| area.id);
 					let request = aidash_application::capabilities::approvals::DisclosureRequest {
 						area,
 						..request.clone()
 					};
-					let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					let mut scope =
+						crate::bootstrap::approval_scope(Some(store), &mut access, None);
 					aidash_application::capabilities::approvals::disclose(
 						&mut scope,
 						&run.metadata(),
@@ -669,6 +672,15 @@ impl Guard {
 	/// The scope of every transaction this Run's step opens.
 	pub(crate) fn tenancy(&self) -> &aidash_application::tenancy::TenancyScope {
 		&self.tenancy
+	}
+	/// The Decider's exact definition, once the Run's subject may invoke it here:
+	/// its Catalog Approval on this Node (ADR 0042).
+	pub(crate) async fn decider_entry(
+		&self,
+		reference: &EntityRef,
+	) -> Result<crate::registry::Entry> {
+		let mut access = self.access.write().await;
+		catalog::entry(&mut access, reference, aidash_domain::decision::INVOKE).await
 	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.
