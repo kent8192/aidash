@@ -12,6 +12,8 @@ import {
   marketplaceConfigure,
   marketplaceShare,
   marketplaceConsent,
+  marketplaceActivate,
+  authorizationCatalog,
 } from "./generated/aidash";
 import type {
   MarketplaceAudience,
@@ -50,6 +52,7 @@ import { cn } from "./lib/utils";
 import { useI18n, Panel, Field, type StatusTone } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
+import { ApprovalSetReview } from "./marketplace-approval";
 import {
   Alert,
   Disclosure,
@@ -121,7 +124,17 @@ function PageControls({
     />
   );
 }
-export function ScopedMarketplace({ identity }: { identity: string }) {
+/** A subject's Marketplace. With `catalog.approve` (`approves`) it also
+ *  activates its Tenant's installations, one by one or as a reviewed set. */
+export function ScopedMarketplace({
+  identity,
+  tenant,
+  approves,
+}: {
+  identity: string;
+  tenant: string;
+  approves: boolean;
+}) {
   const { locale, local } = useI18n();
   const copy = marketplaceCopy[locale];
   const cache = useQueryClient();
@@ -282,6 +295,24 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
       setBusy(false);
     }
   }
+  const activate = (item: MarketplaceInstallationRevision, enabled: boolean) =>
+    run(async () => {
+      // Read the approval fence at the decision; the server checks it again.
+      const binding = (
+        await authorizationCatalog(encodeURIComponent(tenant))
+      ).find(
+        (value) =>
+          value.entry_id === item.entry.id &&
+          value.entry_version === item.entry.version,
+      );
+      await marketplaceActivate(item.installation.id, {
+        tenant,
+        revision: item.revision,
+        expected_activation_revision: item.installation.activation_revision,
+        expected_catalog_revision: binding?.revision ?? 0,
+        enabled,
+      });
+    });
   const bindingInput = () =>
     JSON.parse(bindings) as MarketplaceDependencyBinding[];
   const scopedState = (item: MarketplaceInstallationRevision): InstallState =>
@@ -697,6 +728,26 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                     {copy[state]}
                   </StateBadge>
                   <div className="flex flex-wrap gap-2">
+                    {approves && state !== "active" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void activate(item, true)}
+                      >
+                        {copy.approve}
+                      </Button>
+                    )}
+                    {approves && item.approved && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void activate(item, false)}
+                      >
+                        {copy.revoke}
+                      </Button>
+                    )}
                     {item.installation.active_revision &&
                       item.installation.active_revision !== item.revision && (
                         <Button
@@ -793,6 +844,14 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
           </div>
         )}
       </Panel>
+      {approves && installs.data && (
+        <ApprovalSetReview
+          tenant={tenant}
+          context={context}
+          revisions={installs.data}
+          onSaved={() => cache.invalidateQueries({ queryKey: context })}
+        />
+      )}
       {sources.data &&
         (sources.data.items.length > 0 ||
           sourceOffset > 0 ||

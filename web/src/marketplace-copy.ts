@@ -67,6 +67,21 @@ export const marketplaceCopy = {
     noPermissions: "No permissions requested",
     capabilities: "Capabilities",
     sharing: "Sharing",
+    reviewSet: "Approve a reviewed set",
+    reviewSetHelp:
+      "Choose pending installations to approve and activate together. The selection keeps the exact revisions and approval fences you reviewed until you submit it.",
+    reloadSelection: "Reload approval selection",
+    reviewDefinition: "Review definition and dependencies",
+    installationRevision: "Installation revision",
+    exactSelection: "Exact approval selection",
+    activationRevision: "activation revision",
+    catalogRevision: "catalog revision",
+    submittedRequest: "Submitted request (JSON)",
+    approveSet: "Approve and activate selected set",
+    setApproved: "The reviewed set is approved and active.",
+    selectionChanged:
+      "The reviewed selection changed. Reload the list and review it again.",
+    approvalUnavailable: "Current approval state is unavailable.",
   },
   "ja-JP": {
     publicationVersion: "公開するバージョン",
@@ -134,5 +149,20 @@ export const marketplaceCopy = {
     noPermissions: "要求される権限はありません",
     capabilities: "機能",
     sharing: "共有範囲",
+    reviewSet: "まとめて承認",
+    reviewSetHelp:
+      "承認待ちの導入を選び、まとめて承認・有効化します。送信するまで、確認した時点の revision と承認の前提がそのまま保持されます。",
+    reloadSelection: "承認対象を再読み込み",
+    reviewDefinition: "定義と依存関係を確認",
+    installationRevision: "導入 revision",
+    exactSelection: "承認する対象",
+    activationRevision: "有効化revision",
+    catalogRevision: "カタログrevision",
+    submittedRequest: "送信する内容（JSON）",
+    approveSet: "選択した対象を承認して有効化",
+    setApproved: "選択した対象を承認し、有効化しました。",
+    selectionChanged:
+      "承認対象が変更されました。一覧を再読み込みし、内容を再確認してください。",
+    approvalUnavailable: "現在の承認状態を取得できません。",
   },
 } as const;

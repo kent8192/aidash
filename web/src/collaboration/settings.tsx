@@ -528,6 +528,7 @@ export function Configuration({
   channel?: string;
 }) {
   const { t, locale } = useI18n();
+  const { can } = useTenantActions(data.access);
   const deploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const restricted =
@@ -578,6 +579,8 @@ export function Configuration({
               <ScopedMarketplace
                 key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
                 identity={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                tenant={data.access.tenant}
+                approves={can("catalog.approve")}
               />
             )}
           {section === "marketplace" && deploymentAdministrator && (
