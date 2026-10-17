@@ -376,6 +376,8 @@ fn plan_runtime(
 		insert_session(f, alice, "browser-b", "csrf-b").await;
 		let bob = insert_identity(f, "plan-connection-bob", false).await;
 		insert_session(f, bob, "browser-c", "csrf-c").await;
+		// A Tenant's first policy needs its root record (#304).
+		common::tenant_root(f, "alpha").await;
 		let policy: PolicyBundle = serde_json::from_value(json!({
 			"tenant":"alpha","subjects":{"alice":{"kind":"user"},"carol":{"kind":"user"}},"policies":[]
 		}))
