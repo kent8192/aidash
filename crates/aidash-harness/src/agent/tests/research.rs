@@ -474,6 +474,72 @@ async fn a_summary_that_absorbed_revoked_research_is_discarded_without_pausing(
 	}));
 }
 
+#[rstest]
+#[tokio::test]
+async fn a_summary_that_absorbed_an_expired_provider_result_is_discarded_without_pausing(
+	mut fixture: Fixture,
+) {
+	// Arrange: a summary absorbs a page a provider with account terms read.
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let research = &mut fixture.run.context.history[1];
+	let seq = research.seq;
+	let ContextEvent::Tool { result, .. } = &mut research.event else {
+		unreachable!()
+	};
+	let mut page = research_result(&format!("an expired passage {}", "y".repeat(4000)));
+	page["data"]["document_id"] = json!(EXPIRED_DOCUMENT);
+	*result = page;
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		fixture
+			.run
+			.context
+			.execution_summary
+			.as_ref()
+			.unwrap()
+			.source
+			.absorbs(seq),
+		"the summary absorbed the result"
+	);
+
+	// Act: the Research account terms no longer keep that page.
+	let through = chrono::Utc::now();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.expired_research = aidash_domain::research::expiry::ExpiredResults {
+		sources: Default::default(),
+		documents: [EXPIRED_DOCUMENT.parse().unwrap()].into(),
+		through: Some(through),
+	};
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: the Run continues without the summary and without the page.
+	assert!(!events(&fixture).contains(&"context.summary_revoked".to_owned()));
+	assert_eq!(fixture.run.context.research_expired_through, Some(through));
+	let sent = fixture.backend.0.requests.lock().unwrap()[requests..]
+		.iter()
+		.map(|request| format!("{request:?}"))
+		.collect::<Vec<_>>();
+	assert!(!sent.is_empty());
+	for request in &sent {
+		assert!(!request.contains("an expired passage"), "{request}");
+	}
+	assert!(
+		sent.iter()
+			.any(|request| request.contains("account terms no longer let this result be kept")),
+		"{sent:?}"
+	);
+	assert!(fixture.run.context.history.iter().all(|entry| {
+		entry.seq != seq
+			|| matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_expired_result(result))
+	}));
+}
+
 fn cut(head: &str) -> Value {
 	json!(format!(
 		"{head}\n[fast-jev-compaction truncated 2000 chars of this tool result; full result remains in the execution journal]"

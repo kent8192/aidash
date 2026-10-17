@@ -13587,6 +13587,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -13634,6 +13638,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -23118,6 +23127,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -23165,6 +23178,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -25338,6 +25356,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -25385,6 +25407,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -27316,6 +27343,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -27363,6 +27394,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
