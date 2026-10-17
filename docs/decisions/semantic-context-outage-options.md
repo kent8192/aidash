@@ -136,3 +136,20 @@ Filed after the decision: item 1 → [#233](https://github.com/kent8192/aidash/i
 - `SemanticUnavailable` is not transient. It also reports invariant, allowance and index-state violations and permanent vector backend failures, which retrying cannot fix.
 - `embedding::invoke` no longer collapses an upstream key rejection (HTTP 401–403, `configuration`) or a contract violation (`provider_contract`) into `SemanticUnavailable`. Both pause the Run at once with their typed reason and are not retried.
 - Evidence: `local_auto_context_semantic_outage_is_a_typed_transient_failure_for_every_cause` (four causes), `local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_provider_recovers` and `local_semantic_key_rejection_and_contract_violation_pause_without_retry` in `server/src/apps/knowledge/tests/semantic.rs`.
+
+## 8. Degraded context since #234
+
+The 2026-10-17 grilling for #234 refined section 4. ADR 0059 records the result.
+
+- **Opt-in.** The opt-in is `on_unavailable: pause | degrade` on the `workspace_retrieval` source Binding (`NativeSource::WorkspaceRetrieval`), and it defaults to `pause`. No other adapter can carry it. Registry migration `0031_degraded_context` admits it in `aidash_context_is_valid`. The workspace slot degrades only if every source feeding it opted in. A `semantic_memory` source without a native provider also reads the Workspace index and has no opt-in, so with one bound the step pauses (`AgentConfig::workspace_degrades`).
+- **When a step degrades.** The attempt that may degrade is the last one of the bounded retry: `retry.count` is five and the reason is `unavailable`. It may also be any attempt after an earlier step of the same Run degraded and no retrieval has succeeded since. That attempt tries once and degrades at once if the try fails (`RecoveryState::degrades_on_outage`).
+- **Causes.** Only outages that waiting can fix degrade:
+  - an embedding transport failure, timeout or HTTP 408/429/5xx (`embedding_provider`);
+  - an unreachable vector backend or a transient vector backend database failure (`vector_backend`).
+
+  Vector points missing from the backend still pause, because the index needs repair (`retrieval::workspace_context`).
+
+- **Slots.** The workspace and memory slots are retrieved independently. A degraded workspace slot holds the marker and memory retrieval continues. A memory failure still pauses. If only memory runs out of space, the memory slot becomes `no_space` and the marker stays.
+- **Recording.** The marker is never stored as a Source observation, either under a Retrieval Key or for recovery of the same inference boundary. A degraded step records `{step, cause}` in `RecoveryState.degraded`, which keeps the total count, the latest 16 steps and the outage flag. It also emits the Run event `run.semantic_degraded` with `cause`. There is no Context Journal event, because successful retrievals are not journaled there either.
+- **Visibility.** Run inspection (`GET /api/runs/{id}`) exposes `recovery.degraded`. A local Run's details list the degraded steps and their causes, and the channel timeline shows the event.
+- **Not affected.** Required-Home Runs never degrade, and neither does a Home serving one. A scoped local Run degrades without beginning a dependency journal for the workspace slot. Completion Gate and Completion Review are unaffected.
