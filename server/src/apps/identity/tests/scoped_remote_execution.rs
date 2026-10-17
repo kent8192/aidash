@@ -5350,7 +5350,6 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 /// process from a live worker whose Run stopped progressing.
 struct ScopedWorkerCommand {
 	command: std::process::Command,
-	probe: std::net::SocketAddr,
 	log: std::path::PathBuf,
 	_settings_directory: tempfile::TempDir,
 	_binary: Arc<ScopedWorkerBinary>,
@@ -5397,11 +5396,6 @@ fn scoped_worker_command(
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
-		// Readiness uses the production probe listener on its own port.
-		let probe = std::net::TcpListener::bind("127.0.0.1:0")
-			.unwrap()
-			.local_addr()
-			.unwrap();
 		let log = directory.path().join("worker.log");
 		let output = std::fs::File::create(&log).unwrap();
 		let mut command = std::process::Command::new(&scoped_worker_binary.path);
@@ -5417,7 +5411,6 @@ fn scoped_worker_command(
 			))
 			.env("AIDASH_ACTIVATION_NAMESPACE", &p.bschema)
 			.env("AIDASH_ENV", "test")
-			.env("AIDASH_PROBE_LISTEN", probe.to_string())
 			// Activation claims and deferred step recovery are logged by the
 			// harness and application crates.
 			.env(
@@ -5429,7 +5422,6 @@ fn scoped_worker_command(
 			.stderr(output);
 		ScopedWorkerCommand {
 			command,
-			probe,
 			log,
 			_settings_directory: directory,
 			_binary: scoped_worker_binary,
@@ -5440,6 +5432,7 @@ fn scoped_worker_command(
 struct ScopedWorkerProcess {
 	child: std::process::Child,
 	spawned: std::time::Instant,
+	probe: std::net::SocketAddr,
 	command: ScopedWorkerCommand,
 }
 impl ScopedWorkerProcess {
@@ -5459,10 +5452,23 @@ impl ScopedWorkerProcess {
 
 	// Process primitive used by the initial fixture and by the explicit restart Act.
 	fn spawn(mut command: ScopedWorkerCommand) -> Self {
-		let child = command.command.spawn().unwrap();
+		// Readiness uses the production probe listener, which cannot inherit a
+		// descriptor. Reserve its port just before each spawn: a port reserved
+		// when the restart command is built stays released for the whole
+		// initial Run, and another process can take it.
+		let probe = std::net::TcpListener::bind("127.0.0.1:0")
+			.unwrap()
+			.local_addr()
+			.unwrap();
+		let child = command
+			.command
+			.env("AIDASH_PROBE_LISTEN", probe.to_string())
+			.spawn()
+			.unwrap();
 		Self {
 			child,
 			spawned: std::time::Instant::now(),
+			probe,
 			command,
 		}
 	}
@@ -5503,7 +5509,7 @@ impl ScopedWorkerProcess {
 			);
 			if !probed {
 				probed = http_client
-					.get(format!("http://{}/ready", self.command.probe))
+					.get(format!("http://{}/ready", self.probe))
 					.timeout(std::time::Duration::from_millis(500))
 					.send()
 					.await
