@@ -48,6 +48,13 @@ pub struct Store {
 		Option<std::sync::Arc<dyn aidash_application::provider_access::TokenIssuer>>,
 	pub provider_credentials:
 		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
+	/// Present whenever the Store can hold Plan Tokens (PostgreSQL), so owners
+	/// can still read and disconnect their connections after
+	/// `plan_connections_enabled` is turned off (ADR 0007).
+	pub plan_connections: Option<std::sync::Arc<aidash_application::plan_connections::Service>>,
+	/// `[plan_connections] enabled`: new authorizations, model lists and
+	/// admission of `chatgpt` models.
+	pub plan_connections_enabled: bool,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
@@ -453,6 +460,8 @@ impl Store {
 			tool_slots,
 			cache_salt: None,
 			provider_credentials: None,
+			plan_connections: None,
+			plan_connections_enabled: false,
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
@@ -538,6 +547,8 @@ impl Store {
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			plan_connections: self.plan_connections.clone(),
+			plan_connections_enabled: self.plan_connections_enabled,
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -581,6 +592,8 @@ impl Store {
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			plan_connections: self.plan_connections.clone(),
+			plan_connections_enabled: self.plan_connections_enabled,
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -1241,6 +1254,13 @@ impl Store {
 					.as_deref()
 					.expect("admitted Binding snapshot"),
 				self.provider_credentials.is_some(),
+				// Only a subject's own admission passes its Binding snapshot;
+				// its grant pins the Plan Connection next (ADR 0007).
+				if admitted.is_some() {
+					crate::apps::identity::repositories::provider_credentials::PlanAdmission::Deferred
+				} else {
+					crate::apps::identity::repositories::provider_credentials::PlanAdmission::Refused
+				},
 			)
 			.await?;
 		}
@@ -3162,6 +3182,9 @@ impl Store {
 				.as_deref()
 				.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?,
 			self.provider_credentials.is_some(),
+			// Accepted Runs come from a peer, a remote home or a Deployment
+			// Administrator claim, never from their owner's own admission.
+			crate::apps::identity::repositories::provider_credentials::PlanAdmission::Refused,
 		)
 		.await?;
 		tx.commit().await?;

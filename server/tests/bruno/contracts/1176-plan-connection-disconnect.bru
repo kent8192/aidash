@@ -1,17 +1,23 @@
 meta {
-  name: 1157 run-evidence - Anonymous request is rejected
+  name: 1176 plan-connection-disconnect - Forged bearer cannot reach a Plan Connection
   type: http
-  seq: 1157
+  seq: 1176
 }
 
-get {
-  url: {{base_url}}/api/runs/11111111-1111-4111-8111-111111111111/evidence/__bruno_missing__
-  body: none
+delete {
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt
+  body: text
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Bearer forged
+  Content-Type: application/json
+}
+
+body:text {
+  {"expected_revision": 1}
 }
 
 tests {

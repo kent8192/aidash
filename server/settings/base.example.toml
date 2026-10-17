@@ -123,6 +123,15 @@ enabled = false
 # audience = "develop"
 # kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"
 
+# Sign in with ChatGPT Plan Connections (#159): subjects run agents on their
+# own ChatGPT plan allowance. Off by default. Turning it on means this host
+# stores Plan Tokens it can read, so it needs the PostgreSQL Provider
+# Credential Store above; a server with a Secret Manager Store, or none,
+# refuses to start with it on. Turning it off later keeps each owner's status
+# and disconnect, and stops new connections, model lists and plan Runs.
+# [plan_connections]
+# enabled = true
+
 # Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
 # keys this node creates only Legacy Runs. Rotate by adding a key version and
 # changing `current`.

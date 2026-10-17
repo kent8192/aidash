@@ -70,6 +70,8 @@ async fn interruption_store(
 		tool_slots: aidash_application::ports::execution::ToolSlots::new(1),
 		cache_salt: None,
 		provider_credentials: None,
+		plan_connections: None,
+		plan_connections_enabled: false,
 		provider_key_material_reader: None,
 		capability_issuer: None,
 	}

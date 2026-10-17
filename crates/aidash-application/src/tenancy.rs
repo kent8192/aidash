@@ -115,6 +115,9 @@ pub enum DeploymentScopeReason {
 	/// Finding the Tenant of a Run or a Workspace from its authorization
 	/// records, until #265 records the Tenant on the Run and the Workspace.
 	RunTenant,
+	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
+	/// admission pinned by id, before the owner's Tenant Scope opens.
+	PlanConnectionOwner,
 	/// Working on a Run without an execution grant. Since #243 only test
 	/// fixtures create such Runs; #265 removes them by giving every Run a
 	/// Tenant.
@@ -151,6 +154,7 @@ impl DeploymentScopeReason {
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
+			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::LegacyRun => "legacy-run",
 			Self::ActivityObserver => "activity-observer",
 			#[cfg(feature = "test-support")]
@@ -184,6 +188,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministratorList
 			| Self::FederationInbound
 			| Self::RunTenant
+			| Self::PlanConnectionOwner
 			| Self::ActivityObserver => false,
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => true,
@@ -230,6 +235,7 @@ mod tests {
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
+			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::LegacyRun,
 			DeploymentScopeReason::ActivityObserver,
 		];
