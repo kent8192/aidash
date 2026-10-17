@@ -8,7 +8,7 @@ fn col(name: &str) -> SimpleExpr {
 	Expr::col(Alias::new(name)).into()
 }
 
-fn call(function: &str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
+fn call(function: &'static str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
 	SimpleExpr::FunctionCall(function.into_iden(), arguments)
 }
 

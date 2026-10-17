@@ -231,6 +231,11 @@ pub struct CitedEvidence {
 	/// `None` once the snapshot's text is no longer retained; the fragment
 	/// itself stays readable.
 	pub context: Option<SnapshotContext>,
+	/// The Research account terms no longer keep the passage: its text is
+	/// gone, while its identity and digests still verify the citation
+	/// (ADR 0058). Only that purge empties a delivered passage; a revoked
+	/// Run's evidence cannot be read at all.
+	pub expired: bool,
 }
 
 impl CitedEvidence {
@@ -238,6 +243,7 @@ impl CitedEvidence {
 		let context = (!document.lines.is_empty()).then(|| {
 			SnapshotContext::around(&document.lines, fragment.line_start, fragment.line_end)
 		});
+		let expired = fragment.text.is_empty();
 		Self {
 			fragment,
 			requested_url: document.requested_url.clone(),
@@ -247,6 +253,7 @@ impl CitedEvidence {
 			fetched_at: document.fetched_at,
 			completeness: document.completeness,
 			context,
+			expired,
 		}
 	}
 }

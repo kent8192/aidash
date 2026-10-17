@@ -81,7 +81,18 @@ impl Journal for StoredJournal<'_> {
 	}
 }
 
-/// Apply a revoked Run's revocation to its stored projection, so every reader
+/// What a projection scrub applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Scrub {
+	/// The Run's Evidence Revocation (ADR 0046).
+	Revocation,
+	/// The Run's Provider results the Research account terms no longer keep
+	/// (ADR 0058).
+	Expiry,
+}
+
+/// Apply a revoked Run's revocation, or its expired Provider results, to its
+/// stored projection, so every reader
 /// of `runs.context`, local or remote, sees placeholders as soon as the
 /// revocation commits. A Run whose worker holds its lease is scrubbed too, but
 /// keeps its revision, which the worker's own keys derive from; the worker
@@ -90,7 +101,11 @@ impl Journal for StoredJournal<'_> {
 /// locked is skipped rather than waited on, for the same reasons; the caller
 /// retries it once its own transaction has committed.
 /// `updated_at`, which dates the end of a terminal Run, is kept.
-pub(crate) async fn scrub_projection(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<bool> {
+pub(crate) async fn scrub_projection(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	scrub: Scrub,
+) -> Result<bool> {
 	let (sql, values) = Query::select()
 		.column(Alias::new("context"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
@@ -108,11 +123,31 @@ pub(crate) async fn scrub_projection(tx: &mut dyn TransactionExecutor, run: Uuid
 	};
 	let mut context: Context =
 		serde_json::from_value(QueryRow::from_backend_row(row).data["context"].clone())?;
-	let journal = StoredJournal {
-		tx: tokio::sync::Mutex::new(&mut *tx),
-		run,
-	};
-	revoke_projection(&mut context, &journal).await?;
+	match scrub {
+		Scrub::Revocation => {
+			let journal = StoredJournal {
+				tx: tokio::sync::Mutex::new(&mut *tx),
+				run,
+			};
+			revoke_projection(&mut context, &journal).await?;
+		}
+		Scrub::Expiry => {
+			let expired = native(super::account_terms::expired(&mut *tx, run).await)?;
+			let journal = StoredJournal {
+				tx: tokio::sync::Mutex::new(&mut *tx),
+				run,
+			};
+			if !aidash_application::research::account_terms::expire_projection(
+				&mut context,
+				&expired,
+				&journal,
+			)
+			.await?
+			{
+				return Ok(true);
+			}
+		}
+	}
 	let (sql, values) = Query::update()
 		.table(Alias::new("runs"))
 		.value(Alias::new("context"), serde_json::to_value(&context)?)
@@ -149,13 +184,13 @@ const LOCKED_SCRUB_PAUSE: std::time::Duration = std::time::Duration::from_millis
 /// a worker's step holds its row: that step is about to commit a projection
 /// read before the revocation, which the round after it scrubs. Returns
 /// whether a round reached the row.
-async fn scrub_retrying(store: &Store, run: Uuid) -> Result<bool> {
+pub(super) async fn scrub_retrying(store: &Store, run: Uuid, scrub: Scrub) -> Result<bool> {
 	for round in 0..LOCKED_SCRUB_ROUNDS {
 		if round > 0 {
 			tokio::time::sleep(LOCKED_SCRUB_PAUSE).await;
 		}
 		let mut tx = native(super::retention_transaction(store).await)?;
-		let done = scrub_projection(tx.as_mut(), run).await?;
+		let done = scrub_projection(tx.as_mut(), run, scrub).await?;
 		native(tx.commit().await.map_err(crate::Error::from))?;
 		if done {
 			return Ok(true);
@@ -224,7 +259,7 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		after = Some(last);
 		for run in &runs {
 			let mut tx = native(super::retention_transaction(store).await)?;
-			let done = scrub_projection(tx.as_mut(), *run).await?;
+			let done = scrub_projection(tx.as_mut(), *run, Scrub::Revocation).await?;
 			native(tx.commit().await.map_err(crate::Error::from))?;
 			if done {
 				scrubbed += 1;
@@ -237,7 +272,7 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		}
 	}
 	for run in skipped {
-		scrubbed += u32::from(scrub_retrying(store, run).await?);
+		scrubbed += u32::from(scrub_retrying(store, run, Scrub::Revocation).await?);
 	}
 	Ok(scrubbed)
 }
@@ -476,7 +511,7 @@ impl RevocationScope for Scope<'_> {
 		let sources = native(ResearchSource::revoke(tx, run).await)?;
 		let attempts = native(ResearchAttempt::revoke(tx, run).await)?;
 		let invocations = native(revoke_invocations(tx, Some(run)).await)?;
-		if !scrub_projection(self.executor(), run).await? {
+		if !scrub_projection(self.executor(), run, Scrub::Revocation).await? {
 			self.locked = Some(run);
 		}
 		self.close_disclosures(run).await?;
@@ -504,7 +539,7 @@ impl RevocationScope for Scope<'_> {
 		// The revocation has committed; a failed retry leaves the projection
 		// to the worker's next step and the sweep rather than failing it.
 		if let Some(run) = locked
-			&& let Err(error) = scrub_retrying(&store, run).await
+			&& let Err(error) = scrub_retrying(&store, run, Scrub::Revocation).await
 		{
 			tracing::warn!(run_id = %run, %error, "revoked projection was not scrubbed after commit");
 		}

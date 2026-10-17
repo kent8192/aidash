@@ -28,8 +28,14 @@ pub struct CitedEvidence {
 	pub completeness: Completeness,
 	/// `sha256:` digest of the snapshot text the fragment was taken from.
 	pub text_digest: String,
-	/// The passage exactly as delivered to the Agent.
+	/// The passage exactly as delivered to the Agent; empty once `expired`.
 	pub text: String,
+	/// `sha256:` digest of the passage as delivered. It outlives the text,
+	/// so the citation can still be verified.
+	pub passage_digest: String,
+	/// The Research account terms of the service that returned the page no
+	/// longer keep the passage (ADR 0058).
+	pub expired: bool,
 	/// 1-based, inclusive snapshot lines of the passage.
 	pub line_start: usize,
 	pub line_end: usize,
@@ -71,6 +77,8 @@ impl From<Cited> for CitedEvidence {
 			completeness: cited.completeness,
 			text_digest: fragment.text_digest,
 			text: fragment.text,
+			passage_digest: fragment.passage_digest,
+			expired: cited.expired,
 			line_start: fragment.line_start,
 			line_end: fragment.line_end,
 			pages: fragment.pages,

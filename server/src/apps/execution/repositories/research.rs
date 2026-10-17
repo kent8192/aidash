@@ -25,6 +25,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+pub(crate) mod account_terms;
 pub(crate) mod retention;
 mod revocation;
 pub(crate) use revocation::{Revocations, scrub_revoked_projections};
@@ -247,7 +248,7 @@ impl EvidenceStore for Evidence {
 	async fn record_sources(
 		&self,
 		run: Uuid,
-		_: &str,
+		key: &str,
 		sources: &[SourceCandidate],
 		max_sources: u32,
 	) -> Result<std::result::Result<Vec<SourceRecord>, Failure>> {
@@ -268,7 +269,7 @@ impl EvidenceStore for Evidence {
 				let mut records = Vec::with_capacity(sources.len().min(room));
 				for source in sources.iter().take(room) {
 					records.push(
-						ResearchSource::record(tx.as_mut(), run, &source.url, &source.title)
+						ResearchSource::record(tx.as_mut(), run, key, &source.url, &source.title)
 							.await?,
 					);
 				}
@@ -297,6 +298,7 @@ impl EvidenceStore for Evidence {
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
+		key: &str,
 		source: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
@@ -362,7 +364,7 @@ impl EvidenceStore for Evidence {
 					}),
 					purged: None,
 				};
-				ResearchSnapshot::record(tx.as_mut(), &snapshot).await?;
+				ResearchSnapshot::record(tx.as_mut(), key, &snapshot).await?;
 				if let Some(bytes) = page.original.as_deref().filter(|_| retained) {
 					ResearchOriginal::record(tx.as_mut(), run, snapshot.id, bytes).await?;
 				}

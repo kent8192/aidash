@@ -346,6 +346,54 @@ async fn a_revocation_committed_while_the_request_is_built_never_reaches_the_pro
 	assert!(fixture.run.context.research_revoked);
 }
 
+const EXPIRED_DOCUMENT: &str = "0190f1d2-0000-7000-8000-0000000000d1";
+
+#[rstest]
+#[tokio::test]
+async fn expired_provider_results_never_reach_a_model_request_again(fixture: Fixture) {
+	// Arrange: a page a provider with account terms read, now expired.
+	let mut fixture = thinking(fixture);
+	let mut page = research_result("an expired passage");
+	page["data"]["document_id"] = json!(EXPIRED_DOCUMENT);
+	fixture.run.context.push(ContextEvent::tool(
+		call(
+			"call-page",
+			"renamed_page",
+			json!({"url": "https://example.com/sent"}),
+		),
+		page,
+	));
+	research_history(&mut fixture);
+	let through = chrono::Utc::now();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.expired_research = aidash_domain::research::expiry::ExpiredResults {
+		sources: Default::default(),
+		documents: [EXPIRED_DOCUMENT.parse().unwrap()].into(),
+		through: Some(through),
+	};
+
+	// Act
+	let _ = advance_sources(&mut fixture).await;
+
+	// Assert: only the expired result is replaced; what Aidash sent stays.
+	let request = first_request(&fixture);
+	assert!(!request.contains("an expired passage"), "{request}");
+	assert!(
+		request.contains("account terms no longer let this result be kept"),
+		"{request}"
+	);
+	assert!(request.contains("https://example.com/sent"), "{request}");
+	assert!(request.contains("a revoked passage"), "{request}");
+	assert!(fixture.run.context.events().any(|event| matches!(
+		event,
+		ContextEvent::Tool { call, result }
+			if call.id == "call-page" && ContextEvent::is_expired_result(result)
+	)));
+	assert_eq!(fixture.run.context.research_expired_through, Some(through));
+	assert!(!fixture.run.context.research_revoked);
+}
+
 #[rstest]
 #[tokio::test]
 async fn research_results_of_a_run_not_revoked_are_sent_unchanged(fixture: Fixture) {

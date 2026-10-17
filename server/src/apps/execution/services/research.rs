@@ -41,19 +41,29 @@ pub struct Providers {
 	brave: std::result::Result<Arc<BraveSearch>, String>,
 	pages: Option<Arc<PageReader>>,
 	fixture: Option<Arc<FixtureResearch>>,
+	/// The Research account terms this Deployment declares, whether or not
+	/// their provider can be dispatched; the account-terms sweep applies them.
+	accounts: Vec<AccountProfile>,
 	pub limits: Limits,
 }
 
 impl Providers {
 	pub fn from_env() -> Self {
+		let brave_profile = brave_profile();
 		Self {
-			brave: brave_from_env(),
+			accounts: brave_profile.iter().flatten().cloned().collect(),
+			brave: brave_from_env(brave_profile),
 			pages: (std::env::var(PAGE_READING_ENV).as_deref() == Ok("enabled"))
 				.then(|| Arc::new(PageReader::default())),
 			fixture: (std::env::var(FIXTURE_ENV).as_deref() == Ok("enabled"))
 				.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
 		}
+	}
+
+	/// The Research account terms this Deployment declares (ADR 0058).
+	pub fn account_terms(&self) -> &[AccountProfile] {
+		&self.accounts
 	}
 
 	/// Whether `descriptor` names a research provider this Node can dispatch.
@@ -155,14 +165,24 @@ fn unavailable(provider: &str) -> Error {
 	Error::Invalid(format!("PROVIDER_UNAVAILABLE: {provider}"))
 }
 
-fn brave_from_env() -> std::result::Result<Arc<BraveSearch>, String> {
-	let path = match std::env::var(BRAVE_PROFILE_ENV) {
-		Ok(path) if !path.is_empty() => path,
-		_ => return Err(format!("requires {BRAVE_PROFILE_ENV}")),
-	};
-	let profile: AccountProfile = std::fs::read(&path)
+/// The Brave account terms, if configured: `None` without a profile path and
+/// `Some(None)` for an unreadable profile.
+fn brave_profile() -> Option<Option<AccountProfile>> {
+	let path = std::env::var(BRAVE_PROFILE_ENV)
 		.ok()
-		.and_then(|bytes| serde_json::from_slice(&bytes).ok())
+		.filter(|path| !path.is_empty())?;
+	Some(
+		std::fs::read(&path)
+			.ok()
+			.and_then(|bytes| serde_json::from_slice(&bytes).ok()),
+	)
+}
+
+fn brave_from_env(
+	profile: Option<Option<AccountProfile>>,
+) -> std::result::Result<Arc<BraveSearch>, String> {
+	let profile = profile
+		.ok_or_else(|| format!("requires {BRAVE_PROFILE_ENV}"))?
 		.ok_or_else(|| "has an unreadable account profile".to_owned())?;
 	let token = crate::config::secret(&profile.credential_env)
 		.map_err(|_| "has no configured tool secret".to_owned())?;
@@ -298,4 +318,15 @@ impl Tool for ResearchTool {
 pub async fn sweep_retention(store: &crate::store::Store) -> crate::Result<u64> {
 	use crate::apps::execution::repositories::research::retention;
 	Ok(retention::sweep(store, &store.research_retention).await?)
+}
+
+/// One pass of the Provider results sweep in Deployment Scope under `terms`,
+/// as the hourly retention loop runs it under the account terms this
+/// Deployment declares (ADR 0058). Returns how many attempts were purged.
+pub async fn sweep_account_terms(
+	store: &crate::store::Store,
+	terms: &[AccountProfile],
+) -> crate::Result<u64> {
+	use crate::apps::execution::repositories::research::account_terms;
+	Ok(account_terms::sweep(store, terms).await?)
 }

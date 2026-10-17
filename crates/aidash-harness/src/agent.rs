@@ -772,6 +772,27 @@ impl<'a> Executor<'a> {
 		)
 		.await
 	}
+	/// Provider results the Research account terms no longer keep never reach
+	/// a model provider again (ADR 0058). Each research result built from one
+	/// becomes the expired placeholder, keeping its call's arguments, and an
+	/// Execution Summary that absorbed one is discarded and its range
+	/// restored from the Context Journal, without pausing. A revoked Run's
+	/// results are placeholders already.
+	async fn apply_research_expiry(&self, run: &mut Run) -> Result<()> {
+		use aidash_application::research::{account_terms, revocation};
+		if run.context.research_revoked || !revocation::may_carry_research(&run.context) {
+			return Ok(());
+		}
+		let store = self.environment.store();
+		let expired = store.expired_research(run).await?;
+		account_terms::expire_projection(
+			&mut run.context,
+			&expired,
+			&revocation::RunJournal { store, run: run.id },
+		)
+		.await?;
+		Ok(())
+	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
 	async fn ordered_skill_context(
@@ -1029,6 +1050,7 @@ impl<'a> Executor<'a> {
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
 				self.apply_research_revocation(run).await?;
+				self.apply_research_expiry(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
