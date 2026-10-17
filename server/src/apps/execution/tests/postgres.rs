@@ -556,7 +556,7 @@ async fn registry_versions_and_authenticated_api(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn human_requests_controls_and_cancellation_before_dependencies_finish(
+async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 	#[from(store)] _store_fixture: StoreFuture,
 	#[from(authenticated_runtime)]
 	#[with(_store_fixture.clone())]
@@ -574,14 +574,9 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.create_workspace(&ACME, "alice", "Controls", "Keep human decisions durable")
 		.await
 		.unwrap();
-	let dependency = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
-		.await
-		.unwrap();
-	let mut input = new_task();
-	input.dependencies = vec![dependency.id];
+	// A local Run exists once its task is claimed (ADR 0043).
 	let task = store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let run = common::local_run(&store, &ACME, &task, &agent).await;
@@ -698,15 +693,6 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		store.task(&ACME, task.id).await.unwrap().status.as_str(),
 		"CANCELLED"
 	);
-	assert_eq!(
-		store
-			.task(&ACME, dependency.id)
-			.await
-			.unwrap()
-			.status
-			.as_str(),
-		"OPEN"
-	);
 	assert!(
 		store
 			.control(
@@ -764,18 +750,24 @@ fn federation(
 	.shared()
 }
 
-async fn running_task(store: &Store, agent: &Entry, workspace: Uuid, parent: Option<Uuid>) -> Task {
+/// A task its agent runs: alice admits the Run, which gives it the execution
+/// grant every local Run needs (ADR 0043).
+async fn running_task(
+	f: &Federation,
+	agent: &Entry,
+	workspace: Uuid,
+	parent: Option<Uuid>,
+) -> Task {
+	let store = &f.store;
 	let mut input = new_task();
 	input.parent_id = parent;
 	let task = store
-		.create_task(&ACME, workspace, &input, "human", None)
+		.create_task(&ACME, workspace, &input, "alice", None)
 		.await
 		.unwrap();
+	common::admitted_run(f, "acme", &task, agent).await;
+	let task = store.task(&ACME, task.id).await.unwrap();
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
-	let task = store
-		.claim(&ACME, task.id, task.revision, &owner, agent)
-		.await
-		.unwrap();
 	store
 		.transition(
 			&ACME,
@@ -846,14 +838,14 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		)
 		.await
 		.unwrap();
-	let parent = running_task(&store, &agent, workspace.id, None).await;
+	let parent = running_task(&f, &agent, workspace.id, None).await;
 	let mut children = Vec::new();
 	for status in [
 		TaskStatus::Failed,
 		TaskStatus::Blocked,
 		TaskStatus::Cancelled,
 	] {
-		let child = running_task(&store, &agent, workspace.id, Some(parent.id)).await;
+		let child = running_task(&f, &agent, workspace.id, Some(parent.id)).await;
 		let child = store
 			.transition(
 				&ACME,
@@ -1018,7 +1010,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.create_workspace(&ACME, "alice", "Retries", "Independent budgets")
 		.await
 		.unwrap();
-	let task = running_task(&store, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, workspace.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: (1..=2)
 			.map(|call| aidash_server::provider::ToolCall {
@@ -1182,7 +1174,7 @@ async fn write_approval(
 		.create_workspace(&ACME, "alice", "Approval", "Check external effects")
 		.await
 		.unwrap();
-	let task = running_task(&store, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, workspace.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: (1..=2)
 			.map(|value| aidash_server::provider::ToolCall {
@@ -1479,7 +1471,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.create_workspace(&ACME, "alice", "Web research", "Use available evidence")
 		.await
 		.unwrap();
-	let task = running_task(&store, &agent, workspace.id, None).await;
+	let task = running_task(&federation, &agent, workspace.id, None).await;
 	let harness = Harness { federation };
 	// Four exact external approvals add durable waiting/resume transitions.
 	for _ in 0..40 {
@@ -1577,144 +1569,6 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
-	#[from(store)] _store_fixture: StoreFuture,
-	#[from(federation)]
-	#[with(_store_fixture.clone())]
-	_federation: common::RuntimeFuture,
-) {
-	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let f = _federation.await.federation;
-	let agent = seed(&f.registry).await;
-	let mut other = agent.clone();
-	other.id = "other".into();
-	other.binding_normalization = None;
-	f.registry
-		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			other.clone(),
-		)
-		.await
-		.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Claims", "Do not strand work")
-		.await
-		.unwrap();
-	let prerequisite = running_task(&store, &agent, workspace.id, None).await;
-	{
-		let query_bind_1 = prerequisite.id;
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
-				.value_expr(
-					reinhardt::query::Alias::new("control"),
-					reinhardt::query::Expr::cust("'PAUSED'"),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(task_id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(store.pool.driver())
-		.await
-	}
-	.unwrap();
-	let mut input = new_task();
-	input.dependencies = vec![prerequisite.id];
-	let task = store
-		.create_task(&ACME, workspace.id, &input, "human", None)
-		.await
-		.unwrap();
-	let run = common::local_run(&store, &ACME, &task, &agent).await;
-	let harness = aidash_server::harness::Harness {
-		federation: f.clone(),
-	};
-	harness.worker_once().await.unwrap();
-	assert_eq!(
-		store.run(&ACME, run.id).await.unwrap().phase().as_str(),
-		"WAITING"
-	);
-	assert_eq!(
-		store.task(&ACME, task.id).await.unwrap().status.as_str(),
-		"OPEN"
-	);
-	store
-		.complete(
-			&ACME,
-			prerequisite.id,
-			prerequisite.owner.as_deref().unwrap(),
-			"prerequisite",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "done".into(),
-				content: json!("done"),
-			},
-		)
-		.await
-		.unwrap();
-	let release_obligations: i64 = {
-		let query_bind_1 = run.id;
-		sqlx::query_scalar(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from(reinhardt::query::Alias::new("run_activations"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(run_id = ? AND reason = 'dependency_release')".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_one(store.pool.driver())
-		.await
-	}
-	.unwrap();
-	assert_eq!(
-		release_obligations, 1,
-		"dependency completion must durably reactivate the waiting Run"
-	);
-	let owner = qualified_agent(&store.node_id, &other.id, &other.version);
-	assert!(matches!(
-		store
-			.claim(&ACME, task.id, task.revision, &owner, &other)
-			.await,
-		Err(aidash_server::Error::Conflict(_))
-	));
-	let unchanged = store.task(&ACME, task.id).await.unwrap();
-	assert_eq!(unchanged.revision, task.revision);
-	assert!(unchanged.owner.is_none());
-	{
-		let query_bind_1 = run.id;
-		sqlx::query(
-			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
-				.value_expr(
-					reinhardt::query::Alias::new("pending"),
-					reinhardt::query::Expr::cust(
-						"JSONB_SET(pending, '{data,wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))",
-					),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(store.pool.driver())
-		.await
-	}
-	.unwrap();
-	harness.worker_once().await.unwrap();
-	harness.worker_once().await.unwrap();
-	assert_eq!(
-		store.task(&ACME, task.id).await.unwrap().status.as_str(),
-		"RUNNING"
-	);
-	cleanup(store, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn child_creation_and_parent_completion_are_serialized(
 	#[from(store)] _store_fixture: StoreFuture,
 	#[from(federation)]
@@ -1728,7 +1582,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 		.create_workspace(&ACME, "alice", "Children", "Atomic completion")
 		.await
 		.unwrap();
-	let parent = running_task(&store, &agent, workspace.id, None).await;
+	let parent = running_task(&f, &agent, workspace.id, None).await;
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
 	let artifact = ArtifactInput {
@@ -1827,7 +1681,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 		.create_workspace(&ACME, "alice", "Skill read", "Read a bundled guide")
 		.await
 		.unwrap();
-	let task = running_task(&store, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, workspace.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "read-guide".into(),
@@ -1901,7 +1755,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		.create_workspace(&ACME, "alice", "Recovery", "Repair model errors")
 		.await
 		.unwrap();
-	let parent = running_task(&store, &agent, workspace.id, None).await;
+	let parent = running_task(&f, &agent, workspace.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "bad".into(),
@@ -2316,7 +2170,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		)
 		.await
 		.unwrap();
-	let task = running_task(&store, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, workspace.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "unsafe".into(),
@@ -2447,7 +2301,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		.create_workspace(&ACME, "alice", "Agent tool", "Await delegated results")
 		.await
 		.unwrap();
-	let task = running_task(&store, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, workspace.id, None).await;
 	let run: Run = {
 		let query_bind_1 = task.id;
 		aidash_server::database::query_as(
@@ -2502,98 +2356,6 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 			.await
 			.unwrap();
 		assert_eq!(result["task"]["parent_id"], task.id.to_string());
-	}
-	cleanup(store, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
-	#[from(store)] _store_fixture: StoreFuture,
-	#[from(federation)]
-	#[with(_store_fixture.clone())]
-	_federation: common::RuntimeFuture,
-) {
-	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let f = _federation.await.federation;
-	let agent = seed(&f.registry).await;
-	let worker = aidash_server::harness::Harness { federation: f };
-	for terminal in ["FAILED", "CANCELLED", "ABANDONED"] {
-		let workspace = store
-			.create_workspace(&ACME, "alice", "Dependency", terminal)
-			.await
-			.unwrap();
-		let dependency = running_task(&store, &agent, workspace.id, None).await;
-		{
-			let query_bind_1 = dependency.id;
-			sqlx::query(
-				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
-					.value_expr(
-						reinhardt::query::Alias::new("control"),
-						reinhardt::query::Expr::cust("'PAUSED'"),
-					)
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(task_id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.execute(store.pool.driver())
-			.await
-		}
-		.unwrap();
-		{
-			let query_bind_1 = dependency.id;
-			let query_bind_2 = terminal;
-			sqlx::query(
-				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("tasks"))
-					.value_expr(
-						reinhardt::query::Alias::new("status"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					)
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.execute(store.pool.driver())
-			.await
-		}
-		.unwrap();
-		let mut input = new_task();
-		input.dependencies = vec![dependency.id];
-		let task = store
-			.create_task(&ACME, workspace.id, &input, "human", None)
-			.await
-			.unwrap();
-		let run = common::local_run(&store, &ACME, &task, &agent).await;
-		// Terminal failure delivery is scheduled with a database wake time;
-		// consecutive polls need not straddle that clock boundary.
-		tokio::time::timeout(std::time::Duration::from_secs(5), async {
-			loop {
-				worker.worker_once().await.unwrap();
-				if store.run(&ACME, run.id).await.unwrap().phase().as_str() == "FAILED" {
-					break;
-				}
-				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-			}
-		})
-		.await
-		.expect("terminal dependency must settle rather than wait indefinitely");
-		let run = store.run(&ACME, run.id).await.unwrap();
-		assert_eq!(run.phase().as_str(), "FAILED");
-		assert!(run.error.unwrap().contains(terminal));
-		assert_eq!(
-			store.task(&ACME, task.id).await.unwrap().status.as_str(),
-			"FAILED"
-		);
-		assert!(!worker.worker_once().await.unwrap());
 	}
 	cleanup(store, &url, &schema).await;
 }

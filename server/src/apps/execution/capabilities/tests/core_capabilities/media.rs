@@ -66,18 +66,12 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	.await;
 	assert_eq!(status, 200, "{body}");
 	for entry in [model, agent] {
-		let (status, body) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(&entry),
-		)
-		.await;
+		let (status, body) =
+			request(&c.app, &c.token, "POST", "/api/registry", json!(&entry)).await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			&c.app,
-			&c.f.config.api_token,
+			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),

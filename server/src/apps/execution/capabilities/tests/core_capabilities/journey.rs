@@ -469,7 +469,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		for entry in [tool, agent] {
 			let (status, result) = request(
 				&c.app,
-				&c.f.config.api_token,
+				&c.token,
 				"POST",
 				"/api/registry",
 				json!(entry),
@@ -478,7 +478,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 			assert_eq!(status, 200, "{result}");
 			let (status, result) = request(
 				&c.app,
-				&c.f.config.api_token,
+				&c.token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),

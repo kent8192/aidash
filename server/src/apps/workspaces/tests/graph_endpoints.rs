@@ -29,7 +29,9 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 		&json!({"title":"Foreign","description":"Other workspace"}),
 	)
 	.await;
-	for target in [json!(Uuid::new_v4()), foreign["id"].clone()] {
+	// A subject cannot name a task it cannot read: a missing task is refused
+	// as forbidden, which does not reveal whether it exists.
+	for (target, status) in [(json!(Uuid::new_v4()), 403), (foreign["id"].clone(), 400)] {
 		for field in ["parent_id", "dependencies"] {
 			let mut input = json!({"title":"Rejected","description":"Invalid edge"});
 			input[field] = if field == "dependencies" {
@@ -37,7 +39,10 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 			} else {
 				target.clone()
 			};
-			assert_json(member.post(&home_path, &input, "json").await.unwrap(), 400);
+			assert_json(
+				member.post(&home_path, &input, "json").await.unwrap(),
+				status,
+			);
 		}
 	}
 	let home_id = serde_json::from_value::<Uuid>(home["id"].clone()).unwrap();

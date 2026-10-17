@@ -184,14 +184,7 @@ async fn native_draft_mutations_recheck_browser_authority(
 	}
 	let (status, result) = request(&app, &wb.token, "PUT", &wb.path(), json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[],"release_notes":"Browser authority rechecked"})).await;
 	assert_eq!(status, expected_status, "{change}: {result}");
-	let (status, saved) = request(
-		&wb.app,
-		&wb.f.config.api_token,
-		"GET",
-		&wb.path(),
-		Value::Null,
-	)
-	.await;
+	let (status, saved) = request(&wb.app, &wb.token, "GET", &wb.path(), Value::Null).await;
 	assert_eq!(status, 200);
 	assert_eq!(
 		saved["revision"],

@@ -982,7 +982,7 @@ async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingS
 	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"plan-agent","version":"1.0.0","kind":"agent","name":{"en":"Plan agent"},"description":{"en":"Plan agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"plan-model","version":"1.0.0"},"instructions":"Test admission","cluster":null}})).unwrap();
 	f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("alpha").unwrap(),
 			model,
 		)
 		.await
@@ -997,7 +997,7 @@ async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingS
 		) -> Result<aidash_domain::registry::Entry> {
 			self.0
 				.get(
-					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					&aidash_domain::tenancy::TenantName::new("alpha").unwrap(),
 					id,
 					version,
 				)

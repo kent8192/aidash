@@ -68,6 +68,23 @@ fn trace_errors() {
 		.try_init();
 }
 async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
+	// Each Tenant approves its own copy of a definition (ADR 0029); a fixture
+	// approving one registered elsewhere first copies it into this Tenant.
+	let name = aidash_domain::tenancy::TenantName::new(tenant).unwrap();
+	if f.registry
+		.get(&name, &entry.id, &entry.version)
+		.await
+		.is_err()
+	{
+		for source in ["a", "b", "c"] {
+			let source = aidash_domain::tenancy::TenantName::new(source).unwrap();
+			if let Ok(mut copy) = f.registry.get(&source, &entry.id, &entry.version).await {
+				copy.binding_normalization = None;
+				f.registry.register(&name, copy).await.unwrap();
+				break;
+			}
+		}
+	}
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -107,7 +124,15 @@ async fn activate(
 	catalog: i64,
 	enabled: bool,
 ) -> (u16, Value) {
-	request(app,&f.config.api_token,"POST",&format!("/api/marketplace/installations/{}/activation",installation["installation"]["id"].as_str().unwrap()),json!({"tenant":tenant,"revision":revision,"expected_activation_revision":pointer,"expected_catalog_revision":catalog,"enabled":enabled})).await
+	// Activation is the Tenant's own Catalog Approval, so its subject acts.
+	let approver = Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential(tenant, "viewer", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token;
+	request(app,&approver,"POST",&format!("/api/marketplace/installations/{}/activation",installation["installation"]["id"].as_str().unwrap()),json!({"tenant":tenant,"revision":revision,"expected_activation_revision":pointer,"expected_catalog_revision":catalog,"enabled":enabled})).await
 }
 fn deny(mut value: Value, actions: Value) -> Value {
 	value["policies"].as_array_mut().unwrap().push(json!({"id":"deny","effect":"deny","subjects":{"any":true},"actions":actions,"resources":{"kinds":["*"]}}));
@@ -3287,9 +3312,10 @@ async fn installation_rejects_missing_private_knowledge(
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("agent_knowledge"))
-				.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
+				.columns(["tenant", "agent_id", "agent_version", "documents"].map(Alias::new))
 				.from_subquery(
 					Query::select()
+						.expr(Expr::value("a"))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],

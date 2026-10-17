@@ -750,17 +750,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 
 	f.context.set_singleton(f.runtime.clone());
 	for id in ["environment-agent-fixture-model", "environment-agent"] {
-		assert_json(
-			f.deployment_administrator
-				.post(
-					"/api/authorization/beta/catalog",
-					&json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
+		endpoint_fixtures::approve(&f, "beta", id, "1.0.0").await;
 	}
 	let token = assert_json(
 		f.deployment_administrator
@@ -993,7 +983,19 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		);
 	}
 	f.context.set_singleton(f.runtime.clone());
-	let draft = assert_json(f.deployment_administrator.post("/api/workbench/drafts", &json!({
+	// Workbench drafts belong to a subject of the Tenant (ADR 0043).
+	let actor = reinhardt::test::fixtures::api_client_from_url(&f.server.url);
+	let issued = aidash_server::authorization::Authorization {
+		pool: f.runtime.store.pool.clone(),
+	}
+	.issue_credential("beta", "actor", 3600, "deployment_administrator")
+	.await
+	.unwrap();
+	actor
+		.set_header("Authorization", &format!("Bearer {}", issued.token))
+		.await
+		.unwrap();
+	let draft = assert_json(actor.post("/api/workbench/drafts", &json!({
 		"tenant":"beta","owner":"actor","entry":{
 			"id":"","version":"1.0.0","kind":"agent","name":{"en":"Tenant sandbox"},"description":{"en":"Tenant sandbox"},
 			"config":{"schema_version":1,"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}
@@ -1010,7 +1012,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		draft["id"].as_str().unwrap()
 	);
 	let rejected = assert_json(
-		f.deployment_administrator
+		actor
 			.post(
 				&sandbox_path,
 				&json!({"expected_revision":draft["revision"],"message":"Test the Tenant model"}),
@@ -1026,10 +1028,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			.contains("Workbench tests do not support Tenant Provider Credentials"),
 		"{rejected}"
 	);
-	let sessions = assert_json(
-		f.deployment_administrator.get(&sandbox_path).await.unwrap(),
-		200,
-	);
+	let sessions = assert_json(actor.get(&sandbox_path).await.unwrap(), 200);
 	assert_eq!(
 		sessions,
 		json!([]),

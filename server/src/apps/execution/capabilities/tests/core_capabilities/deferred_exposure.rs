@@ -189,18 +189,11 @@ async fn deferred_fixture(
 }
 
 async fn register_approved(c: &CoreFixture, entry: Value) {
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		entry.clone(),
-	)
-	.await;
+	let (status, result) = request(&c.app, &c.token, "POST", "/api/registry", entry.clone()).await;
 	assert_eq!(status, 200, "{result}");
 	let (status, result) = request(
 		&c.app,
-		&c.f.config.api_token,
+		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":entry["id"],"version":entry["version"]},"expected_revision":0,"enabled":true}),
@@ -711,7 +704,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		// deferred@1 it is Eager here, and the step still fails before inference.
 		let (status, result) = request(
 			&d.c.app,
-			&d.c.f.config.api_token,
+			&d.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"http","version":"1.0.0"},"expected_revision":1 + 2 * revision,"enabled":false}),
@@ -731,7 +724,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		));
 		let (status, result) = request(
 			&d.c.app,
-			&d.c.f.config.api_token,
+			&d.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"http","version":"1.0.0"},"expected_revision":2 + 2 * revision,"enabled":true}),
@@ -764,23 +757,14 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 	// Registered on this Node but approved nowhere.
 	let (status, result) = request(
 		&d.c.app,
-		&d.c.f.config.api_token,
+		&d.c.token,
 		"POST",
 		"/api/registry",
 		zebra("zebra-unapproved"),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	// Approved only in another tenant's catalog.
-	let (status, result) = request(
-		&d.c.app,
-		&d.c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		zebra("zebra-foreign"),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	// Registered and approved only in another Tenant.
 	let foreign = json!({"tenant":"globex","subjects":{"carol":{"kind":"user"}},"policies":[{"id":"globex-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	crate::common::tenant_root(&d.c.f, "globex").await;
 	let (status, result) = request(
@@ -792,15 +776,29 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	let (status, result) = request(
-		&d.c.app,
-		&d.c.f.config.api_token,
-		"POST",
-		"/api/authorization/globex/catalog",
-		json!({"entry":{"id":"zebra-foreign","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	d.c.f
+		.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("globex").unwrap(),
+			serde_json::from_value(zebra("zebra-foreign")).unwrap(),
+		)
+		.await
+		.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: d.c.f.store.pool.clone(),
+	}
+	.set_catalog(
+		"globex",
+		&aidash_server::registry::EntityRef {
+			id: "zebra-foreign".into(),
+			version: "1.0.0".into(),
+		},
+		0,
+		true,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	.await
+	.unwrap();
 	const FORGED: [&str; 5] = [
 		"zebra_unbound",
 		"zebra_unapproved",

@@ -445,18 +445,12 @@ fn sharing_generation_fixture(
 				.unwrap();
 		newer.version = "1.2.0".into();
 		newer.binding_normalization = None;
-		let (status, saved) = request(
-			&f.c.app,
-			&f.c.f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(newer),
-		)
-		.await;
+		let (status, saved) =
+			request(&f.c.app, &f.c.token, "POST", "/api/registry", json!(newer)).await;
 		assert_eq!(status, 200, "{saved}");
 		let (status, saved) = request(
 			&f.c.app,
-			&f.c.f.config.api_token,
+			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true}),

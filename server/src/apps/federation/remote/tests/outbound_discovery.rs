@@ -146,14 +146,22 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		json!({"expected_revision":3,"bundle":policy}),
 	)
 	.await;
-	deployment_administrator(
-		b,
-		"/api/authorization/acme/catalog",
-		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false,
-		}),
+	// The destination Tenant withdraws its approval of the agent version.
+	aidash_server::authorization::Authorization {
+		pool: b.runtime.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
 	)
-	.await;
+	.await
+	.unwrap();
 	let result = discover(subject, json!({})).await;
 	assert_eq!(result["agents"].as_array().unwrap().len(), 1);
 	assert_eq!(result["errors"], json!([]));

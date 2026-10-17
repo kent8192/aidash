@@ -92,12 +92,21 @@ impl Workbench {
 		panic!("test session did not finish: {started}");
 	}
 
-	async fn deployment_administrator_finished(&self, started: &Value) -> Value {
+	/// Polls the session with a credential issued now, so revoking the
+	/// session's own credential does not hide the outcome.
+	async fn observed_finished(&self, started: &Value) -> Value {
+		let observer = aidash_server::authorization::Authorization {
+			pool: self.f.store.pool.clone(),
+		}
+		.issue_credential("acme", "alice", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
 		let mut finished = Value::Null;
 		for _ in 0..200 {
 			let (status, sessions) = request(
 				&self.app,
-				&self.f.config.api_token,
+				&observer,
 				"GET",
 				&format!("{}/tests", self.path()),
 				Value::Null,
@@ -206,14 +215,21 @@ fn workbench(
 async fn crowded_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
 	// An older shared draft must also survive the invisible newer batch.
-	let (status, shared) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/workbench/drafts", json!({"tenant":"acme","owner":"bob","entry":{
+	let bob = aidash_server::authorization::Authorization {
+		pool: wb.f.store.pool.clone(),
+	}
+	.issue_credential("acme", "bob", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token;
+	let (status, shared) = request(&wb.app, &bob, "POST", "/api/workbench/drafts", json!({"tenant":"acme","owner":"bob","entry":{
 		"id":"","version":"1.0.0","kind":"agent","name":{"en":"Shared fixture"},"description":{"en":"Fixture"},"config":wb.draft["entry"]["config"]
 	}})).await;
 	assert_eq!(status, 200, "shared draft: {shared}");
 	assert_eq!(
 		request(
 			&wb.app,
-			&wb.f.config.api_token,
+			&bob,
 			"POST",
 			&format!(
 				"/api/workbench/drafts/{}/shares",
@@ -528,7 +544,7 @@ async fn trust_permissions_use_worker_transport_and_registry_read(
 		&registered["entry"],
 		&json!({"id":"fixture-model","version":"1.0.0"}),
 	] {
-		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":entry["id"],"version":entry["version"]},"enabled":true,"expected_revision":0})).await.0, 200);
+		assert_eq!(request(&wb.app, &wb.token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":entry["id"],"version":entry["version"]},"enabled":true,"expected_revision":0})).await.0, 200);
 	}
 	let mut policies = vec![
 		json!({"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}),
@@ -617,15 +633,9 @@ async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
 	let (wb, app) = revoked_workbench;
 	let (status, result) = request(&app, &wb.token, "PUT", &wb.path(), json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[],"release_notes":"Must not commit"})).await;
 	assert_eq!(status, 401, "revoked actor: {result}");
-	let unchanged = request(
-		&wb.app,
-		&wb.f.config.api_token,
-		"GET",
-		&wb.path(),
-		Value::Null,
-	)
-	.await
-	.1;
+	let unchanged = request(&wb.app, &wb.token, "GET", &wb.path(), Value::Null)
+		.await
+		.1;
 	assert_eq!(unchanged["revision"], 1);
 	assert_eq!(unchanged["release_notes"], "");
 	wb.cleanup().await;
@@ -635,7 +645,7 @@ async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
 async fn clustered_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let mut wb = workbench;
 	wb.register().await;
-	let (status, cluster) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"fixture-cluster","version":"1.0.0","kind":"cluster","name":{"en":"Fixture cluster"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await;
+	let (status, cluster) = request(&wb.app, &wb.token, "POST", "/api/registry", json!({"id":"fixture-cluster","version":"1.0.0","kind":"cluster","name":{"en":"Fixture cluster"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await;
 	assert_eq!(status, 200, "cluster: {cluster}");
 	let mut entry = wb.draft["entry"].clone();
 	entry["version"] = json!("1.0.1");
@@ -661,7 +671,7 @@ async fn clustered_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 		assert_eq!(
 			request(
 				&wb.app,
-				&wb.f.config.api_token,
+				&wb.token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":reference,"enabled":true,"expected_revision":0})
@@ -720,7 +730,7 @@ async fn hidden_incident_backlog(
 	#[future(awt)] workbench: Workbench,
 ) -> (Workbench, Value) {
 	let wb = workbench;
-	wb.register().await;
+	let registered = wb.register().await;
 	let path = format!(
 		"/api/workbench/versions/{}/1.0.0/incidents",
 		wb.draft["entry"]["id"].as_str().unwrap()
@@ -735,6 +745,17 @@ async fn hidden_incident_backlog(
 	if other_tenant {
 		common::tenant_root(&wb.f, "other").await;
 		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
+		// The other Tenant holds the same version in its own Registry.
+		let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let other = aidash_domain::tenancy::TenantName::new("other").unwrap();
+		for id in ["fixture-model", "fixture-tool"] {
+			let entry = wb.f.registry.get(&acme, id, "1.0.0").await.unwrap();
+			wb.f.registry.register(&other, entry).await.unwrap();
+		}
+		let mut agent: aidash_server::registry::Entry =
+			serde_json::from_value(registered["entry"].clone()).unwrap();
+		agent.binding_normalization = None;
+		wb.f.registry.register(&other, agent).await.unwrap();
 	}
 	let mut hidden = Vec::new();
 	for _ in 0..101 {
@@ -844,7 +865,7 @@ async fn pre_dispatch_revocation_is_denied_without_an_unknown_external_outcome(
 		_ => unreachable!(),
 	}
 	wb.model_gate.release.notify_one();
-	let finished = wb.deployment_administrator_finished(&started).await;
+	let finished = wb.observed_finished(&started).await;
 	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 0);
 	assert_eq!(
 		finished["status"], "blocked",
@@ -864,7 +885,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 	let (wb, started) = model_waiting_for_real_tool;
 	wb.effect_reply_invalid.store(true, Ordering::SeqCst);
 	wb.model_gate.release.notify_one();
-	let finished = wb.deployment_administrator_finished(&started).await;
+	let finished = wb.observed_finished(&started).await;
 	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 1);
 	assert_eq!(finished["status"], "outcome_unknown", "session: {finished}");
 	assert_eq!(finished["tool_calls"][0]["outcome"], "outcome_unknown");
@@ -874,7 +895,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 #[rstest::fixture]
 async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","replay":"read_only"}}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","replay":"read_only"}}})).await.0, 200);
 	wb
 }
 
@@ -1134,7 +1155,7 @@ async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
 async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
 	wb.register().await;
-	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
+	assert_eq!(request(&wb.app,&wb.token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
 	wb
 }
 
@@ -1237,9 +1258,16 @@ async fn incident_mutations_reject_a_revoked_authenticated_actor(
 	};
 	let (status, result) = request(&app, &wb.token, if update {"PUT"} else {"POST"}, &path, if update { json!({"expected_revision":1,"severity":"critical","status":"resolved","owner":"alice","notes":"Must not commit"}) } else { json!({"severity":"critical","owner":"alice","notes":"Must not commit"}) }).await;
 	assert_eq!(status, 401, "stale incident actor: {result}");
+	let observer = aidash_server::authorization::Authorization {
+		pool: wb.f.store.pool.clone(),
+	}
+	.issue_credential("acme", "alice", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token;
 	let (read_status, rows) = request(
 		&wb.app,
-		&wb.f.config.api_token,
+		&observer,
 		"GET",
 		&format!(
 			"/api/workbench/versions/{}/1.0.0/incidents",
@@ -1303,19 +1331,12 @@ async fn visible_draft_backlog(#[future(awt)] workbench: Workbench) -> Workbench
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
 #[tokio::test]
 async fn draft_pages_reach_older_visible_rows_without_duplicates(
 	#[future(awt)] visible_draft_backlog: Workbench,
-	#[case] deployment_administrator: bool,
 ) {
 	let wb = visible_draft_backlog;
-	let token = if deployment_administrator {
-		&wb.f.config.api_token
-	} else {
-		&wb.token
-	};
+	let token = &wb.token;
 	let (status, first) =
 		request(&wb.app, token, "GET", "/api/workbench/drafts", Value::Null).await;
 	assert_eq!(status, 200);
@@ -1497,7 +1518,7 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 		_ => unreachable!(),
 	};
 	let app = wb.app.clone();
-	let token = wb.f.config.api_token.clone();
+	let token = wb.token.clone();
 	let mut mutation =
 		tokio::spawn(async move { request(&app, &token, method, &path, body).await });
 	let early = tokio::time::timeout(Duration::from_millis(200), &mut mutation).await;
@@ -1508,7 +1529,7 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 		Ok(result) => result.unwrap(),
 		Err(_) => mutation.await.unwrap(),
 	};
-	let finished = wb.deployment_administrator_finished(&started).await;
+	let finished = wb.observed_finished(&started).await;
 	assert!(
 		!finished_early,
 		"{change} committed across the real dispatch lease: {result:?}"

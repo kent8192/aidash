@@ -277,18 +277,11 @@ pub(super) async fn register_reference_source(
 	references: &[Value],
 ) -> Value {
 	let source = json!({"id":id,"version":"1.0.0","kind":"source","name":{"en":id},"description":{"en":"Immutable reference set"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"reference_attachments","references":references}}});
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		source,
-	)
-	.await;
+	let (status, result) = request(&c.app, &c.token, "POST", "/api/registry", source).await;
 	assert_eq!(status, 200, "{result}");
 	let (status, result) = request(
 		&c.app,
-		&c.f.config.api_token,
+		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),

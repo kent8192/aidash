@@ -19,9 +19,8 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let subject = subject(&app, "alice", _credential_client_0.await).await;
-	let created = workspace(&member, "Atomic validation").await;
+	let created = workspace(&subject, "Atomic validation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",
 		"deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":app.runtime.config.node_id,

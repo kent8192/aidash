@@ -104,6 +104,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 		200,
 	);
 	let _: aidash_server::registry::Entry = serde_json::from_value(stored.clone()).unwrap();
+	crate::endpoint::approve(&app, "endpoint", "endpoint-skill", "1.0.0").await;
 	assert_eq!(
 		assert_json(
 			registrar

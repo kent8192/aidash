@@ -96,10 +96,13 @@ pub async fn local_run(
 	agent: &aidash_server::registry::Entry,
 ) -> aidash_server::domain::Run {
 	let owner = aidash_server::domain::qualified_agent(&store.node_id, &agent.id, &agent.version);
-	store
-		.claim(scope, task.id, task.revision, &owner, agent)
-		.await
-		.expect("the local Run is queued");
+	// A task the agent already claimed has its Run.
+	if task.owner.as_deref() != Some(owner.as_str()) {
+		store
+			.claim(scope, task.id, task.revision, &owner, agent)
+			.await
+			.expect("the local Run is queued");
+	}
 	store
 		.runs(scope)
 		.await
@@ -178,4 +181,118 @@ pub async fn tenant_token(store: &aidash_server::store::Store, tenant: &str) -> 
 	.await
 	.expect("the Subject Credential is issued")
 	.token
+}
+
+/// Makes `agent` runnable in `tenant`, as its Tenant Administrator would: the
+/// agent is a subject of the Tenant's policy, and it and every definition it
+/// names are approved in the catalog (built-ins need no approval).
+#[allow(dead_code)]
+pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::registry::Entry) {
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot(tenant).await.unwrap();
+	let subject =
+		aidash_server::domain::qualified_agent(&f.config.node_id, &agent.id, &agent.version);
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	if bundle["subjects"].get(&subject).is_none() {
+		bundle["subjects"][&subject] = serde_json::json!({"kind":"agent"});
+		authorization
+			.replace(
+				tenant,
+				snapshot.revision,
+				serde_json::from_value(bundle).unwrap(),
+				"deployment_administrator",
+			)
+			.await
+			.expect("the agent becomes a subject of the Tenant");
+	}
+	let name = aidash_domain::tenancy::TenantName::new(tenant).unwrap();
+	let mut pending = vec![aidash_domain::registry::EntityRef {
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	}];
+	let mut order = Vec::new();
+	while let Some(reference) = pending.pop() {
+		if aidash_application::registry::system::builtin_reference(&reference)
+			|| order.contains(&reference)
+		{
+			continue;
+		}
+		let entry = f
+			.registry
+			.get(&name, &reference.id, &reference.version)
+			.await
+			.expect("an approved graph is registered in its Tenant");
+		pending.extend(aidash_application::authorization::catalog::approvals::dependencies(&entry));
+		order.push(reference);
+	}
+	// Dependencies before the definitions that name them.
+	for reference in order.into_iter().rev() {
+		let current = authorization
+			.catalog(tenant)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|binding| {
+				binding.entry_id == reference.id && binding.entry_version == reference.version
+			});
+		if current.as_ref().is_some_and(|binding| binding.enabled) {
+			continue;
+		}
+		authorization
+			.set_catalog(
+				tenant,
+				&reference,
+				current.map_or(0, |binding| binding.revision),
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.expect("the definition is approved");
+	}
+}
+
+/// Claims `task` for `agent` as the Tenant's `alice`, the scoped admission that
+/// gives a local Run its execution grant (ADR 0043), and returns the Run.
+#[allow(dead_code)]
+pub async fn admitted_run(
+	f: &Federation,
+	tenant: &str,
+	task: &aidash_server::domain::Task,
+	agent: &aidash_server::registry::Entry,
+) -> aidash_server::domain::Run {
+	approve_agent(f, tenant, agent).await;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let token = authorization
+		.issue_credential(tenant, "alice", 3600, "deployment_administrator")
+		.await
+		.unwrap()
+		.token;
+	let aidash_server::authorization::identity::Actor::Subject(identity) =
+		authorization.authenticate(&token).await.unwrap()
+	else {
+		panic!("a Subject Credential authenticates a subject")
+	};
+	aidash_server::authorization::services::execution::claim(
+		f,
+		&identity,
+		task.id,
+		task.revision,
+		&aidash_domain::registry::EntityRef {
+			id: agent.id.clone(),
+			version: agent.version.clone(),
+		},
+	)
+	.await
+	.expect("the subject admits the Run");
+	f.store
+		.runs(&aidash_application::tenancy::TenancyScope::tenant(tenant).unwrap())
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == task.id)
+		.expect("admission queues a Run")
 }

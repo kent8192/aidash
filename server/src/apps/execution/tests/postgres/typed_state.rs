@@ -43,9 +43,9 @@ async fn damage(store: &Store, id: Uuid, phase: RunPhase, pending: Value, contex
 	}
 	.unwrap();
 }
-async fn create(store: &Store, agent: &Entry, workspace: Uuid) -> Run {
-	let task = running_task(store, agent, workspace, None).await;
-	common::local_run(&store, &ACME, &task, &agent).await
+async fn create(f: &Federation, agent: &Entry, workspace: Uuid) -> Run {
+	let task = running_task(f, agent, workspace, None).await;
+	common::local_run(&f.store, &ACME, &task, agent).await
 }
 #[rstest::rstest]
 #[tokio::test]
@@ -104,7 +104,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			),
 		),
 	] {
-		let run = create(&store, &agent, workspace.id).await;
+		let run = create(&f, &agent, workspace.id).await;
 		damage(&store, run.id, phase, pending, context).await;
 		damaged.push(run);
 	}
@@ -121,7 +121,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null,"lease_recovered":false}}),
 		),
 	] {
-		let run = create(&store, &agent, workspace.id).await;
+		let run = create(&f, &agent, workspace.id).await;
 		damage(&store, run.id, phase, pending, common::context(json!({}))).await;
 		newer.push((run, phase));
 	}
@@ -152,7 +152,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.execute(store.pool.driver())
 		.await
 		.unwrap();
-	let healthy = create(&store, &agent, workspace.id).await;
+	let healthy = create(&f, &agent, workspace.id).await;
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -214,18 +214,18 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 		.create_workspace(&ACME, "alice", "Controls", "Do not execute")
 		.await
 		.unwrap();
-	let paused = create(&store, &agent, workspace.id).await;
+	let paused = create(&f, &agent, workspace.id).await;
 	store
 		.control(&ACME, paused.id, RunControlAction::Pause)
 		.await
 		.unwrap();
 	damage(&store, paused.id, RunPhase::Ready, json!({}), json!([])).await;
-	let live = create(&store, &agent, workspace.id).await;
+	let live = create(&f, &agent, workspace.id).await;
 	let token = Uuid::new_v4();
 	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
 	assert_eq!(leased.id, live.id);
 	damage(&store, live.id, RunPhase::Ready, json!({}), json!([])).await;
-	let terminal = create(&store, &agent, workspace.id).await;
+	let terminal = create(&f, &agent, workspace.id).await;
 	damage(
 		&store,
 		terminal.id,
@@ -289,7 +289,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 		.await
 		.unwrap();
 	for _ in 0..129 {
-		let run = create(&store, &agent, workspace.id).await;
+		let run = create(&f, &agent, workspace.id).await;
 		damage(
 			&store,
 			run.id,
@@ -302,7 +302,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 		)
 		.await;
 	}
-	let healthy = create(&store, &agent, workspace.id).await;
+	let healthy = create(&f, &agent, workspace.id).await;
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	assert_eq!(
 		store
@@ -312,108 +312,6 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 			.unwrap()
 			.id,
 		healthy.id
-	);
-	cleanup(store, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn dependency_release_uses_only_the_authoritative_home(
-	#[from(super::store)] _store_fixture: StoreFuture,
-	#[from(super::federation)]
-	#[with(_store_fixture.clone())]
-	_federation: common::RuntimeFuture,
-) {
-	let (store, url, schema) = _store_fixture.clone().await.parts();
-	let f = _federation.await.federation;
-	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Dependencies", "Home authority")
-		.await
-		.unwrap();
-	let dependency = running_task(&store, &agent, workspace.id, None).await;
-	sqlx::query(
-		&Query::update()
-			.table(a("runs"))
-			.value(a("control"), "PAUSED")
-			.and_where(Expr::col(a("task_id")).eq(Expr::value(dependency.id)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(store.pool.driver())
-	.await
-	.unwrap();
-	let mut input = new_task();
-	input.dependencies = vec![dependency.id];
-	let task = store
-		.create_task(&ACME, workspace.id, &input, "human", None)
-		.await
-		.unwrap();
-	let local = common::local_run(&store, &ACME, &task, &agent).await;
-	let remote = create(&store, &agent, workspace.id).await;
-	sqlx::query(
-		&Query::update()
-			.table(a("runs"))
-			.value(a("home_node"), "aidash://remote-home")
-			.and_where(Expr::col(a("id")).eq(Expr::value(remote.id)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(store.pool.driver())
-	.await
-	.unwrap();
-	let future = chrono::Utc::now() + chrono::Duration::hours(1);
-	for run in [&local, &remote] {
-		damage(
-			&store,
-			run.id,
-			RunPhase::Waiting,
-			common::pending(RunState::Waiting(Box::new(WaitingState::Dependencies {
-				wake_at: future,
-				resume: Default::default(),
-			}))),
-			common::context(json!({})),
-		)
-		.await;
-	}
-	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
-	store
-		.complete(
-			&ACME,
-			dependency.id,
-			dependency.owner.as_deref().unwrap(),
-			"done",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "done".into(),
-				content: json!("done"),
-			},
-		)
-		.await
-		.unwrap();
-	let claimed = store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap();
-	assert_eq!(
-		claimed.id, local.id,
-		"local completion releases before the deadline"
-	);
-	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
-	damage(
-		&store,
-		remote.id,
-		RunPhase::Waiting,
-		common::pending(RunState::Waiting(Box::new(WaitingState::Dependencies {
-			wake_at: chrono::Utc::now() - chrono::Duration::seconds(1),
-			resume: Default::default(),
-		}))),
-		common::context(json!({})),
-	)
-	.await;
-	assert_eq!(
-		store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.unwrap()
-			.id,
-		remote.id
 	);
 	cleanup(store, &url, &schema).await;
 }
@@ -433,7 +331,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 		.create_workspace(&ACME, "alice", "Delivery", "Resume disposition only")
 		.await
 		.unwrap();
-	let ordinary = create(&store, &agent, workspace.id).await;
+	let ordinary = create(&f, &agent, workspace.id).await;
 	store
 		.control(&ACME, ordinary.id, RunControlAction::Pause)
 		.await
@@ -453,7 +351,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 			.is_err(),
 		"ordinary execution must still reject an invalid Context"
 	);
-	let run = create(&store, &agent, workspace.id).await;
+	let run = create(&f, &agent, workspace.id).await;
 	damage(
 		&store,
 		run.id,

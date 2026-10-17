@@ -1439,14 +1439,10 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	.await;
 	assert!(!entries.to_string().contains(&artifact.id.to_string()));
 	// Even a Deployment Administrator cannot attach a resource from a different workspace.
+	let other_tenant = common::tenant_scope(&f.store, "other").await;
 	let other = f
 		.store
-		.create_workspace(
-			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
-			"alice",
-			"Other",
-			"Isolation",
-		)
+		.create_workspace(&other_tenant, "bob", "Other", "Isolation")
 		.await
 		.unwrap();
 	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;

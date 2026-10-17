@@ -270,15 +270,9 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 	entry.id = "reviewer".into();
 	entry.binding_normalization = None;
 	assert_eq!(
-		request(
-			&f.c.app,
-			&f.c.f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(entry)
-		)
-		.await
-		.0,
+		request(&f.c.app, &f.c.token, "POST", "/api/registry", json!(entry))
+			.await
+			.0,
 		200
 	);
 	f.c.policy["subjects"]
@@ -299,7 +293,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 	assert_eq!(
 		request(
 			&f.c.app,
-			&f.c.f.config.api_token,
+			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})

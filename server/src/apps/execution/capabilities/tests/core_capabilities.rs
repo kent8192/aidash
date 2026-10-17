@@ -1193,18 +1193,11 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 			.unwrap();
 	reader.id = "reader".into();
 	reader.binding_normalization = None;
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		json!(reader),
-	)
-	.await;
+	let (status, value) = request(&c.app, &c.token, "POST", "/api/registry", json!(reader)).await;
 	assert_eq!(status, 200, "{value}");
 	let (_, value) = request(
 		&c.app,
-		&c.f.config.api_token,
+		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
@@ -1440,19 +1433,12 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		.as_array_mut()
 		.unwrap()
 		.push(source);
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		json!(agent),
-	)
-	.await;
+	let (status, value) = request(&c.app, &c.token, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{value}");
 	assert_eq!(
 		request(
 			&c.app,
-			&c.f.config.api_token,
+			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true})

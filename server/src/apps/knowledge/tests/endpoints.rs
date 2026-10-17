@@ -32,7 +32,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	let index_path = format!("{base}/index");
 	let entries_path = format!("{base}/entries");
 	assert_json(
-		member
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -53,7 +53,8 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	// Act
 	let saved = assert_json(member.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(80)},"metadata":{}}), "json").await.unwrap(), 200);
 	index_spec["max_input_bytes"] = json!(128);
-	let reduced = member
+	let reduced = app
+		.deployment_administrator
 		.post(
 			&index_path,
 			&json!({"expected_revision":1,"spec":index_spec}),
@@ -62,7 +63,8 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 		.await
 		.unwrap();
 	index_spec["max_sources"] = json!(0);
-	let invalid_spec = member
+	let invalid_spec = app
+		.deployment_administrator
 		.post(
 			&index_path,
 			&json!({"expected_revision":1,"spec":index_spec}),
@@ -183,7 +185,8 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		invalid.push((wrong, 400));
 	}
 	for (spec, status) in invalid {
-		let response = member
+		let response = app
+			.deployment_administrator
 			.post(&path, &json!({"expected_revision":0,"spec":spec}), "json")
 			.await
 			.unwrap();
@@ -208,7 +211,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			let mut boundary = index_spec.clone();
 			boundary[field] = json!(value);
 			let saved = assert_json(
-				member
+				app.deployment_administrator
 					.post(
 						&path,
 						&json!({"expected_revision":revision,"spec":boundary}),
@@ -227,7 +230,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		let mut boundary = index_spec.clone();
 		boundary["embedding"]["dimensions"] = json!(dimensions);
 		let saved = assert_json(
-			member
+			app.deployment_administrator
 				.post(
 					&path,
 					&json!({"expected_revision":revision,"spec":boundary}),
@@ -256,7 +259,7 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 		workspace["id"].as_str().unwrap()
 	);
 	assert_json(
-		member
+		app.deployment_administrator
 			.post(
 				&format!("{base}/index"),
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -348,7 +351,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let entries_path = format!("{base}/entries");
 	let cleanup_path = format!("{base}/cleanup");
 	let first = assert_json(
-		member
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":0,"spec":index_spec}),
@@ -362,7 +365,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		&json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
 	index_spec["embedding"]["model_version"] = json!("2");
 	let second = assert_json(
-		member
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":1,"spec":index_spec}),
@@ -373,7 +376,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		200,
 	);
 	let replay = assert_json(
-		member
+		app.deployment_administrator
 			.post(
 				&index_path,
 				&json!({"expected_revision":1,"spec":index_spec}),
@@ -609,7 +612,7 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 		let workspace = workspace(&member, title).await;
 		let id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
 		assert_json(
-			member
+			app.deployment_administrator
 				.post(
 					&format!("/api/workspaces/{id}/semantic/index"),
 					&json!({"expected_revision":0,"spec":index_spec}),

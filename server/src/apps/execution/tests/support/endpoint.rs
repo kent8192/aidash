@@ -19,7 +19,8 @@ pub use settings::settings_for;
 use std::sync::Arc;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
 pub use tenant_roots::{
-	local_run, remote_run, tenant_root, tenant_root_in, tenant_scope, tenant_token,
+	admitted_run, approve_agent, local_run, remote_run, tenant_root, tenant_root_in, tenant_scope,
+	tenant_token,
 };
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
