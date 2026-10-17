@@ -1335,6 +1335,40 @@ async fn failed_discards_are_retried_by_the_next_call() {
 	assert!(fixture.store.plaintexts().is_empty());
 }
 
+/// A discard that destroyed the tokens but could not record its transition
+/// leaves a pin the Store rejects; the next call records the reconnection
+/// instead of failing the same read every time.
+#[tokio::test]
+async fn discards_lost_after_their_cleanup_are_recorded_by_the_next_call() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Terminal,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let id = only_row(&fixture).await.id;
+	fixture.repo.0.lock().await.failing_commits = 1;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(only_row(&fixture).await.state, State::Active);
+	assert!(fixture.store.plaintexts().is_empty());
+	for _ in 0..2 {
+		assert!(matches!(
+			fixture.service.bearer(id).await,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+	}
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(row.pinned_version.is_some());
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+}
+
 /// A model list that reports an ineligible plan marks the connection, as an
 /// inference rejection does.
 #[tokio::test]

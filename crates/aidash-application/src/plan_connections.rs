@@ -663,11 +663,17 @@ impl Service {
 			return Ok(());
 		};
 		let mut scope = self.repository.begin(&owner).await?;
-		let Some(mut row) = scope.owned(Provider::Chatgpt).await?.filter(|row| {
+		let Some(row) = scope.owned(Provider::Chatgpt).await?.filter(|row| {
 			row.id == id && row.pinned_version.is_some() && row.state != State::NeedsReconnection
 		}) else {
 			return scope.commit().await;
 		};
+		Self::strand(scope, row, actor).await
+	}
+
+	/// Asks for reconnection while keeping a pin nothing can read, as
+	/// [`Self::mark_unreadable`] explains.
+	async fn strand(mut scope: Box<dyn Scope>, mut row: PlanConnection, actor: &str) -> Result<()> {
 		row.state = State::NeedsReconnection;
 		row.revision += 1;
 		scope
@@ -721,7 +727,17 @@ impl Service {
 			scope.commit().await?;
 			return Err(plan_unavailable());
 		}
-		let tokens = self.tokens(&row, &version).await?;
+		let tokens = match self.tokens(&row, &version).await {
+			Ok(tokens) => tokens,
+			// The Store rejects this pin for good: a discard destroyed its
+			// version but lost the transition, or its Master Key is gone.
+			// Record the reconnection instead of failing every call on it.
+			Err(Error::Invalid(_)) => {
+				Self::strand(scope, row, SYSTEM_ACTOR).await?;
+				return Err(Error::Plan(Failure::NeedsReconnection));
+			}
+			Err(error) => return Err(error),
+		};
 		if !force && !row.needs_refresh(now) {
 			scope.commit().await?;
 			return Ok(tokens.access);
@@ -923,7 +939,9 @@ impl Service {
 		// a reconnect waiting on it pins a new version in the same resource,
 		// which must survive this cleanup. A failed cleanup commits nothing,
 		// so the call that next finds the connection retries the transition;
-		// the pinned version goes last, so until then it stays readable.
+		// the pinned version goes last, so until then it stays readable. A
+		// transition lost after that leaves a pin the Store rejects, which
+		// the next call records instead.
 		let mut versions = self
 			.store
 			.versions(&row.tenant, &row.secret_resource)
