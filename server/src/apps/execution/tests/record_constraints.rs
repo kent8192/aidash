@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{domain::NewTask, registry::Entry};
 use common::cleanup;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
@@ -245,6 +247,33 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		insert_entry(f.store.pool.driver(), &keyed).await,
 		"registry_model_provider_keys",
 	);
+	// ADR 0007: a `chatgpt` model is served only by a Plan Connection at
+	// OpenAI's endpoint, and no other model names one.
+	let mut plan = good.clone();
+	plan["id"] = json!("plan-model");
+	plan["config"]["provider"] = json!("chatgpt");
+	plan["config"]["endpoint"] = json!("https://api.openai.com/v1");
+	plan["config"]["plan_connection"] = json!("chatgpt");
+	for (field, invalid) in [
+		("plan_connection", Value::Null),
+		("plan_connection", json!("openrouter")),
+		("endpoint", json!("https://openrouter.ai/api/v1")),
+		("provider_credential", json!("openrouter")),
+	] {
+		let mut entry = plan.clone();
+		entry["config"][field] = invalid;
+		check_rejected(
+			insert_entry(f.store.pool.driver(), &entry).await,
+			"registry_plan_connection_config",
+		);
+	}
+	let mut borrowed = good.clone();
+	borrowed["config"]["plan_connection"] = json!("chatgpt");
+	check_rejected(
+		insert_entry(f.store.pool.driver(), &borrowed).await,
+		"registry_plan_connection_config",
+	);
+	insert_entry(f.store.pool.driver(), &plan).await.unwrap();
 	let mut malformed = good.clone();
 	malformed["name"] = json!([]);
 	check_rejected(
@@ -299,12 +328,12 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let other = f
 		.store
-		.create_workspace("acme", "alice", "Other", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Other", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -316,12 +345,12 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	};
 	let task = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let foreign = f
 		.store
-		.create_task(other.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, other.id, &input, "human", None)
 		.await
 		.unwrap();
 	check_rejected(
@@ -476,7 +505,13 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	remote.workspace_id = uuid::Uuid::new_v4();
 	let run = f
 		.store
-		.accept_run(&remote, "aidash://remote", "executor", "1.0.0")
+		.accept_run(
+			&TEST_FIXTURE,
+			&remote,
+			"aidash://remote",
+			"executor",
+			"1.0.0",
+		)
 		.await
 		.unwrap();
 	let human_request = Query::insert()
@@ -552,11 +587,12 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 	.unwrap();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	f.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Task".into(),
@@ -810,7 +846,7 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	let mut other_kind = serde_json::to_value(model()).unwrap();
 	other_kind["id"] = json!("not-a-model");
 	other_kind["kind"] = json!("tool");
-	other_kind["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9999/tool","credential_env":null,"replay":"read_only"}});
+	other_kind["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9999/tool","replay":"read_only"}});
 	insert_entry(f.store.pool.driver(), &other_kind)
 		.await
 		.unwrap();
@@ -1013,19 +1049,32 @@ async fn tool_configs_reject_undecodable_shapes(
 		tool["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{
 			"transport":"http",
 			"endpoint":endpoint,
-			"credential_env":null,
 			"replay":"read_only"
 		}});
 		insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	}
+	// A Tool never names a Deployment secret, even a well-formed one (#296).
 	tool["id"] = json!("secret-tool");
-	tool["config"] = json!({"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":{
-		"transport":"http",
-		"endpoint":"http://localhost",
-		"credential_env":"AIDASH_SECRET_TOOL_TOKEN",
-		"replay":"read_only"
-	}});
-	insert_entry(f.store.pool.driver(), &tool).await.unwrap();
+	for (provider, transport) in [
+		(
+			"integration.http@1",
+			json!({"transport":"http","endpoint":"http://localhost","credential_env":"AIDASH_SECRET_TOOL_TOKEN","replay":"read_only"}),
+		),
+		(
+			"integration.http@1",
+			json!({"transport":"http","endpoint":"http://localhost","credential_env":null,"replay":"read_only"}),
+		),
+		(
+			"integration.mcp@1",
+			json!({"transport":"mcp","endpoint":"http://localhost","credential_env":"AIDASH_SECRET_TOOL_TOKEN","tool_name":"call","replay":"read_only"}),
+		),
+	] {
+		tool["config"] = json!({"registry_node":"aidash://execution-test","provider":provider,"operation":"invoke","default_alias":"fixture","tier":"integration","narrow":{},"transport":transport});
+		check_rejected(
+			insert_entry(f.store.pool.driver(), &tool).await,
+			"registry_tool_config",
+		);
+	}
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1110,12 +1159,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Task".into(),
@@ -1171,7 +1221,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	.unwrap();
 	let run = f
 		.store
-		.accept_run(&task, "aidash://remote", "executor", "1.0.0")
+		.accept_run(&TEST_FIXTURE, &task, "aidash://remote", "executor", "1.0.0")
 		.await
 		.unwrap();
 	// Storage accepts damaged machine payloads so metadata controls and the
@@ -1181,10 +1231,10 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			update(f.store.pool.driver(), "runs", column, Expr::value(invalid))
 				.await
 				.unwrap();
-			assert!(f.store.run(run.id).await.is_err());
+			assert!(f.store.run(&TEST_FIXTURE, run.id).await.is_err());
 			assert!(
 				f.store
-					.inspect_run(run.id)
+					.inspect_run(&TEST_FIXTURE, run.id)
 					.await
 					.unwrap()
 					.state_error
@@ -1224,7 +1274,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	);
 	let request = f
 		.store
-		.human_request(&run, "QUESTION", "Continue?", "waiting-shape-test")
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Continue?",
+			"waiting-shape-test",
+		)
 		.await
 		.unwrap();
 	update_run_state(f.store.pool.driver(), run.id, "WAITING", human(request.id))
@@ -1243,6 +1299,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	let other_task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Other request task".into(),
@@ -1258,7 +1315,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.unwrap();
 	let other_run = f
 		.store
-		.accept_run(&other_task, "aidash://remote", "executor", "1.0.0")
+		.accept_run(
+			&TEST_FIXTURE,
+			&other_task,
+			"aidash://remote",
+			"executor",
+			"1.0.0",
+		)
 		.await
 		.unwrap();
 	check_foreign_key_rejected(
@@ -1307,7 +1370,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	update_run_state(f.store.pool.driver(), run.id, "TOOL_CALL", valid.clone())
 		.await
 		.unwrap();
-	assert!(f.store.run(run.id).await.is_ok());
+	assert!(f.store.run(&TEST_FIXTURE, run.id).await.is_ok());
 	for (field, value) in [
 		("cursor", json!(2)),
 		("response_epoch", json!(-1)),
@@ -1318,7 +1381,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		update_run_state(f.store.pool.driver(), run.id, "TOOL_CALL", invalid)
 			.await
 			.unwrap();
-		assert!(f.store.run(run.id).await.is_err());
+		assert!(f.store.run(&TEST_FIXTURE, run.id).await.is_err());
 	}
 	update_run_state(
 		f.store.pool.driver(),
@@ -1341,6 +1404,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	let second_task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Second task".into(),
@@ -1356,7 +1420,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.unwrap();
 	let second_run = f
 		.store
-		.accept_run(&second_task, "aidash://remote", "executor", "1.0.0")
+		.accept_run(
+			&TEST_FIXTURE,
+			&second_task,
+			"aidash://remote",
+			"executor",
+			"1.0.0",
+		)
 		.await
 		.unwrap();
 	let max_safe_revision = Query::update()
@@ -1379,6 +1449,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	let third_task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Third task".into(),
@@ -1394,7 +1465,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.unwrap();
 	let third_run = f
 		.store
-		.accept_run(&third_task, "aidash://remote", "executor", "1.0.0")
+		.accept_run(
+			&TEST_FIXTURE,
+			&third_task,
+			"aidash://remote",
+			"executor",
+			"1.0.0",
+		)
 		.await
 		.unwrap();
 	let leased = f
@@ -1422,7 +1499,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.unwrap();
 		assert!(
 			f.store
-				.inspect_run(run.id)
+				.inspect_run(&TEST_FIXTURE, run.id)
 				.await
 				.unwrap()
 				.state_error
@@ -1482,7 +1559,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let spec = index_spec();
@@ -1889,7 +1966,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -1901,13 +1978,13 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	};
 	let task = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	for deletion_first in [true, false] {
 		let target = f
 			.store
-			.create_task(workspace.id, &input, "human", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 			.await
 			.unwrap();
 		let mut transaction = f.store.pool.driver().begin().await.unwrap();
@@ -1971,7 +2048,7 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -1983,12 +2060,12 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	};
 	let parent = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let child = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let parent_update = Query::update()
@@ -2024,7 +2101,7 @@ async fn task_dependency_cycles_include_parent_edges(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2036,12 +2113,12 @@ async fn task_dependency_cycles_include_parent_edges(
 	};
 	let first = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let second = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let set_dependencies = Query::update()
@@ -2100,7 +2177,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2116,7 +2193,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 		for _ in 0..2 {
 			level.push(
 				f.store
-					.create_task(workspace.id, &input, "human", None)
+					.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 					.await
 					.unwrap()
 					.id,
@@ -2160,7 +2237,7 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2172,12 +2249,12 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	};
 	let first_task = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let second_task = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let parent_update = Query::update()
@@ -2281,12 +2358,12 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	let (f, url, schema) = fixture.parts();
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Main", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Main", "Goal")
 		.await
 		.unwrap();
 	let other = f
 		.store
-		.create_workspace("acme", "alice", "Other", "Goal")
+		.create_workspace(&TEST_FIXTURE, "Other", "Goal")
 		.await
 		.unwrap();
 	let input = NewTask {
@@ -2298,17 +2375,17 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	};
 	let task = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let target = f
 		.store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let foreign = f
 		.store
-		.create_task(other.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, other.id, &input, "human", None)
 		.await
 		.unwrap();
 	let query = dependencies_update();

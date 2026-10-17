@@ -2,11 +2,11 @@
 pub use crate::apps::registry::serializers::knowledge::{PersonalAgent, ReferenceDocument};
 use crate::{Error, Result, federation::Federation, registry::Entry};
 use http::HeaderMap;
-use reinhardt::{db::orm::DatabaseConnection, injectable};
+use reinhardt::injectable;
 use serde_json::Value;
 use uuid::Uuid;
-pub async fn load(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
-	crate::apps::registry::repositories::private_documents(db, entry).await
+pub async fn load(registry: &crate::registry::Registry, entry: &Entry) -> Result<Value> {
+	registry.private_documents(entry).await
 }
 #[derive(Clone)]
 pub struct PersonalAgents {

@@ -1,4 +1,5 @@
 //! Outbound discovery uses both nodes' current authority over native HTTP.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/endpoint.rs"]
 mod endpoint;
 #[path = "../../../execution/tests/support/execution.rs"]

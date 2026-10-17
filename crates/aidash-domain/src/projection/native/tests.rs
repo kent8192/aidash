@@ -248,6 +248,53 @@ fn a_citation_correction_survives_turns_that_gather_evidence() {
 }
 
 #[test]
+fn a_completion_repair_survives_turns_that_repair_the_files() {
+	// Arrange: the refused candidate opened no Model Turn; the model edits
+	// files before it answers again.
+	let repair = ContextEvent::CompletionRepairRequired {
+		checks: vec![crate::completion::RepairNote {
+			check: "tests".into(),
+			outcome: crate::completion::CheckOutcome::Failed,
+			exit_code: Some(101),
+			diagnostics: "test result: FAILED".into(),
+		}],
+		instruction: "Repair the files, then answer again.".into(),
+		through_seq: 3,
+	};
+	let repairing = context(vec![
+		assistant(1, "", &["a"]),
+		tool("a"),
+		repair.clone(),
+		assistant(2, "Fixing the failing test.", &["b"]),
+		tool("b"),
+	]);
+	let mut answered = repairing.clone();
+	answered.push(assistant(3, "Repaired answer", &[]));
+	let pinned = json!({"agent_state": {"step": 5}});
+	// Act
+	let repairing = native_context(&repairing, &pinned);
+	let answered = native_context(&answered, &pinned);
+	// Assert: the repair stays a marker, never history, until an answer
+	// without calls.
+	assert_eq!(
+		shape(&repairing.history),
+		[
+			"assistant[a]",
+			"tool:a",
+			"assistant[b]:Fixing the failing test.",
+			"tool:b"
+		]
+	);
+	let volatile: Value = serde_json::from_str(&repairing.volatile).unwrap();
+	assert_eq!(
+		volatile,
+		json!({"agent_state": {"step": 5}, "markers": [repair]})
+	);
+	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
+	assert_eq!(volatile, pinned);
+}
+
+#[test]
 fn a_turn_that_renders_nothing_answers_no_marker() {
 	// Arrange: the response's only call was deferred before it ran.
 	let marker = ContextEvent::RunMessageSummaryRequired {

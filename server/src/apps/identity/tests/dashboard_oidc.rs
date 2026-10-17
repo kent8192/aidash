@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::FutureExt;
 use http::Method;
@@ -237,6 +239,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]
 	}))
 	.unwrap();
+	common::tenant_root_in(federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: federation.store.pool.clone(),
 	}
@@ -497,7 +500,11 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	)
 	.await;
 	assert_eq!(status, 200);
-	assert_eq!(actionable, json!([fresh]));
+	// The queue adds what an Invitation proposed; this request had none.
+	let mut queued = fresh.clone();
+	queued["invitation_id"] = Value::Null;
+	queued["proposed_groups"] = json!([]);
+	assert_eq!(actionable, json!([queued]));
 	let path = format!(
 		"/api/dashboard/registrations/{}/approve",
 		fresh["id"].as_str().unwrap()
@@ -557,7 +564,11 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.to_string()
 			.contains(&credential_id.to_string())
 	);
-	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	let (status, session) = call(
 		&app,
 		"GET",
@@ -752,8 +763,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	let workspace = federation
 		.store
 		.create_workspace(
-			"acme",
-			"alice",
+			&TEST_FIXTURE,
 			"Browser management",
 			"Pause and cancel an admitted run",
 		)
@@ -762,6 +772,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	let task = federation
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
@@ -796,7 +807,13 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	}
 	let run = federation
 		.store
-		.accept_run(&task, &federation.config.node_id, "fixture-agent", "1.0.0")
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&federation.config.node_id,
+			"fixture-agent",
+			"1.0.0",
+		)
 		.await
 		.unwrap();
 	let run_management = format!("/api/runs/{}/management", run.id);
@@ -817,7 +834,12 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"restoring the route must retain CSRF enforcement"
 	);
 	assert_eq!(
-		federation.store.inspect_run(run.id).await.unwrap().control,
+		federation
+			.store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control,
 		aidash_server::domain::RunControl::Active
 	);
 	for (action, expected) in [
@@ -838,7 +860,12 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["control"], json!(expected));
 		assert_eq!(
-			federation.store.inspect_run(run.id).await.unwrap().control,
+			federation
+				.store
+				.inspect_run(&TEST_FIXTURE, run.id)
+				.await
+				.unwrap()
+				.control,
 			expected
 		);
 	}
@@ -1482,6 +1509,8 @@ struct GoogleBrowser {
 async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
 	let runtime = runtime.await;
 	let (mut federation, url, database) = runtime.parts();
+	// Personal Tenants follow the Tenancy Rules, not the issuer.
+	federation.config.tenancy.personal_tenants = true;
 	federation.config.oidc = Some(OidcConfig {
 		issuer: "https://accounts.google.com".into(),
 		client_id: "aidash".into(),
@@ -1575,6 +1604,7 @@ async fn google_session_provisions_private_access_without_registration(
 		"actions":["*"],"resources":{"kinds":["*"]}}]
 	}))
 	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -1657,7 +1687,11 @@ async fn google_session_provisions_private_access_without_registration(
 		}
 	};
 	let personal = &session["mappings"][0];
-	let context = format!("mapping:{}", personal["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		personal["tenant"].as_str().unwrap(),
+		personal["id"].as_str().unwrap()
+	);
 	let (status, selected) = call(
 		&fixture.app,
 		"GET",
@@ -1744,7 +1778,11 @@ async fn google_session_provisions_private_access_without_registration(
 	)
 	.await;
 	assert_eq!(status, 200, "{shared}");
-	let shared_context = format!("mapping:{}", shared["id"].as_str().unwrap());
+	let shared_context = format!(
+		"mapping:{}:{}",
+		shared["tenant"].as_str().unwrap(),
+		shared["id"].as_str().unwrap()
+	);
 	let (status, shared_workspace) = call(
 		&fixture.app,
 		"POST",
@@ -1830,7 +1868,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	#[from(google_browser)]
 	fixture: GoogleBrowser,
 ) {
-	// Arrange: a Deployment Administrator already created data in the reserved tenant namespace.
+	// Arrange: a Deployment Administrator already created a Tenant named after the identity.
 	let tenant = format!("personal-{}", fixture.identity.simple());
 	let policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
@@ -1839,6 +1877,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	let authorization = Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	};
+	common::tenant_root_in(fixture.federation.store.pool.driver(), &tenant).await;
 	let before = authorization
 		.replace(&tenant, 0, policy, "deployment_administrator")
 		.await
@@ -1855,8 +1894,15 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 		Value::Null,
 	)
 	.await;
-	// Assert: fail closed, without introducing authority or rewriting the policy.
-	assert_eq!(status, 409, "{response}");
+	// Assert: the Personal Tenant gets an assigned name, so the existing
+	// Tenant gains no authority and keeps its policy.
+	assert_eq!(status, 200, "{response}");
+	assert_eq!(
+		response["mappings"].as_array().unwrap().len(),
+		1,
+		"{response}"
+	);
+	assert_ne!(response["mappings"][0]["tenant"], tenant.as_str());
 	for table in ["dashboard_mappings", "authorization_credentials"] {
 		let count = Query::select()
 			.expr(Expr::cust("count(*)"))
@@ -1909,7 +1955,7 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 	let mapping = &session["mappings"][0];
 	let mapping_id = mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap();
 	let tenant = mapping["tenant"].as_str().unwrap();
-	let context = format!("mapping:{mapping_id}");
+	let context = format!("mapping:{tenant}:{mapping_id}");
 	let credential_query = Query::select()
 		.column(Alias::new("credential_id"))
 		.from(Alias::new("dashboard_mappings"))
@@ -2224,11 +2270,12 @@ async fn tenant_administration_works_without_a_tenant_binding(
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": actions,
-			"resources": {"kinds": ["registration", "mapping", "subject"]},
+			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
 		}]
 	}))
 	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -2241,8 +2288,16 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	google_identity(&fixture.federation, "carol", "carol-session").await;
 	let alice = deployment_administrator_mapped(app, "alice-session", "acme", "root").await;
 	let bob = deployment_administrator_mapped(app, "bob-session", "acme", "bob").await;
-	let alice_context = format!("mapping:{}", alice["id"].as_str().unwrap());
-	let bob_context = format!("mapping:{}", bob["id"].as_str().unwrap());
+	let alice_context = format!(
+		"mapping:{}:{}",
+		alice["tenant"].as_str().unwrap(),
+		alice["id"].as_str().unwrap()
+	);
+	let bob_context = format!(
+		"mapping:{}:{}",
+		bob["tenant"].as_str().unwrap(),
+		bob["id"].as_str().unwrap()
+	);
 	// Carol's request is generic: it is addressed to no Tenant.
 	let (status, carol) = browser_call(
 		app,
@@ -2401,6 +2456,20 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		.await
 		.unwrap();
 	assert!(recorded >= 1, "{recorded}");
+	// The group change is recorded with its subject and acting administrator.
+	let group_changes = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_administration_history"))
+		.and_where(Expr::cust(
+			"action = 'subject.group.update' AND tenant = 'acme' AND subject = 'bob' \
+			 AND actor_kind = 'tenant_administrator' AND actor_identity_id IS NOT NULL",
+		))
+		.to_string(PostgresQueryBuilder);
+	let group_changes: i64 = sqlx::query_scalar(&group_changes)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(group_changes, 1);
 	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
 }
 
@@ -2808,3 +2877,6 @@ fn negative_status_state(
 ) -> NegativeStatusState {
 	NegativeStatusState { checks, release }
 }
+
+#[path = "dashboard_oidc/tenancy.rs"]
+mod tenancy;

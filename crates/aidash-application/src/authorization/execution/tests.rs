@@ -152,6 +152,9 @@ impl ExecutionGrantSession for Scope {
 		self.touch("remote_origin")?;
 		Ok(self.remote.clone())
 	}
+	async fn federated_origin(&mut self, _: Uuid) -> Result<bool> {
+		Ok(false)
+	}
 	async fn workspace(&mut self, _: Uuid) -> Result<Resource> {
 		self.touch("workspace")?;
 		Ok(Resource {

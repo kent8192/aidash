@@ -1,6 +1,6 @@
 //! Rust adaptation of fast-jev-compaction for Aidash's paired history events.
 //! Upstream: e3f262a7f4d42bd8dd32ced30d26176f7cb545b0 (MIT).
-//! See LICENSE.
+//! The upstream MIT notice is in `third_party/fast-jev-compaction/LICENSE`; see `THIRD_PARTY_NOTICES.md`.
 use super::probability;
 use crate::ports::{CompactionClassifier as JevAsker, CompactionQuestions as Questions};
 use crate::{Error, Result};
@@ -367,6 +367,18 @@ fn batches<'a>(
 	Ok(batches)
 }
 
+/// How fast compaction marks a tool result it cut to its head.
+const TRUNCATION_MARK: &str = "[fast-jev-compaction truncated ";
+
+/// Whether fast compaction cut `result` to its head. Such a result is a string
+/// whatever its original shape; the Context Journal keeps the original.
+pub fn truncated_result(result: &Value) -> bool {
+	result.as_str().is_some_and(|text| {
+		text.contains(TRUNCATION_MARK)
+			&& text.ends_with("full result remains in the execution journal]")
+	})
+}
+
 pub(super) async fn prune(
 	history: &[HistoryEntry],
 	current: &Value,
@@ -480,7 +492,7 @@ pub(super) async fn prune(
 					return Err(Error::Invalid("invalid compaction target".into()));
 				};
 				*result = json!(format!(
-					"{}[fast-jev-compaction truncated {} chars of this tool result; full result remains in the execution journal]",
+					"{}{TRUNCATION_MARK}{} chars of this tool result; full result remains in the execution journal]",
 					if head.is_empty() {
 						head
 					} else {

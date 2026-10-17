@@ -4,6 +4,7 @@ use crate::{
 	apps::identity::services::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
 	ports::authorization::{ExecutionGrantRepository, ExecutionGrantSession},
@@ -20,6 +21,10 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+
+/// How many local task hops a Federation provenance walk follows. A chain
+/// that continues past it counts as federated.
+const MAX_ORIGIN_DEPTH: u32 = 64;
 
 #[derive(Clone)]
 pub(crate) struct Grant {
@@ -108,7 +113,10 @@ impl ExecutionGrantRepository for Grants<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&self.store.pool)
+				// A worker learns a Run's Tenant from its grant (#265).
+				.fetch_optional(self.store.pool.in_scope(&TenancyScope::Deployment(
+					DeploymentScopeReason::RunTenant,
+				)))
 				.await?
 			};
 			Ok(grant)
@@ -267,6 +275,65 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		result
 			.map(|origin| origin.map(Into::into))
 			.map_err(Into::into)
+	}
+	async fn federated_origin(&mut self, task: Uuid) -> Result<bool> {
+		use reinhardt::query::{JoinType, TableRef};
+		// Walk the local creation chain: each task's origin names the Run that
+		// created it, and that Run's execution grant names its own task. The
+		// walk takes one hop past the bound, so a row there means the chain
+		// continues and its provenance is unknown.
+		let mut chain = Query::select();
+		chain
+			.column(Alias::new("task_id"))
+			.expr_as(Expr::value(0_i32), Alias::new("depth"))
+			.from(Alias::new("authorization_task_origins"))
+			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
+			.union_all(
+				Query::select()
+					.column((Alias::new("e"), Alias::new("task_id")))
+					.expr_as(Expr::cust("c.depth + 1"), Alias::new("depth"))
+					.from_as(Alias::new("chain"), Alias::new("c"))
+					.join(
+						JoinType::InnerJoin,
+						TableRef::table_alias(
+							Alias::new("authorization_task_origins"),
+							Alias::new("o"),
+						),
+						Expr::cust("o.task_id = c.task_id"),
+					)
+					.join(
+						JoinType::InnerJoin,
+						TableRef::table_alias(
+							Alias::new("authorization_execution"),
+							Alias::new("e"),
+						),
+						Expr::cust("e.run_id = o.source_run_id"),
+					)
+					.and_where(Expr::cust(format!("c.depth <= {MAX_ORIGIN_DEPTH}")))
+					.to_owned(),
+			);
+		let reached = Query::select()
+			.expr(Expr::value(1_i32))
+			.from_as(Alias::new("chain"), Alias::new("c"))
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(Alias::new("authorization_remote_outputs"), Alias::new("r")),
+				Expr::cust("r.resource_kind = 'task' AND r.resource_id = c.task_id"),
+			)
+			.to_owned();
+		let exhausted = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("chain"))
+			.and_where(Expr::cust(format!("depth > {MAX_ORIGIN_DEPTH}")))
+			.to_owned();
+		let sql = Query::select()
+			.with_recursive_cte(Alias::new("chain"), chain)
+			.expr(Expr::exists(reached).or(Expr::exists(exhausted)))
+			.to_string(PostgresQueryBuilder);
+		let federated: NativeResult<bool> = crate::database::native::query_scalar(&sql)
+			.scalar_one(&mut **self.access.tx)
+			.await;
+		federated.map_err(Into::into)
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.workspace(id).await.map_err(Into::into)

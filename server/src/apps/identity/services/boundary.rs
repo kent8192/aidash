@@ -9,6 +9,7 @@ use crate::{
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::federation::protocol::compatible;
 use async_trait::async_trait;
 use http::Method;
@@ -178,10 +179,14 @@ impl Middleware for AccessBoundary {
 				// A decision locks the registration's identity for update in its own
 				// transaction, while the Deployment Administrator lease below holds a shared lock on
 				// the Deployment Administrator's identity: deciding one's own request could never finish.
-				let lease = runtime.store.orm_connection()?;
-				if DashboardRegistrationRequest::identity_of(&mut lease.handle(), registration)
-					.await? == Some(origin.identity_id)
-				{
+				let identity = runtime
+					.store
+					.pool
+					.atomic(&TenancyScope::NoTenant, async |tx| {
+						DashboardRegistrationRequest::identity_of(tx, registration).await
+					})
+					.await?;
+				if identity == Some(origin.identity_id) {
 					return Err(Error::Forbidden);
 				}
 			}
@@ -192,7 +197,8 @@ impl Middleware for AccessBoundary {
 					&& request.method != Method::OPTIONS
 					&& let Some(origin) = browser
 				{
-					let mut lease = crate::database::native::begin(&runtime.store.pool).await?;
+					// Deployment Administrator grants are Deployment-wide.
+					let mut lease = runtime.store.pool.begin(&TenancyScope::NoTenant).await?;
 					origin
 						.require_deployment_administrator(&mut lease, true)
 						.await?;

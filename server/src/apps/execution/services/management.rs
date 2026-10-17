@@ -12,6 +12,7 @@ use crate::{
 	federation::Federation,
 	registry::Search,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::provider::progress::MARKER_PREFIX;
 use futures_util::StreamExt;
 use http::HeaderMap;
@@ -30,7 +31,22 @@ use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
+use crate::apps::execution::repositories::research::Revocations;
+use crate::apps::execution::serializers::research::{
+	HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
+};
+use crate::apps::identity::repositories::retention::TenantRetention;
 use crate::apps::identity::services::http_auth::scoped;
+
+/// The dashboard identity of a Deployment Administrator acting in a browser.
+fn administrator(
+	actor: &Actor,
+	browser: Option<crate::dashboard_auth::BrowserOrigin>,
+) -> Option<Uuid> {
+	matches!(actor, Actor::DeploymentAdministrator)
+		.then(|| browser.map(|origin| origin.identity_id))
+		.flatten()
+}
 
 #[derive(Clone)]
 pub struct HarnessManagement {
@@ -38,6 +54,11 @@ pub struct HarnessManagement {
 	event_streams: crate::sse::Service,
 	catalog: std::sync::Arc<dyn aidash_application::ports::ModelCatalog>,
 }
+/// A Deployment Administrator's reads across Tenants.
+fn listing() -> TenancyScope {
+	TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList)
+}
+
 #[injectable(scope = "request")]
 pub async fn provide(
 	#[inject] runtime: Federation,
@@ -80,7 +101,7 @@ impl HarnessManagement {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.bind(before)
-			.fetch_all(&f.store.pool)
+			.fetch_all(f.store.pool.in_scope(&listing()))
 			.await?;
 			if batch.is_empty() {
 				break;
@@ -89,7 +110,7 @@ impl HarnessManagement {
 			let exhausted = batch.len() < 500;
 			events.extend(
 				crate::authorization::remote::deployment_administrator::filter_events(
-					&mut crate::database::native::begin(&f.store.pool).await?,
+					&mut f.store.pool.begin(&listing()).await?,
 					batch,
 				)
 				.await?,
@@ -123,7 +144,7 @@ impl HarnessManagement {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let conversations: Vec<Conversation> = crate::database::query_as(
 			&reinhardt::query::Query::select()
@@ -148,7 +169,7 @@ impl HarnessManagement {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let artifacts: Vec<Artifact> = crate::database::query_as(
 			&reinhardt::query::Query::select()
@@ -173,13 +194,13 @@ impl HarnessManagement {
 				.limit(500)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.in_scope(&listing()))
 		.await?;
 		let mut state = StateResponse {
 			access: AccessProfile::DeploymentAdministrator,
 			node: f.config.identity(vec![]),
 			registry: records,
-			workspaces: f.store.workspaces().await?,
+			workspaces: f.store.workspaces(&listing()).await?,
 			tasks: crate::database::query_as(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::ColumnRef::Asterisk)
@@ -203,7 +224,7 @@ impl HarnessManagement {
 					.limit(500)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_all(&f.store.pool)
+			.fetch_all(f.store.pool.in_scope(&listing()))
 			.await?,
 			runs: crate::database::query_as::<crate::domain::run_state::RawRun>(
 				&reinhardt::query::Query::select()
@@ -224,7 +245,7 @@ impl HarnessManagement {
 					.limit(500)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_all(&f.store.pool)
+			.fetch_all(f.store.pool.in_scope(&listing()))
 			.await?
 			.into_iter()
 			.map(crate::domain::run_state::RawRun::inspect)
@@ -236,7 +257,7 @@ impl HarnessManagement {
 			artifacts,
 		};
 		crate::authorization::remote::deployment_administrator::filter_state(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&listing()).await?,
 			&mut state,
 		)
 		.await?;
@@ -270,13 +291,14 @@ impl HarnessManagement {
 			details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 			return Ok(details);
 		}
-		let run = f.store.inspect_run(id).await?;
+		let scope = f.store.run_tenancy(id).await?;
+		let run = f.store.inspect_run(&scope, id).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			run.workspace_id,
 		)
 		.await?;
-		let mut details = f.store.run_details(id, page.offset).await?;
+		let mut details = f.store.run_details(&scope, id, page.offset).await?;
 		details.media_input_routes = f.run_media_input_routes(&details.run).await?;
 		Ok(details)
 	}
@@ -293,12 +315,115 @@ impl HarnessManagement {
 			federation: &f,
 			actor: &actor,
 		};
-		let store = crate::research::evidence_store(f.store.clone());
+		let scope = match &actor {
+			Actor::Subject(identity) => identity.tenancy()?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(run).await?,
+		};
+		let store = crate::research::evidence_store(f.store.clone(), scope);
 		Ok(
 			aidash_application::research::reading::read(&readers, &store, run, reference)
 				.await?
 				.into(),
 		)
+	}
+	/// Revoke all of one Run's Research evidence (ADR 0046).
+	pub(crate) async fn research_revocation(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		run: Uuid,
+		input: RevocationInput,
+	) -> Result<RevocationRecord> {
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor: &actor,
+			administrator: administrator(&actor, browser),
+		};
+		Ok(aidash_application::research::revocation::revoke(
+			&revocations,
+			run,
+			&input.reason,
+			chrono::Utc::now(),
+		)
+		.await?
+		.into())
+	}
+	/// One Tenant's Evidence Revocation records, newest first.
+	pub(crate) async fn research_revocations(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+		page: HistoryPage,
+	) -> Result<Vec<RevocationRecord>> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor: &actor,
+			administrator: administrator(&actor, browser),
+		};
+		Ok(aidash_application::research::revocation::records(
+			&revocations,
+			&tenant,
+			page.offset,
+			page.limit,
+		)
+		.await?
+		.into_iter()
+		.map(Into::into)
+		.collect())
+	}
+	/// The Retention Rules that apply to one Tenant (ADR 0045).
+	pub(crate) async fn retention(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+	) -> Result<aidash_application::retention::TenantRetention> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let repository = self.retention_repository(&actor, browser)?;
+		Ok(aidash_application::retention::rules(&repository, &tenant).await?)
+	}
+	/// Store or clear one Tenant's own, shorter periods.
+	pub(crate) async fn retention_update(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+		input: RetentionInput,
+	) -> Result<aidash_application::retention::TenantRetention> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let repository = self.retention_repository(&actor, browser)?;
+		Ok(aidash_application::retention::update(&repository, &tenant, input.rules).await?)
+	}
+	/// The history of one Tenant's periods, newest first.
+	pub(crate) async fn retention_history(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+		page: HistoryPage,
+	) -> Result<Vec<aidash_domain::retention::RetentionChange>> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let repository = self.retention_repository(&actor, browser)?;
+		Ok(
+			aidash_application::retention::history(&repository, &tenant, page.offset, page.limit)
+				.await?,
+		)
+	}
+	fn retention_repository<'a>(
+		&'a self,
+		actor: &'a Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+	) -> Result<TenantRetention<'a>> {
+		Ok(TenantRetention {
+			store: &self.runtime.store,
+			actor,
+			administrator: administrator(actor, browser),
+			deployment: self.runtime.store.research_retention,
+		})
 	}
 	pub(crate) async fn run_control(
 		&self,
@@ -317,13 +442,14 @@ impl HarnessManagement {
 		if let Actor::Subject(identity) = actor {
 			return execution::control(&f, &identity, id, input.action).await;
 		}
-		let existing = f.store.inspect_run(id).await?;
+		let scope = f.store.run_tenancy(id).await?;
+		let existing = f.store.inspect_run(&scope, id).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			existing.workspace_id,
 		)
 		.await?;
-		let r = f.store.control(id, input.action).await?;
+		let r = f.store.control(&scope, id, input.action).await?;
 		f.notify.notify_waiters();
 		Ok(r)
 	}
@@ -375,7 +501,7 @@ impl HarnessManagement {
 		}
 		let mut cursor = q.after.max(0);
 		let mut visible = Vec::new();
-		let mut connection = crate::database::native::begin(&f.store.pool).await?;
+		let mut connection = f.store.pool.begin(&listing()).await?;
 		if let Some(workspace) = q.workspace_id
 			&& !crate::authorization::remote::deployment_administrator::visible(
 				&mut connection,
@@ -390,7 +516,10 @@ impl HarnessManagement {
 			return Ok(response);
 		}
 		loop {
-			let page = f.store.events(cursor, q.workspace_id, 500).await?;
+			let page = f
+				.store
+				.events(&listing(), cursor, q.workspace_id, 500)
+				.await?;
 			let exhausted = page.len() < 500;
 			if let Some(last) = page.last() {
 				cursor = last.sequence;
@@ -485,7 +614,7 @@ impl HarnessManagement {
 				.expr(Expr::cust("1"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.in_scope(&TenancyScope::NoTenant))
 		.await?;
 		Ok(json!({"status":"ok","node_id":f.config.node_id}))
 	}
@@ -612,6 +741,55 @@ impl HarnessManagement {
 		lease.finish(result).await?;
 		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
+	}
+	/// A Run's research usage, limits and estimated cost, for a reader who
+	/// may read that Run now, decided exactly as [`Self::run_get`] decides it.
+	pub(crate) async fn run_research(
+		&self,
+		actor: Actor,
+		id: Uuid,
+	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
+		let f = self.runtime.clone();
+		let scope = match &actor {
+			Actor::Subject(identity) => identity.tenancy()?,
+			Actor::DeploymentAdministrator => f.store.run_tenancy(id).await?,
+		};
+		let readable = || async {
+			if let Actor::Subject(identity) = &actor {
+				execution::details_page(&f, identity, id, 0).await?;
+			} else {
+				let run = f.store.inspect_run(&scope, id).await?;
+				crate::authorization::remote::deployment_administrator::require(
+					&mut f.store.pool.begin(&scope).await?,
+					run.workspace_id,
+				)
+				.await?;
+			}
+			Ok::<_, crate::Error>(())
+		};
+		readable().await?;
+		let research = crate::apps::execution::repositories::research::run_research(
+			&f.store,
+			&scope,
+			id,
+			crate::research::providers().limits,
+		)
+		.await?;
+		// The research reads are separate transactions: authority revoked
+		// meanwhile withholds them, as for a cited fragment.
+		readable().await?;
+		Ok(research)
+	}
+	/// The Research providers of this Deployment for a Tenant's subject.
+	pub(crate) async fn research_providers(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
+		crate::apps::execution::capabilities::services::endpoints::research_providers(
+			self.runtime.clone(),
+			actor,
+		)
+		.await
 	}
 }
 

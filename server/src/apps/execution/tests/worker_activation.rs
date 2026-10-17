@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
@@ -205,7 +207,7 @@ async fn complete(f: &Federation, id: Uuid) {
 	let start = Instant::now();
 
 	loop {
-		let run = f.store.run(id).await.unwrap();
+		let run = f.store.run(&TEST_FIXTURE, id).await.unwrap();
 		if run.phase().as_str() == "COMPLETED" {
 			break;
 		}
@@ -534,7 +536,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	tokio::time::sleep(Duration::from_millis(150)).await;
 	let run = admit(&f, &token, task).await;
 	let original = count(&f, "TRUE").await;
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	aidash_server::database::native::query(
 		&Query::update()
 			.table(a("runs"))
@@ -560,7 +562,15 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	assert!(within >= original + 2);
 	tx.rollback().await.unwrap();
 	assert_eq!(count(&f, "TRUE").await, original);
-	assert_eq!(f.store.run(run).await.unwrap().control.as_str(), "ACTIVE");
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
+		"ACTIVE"
+	);
 	// Rollback preserved both state and scheduling; a committed future wait
 	// now has an independent deadline and must not be claimed early.
 	sqlx::query(
@@ -585,7 +595,14 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	.unwrap();
 	std::fs::remove_file(&pause).unwrap();
 	tokio::time::sleep(Duration::from_millis(1200)).await;
-	assert!(f.store.run(run).await.unwrap().lease_owner.is_none());
+	assert!(
+		f.store
+			.run(&TEST_FIXTURE, run)
+			.await
+			.unwrap()
+			.lease_owner
+			.is_none()
+	);
 	assert!(count(&f, "state = 'deferred' AND due_at > CURRENT_TIMESTAMP").await > 0);
 	complete(&f, run).await;
 	assert_eq!(count(&f, "claim_source = 'recovery'").await, 0);
@@ -661,7 +678,12 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	}
 	assert_eq!(calls.load(Ordering::SeqCst), before);
 	assert_eq!(
-		f.store.run(run).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	// New accepted input during inference is deferred by another free worker,
@@ -687,11 +709,18 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 		1,
 	)
 	.await;
-	assert_eq!(f.store.run(active).await.unwrap().observed_input_seq, 0);
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, active)
+			.await
+			.unwrap()
+			.observed_input_seq,
+		0
+	);
 	blocked.store(false, Ordering::SeqCst);
 	permits.add_permits(1);
 	complete(&f, active).await;
-	let finished = f.store.run(active).await.unwrap();
+	let finished = f.store.run(&TEST_FIXTURE, active).await.unwrap();
 	let seq: i64 = sqlx::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("MAX(seq)"))
@@ -861,7 +890,14 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 		1,
 	)
 	.await;
-	assert!(f.store.run(fourth).await.unwrap().lease_owner.is_none());
+	assert!(
+		f.store
+			.run(&TEST_FIXTURE, fourth)
+			.await
+			.unwrap()
+			.lease_owner
+			.is_none()
+	);
 	// Let the failed publisher finish before opening the consumer slots.
 	tokio::time::sleep(Duration::from_secs(1)).await;
 	std::fs::remove_file(&pause).unwrap();
@@ -909,7 +945,14 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 		);
 		tokio::time::sleep(Duration::from_millis(25)).await;
 	}
-	assert!(f.store.run(fifth).await.unwrap().lease_owner.is_none());
+	assert!(
+		f.store
+			.run(&TEST_FIXTURE, fifth)
+			.await
+			.unwrap()
+			.lease_owner
+			.is_none()
+	);
 	restored.context.update_stream(baseline).await.unwrap();
 	std::fs::remove_file(&pause).unwrap();
 	complete(&f, fifth).await;
@@ -973,7 +1016,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	std::fs::write(&barrier, b"crash checkpoint").unwrap();
 	let id = admit(&f, &token, task).await;
 	wait_count(&f, "state = 'claimed'", 1).await;
-	let leased = f.store.run(id).await.unwrap();
+	let leased = f.store.run(&TEST_FIXTURE, id).await.unwrap();
 	let owner = leased.lease_owner.unwrap();
 	let stream = broker
 		.context
@@ -996,7 +1039,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	replacement.ready().await;
 	// Keep the real lease duration. No SQL timestamp shortening hides early takeover.
 	loop {
-		let current = f.store.run(id).await.unwrap();
+		let current = f.store.run(&TEST_FIXTURE, id).await.unwrap();
 		let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
@@ -1378,7 +1421,7 @@ async fn child_runtime(
 			api_token: "fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			default_host_packages: vec![],
+			tenancy: Default::default(),
 			oidc: None,
 			gcip: None,
 		},

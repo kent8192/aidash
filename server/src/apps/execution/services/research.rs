@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
-/// Path of the Search account holder's Brave account profile (JSON).
+/// Path of the Research account holder's Brave account profile (JSON).
 pub const BRAVE_PROFILE_ENV: &str = "AIDASH_RESEARCH_BRAVE_PROFILE";
 /// `enabled` admits the public page reading provider.
 pub const PAGE_READING_ENV: &str = "AIDASH_RESEARCH_PAGE_READING";
@@ -78,6 +78,43 @@ impl Providers {
 			}
 			"research.page@1" | "research.fixture@1" => Ok(()),
 			_ => Err(unavailable("is not a research provider")),
+		}
+	}
+
+	/// Every Research provider this Deployment knows, its operations and
+	/// whether it is set up now. Account terms are checked on every call, so
+	/// terms that lapsed after startup read as not set up. A Tenant's approved
+	/// definitions are the caller's to fill in; why a provider is not set up
+	/// is never said.
+	pub fn availability(&self) -> crate::apps::execution::serializers::runs::ResearchProviders {
+		use crate::apps::execution::serializers::runs::{
+			ResearchProvider, ResearchProviderOperation, ResearchProviders,
+		};
+		let set_up = |provider: &str| match provider {
+			"research.brave@1" => self
+				.brave
+				.as_ref()
+				.is_ok_and(|brave| brave.account().is_ok()),
+			"research.page@1" => self.pages.is_some(),
+			"research.fixture@1" => self.fixture.is_some(),
+			_ => false,
+		};
+		ResearchProviders {
+			providers: aidash_domain::tool::providers::RESEARCH_PROVIDERS
+				.iter()
+				.map(|(provider, operations, _)| ResearchProvider {
+					provider: (*provider).into(),
+					set_up: set_up(provider),
+					operations: operations
+						.iter()
+						.map(|operation| ResearchProviderOperation {
+							operation: (*operation).into(),
+							approved_definitions: vec![],
+						})
+						.collect(),
+				})
+				.collect(),
+			limits: self.limits.into(),
 		}
 	}
 
@@ -137,8 +174,9 @@ fn brave_from_env() -> std::result::Result<Arc<BraveSearch>, String> {
 /// The Node's Research evidence store over `store`.
 pub fn evidence_store(
 	store: crate::store::Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::research::EvidenceStore {
-	crate::apps::execution::repositories::research::Evidence { store }
+	crate::apps::execution::repositories::research::Evidence { store, scope }
 }
 
 /// The Node's research providers. Configuration changes need a restart.
@@ -186,6 +224,10 @@ impl DisclosureGate for Gate<'_> {
 			destination: disclosure.outbound.destination.clone(),
 			content: disclosure.outbound.content.clone(),
 			context_revision: disclosure.context_revision,
+			// The authority places the approval in the Run's Working Area.
+			area: None,
+			attribution: disclosure.attribution.clone(),
+			query: disclosure.query.clone(),
 		};
 		authority
 			.web_disclosure(&self.context.store, &self.context.run, &request)
@@ -218,6 +260,7 @@ impl Tool for ResearchTool {
 		let providers = providers();
 		let store = crate::apps::execution::repositories::research::Evidence {
 			store: context.store.clone(),
+			scope: context.scope.clone(),
 		};
 		let gate = Gate { context };
 		let research = Research {
@@ -248,4 +291,11 @@ impl Tool for ResearchTool {
 		};
 		result.map_err(Into::into)
 	}
+}
+
+/// One Research evidence retention pass in Deployment Scope, as the hourly
+/// retention loop runs it under the configured Deployment periods.
+pub async fn sweep_retention(store: &crate::store::Store) -> crate::Result<u64> {
+	use crate::apps::execution::repositories::research::retention;
+	Ok(retention::sweep(store, &store.research_retention).await?)
 }

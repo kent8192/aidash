@@ -6,6 +6,7 @@ use crate::{
 	federation::Federation,
 	transactions::gate::ReadLease,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use futures_util::{Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, Method};
 use std::{
@@ -267,7 +268,15 @@ impl Watch<Event> for Context {
 							.map_err(|_| Closed::Authority)?
 							.then(|| event.cloud_event().to_string()),
 						None => {
-							let mut connection = crate::database::native::begin(&self.f.store.pool)
+							// The Deployment Administrator's stream observes every Tenant's events.
+							let scope = aidash_application::tenancy::TenancyScope::Deployment(
+								aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+							);
+							let mut connection = self
+								.f
+								.store
+								.pool
+								.begin(&scope)
 								.await
 								.map_err(|_| Closed::Database)?;
 							crate::authorization::remote::deployment_administrator::event_visible(
@@ -323,6 +332,16 @@ impl Service {
 		} = request;
 		// Register before validation/high-water lookup/initial read.
 		let observation = self.register(workspace);
+		// The initial cursor reads the actor's events: the Deployment Administrator's stream
+		// observes every Tenant's.
+		let tenancy = match &actor {
+			Actor::DeploymentAdministrator => {
+				aidash_application::tenancy::TenancyScope::Deployment(
+					aidash_application::tenancy::DeploymentScopeReason::DeploymentAdministratorList,
+				)
+			}
+			Actor::Subject(identity) => identity.tenancy()?,
+		};
 		let scope = match actor {
 			Actor::DeploymentAdministrator => None,
 			Actor::Subject(identity) => Some(Workspaces {
@@ -348,7 +367,7 @@ impl Service {
 					.from(reinhardt::query::Alias::new("events"))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.scalar_one(&context.f.store.pool)
+			.scalar_one(context.f.store.pool.in_scope(&tenancy))
 			.await?;
 		}
 		let control = Arc::new(Control::new(lease));
@@ -491,7 +510,13 @@ async fn read(
 			let events = context
 				.f
 				.store
-				.events(cursor, context.workspace, 100)
+				.events(
+					// A Deployment Administrator's stream spans Tenants.
+					&TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList),
+					cursor,
+					context.workspace,
+					100,
+				)
 				.await?;
 			let scanned = events.last().map_or(cursor, |event| event.sequence);
 			let more = events.len() == 100;

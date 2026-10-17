@@ -59,8 +59,20 @@ worker_count = 4
 # Worker probe listeners are disabled unless this address is configured.
 # probe_listen = "127.0.0.1:8081"
 background_enabled = true
-# Stage these Host groups for new tenants; approval and activation remain explicit.
-default_host_packages = []
+
+# Tenancy Rules: how Tenants come to exist and how people join them. These are
+# the Self-hosted defaults. Identities of a GCIP Tenant with a Tenant Binding
+# are never covered.
+[tenancy]
+# Create a Personal Tenant for each External Identity at its first sign-in.
+personal_tenants = false
+# Let signed-in External Identities create Tenants. Deployment Administrators
+# always can, without limits.
+tenant_creation = false
+creation_per_hour = 5
+creation_total = 20
+# Let Tenant Administrators and Deployment Administrators issue Invitations.
+invitations = true
 
 # Omit this table to disable dashboard OIDC.
 # [dashboard.oidc]
@@ -110,6 +122,23 @@ enabled = false
 # issuer = "aidash-worker"
 # audience = "develop"
 # kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"
+
+# Sign in with ChatGPT Plan Connections (#159): subjects run agents on their
+# own ChatGPT plan allowance. Off by default. Turning it on means this host
+# stores Plan Tokens it can read, so it needs the PostgreSQL Provider
+# Credential Store above; a server with a Secret Manager Store, or none,
+# refuses to start with it on. Turning it off later keeps each owner's status
+# and disconnect, and stops new connections, model lists and plan Runs.
+# [plan_connections]
+# enabled = true
+
+# How long Research Document snapshot contents are retained (ADR 0045), in
+# seconds: after their Run ends and after their retrieval. Unset periods keep
+# the defaults (one day and seven days); at most ten years. A Tenant's own
+# rules may shorten them. Takes effect on restart.
+# [research_retention]
+# snapshot_after_run_seconds = 86400
+# snapshot_max_age_seconds = 604800
 
 # Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
 # keys this node creates only Legacy Runs. Rotate by adding a key version and

@@ -44,7 +44,7 @@ impl CoreToolCatalog for Contracts {
 
 #[test]
 fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
-	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let entries = entries(&validation, NODE).unwrap();
 	assert_eq!(
 		entries.len(),

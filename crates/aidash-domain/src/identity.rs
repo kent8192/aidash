@@ -8,6 +8,8 @@ pub enum Principal {
 
 pub mod catalog;
 
+pub mod credentials;
+
 pub mod execution;
 
 pub mod authority;
@@ -18,8 +20,8 @@ pub mod peer_mapping;
 
 pub mod dashboard;
 
-pub mod personal_tenant;
-
 pub mod desktop;
+
+pub mod tenancy;
 
 pub mod tenant_administration;

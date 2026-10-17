@@ -2,7 +2,7 @@
 //! package: it validates input, enforces Run limits, waits for Web disclosure
 //! approval, attributes cost, records Research evidence and bounds results.
 use crate::{
-	Result,
+	Error, Result,
 	ports::research::{
 		Budget, DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider,
 		Reservation, Reserved, SearchProvider, WebDisclosure,
@@ -30,6 +30,12 @@ pub mod reading;
 
 /// Instruction returned with a pending Web disclosure approval.
 pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision; after approval, repeat this exact call.";
+/// Instruction returned with the pages of a retained document that carry no
+/// text while no research operation can show them as images.
+pub const NO_VIEW_INSTRUCTION: &str = "These pages carry no text, and no research operation can view them as images yet, so their contents cannot be read.";
+/// Instruction returned when those pages cannot be viewed.
+pub const NOT_RETAINED_INSTRUCTION: &str =
+	"These pages carry no text, and the document is not retained, so they cannot be viewed.";
 
 /// The Agent-facing definition of a research operation, identical for every
 /// provider package so that providers can replace each other.
@@ -90,6 +96,13 @@ pub struct Call<'a> {
 	pub disclosure_approval: bool,
 }
 
+/// What an approver is shown besides the exact outbound content.
+#[derive(Debug, Default)]
+struct Card {
+	attribution: Option<aidash_domain::research::account::CostAttribution>,
+	query: Option<Value>,
+}
+
 pub struct Research<'a> {
 	pub store: &'a dyn EvidenceStore,
 	pub gate: &'a dyn DisclosureGate,
@@ -125,6 +138,9 @@ impl Research<'_> {
 		input: &Value,
 	) -> Result<Value> {
 		let operation = Operation::Search;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
 		let Ok(query) = SearchQuery::parse(input, None) else {
 			return Ok(failure(operation, Failure::InvalidInput));
 		};
@@ -155,7 +171,11 @@ impl Research<'_> {
 			Ok(outbound) => outbound,
 			Err(error) => return Ok(failure(operation, error)),
 		};
-		let approval = match self.disclose(call, operation, &outbound).await? {
+		let card = Card {
+			attribution: account.as_ref().map(|account| account.attribution()),
+			query: Some(query.effective()),
+		};
+		let approval = match self.disclose(call, operation, &outbound, card).await? {
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
@@ -192,10 +212,22 @@ impl Research<'_> {
 		};
 		let mut page = query.normalize(results);
 		// The store keeps the Run within its Source record limit under its lock.
-		let records = self
+		let records = match self
 			.store
 			.record_sources(call.run, call.key, &page.sources, self.limits.sources)
-			.await?;
+			.await?
+		{
+			Ok(records) => records,
+			// Revoked while the provider answered: nothing is recorded, and the
+			// attempt stays charged.
+			Err(refused) => {
+				let result = failure(operation, refused);
+				return self
+					.store
+					.settle(call.run, call.key, AttemptOutcome::Completed, &result)
+					.await;
+			}
+		};
 		if records.len() < page.sources.len() {
 			page.sources.truncate(records.len());
 			page.truncated = true;
@@ -243,8 +275,7 @@ impl Research<'_> {
 		};
 		self.store
 			.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-			.await?;
-		Ok(result)
+			.await
 	}
 
 	pub async fn fetch(
@@ -254,6 +285,9 @@ impl Research<'_> {
 		input: &Value,
 	) -> Result<Value> {
 		let operation = Operation::Fetch;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
 		let Ok(input) = serde_json::from_value::<FetchInput>(input.clone()) else {
 			return Ok(failure(operation, Failure::InvalidInput));
 		};
@@ -274,6 +308,9 @@ impl Research<'_> {
 			let Some(snapshot) = self.store.snapshot(call.run, document).await? else {
 				return Ok(failure(operation, Failure::UnknownDocument));
 			};
+			if let Err(purged) = snapshot.readable() {
+				return Ok(failure(operation, purged));
+			}
 			let position = match input.cursor.as_deref().map(|cursor| {
 				Cursor::decode(cursor)?.check(snapshot.id, &snapshot.text_digest, operation, None)
 			}) {
@@ -317,7 +354,10 @@ impl Research<'_> {
 			destination: host,
 			content: url.to_string(),
 		};
-		let approval = match self.disclose(call, operation, &outbound).await? {
+		let approval = match self
+			.disclose(call, operation, &outbound, Card::default())
+			.await?
+		{
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
@@ -354,7 +394,9 @@ impl Research<'_> {
 			Ok(page) => page,
 			Err(error) => return self.settle_failure(call, operation, error, true).await,
 		};
-		if page.validate().is_err() {
+		// The maximum age counts from `fetched_at`, so a provider must not
+		// date a page after its own retrieval.
+		if page.validate().is_err() || page.fetched_at > Utc::now() {
 			return self
 				.settle_failure(call, operation, Failure::ProviderResponseInvalid, true)
 				.await;
@@ -368,10 +410,10 @@ impl Research<'_> {
 			Ok(snapshot) => snapshot,
 			Err(limit) => {
 				let result = failure(operation, limit);
-				self.store
+				return self
+					.store
 					.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-					.await?;
-				return Ok(result);
+					.await;
 			}
 		};
 		let result = self
@@ -379,14 +421,16 @@ impl Research<'_> {
 			.await?;
 		self.store
 			.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-			.await?;
-		Ok(result)
+			.await
 	}
 
 	/// Locate passages of a retained snapshot. Every match is delivered as an
 	/// Evidence fragment; nothing leaves the Node.
 	pub async fn find(&self, call: &Call<'_>, input: &Value) -> Result<Value> {
 		let operation = Operation::Find;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
 		let Ok(input) = serde_json::from_value::<FindInput>(input.clone()) else {
 			return Ok(failure(operation, Failure::InvalidInput));
 		};
@@ -400,6 +444,9 @@ impl Research<'_> {
 		let Some(snapshot) = self.store.snapshot(call.run, input.document_id).await? else {
 			return Ok(failure(operation, Failure::UnknownDocument));
 		};
+		if let Err(purged) = snapshot.readable() {
+			return Ok(failure(operation, purged));
+		}
 		let binding = document::find_binding(&input.query, input.case_sensitive);
 		let start = match input.cursor.as_deref().map(|cursor| {
 			Cursor::decode(cursor)?.check(
@@ -442,10 +489,14 @@ impl Research<'_> {
 				next = Some(index);
 				break;
 			}
-			let fragment = self
+			let fragment = match self
 				.store
 				.record_fragment(call.run, &snapshot, &passage)
-				.await?;
+				.await?
+			{
+				Ok(fragment) => fragment,
+				Err(refused) => return Ok(failure(operation, refused)),
+			};
 			matches.push(fragment.delivered(&snapshot));
 		}
 		let cursor = next.map(|line| {
@@ -481,6 +532,10 @@ impl Research<'_> {
 		max_bytes: usize,
 	) -> Result<Value> {
 		let operation = Operation::Fetch;
+		if snapshot.lines.is_empty() {
+			// Every page of the document carries no text: nothing is delivered.
+			return Ok(textless_result(snapshot));
+		}
 		let mut budget = max_bytes;
 		let (delivery, fragment) = loop {
 			let Ok(delivery) = document::deliver(&snapshot.lines, position, budget) else {
@@ -492,10 +547,14 @@ impl Research<'_> {
 				delivery.next,
 			);
 			if probe.to_string().len() <= MAX_RESULT_BYTES {
-				let fragment = self
+				let fragment = match self
 					.store
 					.record_fragment(call.run, snapshot, &delivery.passage)
-					.await?;
+					.await?
+				{
+					Ok(fragment) => fragment,
+					Err(refused) => return Ok(failure(operation, refused)),
+				};
 				break (delivery, fragment);
 			}
 			if budget <= 1 {
@@ -510,10 +569,41 @@ impl Research<'_> {
 		))
 	}
 
+	/// A Run whose evidence was revoked does no further research (ADR 0046).
+	async fn revoked(&self, call: &Call<'_>, operation: Operation) -> Result<Option<Value>> {
+		Ok(self
+			.store
+			.revoked(call.run)
+			.await?
+			.then(|| failure(operation, Failure::EvidenceRevoked)))
+	}
+
 	async fn replay(&self, call: &Call<'_>, operation: Operation) -> Result<Option<Value>> {
 		Ok(match self.store.attempt(call.run, call.key).await? {
 			None => None,
-			Some(AttemptState::Dispatched) => Some(failure(operation, Failure::OutcomeUnknown)),
+			// The step that reserved it stopped before settling it, so the
+			// provider may have performed it. Settle it as unknown, so the
+			// Run's usage reports it as such rather than as still in flight.
+			Some(AttemptState::Dispatched) => {
+				let result = failure(operation, Failure::OutcomeUnknown);
+				match self
+					.store
+					.settle(call.run, call.key, AttemptOutcome::Unknown, &result)
+					.await
+				{
+					// The tombstone instead when the Run was revoked meanwhile.
+					Ok(recorded) => Some(recorded),
+					// A late settlement or a concurrent replay came first:
+					// answer with what it recorded.
+					Err(Error::Conflict(_)) => {
+						match self.store.attempt(call.run, call.key).await? {
+							Some(AttemptState::Settled { result, .. }) => Some(result),
+							_ => Some(result),
+						}
+					}
+					Err(error) => return Err(error),
+				}
+			}
 			Some(AttemptState::Settled { result, .. }) => Some(result),
 		})
 	}
@@ -525,6 +615,7 @@ impl Research<'_> {
 		call: &Call<'_>,
 		operation: Operation,
 		outbound: &Outbound,
+		card: Card,
 	) -> Result<std::result::Result<Option<Uuid>, Value>> {
 		if !call.disclosure_approval {
 			return Ok(Ok(None));
@@ -534,6 +625,8 @@ impl Research<'_> {
 			provider: call.provider.into(),
 			outbound: outbound.clone(),
 			context_revision: call.context_revision,
+			attribution: card.attribution,
+			query: card.query,
 		};
 		Ok(match self.gate.admit(call.run, &disclosure).await? {
 			DisclosureState::Permitted => Ok(None),
@@ -542,6 +635,9 @@ impl Research<'_> {
 				approval_id,
 				expires_at,
 			} => Err(json!({
+				// It carries the disclosed content, so a revocation redacts it
+				// like every other research result.
+				"contract": aidash_domain::research::RESULT_CONTRACT,
 				"version": 1,
 				"operation": operation.as_str(),
 				"status": "approval_required",
@@ -555,6 +651,7 @@ impl Research<'_> {
 				},
 			})),
 			DisclosureState::Denied => Err(failure(operation, Failure::DisclosureDenied)),
+			DisclosureState::Revoked => Err(failure(operation, Failure::EvidenceRevoked)),
 		})
 	}
 
@@ -593,6 +690,7 @@ impl Research<'_> {
 			Reserved::SourceLimit => Err(failure(operation, Failure::SourceLimit)),
 			Reserved::SnapshotLimit => Err(failure(operation, Failure::SnapshotLimit)),
 			Reserved::BudgetExhausted => Err(failure(operation, Failure::BudgetExhausted)),
+			Reserved::Revoked => Err(failure(operation, Failure::EvidenceRevoked)),
 		})
 	}
 
@@ -615,8 +713,7 @@ impl Research<'_> {
 		};
 		self.store
 			.settle(call.run, call.key, outcome, &result)
-			.await?;
-		Ok(result)
+			.await
 	}
 }
 
@@ -645,11 +742,60 @@ fn fetch_result(snapshot: &DocumentSnapshot, mut fragment: Value, next: Option<P
 	fragment["requested_url"] = json!(snapshot.requested_url);
 	fragment["media_type"] = json!(snapshot.media_type);
 	fragment["next_cursor"] = json!(cursor);
+	if let Some(count) = snapshot.page_count {
+		fragment["page_count"] = json!(count);
+	}
+	if let Some(pages) = pages_without_text(snapshot) {
+		fragment["pages_without_text"] = pages;
+	}
 	envelope(
 		Operation::Fetch,
 		if partial { "partial" } else { "ok" },
 		fragment,
 		partial,
+	)
+}
+
+/// The pages of a snapshot that carry no text, and why their images cannot be
+/// viewed (ADR 0053). The original is retained for the `view` operation, which
+/// no research contract binds yet (#312), so a retained original is not yet
+/// reported `available` either.
+fn pages_without_text(snapshot: &DocumentSnapshot) -> Option<Value> {
+	if snapshot.pages_without_text.is_empty() {
+		return None;
+	}
+	let retained = snapshot.purged.is_none()
+		&& snapshot
+			.original
+			.as_ref()
+			.is_some_and(|original| original.retained);
+	Some(json!({
+		"pages": snapshot.pages_without_text,
+		"page_images": if retained { "no_view_operation" } else { "original_not_retained" },
+		"instruction": if retained { NO_VIEW_INSTRUCTION } else { NOT_RETAINED_INSTRUCTION },
+	}))
+}
+
+/// The result of reading a document whose pages all carry no text.
+fn textless_result(snapshot: &DocumentSnapshot) -> Value {
+	envelope(
+		Operation::Fetch,
+		"empty",
+		json!({
+			"source_id": snapshot.source_id,
+			"document_id": snapshot.id,
+			"url": snapshot.url,
+			"requested_url": snapshot.requested_url,
+			"title": snapshot.title,
+			"media_type": snapshot.media_type,
+			"fetched_at": snapshot.fetched_at,
+			"text_digest": snapshot.text_digest,
+			"completeness": snapshot.completeness.as_str(),
+			"page_count": snapshot.page_count,
+			"pages_without_text": pages_without_text(snapshot),
+			"next_cursor": null,
+		}),
+		false,
 	)
 }
 
@@ -683,6 +829,9 @@ fn find_result(
 		probe_cursor.is_some(),
 	)
 }
+
+pub mod retention;
+pub mod revocation;
 
 #[cfg(test)]
 mod tests;

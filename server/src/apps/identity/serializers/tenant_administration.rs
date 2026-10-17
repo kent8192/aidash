@@ -10,6 +10,8 @@ use uuid::Uuid;
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct TenantAdministration {
 	pub(crate) tenant: String,
+	/// The Tenant label every member sees.
+	pub(crate) label: Option<String>,
 	pub(crate) actions: Vec<String>,
 	/// Empty unless the caller holds a Tenant Administrator action.
 	pub(crate) assignable_groups: BTreeSet<String>,
@@ -31,6 +33,10 @@ pub(crate) struct TenantRegistration {
 	pub(crate) identity: TenantIdentity,
 	pub(crate) created_at: DateTime<Utc>,
 	pub(crate) expires_at: DateTime<Utc>,
+	/// The Invitation the request was made with, if any.
+	pub(crate) invitation_id: Option<Uuid>,
+	/// The Assignable Groups that Invitation proposed; approval starts from them.
+	pub(crate) proposed_groups: BTreeSet<String>,
 }
 
 #[derive(Deserialize, JsonSchema, Validate)]

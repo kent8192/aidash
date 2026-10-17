@@ -1,4 +1,5 @@
 //! Private document admission and provider execution through native endpoints.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod endpoint;
 #[path = "../../execution/tests/support/execution.rs"]
@@ -10,6 +11,7 @@ mod native_database;
 #[path = "../../execution/tests/provider_fixtures.rs"]
 mod provider_fixtures;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::registry::models::AgentKnowledge;
 use aidash_server::{context, domain::NewTask, harness::Harness, knowledge, registry::Entry, tool};
 use endpoint::assert_json;
@@ -142,8 +144,8 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	cloned.binding_normalization = None;
 	let cloned = f.registry.register(cloned).await.unwrap();
 	assert_eq!(
-		knowledge::load(&f.registry.db, &cloned).await.unwrap(),
-		knowledge::load(&f.registry.db, &entry).await.unwrap()
+		knowledge::load(&f.registry, &cloned).await.unwrap(),
+		knowledge::load(&f.registry, &entry).await.unwrap()
 	);
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");
@@ -155,12 +157,13 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	);
 	let workspace = f
 		.store
-		.create_workspace("acme", "alice", "Personal", "Use documents")
+		.create_workspace(&TEST_FIXTURE, "Personal", "Use documents")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Read documents".into(),

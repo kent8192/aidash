@@ -12,7 +12,13 @@ pub(crate) struct SavepointProbe(Arc<Mutex<Vec<&'static str>>>);
 impl SavepointProbe {
 	/// A transaction whose statements reach this probe instead of a connection.
 	pub(crate) fn transaction(&self, pool: Pool) -> Transaction {
-		Transaction(Some(Box::new(self.clone())), pool, Default::default(), 0)
+		Transaction(
+			Some(Box::new(self.clone())),
+			pool,
+			Default::default(),
+			0,
+			None,
+		)
 	}
 	pub(crate) fn statements(&self) -> Vec<&'static str> {
 		self.0.lock().unwrap().clone()

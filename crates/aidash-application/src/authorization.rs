@@ -1,4 +1,5 @@
 //! Policy evaluation is shared by HTTP, worker, and recovery callers.
+use crate::tenancy::TenancyScope;
 use crate::{
 	Error, Result,
 	ports::{AuthorizationScope, AuthorizationStore},
@@ -30,7 +31,7 @@ impl Authorization {
 		actor: &str,
 	) -> Result<Snapshot> {
 		validate_replacement(tenant, expected_revision, &bundle, actor)?;
-		let mut transaction = self.store.begin().await?;
+		let mut transaction = self.store.begin(&TenancyScope::tenant(tenant)?).await?;
 		let revision = transaction
 			.replace(tenant, expected_revision, &bundle, actor)
 			.await?;
@@ -39,7 +40,7 @@ impl Authorization {
 	}
 
 	pub async fn evaluate(&self, tenant: &str, input: &Evaluation) -> Result<Decision> {
-		let mut transaction = self.store.begin().await?;
+		let mut transaction = self.store.begin(&TenancyScope::tenant(tenant)?).await?;
 		let decision = Self::evaluate_in(transaction.as_mut(), tenant, input).await?;
 		transaction.commit().await?;
 		Ok(decision)
@@ -64,8 +65,7 @@ impl Authorization {
 
 	pub async fn simulate(&self, tenant: &str, input: &Evaluation) -> Result<Decision> {
 		input.validate()?;
-		identifier(tenant)?;
-		let mut transaction = self.store.begin().await?;
+		let mut transaction = self.store.begin(&TenancyScope::tenant(tenant)?).await?;
 		let snapshot = transaction.load(tenant).await?;
 		let mut decision = snapshot.bundle.evaluate(input);
 		decision.revision = snapshot.revision;

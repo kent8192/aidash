@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::{bootstrap, cleanup, request};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -246,6 +248,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	);
 	let mut other_policy = common::policy(&f.config.node_id);
 	other_policy["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,
@@ -337,7 +340,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	);
 	let workspace_id = f
 		.store
-		.tasks(None)
+		.tasks(&TEST_FIXTURE, None)
 		.await
 		.unwrap()
 		.into_iter()
@@ -789,6 +792,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			 "resources":{"kinds":["workspace"],"ids":[final_id.to_string()]}}
 		]
 	});
+	common::tenant_root(&f, "sparse").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,

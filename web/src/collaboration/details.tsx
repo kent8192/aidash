@@ -59,6 +59,7 @@ import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
 import { resumableRun } from "./workspace-model";
+import { researchFailure } from "../research";
 import {
   runMediaAccept,
   validRunMediaAttachments,
@@ -746,6 +747,11 @@ function RunPanel({
             <h4 className="text-[11px] font-medium text-faint">
               {t("result")}
             </h4>
+            {researchFailure(call.result, locale === "ja-JP") && (
+              <Hint role="status">
+                {researchFailure(call.result, locale === "ja-JP")}
+              </Hint>
+            )}
             <JsonView value={call.result} />
           </Disclosure>
         ))}

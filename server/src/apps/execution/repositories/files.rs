@@ -265,6 +265,19 @@ impl FileScopePort for Scope<'_> {
 					)
 					.await?
 				}
+				Action::Verify => {
+					operations::prepare_kind(
+						store,
+						self.access,
+						run,
+						&mut native,
+						serde_json::from_value(input)
+							.map_err(|e| NativeError::Invalid(e.to_string()))?,
+						aidash_domain::capabilities::operations::VERIFICATION,
+						serde_json::json!({}),
+					)
+					.await?
+				}
 				Action::Control { kind, cancel } => {
 					operations::poll(
 						store,
@@ -494,7 +507,7 @@ impl FileScopePort for Scope<'_> {
 	async fn documents(&mut self, entry: &Entry) -> Result<Value> {
 		let store = self.store.ok_or_else(missing)?;
 		let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id)?;
-		crate::knowledge::load(&registry.db, entry)
+		crate::knowledge::load(&registry, entry)
 			.await
 			.map_err(Into::into)
 	}

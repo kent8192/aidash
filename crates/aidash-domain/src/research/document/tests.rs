@@ -159,6 +159,9 @@ fn extracted_pages_are_bounded_untrusted_input(lines: Vec<Line>) {
 		raw_digest: "sha256:00".into(),
 		completeness: Completeness::Complete,
 		lines,
+		page_count: None,
+		pages_without_text: Vec::new(),
+		original: None,
 	};
 	assert!(page.validate().is_ok());
 	let mut control = page.clone();
@@ -182,4 +185,136 @@ fn extracted_pages_are_bounded_untrusted_input(lines: Vec<Line>) {
 		MAX_SNAPSHOT_BYTES / MAX_LINE_BYTES + 1
 	];
 	assert!(oversized.validate().is_err());
+}
+
+fn pdf_page(lines: Vec<Line>, pages_without_text: Vec<u32>) -> ExtractedPage {
+	ExtractedPage {
+		url: "https://example.com/report.pdf".into(),
+		title: None,
+		media_type: "application/pdf".into(),
+		fetched_at: Utc::now(),
+		raw_digest: "sha256:00".into(),
+		completeness: Completeness::Complete,
+		lines,
+		page_count: Some(3),
+		original: (!pages_without_text.is_empty()).then(|| b"%PDF-".to_vec()),
+		pages_without_text,
+	}
+}
+
+/// A stored page count is at least one, so a provider claiming none is
+/// refused as invalid output, not left to the database to reject.
+#[rstest::rstest]
+fn a_page_count_of_zero_is_invalid(lines: Vec<Line>) {
+	let mut page = pdf_page(
+		lines
+			.into_iter()
+			.map(|line| Line { page: None, ..line })
+			.collect(),
+		vec![],
+	);
+	page.page_count = Some(0);
+	assert!(page.validate().is_err());
+}
+
+/// A page count the snapshot cannot record is refused rather than stored
+/// smaller than the pages its lines name.
+#[rstest::rstest]
+fn a_page_count_beyond_the_recorded_range_is_invalid() {
+	let line = Line {
+		text: "Text on the last page.".into(),
+		page: Some(MAX_PAGES),
+	};
+	let mut page = pdf_page(vec![line], vec![]);
+	// Reading stops long before the last page of so long a document.
+	page.completeness = Completeness::TextLimit;
+	page.page_count = Some(MAX_PAGES);
+	assert!(page.validate().is_ok());
+	page.page_count = Some(MAX_PAGES + 1);
+	assert!(page.validate().is_err());
+}
+
+/// A page with text lines cannot also be listed as carrying no text.
+#[rstest::rstest]
+fn a_page_with_text_is_not_a_page_without_text() {
+	let line = Line {
+		text: "Text on page two.".into(),
+		page: Some(2),
+	};
+	assert!(pdf_page(vec![line.clone()], vec![1, 3]).validate().is_ok());
+	assert!(pdf_page(vec![line], vec![1, 2]).validate().is_err());
+}
+
+#[rstest::rstest]
+fn a_pdf_whose_pages_carry_no_text_is_a_valid_page_without_lines() {
+	assert!(pdf_page(vec![], vec![1, 2, 3]).validate().is_ok());
+	let line = Line {
+		text: "Text on page three.".into(),
+		page: Some(3),
+	};
+	assert!(pdf_page(vec![line], vec![1, 2]).validate().is_ok());
+	assert!(pdf_page(vec![], vec![]).validate().is_err());
+}
+
+#[rstest::rstest]
+#[case::page_beyond_count(vec![4])]
+#[case::page_zero(vec![0])]
+#[case::out_of_order(vec![2, 1])]
+#[case::repeated(vec![2, 2])]
+fn pages_without_text_must_name_real_pages_in_order(#[case] pages: Vec<u32>) {
+	assert!(pdf_page(vec![], pages).validate().is_err());
+}
+
+#[rstest::rstest]
+fn an_original_needs_a_page_without_text_and_stays_bounded() {
+	let lines = (1..=3)
+		.map(|page| Line {
+			text: format!("Page {page} carries text."),
+			page: Some(page),
+		})
+		.collect();
+	let mut page = pdf_page(lines, vec![]);
+	assert!(page.validate().is_ok());
+	page.original = Some(b"%PDF-".to_vec());
+	assert!(page.validate().is_err());
+	let mut page = pdf_page(vec![], vec![1, 2, 3]);
+	assert!(page.validate().is_ok());
+	page.original = Some(vec![0; MAX_ORIGINAL_BYTES + 1]);
+	assert!(page.validate().is_err());
+	page.original = Some(Vec::new());
+	assert!(page.validate().is_err());
+	// The host, not the provider, decides whether the original is retained.
+	page.original = None;
+	assert!(page.validate().is_err());
+	let mut page = pdf_page(vec![], vec![1, 2, 3]);
+	page.page_count = None;
+	assert!(page.validate().is_err());
+}
+
+/// A complete paginated source cannot leave a page out: each page carries
+/// text or is listed as carrying none. A source read only in part may.
+#[rstest::rstest]
+fn a_complete_pdf_accounts_for_every_page() {
+	let line = Line {
+		text: "Text on page one.".into(),
+		page: Some(1),
+	};
+	assert!(pdf_page(vec![line.clone()], vec![2, 3]).validate().is_ok());
+	let mut page = pdf_page(vec![line], vec![2]);
+	assert!(page.validate().is_err(), "page three is missing");
+	page.completeness = Completeness::TextLimit;
+	assert!(page.validate().is_ok());
+}
+
+/// The list of pages without text is bounded, so a result that lists them
+/// stays within its size limit whatever a provider reports.
+#[rstest::rstest]
+fn the_pages_without_text_are_bounded() {
+	let bound = u32::try_from(MAX_PAGES_WITHOUT_TEXT).unwrap();
+	let mut page = pdf_page(vec![], (1..=bound).collect());
+	page.page_count = Some(bound);
+	assert!(page.validate().is_ok());
+	let mut page = pdf_page(vec![], (1..=bound + 1).collect());
+	page.page_count = Some(bound + 1);
+	assert!(page.validate().is_err());
 }

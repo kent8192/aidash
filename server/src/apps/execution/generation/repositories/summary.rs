@@ -1,5 +1,6 @@
 //! Atomic Summary Stage call charges and durable per-attempt usage records.
 use crate::store::Store;
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	ports::generation::summary::{GenerationSummaryRepository, GenerationSummarySession},
@@ -13,6 +14,8 @@ use uuid::Uuid;
 
 pub(crate) struct NativeSummaryRepository {
 	pub store: Store,
+	/// The Tenant scope of the requests this repository settles.
+	pub scope: TenancyScope,
 }
 struct Session {
 	transaction: crate::database::native::Transaction,
@@ -24,7 +27,7 @@ impl GenerationSummaryRepository for NativeSummaryRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationSummarySession>> {
 		Ok(Box::new(Session {
-			transaction: crate::database::native::begin(&self.store.pool).await?,
+			transaction: self.store.pool.begin(&self.scope).await?,
 		}))
 	}
 }

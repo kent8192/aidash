@@ -9,6 +9,7 @@ use crate::{
 	domain::*,
 	federation::Federation,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use http::HeaderMap;
 use reinhardt::injectable;
 use uuid::Uuid;
@@ -35,9 +36,11 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.task_page(page.offset).await;
 		}
-		let mut page = f.store.task_page(page.offset).await?;
+		// A Deployment Administrator lists tasks across Tenants.
+		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		let mut page = f.store.task_page(&listing, page.offset).await?;
 		let denied = crate::authorization::remote::deployment_administrator::blocked(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&listing).await?,
 			&page
 				.tasks
 				.iter()
@@ -67,12 +70,13 @@ impl CollaborationManagement {
 		if let Some(scope) = scoped(&f, actor) {
 			return scope.snapshot(id).await;
 		}
+		let scope = f.store.workspace_tenancy(id).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			id,
 		)
 		.await?;
-		f.store.snapshot(id).await
+		f.store.snapshot(&scope, id).await
 	}
 	pub(crate) async fn workspace_update(
 		&self,
@@ -138,15 +142,18 @@ impl CollaborationManagement {
 		if let Actor::Subject(identity) = actor {
 			return interaction::abandon(&f, &identity, id, input.revision, &input.reason).await;
 		}
-		let existing = f.store.task(id).await?;
+		// A task names its Workspace; read it across Tenants first.
+		let listing = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		let existing = f.store.task(&listing, id).await?;
+		let scope = f.store.workspace_tenancy(existing.workspace_id).await?;
 		crate::authorization::remote::deployment_administrator::require(
-			&mut crate::database::native::begin(&f.store.pool).await?,
+			&mut f.store.pool.begin(&scope).await?,
 			existing.workspace_id,
 		)
 		.await?;
 		let task = f
 			.store
-			.abandon_task(id, input.revision, &input.reason)
+			.abandon_task(&scope, id, input.revision, &input.reason)
 			.await?;
 		f.notify.notify_waiters();
 		Ok(task)

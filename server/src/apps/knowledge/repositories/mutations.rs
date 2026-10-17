@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 pub(crate) struct NativeConfiguration {
 	pub store: Store,
+	/// The Tenant of the Workspace whose index is configured.
+	pub scope: aidash_application::tenancy::TenancyScope,
 }
 struct Configuration {
 	transaction: Box<dyn TransactionExecutor>,
@@ -44,7 +46,12 @@ impl SemanticConfigurationRepository for NativeConfiguration {
 	}
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {
 		Ok(Box::new(Configuration {
-			transaction: self.store.database().begin().await.map_err(Error::from)?,
+			transaction: self
+				.store
+				.pool
+				.begin(&self.scope)
+				.await
+				.and_then(crate::database::native::Transaction::into_executor)?,
 		}))
 	}
 }

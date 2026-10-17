@@ -1,6 +1,7 @@
 //! Deletion excludes immediately; body purge is a durable, idempotent PostgreSQL job.
 use super::{access::Lease, native_memory as repository, units};
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::memory::{Retention, Unit};
 use chrono::{Duration, Utc};
 use reinhardt::query::{
@@ -8,6 +9,9 @@ use reinhardt::query::{
 	QueryStatementBuilder,
 };
 mod dependencies;
+
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
 pub(crate) async fn schedule(
 	lease: &mut Lease<'_>,
@@ -97,7 +101,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			.limit(32)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&MAINTENANCE))
 	.await?;
 	let mut completed = 0;
 	for row in rows {
@@ -105,7 +109,8 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 		let attempts: i32 = row.try_get("attempts")?;
 		let mut max_retries = None;
 		let bank: uuid::Uuid = row.try_get("bank_id")?;
-		let mut lease = Lease::without_subject(store).await?;
+		let mut lease =
+			Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
 		let result = async {
 			let workspace: uuid::Uuid = native::query_scalar(
 				&Query::select()
@@ -224,7 +229,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 				} else {
 					"failed"
 				};
-				let mut tx = native::begin(&store.pool).await?;
+				let mut tx = store.pool.begin(&MAINTENANCE).await?;
 				native::query(
 					&Query::update()
 						.table(Alias::new("memory_purge_jobs"))

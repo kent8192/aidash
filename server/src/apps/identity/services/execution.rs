@@ -146,6 +146,10 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	/// The scope of every transaction this authority's Run opens.
+	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
+		self.access.read().await.tenancy()
+	}
 	/// Concurrent core tool calls of one Run share the outer authority lease.
 	/// Each call runs in its own inner transaction while the outer transaction
 	/// keeps the authorization locks, so revocation waits until every concurrent
@@ -187,6 +191,38 @@ impl WorkerAuthority {
 		}
 	}
 
+	/// Start a Completion Gate Check (#112) under the worker's current
+	/// authority lease, exactly as the model's own shell calls are admitted.
+	pub async fn check(&self, store: &Store, run: &Run, input: Value, key: &str) -> Result<Value> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			crate::capabilities::service::verify(store, &mut access, run, input, key).await;
+		access.finish(result).await
+	}
+
+	/// The current result of a Completion Gate Check this Run started.
+	pub async fn check_status(&self, store: &Store, run: &Run, operation: Uuid) -> Result<Value> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			crate::capabilities::service::verification(store, &mut access, run, operation).await;
+		access.finish(result).await
+	}
+
+	/// The Run's Working Area as the Completion Gate reads it; `None` when the
+	/// Run has none.
+	pub async fn working_area(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Option<aidash_domain::capabilities::sessions::Area>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = crate::capabilities::service::working_area(store, &mut access, run).await;
+		access.finish(result).await
+	}
+
 	/// Web disclosure approval under the worker's current authority lease. It
 	/// shares the capability approval records, decision API and Run waiting.
 	pub async fn web_disclosure(
@@ -197,15 +233,43 @@ impl WorkerAuthority {
 	) -> Result<aidash_application::ports::research::DisclosureState> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result = {
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
-			aidash_application::capabilities::approvals::disclose(
-				&mut scope,
-				&run.metadata(),
-				request,
-			)
-			.await
-			.map_err(Error::from)
+		// Under the Run's research lock, so a revocation that commits after
+		// the caller's own check still closes, or prevents, this approval.
+		let result = match crate::apps::execution::repositories::research::revoked_under_lock(
+			access.tx.as_mut(),
+			run.id,
+		)
+		.await
+		{
+			Ok(true) => Ok(aidash_application::ports::research::DisclosureState::Revoked),
+			Ok(false) => {
+				async {
+					// A core Run's approval belongs to its Working Area, so its Thread
+					// lists it; other Runs have none.
+					let area = crate::apps::execution::repositories::sessions::run_area(
+						&mut access,
+						run.id,
+					)
+					.await?
+					.flatten()
+					.map(|area| area.id);
+					let request = aidash_application::capabilities::approvals::DisclosureRequest {
+						area,
+						..request.clone()
+					};
+					let mut scope =
+						crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					aidash_application::capabilities::approvals::disclose(
+						&mut scope,
+						&run.metadata(),
+						&request,
+					)
+					.await
+					.map_err(Error::from)
+				}
+				.await
+			}
+			Err(error) => Err(error),
 		};
 		access.finish(result).await
 	}
@@ -468,7 +532,7 @@ pub(crate) async fn operator_human_message_media(
 	model: &crate::registry::ModelConfig,
 ) -> Result<HumanMediaBatch> {
 	aidash_application::execution::media::deployment_administrator(
-		&crate::bootstrap::operator_media_repository(store),
+		&crate::bootstrap::operator_media_repository(store, store.run_tenancy(run.id).await?),
 		&run.metadata(),
 		messages,
 		model,
@@ -484,6 +548,8 @@ pub(crate) struct Guard {
 	access: Arc<RwLock<Access>>,
 	run: Run,
 	agent: AgentConfig,
+	/// The Run's Tenant, learned from its authority when the step began.
+	tenancy: aidash_application::tenancy::TenancyScope,
 }
 
 pub(in crate::apps::identity) async fn authorize_guard(
@@ -565,6 +631,7 @@ impl Guard {
 		)
 		.await?;
 		Ok(Self {
+			tenancy: entry.scope.tenancy()?,
 			remote: entry.remote.then(|| f.clone()),
 			access: Arc::new(RwLock::new(entry.scope)),
 			run: run.clone(),
@@ -598,6 +665,10 @@ impl Guard {
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()
 	}
+	/// The scope of every transaction this Run's step opens.
+	pub(crate) fn tenancy(&self) -> &aidash_application::tenancy::TenancyScope {
+		&self.tenancy
+	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.
 	pub(crate) async fn tenant(&self) -> String {
@@ -625,7 +696,9 @@ impl Guard {
 		store: &Store,
 	) -> Result<aidash_domain::context::sources::RetrievalScope> {
 		if let Some(federation) = &self.remote {
-			let description = super::peer::semantic::admission(federation, &self.run).await?;
+			let tenancy = self.access.read().await.tenancy()?;
+			let description =
+				super::peer::semantic::admission(federation, &self.run, &tenancy).await?;
 			let (index_revision, participant_revision) = match &description.semantic {
 				aidash_domain::semantic::remote::Binding::Disabled { .. } => (None, None),
 				aidash_domain::semantic::remote::Binding::RequiredHome {
@@ -1045,9 +1118,10 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		request_bytes: i64,
 	) -> aidash_application::Result<()> {
 		let mut access = self.guard.access.write().await;
+		let tenancy = access.tenancy()?;
 		aidash_application::generation::summary::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&crate::bootstrap::generation_summary_repository(&self.f.store),
+			&crate::bootstrap::generation_summary_repository(&self.f.store, tenancy),
 			&self.generation_context(),
 			summarizer,
 			request_bytes,

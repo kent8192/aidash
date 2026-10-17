@@ -11,6 +11,8 @@ struct Data {
 	rows: BTreeMap<Uuid, PlanConnection>,
 	mapped: usize,
 	events: Vec<String>,
+	/// Pending attempts ended by a committed disconnect.
+	cancelled_attempts: usize,
 	/// Commits that fail before applying anything, as a lost database would.
 	failing_commits: usize,
 	/// Commits that succeed before `failing_commits` take effect.
@@ -48,6 +50,20 @@ impl Repository for Repo {
 			subject: row.subject.clone(),
 		}))
 	}
+	async fn owners(&self, tenant: &str) -> Result<Vec<Owner>> {
+		Ok(self
+			.0
+			.lock()
+			.await
+			.rows
+			.values()
+			.filter(|row| row.tenant == tenant)
+			.map(|row| Owner {
+				tenant: row.tenant.clone(),
+				subject: row.subject.clone(),
+			})
+			.collect())
+	}
 }
 #[async_trait]
 impl Scope for Lease {
@@ -79,6 +95,10 @@ impl Scope for Lease {
 	async fn delete(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
 		self.data.rows.remove(&value.id);
 		self.data.events.push(event.into());
+		Ok(())
+	}
+	async fn cancel_attempts(&mut self, _: Provider) -> Result<()> {
+		self.data.cancelled_attempts += 1;
 		Ok(())
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
@@ -153,7 +173,7 @@ impl Store for FakeStore {
 		versions.insert(n, key.expose_secret().to_owned());
 		Ok(format!("{resource}/versions/{n}"))
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		Ok(self
 			.0
 			.lock()
@@ -167,10 +187,10 @@ impl Store for FakeStore {
 			})
 			.unwrap_or_default())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, version: &str) -> Result<()> {
 		if self.1.lock().unwrap().destroy {
 			return Err(Error::External("store unavailable".into()));
 		}
@@ -180,7 +200,7 @@ impl Store for FakeStore {
 		}
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		if self.1.lock().unwrap().delete {
 			return Err(Error::External("store unavailable".into()));
 		}
@@ -861,6 +881,44 @@ async fn ineligible_plans_mark_the_connection_once() {
 	);
 }
 
+/// A reconnection that completes after its connection was disconnected must
+/// not bring it back: the owner ended the grant meanwhile.
+#[tokio::test]
+async fn a_reconnection_completed_after_a_disconnect_is_refused() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	// The reconnect started while the connection existed, so it carries the
+	// saved client; the owner disconnects before its callback completes.
+	let saved = fixture.service.check(&owner()).await.unwrap();
+	assert_eq!(saved.as_deref(), Some("oaiapp_1"));
+	fixture
+		.service
+		.disconnect(&owner(), 2, "alice")
+		.await
+		.unwrap();
+	assert!(matches!(
+		connect(&fixture, saved.as_deref(), None).await,
+		Err(Error::Conflict(_))
+	));
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	// The tokens the late exchange issued are revoked, not left live.
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1", "refresh-1"]
+	);
+}
+
+#[tokio::test]
+async fn a_disconnect_without_a_connection_still_ends_pending_attempts() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	assert!(matches!(
+		fixture.service.disconnect(&owner(), 1, "alice").await,
+		Err(Error::NotFound(_))
+	));
+	assert_eq!(fixture.repo.0.lock().await.cancelled_attempts, 1);
+}
+
 #[tokio::test]
 async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
 	let fixture = fixture(1, FakeAuthorization::default());
@@ -869,12 +927,15 @@ async fn disconnecting_revokes_the_grant_and_deletes_every_copy() {
 		fixture.service.disconnect(&owner(), 1, "alice").await,
 		Err(Error::Domain(aidash_domain::Error::Conflict(_)))
 	));
+	// A refused disconnect leaves pending attempts to their callbacks.
+	assert_eq!(fixture.repo.0.lock().await.cancelled_attempts, 0);
 	let result = fixture
 		.service
 		.disconnect(&owner(), 2, "alice")
 		.await
 		.unwrap();
 	assert!(result.revoked);
+	assert_eq!(fixture.repo.0.lock().await.cancelled_attempts, 1);
 	assert_eq!(
 		fixture.authorization.calls.lock().unwrap().revoked,
 		vec!["refresh-1"]
@@ -927,6 +988,98 @@ async fn owners_who_lose_access_lose_their_connection() {
 			.await
 			.events
 			.contains(&"plan_connection.retired".to_owned())
+	);
+}
+
+#[tokio::test]
+async fn deleting_a_tenant_retires_every_connection_in_it() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	fixture
+		.service
+		.retire_tenant("other", "tenant-deletion")
+		.await
+		.unwrap();
+	assert_eq!(fixture.repo.0.lock().await.rows.len(), 1);
+	fixture
+		.service
+		.retire_tenant(TENANT, "tenant-deletion")
+		.await
+		.unwrap();
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	assert_eq!(fixture.authorization.calls.lock().unwrap().revoked.len(), 1);
+}
+
+#[tokio::test]
+async fn usability_checks_read_no_tokens() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	fixture.service.usable(id).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	// An expired access token is refreshed by a call, not by a check.
+	fixture.service.usable(id).await.unwrap();
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
+	fixture.repo.0.lock().await.mapped = 0;
+	assert!(matches!(
+		fixture.service.usable(id).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	fixture.repo.0.lock().await.mapped = 1;
+	set_row(&fixture, |row| row.state = State::Ineligible).await;
+	assert!(matches!(
+		fixture.service.usable(id).await,
+		Err(Error::Plan(Failure::Ineligible))
+	));
+	assert!(matches!(
+		fixture.service.usable(Uuid::now_v7()).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+}
+
+#[tokio::test]
+async fn unreadable_tokens_ask_for_reconnection() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	fixture
+		.service
+		.mark_unreadable(id, "provider-credential-store-recovery")
+		.await
+		.unwrap();
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NeedsReconnection))
+	));
+	// A second recovery run changes nothing.
+	let revision = row.revision;
+	fixture
+		.service
+		.mark_unreadable(id, "provider-credential-store-recovery")
+		.await
+		.unwrap();
+	assert_eq!(only_row(&fixture).await.revision, revision);
+	// The Store removed the lost version, so the grant could not be revoked
+	// at OpenAI, and disconnecting says so.
+	let lost = row.pinned_version.clone().expect("the lost pin is kept");
+	fixture.store.destroy(TENANT, &lost).await.unwrap();
+	let result = fixture
+		.service
+		.disconnect(&owner(), revision, "alice")
+		.await
+		.unwrap();
+	assert!(!result.revoked);
+	assert!(
+		fixture
+			.authorization
+			.calls
+			.lock()
+			.unwrap()
+			.revoked
+			.is_empty()
 	);
 }
 
@@ -1180,6 +1333,40 @@ async fn failed_discards_are_retried_by_the_next_call() {
 	));
 	assert_eq!(only_row(&fixture).await.state, State::NeedsReconnection);
 	assert!(fixture.store.plaintexts().is_empty());
+}
+
+/// A discard that destroyed the tokens but could not record its transition
+/// leaves a pin the Store rejects; the next call records the reconnection
+/// instead of failing the same read every time.
+#[tokio::test]
+async fn discards_lost_after_their_cleanup_are_recorded_by_the_next_call() {
+	let fixture = fixture(
+		1,
+		FakeAuthorization {
+			refresh: RefreshMode::Terminal,
+			..FakeAuthorization::default()
+		},
+	);
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
+	let id = only_row(&fixture).await.id;
+	fixture.repo.0.lock().await.failing_commits = 1;
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(only_row(&fixture).await.state, State::Active);
+	assert!(fixture.store.plaintexts().is_empty());
+	for _ in 0..2 {
+		assert!(matches!(
+			fixture.service.bearer(id).await,
+			Err(Error::Plan(Failure::NeedsReconnection))
+		));
+	}
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::NeedsReconnection);
+	assert!(row.pinned_version.is_some());
+	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
 }
 
 /// A model list that reports an ineligible plan marks the connection, as an

@@ -25,9 +25,9 @@ use crate::apps::identity::models::{
 };
 use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::TenancyScope;
 use policy::{Decision, Evaluation, PolicyBundle, identifier};
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -50,11 +50,6 @@ impl Authorization {
 		)
 	}
 
-	// Scope ORM reads and compound transactions to the application's native connection.
-	fn native_connection(&self) -> Result<DatabaseConnectionLease> {
-		Ok(DatabaseConnectionLease::register(self.pool.connection())?)
-	}
-
 	pub async fn replace(
 		&self,
 		tenant: &str,
@@ -65,62 +60,6 @@ impl Authorization {
 		Ok(crate::bootstrap::authorization(self.pool.clone())
 			.replace(tenant, expected_revision, bundle, actor)
 			.await?)
-	}
-
-	/// The protected tenant-creation route stages configured packages in the
-	/// policy transaction. Updates and process restarts never enter this path.
-	pub(crate) async fn replace_with_host_defaults(
-		&self,
-		store: &crate::store::Store,
-		groups: &[String],
-		tenant: &str,
-		expected_revision: i64,
-		bundle: PolicyBundle,
-		actor: &str,
-	) -> Result<(
-		Snapshot,
-		Option<aidash_application::marketplace::operations::host_packages::PendingHostPackages>,
-	)> {
-		aidash_application::authorization::validate_replacement(
-			tenant,
-			expected_revision,
-			&bundle,
-			actor,
-		)?;
-		let mut tx = crate::database::native::begin(&self.pool).await?;
-		let revision = AuthorizationBundle::replace(
-			&mut tx,
-			tenant,
-			expected_revision,
-			serde_json::to_value(&bundle)?,
-			actor,
-		)
-		.await?;
-		let pending = if expected_revision == 0 && !groups.is_empty() {
-			let validation = crate::bootstrap::registry_validation_for(store);
-			Some(
-				aidash_application::marketplace::operations::host_packages::provision(
-					&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-						store,
-						&mut tx,
-						aidash_domain::identity::Principal::DeploymentAdministrator,
-					),
-					&validation,
-					&validation,
-					&aidash_application::marketplace::operations::host_packages::HostPackages {
-						tenant: tenant.into(),
-						groups: groups.to_vec(),
-						idempotency_key: uuid::Uuid::new_v4(),
-					},
-					&store.node_id,
-				)
-				.await?,
-			)
-		} else {
-			None
-		};
-		tx.commit().await?;
-		Ok((Snapshot { revision, bundle }, pending))
 	}
 
 	pub(crate) async fn load(
@@ -173,11 +112,10 @@ impl Authorization {
 	}
 
 	pub async fn snapshot(&self, tenant: &str) -> Result<Snapshot> {
-		identifier(tenant)?;
-		let lease = self.native_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| AuthorizationBundle::lock_snapshot(tx, tenant, false).await)
+		self.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AuthorizationBundle::lock_snapshot(tx, tenant, false).await
+			})
 			.await
 	}
 
@@ -299,15 +237,19 @@ impl Authorization {
 	}
 
 	pub async fn revisions(&self, tenant: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
-		identifier(tenant)?;
-		let lease = self.native_connection()?;
-		AuthorizationRevision::page(&mut lease.handle(), tenant, after, limit).await
+		self.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AuthorizationRevision::page(tx, tenant, after, limit).await
+			})
+			.await
 	}
 
 	pub async fn decisions(&self, tenant: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
-		identifier(tenant)?;
-		let lease = self.native_connection()?;
-		AuthorizationDecision::page(&mut lease.handle(), tenant, after, limit).await
+		self.pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				AuthorizationDecision::page(tx, tenant, after, limit).await
+			})
+			.await
 	}
 }
 

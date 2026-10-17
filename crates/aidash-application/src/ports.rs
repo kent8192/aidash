@@ -1,4 +1,5 @@
 //! Ports describe atomic business operations, not database query syntax.
+use crate::tenancy::TenancyScope;
 use crate::{Result, authorization::Snapshot};
 use aidash_domain::policy::{Decision, Evaluation, PolicyBundle};
 use async_trait::async_trait;
@@ -32,7 +33,7 @@ pub trait AuthorizationTransaction: AuthorizationScope {
 
 #[async_trait]
 pub trait AuthorizationStore: Send + Sync {
-	async fn begin(&self) -> Result<Box<dyn AuthorizationTransaction>>;
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn AuthorizationTransaction>>;
 }
 
 #[async_trait]
@@ -134,10 +135,12 @@ pub trait VectorIndex: Send + Sync {
 		filter: aidash_domain::semantic::VectorFilter<'_>,
 		limit: usize,
 	) -> Result<Vec<aidash_domain::semantic::Point>>;
+	/// Whether every point in `ids` has a vector in `tenant`'s `collection`.
 	async fn present(
 		&self,
 		config: &aidash_domain::semantic::VectorConfig,
 		collection: &str,
+		tenant: &str,
 		ids: &[uuid::Uuid],
 	) -> Result<bool>;
 }
@@ -205,3 +208,4 @@ pub mod activation;
 pub mod bindings;
 pub mod decision;
 pub mod research;
+pub mod retention;

@@ -1,5 +1,6 @@
 use super::*;
-use crate::ports::{Credentials, registry::CoreToolCatalog};
+use crate::ports::registry::CoreToolCatalog;
+use crate::tenancy::TenancyScope;
 use aidash_domain::{capabilities::CoreCapabilities, provider::ToolSpec, registry::EntityRef};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -10,12 +11,6 @@ use std::{
 	time::Duration,
 };
 
-struct NoSecrets;
-impl Credentials for NoSecrets {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("policy admission must not execute an approved provider")
-	}
-}
 struct CoreContracts;
 impl CoreToolCatalog for CoreContracts {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
@@ -24,7 +19,7 @@ impl CoreToolCatalog for CoreContracts {
 }
 #[fixture]
 fn validation() -> DefinitionValidation {
-	DefinitionValidation::new(Arc::new(NoSecrets), Arc::new(CoreContracts))
+	DefinitionValidation::new(Arc::new(CoreContracts))
 }
 #[fixture]
 fn spec() -> Spec {
@@ -174,7 +169,8 @@ impl GenerationPolicies for Repository {
 		state.calls.push(format!("ids:{tenant}"));
 		Ok(state.persisted.keys().cloned().collect())
 	}
-	async fn begin(&self, tenant: &str, exclusive: bool) -> Result<Box<dyn PolicySession>> {
+	async fn begin(&self, scope: &TenancyScope, exclusive: bool) -> Result<Box<dyn PolicySession>> {
+		let tenant = scope.tenant_name().expect("a Tenant scope").as_str();
 		let mut state = self.state.lock().unwrap();
 		state.calls.push(format!("begin:{tenant}:{exclusive}"));
 		state.active_scopes += 1;

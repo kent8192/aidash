@@ -2,6 +2,7 @@
 mod catalog;
 mod completion;
 pub(crate) mod context_journal;
+pub(crate) mod decisions;
 pub(crate) mod inference;
 mod inspection;
 mod invocation_records;
@@ -43,3 +44,4 @@ pub(crate) mod estimate_calibration;
 pub(crate) use estimate_calibration::EstimateCalibrationSample;
 
 pub(crate) mod research;
+pub(crate) mod url_intents;

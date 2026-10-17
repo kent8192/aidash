@@ -6875,7 +6875,7 @@
     "source": "server/src/apps/execution/capabilities/views/management.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["cursor"],
+    "query_parameters": ["cursor", "role", "state"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/ApprovalPage"
@@ -6911,11 +6911,22 @@
             "targets",
             "action",
             "expires_at",
-            "grant_id"
+            "grant_id",
+            "viewer_is_approver",
+            "agent_id",
+            "agent_version",
+            "decided_by",
+            "decided_at"
           ],
           "properties": {
             "action": {
               "type": "string"
+            },
+            "agent_id": {
+              "type": ["string", "null"]
+            },
+            "agent_version": {
+              "type": ["string", "null"]
             },
             "approver": {
               "type": ["string", "null"]
@@ -6923,6 +6934,26 @@
             "area_id": {
               "type": ["string", "null"],
               "format": "uuid"
+            },
+            "closed_reason": {
+              "type": ["string", "null"],
+              "description": "Why a `closed` approval or Run grant was closed, such as\n`evidence_revoked`."
+            },
+            "decided_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "decided_by": {
+              "type": ["string", "null"]
+            },
+            "disclosure": {
+              "type": ["string", "null"],
+              "description": "For a Web disclosure approval, the exact query or page address that\nwould leave the Node."
+            },
+            "estimated_micro_usd": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "The price of this one request, recorded when approval was requested\nand charged to the Research account holder: an estimate, not an\ninvoice. Absent for a provider without a price. The account itself is\nkept with the approval for audit and never shown."
             },
             "expires_at": {
               "type": ["string", "null"],
@@ -6938,6 +6969,16 @@
             },
             "kind": {
               "type": "string"
+            },
+            "operation": {
+              "type": ["string", "null"],
+              "description": "The research operation of a Web disclosure approval, or of the\napproval a Web disclosure Run grant came from."
+            },
+            "provider": {
+              "type": ["string", "null"]
+            },
+            "query": {
+              "description": "The validated search query in provider-independent form."
             },
             "requester": {
               "type": "string"
@@ -6958,6 +6999,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "viewer_is_approver": {
+              "type": "boolean",
+              "description": "Whether the reader is the approver this card is addressed to."
             }
           }
         }
@@ -13542,6 +13587,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -13552,6 +13601,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -13581,6 +13634,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -23050,6 +23118,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -23060,6 +23132,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -23089,6 +23165,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -25247,6 +25338,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -25257,6 +25352,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -25286,6 +25385,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -27202,6 +27316,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "estimate": {
+              "$ref": "#/components/schemas/EstimateState",
+              "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
+            },
             "execution_summary": {
               "anyOf": [
                 {
@@ -27212,6 +27330,10 @@
                 }
               ],
               "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
+            "exposure": {
+              "$ref": "#/components/schemas/ExposureState",
+              "description": "Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs."
             },
             "history": {
               "type": "array",
@@ -27241,6 +27363,21 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_revoked": {
+              "type": "boolean",
+              "description": "The Run's Research evidence was revoked (ADR 0046). Its research results\nare placeholders here and no Execution Summary holds them; the Context\nJournal keeps the originals."
+            },
+            "revoked_summary_dependencies": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryDependencies"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sources of a revoked Execution Summary whose originals were restored\ninto `history`. No request carries the restored originals until every\none is readable again."
             },
             "run_message_summary": {
               "type": "string"
@@ -29167,6 +29304,291 @@
   },
   {
     "method": "GET",
+    "path": "/api/runs/{id}/research",
+    "name": "run-research",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RunResearch"
+      },
+      "definitions": {
+        "RunResearch": {
+          "type": "object",
+          "description": "A Run's research usage against its limits, for anyone who may read the Run.",
+          "required": [
+            "limits",
+            "usage",
+            "estimated_micro_usd",
+            "uncertain_attempts",
+            "in_flight_attempts",
+            "url_intents"
+          ],
+          "properties": {
+            "estimated_micro_usd": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Recorded prices of the Run's charged attempts: an estimate, not an\ninvoice.",
+              "minimum": 0
+            },
+            "in_flight_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Attempts sent and not yet settled.",
+              "minimum": 0
+            },
+            "limits": {
+              "$ref": "#/components/schemas/ResearchLimits"
+            },
+            "uncertain_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Attempts the provider may have performed whose outcome is unknown.\nThey are never sent again automatically.",
+              "minimum": 0
+            },
+            "url_intents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RunUrlIntent"
+              },
+              "description": "The pages people asked the Run to read, oldest first. Each only asked\nfor a Page reading; none approved a Web disclosure."
+            },
+            "usage": {
+              "$ref": "#/components/schemas/ResearchUsage"
+            }
+          }
+        },
+        "ResearchUsage": {
+          "type": "object",
+          "description": "What one Run has used of its research limits.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        },
+        "RunUrlIntent": {
+          "type": "object",
+          "description": "The pages one input asked a Run to read.",
+          "required": ["input", "pages", "requested_by", "requested_at"],
+          "properties": {
+            "input": {
+              "$ref": "#/components/schemas/UrlIntentInput",
+              "description": "`task` for the input that started or queued the Run, `run_message`\nfor a later message steering it."
+            },
+            "pages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "requested_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "requested_by": {
+              "type": "string"
+            }
+          }
+        },
+        "UrlIntentInput": {
+          "type": "string",
+          "enum": ["task", "run_message"]
+        },
+        "ResearchLimits": {
+          "type": "object",
+          "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/research/providers",
+    "name": "research-providers",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ResearchProviders"
+      },
+      "definitions": {
+        "ResearchProviders": {
+          "type": "object",
+          "description": "The Research providers of this Deployment and the per-Run limits every\nRun is held to.",
+          "required": ["providers", "limits"],
+          "properties": {
+            "limits": {
+              "$ref": "#/components/schemas/ResearchLimits"
+            },
+            "providers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResearchProvider"
+              }
+            }
+          }
+        },
+        "ResearchProvider": {
+          "type": "object",
+          "description": "One Research provider this Deployment knows.",
+          "required": ["provider", "set_up", "operations"],
+          "properties": {
+            "operations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResearchProviderOperation"
+              }
+            },
+            "provider": {
+              "type": "string"
+            },
+            "set_up": {
+              "type": "boolean",
+              "description": "Whether whoever runs the Deployment has set the provider up, with\ncurrent account terms where it has any. It never says what is missing."
+            }
+          }
+        },
+        "ResearchProviderOperation": {
+          "type": "object",
+          "description": "One research operation of a provider and the tool definitions through\nwhich the reader's Tenant may bind it here.",
+          "required": ["operation", "approved_definitions"],
+          "properties": {
+            "approved_definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DefinitionRef"
+              },
+              "description": "The Tenant's tool definitions of this operation that have a Catalog\nApproval. A Run can use the operation only through one of them."
+            },
+            "operation": {
+              "type": "string"
+            }
+          }
+        },
+        "DefinitionRef": {
+          "type": "object",
+          "description": "A tool definition of the reader's Tenant, by identifier and version.",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "ResearchLimits": {
+          "type": "object",
+          "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
     "path": "/health",
     "name": "health",
     "source": "server/src/apps/execution/views/management.rs",
@@ -30002,7 +30424,7 @@
     "source": "server/src/apps/identity/views/tenant_administration.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": ["offset"]
   },
   {
     "method": "POST",
@@ -30045,6 +30467,78 @@
     "path": "/api/tenants/{tenant}/subjects/{subject}/groups",
     "name": "tenant-subject-groups",
     "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants",
+    "name": "tenants-create",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants",
+    "name": "tenants-list",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["offset"]
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/label",
+    "name": "tenants-label",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/invitations",
+    "name": "tenant-invitations-issue",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/invitations",
+    "name": "tenant-invitations",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/invitations/{id}/revoke",
+    "name": "tenant-invitations-revoke",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/auth/invitations/inspect",
+    "name": "invitations-inspect",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/auth/invitations/redeem",
+    "name": "invitations-redeem",
+    "source": "server/src/apps/identity/views/invitations.rs",
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
@@ -30101,6 +30595,373 @@
     "json": false,
     "uuid_parameters": [],
     "query_parameters": ["code", "state"]
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}",
+    "name": "plan-connection-status",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanConnectionStatus"
+      },
+      "definitions": {
+        "PlanConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "provider",
+            "state",
+            "connected_at",
+            "refreshed_at",
+            "refresh_expires_at",
+            "revision"
+          ],
+          "properties": {
+            "connected_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "refresh_expires_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the connection needs reconnection unless a call refreshes it."
+            },
+            "refreshed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "state": {
+              "$ref": "#/components/schemas/PlanConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "PlanConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Usable by Runs whose delegation chain starts at the owner.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "A refresh was rejected, or OpenAI confirmed that the grant ended. The\nowner must connect again; the Plan Tokens are already discarded.",
+              "enum": ["needs_reconnection"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI reports that the owner's plan or workspace is not eligible.\nReconnecting does not help, so the owner is not asked to.",
+              "enum": ["ineligible"]
+            }
+          ]
+        },
+        "PlanConnectionStatus": {
+          "type": "object",
+          "required": ["enabled", "connection"],
+          "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PlanConnectionMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether this Deployment lets its subjects connect a ChatGPT plan."
+            }
+          }
+        },
+        "Provider": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["openrouter"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+              "enum": ["chatgpt"]
+            }
+          ],
+          "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+    "name": "plan-authorization-start",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanAuthorizationStarted"
+      },
+      "definitions": {
+        "PlanAuthorizationStarted": {
+          "type": "object",
+          "required": ["authorization_url", "redirect_uri"],
+          "properties": {
+            "authorization_url": {
+              "type": "string",
+              "description": "OpenAI's consent page; the system or dashboard browser opens it."
+            },
+            "redirect_uri": {
+              "type": "string",
+              "description": "Where the browser lands after consent. For a paste, nothing listens\nthere and the owner copies the address from the browser."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+    "name": "plan-authorization-complete",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanAuthorizationCompleted"
+      },
+      "definitions": {
+        "PlanAuthorizationCompleted": {
+          "type": "object",
+          "required": ["outcome", "connection"],
+          "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PlanConnectionMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The owner's connection after the attempt, if any."
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/PlanAuthorizationOutcome"
+            }
+          }
+        },
+        "PlanAuthorizationOutcome": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["connected", "reconnected", "denied", "failed"]
+            },
+            {
+              "type": "string",
+              "description": "The grant lacked `chatgpt.tokens.use.direct`. Its tokens were revoked;\nonly the issued client and account are kept, so enabling plan usage\nlater reauthorizes the same client (OpenAI's recovery guidance).",
+              "enum": ["plan_usage_not_granted"]
+            }
+          ]
+        },
+        "PlanConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "provider",
+            "state",
+            "connected_at",
+            "refreshed_at",
+            "refresh_expires_at",
+            "revision"
+          ],
+          "properties": {
+            "connected_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "refresh_expires_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the connection needs reconnection unless a call refreshes it."
+            },
+            "refreshed_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "state": {
+              "$ref": "#/components/schemas/PlanConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "PlanConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Usable by Runs whose delegation chain starts at the owner.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "A refresh was rejected, or OpenAI confirmed that the grant ended. The\nowner must connect again; the Plan Tokens are already discarded.",
+              "enum": ["needs_reconnection"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI reports that the owner's plan or workspace is not eligible.\nReconnecting does not help, so the owner is not asked to.",
+              "enum": ["ineligible"]
+            }
+          ]
+        },
+        "Provider": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["openrouter"]
+            },
+            {
+              "type": "string",
+              "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+              "enum": ["chatgpt"]
+            }
+          ],
+          "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}",
+    "name": "plan-connection-disconnect",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanDisconnection"
+      },
+      "definitions": {
+        "PlanDisconnection": {
+          "type": "object",
+          "description": "The result of a disconnect. OpenAI may be unreachable; Aidash's copy is\ndeleted either way, and the owner is told when revocation is unconfirmed.",
+          "required": ["revoked"],
+          "properties": {
+            "revoked": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/plan-connections/{provider}/models",
+    "name": "plan-connection-models",
+    "source": "server/src/apps/identity/views/plan_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/PlanModels"
+      },
+      "definitions": {
+        "PlanModel": {
+          "type": "object",
+          "description": "One entry of the owner's ChatGPT model list, offered to model pickers.",
+          "required": [
+            "slug",
+            "display_name",
+            "context_window",
+            "max_output_tokens",
+            "defaulted"
+          ],
+          "properties": {
+            "context_window": {
+              "type": "integer",
+              "format": "uint",
+              "description": "Context window and output limit for the Registry form. Values OpenAI's\nlist does not report come from [`DEFAULT_CONTEXT_WINDOW`] and\n[`DEFAULT_MAX_OUTPUT_TOKENS`], flagged by `defaulted`.",
+              "minimum": 0
+            },
+            "defaulted": {
+              "type": "boolean"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "max_output_tokens": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "slug": {
+              "type": "string",
+              "description": "Sent as `model`."
+            }
+          }
+        },
+        "PlanModels": {
+          "type": "object",
+          "required": ["models"],
+          "properties": {
+            "models": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PlanModel"
+              }
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",
@@ -30261,6 +31122,433 @@
               "type": "string"
             }
           }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/runs/{id}/research-revocation",
+    "name": "run-research-revocation",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RevocationRecord"
+      },
+      "definitions": {
+        "RevocationRecord": {
+          "type": "object",
+          "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
+          "required": [
+            "run_id",
+            "tenant",
+            "revoked_by",
+            "reason",
+            "revoked_at",
+            "removed"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "removed": {
+              "$ref": "#/components/schemas/RemovedCopies"
+            },
+            "revoked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revoked_by": {
+              "type": "string",
+              "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token."
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Run's Tenant, when it has one."
+            }
+          }
+        },
+        "RemovedCopies": {
+          "type": "object",
+          "description": "What a revocation removed, counted and identified by digest only.",
+          "required": [
+            "sources",
+            "snapshots",
+            "fragments",
+            "attempts",
+            "invocations",
+            "snapshot_digests"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "fragments": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocations": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_digests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`sha256:` text digests of the revoked Document snapshots."
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/research-revocations",
+    "name": "research-revocation-list",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RevocationRecord"
+        }
+      },
+      "definitions": {
+        "RevocationRecord": {
+          "type": "object",
+          "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
+          "required": [
+            "run_id",
+            "tenant",
+            "revoked_by",
+            "reason",
+            "revoked_at",
+            "removed"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "removed": {
+              "$ref": "#/components/schemas/RemovedCopies"
+            },
+            "revoked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revoked_by": {
+              "type": "string",
+              "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token."
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Run's Tenant, when it has one."
+            }
+          }
+        },
+        "RemovedCopies": {
+          "type": "object",
+          "description": "What a revocation removed, counted and identified by digest only.",
+          "required": [
+            "sources",
+            "snapshots",
+            "fragments",
+            "attempts",
+            "invocations",
+            "snapshot_digests"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "fragments": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocations": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_digests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`sha256:` text digests of the revoked Document snapshots."
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/retention",
+    "name": "tenant-retention",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantRetention"
+      },
+      "definitions": {
+        "TenantRetention": {
+          "type": "object",
+          "description": "The periods that apply to one Tenant and where they come from.",
+          "required": ["tenant", "deployment", "tenant_rules", "effective"],
+          "properties": {
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
+        },
+        "RetentionRules": {
+          "type": "object",
+          "description": "The periods of every kind of content Aidash keeps only for a while.",
+          "required": ["document_snapshots"],
+          "properties": {
+            "document_snapshots": {
+              "$ref": "#/components/schemas/SnapshotPeriods"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SnapshotPeriods": {
+          "type": "object",
+          "description": "How long the contents of a Document snapshot are kept.",
+          "required": ["after_run_seconds", "max_age_seconds"],
+          "properties": {
+            "after_run_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Kept this long after the snapshot's Run ends.",
+              "minimum": 0
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Never kept longer than this after retrieval, even while the Run lasts.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/retention",
+    "name": "tenant-retention-update",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantRetention"
+      },
+      "definitions": {
+        "TenantRetention": {
+          "type": "object",
+          "description": "The periods that apply to one Tenant and where they come from.",
+          "required": ["tenant", "deployment", "tenant_rules", "effective"],
+          "properties": {
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
+        },
+        "RetentionRules": {
+          "type": "object",
+          "description": "The periods of every kind of content Aidash keeps only for a while.",
+          "required": ["document_snapshots"],
+          "properties": {
+            "document_snapshots": {
+              "$ref": "#/components/schemas/SnapshotPeriods"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SnapshotPeriods": {
+          "type": "object",
+          "description": "How long the contents of a Document snapshot are kept.",
+          "required": ["after_run_seconds", "max_age_seconds"],
+          "properties": {
+            "after_run_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Kept this long after the snapshot's Run ends.",
+              "minimum": 0
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Never kept longer than this after retrieval, even while the Run lasts.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/retention-history",
+    "name": "tenant-retention-history",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RetentionChange"
+        }
+      },
+      "definitions": {
+        "RetentionChange": {
+          "type": "object",
+          "description": "One change of a Tenant's periods, as kept in its history.",
+          "required": ["rules", "changed_at", "changed_by"],
+          "properties": {
+            "changed_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "changed_by": {
+              "type": "string",
+              "description": "The recorded [`Decider`]."
+            },
+            "rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The periods stored from then on; none when they were cleared and the\nDeployment's periods applied again."
+            }
+          }
+        },
+        "RetentionRules": {
+          "type": "object",
+          "description": "The periods of every kind of content Aidash keeps only for a while.",
+          "required": ["document_snapshots"],
+          "properties": {
+            "document_snapshots": {
+              "$ref": "#/components/schemas/SnapshotPeriods"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SnapshotPeriods": {
+          "type": "object",
+          "description": "How long the contents of a Document snapshot are kept.",
+          "required": ["after_run_seconds", "max_age_seconds"],
+          "properties": {
+            "after_run_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Kept this long after the snapshot's Run ends.",
+              "minimum": 0
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Never kept longer than this after retrieval, even while the Run lasts.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       }
     }

@@ -1,5 +1,6 @@
 //! Usage Records are dispatched under the worker lease and completed at most once.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::projection::ProjectionVersion;
 use aidash_domain::provider::estimate::{
 	ByteEstimate, CALIBRATION_WINDOW, EstimateSnapshot, FRAMING_RESERVE,
@@ -102,15 +103,21 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
-		.create_workspace("acme", "alice", "Usage", "Record inference usage")
+		.create_workspace(&TEST_FIXTURE, "Usage", "Record inference usage")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let token = Uuid::new_v4();
@@ -129,7 +136,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 
 	// Act / Assert: dispatch then completion writes only the reported counts.
 	store
-		.record_usage_dispatch(&run, token, &completed)
+		.record_usage_dispatch(&TEST_FIXTURE, &run, token, &completed)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -139,6 +146,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	assert!(
 		store
 			.complete_usage_record(
+				&TEST_FIXTURE,
 				&run,
 				completed.attempt,
 				&UsageOutcome::Completed(reported.clone())
@@ -165,7 +173,12 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	// Completion is at most once.
 	assert!(
 		!store
-			.complete_usage_record(&run, completed.attempt, &UsageOutcome::Unknown)
+			.complete_usage_record(
+				&TEST_FIXTURE,
+				&run,
+				completed.attempt,
+				&UsageOutcome::Unknown
+			)
 			.await
 			.unwrap()
 	);
@@ -174,12 +187,12 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	// An attempt left dispatched by a crash becomes unknown at the next dispatch.
 	let interrupted = dispatch(token);
 	store
-		.record_usage_dispatch(&run, token, &interrupted)
+		.record_usage_dispatch(&TEST_FIXTURE, &run, token, &interrupted)
 		.await
 		.unwrap();
 	let rejected = dispatch(token);
 	store
-		.record_usage_dispatch(&run, token, &rejected)
+		.record_usage_dispatch(&TEST_FIXTURE, &run, token, &rejected)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -190,6 +203,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	assert!(
 		!store
 			.complete_usage_record(
+				&TEST_FIXTURE,
 				&run,
 				interrupted.attempt,
 				&UsageOutcome::Completed(reported)
@@ -206,6 +220,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	assert!(
 		store
 			.complete_usage_record(
+				&TEST_FIXTURE,
 				&run,
 				rejected.attempt,
 				&UsageOutcome::Rejected {
@@ -223,7 +238,7 @@ async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	// Another worker's token cannot dispatch for this Run.
 	assert!(
 		store
-			.record_usage_dispatch(&run, Uuid::new_v4(), &dispatch(token))
+			.record_usage_dispatch(&TEST_FIXTURE, &run, Uuid::new_v4(), &dispatch(token))
 			.await
 			.is_err()
 	);
@@ -234,15 +249,21 @@ async fn leased_run(store: &Store, token: Uuid) -> Run {
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
-		.create_workspace("acme", "alice", "Usage", "Record inference usage")
+		.create_workspace(&TEST_FIXTURE, "Usage", "Record inference usage")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	store.lease_run(token, 30).await.unwrap().unwrap()
@@ -280,7 +301,7 @@ async fn dispatch_does_not_wait_for_the_workers_own_run_references(
 	// Act
 	let dispatched = tokio::time::timeout(
 		std::time::Duration::from_secs(10),
-		store.record_usage_dispatch(&run, token, &attempt),
+		store.record_usage_dispatch(&TEST_FIXTURE, &run, token, &attempt),
 	)
 	.await;
 
@@ -311,7 +332,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	let run = leased_run(&store, crashed).await;
 	let attempt = dispatch(crashed);
 	store
-		.record_usage_dispatch(&run, crashed, &attempt)
+		.record_usage_dispatch(&TEST_FIXTURE, &run, crashed, &attempt)
 		.await
 		.unwrap();
 	// A live lease is not recoverable; this also completes the recovery scan.
@@ -341,7 +362,7 @@ async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	);
 	assert!(
 		!store
-			.complete_usage_record(&run, attempt.attempt, &UsageOutcome::Unknown)
+			.complete_usage_record(&TEST_FIXTURE, &run, attempt.attempt, &UsageOutcome::Unknown)
 			.await
 			.unwrap()
 	);
@@ -384,7 +405,7 @@ async fn usage_records_keep_the_cache_identity_of_salted_attempts(
 	// Act
 	for attempt in [&legacy, &native] {
 		store
-			.record_usage_dispatch(&run, token, attempt)
+			.record_usage_dispatch(&TEST_FIXTURE, &run, token, attempt)
 			.await
 			.unwrap();
 	}
@@ -477,12 +498,12 @@ async fn complete_sample_attempts_record_anonymous_calibration_samples(
 		),
 	] {
 		store
-			.record_usage_dispatch(&run, token, attempt)
+			.record_usage_dispatch(&TEST_FIXTURE, &run, token, attempt)
 			.await
 			.unwrap();
 		assert!(
 			store
-				.complete_usage_record(&run, attempt.attempt, &outcome)
+				.complete_usage_record(&TEST_FIXTURE, &run, attempt.attempt, &outcome)
 				.await
 				.unwrap()
 		);
@@ -561,7 +582,7 @@ async fn calibration_samples_keep_only_the_newest_window_per_key(
 			..dispatch(token)
 		};
 		store
-			.record_usage_dispatch(&run, token, &attempt)
+			.record_usage_dispatch(&TEST_FIXTURE, &run, token, &attempt)
 			.await
 			.unwrap();
 		let reported = ReportedUsage {
@@ -570,7 +591,12 @@ async fn calibration_samples_keep_only_the_newest_window_per_key(
 		};
 		assert!(
 			store
-				.complete_usage_record(&run, attempt.attempt, &UsageOutcome::Completed(reported))
+				.complete_usage_record(
+					&TEST_FIXTURE,
+					&run,
+					attempt.attempt,
+					&UsageOutcome::Completed(reported)
+				)
 				.await
 				.unwrap()
 		);

@@ -1,7 +1,9 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 #[path = "../../../execution/tests/support/worker_process.rs"]
 mod worker_process;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	Error,
 	apps::federation::transactions::{
@@ -14,7 +16,6 @@ use aidash_server::{
 };
 use chrono::{Duration, Utc};
 use common::{TestEnvironment, test_environment};
-use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
 use reinhardt::db::orm::DatabaseConnectionLease;
 use reinhardt::test::fixtures::http_client;
 use serde_json::{Value, json};
@@ -114,7 +115,7 @@ fn node(
 			server: Some(peer.server),
 			client: peer.client,
 			application: peer.application,
-			_runtime: peer.runtime,
+			runtime: peer.runtime,
 			_capacity: None,
 		}
 	}
@@ -168,12 +169,12 @@ fn pair(
 	}
 	let wa =
 		a.f.store
-			.create_workspace("acme", "alice", "A", "Atomic state")
+			.create_workspace(&TEST_FIXTURE, "A", "Atomic state")
 			.await
 			.unwrap();
 	let wb =
 		b.f.store
-			.create_workspace("acme", "alice", "B", "Atomic state")
+			.create_workspace(&TEST_FIXTURE, "B", "Atomic state")
 			.await
 			.unwrap();
 	let manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
@@ -188,7 +189,7 @@ struct Node {
 	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
 	reservation: Reservation,
 	application: common::TestApplication,
-	_runtime: common::RuntimeFixture,
+	runtime: common::RuntimeFixture,
 	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Node {
@@ -208,20 +209,61 @@ impl Node {
 			);
 		}
 	}
+	/// Name this Node's database in step failures, which list sessions by database.
+	fn stage(&self, action: &str, step: &str) -> String {
+		format!(
+			"{action} {} (database {}): {step}",
+			self.f.config.node_id, self.runtime.schema
+		)
+	}
+	/// Stop serving and close both pools. Each step is bounded because a pool
+	/// close waits for every checked-out connection to return (#308).
+	async fn close(&mut self, action: &str) {
+		let environment = self.runtime.environment();
+		environment
+			.bounded(self.stage(action, "stop the HTTP server"), self.stop())
+			.await;
+		environment
+			.bounded(
+				self.stage(action, "close the pool"),
+				self.f.store.pool.close(),
+			)
+			.await;
+		environment
+			.bounded(
+				self.stage(action, "close the control pool"),
+				self.f.store.control_pool.close(),
+			)
+			.await;
+	}
 	async fn restart(&mut self) {
 		// Act: close and reconnect the participant pools, then rebind its stable origin.
-		self.stop().await;
-		self.f.store.pool.close().await;
-		self.f.store.control_pool.close().await;
-		let store = common::native_store(&self.f.config.database_url, &self.f.config.node_id).await;
+		self.close("restart").await;
+		let environment = self.runtime.environment();
+		let store = environment
+			.bounded(
+				self.stage("restart", "reconnect the store"),
+				common::native_store(&self.f.config.database_url, &self.f.config.node_id),
+			)
+			.await;
 		self.f = Federation {
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			store,
 			notify: Arc::new(tokio::sync::Notify::new()),
 			..self.f.clone()
 		};
-		self.application = common::application(self.f.clone()).await;
-		self.serve(self.application.native_router()).await;
+		self.application = environment
+			.bounded(
+				self.stage("restart", "rebuild the application"),
+				common::application(self.f.clone()),
+			)
+			.await;
+		environment
+			.bounded(
+				self.stage("restart", "serve the stable origin"),
+				self.serve(self.application.native_router()),
+			)
+			.await;
 	}
 	async fn serve(&mut self, router: Arc<reinhardt::ServerRouter>) {
 		// Act: replace the live participant routes while preserving its advertised port.
@@ -279,9 +321,7 @@ impl Node {
 		self.request(reqwest::Method::GET, path, None).await
 	}
 	async fn cleanup(mut self) {
-		self.stop().await;
-		self.f.store.pool.close().await;
-		self.f.store.control_pool.close().await;
+		self.close("clean up").await;
 	}
 }
 impl Drop for Node {
@@ -485,7 +525,7 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	assert!(
 		node.f
 			.store
-			.update_state(workspace, 0, json!({"bypass":true}))
+			.update_state(&TEST_FIXTURE, workspace, 0, json!({"bypass":true}))
 			.await
 			.is_err(),
 		"statement trigger must reject a direct write"
@@ -538,8 +578,14 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	);
 	let final_state = complete(&a, manifest.id).await;
 	assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().state, json!({}));
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().state, json!({}));
+	assert_eq!(
+		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().state,
+		json!({})
+	);
+	assert_eq!(
+		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state,
+		json!({})
+	);
 	let decisions: i64 = { let query_bind_1 = manifest.id; sqlx::query_scalar(&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 			.from(reinhardt::query::Alias::new("atomic_history"))
@@ -574,8 +620,14 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		Err(Error::TransactionPending)
 	));
 	steps(&a, manifest.id, 2).await; // Both prepared; speculative writes rolled back.
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().state, json!({}));
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().state, json!({}));
+	assert_eq!(
+		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().state,
+		json!({})
+	);
+	assert_eq!(
+		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state,
+		json!({})
+	);
 	steps(&a, manifest.id, 1).await; // Durable commit precedes any application.
 	assert_eq!(
 		coordinator::status(&a.f, manifest.id)
@@ -586,13 +638,9 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		Some("COMMIT")
 	);
 	assert!(coordinator::abort(&a.f, manifest.id).await.is_err());
-	let connection = DatabaseConnectionLease::register(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(a.f.store.control_pool.driver().clone()),
-	)))
-	.unwrap();
 	assert!(
 		!coordinator_records::transition(
-			connection.handle(),
+			&a.f.store.control_pool,
 			manifest.id,
 			CoordinatorTransition::Decide(AtomicCoordinatorDecision::Abort),
 			"late conflicting decision",
@@ -610,15 +658,18 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	);
 	steps(&a, manifest.id, 1).await;
 	assert_eq!(
-		a.f.store.workspace(wa).await.unwrap().state["value"],
+		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().state["value"],
 		"new-a"
 	);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().state, json!({}));
+	assert_eq!(
+		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state,
+		json!({})
+	);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	steps(&a, manifest.id, 1).await;
 	assert_eq!(
-		b.f.store.workspace(wb).await.unwrap().state["value"],
+		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().state["value"],
 		"new-b"
 	);
 	assert!(
@@ -691,7 +742,12 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	assert!(!done.visible);
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
-			node.f.store.workspace(workspace).await.unwrap().state,
+			node.f
+				.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.state,
 			json!({})
 		);
 		assert_eq!(
@@ -738,8 +794,22 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 	unavailable(&b, wb).await;
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("COMMIT"));
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	a.cleanup().await;
 	b.cleanup().await;
 }
@@ -768,8 +838,22 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 		complete(&b, second.id).await.decision.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	a.cleanup().await;
 	b.cleanup().await;
 }
@@ -791,6 +875,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 	let task =
 		a.f.store
 			.create_task(
+				&TEST_FIXTURE,
 				wa,
 				&NewTask {
 					title: "Atomic task".into(),
@@ -804,10 +889,14 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 			)
 			.await
 			.unwrap();
-	a.f.store.claim(task.id, 0, &owner, &agent).await.unwrap();
+	a.f.store
+		.claim(&TEST_FIXTURE, task.id, 0, &owner, &agent)
+		.await
+		.unwrap();
 	let task =
 		a.f.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				1,
 				&owner,
@@ -859,7 +948,13 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 	.unwrap();
 	let run =
 		b.f.store
-			.accept_run(&task, &a.f.config.node_id, &agent.id, &agent.version)
+			.accept_run(
+				&TEST_FIXTURE,
+				&task,
+				&a.f.config.node_id,
+				&agent.id,
+				&agent.version,
+			)
 			.await
 			.unwrap();
 	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
@@ -904,10 +999,17 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 		Some("ABORT")
 	);
 	assert_eq!(
-		a.f.store.task(task.id).await.unwrap().status,
+		a.f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Running
 	);
-	assert!(a.f.store.snapshot(wa).await.unwrap().artifacts.is_empty());
+	assert!(
+		a.f.store
+			.snapshot(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.artifacts
+			.is_empty()
+	);
 	{
 		let query_bind_1 = run.id;
 		sqlx::query(
@@ -945,14 +1047,24 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 			.unwrap();
 	}
 	assert_eq!(
-		a.f.store.task(task.id).await.unwrap().status,
+		a.f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Completed
 	);
 	assert_eq!(
-		b.f.store.run(run.id).await.unwrap().phase().as_str(),
+		b.f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
-	let artifacts = a.f.store.snapshot(wa).await.unwrap().artifacts;
+	let artifacts =
+		a.f.store
+			.snapshot(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.artifacts;
 	assert_eq!(artifacts.len(), 1);
 	assert_eq!(artifacts[0].created_by, owner);
 	a.cleanup().await;
@@ -969,13 +1081,27 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 	steps(&a, manifest.id, 4).await;
 	a.stop().await;
 	assert_eq!(participant::recover_once(&b.f).await.unwrap(), 0);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 0);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
 	unavailable(&b, wb).await;
 	a.restart().await;
 	steps(&a, manifest.id, 1).await;
 	// The coordinator has not sent apply, but a participant can recover its vote.
 	assert_eq!(participant::recover_once(&b.f).await.unwrap(), 1);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	assert_eq!(
@@ -1074,8 +1200,22 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		Some("ABORT")
 	);
 	complete(&a, manifest.id).await;
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 0);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 0);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
 
 	assert_eq!(
 		b.request(
@@ -1123,27 +1263,58 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		complete(&a, admitted.id).await.decision.as_deref(),
 		Some("COMMIT")
 	);
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	a.cleanup().await;
 	b.cleanup().await;
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future(awt)] pair: Pair) {
 	let (mut a, mut b, manifest, wa, wb) = pair;
+	let environment = a.runtime.environment();
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	let mut transitions = 0;
 	loop {
+		// Restarts bound their own steps; name the protocol steps between them (#308).
 		a.restart().await;
 		b.restart().await;
-		let state = coordinator::advance(&a.f, manifest.id).await.unwrap();
 		transitions += 1;
+		let state = environment
+			.bounded(
+				format!("transition {transitions}: advance"),
+				coordinator::advance(&a.f, manifest.id),
+			)
+			.await
+			.unwrap();
 		if !state.visible {
 			// No node may expose a new value before the global visibility decision.
 			for (node, workspace) in [(&a, wa), (&b, wb)] {
-				let (status, value) = node.get(&format!("/api/workspaces/{workspace}")).await;
+				let (status, value) = environment
+					.bounded(
+						format!(
+							"transition {transitions}: read {} workspace",
+							node.f.config.node_id
+						),
+						node.get(&format!("/api/workspaces/{workspace}")),
+					)
+					.await;
 				assert!(
 					status == 503 || (status == 200 && value["workspace"]["revision"] == 0),
 					"{status}: {value}"
@@ -1156,8 +1327,22 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future
 		assert!(transitions < 20);
 	}
 	assert_eq!(transitions, 11);
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	a.cleanup().await;
 	b.cleanup().await;
 }
@@ -1179,13 +1364,28 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 		complete(&a, manifest.id).await.decision.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 0);
-	assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 0);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
+	assert_eq!(
+		b.f.store
+			.workspace(&TEST_FIXTURE, wb)
+			.await
+			.unwrap()
+			.revision,
+		0
+	);
 	a.cleanup().await;
 	b.cleanup().await;
 }
 
 #[rstest::rstest]
+#[timeout(common::TEST_BOUND)]
 #[tokio::test]
 async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	#[future(awt)] pair: Pair,
@@ -1281,7 +1481,15 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	drop(restarted_a);
 	drop(restarted_b);
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
-		assert_eq!(node.f.store.workspace(workspace).await.unwrap().revision, 1);
+		assert_eq!(
+			node.f
+				.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.revision,
+			1
+		);
 		let events: i64 = {
 			let query_bind_1 = workspace;
 			sqlx::query_scalar(
@@ -1329,7 +1537,14 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 		}
 	}
 	assert!(coordinator::status(&a.f, local.id).await.unwrap().complete);
-	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
+	assert_eq!(
+		a.f.store
+			.workspace(&TEST_FIXTURE, wa)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
 	a.cleanup().await;
 	b.cleanup().await;
 }
@@ -1369,8 +1584,18 @@ async fn mapped_transaction_admission_and_revocation(
 	let app_b = b.application.clone();
 	let (_, token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
 	let (_, _, task_b) = common::bootstrap(&b.f, &app_b, "http://127.0.0.1:9").await;
-	let wa = a.f.store.task(task_a).await.unwrap().workspace_id;
-	let wb = b.f.store.task(task_b).await.unwrap().workspace_id;
+	let wa =
+		a.f.store
+			.task(&TEST_FIXTURE, task_a)
+			.await
+			.unwrap()
+			.workspace_id;
+	let wb =
+		b.f.store
+			.task(&TEST_FIXTURE, task_b)
+			.await
+			.unwrap()
+			.workspace_id;
 	let auth_a = Authorization {
 		pool: a.f.store.control_pool.clone(),
 	};
@@ -1443,7 +1668,12 @@ async fn mapped_transaction_admission_and_revocation(
 		}
 		let app_c = c.application.clone();
 		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
-		let workspace = c.f.store.task(task).await.unwrap().workspace_id;
+		let workspace =
+			c.f.store
+				.task(&TEST_FIXTURE, task)
+				.await
+				.unwrap()
+				.workspace_id;
 		let auth = Authorization {
 			pool: c.f.store.control_pool.clone(),
 		};
@@ -1803,7 +2033,12 @@ async fn mapped_transaction_admission_and_revocation(
 	}
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
-			node.f.store.workspace(workspace).await.unwrap().revision,
+			node.f
+				.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.revision,
 			i64::from(expected == "COMMIT")
 		);
 		assert_eq!(
@@ -1813,7 +2048,11 @@ async fn mapped_transaction_admission_and_revocation(
 	}
 	if let Some((c, workspace)) = third {
 		assert_eq!(
-			c.f.store.workspace(workspace).await.unwrap().revision,
+			c.f.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.revision,
 			i64::from(expected == "COMMIT")
 		);
 		assert_eq!(c.get(&format!("/api/workspaces/{workspace}")).await.0, 200);
@@ -1922,7 +2161,15 @@ async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_t
 		Some("COMMIT")
 	);
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
-		assert_eq!(node.f.store.workspace(workspace).await.unwrap().revision, 1);
+		assert_eq!(
+			node.f
+				.store
+				.workspace(&TEST_FIXTURE, workspace)
+				.await
+				.unwrap()
+				.revision,
+			1
+		);
 	}
 	let mut next = manifest.clone();
 	next.id = Uuid::new_v4();

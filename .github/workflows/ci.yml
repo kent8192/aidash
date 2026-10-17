@@ -94,7 +94,7 @@ jobs:
       - run: npm ci --prefix web
       - run: npm run build --prefix web
       - run: scripts/install-browser.sh
-      - run: npm run test:graph --prefix web && npm run test:collaboration --prefix web
+      - run: npm run test:graph --prefix web && npm run test:collaboration --prefix web && npm run test:research --prefix web
       - run: npm run test:ui --prefix web -- --reporter=list,json
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/browser.json
@@ -216,6 +216,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Interim licensing (#250): no license declarations until #255 replaces this guard.
+      - run: python3 scripts/check-license-declarations.py
+      - run: python3 -m unittest discover -s scripts -p test_license_declarations.py
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py

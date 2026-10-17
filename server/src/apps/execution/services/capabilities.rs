@@ -10,6 +10,8 @@ pub struct ToolContext {
 	pub home: Home,
 	pub store: Store,
 	pub run: Run,
+	/// The Run's Tenant scope; every transaction the tool opens uses it.
+	pub scope: aidash_application::tenancy::TenancyScope,
 }
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -19,11 +21,8 @@ pub trait Tool: Send + Sync {
 	async fn invoke(&self, context: &ToolContext, input: Value, key: &str) -> Result<Value>;
 }
 pub fn validate_config(value: &Value) -> Result<()> {
-	validate_config_in(value, true)
-}
-pub(crate) fn validate_config_in(value: &Value, local: bool) -> Result<()> {
 	crate::bootstrap::registry_validation()
-		.validate_tool(value, local)
+		.validate_tool(value)
 		.map_err(Into::into)
 }
 

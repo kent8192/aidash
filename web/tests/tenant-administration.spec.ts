@@ -126,3 +126,238 @@ test("a Tenant Administrator is not offered controls the server marks as its own
     await expect(row(own).getByRole("checkbox")).toHaveCount(0);
   }
 });
+
+test("an approval submits only the proposed groups that are still assignable", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture", {
+    tenant: "alpha",
+    name: "alice",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const approvals: unknown[] = [];
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({ json: { access, node_id: "aidash://test" } });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access,
+          node: {
+            id: "aidash://test",
+            endpoint: "http://localhost",
+            protocol_version: "0.1",
+            capabilities: [],
+            clusters: [],
+          },
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+          peers: [],
+        },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/administration")
+      return route.fulfill({
+        json: {
+          tenant: "alpha",
+          actions: ["registration.read", "registration.approve"],
+          assignable_groups: ["members"],
+          policy_revision: 3,
+        },
+      });
+    // The Invitation proposed `reviewers`, which is no longer assignable.
+    if (path === "/api/tenants/alpha/registrations")
+      return route.fulfill({
+        json: [
+          {
+            id: "request-dave",
+            identity: {
+              id: "identity-dave",
+              verified_email: "dave@example.test",
+              display_name: "dave",
+            },
+            expires_at: "2026-10-20T00:00:00Z",
+            proposed_groups: ["members", "reviewers"],
+          },
+        ],
+      });
+    if (path === "/api/tenants/alpha/registrations/request-dave/approve") {
+      approvals.push(request.postDataJSON());
+      return route.fulfill({ json: {} });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+  await expect(page.getByRole("checkbox", { name: "members" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "reviewers" })).toHaveCount(
+    0,
+  );
+  await page.getByLabel("New user subject").fill("dave");
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect
+    .poll(() => approvals)
+    .toEqual([{ subject: "dave", groups: ["members"] }]);
+});
+
+test("a Deployment Administrator invites a Tenant's first administrator and approves what each Invitation proposed", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  // This Deployment issues Invitations.
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: {
+        id: "fixture-browser-session",
+        deployment_administrator: true,
+        mappings: [],
+        invitations: true,
+      },
+    }),
+  );
+  const administrator = { kind: "deployment_administrator" };
+  const request = (id: string, invitation: string, groups: string[]) => ({
+    id,
+    identity_id: `identity-${id}`,
+    status: "pending",
+    created_at: "2026-10-17T00:00:00Z",
+    expires_at: "2026-10-24T00:00:00Z",
+    decided_at: null,
+    tenant: "beta",
+    invitation_id: invitation,
+    proposed_groups: groups,
+  });
+  const issued: unknown[] = [];
+  const approvals: unknown[] = [];
+  await page.route("**/api/**", async (route) => {
+    const call = route.request();
+    const path = new URL(call.url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({
+        json: { access: administrator, node_id: "aidash://test" },
+      });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access: administrator,
+          node: {
+            id: "aidash://test",
+            endpoint: "http://localhost",
+            protocol_version: "0.1",
+            capabilities: [],
+            clusters: [],
+          },
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+          peers: [],
+        },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    // A Tenant created by a Deployment Administrator: nobody is in it yet.
+    if (path === "/api/authorization/beta")
+      return route.fulfill({
+        json: {
+          revision: 1,
+          bundle: {
+            tenant: "beta",
+            groups: {
+              administrators: { roles: ["administrator"], assignable: true },
+              members: { roles: ["member"], assignable: true },
+              auditors: { roles: ["auditor"] },
+            },
+            roles: {},
+            subjects: {},
+            policies: [],
+          },
+        },
+      });
+    if (path === "/api/tenants/beta/invitations" && call.method() === "POST") {
+      issued.push(call.postDataJSON());
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: "invitation-erin",
+          tenant: "beta",
+          link: "http://127.0.0.1/invitations/beta#erin-secret",
+          secret: "erin-secret",
+          groups: ["administrators"],
+          expires_at: "2026-10-24T00:00:00Z",
+        },
+      });
+    }
+    if (path === "/api/dashboard/registrations")
+      return route.fulfill({
+        json: [
+          request("erin", "invitation-erin", ["administrators"]),
+          request("frank", "invitation-frank", ["members"]),
+          // A request without an Invitation proposes nothing.
+          { ...request("grace", "", []), invitation_id: null },
+        ],
+      });
+    if (path === "/api/dashboard/registrations/frank/approve") {
+      approvals.push(call.postDataJSON());
+      return route.fulfill({ json: {} });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+
+  // The queue starts each approval from what its Invitation proposed.
+  const queued = (id: string) =>
+    page.locator("li").filter({ hasText: `identity-${id}` });
+  const groups = "Groups, if the subject is new (comma-separated)";
+  await expect(queued("erin").getByLabel(groups)).toHaveValue("administrators");
+  await expect(queued("frank").getByLabel(groups)).toHaveValue("members");
+  await expect(queued("grace").getByLabel(groups)).toHaveValue("");
+  await queued("frank").getByLabel("User subject").fill("frank");
+  await queued("frank")
+    .getByRole("button", { name: "Approve mapping", exact: true })
+    .click();
+  await expect
+    .poll(() => approvals)
+    .toEqual([{ tenant: "beta", subject: "frank", groups: ["members"] }]);
+
+  // The Tenant's view issues Invitations into its Assignable Groups only.
+  const open = page
+    .locator("form")
+    .filter({ has: page.locator('input[name="tenant"]') });
+  await open.locator('input[name="tenant"]').fill("beta");
+  await open.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "members" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "auditors" })).toHaveCount(0);
+  await page.getByRole("checkbox", { name: "administrators" }).check();
+  await page.getByRole("checkbox", { name: "members" }).uncheck();
+  await page
+    .getByRole("button", { name: "Create invitation link", exact: true })
+    .click();
+  await expect(
+    page.getByText("http://127.0.0.1/invitations/beta#erin-secret"),
+  ).toBeVisible();
+  expect(issued).toEqual([
+    { groups: ["administrators"], expires_in_seconds: 604_800 },
+  ]);
+});

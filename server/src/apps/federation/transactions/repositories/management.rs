@@ -1,5 +1,5 @@
 //! Native records and authority adapters for transaction management use cases.
-use super::{authority::persistence, coordination::connection};
+use super::{authority::persistence, coordination::plumbing};
 use crate::apps::federation::transactions::{
 	models::{AtomicParticipant, AtomicPeerTrust, coordinator_records},
 	serializers::protocol::TransactionTrust,
@@ -23,7 +23,6 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::orm::DatabaseConnectionLease;
 use uuid::Uuid;
 
 pub(crate) struct Repository {
@@ -32,15 +31,17 @@ pub(crate) struct Repository {
 
 struct TrustUpdate {
 	runtime: Federation,
-	connection: DatabaseConnectionLease,
 }
 #[async_trait]
 impl TrustScope for TrustUpdate {
 	async fn set(&mut self, trust: Trust) -> Result<Trust> {
-		AtomicPeerTrust::set(self.connection.handle(), TransactionTrust::from(trust))
-			.await
-			.map(Into::into)
-			.map_err(Into::into)
+		AtomicPeerTrust::set(
+			&self.runtime.store.control_pool,
+			TransactionTrust::from(trust),
+		)
+		.await
+		.map(Into::into)
+		.map_err(Into::into)
 	}
 	async fn pending_peer(&mut self, node: &str) -> Result<Vec<Uuid>> {
 		persistence::pending_peer(&self.runtime, node)
@@ -86,11 +87,12 @@ impl ManagementRepository for Repository {
 		identity: Option<&ExecutionPrincipal>,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<Status>> {
-		let lease = connection(&self.runtime)?;
-		coordinator_records::visible_candidates(&mut lease.handle(), identity, cursor)
-			.await
-			.map(|rows| rows.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
+		plumbing(&self.runtime, async |tx| {
+			coordinator_records::visible_candidates(tx, identity, cursor).await
+		})
+		.await
+		.map(|rows| rows.into_iter().map(Into::into).collect())
+		.map_err(Into::into)
 	}
 	async fn require_owner(&self, identity: &ExecutionPrincipal, id: Uuid) -> Result<()> {
 		control::require_owner(
@@ -129,19 +131,20 @@ impl ManagementRepository for Repository {
 			.await
 	}
 	async fn history(&self, id: Uuid) -> Result<(Vec<Vote>, Vec<History>)> {
-		let lease = connection(&self.runtime)?;
-		let mut db = lease.handle();
-		let votes = coordinator_records::votes(&mut db, id)
-			.await?
-			.into_iter()
-			.map(Into::into)
-			.collect();
-		let history = coordinator_records::audit(&mut db, id)
-			.await?
-			.into_iter()
-			.map(Into::into)
-			.collect();
-		Ok((votes, history))
+		Ok(plumbing(&self.runtime, async |db| {
+			let votes = coordinator_records::votes(db, id)
+				.await?
+				.into_iter()
+				.map(Into::into)
+				.collect();
+			let history = coordinator_records::audit(db, id)
+				.await?
+				.into_iter()
+				.map(Into::into)
+				.collect();
+			Ok((votes, history))
+		})
+		.await?)
 	}
 	async fn abort_deployment_administrator(&self, id: Uuid) -> Result<Status> {
 		crate::bootstrap::transaction_coordinator(&self.runtime)
@@ -149,15 +152,13 @@ impl ManagementRepository for Repository {
 			.await
 	}
 	async fn participants(&self) -> Result<Vec<LocalStatus>> {
-		let lease = connection(&self.runtime)?;
-		AtomicParticipant::page(&mut lease.handle())
+		plumbing(&self.runtime, async |tx| AtomicParticipant::page(tx).await)
 			.await
 			.map(|rows| rows.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
 	async fn trusts(&self) -> Result<Vec<Trust>> {
-		let lease = connection(&self.runtime)?;
-		AtomicPeerTrust::page(&mut lease.handle())
+		plumbing(&self.runtime, async |tx| AtomicPeerTrust::page(tx).await)
 			.await
 			.map(|rows| rows.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
@@ -172,7 +173,6 @@ impl ManagementRepository for Repository {
 	async fn trust_scope(&self) -> Result<Box<dyn TrustScope>> {
 		Ok(Box::new(TrustUpdate {
 			runtime: self.runtime.clone(),
-			connection: connection(&self.runtime)?,
 		}))
 	}
 	async fn pending_peer(&self, node: &str) -> Result<Vec<Uuid>> {
@@ -184,9 +184,8 @@ impl ManagementRepository for Repository {
 		crate::config::peer_secret(reference).map_err(Into::into)
 	}
 	async fn restore_peer(&self, node: &str, reference: &str, credential: &str) -> Result<Peer> {
-		let lease = connection(&self.runtime)?;
 		crate::apps::federation::peer::models::records::restore_authentication(
-			lease.handle(),
+			&self.runtime.store.pool,
 			node,
 			reference,
 			credential,

@@ -82,18 +82,18 @@ async fn rest_store_writes_payload_once_and_uses_only_metadata_and_lifecycle_end
 	let key: SecretString = "canary-provider-write-only-key".into();
 	let version = store.add_version("alpha", &resource, &key).await.unwrap();
 	assert_eq!(version, format!("{resource}/versions/2"));
-	assert_eq!(store.versions(&resource).await.unwrap().len(), 2);
-	store.disable(&version).await.unwrap();
+	assert_eq!(store.versions("alpha", &resource).await.unwrap().len(), 2);
+	store.disable("alpha", &version).await.unwrap();
 	store
-		.disable(&format!("{resource}/versions/1"))
+		.disable("alpha", &format!("{resource}/versions/1"))
 		.await
 		.unwrap();
-	store.destroy(&version).await.unwrap();
+	store.destroy("alpha", &version).await.unwrap();
 	store
-		.destroy(&format!("{resource}/versions/3"))
+		.destroy("alpha", &format!("{resource}/versions/3"))
 		.await
 		.unwrap();
-	store.delete(&resource).await.unwrap();
+	store.delete("alpha", &resource).await.unwrap();
 	let calls = calls.lock().unwrap();
 	assert!(
 		calls.iter().all(|(_, p, _)| !p.contains(":access")

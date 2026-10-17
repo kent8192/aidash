@@ -1,4 +1,5 @@
 //! Real HTTP coverage for peer mappings and discovery under live authority changes.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/endpoint.rs"]
 mod endpoint;
 #[path = "../../../execution/tests/support/execution.rs"]
@@ -394,6 +395,7 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	let mapping = json!({"source_node":SOURCE,"source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
 	let mut other_policy = policy.clone();
 	other_policy["tenant"] = json!("other");
+	crate::endpoint::tenant_root(f, "other").await;
 	assert_eq!(
 		request(
 			app,

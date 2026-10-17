@@ -133,10 +133,12 @@ class Experiment:
         subjects = {self.subject: {"kind": "user"}}
         for agent in agent_ids:
             subjects[f"{self.node}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+        # Aidash assigns Tenant names; `self.tenant` is the label until it does.
+        self.tenant = self.api.post("/api/tenants", {"label": self.tenant}, accept=(201,))["name"]
         bundle = {"tenant": self.tenant, "subjects": subjects,
                   "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
                                 "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-        self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": 0, "bundle": bundle})
+        self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": 1, "bundle": bundle})
         self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
 
     def register(self, kind, identifier, config, schema=None, description="Fixed-task evaluation fixture",
@@ -170,7 +172,7 @@ def fixture_model_ids(corpus, prefix):
 def tool_config(experiment, endpoint, alias):
     return {"registry_node": experiment.node, "provider": "integration.http@1", "operation": "invoke",
             "default_alias": alias, "tier": "integration", "narrow": {},
-            "transport": {"transport": "http", "endpoint": endpoint, "credential_env": None, "replay": "idempotent"}}
+            "transport": {"transport": "http", "endpoint": endpoint, "replay": "idempotent"}}
 
 
 def agent_config(corpus, task, model_ref, tool_refs, fields):

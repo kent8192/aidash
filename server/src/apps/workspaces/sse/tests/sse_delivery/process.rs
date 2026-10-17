@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::test::testcontainers::{
 	GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
 };
@@ -514,6 +515,7 @@ async fn oversized_reference_notification_replays_canonical_bytes(
 		.f
 		.store
 		.emit(
+			&TEST_FIXTURE,
 			Some(ws),
 			"workspace.updated",
 			json!({"id":ws,"text":"x".repeat(body_bytes)}),

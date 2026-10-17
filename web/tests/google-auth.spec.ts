@@ -103,7 +103,7 @@ for (const locale of ["ja-JP", "en-US"] as const) {
       exact: true,
     });
     await expect(account).toBeVisible();
-    expect(selected).toContain("mapping:personal-mapping");
+    expect(selected).toContain("mapping:acme:personal-mapping");
     expect(requests).toBe(0);
     await account.click();
     await expect(
@@ -135,13 +135,13 @@ for (const locale of ["ja-JP", "en-US"] as const) {
           ? "このタブで使う権限を選択してください"
           : "Choose the authority for this tab",
       }),
-    ).toHaveValue("mapping:personal-mapping");
+    ).toHaveValue("mapping:acme:personal-mapping");
     expect(requests).toBe(1);
   });
 }
 
 for (const selected of [
-  "mapping:shared-mapping",
+  "mapping:team:shared-mapping",
   "deployment_administrator",
   null,
 ]) {
@@ -164,7 +164,7 @@ for (const selected of [
     });
     await page.route("**/api/session", (route) => {
       expect(route.request().headers()["x-aidash-context"]).toBe(
-        selected ?? "mapping:personal-mapping",
+        selected ?? "mapping:acme:personal-mapping",
       );
       return route.fallback();
     });
@@ -176,7 +176,7 @@ for (const selected of [
       page.getByRole("combobox", {
         name: "Choose the authority for this tab",
       }),
-    ).toHaveValue(selected ?? "mapping:personal-mapping");
+    ).toHaveValue(selected ?? "mapping:acme:personal-mapping");
   });
 }
 
@@ -204,7 +204,7 @@ test("a denied shared request keeps personal access and reports the failure", as
     page.getByRole("combobox", {
       name: "Choose the authority for this tab",
     }),
-  ).toHaveValue("mapping:personal-mapping");
+  ).toHaveValue("mapping:acme:personal-mapping");
 });
 
 test("legacy mappings still require an explicit authority choice", async ({
@@ -273,8 +273,8 @@ test("a revoked personal credential is not selected automatically", async ({
   await expect(
     page.getByRole("button", { name: "Account settings", exact: true }),
   ).toBeVisible();
-  expect(selected).toContain("mapping:shared-mapping");
-  expect(selected).not.toContain("mapping:personal-mapping");
+  expect(selected).toContain("mapping:team:shared-mapping");
+  expect(selected).not.toContain("mapping:acme:personal-mapping");
 });
 
 test("a saved personal selection with an inactive credential returns to the chooser", async ({
@@ -282,7 +282,7 @@ test("a saved personal selection with an inactive credential returns to the choo
 }) => {
   await installSession(page, {
     deploymentAdministrator: true,
-    selected: "mapping:personal-mapping",
+    selected: "mapping:acme:personal-mapping",
     mappings: [
       { ...personalMapping, credential_active: false },
       {
@@ -313,14 +313,14 @@ test("a saved personal selection with an inactive credential returns to the choo
     page.getByRole("button", { name: "Account settings", exact: true }),
   ).toBeVisible();
   expect(selected).toContain("deployment_administrator");
-  expect(selected).not.toContain("mapping:personal-mapping");
+  expect(selected).not.toContain("mapping:acme:personal-mapping");
 });
 
 test("a disabled personal mapping keeps the shared-access request", async ({
   page,
 }) => {
   await installSession(page, {
-    selected: "mapping:shared-mapping",
+    selected: "mapping:team:shared-mapping",
     mappings: [
       {
         id: "shared-mapping",
@@ -357,5 +357,5 @@ test("a disabled personal mapping keeps the shared-access request", async ({
     page.getByRole("combobox", {
       name: "Choose the authority for this tab",
     }),
-  ).toHaveValue("mapping:shared-mapping");
+  ).toHaveValue("mapping:team:shared-mapping");
 });

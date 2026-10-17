@@ -1,5 +1,6 @@
 use super::upstream_fixtures;
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::test::fixtures::server::TestServerGuard;
@@ -46,7 +47,13 @@ async fn damage(store: &Store, id: Uuid, phase: RunPhase, pending: Value, contex
 async fn create(store: &Store, agent: &Entry, workspace: Uuid) -> Run {
 	let task = running_task(store, agent, workspace, None).await;
 	store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap()
 }
@@ -83,7 +90,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.await
 		.unwrap();
 	let workspace = store
-		.create_workspace("acme", "alice", "Isolation", "Healthy progress")
+		.create_workspace(&TEST_FIXTURE, "Isolation", "Healthy progress")
 		.await
 		.unwrap();
 	let mut damaged = vec![];
@@ -162,7 +169,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	for _ in 0..16 {
 		worker.worker_once().await.unwrap();
 	}
-	let finished = store.run(healthy.id).await.unwrap();
+	let finished = store.run(&TEST_FIXTURE, healthy.id).await.unwrap();
 	assert_eq!(
 		finished.phase(),
 		RunPhase::Completed,
@@ -171,19 +178,19 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	for run in damaged {
-		let inspected = store.inspect_run(run.id).await.unwrap();
+		let inspected = store.inspect_run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(inspected.phase, RunPhase::Failed);
 		assert_eq!(
-			store.task(run.task_id).await.unwrap().status,
+			store.task(&TEST_FIXTURE, run.task_id).await.unwrap().status,
 			TaskStatus::Failed
 		);
 		assert!(!inspected.error.as_ref().unwrap().contains("sensitive"));
 	}
 	for (run, phase) in newer {
-		let inspected = store.inspect_run(run.id).await.unwrap();
+		let inspected = store.inspect_run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(inspected.phase, phase, "{inspected:?}");
 		assert_ne!(
-			store.task(run.task_id).await.unwrap().status,
+			store.task(&TEST_FIXTURE, run.task_id).await.unwrap().status,
 			TaskStatus::Failed
 		);
 	}
@@ -214,12 +221,12 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("acme", "alice", "Controls", "Do not execute")
+		.create_workspace(&TEST_FIXTURE, "Controls", "Do not execute")
 		.await
 		.unwrap();
 	let paused = create(&store, &agent, workspace.id).await;
 	store
-		.control(paused.id, RunControlAction::Pause)
+		.control(&TEST_FIXTURE, paused.id, RunControlAction::Pause)
 		.await
 		.unwrap();
 	damage(&store, paused.id, RunPhase::Ready, json!({}), json!([])).await;
@@ -238,27 +245,39 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	)
 	.await;
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
-	assert_eq!(store.inspect_runs().await.unwrap().len(), 3);
+	assert_eq!(store.inspect_runs(&TEST_FIXTURE).await.unwrap().len(), 3);
 	assert_eq!(
-		store.inspect_run(paused.id).await.unwrap().control,
+		store
+			.inspect_run(&TEST_FIXTURE, paused.id)
+			.await
+			.unwrap()
+			.control,
 		RunControl::Paused
 	);
 	assert_eq!(
-		store.inspect_run(live.id).await.unwrap().lease_owner,
+		store
+			.inspect_run(&TEST_FIXTURE, live.id)
+			.await
+			.unwrap()
+			.lease_owner,
 		Some(token)
 	);
 	assert_eq!(
-		store.inspect_run(terminal.id).await.unwrap().phase,
+		store
+			.inspect_run(&TEST_FIXTURE, terminal.id)
+			.await
+			.unwrap()
+			.phase,
 		RunPhase::Completed
 	);
 	assert!(
 		store
-			.control(paused.id, RunControlAction::Resume)
+			.control(&TEST_FIXTURE, paused.id, RunControlAction::Resume)
 			.await
 			.is_err()
 	);
 	store
-		.control(paused.id, RunControlAction::Cancel)
+		.control(&TEST_FIXTURE, paused.id, RunControlAction::Cancel)
 		.await
 		.unwrap();
 	let worker = aidash_server::harness::Harness {
@@ -267,11 +286,19 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		store.inspect_run(paused.id).await.unwrap().phase,
+		store
+			.inspect_run(&TEST_FIXTURE, paused.id)
+			.await
+			.unwrap()
+			.phase,
 		RunPhase::Cancelled
 	);
 	assert_eq!(
-		store.task(paused.task_id).await.unwrap().status,
+		store
+			.task(&TEST_FIXTURE, paused.task_id)
+			.await
+			.unwrap()
+			.status,
 		TaskStatus::Cancelled
 	);
 	cleanup(store, &url, &schema).await;
@@ -288,7 +315,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("acme", "alice", "Paging", "Later work")
+		.create_workspace(&TEST_FIXTURE, "Paging", "Later work")
 		.await
 		.unwrap();
 	for _ in 0..129 {
@@ -331,7 +358,7 @@ async fn dependency_release_uses_only_the_authoritative_home(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("acme", "alice", "Dependencies", "Home authority")
+		.create_workspace(&TEST_FIXTURE, "Dependencies", "Home authority")
 		.await
 		.unwrap();
 	let dependency = running_task(&store, &agent, workspace.id, None).await;
@@ -348,11 +375,17 @@ async fn dependency_release_uses_only_the_authoritative_home(
 	let mut input = new_task();
 	input.dependencies = vec![dependency.id];
 	let task = store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let local = store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let remote = create(&store, &agent, workspace.id).await;
@@ -383,6 +416,7 @@ async fn dependency_release_uses_only_the_authoritative_home(
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	store
 		.complete(
+			&TEST_FIXTURE,
 			dependency.id,
 			dependency.owner.as_deref().unwrap(),
 			"done",
@@ -435,12 +469,12 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("acme", "alice", "Delivery", "Resume disposition only")
+		.create_workspace(&TEST_FIXTURE, "Delivery", "Resume disposition only")
 		.await
 		.unwrap();
 	let ordinary = create(&store, &agent, workspace.id).await;
 	store
-		.control(ordinary.id, RunControlAction::Pause)
+		.control(&TEST_FIXTURE, ordinary.id, RunControlAction::Pause)
 		.await
 		.unwrap();
 	damage(
@@ -453,7 +487,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	.await;
 	assert!(
 		store
-			.control(ordinary.id, RunControlAction::Resume)
+			.control(&TEST_FIXTURE, ordinary.id, RunControlAction::Resume)
 			.await
 			.is_err(),
 		"ordinary execution must still reject an invalid Context"
@@ -469,12 +503,12 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	.await;
 	// Claiming repairs only the disposition; it never constructs a usable Context.
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
-	let pending = store.inspect_run(run.id).await.unwrap();
+	let pending = store.inspect_run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(pending.state.as_ref().unwrap().failure_delivery());
 	assert!(pending.context.is_none());
 	assert!(pending.state_error.is_some());
 	store
-		.control(run.id, RunControlAction::Pause)
+		.control(&TEST_FIXTURE, run.id, RunControlAction::Pause)
 		.await
 		.unwrap();
 	let worker = aidash_server::harness::Harness {
@@ -482,22 +516,26 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	};
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		store.task(run.task_id).await.unwrap().status,
+		store.task(&TEST_FIXTURE, run.task_id).await.unwrap().status,
 		TaskStatus::Running
 	);
 	let resumed = store
-		.control(run.id, RunControlAction::Resume)
+		.control(&TEST_FIXTURE, run.id, RunControlAction::Resume)
 		.await
 		.unwrap();
 	assert_eq!(resumed.control, RunControl::Active);
 	assert!(resumed.state.as_ref().unwrap().failure_delivery());
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		store.inspect_run(run.id).await.unwrap().phase,
+		store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase,
 		RunPhase::Failed
 	);
 	assert_eq!(
-		store.task(run.task_id).await.unwrap().status,
+		store.task(&TEST_FIXTURE, run.task_id).await.unwrap().status,
 		TaskStatus::Failed
 	);
 	let context: Value = sqlx::query_scalar(
@@ -522,7 +560,10 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	.await
 	.unwrap();
 	assert_eq!(effects, 0);
-	assert_eq!(store.inspect_run(run.id).await.unwrap().step, 0);
+	assert_eq!(
+		store.inspect_run(&TEST_FIXTURE, run.id).await.unwrap().step,
+		0
+	);
 	// seed's provider endpoint is unavailable: any provider replay would fail
 	// worker_once rather than delivering the task's Failed disposition.
 	cleanup(store, &url, &schema).await;

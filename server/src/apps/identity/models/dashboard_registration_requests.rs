@@ -23,6 +23,13 @@ pub struct DashboardRegistrationRequest {
 	pub decided_by: Option<uuid::Uuid>,
 	#[field(field_type = "text", null = true)]
 	pub decision_actor: Option<String>,
+	/// The Tenant this request is addressed to, through a Tenant Binding or an
+	/// Invitation. Only Deployment Administrators decide unaddressed requests.
+	#[field(field_type = "text", null = true)]
+	pub tenant: Option<String>,
+	/// The Invitation this request was made with.
+	#[field(null = true)]
+	pub invitation_id: Option<uuid::Uuid>,
 }
 
 impl DashboardRegistrationRequest {}

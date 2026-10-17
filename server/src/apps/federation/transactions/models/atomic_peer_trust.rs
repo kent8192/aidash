@@ -4,10 +4,12 @@ use super::{AtomicHistory, coordinator_records::advisory_lock};
 use crate::Result;
 use crate::apps::federation::peer::models::Peer;
 use crate::apps::federation::transactions::serializers::protocol::TransactionTrust;
+use crate::database::native::Pool;
+use aidash_application::tenancy::TenancyScope;
 use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::model;
 use reinhardt::query::{PostgresQueryBuilder, Query, QueryStatementBuilder};
 use serde::{Deserialize, Serialize};
@@ -40,11 +42,11 @@ impl AtomicPeerTrust {
 	}
 
 	pub(crate) async fn set(
-		connection: DatabaseConnection,
+		connection: &Pool,
 		input: TransactionTrust,
 	) -> Result<TransactionTrust> {
 		connection
-			.atomic(async |tx| {
+			.atomic(&TenancyScope::NoTenant, async |tx| {
 				let (sql, values) = Query::select()
 					.expr(advisory_lock(
 						"pg_advisory_xact_lock",

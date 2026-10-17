@@ -11,6 +11,7 @@ use crate::{
 	registry::{EntityRef, Entry, Search},
 	tool::required,
 };
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use futures_util::{StreamExt, stream};
 use http::HeaderMap;
 use reinhardt::injectable;
@@ -100,49 +101,57 @@ impl PeerManagement {
 	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
 		let f = &self.runtime;
 		f.store.require_legacy_agent(&id, &version).await?;
-		let lease = f.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
-				let entry =
-					crate::apps::registry::services::admission::definition(tx, &id, &version)
-						.await?;
-				let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
-					tx,
-					&f.config.node_id,
-					&entry,
-					f.store.provider_credentials.is_some(),
-				)
-				.await?;
-				let snapshot =
-					aidash_domain::registry::bindings::ForeignAgentSnapshot::from_snapshot(
-						snapshot,
-					)?;
-				for definition in &snapshot.definitions {
-					if definition.definition.kind == "agent" {
-						f.store
-							.require_legacy_agent(
-								&definition.identity.id,
-								&definition.identity.version,
+		// A peer previews a legacy agent from the shared Registry, whose reads
+		// lock the definition rows they admit.
+		f.store
+			.pool
+			.atomic(
+				&TenancyScope::Deployment(DeploymentScopeReason::SharedRegistry),
+				async |tx| {
+					let entry =
+						crate::apps::registry::services::admission::definition(tx, &id, &version)
+							.await?;
+					let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
+						tx,
+						&f.config.node_id,
+						&entry,
+						f.store.provider_credentials.is_some(),
+					)
+					.await?;
+					let snapshot =
+						aidash_domain::registry::bindings::ForeignAgentSnapshot::from_snapshot(
+							snapshot,
+						)?;
+					for definition in &snapshot.definitions {
+						if definition.definition.kind == "agent" {
+							f.store
+								.require_legacy_agent(
+									&definition.identity.id,
+									&definition.identity.version,
+								)
+								.await?;
+							crate::apps::registry::repositories::bindings::preview_remote(
+								tx,
+								&f.config.node_id,
+								&definition.definition,
+								f.store.provider_credentials.is_some(),
 							)
 							.await?;
-						crate::apps::registry::repositories::bindings::preview_remote(
-							tx,
-							&f.config.node_id,
-							&definition.definition,
-							f.store.provider_credentials.is_some(),
-						)
-						.await?;
+						}
 					}
-				}
-				Ok(snapshot)
-			})
+					Ok(snapshot)
+				},
+			)
 			.await
 	}
 	pub(crate) async fn peer_observe(&self, headers: HeaderMap) -> Result<Value> {
 		let f = self.runtime.clone();
 		let node = peer_node(&headers)?;
-		Ok(serde_json::to_value(f.store.peer_observation(node).await?)?)
+		// A peer observes the Runs it is home to, in any Tenant, until #241.
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::FederationInbound);
+		Ok(serde_json::to_value(
+			f.store.peer_observation(&scope, node).await?,
+		)?)
 	}
 }
 

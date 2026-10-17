@@ -1,5 +1,6 @@
 //! Business models, authorization rules, and state invariants.
 pub mod catalog;
+pub mod completion;
 pub mod context;
 pub mod decision;
 pub mod deployment;
@@ -15,9 +16,11 @@ pub mod policy;
 pub mod projection;
 pub mod provider;
 pub mod provider_credentials;
+pub mod retention;
 pub mod run_input;
 pub mod run_state;
 pub mod semantic;
+pub mod tenancy;
 
 pub use entities::*;
 

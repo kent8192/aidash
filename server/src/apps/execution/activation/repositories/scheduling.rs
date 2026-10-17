@@ -259,6 +259,15 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn input_after(&mut self, run: Uuid, seq: i64) -> aidash_application::Result<bool> {
+		let newer = Query::select()
+			.expr(Expr::value(1_i64))
+			.from(Alias::new("run_inputs"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("seq").gt(Expr::value(seq)))
+			.to_owned();
+		exists(self.tx.executor(), newer).await.map_err(Into::into)
+	}
 	async fn approval(&mut self, id: Uuid) -> aidash_application::Result<Option<Approval>> {
 		let (sql, values) = Query::select()
 			.columns([Alias::new("state"), Alias::new("expires_at")])

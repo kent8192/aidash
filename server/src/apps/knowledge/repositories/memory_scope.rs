@@ -158,10 +158,14 @@ impl Scope<'_, '_> {
 		}
 		let transport = crate::bootstrap::semantic_transport(self.store);
 		if !transport
-			.present(&spec.vector, &index.collection, &points)
+			.present(&spec.vector, &index.collection, &index.tenant, &points)
 			.await?
 		{
-			return Err(Error::SemanticUnavailable);
+			// Indexed points are missing from the vector backend: an outage of
+			// that backend, retried by a Run like a semantic search (#233).
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Unavailable,
+			));
 		}
 		let embedded = self.models.embed(model, text, allowance).await?;
 		let results = transport

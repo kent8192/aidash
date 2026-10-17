@@ -7,6 +7,7 @@ use crate::{
 	registry::{EntityRef, Entry, Registry, Search},
 	store::{RunResponseMessage, Store},
 };
+use aidash_application::tenancy::TenancyScope;
 use reinhardt::DiError;
 use reinhardt::DiResult;
 use reinhardt::Injectable;
@@ -167,14 +168,12 @@ impl Federation {
 	}
 
 	pub async fn peers(&self) -> Result<Vec<Peer>> {
-		let lease = self.store.orm_connection()?;
-		PeerRecords::new(lease.handle(), &self.config.node_id)
+		PeerRecords::new(&self.store.pool, &self.config.node_id)
 			.list()
 			.await
 	}
 	pub async fn peer(&self, node: &str) -> Result<Peer> {
-		let lease = self.store.orm_connection()?;
-		PeerRecords::new(lease.handle(), &self.config.node_id)
+		PeerRecords::new(&self.store.pool, &self.config.node_id)
 			.enabled(node)
 			.await
 	}
@@ -236,12 +235,21 @@ pub struct Home {
 }
 
 impl Home {
+	/// The scope of every local transaction for this Run: its authority's
+	/// Tenant, or otherwise the Run's Tenant found by id.
+	pub(crate) async fn tenancy(&self) -> Result<TenancyScope> {
+		match &self.authority {
+			Some(authority) => authority.tenancy().await,
+			None => self.federation.store.run_tenancy(self.run.id).await,
+		}
+	}
 	pub async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
+		let scope = self.tenancy().await?;
 		if self.local() {
 			let run = self.execution.as_ref().ok_or(Error::Forbidden)?;
 			self.federation
 				.store
-				.human_request(run, kind, prompt, key)
+				.human_request(&scope, run, kind, prompt, key)
 				.await
 		} else {
 			let request: HumanRequest = self
@@ -257,6 +265,7 @@ impl Home {
 				self.federation
 					.store
 					.cache_home_human(
+						&scope,
 						self.execution.as_ref().ok_or(Error::Forbidden)?,
 						&request,
 						key,
@@ -267,11 +276,25 @@ impl Home {
 		}
 	}
 	pub async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
+		let scope = self.tenancy().await?;
 		if self.local() {
-			self.federation.store.human_request_by_id(id).await
+			self.federation.store.human_request_by_id(&scope, id).await
 		} else {
 			self.command("human_read", json!({"run_id":self.run.id,"id":id}))
 				.await
+		}
+	}
+	/// Answer a Home request on the Run's own behalf: `system` locally, this
+	/// node through the delegated route.
+	pub async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		if self.local() {
+			let scope = self.tenancy().await?;
+			self.federation
+				.store
+				.close_human_request(&scope, id, response)
+				.await
+		} else {
+			self.answer_home_human(id, response).await
 		}
 	}
 	pub(crate) async fn answer_home_human(
@@ -351,6 +374,7 @@ impl Home {
 		self.command(op, data).await.map(Some)
 	}
 	pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
+		let scope = self.tenancy().await?;
 		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
 			.await?
 			.is_some()
@@ -360,7 +384,10 @@ impl Home {
 		if let Some(authority) = &self.authority {
 			authority.snapshot(self.run.workspace_id).await
 		} else if self.local() {
-			self.federation.store.snapshot(self.run.workspace_id).await
+			self.federation
+				.store
+				.snapshot(&scope, self.run.workspace_id)
+				.await
 		} else {
 			let mut snapshot = WorkspaceSnapshot {
 				workspace: self.command("snapshot_workspace", json!({})).await?,
@@ -411,6 +438,7 @@ impl Home {
 		crate::context::observation::fit_projection(&snapshot, offset, limit, fits)
 	}
 	pub async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
+		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			let id = id
 				.parse::<Uuid>()
@@ -426,7 +454,7 @@ impl Home {
 			return self
 				.federation
 				.store
-				.workspace_record(self.run.workspace_id, kind, id)
+				.workspace_record(&scope, self.run.workspace_id, kind, id)
 				.await;
 		}
 		self.command("workspace_record", json!({"kind":kind,"id":id}))
@@ -439,6 +467,7 @@ impl Home {
 		offset: usize,
 		max_chars: usize,
 	) -> Result<Value> {
+		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			let id = id
 				.parse::<Uuid>()
@@ -461,7 +490,7 @@ impl Home {
 			let record = self
 				.federation
 				.store
-				.workspace_record(self.run.workspace_id, kind, id)
+				.workspace_record(&scope, self.run.workspace_id, kind, id)
 				.await?;
 			return crate::context::observation::chunk_record(
 				record,
@@ -481,6 +510,7 @@ impl Home {
 		.await
 	}
 	pub(crate) async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
+		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
 				.workspace_child_summary(self.run.workspace_id, parent)
@@ -490,7 +520,7 @@ impl Home {
 			return self
 				.federation
 				.store
-				.child_task_summary(self.run.workspace_id, parent)
+				.child_task_summary(&scope, self.run.workspace_id, parent)
 				.await;
 		}
 		self.command("workspace_children", json!({"parent_id":parent}))
@@ -524,6 +554,7 @@ impl Home {
 		}
 	}
 	pub async fn task(&self) -> Result<Task> {
+		let scope = self.tenancy().await?;
 		if self.authority.is_some() {
 			return serde_json::from_value(
 				self.read_record("task", &self.run.task_id.to_string())
@@ -532,12 +563,13 @@ impl Home {
 			.map_err(Into::into);
 		}
 		if self.local() {
-			self.federation.store.task(self.run.task_id).await
+			self.federation.store.task(&scope, self.run.task_id).await
 		} else {
 			self.command("task", json!({})).await
 		}
 	}
 	pub async fn claim(&self, task: &Task, agent: &Entry) -> Result<Task> {
+		let scope = self.tenancy().await?;
 		if task.owner.as_deref() == Some(&self.owner())
 			&& task.status != crate::domain::TaskStatus::Open
 		{
@@ -551,6 +583,7 @@ impl Home {
 			.await
 	}
 	pub async fn transition(&self, next: TaskStatus) -> Result<Task> {
+		let scope = self.tenancy().await?;
 		let t = self.task().await?;
 		if t.status == next {
 			return Ok(t);
@@ -558,7 +591,7 @@ impl Home {
 		if self.local() {
 			self.federation
 				.store
-				.transition(t.id, t.revision, &self.owner(), next)
+				.transition(&scope, t.id, t.revision, &self.owner(), next)
 				.await
 		} else {
 			self.command("transition", json!({"revision":t.revision,"status":next}))
@@ -566,12 +599,13 @@ impl Home {
 		}
 	}
 	pub async fn transition_terminal(&self, next: TaskStatus, through_seq: i64) -> Result<Task> {
+		let scope = self.tenancy().await?;
 		let task = self.task().await?;
 		if self.local() {
 			return self
 				.federation
 				.store
-				.transition(task.id, task.revision, &self.owner(), next)
+				.transition(&scope, task.id, task.revision, &self.owner(), next)
 				.await;
 		}
 		if let Some(task) = self
@@ -594,10 +628,12 @@ impl Home {
 		self.transition(next).await
 	}
 	pub async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
+		let scope = self.tenancy().await?;
 		if self.local() {
 			self.federation
 				.store
 				.complete_from_run(
+					&scope,
 					self.run.task_id,
 					&self.owner(),
 					key,
@@ -616,10 +652,12 @@ impl Home {
 		}
 	}
 	pub async fn artifact(&self, key: &str, artifact: &ArtifactInput) -> Result<Artifact> {
+		let scope = self.tenancy().await?;
 		if self.local() {
 			self.federation
 				.store
 				.publish_artifact_from_run(
+					&scope,
 					self.run.task_id,
 					&self.owner(),
 					key,
@@ -650,6 +688,7 @@ impl Home {
 			.await
 	}
 	pub async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
+		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
 				.create_task(&self.federation, self.execution_run()?, key, input)
@@ -658,7 +697,13 @@ impl Home {
 		if self.local() {
 			self.federation
 				.store
-				.create_task(self.run.workspace_id, input, &self.owner(), Some(key))
+				.create_task(
+					&scope,
+					self.run.workspace_id,
+					input,
+					&self.owner(),
+					Some(key),
+				)
 				.await
 		} else {
 			self.command("create_task", json!({"key":key,"task":input}))
@@ -684,6 +729,7 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
+		let scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority
 				.delegate(
@@ -706,6 +752,7 @@ impl Home {
 		.await
 	}
 	pub async fn message(&self, key: &str, content: &str) -> Result<()> {
+		let scope = self.tenancy().await?;
 		if self.authority.is_some() || self.local() {
 			let run = match self.authority {
 				Some(_) => self.execution_run()?.metadata(),
@@ -713,7 +760,14 @@ impl Home {
 			};
 			self.federation
 				.store
-				.message_from_run(&run, &self.owner(), content, key, self.authority.is_some())
+				.message_from_run(
+					&scope,
+					&run,
+					&self.owner(),
+					content,
+					key,
+					self.authority.is_some(),
+				)
 				.await
 		} else {
 			self.command::<Value>("message", json!({"key":key,"content":content}))
@@ -728,24 +782,28 @@ impl Home {
 		key: &str,
 		content: &str,
 	) -> Result<()> {
+		let scope = self.tenancy().await?;
 		if self.authority.is_some() || self.local() {
 			self.federation
 				.store
-				.response_message_in_run(RunResponseMessage {
-					run: self.execution_run()?,
-					worker,
-					included_input_seq,
-					sender: &self.owner(),
-					content,
-					key,
-					track_output: self.authority.is_some(),
-				})
+				.response_message_in_run(
+					&scope,
+					RunResponseMessage {
+						run: self.execution_run()?,
+						worker,
+						included_input_seq,
+						sender: &self.owner(),
+						content,
+						key,
+						track_output: self.authority.is_some(),
+					},
+				)
 				.await
 		} else {
 			self.federation
 				.store
 				.with_run_response_fence(
-					self.run.id,
+					&scope, self.run.id,
 					worker,
 					included_input_seq,
 					self.command::<Value>(
@@ -758,10 +816,11 @@ impl Home {
 		}
 	}
 	pub async fn human_message(&self, key: &str, content: &str) -> Result<()> {
+		let scope = self.tenancy().await?;
 		if self.local() {
 			self.federation
 				.store
-				.message(self.run.workspace_id, "human", content, Some(key))
+				.message(&scope, self.run.workspace_id, "human", content, Some(key))
 				.await
 		} else {
 			self.command::<Value>("human_message", json!({"key":key,"content":content}))
@@ -854,7 +913,8 @@ impl Federation {
 		target: TaskStatus,
 		authority: Option<crate::authorization::execution::WorkerAuthority>,
 	) -> Result<Task> {
-		let through_seq = self.store.run_input_high_watermark(run.id).await?;
+		let scope = self.store.run_tenancy(run.id).await?;
+		let through_seq = self.store.run_input_high_watermark(&scope, run.id).await?;
 		let home = Home::for_delivery(self.clone(), run.clone()).with_authority(authority);
 		home.transition_terminal(target, through_seq).await
 	}

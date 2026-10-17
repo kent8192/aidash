@@ -41,7 +41,7 @@ use chrono::Duration;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };

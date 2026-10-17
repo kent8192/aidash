@@ -383,3 +383,137 @@ async fn a_whole_read_is_bounded_by_its_deadline() {
 	assert!(started.elapsed() < Duration::from_secs(5));
 	silent.abort();
 }
+
+fn http_bytes(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+	let mut response = format!(
+		"HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+		body.len()
+	)
+	.into_bytes();
+	response.extend_from_slice(body);
+	response
+}
+
+fn pdf_reader(address: SocketAddr) -> PageReader {
+	reader(address).with_pdf_engine(Arc::new(crate::research::pdf::InProcessEngine))
+}
+
+fn two_page_pdf() -> Vec<u8> {
+	use crate::research::pdf::tests::{pdf, text_page};
+	pdf(&[
+		text_page(&["Page one states the hypothesis."]),
+		text_page(&["Page two reports the measurements."]),
+	])
+}
+
+#[rstest]
+#[case::declared("Content-Type: application/pdf\r\n")]
+#[case::generic_binary("Content-Type: application/octet-stream\r\n")]
+#[tokio::test]
+async fn pdf_pages_become_lines_with_their_page_numbers(#[case] headers: &str) {
+	let bytes = two_page_pdf();
+	let address = serve(vec![http_bytes("200 OK", headers, &bytes)]).await;
+	let page = pdf_reader(address)
+		.fetch(&Url::parse("http://example.com/report.pdf").unwrap())
+		.await
+		.unwrap();
+	assert_eq!(page.media_type, "application/pdf");
+	assert_eq!(
+		page.raw_digest,
+		format!("sha256:{:x}", Sha256::digest(&bytes))
+	);
+	assert_eq!(
+		page.lines
+			.iter()
+			.map(|line| (line.text.as_str(), line.page))
+			.collect::<Vec<_>>(),
+		[
+			("Page one states the hypothesis.", Some(1)),
+			("Page two reports the measurements.", Some(2)),
+		]
+	);
+	assert!(page.validate().is_ok());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_generic_binary_that_is_not_a_pdf_is_unsupported() {
+	let address = serve(vec![http_bytes(
+		"200 OK",
+		"Content-Type: application/octet-stream\r\n",
+		b"\x7fELF not a document",
+	)])
+	.await;
+	let outcome = pdf_reader(address)
+		.fetch(&Url::parse("http://example.com/download").unwrap())
+		.await;
+	assert_eq!(outcome, Err(Failure::UnsupportedMedia));
+}
+
+#[rstest]
+#[tokio::test]
+async fn pdfs_have_their_own_size_limit() {
+	let bytes = two_page_pdf();
+	let address = serve(vec![http_bytes(
+		"200 OK",
+		"Content-Type: application/pdf\r\n",
+		&bytes,
+	)])
+	.await;
+	let mut reader = pdf_reader(address);
+	reader.max_pdf_bytes = bytes.len() - 1;
+	let outcome = reader
+		.fetch(&Url::parse("http://example.com/report.pdf").unwrap())
+		.await;
+	assert_eq!(outcome, Err(Failure::ResponseTooLarge));
+}
+
+/// An engine with a scripted outcome, standing in for the bounded child.
+struct Scripted(Result<(), Failure>, Duration);
+#[async_trait]
+impl PdfEngine for Scripted {
+	async fn extract(&self, _: Vec<u8>) -> Result<PdfText, Failure> {
+		tokio::time::sleep(self.1).await;
+		self.0.map(|()| unreachable!("scripted engines only fail"))
+	}
+}
+
+#[rstest]
+#[case::encrypted(Failure::EncryptedDocument)]
+#[case::forbidden(Failure::ExtractionNotPermitted)]
+#[case::child_failed(Failure::ExtractionFailed)]
+#[tokio::test]
+async fn pdf_engine_failures_reach_the_host(#[case] failure: Failure) {
+	let address = serve(vec![http_bytes(
+		"200 OK",
+		"Content-Type: application/pdf\r\n",
+		&two_page_pdf(),
+	)])
+	.await;
+	let outcome = reader(address)
+		.with_pdf_engine(Arc::new(Scripted(Err(failure), Duration::ZERO)))
+		.fetch(&Url::parse("http://example.com/report.pdf").unwrap())
+		.await;
+	assert_eq!(outcome, Err(failure));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_parse_that_outlives_the_read_deadline_leaves_the_page_unreadable() {
+	// The page was retrieved, so the outcome is not uncertain: parsing failed.
+	let address = serve(vec![http_bytes(
+		"200 OK",
+		"Content-Type: application/pdf\r\n",
+		&two_page_pdf(),
+	)])
+	.await;
+	let mut reader = reader(address).with_pdf_engine(Arc::new(Scripted(
+		Err(Failure::EncryptedDocument),
+		Duration::from_secs(30),
+	)));
+	reader.timeout = Duration::from_millis(500);
+	let outcome = reader
+		.fetch(&Url::parse("http://example.com/report.pdf").unwrap())
+		.await;
+	assert_eq!(outcome, Err(Failure::ExtractionFailed));
+}

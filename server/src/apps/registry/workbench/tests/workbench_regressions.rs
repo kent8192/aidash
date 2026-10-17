@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::authorization::identity::Actor;
 use aidash_server::registry::Registry;
 use reinhardt::http::{Handler, Middleware, ViewResult};
@@ -155,11 +157,12 @@ fn workbench(
 			(
 				"fixture-tool",
 				"tool",
-				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
+				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 			),
 		] {
 			assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
 		}
+		common::tenant_root(&f, "acme").await;
 		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
 		let (status, credential) = request(
 			&app,
@@ -717,6 +720,7 @@ async fn hidden_incident_backlog(
 		)
 		.await;
 	if other_tenant {
+		common::tenant_root(&wb.f, "other").await;
 		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
 	}
 	let mut hidden = Vec::new();
@@ -857,7 +861,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 #[rstest::fixture]
 async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","replay":"read_only"}}})).await.0, 200);
 	wb
 }
 
@@ -990,12 +994,12 @@ async fn trust_run_backlog(
 	wb.register().await;
 	let visible =
 		wb.f.store
-			.create_workspace("acme", "alice", "Visible history", "Fixture")
+			.create_workspace(&TEST_FIXTURE, "Visible history", "Fixture")
 			.await
 			.unwrap();
 	let hidden =
 		wb.f.store
-			.create_workspace("acme", "alice", "Hidden history", "Fixture")
+			.create_workspace(&TEST_FIXTURE, "Hidden history", "Fixture")
 			.await
 			.unwrap();
 	let visible = serde_json::to_value(visible).unwrap();
@@ -1011,6 +1015,7 @@ async fn trust_run_backlog(
 		let task =
 			wb.f.store
 				.create_task(
+					&TEST_FIXTURE,
 					workspace,
 					&aidash_server::domain::NewTask {
 						title: "History".into(),

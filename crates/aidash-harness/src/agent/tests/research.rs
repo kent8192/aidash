@@ -252,3 +252,269 @@ async fn each_user_input_gets_its_own_correction(mut fixture: Fixture) {
 	assert_eq!(last_write(&fixture).0, "run.citation_correction_required");
 	assert!(fixture.backend.0.artifacts.lock().unwrap().is_empty());
 }
+
+fn research_result(text: &str) -> Value {
+	json!({
+		"contract": "aidash.research/1",
+		"version": 1,
+		"operation": "fetch",
+		"status": "ok",
+		"limits": {"max_bytes": 32768, "truncated": false},
+		"data": {"text": text},
+	})
+}
+
+fn research_history(fixture: &mut Fixture) {
+	// The alias is bound to nothing: a result is recognized by its envelope,
+	// so a renamed, unloaded or unbound research tool is redacted all the same.
+	fixture.run.context.push(ContextEvent::tool(
+		call(
+			"call-page",
+			"renamed_page",
+			json!({"url": "https://example.com/"}),
+		),
+		research_result("a revoked passage"),
+	));
+	fixture.run.context.push(ContextEvent::tool(
+		call("call-other", "unbound", json!({})),
+		json!("an unrelated result"),
+	));
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+}
+
+fn first_request(fixture: &Fixture) -> String {
+	format!("{:?}", fixture.backend.0.requests.lock().unwrap()[0])
+}
+
+fn revoke(fixture: &mut Fixture) {
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.research_revoked = true;
+}
+
+#[rstest]
+#[tokio::test]
+async fn revoked_research_results_never_reach_a_model_request_again(fixture: Fixture) {
+	let mut fixture = thinking(fixture);
+	revoke(&mut fixture);
+	research_history(&mut fixture);
+	let _ = advance_sources(&mut fixture).await;
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked passage"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	// Results that are not Research evidence are untouched.
+	assert!(request.contains("an unrelated result"), "{request}");
+	// The call stays paired with its placeholder.
+	assert!(fixture.run.context.events().any(|event| matches!(
+		event,
+		ContextEvent::Tool { call, result }
+			if call.id == "call-page" && ContextEvent::is_revoked_result(result)
+	)));
+	assert!(fixture.run.context.research_revoked);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_revocation_committed_while_the_request_is_built_never_reaches_the_provider(
+	fixture: Fixture,
+) {
+	// Arrange: the revocation lands after the check at the start of the step.
+	let mut fixture = thinking(fixture);
+	research_history(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.research_revoked_after = Some(1);
+
+	// Act
+	let _ = advance_sources(&mut fixture).await;
+	let sent = fixture.backend.0.requests.lock().unwrap().len();
+	let _ = advance_sources(&mut fixture).await;
+
+	// Assert: nothing went out in the step that saw the revocation late; the
+	// next step was built from the redacted projection.
+	assert_eq!(sent, 0);
+	assert!(fixture.run.context.research_revoked);
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked passage"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	assert!(fixture.run.context.research_revoked);
+}
+
+#[rstest]
+#[tokio::test]
+async fn research_results_of_a_run_not_revoked_are_sent_unchanged(fixture: Fixture) {
+	let mut fixture = thinking(fixture);
+	research_history(&mut fixture);
+	let _ = advance_sources(&mut fixture).await;
+	assert!(first_request(&fixture).contains("a revoked passage"));
+	assert!(!fixture.run.context.research_revoked);
+}
+
+#[rstest]
+#[tokio::test]
+async fn runs_without_research_results_or_a_summary_never_ask_whether_evidence_was_revoked(
+	fixture: Fixture,
+) {
+	let mut fixture = thinking(fixture);
+	let _ = advance_sources(&mut fixture).await;
+	assert!(
+		!fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.contains(&"store.research_revoked")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_summary_that_absorbed_revoked_research_is_discarded_without_pausing(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let research = &mut fixture.run.context.history[1];
+	let seq = research.seq;
+	let ContextEvent::Tool { result, .. } = &mut research.event else {
+		unreachable!()
+	};
+	*result = research_result(&format!("a revoked passage {}", "y".repeat(4000)));
+	advance_sources(&mut fixture).await.unwrap();
+	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
+	assert!(
+		summary.source.absorbs(seq),
+		"the summary absorbed the result"
+	);
+
+	revoke(&mut fixture);
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	advance_sources(&mut fixture).await.unwrap();
+	// The Run continues: nothing waits for revoked evidence to become
+	// readable again, which it never does.
+	assert!(!events(&fixture).contains(&"context.summary_revoked".to_owned()));
+	assert!(fixture.run.context.research_revoked);
+	let sent = fixture.backend.0.requests.lock().unwrap()[requests..]
+		.iter()
+		.map(|request| format!("{request:?}"))
+		.collect::<Vec<_>>();
+	assert!(!sent.is_empty());
+	for request in &sent {
+		assert!(!request.contains("a revoked passage"), "{request}");
+	}
+	// The discarded summary's range was restored and sent again, with the
+	// placeholder where the research result was.
+	assert!(
+		sent.iter()
+			.any(|request| request.contains("Research evidence was revoked")),
+		"{sent:?}"
+	);
+	// The restored range carries the placeholder wherever it is still projected.
+	assert!(fixture.run.context.history.iter().all(|entry| {
+		entry.seq != seq
+			|| matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_revoked_result(result))
+	}));
+}
+
+fn cut(head: &str) -> Value {
+	json!(format!(
+		"{head}\n[fast-jev-compaction truncated 2000 chars of this tool result; full result remains in the execution journal]"
+	))
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_research_result_compaction_cut_to_a_string_is_redacted_from_its_journaled_original(
+	fixture: Fixture,
+) {
+	let mut fixture = thinking(fixture);
+	revoke(&mut fixture);
+	let originals = [
+		("call-page", research_result("a revoked passage")),
+		("call-note", json!("a workspace note")),
+	];
+	for (id, original) in originals {
+		let head = format!("{{\"data\":{original}");
+		fixture.run.context.push(ContextEvent::tool(
+			call(id, "renamed", json!({})),
+			cut(&head),
+		));
+		let seq = fixture.run.context.history.last().unwrap().seq;
+		fixture.backend.0.journal.lock().unwrap().push((
+			fixture.run.id,
+			aidash_domain::context::HistoryEntry {
+				seq,
+				event: ContextEvent::tool(call(id, "renamed", json!({})), original),
+			},
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	let _ = advance_sources(&mut fixture).await;
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked passage"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	// A cut result whose original was no research result is kept.
+	assert!(request.contains("a workspace note"), "{request}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_elided_research_result_loses_the_arguments_its_original_named(fixture: Fixture) {
+	// Arrange: compaction elided two results whole, keeping their calls; the
+	// journal holds the originals.
+	let mut fixture = thinking(fixture);
+	revoke(&mut fixture);
+	let originals = [
+		(
+			"call-search",
+			json!({"query": "a revoked query"}),
+			research_result("a revoked passage"),
+		),
+		(
+			"call-note",
+			json!({"note": "a kept note"}),
+			json!("a workspace note"),
+		),
+	];
+	for (id, arguments, original) in originals {
+		fixture.run.context.push(ContextEvent::tool(
+			call(id, "renamed", arguments.clone()),
+			ContextEvent::elided_result(id),
+		));
+		let seq = fixture.run.context.history.last().unwrap().seq;
+		fixture.backend.0.journal.lock().unwrap().push((
+			fixture.run.id,
+			aidash_domain::context::HistoryEntry {
+				seq,
+				event: ContextEvent::tool(call(id, "renamed", arguments), original),
+			},
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+
+	// Act
+	let _ = advance_sources(&mut fixture).await;
+
+	// Assert: the research call no longer names its query; the other keeps
+	// its arguments.
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked query"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	assert!(request.contains("a kept note"), "{request}");
+}

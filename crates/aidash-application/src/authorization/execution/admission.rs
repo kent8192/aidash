@@ -16,7 +16,7 @@ pub async fn admit(
 	delegation: bool,
 ) -> Result<Task> {
 	let task = scope.task(task_id).await?.ok_or(Error::Forbidden)?;
-	super::inherit_task(scope, task_id).await?;
+	let inherited = super::inherit(scope, task_id).await?;
 	let workspace = scope.workspace(task.workspace_id).await?;
 	scope.set_context(workspace.attributes.clone());
 	let task_resource = scope.task_resource(&task).await?;
@@ -74,6 +74,9 @@ pub async fn admit(
 		subject_chain: scope.subjects().to_vec(),
 	};
 	scope.persist_grant(&grant).await?;
+	scope
+		.admit_plan_connections(&grant, &snapshot, inherited == super::Inherited::Remote)
+		.await?;
 	if let Some((identity_id, mapping_id)) = scope.dashboard_origin(grant.credential_id).await? {
 		scope
 			.persist_dashboard_origin(run_id, identity_id, mapping_id)

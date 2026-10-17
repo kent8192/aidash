@@ -150,7 +150,7 @@ impl Store for FakeStore {
 		versions.insert(name.clone(), (key.clone(), "enabled"));
 		Ok(name)
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		self.version_lists.lock().await.push(resource.into());
 		Ok(self
 			.state
@@ -160,7 +160,7 @@ impl Store for FakeStore {
 			.map(|v| v.keys().cloned().collect())
 			.unwrap_or_default())
 	}
-	async fn disable(&self, version: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, version: &str) -> Result<()> {
 		if let Some(error) = self.disable_failure.lock().await.as_ref() {
 			return Err(Error::External(error.clone()));
 		}
@@ -173,7 +173,7 @@ impl Store for FakeStore {
 		}
 		panic!("unknown version")
 	}
-	async fn destroy(&self, version: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, version: &str) -> Result<()> {
 		if self.destroy_failure.lock().await.as_deref() == Some(version) {
 			return Err(Error::External("destroy-error-canary".into()));
 		}
@@ -187,7 +187,7 @@ impl Store for FakeStore {
 		}
 		panic!("unknown version")
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		if *self.delete_failure.lock().await {
 			return Err(Error::External("delete-error-canary".into()));
 		}

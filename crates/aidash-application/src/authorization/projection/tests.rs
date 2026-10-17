@@ -82,6 +82,7 @@ struct Scope {
 	require_allowed: bool,
 	events_allowed: bool,
 	tracked: Vec<WorkspaceSnapshot>,
+	verdicts_seen: Vec<usize>,
 	fail: Option<&'static str>,
 }
 #[fixture]
@@ -100,6 +101,7 @@ fn scope() -> Scope {
 		require_allowed: true,
 		events_allowed: true,
 		tracked: vec![],
+		verdicts_seen: vec![],
 		fail: None,
 	}
 }
@@ -154,8 +156,10 @@ impl WorkspaceProjection for Scope {
 		*visits += 1;
 		Ok(row.sender == "visible" && !(self.second_message_denied && *visits > 1))
 	}
-	async fn event_visible(&mut self, row: &Event) -> Result<bool> {
+	async fn event_visible(&mut self, row: &Event, runs: &mut RunVerdicts) -> Result<bool> {
 		self.touch("event_visible")?;
+		self.verdicts_seen.push(runs.remembered());
+		runs.remember(row.id, None, true);
 		Ok(row.data["visible"] == true)
 	}
 	async fn task_rows(&mut self, workspaces: &[Uuid], cursor: u64) -> Result<Vec<Task>> {
@@ -289,6 +293,16 @@ async fn latest_events_are_disclosed_oldest_first_after_hidden_rows(mut scope: S
 			(201, 100, true)
 		]
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn one_event_scan_shares_its_run_verdicts_across_pages(mut scope: Scope) {
+	scope.events = (1..=500).rev().map(|seq| event(seq, seq <= 250)).collect();
+	latest_visible_events(&mut scope, &[Uuid::from_u128(1)], true)
+		.await
+		.unwrap();
+	assert_eq!(scope.event_pages.len(), 4);
+	assert_eq!(scope.verdicts_seen, (0..350).collect::<Vec<_>>());
 }
 #[rstest]
 #[tokio::test]

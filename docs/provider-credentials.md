@@ -16,8 +16,9 @@ removed from model and embedding configurations in #158: `provider_access`
 has no environment source, and the `registry_model_provider_keys` and
 `semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
 Every model-provider key therefore comes from a Provider Credential Store, on
-Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
-store references keep their `AIDASH_SECRET_*` configuration.
+Cloud and self-hosted nodes alike. Peer, sandbox, runner and vector store
+references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
+transports can no longer name one (#296).
 
 Jev also runs through OpenRouter, at `POST {base}/systemone` with
 `provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
@@ -174,8 +175,8 @@ Both kinds require the separate `provider_credentials.fingerprint_key` setting.
 It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
 random raw string of at least 32 bytes, through `{ env = "..." }` or
 `{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
-`AIDASH_SECRET_*` environment names are rejected because Registry configurations
-can resolve that namespace. Names that skill imports pass to the `gh` CLI, such
+`AIDASH_SECRET_*` environment names are rejected because that namespace holds
+Deployment secrets such as Peer Credentials. Names that skill imports pass to the `gh` CLI, such
 as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
 because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
 Fingerprints use independent derived Tenant keys,
@@ -214,7 +215,9 @@ manage provider-credential-store-recovery --execute
 
 The default is a dry run. Both invocations print only JSON counts:
 `affected_tenants` and `affected_provider_credentials` count active records whose
-pin uses a lost key; `version_rows` and `key_registry_rows` count rows to remove.
+pin uses a lost key; `affected_plan_connections` counts Plan Connections whose
+pinned Plan Tokens use one; `version_rows` and `key_registry_rows` count rows to
+remove.
 Recovery requires a PostgreSQL Store and valid current Master Key and fingerprint
 key. It verifies registered configured keys, so a failed key check refuses both
 dry run and execute without changes. It bypasses the wrong-key startup gate and
@@ -228,7 +231,14 @@ ciphertext. Unaffected Provider Credentials retain every row and state.
 Recovery never decrypts or re-encrypts version payloads. Restart server and worker
 afterward; normal startup registers the current key. Tenants then delete revoked
 credentials and reconnect through Provider Authorization. The command is safe to rerun
-after an interrupted recovery. Plan Token recovery will be added by #159.
+after an interrupted recovery.
+
+Each affected Plan Connection moves to `needs_reconnection` with a
+`plan_connection.needs_reconnection` event, and its Runs fail at their next
+call. Its grant cannot be revoked at OpenAI any more, because the refresh token
+is gone: the owner reconnects from settings with the same ChatGPT account, or
+disconnects, which then reports `revoked: false` so the owner knows to remove
+the grant at OpenAI themselves.
 
 GCP deployment passes this non-secret Store descriptor to the app chart's
 `providerCredentials.settings`, which renders it as a ConfigMap read as a

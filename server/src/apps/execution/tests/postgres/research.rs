@@ -2,6 +2,7 @@
 //! attribution, Run-scoped snapshots and fragments, and citation lookup. The
 //! host research use case runs against PostgreSQL with the fixture provider.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_application::{
 	ports::{
 		execution::ExecutionStore,
@@ -43,15 +44,21 @@ async fn agent(store: &Store) -> Entry {
 
 async fn leased_run(store: &Store, agent: &Entry) -> Run {
 	let workspace = store
-		.create_workspace("acme", "alice", "Research", "Read public sources")
+		.create_workspace(&TEST_FIXTURE, "Research", "Read public sources")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap()
@@ -88,7 +95,7 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_search_accou
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone());
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
 	let since = chrono::Utc::now() - chrono::Duration::hours(1);
 
 	assert_eq!(
@@ -210,7 +217,7 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 	let (store, url, schema) = _store_fixture.parts();
 	let agent = agent(&store).await;
 	let run = leased_run(&store, &agent).await;
-	let evidence = aidash_server::research::evidence_store(store.clone());
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,
@@ -280,14 +287,18 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 	// Citation lookup accepts only this Run's delivered fragments.
 	let invented = EvidenceRef(Uuid::new_v4());
 	assert_eq!(
-		ExecutionStore::unknown_evidence(&store, &run, &[reference, invented])
-			.await
-			.unwrap(),
+		ExecutionStore::unknown_evidence(
+			&store.for_run(TEST_FIXTURE),
+			&run,
+			&[reference, invented]
+		)
+		.await
+		.unwrap(),
 		[invented]
 	);
 	let other = leased_run(&store, &agent).await;
 	assert_eq!(
-		ExecutionStore::unknown_evidence(&store, &other, &[reference])
+		ExecutionStore::unknown_evidence(&store.for_run(TEST_FIXTURE), &other, &[reference])
 			.await
 			.unwrap(),
 		[reference]
@@ -370,7 +381,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		reqwest::Url::parse(&endpoint).unwrap(),
 	)
 	.unwrap();
-	let evidence = aidash_server::research::evidence_store(store.clone());
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,
@@ -422,7 +433,7 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone());
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
 	let limits = Limits {
 		sources: 1,
 		..Limits::default()
@@ -471,6 +482,7 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 			.record_sources(run.id, "s1", &[candidate], limits.sources)
 			.await
 			.unwrap()
+			.unwrap()
 			.is_empty()
 	);
 	assert_eq!(evidence.usage(run.id).await.unwrap().sources, 1);
@@ -490,6 +502,9 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 			text: "Alpha".into(),
 			page: None,
 		}],
+		page_count: None,
+		pages_without_text: Vec::new(),
+		original: None,
 	};
 	let snapshot = evidence
 		.record_snapshot(run.id, created, &page.url, &page, &limits)
@@ -509,7 +524,7 @@ async fn a_dispatched_read_holds_a_snapshot_slot_until_it_settles(
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone());
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
 	let read = |key: &str| Reservation {
 		key: key.into(),
 		operation: Operation::Fetch,
@@ -545,6 +560,109 @@ async fn a_dispatched_read_holds_a_snapshot_slot_until_it_settles(
 	assert_eq!(
 		evidence.reserve(run.id, &read("f3")).await.unwrap(),
 		Reserved::Reserved { source: None }
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapshots(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let run = leased_run(&store, &agent(&store).await).await;
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let original = aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec();
+	// Room for one original only (ADR 0053).
+	let limits = Limits {
+		original_bytes: original.len() as u64 + 1,
+		..Limits::default()
+	};
+	let mut snapshots = Vec::new();
+	for (key, address) in [
+		("f1", "https://example.com/first.pdf"),
+		("f2", "https://example.com/second.pdf"),
+	] {
+		let Reserved::Reserved {
+			source: Some(source),
+		} = evidence
+			.reserve(
+				run.id,
+				&Reservation {
+					key: key.into(),
+					operation: Operation::Fetch,
+					provider: "research.page@1".into(),
+					destination: "example.com".into(),
+					attribution: None,
+					limits,
+					budget: None,
+					source_url: Some(address.into()),
+				},
+			)
+			.await
+			.unwrap()
+		else {
+			panic!("the reservation creates the Source record");
+		};
+		let page = ExtractedPage {
+			url: address.into(),
+			title: Some("Annual report".into()),
+			media_type: "application/pdf".into(),
+			fetched_at: chrono::Utc::now(),
+			raw_digest: "sha256:raw".into(),
+			completeness: Completeness::Complete,
+			lines: vec![Line {
+				text: "Annual report: revenue grew by twelve percent.".into(),
+				page: Some(1),
+			}],
+			page_count: Some(3),
+			pages_without_text: vec![2],
+			original: Some(original.clone()),
+		};
+		snapshots.push(
+			evidence
+				.record_snapshot(run.id, source, address, &page, &limits)
+				.await
+				.unwrap()
+				.unwrap(),
+		);
+	}
+	let retained = snapshots
+		.iter()
+		.map(|snapshot| snapshot.original.as_ref().unwrap().retained)
+		.collect::<Vec<_>>();
+	assert_eq!(retained, [true, false]);
+	for snapshot in &snapshots {
+		let stored = evidence
+			.snapshot(run.id, snapshot.id)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(stored.page_count, Some(3));
+		assert_eq!(stored.pages_without_text, vec![2]);
+		assert_eq!(stored.original, snapshot.original);
+		assert_eq!(
+			stored.original.as_ref().unwrap().bytes,
+			original.len() as u64
+		);
+	}
+	assert_eq!(
+		evidence.original(run.id, snapshots[0].id).await.unwrap(),
+		Some(original.clone())
+	);
+	assert_eq!(
+		evidence.original(run.id, snapshots[1].id).await.unwrap(),
+		None
+	);
+	// Another Run never reads it.
+	assert_eq!(
+		evidence
+			.original(Uuid::new_v4(), snapshots[0].id)
+			.await
+			.unwrap(),
+		None
 	);
 	cleanup(store, &url, &schema).await;
 }

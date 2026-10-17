@@ -39,6 +39,7 @@ async function core(page: Page) {
       state: "pending",
       requester: "alice",
       approver: "alice",
+      viewer_is_approver: true,
       targets: ["https://example.org"],
       expires_at: "2099-01-01T00:00:00Z",
     },

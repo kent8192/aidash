@@ -1,4 +1,5 @@
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 struct SharedThread {
@@ -17,7 +18,12 @@ fn shared_thread(
 	let capability_fixture = Box::pin(capability_fixture);
 	async move {
 		let c = capability_fixture.await;
-		let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+		let workspace =
+			c.f.store
+				.task(&TEST_FIXTURE, c.task)
+				.await
+				.unwrap()
+				.workspace_id;
 		let root = source(&c, workspace, "Shared conversation; private working files").await;
 		let (_, thread) = request(
 			&c.app,
@@ -293,7 +299,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 		.0,
 		200
 	);
-	let parent = f.c.f.store.run(f.runs[1]).await.unwrap();
+	let parent = f.c.f.store.run(&TEST_FIXTURE, f.runs[1]).await.unwrap();
 	let (status, child) = request(
 		&f.c.app,
 		&f.bob,

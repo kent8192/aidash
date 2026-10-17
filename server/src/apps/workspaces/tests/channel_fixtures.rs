@@ -25,6 +25,7 @@ pub fn scoped_channel(#[future] endpoint: EndpointFixture) -> impl Future<Output
 			"policies":[{"id":"channel-work","effect":"allow","subjects":{"any":true},
 				"actions":["*"],"resources":{"kinds":["*"]}}]
 		});
+		crate::endpoint::tenant_root(&app.runtime, "acme").await;
 		assert_json(
 			app.deployment_administrator
 				.post(

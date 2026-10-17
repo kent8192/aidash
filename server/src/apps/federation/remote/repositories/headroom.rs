@@ -21,7 +21,7 @@ impl Definitions for Context<'_> {
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		self.0
 			.store
-			.run(run.id)
+			.run(&self.0.store.run_tenancy(run.id).await?, run.id)
 			.await?
 			.context
 			.binding_snapshot
@@ -36,7 +36,7 @@ impl Definitions for Context<'_> {
 			.map_err(Into::into)
 	}
 	async fn documents(&self, agent: &Entry) -> Result<Value> {
-		crate::knowledge::load(&self.0.registry.db, agent)
+		crate::knowledge::load(&self.0.registry, agent)
 			.await
 			.map_err(Into::into)
 	}
