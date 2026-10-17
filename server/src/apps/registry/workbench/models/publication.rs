@@ -81,6 +81,7 @@ impl AgentDraftRegistration {
 			.into_table(Alias::new(Self::table_name()))
 			.columns(
 				[
+					"tenant",
 					"draft_id",
 					"revision",
 					"agent_id",
@@ -94,6 +95,7 @@ impl AgentDraftRegistration {
 				.map(Alias::new),
 			)
 			.values_panic([
+				IntoValue::into_value(&draft.tenant),
 				IntoValue::into_value(draft.id),
 				IntoValue::into_value(draft.revision),
 				IntoValue::into_value(&entry.id),
