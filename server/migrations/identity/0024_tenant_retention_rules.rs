@@ -5,9 +5,9 @@
 // periods. Every period is at most ten years.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0022_tenant_retention_rules", "identity")
+	Migration::new("0024_tenant_retention_rules", "identity")
         .database_only(true)
-        .add_dependency("identity", "0021_tenancy_state")
+        .add_dependency("identity", "0023_plan_connection_constraints")
         .add_operation(Operation::CreateTable {
             name: "tenant_retention_rules".into(),
             columns: vec![

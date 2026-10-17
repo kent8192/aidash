@@ -5,7 +5,7 @@
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0023_tenant_retention_rules_state", "identity")
+	Migration::new("0025_tenant_retention_rules_state", "identity")
 		.add_operation(Operation::CreateTable {
 			name: "tenant_retention_rule_history".to_string(),
 			columns: vec![
@@ -112,7 +112,7 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
-		.add_dependency("identity", "0022_tenant_retention_rules")
+		.add_dependency("identity", "0024_tenant_retention_rules")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(true)

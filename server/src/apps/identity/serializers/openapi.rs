@@ -186,6 +186,28 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		// The callback is a browser redirect target, like `/auth/callback`, and
 		// stays out of the API document.
 	}
+	{
+		use super::plan_connections as plan;
+		use views::plan_connections as v;
+		contracts.response::<_, plan::Status>(document, v::status, 200, "application/json")?;
+		contracts.path(document, v::status, &["String", "String"])?;
+		contracts.request::<_, plan::Start>(document, v::start)?;
+		contracts.response::<_, plan::Started>(document, v::start, 200, "application/json")?;
+		contracts.path(document, v::start, &["String", "String"])?;
+		contracts.request::<_, plan::Complete>(document, v::complete)?;
+		contracts.response::<_, plan::Completed>(document, v::complete, 200, "application/json")?;
+		contracts.path(document, v::complete, &["String", "String"])?;
+		contracts.request::<_, plan::Disconnect>(document, v::disconnect)?;
+		contracts.response::<_, aidash_application::plan_connections::Disconnection>(
+			document,
+			v::disconnect,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::disconnect, &["String", "String"])?;
+		contracts.response::<_, plan::Models>(document, v::models, 200, "application/json")?;
+		contracts.path(document, v::models, &["String", "String"])?;
+	}
 
 	contracts.response::<_, desktop::Started>(
 		document,

@@ -86,8 +86,14 @@ pub async fn initialize(
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
+	configure_plan_connections(
+		&mut store,
+		&settings.provider_credentials,
+		&settings.plan_connections,
+	)?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
-		.with_provider_credentials(store.provider_credentials.is_some());
+		.with_provider_credentials(store.provider_credentials.is_some())
+		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
 	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
 		.timeout(Duration::from_secs(120))
@@ -536,18 +542,30 @@ impl aidash_application::ports::Credentials for PeerCredentials {
 
 /// Assemble definition admission for both management and worker paths.
 pub fn registry_validation() -> aidash_application::registry::DefinitionValidation {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
+	let settings = crate::config::settings::get_settings()
+		.ok()
+		.and_then(|s| s.resolve().ok())
+		.map(|s| s.into_parts().0);
 	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
-		.with_provider_credentials(
-			crate::config::settings::get_settings()
-				.ok()
-				.and_then(|s| s.resolve().ok())
-				.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
-		)
+	.with_provider_credentials(
+		settings
+			.as_ref()
+			.is_some_and(|s| s.provider_credentials.store.is_some()),
+	)
+	// Startup refuses `enabled` without a PostgreSQL Store; checking both
+	// keeps a management command from admitting what the server would not.
+	.with_plan_connections(settings.as_ref().is_some_and(|s| {
+		s.plan_connections.enabled
+			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
+	}))
 }
 pub fn registry_validation_for(
 	store: &Store,
 ) -> aidash_application::registry::DefinitionValidation {
-	registry_validation().with_provider_credentials(store.provider_credentials.is_some())
+	registry_validation()
+		.with_provider_credentials(store.provider_credentials.is_some())
+		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 }
 struct NativeCoreToolCatalog;
 impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCatalog {
@@ -2350,6 +2368,53 @@ pub async fn configure_provider_credentials(
 		},
 	));
 	store.provider_key_material_reader = reader;
+	Ok(())
+}
+
+/// Plan Tokens live only in a PostgreSQL Provider Credential Store (ADR 0008):
+/// Cloud and Dedicated wait for OpenAI's approval of a hosted flow (#248), so a
+/// server whose Store is in Secret Manager, or that has none, refuses to start
+/// with Plan Connections on. The service exists whenever the Store could hold
+/// Plan Tokens, so owners can still read and disconnect their connections
+/// after `enabled` is turned off (ADR 0007).
+pub fn configure_plan_connections(
+	store: &mut Store,
+	credentials: &crate::apps::identity::serializers::provider_credentials::Settings,
+	settings: &crate::apps::identity::serializers::plan_connections::PlanConnectionSettings,
+) -> Result<()> {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
+	let postgres = matches!(credentials.store, Some(StoreConfig::Postgres { .. }));
+	if settings.enabled && !postgres {
+		return Err(Error::Invalid(
+			"Plan Connections need a PostgreSQL Provider Credential Store; \
+			 turn off [plan_connections] enabled"
+				.into(),
+		));
+	}
+	store.plan_connections_enabled = settings.enabled;
+	let (Some(credentials), Some(reader), true) = (
+		store.provider_credentials.as_ref(),
+		store.provider_key_material_reader.clone(),
+		postgres,
+	) else {
+		return Ok(());
+	};
+	store.plan_connections = Some(Arc::new(aidash_application::plan_connections::Service {
+		repository: Arc::new(
+			crate::apps::identity::repositories::plan_connections::NativeRepository {
+				pool: store.control_pool.clone(),
+				node: store.node_id.clone(),
+			},
+		),
+		store: credentials.store.clone(),
+		reader,
+		authorization: Arc::new(aidash_integrations::chatgpt::ChatgptAuthorization::new(
+			aidash_integrations::semantic::client()?,
+		)),
+	}));
+	if settings.enabled {
+		tracing::info!("Plan Connections enabled");
+	}
 	Ok(())
 }
 

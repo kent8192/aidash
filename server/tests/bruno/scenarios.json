@@ -12599,8 +12599,345 @@
       ]
     },
     {
-      "name": "1157 run-evidence - Anonymous request is rejected",
-      "file": "contracts/1157-run-evidence.bru",
+      "name": "1157 plan-connection-status - Anonymous request is rejected",
+      "file": "contracts/1157-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1158 plan-connection-status - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1158-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1159 plan-connection-status - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1159-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1160 plan-connection-status - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1160-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1161 plan-authorization-start - Anonymous request is rejected",
+      "file": "contracts/1161-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1162 plan-authorization-start - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1162-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1163 plan-authorization-start - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1163-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1164 plan-authorization-start - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1164-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1165 plan-authorization-start - Wrong JSON media type is rejected",
+      "file": "contracts/1165-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1166 plan-authorization-start - Malformed JSON cannot reach the use case",
+      "file": "contracts/1166-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1167 plan-authorization-start - Plan Tokens are not an accepted field",
+      "file": "contracts/1167-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Plan Tokens are not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1168 plan-authorization-complete - Anonymous request is rejected",
+      "file": "contracts/1168-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1169 plan-authorization-complete - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1169-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1170 plan-authorization-complete - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1170-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1171 plan-authorization-complete - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1171-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1172 plan-authorization-complete - Wrong JSON media type is rejected",
+      "file": "contracts/1172-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1173 plan-authorization-complete - Malformed JSON cannot reach the use case",
+      "file": "contracts/1173-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1174 plan-authorization-complete - Plan Tokens are not an accepted field",
+      "file": "contracts/1174-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Plan Tokens are not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1175 plan-connection-disconnect - Anonymous request is rejected",
+      "file": "contracts/1175-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1176 plan-connection-disconnect - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1176-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1177 plan-connection-disconnect - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1177-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1178 plan-connection-disconnect - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1178-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1179 plan-connection-disconnect - Wrong JSON media type is rejected",
+      "file": "contracts/1179-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1180 plan-connection-disconnect - Malformed JSON cannot reach the use case",
+      "file": "contracts/1180-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1181 plan-connection-disconnect - Plan Tokens are not an accepted field",
+      "file": "contracts/1181-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Plan Tokens are not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1182 plan-connection-models - Anonymous request is rejected",
+      "file": "contracts/1182-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1183 plan-connection-models - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1183-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1184 plan-connection-models - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1184-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1185 plan-connection-models - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1185-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1186 run-evidence - Anonymous request is rejected",
+      "file": "contracts/1186-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12610,8 +12947,8 @@
       ]
     },
     {
-      "name": "1158 run-evidence - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1158-run-evidence.bru",
+      "name": "1187 run-evidence - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1187-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -12621,8 +12958,8 @@
       ]
     },
     {
-      "name": "1159 run-evidence - Application read preserves the typed response contract",
-      "file": "contracts/1159-run-evidence.bru",
+      "name": "1188 run-evidence - Application read preserves the typed response contract",
+      "file": "contracts/1188-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Application read preserves the typed response contract",
       "status": 404,

@@ -767,16 +767,38 @@ impl DashboardSessions {
 		input: Approval,
 	) -> Result<ApprovedMapping> {
 		validate(&input)?;
-		DashboardRegistrationRequest::approve(
-			&self.runtime.store.pool,
-			id,
-			input,
-			Default::default(),
-			&deployment_administrator_actor(actor),
-			digest(&random_secret()),
-			self.runtime.config.dashboard_policy(),
-		)
-		.await
+		let actor = deployment_administrator_actor(actor);
+		let approve = || {
+			DashboardRegistrationRequest::approve(
+				&self.runtime.store.pool,
+				id,
+				Approval {
+					tenant: input.tenant.clone(),
+					subject: input.subject.clone(),
+					groups: input.groups.clone(),
+				},
+				Default::default(),
+				&actor,
+				digest(&random_secret()),
+				self.runtime.config.dashboard_policy(),
+			)
+		};
+		let result = approve().await;
+		// As for a Tenant Administrator: a previous owner's connection is
+		// retired only for an approval refused for that alone (ADR 0007).
+		if result.as_ref().is_err_and(
+			crate::apps::identity::repositories::plan_connections::refused_shared_holder,
+		) {
+			crate::apps::identity::services::plan_connections::retire_unmapped(
+				&self.runtime,
+				&input.tenant,
+				&input.subject,
+				&actor.decision_actor(),
+			)
+			.await?;
+			return approve().await;
+		}
+		result
 	}
 	pub(crate) async fn admin_reject(
 		&self,
@@ -841,13 +863,20 @@ impl DashboardSessions {
 		input: MappingRevision,
 	) -> Result<http::StatusCode> {
 		validate(&input)?;
+		let actor = deployment_administrator_actor(actor);
 		DashboardMapping::disable(
 			&self.runtime.store.pool,
 			id,
 			input.expected_revision,
-			&deployment_administrator_actor(actor),
+			&actor,
 		)
 		.await?;
+		crate::apps::identity::services::plan_connections::retire_disabled_mapping(
+			&self.runtime,
+			id,
+			&actor.decision_actor(),
+		)
+		.await;
 		Ok(http::StatusCode::NO_CONTENT)
 	}
 	pub(crate) async fn logout(&self, headers: HeaderMap) -> Result<Response> {

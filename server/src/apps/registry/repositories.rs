@@ -27,14 +27,22 @@ pub struct Registry {
 	pool: Pool,
 	node_id: String,
 	provider_credentials: bool,
+	plan_connections: bool,
 }
 impl Registry {
 	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
 		self.provider_credentials = configured;
 		self
 	}
+	/// Whether `chatgpt` model definitions may be registered (ADR 0007).
+	pub fn with_plan_connections(mut self, enabled: bool) -> Self {
+		self.plan_connections = enabled;
+		self
+	}
 	pub(crate) fn validation(&self) -> aidash_application::registry::DefinitionValidation {
-		crate::bootstrap::registry_validation().with_provider_credentials(self.provider_credentials)
+		crate::bootstrap::registry_validation()
+			.with_provider_credentials(self.provider_credentials)
+			.with_plan_connections(self.plan_connections)
 	}
 	pub async fn seed_system(&self) -> Result<()> {
 		let seeding = TenancyScope::Deployment(DeploymentScopeReason::BuiltInSeeding);
@@ -57,6 +65,7 @@ impl Registry {
 			pool: pool.into(),
 			node_id: node_id.into(),
 			provider_credentials: false,
+			plan_connections: false,
 		})
 	}
 	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {

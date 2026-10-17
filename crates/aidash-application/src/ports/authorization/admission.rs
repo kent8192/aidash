@@ -44,6 +44,15 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	) -> Result<Task>;
 	async fn claimed_run(&mut self, task: Uuid) -> Result<Uuid>;
 	async fn persist_grant(&mut self, grant: &ExecutionGrant) -> Result<()>;
+	/// Pins the Plan Connection of the grant's delegation-chain root for every
+	/// Plan Connection model the snapshot selects (ADR 0007). `federated` is
+	/// set when the task inherited a remote origin; such a Run never uses one.
+	async fn admit_plan_connections(
+		&mut self,
+		grant: &ExecutionGrant,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		federated: bool,
+	) -> Result<()>;
 	async fn dashboard_origin(&mut self, credential: Uuid) -> Result<Option<(Uuid, Uuid)>>;
 	async fn persist_dashboard_origin(
 		&mut self,
