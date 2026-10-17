@@ -2,8 +2,8 @@
 //! Registration Request addressed to the inviting Tenant. Only a digest of the
 //! secret is stored; the secret is shown once, when the Invitation is issued.
 use crate::apps::identity::models::{
-	AdministrationActor, AdministrationEvent, DashboardMapping, DashboardRegistrationRequest,
-	TenantInvitation, database_time,
+	AdministrationActor, AdministrationEvent, DashboardIdentity, DashboardMapping,
+	DashboardRegistrationRequest, TenantInvitation, database_time,
 };
 use crate::apps::identity::services::oidc::{digest, random_secret};
 use crate::{Error, Result};
@@ -242,6 +242,15 @@ pub(crate) async fn redeem(
 	mut invitation: TenantInvitation,
 	identity: Uuid,
 ) -> Result<DashboardRegistrationRequest> {
+	// An approval maps the identity under this row lock, so taking it before
+	// the membership check means one committing meanwhile is seen here and
+	// the link stays unspent. `open_addressed` takes the same lock again.
+	DashboardIdentity::objects()
+		.filter(DashboardIdentity::field_id().eq(identity))
+		.select_for_update()
+		.all_with_executor(tx)
+		.await
+		.map_err(FrameworkError::from)?;
 	if DashboardMapping::objects()
 		.filter(DashboardMapping::field_identity_id().eq(identity))
 		.filter(DashboardMapping::field_tenant().eq(invitation.tenant.clone()))

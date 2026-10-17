@@ -62,9 +62,9 @@ impl Tenants {
 	/// The Deployment Administrator bearer token, a browser session in the
 	/// `deployment_administrator` context, or any other browser session as the External
 	/// Identity itself. A session needs no Mapping. Every other bearer token,
-	/// such as a Subject Credential, is refused. A browser Deployment
-	/// Administrator's grant is checked in the creation transaction, so its
-	/// origin is returned with it.
+	/// such as a Subject Credential, is refused. A browser session's origin is
+	/// returned with it: the creation transaction rechecks the session, and a
+	/// Deployment Administrator's grant, under lock.
 	async fn creator(&self, headers: &HeaderMap) -> Result<(Creator, Option<BrowserOrigin>)> {
 		let f = &self.runtime;
 		let desktop = crate::apps::identity::repositories::desktop::access_token(headers).is_some();
@@ -87,10 +87,13 @@ impl Tenants {
 		if context == Some("deployment_administrator") {
 			return Ok((
 				Creator::DeploymentAdministrator(Some(identity)),
-				Some(BrowserOrigin::deployment_administrator(config, &session)),
+				Some(BrowserOrigin::unmapped(config, &session)),
 			));
 		}
-		Ok((Creator::Identity(identity), None))
+		Ok((
+			Creator::Identity(identity),
+			Some(BrowserOrigin::unmapped(config, &session)),
+		))
 	}
 
 	pub(crate) async fn create(
@@ -110,7 +113,7 @@ impl Tenants {
 				// As at the authenticated write boundary, the identity, grant and
 				// session stay share-locked until the Tenant exists: a revocation
 				// committing meanwhile waits, or is seen here.
-				if let Some(origin) = &origin {
+				if let (Creator::DeploymentAdministrator(_), Some(origin)) = (creator, &origin) {
 					origin.require_deployment_administrator(tx, true).await?;
 				}
 				if let Creator::Identity(identity) = creator {
@@ -134,6 +137,11 @@ impl Tenants {
 							.is_some_and(|policy| policy.unbound(pool))
 					{
 						return Err(Error::Forbidden);
+					}
+					// The session, after the identity as at the write boundary:
+					// a logout committing meanwhile waits, or is seen here.
+					if let Some(origin) = &origin {
+						origin.session.current(tx, true).await?;
 					}
 					let now = database_time(tx).await?;
 					let (recent, total) = tenants::creations(tx, identity, now).await?;
@@ -204,7 +212,8 @@ impl Tenants {
 					registration: None,
 					mapping: None,
 					tenant: Some(&tenant),
-					subject: Some(&identity.subject),
+					// The event concerns the Tenant; who acted is in the actor.
+					subject: None,
 					invitation: None,
 				},
 			)

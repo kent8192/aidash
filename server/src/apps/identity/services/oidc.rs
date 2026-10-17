@@ -299,9 +299,10 @@ pub struct BrowserOrigin {
 }
 
 impl BrowserOrigin {
-	/// A browser session acting as a Deployment Administrator. Its grant is
-	/// checked by [`Self::require_deployment_administrator`].
-	pub(crate) fn deployment_administrator(
+	/// A browser session acting without a Mapping: as a Deployment
+	/// Administrator, whose grant [`Self::require_deployment_administrator`]
+	/// checks, or as the External Identity itself.
+	pub(crate) fn unmapped(
 		config: crate::config::SessionConfig<'_>,
 		session: &BrowserSession,
 	) -> Self {
@@ -358,7 +359,7 @@ pub async fn actor_from_headers(
 		}
 		return Ok((
 			Actor::DeploymentAdministrator,
-			BrowserOrigin::deployment_administrator(config, &session),
+			BrowserOrigin::unmapped(config, &session),
 		));
 	}
 	// The selector names the Mapping's Tenant, so the lookup runs in that

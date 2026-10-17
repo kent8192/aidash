@@ -62,15 +62,11 @@ export function DashboardIdentityAdministration() {
   const [tenant, setTenant] = useState("");
   const [subject, setSubject] = useState("");
   // Groups for a subject the approval creates, per request. They start from
-  // what the request's Invitation proposed. Without one, a Tenant a
-  // Deployment Administrator created has nobody yet, so its first
-  // administrator is made here, in `administrators`.
+  // what the request's Invitation proposed, and otherwise from none: any
+  // group, `administrators` included, is the reviewer's explicit choice.
   const [groups, setGroups] = useState<Record<string, string>>({});
   const groupsOf = (request: Registration) =>
-    groups[request.id] ??
-    (request.invitation_id
-      ? (request.proposed_groups ?? []).join(", ")
-      : "administrators");
+    groups[request.id] ?? (request.proposed_groups ?? []).join(", ");
   const [mappingOffset, setMappingOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

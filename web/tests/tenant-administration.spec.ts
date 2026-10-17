@@ -314,6 +314,8 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
         json: [
           request("erin", "invitation-erin", ["administrators"]),
           request("frank", "invitation-frank", ["members"]),
+          // A request without an Invitation proposes nothing.
+          { ...request("grace", "", []), invitation_id: null },
         ],
       });
     if (path === "/api/dashboard/registrations/frank/approve") {
@@ -330,6 +332,7 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
   const groups = "Groups, if the subject is new (comma-separated)";
   await expect(queued("erin").getByLabel(groups)).toHaveValue("administrators");
   await expect(queued("frank").getByLabel(groups)).toHaveValue("members");
+  await expect(queued("grace").getByLabel(groups)).toHaveValue("");
   await queued("frank").getByLabel("User subject").fill("frank");
   await queued("frank")
     .getByRole("button", { name: "Approve mapping", exact: true })

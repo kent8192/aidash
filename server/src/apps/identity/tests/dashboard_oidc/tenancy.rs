@@ -436,6 +436,15 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 		)
 		.await;
 	assert_eq!(status, 200, "{renamed}");
+	// The history names the Tenant as what changed and Alice only as the actor.
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM dashboard_administration_history WHERE action = 'tenant.update' AND tenant = '{tenant}' AND subject IS NULL AND actor_identity_id = '{}'",
+			alice.identity
+		))
+		.await,
+		1
+	);
 	let (_, session) = d
 		.as_person(&alice, "GET", "/auth/session", None, Value::Null)
 		.await;
