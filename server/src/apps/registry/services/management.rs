@@ -52,8 +52,12 @@ impl RegistryManagement {
 			return Err(Error::Forbidden);
 		};
 		let mut access = Access::begin(&f.store, &identity).await?;
-		let result =
-			crate::apps::registry::repositories::versions::page(&mut access, page.offset).await;
+		let result = crate::apps::registry::repositories::versions::page(
+			&mut access,
+			&f.config.node_id,
+			page.offset,
+		)
+		.await;
 		access.finish(result).await
 	}
 	/// A new definition or version in the subject's Tenant, under `registry.create`.

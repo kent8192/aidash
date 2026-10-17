@@ -3,7 +3,7 @@
 use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationCatalogHistory};
 use crate::apps::registry::models::Definition;
 use crate::apps::registry::serializers::contracts::{
-	ApprovalRecord, Entry, RegistryVersion, VersionApproval,
+	AgentSubject, ApprovalRecord, Entry, RegistryVersion, VersionApproval,
 };
 use crate::authorization::access::Access;
 use crate::{Error, Result};
@@ -12,7 +12,11 @@ use reinhardt::db::orm::Model;
 
 const PAGE: usize = 100;
 
-pub(crate) async fn page(access: &mut Access, offset: u64) -> Result<Vec<RegistryVersion>> {
+pub(crate) async fn page(
+	access: &mut Access,
+	node: &str,
+	offset: u64,
+) -> Result<Vec<RegistryVersion>> {
 	let resource = access.resource("registry", "*", serde_json::json!({}));
 	access.require(&resource, "registry.read").await?;
 	let tenant = access.identity.tenant.clone();
@@ -55,11 +59,26 @@ pub(crate) async fn page(access: &mut Access, offset: u64) -> Result<Vec<Registr
 				created_at: row.created_at,
 			})
 			.collect();
+		let subject = (entry.kind == "agent")
+			.then(|| aidash_domain::qualified_agent(node, &entry.id, &entry.version))
+			.and_then(|id| {
+				access
+					.snapshot
+					.bundle
+					.subjects
+					.get(&id)
+					.map(|subject| AgentSubject {
+						groups: subject.groups.clone(),
+						enabled: subject.enabled,
+						id,
+					})
+			});
 		versions.push(RegistryVersion {
 			needs_approval: !aidash_application::registry::system::is_builtin(&entry),
 			entry,
 			approval,
 			history,
+			subject,
 		});
 	}
 	Ok(versions)

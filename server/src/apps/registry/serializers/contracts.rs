@@ -20,6 +20,14 @@ pub struct RegistryVersion {
 	pub needs_approval: bool,
 	pub approval: Option<VersionApproval>,
 	pub history: Vec<ApprovalRecord>,
+	/// The agent subject an approval created, for an agent version (ADR 0062).
+	pub subject: Option<AgentSubject>,
+}
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct AgentSubject {
+	pub id: String,
+	pub groups: std::collections::BTreeSet<String>,
+	pub enabled: bool,
 }
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct VersionApproval {
