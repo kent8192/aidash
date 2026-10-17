@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, authenticatedFetch } from "./transport";
 import { Panel, useI18n } from "./ui";
 import { Alert, Hint, Pager } from "./components/patterns";
+import { TenantInvitations, TenantLabelForm } from "./tenancy";
 
 type Registration = {
   id: string;
@@ -13,6 +14,12 @@ type Registration = {
   status: string;
   created_at: string;
   expires_at: string;
+  /** The Tenant the request is addressed to; absent when only Deployment Administrators decide it. */
+  tenant?: string | null;
+  /** The Invitation the request was made with, if any. */
+  invitation_id?: string | null;
+  /** The groups that Invitation proposed. */
+  proposed_groups?: string[];
 };
 type Identity = {
   id: string;
@@ -33,7 +40,20 @@ type Mapping = {
   revision: number;
 };
 type Grant = { identity_id: string; enabled: boolean; revision: number };
-const MAPPING_PAGE_SIZE = 200;
+/** The server's page size for Mappings and Registration Requests. */
+const PAGE_SIZE = 200;
+
+/** The distinct, non-empty groups named in a comma-separated field. */
+function approvalGroups(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .split(",")
+        .map((group) => group.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
 
 export function DashboardIdentityAdministration() {
   const { locale } = useI18n();
@@ -41,6 +61,12 @@ export function DashboardIdentityAdministration() {
   const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   const [subject, setSubject] = useState("");
+  // Groups for a subject the approval creates, per request. They start from
+  // what the request's Invitation proposed, and otherwise from none: any
+  // group, `administrators` included, is the reviewer's explicit choice.
+  const [groups, setGroups] = useState<Record<string, string>>({});
+  const groupsOf = (request: Registration) =>
+    groups[request.id] ?? (request.proposed_groups ?? []).join(", ");
   const [mappingOffset, setMappingOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -132,6 +158,17 @@ export function DashboardIdentityAdministration() {
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
+                {request.tenant && (
+                  <p className="truncate font-mono text-[11px] text-faint">
+                    {english ? "Addressed to" : "申請先"}: {request.tenant}
+                  </p>
+                )}
+                {request.invitation_id && (
+                  <p className="truncate text-[11px] text-faint">
+                    {english ? "Invited into" : "招待時のグループ"}:{" "}
+                    {(request.proposed_groups ?? []).join(", ") || "—"}
+                  </p>
+                )}
                 <small className="text-[11px] text-faint">
                   {english ? "Expires" : "期限"}:{" "}
                   <span className="font-mono tabular">
@@ -143,21 +180,33 @@ export function DashboardIdentityAdministration() {
                 <label className={field}>
                   {english ? "Tenant" : "テナント"}
                   <Input
-                    value={tenant}
+                    value={request.tenant ?? tenant}
+                    disabled={Boolean(request.tenant)}
                     onChange={(event) => setTenant(event.target.value)}
                   />
                 </label>
                 <label className={field}>
-                  {english ? "Existing user subject" : "既存の user subject"}
+                  {english ? "User subject" : "user subject"}
                   <Input
                     value={subject}
                     onChange={(event) => setSubject(event.target.value)}
                   />
                 </label>
+                <label className={field}>
+                  {english
+                    ? "Groups, if the subject is new (comma-separated)"
+                    : "subject が新しい場合のグループ（カンマ区切り）"}
+                  <Input
+                    value={groupsOf(request)}
+                    onChange={(event) =>
+                      setGroups({ ...groups, [request.id]: event.target.value })
+                    }
+                  />
+                </label>
                 <div className="flex gap-2 sm:col-span-2">
                   <Button
                     size="sm"
-                    disabled={busy || !tenant || !subject}
+                    disabled={busy || !(request.tenant ?? tenant) || !subject}
                     onClick={() => {
                       void act(() =>
                         apiFetch(
@@ -165,7 +214,14 @@ export function DashboardIdentityAdministration() {
                           {
                             method: "POST",
                             headers: { "content-type": "application/json" },
-                            body: JSON.stringify({ tenant, subject }),
+                            body: JSON.stringify({
+                              tenant: request.tenant ?? tenant,
+                              subject,
+                              // Used only when the subject does not exist yet.
+                              ...(approvalGroups(groupsOf(request)).length
+                                ? { groups: approvalGroups(groupsOf(request)) }
+                                : {}),
+                            }),
                           },
                         ),
                       );
@@ -230,17 +286,15 @@ export function DashboardIdentityAdministration() {
       </ul>
       <Pager
         className="justify-start"
-        page={mappingOffset / MAPPING_PAGE_SIZE + 1}
+        page={mappingOffset / PAGE_SIZE + 1}
         previous={{
           disabled: mappingOffset === 0 || mappings.isFetching,
-          go: () =>
-            setMappingOffset(Math.max(0, mappingOffset - MAPPING_PAGE_SIZE)),
+          go: () => setMappingOffset(Math.max(0, mappingOffset - PAGE_SIZE)),
         }}
         next={{
           disabled:
-            (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
-            mappings.isFetching,
-          go: () => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE),
+            (mappings.data?.length ?? 0) < PAGE_SIZE || mappings.isFetching,
+          go: () => setMappingOffset(mappingOffset + PAGE_SIZE),
         }}
       />
       <h3 className={group}>
@@ -365,6 +419,7 @@ export function DashboardIdentityAdministration() {
 
 type TenantAdministration = {
   tenant: string;
+  label: string | null;
   actions: string[];
   assignable_groups: string[];
   policy_revision: number | null;
@@ -378,6 +433,8 @@ type TenantRegistration = {
   id: string;
   identity: TenantIdentity;
   expires_at: string;
+  /** The Assignable Groups the request's Invitation proposed. */
+  proposed_groups: string[];
 };
 type TenantMapping = {
   id: string;
@@ -456,6 +513,7 @@ export function TenantIdentityAdministration({
   const [subjects, setSubjects] = useState<Record<string, string>>({});
   const [groups, setGroups] = useState<Record<string, string[]>>({});
   const [mappingOffset, setMappingOffset] = useState(0);
+  const [registrationOffset, setRegistrationOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const overview = useQuery({
@@ -465,8 +523,11 @@ export function TenantIdentityAdministration({
   const can = (action: string) =>
     overview.data?.actions.includes(action) ?? false;
   const registrations = useQuery({
-    queryKey: ["tenant-registrations", tenant],
-    queryFn: () => apiFetch<TenantRegistration[]>(`${path}/registrations`),
+    queryKey: ["tenant-registrations", tenant, registrationOffset],
+    queryFn: () =>
+      apiFetch<TenantRegistration[]>(
+        `${path}/registrations?offset=${registrationOffset}`,
+      ),
     enabled: can("registration.read"),
   });
   const mappings = useQuery({
@@ -498,6 +559,12 @@ export function TenantIdentityAdministration({
     return <>{fallback}</>;
   if (!overview.data) return null;
   const assignable = overview.data.assignable_groups;
+  // An Invitation's proposal can name a group that is no longer assignable;
+  // such a group is neither shown nor submitted with the approval.
+  const chosen = (request: { id: string; proposed_groups: string[] }) =>
+    (groups[request.id] ?? request.proposed_groups).filter((group) =>
+      assignable.includes(group),
+    );
   const revision = overview.data.policy_revision;
   const row = "flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5";
   const heading = "text-[11px] font-medium text-faint";
@@ -505,15 +572,34 @@ export function TenantIdentityAdministration({
   return (
     <Panel
       title={
-        english ? `Tenant administration: ${tenant}` : `テナント管理: ${tenant}`
+        english
+          ? `Tenant administration: ${overview.data.label ?? tenant}`
+          : `テナント管理: ${overview.data.label ?? tenant}`
       }
     >
       <Hint>
         {english
-          ? "Manage the people mapped into this Tenant. Where the Tenant has its own sign-in pool, approve requests from it into new user subjects. You can assign only groups marked as assignable."
-          : "このテナントに mapping された人を管理します。テナント専用のサインインプールがある場合は、そこからのリクエストを新しい user subject として承認します。付与できるのは、割り当て可能な group だけです。"}
+          ? "Manage the people mapped into this Tenant. Invite people with a link, then approve their requests into new user subjects. You can assign only groups marked as assignable."
+          : "このテナントに mapping された人を管理します。招待リンクで人を招き、届いた申請を新しい user subject として承認します。付与できるのは、割り当て可能な group だけです。"}
       </Hint>
       {error && <Alert>{error}</Alert>}
+      <p className="font-mono text-[11px] text-faint">{tenant}</p>
+      {can("tenant.update") && (
+        <TenantLabelForm
+          key={overview.data.label ?? ""}
+          tenant={tenant}
+          label={overview.data.label}
+        />
+      )}
+      {(can("invitation.create") || can("invitation.read")) && (
+        <TenantInvitations
+          tenant={tenant}
+          assignable={assignable}
+          canCreate={can("invitation.create")}
+          canRead={can("invitation.read")}
+          canRevoke={can("invitation.revoke")}
+        />
+      )}
       {can("registration.read") && (
         <>
           <h3 className={heading}>
@@ -553,7 +639,7 @@ export function TenantIdentityAdministration({
                       </label>
                       <GroupChoice
                         groups={assignable}
-                        selected={groups[request.id] ?? []}
+                        selected={chosen(request)}
                         disabled={busy}
                         change={(next) =>
                           setGroups({ ...groups, [request.id]: next })
@@ -575,7 +661,7 @@ export function TenantIdentityAdministration({
                                 headers: { "content-type": "application/json" },
                                 body: JSON.stringify({
                                   subject: subjects[request.id],
-                                  groups: groups[request.id] ?? [],
+                                  groups: chosen(request),
                                 }),
                               },
                             ),
@@ -607,6 +693,23 @@ export function TenantIdentityAdministration({
               </li>
             ))}
           </ul>
+          <Pager
+            className="justify-start"
+            page={registrationOffset / PAGE_SIZE + 1}
+            previous={{
+              disabled: registrationOffset === 0 || registrations.isFetching,
+              go: () =>
+                setRegistrationOffset(
+                  Math.max(0, registrationOffset - PAGE_SIZE),
+                ),
+            }}
+            next={{
+              disabled:
+                (registrations.data?.length ?? 0) < PAGE_SIZE ||
+                registrations.isFetching,
+              go: () => setRegistrationOffset(registrationOffset + PAGE_SIZE),
+            }}
+          />
         </>
       )}
       {can("mapping.read") && (
@@ -681,19 +784,16 @@ export function TenantIdentityAdministration({
           </ul>
           <Pager
             className="justify-start"
-            page={mappingOffset / MAPPING_PAGE_SIZE + 1}
+            page={mappingOffset / PAGE_SIZE + 1}
             previous={{
               disabled: mappingOffset === 0 || mappings.isFetching,
               go: () =>
-                setMappingOffset(
-                  Math.max(0, mappingOffset - MAPPING_PAGE_SIZE),
-                ),
+                setMappingOffset(Math.max(0, mappingOffset - PAGE_SIZE)),
             }}
             next={{
               disabled:
-                (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
-                mappings.isFetching,
-              go: () => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE),
+                (mappings.data?.length ?? 0) < PAGE_SIZE || mappings.isFetching,
+              go: () => setMappingOffset(mappingOffset + PAGE_SIZE),
             }}
           />
         </>

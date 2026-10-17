@@ -37,6 +37,11 @@ pub(crate) use application::{process_settings, settings_for};
 #[allow(unused_imports)] // Only federation suites consume fixed-origin application fixtures.
 pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, native_peer};
 
+#[path = "tenant_roots.rs"]
+mod tenant_roots;
+#[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
+pub use tenant_roots::{tenant_root, tenant_root_in};
+
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
 pub async fn http_response(
 	app: &TestApplication,
@@ -149,6 +154,7 @@ async fn bootstrap_with_resources(
 ) -> (Value, String, Uuid) {
 	let deployment_administrator = &f.config.api_token;
 	let policy = policy(&f.config.node_id);
+	tenant_root(f, "acme").await;
 	let (status, snapshot) = request(
 		app,
 		deployment_administrator,
@@ -464,7 +470,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				api_token: "deployment-administrator-execution-fixture".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
-				default_host_packages: vec![],
+				tenancy: Default::default(),
 				oidc: None,
 				gcip: None,
 			},

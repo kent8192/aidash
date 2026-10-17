@@ -14,6 +14,7 @@ import { mappingContext } from "../transport";
 import type { ThemePreference } from "../theme";
 import { useI18n, type Locale } from "../ui";
 import { authCopy, shellCopy } from "./copy";
+import { CreateTenantForm, type CreatedTenant } from "../tenancy";
 
 export type Account = {
   name: string;
@@ -21,10 +22,14 @@ export type Account = {
   mappings: {
     id: string;
     tenant: string;
+    label?: string | null;
     subject: string;
     personal?: boolean;
   }[];
   deploymentAdministratorAllowed: boolean;
+  /** Whether the Tenancy Rules let this identity create Tenants now. */
+  tenantCreation: boolean;
+  tenantCreated: (created: CreatedTenant) => void;
   /** A direct Google account may request shared access even after its personal Mapping is disabled. */
   personalAccount: boolean;
   sharedAccess: {
@@ -106,7 +111,10 @@ export function AccountPanel({ account }: { account: Account }) {
                   .filter(
                     (mapping) => account.context === mappingContext(mapping),
                   )
-                  .map((mapping) => `${mapping.tenant} / ${mapping.subject}`)}
+                  .map(
+                    (mapping) =>
+                      `${mapping.label ?? mapping.tenant} / ${mapping.subject}`,
+                  )}
           </span>
         </span>
       </div>
@@ -120,7 +128,7 @@ export function AccountPanel({ account }: { account: Account }) {
           >
             {account.mappings.map((mapping) => (
               <option key={mapping.id} value={mappingContext(mapping)}>
-                {mapping.tenant} / {mapping.subject}
+                {mapping.label ?? mapping.tenant} / {mapping.subject}
               </option>
             ))}
             {account.deploymentAdministratorAllowed && (
@@ -130,6 +138,11 @@ export function AccountPanel({ account }: { account: Account }) {
             )}
           </NativeSelect>
         </label>
+        {account.tenantCreation && (
+          <div className="pt-1">
+            <CreateTenantForm onCreated={account.tenantCreated} />
+          </div>
+        )}
         {account.personalAccount && (
           <div className="grid gap-2 pt-1">
             <p

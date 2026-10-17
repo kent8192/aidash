@@ -298,6 +298,36 @@ pub struct BrowserOrigin {
 	pub(crate) session: identity::HttpSession,
 }
 
+impl BrowserOrigin {
+	/// A browser session acting without a Mapping: as a Deployment
+	/// Administrator, whose grant [`Self::require_deployment_administrator`]
+	/// checks, or as the External Identity itself.
+	pub(crate) fn unmapped(
+		config: crate::config::SessionConfig<'_>,
+		session: &BrowserSession,
+	) -> Self {
+		Self {
+			identity_id: session.identity_id(),
+			mapping_id: None,
+			session: http_session(config, session),
+		}
+	}
+}
+
+fn http_session(
+	config: crate::config::SessionConfig<'_>,
+	session: &BrowserSession,
+) -> identity::HttpSession {
+	identity::HttpSession {
+		id: session.id,
+		identity_id: session.identity_id(),
+		idle_seconds: session
+			.desktop_idle_seconds
+			.unwrap_or(config.session_idle_seconds),
+		access_expires_at: session.access_expires_at,
+	}
+}
+
 pub async fn actor_from_headers(
 	f: &Federation,
 	headers: &HeaderMap,
@@ -305,14 +335,7 @@ pub async fn actor_from_headers(
 ) -> Result<(Actor, BrowserOrigin)> {
 	let config = required_config(f)?;
 	let session = session_from_headers(f, headers).await?;
-	let http_session = identity::HttpSession {
-		id: session.id,
-		identity_id: session.identity_id(),
-		idle_seconds: session
-			.desktop_idle_seconds
-			.unwrap_or(config.session_idle_seconds),
-		access_expires_at: session.access_expires_at,
-	};
+	let http_session = http_session(config, &session);
 	if !csrf_allowed(config, headers, &session, method) {
 		return Err(Error::Forbidden);
 	}
@@ -336,11 +359,7 @@ pub async fn actor_from_headers(
 		}
 		return Ok((
 			Actor::DeploymentAdministrator,
-			BrowserOrigin {
-				identity_id: session.identity_id(),
-				mapping_id: None,
-				session: http_session.clone(),
-			},
+			BrowserOrigin::unmapped(config, &session),
 		));
 	}
 	// The selector names the Mapping's Tenant, so the lookup runs in that
@@ -571,21 +590,23 @@ impl DashboardSessions {
 			})
 			.await?;
 		let policy = f.config.dashboard_policy();
-		// Existing Google sessions receive the same one-time provisioning as a
-		// fresh verified callback, without changing pending shared enrollment.
-		let personal = if policy.as_ref().is_some_and(|policy| policy.google) {
+		// Existing sessions receive the same one-time provisioning as a fresh
+		// verified callback, without changing pending shared enrollment.
+		let gcip_pool = (!external.gcip_tenant.is_empty()).then_some(external.gcip_tenant.as_str());
+		if policy
+			.as_ref()
+			.is_some_and(|policy| policy.provisions_personal(gcip_pool))
+		{
 			crate::apps::identity::repositories::personal_tenant::provision(pool, external.id)
 				.await?;
-			Some(
-				aidash_domain::identity::personal_tenant::PersonalTenant::for_identity(external.id),
-			)
-		} else {
-			None
-		};
+		}
 		// The identity's Mappings in every Tenant, which the Tenant switcher lists.
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
-		let (mappings, active, deployment_administrator) = pool
+		let (personal, mappings, active, deployment_administrator, labels) = pool
 			.atomic(&scope, async |tx| {
+				let personal =
+					crate::apps::identity::repositories::personal_tenant::of(tx, external.id)
+						.await?;
 				let mappings = DashboardMapping::enabled_for_identity(tx, external.id)
 					.await?
 					.into_iter()
@@ -613,22 +634,36 @@ impl DashboardSessions {
 						session.identity_id(),
 					)
 					.await?;
-				Ok((mappings, active, deployment_administrator))
+				let labels = crate::apps::identity::repositories::tenants::labels(
+					tx,
+					mappings
+						.iter()
+						.map(|mapping| mapping.tenant.clone())
+						.collect(),
+				)
+				.await?;
+				Ok((personal, mappings, active, deployment_administrator, labels))
 			})
 			.await?;
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
-				personal_account: external.direct_google(),
+				personal_account: personal.is_some(),
+				tenant_creation: crate::apps::identity::services::tenants::creation_offered(
+					&f,
+					gcip_pool,
+					external.disabled_at.is_some(),
+				),
+				invitations: f.config.tenancy.invitations,
 				deployment_administrator,
 				mappings: mappings
 					.into_iter()
 					.map(|row| MappingView {
 						id: row.id,
-						personal: personal
-							.as_ref()
-							.is_some_and(|personal| personal.contains(&row.tenant, &row.subject)),
+						personal: personal.as_deref() == Some(row.tenant.as_str())
+							&& row.subject == aidash_domain::identity::tenancy::OWNER,
 						credential_active: active.contains(&row.credential_id),
+						label: labels.get(&row.tenant).cloned().flatten(),
 						tenant: row.tenant,
 						subject: row.subject,
 					})
@@ -666,9 +701,24 @@ impl DashboardSessions {
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
-		DashboardRegistrationRequest::submit(&f.store.pool, session.identity_id()).await
+		let pool = &f.store.pool;
+		// A Tenant Binding addresses the request to its Tenant; otherwise only
+		// Deployment Administrators decide it.
+		let identity = pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardIdentity::find(tx, session.identity_id()).await
+			})
+			.await?;
+		let tenant = f
+			.config
+			.gcip
+			.as_ref()
+			.and_then(|gcip| gcip.tenant_bindings.get(&identity.gcip_tenant).cloned());
+		DashboardRegistrationRequest::submit(pool, session.identity_id(), tenant).await
 	}
-	pub(crate) async fn admin_registrations(&self) -> Result<Vec<Registration>> {
+	pub(crate) async fn admin_registrations(
+		&self,
+	) -> Result<Vec<crate::apps::identity::serializers::oidc::PendingRegistration>> {
 		DashboardRegistrationRequest::pending(&self.runtime.store.pool).await
 	}
 	pub(crate) async fn admin_identity(&self, id: Uuid) -> Result<IdentityView> {
@@ -725,6 +775,7 @@ impl DashboardSessions {
 				Approval {
 					tenant: input.tenant.clone(),
 					subject: input.subject.clone(),
+					groups: input.groups.clone(),
 				},
 				Default::default(),
 				&actor,
@@ -926,9 +977,9 @@ async fn exchange_identity(
 }
 
 impl BrowserOrigin {
-	pub(crate) async fn require_deployment_administrator(
+	pub(crate) async fn require_deployment_administrator<E: TransactionExecutor + ?Sized>(
 		&self,
-		tx: &mut crate::database::native::Transaction,
+		tx: &mut E,
 		lock: bool,
 	) -> Result<()> {
 		if self.mapping_id.is_some() {
@@ -950,7 +1001,7 @@ impl BrowserOrigin {
 		let status = crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
 			.columns(&["issuer", "last_valid_at", "disabled_at"])
 			.bind(self.identity_id)
-			.fetch_optional(&mut **tx)
+			.fetch_optional(&mut *tx)
 			.await?;
 		identity::validate_dashboard_status(status)?;
 		let mut query = Query::select();
@@ -967,7 +1018,7 @@ impl BrowserOrigin {
 		let enabled: Option<bool> =
 			crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
 				.bind(self.identity_id)
-				.scalar_optional(&mut **tx)
+				.scalar_optional(&mut *tx)
 				.await?;
 		if enabled != Some(true) {
 			return Err(Error::Forbidden);
@@ -976,6 +1027,7 @@ impl BrowserOrigin {
 	}
 }
 
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { createTenant } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -61,7 +62,11 @@ test("generation dashboard manages policy, approval, completion and retained his
   );
   try {
     const id = `generation-${randomUUID()}`;
-    const tenant = `tenant-${id}`;
+    const tenant = await createTenant(
+      request,
+      "acceptance-access-token",
+      `tenant-${id}`,
+    );
     const api = async (
       path: string,
       body?: unknown,
@@ -76,7 +81,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       return response.json();
     };
     await api(`/api/authorization/${tenant}`, {
-      expected_revision: 0,
+      expected_revision: 1,
       bundle: {
         tenant,
         subjects: { alice: { kind: "user" } },

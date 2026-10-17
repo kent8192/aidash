@@ -146,6 +146,8 @@ pub struct AgentConfig {
 	pub projection_version: Option<crate::projection::ProjectionVersion>,
 	/// As written in the definition; `None` means `off` (ADR 0019).
 	pub prompt_cache: Option<crate::projection::PromptCache>,
+	/// As written in the definition; `None` requires no verification.
+	pub completion: Option<crate::completion::CompletionPolicy>,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,

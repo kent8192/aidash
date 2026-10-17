@@ -169,6 +169,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_handoffs", DeploymentWide),
 	// desktop sessions
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
+	// the identity's one Personal Tenant, read at sign-in
+	table("identity", "personal_tenants", Pending(264)),
 	// pending Sign in with ChatGPT flows bound to a browser, like sign-in state
 	table("identity", "plan_authorizations", DeploymentWide),
 	// this Deployment's Plan Connection host ID
@@ -180,6 +182,9 @@ pub const TABLES: &[Table] = &[
 	table("identity", "provider_credentials", Pending(264)),
 	table("identity", "run_plan_connections", Pending(264)),
 	table("identity", "run_provider_credentials", Pending(264)),
+	table("identity", "tenant_invitations", Pending(264)),
+	// Tenant root records: the Deployment's list of Tenants (ADR 0050)
+	table("identity", "tenants", DeploymentWide),
 	// knowledge
 	table("knowledge", "memory_bank_decay", Pending(265)),
 	table("knowledge", "memory_bank_policy_changes", Pending(265)),

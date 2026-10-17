@@ -6,6 +6,7 @@ use crate::{
 	registry::Registry,
 	store::{RunStore, Store},
 };
+use aidash_application::ports::execution::completion;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Result,
@@ -336,6 +337,12 @@ impl ExecutionHome for NativeHome {
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		self.0.human_request_by_id(id).await.map_err(Into::into)
 	}
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		self.0
+			.close_human_request(id, response)
+			.await
+			.map_err(Into::into)
+	}
 
 	async fn task(&self) -> Result<Task> {
 		Home::task(&self.0).await.map_err(Into::into)
@@ -557,6 +564,146 @@ impl ExecutionAuthority for Authority<'_> {
 	}
 }
 
+impl Environment<'_> {
+	/// Completion Gate Checks run only under this node's own authority lease.
+	fn worker(&self) -> Option<crate::authorization::execution::WorkerAuthority> {
+		self.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+	}
+}
+
+#[async_trait]
+impl completion::CompletionChecks for Environment<'_> {
+	async fn content(&self, run: &Run) -> Result<Option<completion::MountedContent>> {
+		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		let Some(area) = worker.working_area(&self.federation.store, run).await? else {
+			return Ok(None);
+		};
+		let files: Vec<aidash_domain::capabilities::operations::MountedFile> =
+			serde_json::from_value(area.manifest.clone())?;
+		Ok(Some(completion::MountedContent {
+			digest: aidash_domain::completion::content_digest(&files),
+			revision: area.revision,
+			state: match area.state.as_str() {
+				"active" => completion::ContentState::Ready,
+				"running" => completion::ContentState::Busy,
+				state => {
+					completion::ContentState::Unavailable(format!("the Working Area is {state}"))
+				}
+			},
+		}))
+	}
+	async fn start(
+		&self,
+		run: &Run,
+		request: &completion::CheckRequest<'_>,
+	) -> Result<completion::CheckStart> {
+		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		let store = &self.federation.store;
+		// The Check's own timeout, or what an omitted shell argument gets:
+		// the shell Binding's ceiling, else the node default. One above the
+		// ceiling reaches the Binding's narrowing as declared, which refuses
+		// it; an admitted one is never longer than the Run's remaining
+		// verification time.
+		let ceiling = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.and_then(|snapshot| snapshot.operation(aidash_domain::completion::SHELL).ok())
+			.and_then(|binding| binding.narrow.limits.get("timeout_seconds").copied());
+		let declared = aidash_domain::completion::check_timeout(
+			request.timeout_seconds,
+			ceiling,
+			store.capabilities.0.operation_seconds,
+		);
+		let timeout_seconds = if ceiling.is_some_and(|ceiling| declared > ceiling) {
+			declared
+		} else {
+			declared.min(request.remaining_seconds)
+		};
+		let input = serde_json::json!({
+			"idempotency_key": request.key,
+			"command": request.command,
+			"timeout_seconds": timeout_seconds,
+			"expected_revision": request.revision,
+		});
+		check_started(
+			worker
+				.check(store, run, input, &request.key.to_string())
+				.await,
+			timeout_seconds,
+		)
+	}
+	async fn status(&self, run: &Run, operation: Uuid) -> Result<completion::CheckStatus> {
+		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
+		check_polled(
+			worker
+				.check_status(&self.federation.store, run, operation)
+				.await,
+		)
+	}
+}
+
+/// What starting a Check means to the Completion Gate.
+fn check_started(
+	result: crate::Result<serde_json::Value>,
+	timeout_seconds: u64,
+) -> Result<completion::CheckStart> {
+	match result {
+		Ok(result) => {
+			let operation_id = result["operation_id"]
+				.as_str()
+				.and_then(|id| id.parse().ok())
+				.ok_or_else(|| {
+					aidash_application::Error::Invalid("Check result has no operation".into())
+				})?;
+			Ok(completion::CheckStart::Started {
+				operation_id,
+				timeout_seconds,
+			})
+		}
+		// The content moved after it was read. An idempotency conflict means the
+		// same attempt was started at another revision before a process cut;
+		// the saved attempt count gives the next start a fresh key.
+		Err(crate::Error::Conflict(reason))
+			if ["AREA_REVISION_CHANGED", "AREA_BUSY", "IDEMPOTENCY_CONFLICT"]
+				.iter()
+				.any(|code| reason.starts_with(code)) =>
+		{
+			Ok(completion::CheckStart::Stale)
+		}
+		Err(crate::Error::Forbidden | crate::Error::Unauthorized) => Ok(
+			completion::CheckStart::Denied("the shell capability is not authorized".into()),
+		),
+		// The shell Binding's narrowing refused the policy's command or limits:
+		// a decision of its authority, not an inability to run.
+		Err(crate::Error::Invalid(reason)) if reason.contains("exceeds Binding") => {
+			Ok(completion::CheckStart::Denied(reason))
+		}
+		Err(
+			crate::Error::Invalid(reason)
+			| crate::Error::Conflict(reason)
+			| crate::Error::NotFound(reason),
+		) => Ok(completion::CheckStart::Unavailable(reason)),
+		Err(error) => Err(error.into()),
+	}
+}
+
+/// What a polled Check means to the Completion Gate.
+fn check_polled(result: crate::Result<serde_json::Value>) -> Result<completion::CheckStatus> {
+	match result {
+		Ok(result) => Ok(completion::CheckStatus::of(&result)),
+		Err(crate::Error::NotFound(reason)) => Ok(completion::CheckStatus::Unavailable(reason)),
+		// Revoked authority stops the Run as it does any other step.
+		Err(error) => Err(error.into()),
+	}
+}
+
+#[cfg(test)]
+#[path = "../tests/agent_completion_checks.rs"]
+mod completion_check_tests;
+
 pub(crate) struct Environment<'a> {
 	federation: &'a Federation,
 	authority: Option<Authority<'a>>,
@@ -629,6 +776,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			tool_parallelism: usize::from(config.tool_parallelism),
 			projection_version: config.projection_version.unwrap_or_default(),
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
+			completion: config.completion,
 		})
 	}
 	fn tool_slots(&self) -> Option<&ToolSlots> {
@@ -657,6 +805,11 @@ impl ExecutionEnvironment for Environment<'_> {
 	}
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
+	}
+	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
+		self.worker()
+			.is_some()
+			.then_some(self as &dyn completion::CompletionChecks)
 	}
 
 	async fn documents(&self, _entry: &Entry) -> Result<Value> {

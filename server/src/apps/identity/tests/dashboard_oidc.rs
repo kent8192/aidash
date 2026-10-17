@@ -239,6 +239,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]
 	}))
 	.unwrap();
+	common::tenant_root_in(federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: federation.store.pool.clone(),
 	}
@@ -499,7 +500,11 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	)
 	.await;
 	assert_eq!(status, 200);
-	assert_eq!(actionable, json!([fresh]));
+	// The queue adds what an Invitation proposed; this request had none.
+	let mut queued = fresh.clone();
+	queued["invitation_id"] = Value::Null;
+	queued["proposed_groups"] = json!([]);
+	assert_eq!(actionable, json!([queued]));
 	let path = format!(
 		"/api/dashboard/registrations/{}/approve",
 		fresh["id"].as_str().unwrap()
@@ -1504,6 +1509,8 @@ struct GoogleBrowser {
 async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
 	let runtime = runtime.await;
 	let (mut federation, url, database) = runtime.parts();
+	// Personal Tenants follow the Tenancy Rules, not the issuer.
+	federation.config.tenancy.personal_tenants = true;
 	federation.config.oidc = Some(OidcConfig {
 		issuer: "https://accounts.google.com".into(),
 		client_id: "aidash".into(),
@@ -1597,6 +1604,7 @@ async fn google_session_provisions_private_access_without_registration(
 		"actions":["*"],"resources":{"kinds":["*"]}}]
 	}))
 	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -1860,7 +1868,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	#[from(google_browser)]
 	fixture: GoogleBrowser,
 ) {
-	// Arrange: a Deployment Administrator already created data in the reserved tenant namespace.
+	// Arrange: a Deployment Administrator already created a Tenant named after the identity.
 	let tenant = format!("personal-{}", fixture.identity.simple());
 	let policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
@@ -1869,6 +1877,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	let authorization = Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	};
+	common::tenant_root_in(fixture.federation.store.pool.driver(), &tenant).await;
 	let before = authorization
 		.replace(&tenant, 0, policy, "deployment_administrator")
 		.await
@@ -1885,8 +1894,15 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 		Value::Null,
 	)
 	.await;
-	// Assert: fail closed, without introducing authority or rewriting the policy.
-	assert_eq!(status, 409, "{response}");
+	// Assert: the Personal Tenant gets an assigned name, so the existing
+	// Tenant gains no authority and keeps its policy.
+	assert_eq!(status, 200, "{response}");
+	assert_eq!(
+		response["mappings"].as_array().unwrap().len(),
+		1,
+		"{response}"
+	);
+	assert_ne!(response["mappings"][0]["tenant"], tenant.as_str());
 	for table in ["dashboard_mappings", "authorization_credentials"] {
 		let count = Query::select()
 			.expr(Expr::cust("count(*)"))
@@ -2254,11 +2270,12 @@ async fn tenant_administration_works_without_a_tenant_binding(
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": actions,
-			"resources": {"kinds": ["registration", "mapping", "subject"]},
+			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
 		}]
 	}))
 	.unwrap();
+	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -2439,6 +2456,20 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		.await
 		.unwrap();
 	assert!(recorded >= 1, "{recorded}");
+	// The group change is recorded with its subject and acting administrator.
+	let group_changes = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_administration_history"))
+		.and_where(Expr::cust(
+			"action = 'subject.group.update' AND tenant = 'acme' AND subject = 'bob' \
+			 AND actor_kind = 'tenant_administrator' AND actor_identity_id IS NOT NULL",
+		))
+		.to_string(PostgresQueryBuilder);
+	let group_changes: i64 = sqlx::query_scalar(&group_changes)
+		.fetch_one(fixture.federation.store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(group_changes, 1);
 	common::cleanup(fixture.federation, &fixture.url, &fixture.database).await;
 }
 
@@ -2846,3 +2877,6 @@ fn negative_status_state(
 ) -> NegativeStatusState {
 	NegativeStatusState { checks, release }
 }
+
+#[path = "dashboard_oidc/tenancy.rs"]
+mod tenancy;

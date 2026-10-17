@@ -27,7 +27,12 @@ pub enum Action<'a> {
 	Skill(&'a str),
 	Patch,
 	Shell,
-	Control { kind: &'static str, cancel: bool },
+	/// A Completion Gate Check: shell admission, no file publication (#112).
+	Verify,
+	Control {
+		kind: &'static str,
+		cancel: bool,
+	},
 }
 #[async_trait]
 pub trait VerifiedFile: Send {

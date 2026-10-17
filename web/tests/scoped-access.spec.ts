@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { createTenant } from "./tenant-fixture";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -70,7 +71,11 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       return response.json();
     };
     const id = `scoped-${randomUUID()}`;
-    const tenant = `tenant-${id}`;
+    const tenant = await createTenant(
+      request,
+      "acceptance-access-token",
+      `tenant-${id}`,
+    );
     const state = await api("/api/state");
     for (const [kind, entryId, config] of [
       [
@@ -110,7 +115,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       });
     }
     await api(`/api/authorization/${tenant}`, {
-      expected_revision: 0,
+      expected_revision: 1,
       bundle: {
         tenant,
         subjects: {
