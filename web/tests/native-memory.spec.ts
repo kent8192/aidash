@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { routeTenantActions, tenantSubject } from "./registry-fixture";
 
 const workspace = "019c0000-0000-7000-8000-000000000001";
 const participant = "019c0000-0000-7000-8000-000000000002";
@@ -28,6 +29,7 @@ async function fixture(
   paged = false,
   visual = false,
   contextTokens = 4096,
+  access: object = { kind: "deployment_administrator" },
 ) {
   await installBearerDashboard(page, "fixture-token");
   await page.addInitScript(
@@ -53,7 +55,7 @@ async function fixture(
     participant,
   };
   const state = {
-    access: { kind: "deployment_administrator" },
+    access,
     node: {
       id: bank.home,
       endpoint: "http://localhost",
@@ -485,7 +487,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
   test(`memory Registry pins all six roles and an explicit graph cutoff (${locale})`, async ({
     page,
   }) => {
-    await fixture(page, locale);
+    await fixture(page, locale, false, false, 4096, tenantSubject);
+    await routeTenantActions(page, ["registry.create"]);
     const ja = locale === "ja-JP";
     await page.goto("/registry");
     await page

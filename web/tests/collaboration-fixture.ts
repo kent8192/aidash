@@ -1,6 +1,7 @@
 import type { Artifact } from "../src/generated/models";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { registryVersion } from "./registry-fixture";
 
 function fixture(reference = false) {
   const node = {
@@ -257,6 +258,8 @@ export async function setup(
     remoteNativeCollision?: boolean;
     /** Run-published text citing evidence, beside a person's pasted marker. */
     citations?: boolean;
+    /** The actions the subject holds in `acme`; members create definitions. */
+    tenantActions?: string[];
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -551,6 +554,20 @@ export async function setup(
       return route.fulfill({ json: { access, node_id: data.node.id } });
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
+    if (path === "/api/tenants/acme/administration")
+      return route.fulfill({
+        json: {
+          tenant: "acme",
+          label: null,
+          actions: options.tenantActions ?? ["registry.create"],
+          assignable_groups: [],
+          policy_revision: null,
+        },
+      });
+    if (path === "/api/registry/versions")
+      return route.fulfill({
+        json: data.registry.map((entry) => registryVersion(entry)),
+      });
     if (path.endsWith("/memory/participants"))
       return route.fulfill({
         json: {

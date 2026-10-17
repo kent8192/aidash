@@ -807,7 +807,7 @@ for (const viewport of [
     page,
   }) => {
     await page.setViewportSize(viewport);
-    const { errors } = await setup(page);
+    const { errors } = await setup(page, { subject: true });
     await page.goto("/settings?view=registry");
     await page
       .getByRole("button", { name: "Register entity", exact: true })
@@ -1117,7 +1117,7 @@ test("an inaccessible explicit channel is not silently replaced with another cha
 test("legacy management links are routed into secondary settings", async ({
   page,
 }) => {
-  const { errors } = await setup(page);
+  const { errors } = await setup(page, { subject: true });
   await page.goto("/agents");
   await expect(page).toHaveURL(/\/settings\?.*view=agents/);
   await expect(

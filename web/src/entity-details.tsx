@@ -7,6 +7,11 @@ import { RecordView } from "./record-view";
 import { AgentRelationshipGraph } from "./agent-graph";
 import { graphCopy } from "./agent-graph/copy";
 import type { GraphNode } from "./agent-graph/model";
+import {
+  CatalogApprovalSection,
+  useRegistryVersions,
+} from "./catalog-approval";
+import { approvalState } from "./catalog-approval-model";
 
 type Selection =
   | { kind: "entityDetail"; entity: Entry }
@@ -22,13 +27,21 @@ export function EntityDetails({
   open: (selection: Selection) => void;
 }) {
   const { local, t, locale, entityName } = useI18n();
-  // Re-resolve on every authorized snapshot instead of retaining the modal's old metadata.
-  const current = data.registry.find(
-    (value) =>
-      value.id === entity.id &&
-      value.version === entity.version &&
-      value.kind === entity.kind,
-  );
+  const versions = useRegistryVersions(data.access);
+  const same = (value: Entry) =>
+    value.id === entity.id &&
+    value.version === entity.version &&
+    value.kind === entity.kind;
+  const version = versions.isError
+    ? undefined
+    : versions.data?.find((value) => same(value.entry));
+  // Re-resolve on every authorized snapshot instead of retaining the modal's
+  // old metadata. A version awaiting approval is only in the Tenant's Registry.
+  const current =
+    data.registry.find(same) ??
+    (version && ["unapproved", "withdrawn"].includes(approvalState(version))
+      ? version.entry
+      : undefined);
   if (!current) return <p role="status">{graphCopy[locale].unavailable}</p>;
   const openNode = (node: GraphNode) => {
     if (!node.available) return;
@@ -81,6 +94,14 @@ export function EntityDetails({
           </div>
         )}
       </header>
+      {version && versions.data && (
+        <CatalogApprovalSection
+          key={`${version.entry.id}@${version.entry.version}`}
+          version={version}
+          versions={versions.data}
+          access={data.access}
+        />
+      )}
       {current.kind === "agent" && (
         <AgentRelationshipGraph
           key={JSON.stringify([data.node.id, current.id, current.version])}
