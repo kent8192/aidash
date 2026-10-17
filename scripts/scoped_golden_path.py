@@ -17,6 +17,14 @@ import uuid
 
 from golden_path import tool_descriptor, tool_binding, PEER_TOKEN, api_request, entity, wait_for
 
+# Budget for a scoped Run to reach its crash boundary, and again to complete
+# after the SIGKILL. Each durable phase performs bounded Home RPCs before its
+# next lease, and one describe or command call costs about 1 s in the debug
+# binary CI runs. On develop 7580b08c8 a passing home-message-recovery took
+# 110-130 s after the restart and a failing one about 160 s, so 150 s held
+# only on fast runners (#321).
+RECOVERY_BUDGET_SECONDS = 300
+
 
 def denied(base, path, body=None, **kwargs):
     try:
@@ -293,17 +301,18 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.2"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, token=PEER_TOKEN, headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
-            # Completion also includes the external-action approval continuation.
-            # Each durable phase performs bounded Home RPCs before the next lease;
-            # use the same total budget as the completed-run assertion below.
-            if not home.blocked.wait(150):
-                stalled = api_request(base_b, f"/api/runs/{run_id}")["run"]
-                commands = {name: len(attempts) for (owner, name), attempts in home.commands.items() if owner == grant}
-                timings = {name: {"total": round(sum(values), 3), "max": max(values)} for (owner, name), values in home.timings.items() if owner == grant}
-                raise AssertionError(f"Did not reach committed {operation}: phase={stalled['phase']}, step={stalled['step']}, error={stalled.get('error')}, model_calls={fixture.model_calls[scenario]}, Home commands={commands}, RPC seconds={timings}, peer_errors={home.errors}, provider_errors={fixture.errors}")
-
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}")["run"]
+
+            def progress(grant=grant, scenario=scenario):
+                stalled = run()
+                commands = {name: len(attempts) for (owner, name), attempts in home.commands.items() if owner == grant}
+                timings = {name: {"total": round(sum(values), 3), "max": max(values)} for (owner, name), values in home.timings.items() if owner == grant}
+                return f"phase={stalled['phase']}, step={stalled['step']}, error={stalled.get('error')}, model_calls={fixture.model_calls[scenario]}, Home commands={commands}, RPC seconds={timings}, peer_errors={home.errors}, provider_errors={fixture.errors}"
+
+            # Completion also includes the external-action approval continuation.
+            if not home.blocked.wait(RECOVERY_BUDGET_SECONDS):
+                raise AssertionError(f"Did not reach committed {operation}: {progress()}")
 
             before = run()
             assert before["agent_id"] == agent["id"] and before["agent_version"] == agent["version"]
@@ -336,7 +345,10 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 wait_for(lambda: run()["phase"] == "CANCELLED", label="revoked remote run cancellation")
                 assert api_request(base_a, f"/api/workspaces/{workspace['id']}")["tasks"][0]["status"] == "CANCELLED"
             else:
-                wait_for(lambda: run()["phase"] == "COMPLETED", timeout=150, label=scenario)
+                try:
+                    wait_for(lambda: run()["phase"] == "COMPLETED", timeout=RECOVERY_BUDGET_SECONDS, label=scenario)
+                except AssertionError as error:
+                    raise AssertionError(f"{error}; {progress()}") from None
                 if scenario == "home-completion-recovery":
                     assert fixture.model_calls[scenario] == before_calls, "Recovery repeated committed inference"
                 else:
