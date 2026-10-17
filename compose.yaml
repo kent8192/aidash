@@ -65,7 +65,7 @@ services:
       args:
         CARGO_PROFILE: dev
     environment:
-      DATABASE_URL: postgres://aidash_owner:aidash-owner-local@postgres:5432/aidash_a
+      DATABASE_URL: postgres://aidash_server:aidash-server-local@postgres:5432/aidash_a
       AIDASH_NODE_ID: ${AIDASH_NODE_ID:-aidash://node-a}
       AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
     command:
@@ -80,6 +80,29 @@ services:
     depends_on:
       postgres-extensions:
         condition: service_completed_successfully
+  # Generates this machine's Provider Credential Store keys once. They live in
+  # a volume, so `down -v` deletes them together with the credentials they encrypt.
+  provider-credential-keys:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        umask 077
+        cd /var/lib/aidash/provider-credentials
+        for key in master-key fingerprint-key; do
+          if [ ! -s "$$key" ]; then
+            head -c 32 /dev/urandom | od -An -vtx1 | tr -d ' \n' > "$$key.tmp"
+            mv "$$key.tmp" "$$key"
+          fi
+        done
+    volumes:
+      - provider-credentials:/var/lib/aidash/provider-credentials
   backend:
     profiles: [dev]
     build:
@@ -100,12 +123,21 @@ services:
       AIDASH_LISTEN: 0.0.0.0:8080
       AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
       AIDASH_MEMORY_RECOVERY_DIR: /var/lib/aidash/memory-recovery
+      AIDASH_PROVIDER_CREDENTIAL_SETTINGS: /run/aidash/provider-credentials.json
+    configs:
+      - source: provider-credentials
+        target: /run/aidash/provider-credentials.json
+      - source: local-settings
+        target: /app/server/settings/local.toml
     volumes:
       - memory-recovery:/var/lib/aidash/memory-recovery
+      - provider-credentials:/var/lib/aidash/provider-credentials:ro
     ports:
       - "127.0.0.1:${AIDASH_BACKEND_PORT:-18080}:8080"
     depends_on:
       memory-recovery-init:
+        condition: service_completed_successfully
+      provider-credential-keys:
         condition: service_completed_successfully
       nats:
         condition: service_started
@@ -172,8 +204,22 @@ services:
           path: ./server
         - action: rebuild
           path: ./crates
+configs:
+  provider-credentials:
+    content: |
+      {"provider_credentials": {
+        "fingerprint_key": {"file": "/var/lib/aidash/provider-credentials/fingerprint-key"},
+        "store": {"kind": "postgres", "master_key": {"file": "/var/lib/aidash/provider-credentials/master-key"}}
+      }}
+  # The Self-hosted Tenancy Rules leave Personal Tenants off. The dev stack turns
+  # them on, so a first Google sign-in works without a Deployment Administrator.
+  local-settings:
+    content: |
+      [tenancy]
+      personal_tenants = true
 volumes:
   postgres:
   memory-recovery:
+  provider-credentials:
   nats:
   keycloak:
