@@ -16,6 +16,10 @@ type Registration = {
   expires_at: string;
   /** The Tenant the request is addressed to; absent when only Deployment Administrators decide it. */
   tenant?: string | null;
+  /** The Invitation the request was made with, if any. */
+  invitation_id?: string | null;
+  /** The groups that Invitation proposed. */
+  proposed_groups?: string[];
 };
 type Identity = {
   id: string;
@@ -56,10 +60,16 @@ export function DashboardIdentityAdministration() {
   const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   const [subject, setSubject] = useState("");
-  // Groups for a subject the approval creates; a Tenant a Deployment
-  // Administrator created has none yet, so its first administrator is made
-  // here, in `administrators`.
-  const [groups, setGroups] = useState("administrators");
+  // Groups for a subject the approval creates, per request. They start from
+  // what the request's Invitation proposed. Without one, a Tenant a
+  // Deployment Administrator created has nobody yet, so its first
+  // administrator is made here, in `administrators`.
+  const [groups, setGroups] = useState<Record<string, string>>({});
+  const groupsOf = (request: Registration) =>
+    groups[request.id] ??
+    (request.invitation_id
+      ? (request.proposed_groups ?? []).join(", ")
+      : "administrators");
   const [mappingOffset, setMappingOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -156,6 +166,12 @@ export function DashboardIdentityAdministration() {
                     {english ? "Addressed to" : "申請先"}: {request.tenant}
                   </p>
                 )}
+                {request.invitation_id && (
+                  <p className="truncate text-[11px] text-faint">
+                    {english ? "Invited into" : "招待時のグループ"}:{" "}
+                    {(request.proposed_groups ?? []).join(", ") || "—"}
+                  </p>
+                )}
                 <small className="text-[11px] text-faint">
                   {english ? "Expires" : "期限"}:{" "}
                   <span className="font-mono tabular">
@@ -184,8 +200,10 @@ export function DashboardIdentityAdministration() {
                     ? "Groups, if the subject is new (comma-separated)"
                     : "subject が新しい場合のグループ（カンマ区切り）"}
                   <Input
-                    value={groups}
-                    onChange={(event) => setGroups(event.target.value)}
+                    value={groupsOf(request)}
+                    onChange={(event) =>
+                      setGroups({ ...groups, [request.id]: event.target.value })
+                    }
                   />
                 </label>
                 <div className="flex gap-2 sm:col-span-2">
@@ -203,8 +221,8 @@ export function DashboardIdentityAdministration() {
                               tenant: request.tenant ?? tenant,
                               subject,
                               // Used only when the subject does not exist yet.
-                              ...(approvalGroups(groups).length
-                                ? { groups: approvalGroups(groups) }
+                              ...(approvalGroups(groupsOf(request)).length
+                                ? { groups: approvalGroups(groupsOf(request)) }
                                 : {}),
                             }),
                           },

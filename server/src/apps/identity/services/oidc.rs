@@ -298,6 +298,35 @@ pub struct BrowserOrigin {
 	pub(crate) session: identity::HttpSession,
 }
 
+impl BrowserOrigin {
+	/// A browser session acting as a Deployment Administrator. Its grant is
+	/// checked by [`Self::require_deployment_administrator`].
+	pub(crate) fn deployment_administrator(
+		config: crate::config::SessionConfig<'_>,
+		session: &BrowserSession,
+	) -> Self {
+		Self {
+			identity_id: session.identity_id(),
+			mapping_id: None,
+			session: http_session(config, session),
+		}
+	}
+}
+
+fn http_session(
+	config: crate::config::SessionConfig<'_>,
+	session: &BrowserSession,
+) -> identity::HttpSession {
+	identity::HttpSession {
+		id: session.id,
+		identity_id: session.identity_id(),
+		idle_seconds: session
+			.desktop_idle_seconds
+			.unwrap_or(config.session_idle_seconds),
+		access_expires_at: session.access_expires_at,
+	}
+}
+
 pub async fn actor_from_headers(
 	f: &Federation,
 	headers: &HeaderMap,
@@ -305,14 +334,7 @@ pub async fn actor_from_headers(
 ) -> Result<(Actor, BrowserOrigin)> {
 	let config = required_config(f)?;
 	let session = session_from_headers(f, headers).await?;
-	let http_session = identity::HttpSession {
-		id: session.id,
-		identity_id: session.identity_id(),
-		idle_seconds: session
-			.desktop_idle_seconds
-			.unwrap_or(config.session_idle_seconds),
-		access_expires_at: session.access_expires_at,
-	};
+	let http_session = http_session(config, &session);
 	if !csrf_allowed(config, headers, &session, method) {
 		return Err(Error::Forbidden);
 	}
@@ -336,11 +358,7 @@ pub async fn actor_from_headers(
 		}
 		return Ok((
 			Actor::DeploymentAdministrator,
-			BrowserOrigin {
-				identity_id: session.identity_id(),
-				mapping_id: None,
-				session: http_session.clone(),
-			},
+			BrowserOrigin::deployment_administrator(config, &session),
 		));
 	}
 	// The selector names the Mapping's Tenant, so the lookup runs in that
@@ -697,7 +715,9 @@ impl DashboardSessions {
 			.and_then(|gcip| gcip.tenant_bindings.get(&identity.gcip_tenant).cloned());
 		DashboardRegistrationRequest::submit(pool, session.identity_id(), tenant).await
 	}
-	pub(crate) async fn admin_registrations(&self) -> Result<Vec<Registration>> {
+	pub(crate) async fn admin_registrations(
+		&self,
+	) -> Result<Vec<crate::apps::identity::serializers::oidc::PendingRegistration>> {
 		DashboardRegistrationRequest::pending(&self.runtime.store.pool).await
 	}
 	pub(crate) async fn admin_identity(&self, id: Uuid) -> Result<IdentityView> {
@@ -927,9 +947,9 @@ async fn exchange_identity(
 }
 
 impl BrowserOrigin {
-	pub(crate) async fn require_deployment_administrator(
+	pub(crate) async fn require_deployment_administrator<E: TransactionExecutor + ?Sized>(
 		&self,
-		tx: &mut crate::database::native::Transaction,
+		tx: &mut E,
 		lock: bool,
 	) -> Result<()> {
 		if self.mapping_id.is_some() {
@@ -951,7 +971,7 @@ impl BrowserOrigin {
 		let status = crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
 			.columns(&["issuer", "last_valid_at", "disabled_at"])
 			.bind(self.identity_id)
-			.fetch_optional(&mut **tx)
+			.fetch_optional(&mut *tx)
 			.await?;
 		identity::validate_dashboard_status(status)?;
 		let mut query = Query::select();
@@ -968,7 +988,7 @@ impl BrowserOrigin {
 		let enabled: Option<bool> =
 			crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
 				.bind(self.identity_id)
-				.scalar_optional(&mut **tx)
+				.scalar_optional(&mut *tx)
 				.await?;
 		if enabled != Some(true) {
 			return Err(Error::Forbidden);
@@ -977,6 +997,7 @@ impl BrowserOrigin {
 	}
 }
 
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};

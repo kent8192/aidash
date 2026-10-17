@@ -146,6 +146,8 @@ type BrowserSession = {
   personal_account?: boolean;
   /** Whether the Tenancy Rules let this identity create Tenants now. */
   tenant_creation?: boolean;
+  /** Whether this Deployment issues Invitations. */
+  invitations?: boolean;
   mappings: {
     id: string;
     tenant: string;
@@ -1015,6 +1017,7 @@ function Dashboard({
                       <TrustTools
                         entries={data.registry}
                         deploymentAdministrator={deploymentAdministrator}
+                        invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}
                         initiallyOpen={route.integration === "authorization"}
                       />
@@ -1046,6 +1049,7 @@ function Dashboard({
               <TrustTools
                 entries={[]}
                 deploymentAdministrator={deploymentAdministrator}
+                invitations={browserSession?.invitations ?? false}
                 tenant={subjectTenant}
                 initiallyOpen={route.integration === "authorization"}
               />

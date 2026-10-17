@@ -302,6 +302,59 @@ async fn only_signed_in_people_and_deployment_administrators_create_tenants(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_browser_deployment_administrator_creates_tenants_only_while_granted(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	// Arrange: Carol holds a Deployment Administrator grant; the Tenancy
+	// Rules allow nobody to create Tenants.
+	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let carol = d.person("carol").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(carol.identity)
+		.execute(d.federation.store.pool.driver())
+		.await
+		.unwrap();
+	let create = async || {
+		d.as_person(
+			&carol,
+			"POST",
+			"/api/tenants",
+			Some("deployment_administrator"),
+			json!({"label":"Operations"}),
+		)
+		.await
+	};
+
+	// Act: she creates one Tenant, loses the grant, and tries again.
+	let (status, created) = create().await;
+	assert_eq!(status, 201, "{created}");
+	sqlx::query(
+		"UPDATE dashboard_deployment_administrator_grants SET enabled = false, revision = revision + 1 WHERE identity_id = $1",
+	)
+	.bind(carol.identity)
+	.execute(d.federation.store.pool.driver())
+	.await
+	.unwrap();
+	let (refused, body) = create().await;
+
+	// Assert: the grant, checked in the creation transaction, decided both;
+	// the Tenant names her as its creator and maps nobody.
+	assert_eq!(refused, 403, "{body}");
+	assert!(created["mapping_id"].is_null());
+	let (kind, creator): (String, Option<Uuid>) =
+		sqlx::query_as("SELECT created_by_kind, created_by_identity FROM tenants WHERE name = $1")
+			.bind(created["name"].as_str().unwrap())
+			.fetch_one(d.federation.store.pool.driver())
+			.await
+			.unwrap();
+	assert_eq!(kind, "deployment_administrator");
+	assert_eq!(creator, Some(carol.identity));
+	assert_eq!(d.count("SELECT count(*) FROM tenants").await, 1);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_tenant_creator_administers_the_tenant_it_created(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
@@ -733,6 +786,21 @@ impl Deployment {
 			)
 			.await;
 		assert_eq!(status, 200, "{request}");
+		// The Deployment Administrators' queue shows what the Invitation
+		// proposed, so the approval can start from it.
+		let (status, queue) = self
+			.as_deployment_administrator("GET", "/api/dashboard/registrations", Value::Null)
+			.await;
+		assert_eq!(status, 200, "{queue}");
+		let queued = queue
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["id"] == request["id"])
+			.unwrap_or_else(|| panic!("{queue}"));
+		assert_eq!(queued["tenant"], tenant);
+		assert_eq!(queued["invitation_id"], invitation["id"]);
+		assert_eq!(queued["proposed_groups"], groups);
 		let (status, approved) = self
 			.as_deployment_administrator(
 				"POST",

@@ -76,6 +76,17 @@ pub(crate) struct Registration {
 	pub(crate) tenant: Option<String>,
 }
 
+/// A pending request in the Deployment Administrators' queue.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct PendingRegistration {
+	#[serde(flatten)]
+	pub(crate) registration: Registration,
+	/// The Invitation the request was made with, if any.
+	pub(crate) invitation_id: Option<Uuid>,
+	/// The groups that Invitation proposed; approval starts from them.
+	pub(crate) proposed_groups: std::collections::BTreeSet<String>,
+}
+
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct IdentityView {
 	pub(crate) id: Uuid,

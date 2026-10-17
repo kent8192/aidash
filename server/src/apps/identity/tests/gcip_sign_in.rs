@@ -1014,9 +1014,12 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 	assert_ne!(second["id"], first["id"]);
 	assert_eq!(second["tenant"], "third");
 	assert_eq!(second["status"], "pending");
-	let ended: String = sqlx::query_scalar(
+	// It ended when it was replaced, not at the deadline it never reached,
+	// which display retention would otherwise treat as its end.
+	let (ended, ended_early): (String, bool) = sqlx::query_as(
 		&Query::select()
 			.column(Alias::new("status"))
+			.expr(Expr::cust("expires_at <= clock_timestamp()"))
 			.from(Alias::new("dashboard_registration_requests"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(
 				uuid::Uuid::parse_str(first["id"].as_str().unwrap()).unwrap(),
@@ -1027,6 +1030,7 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 	.await
 	.unwrap();
 	assert_eq!(ended, "expired");
+	assert!(ended_early);
 	common::cleanup(f, &url, &schema).await;
 }
 

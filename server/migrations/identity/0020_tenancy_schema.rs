@@ -55,6 +55,20 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
+		// The Deployment Administrators' newest-first list, scanned backwards,
+		// so a page stops after its rows however many Tenants there are.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "tenants".into(),
+			name: "tenants_created".into(),
+			columns: vec!["created_at".into(), "name".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
 		.add_operation(Operation::CreateTable {
 			name: "personal_tenants".into(),
 			columns: vec![
@@ -125,13 +139,16 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		// A Tenant's active Invitations, which issuance counts against the
+		// limit and administration lists. Spent and revoked links leave it, so
+		// churn within the lifetime window never lengthens the scan.
 		.add_operation(Operation::CreateNamedIndex {
 			table: "tenant_invitations".into(),
-			name: "tenant_invitations_tenant".into(),
+			name: "tenant_invitations_active".into(),
 			columns: vec!["tenant".into(), "expires_at".into()],
 			unique: false,
 			index_type: Some(IndexType::BTree),
-			where_clause: None,
+			where_clause: Some("revoked_at IS NULL AND redeemed_at IS NULL".into()),
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

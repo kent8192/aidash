@@ -60,7 +60,7 @@ import {
   RowList,
 } from "./components/patterns";
 import { cn } from "./lib/utils";
-import { CreateTenantForm } from "./tenancy";
+import { CreateTenantForm, TenantInvitations } from "./tenancy";
 
 const PAGE_SIZE = 25;
 
@@ -73,6 +73,14 @@ const accessTones = {
   authExpired: "warning",
   authDisabled: "neutral",
 } satisfies Record<string, StatusTone>;
+
+/** The groups an Invitation or a Tenant Administrator may assign. */
+function assignableGroups(bundle: PolicyBundle): string[] {
+  return Object.entries(bundle.groups)
+    .filter(([, group]) => group.assignable)
+    .map(([name]) => name)
+    .sort();
+}
 
 /** Access-control state badge; keeps the `badge <state>` hook class. */
 function AccessBadge({ value }: { value: keyof typeof accessTones }) {
@@ -90,7 +98,15 @@ const jsonObject = (text: string) => {
 };
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 
-export function AuthorizationPage({ entries }: { entries: Entry[] }) {
+/** A Deployment Administrator's view of one Tenant at a time. */
+export function AuthorizationPage({
+  entries,
+  invitations,
+}: {
+  entries: Entry[];
+  /** Whether this Deployment issues Invitations. */
+  invitations: boolean;
+}) {
   const { t } = useI18n();
   const [tenant, setTenant] = useState("");
   return (
@@ -125,7 +141,12 @@ export function AuthorizationPage({ entries }: { entries: Entry[] }) {
         </form>
       </div>
       {tenant && (
-        <TenantAuthorization key={tenant} tenant={tenant} entries={entries} />
+        <TenantAuthorization
+          key={tenant}
+          tenant={tenant}
+          entries={entries}
+          invitations={invitations}
+        />
       )}
     </div>
   );
@@ -134,9 +155,11 @@ export function AuthorizationPage({ entries }: { entries: Entry[] }) {
 function TenantAuthorization({
   tenant,
   entries,
+  invitations,
 }: {
   tenant: string;
   entries: Entry[];
+  invitations: boolean;
 }) {
   const { t, locale } = useI18n();
   const entryLabel = useEntryLabel(entries);
@@ -265,6 +288,17 @@ function TenantAuthorization({
             <JsonView value={current.bundle} />
           </Disclosure>
         </Panel>
+      )}
+      {current && (
+        // A Tenant a Deployment Administrator created has nobody in it yet;
+        // its first administrator joins through an Invitation issued here.
+        <TenantInvitations
+          tenant={tenant}
+          assignable={assignableGroups(current.bundle)}
+          canCreate={invitations}
+          canRead
+          canRevoke
+        />
       )}
       {current && (
         <>

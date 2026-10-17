@@ -5,10 +5,11 @@ use super::{
 	AdministrationActor, AuthorizationBundle, AuthorizationCredential,
 	DashboardDeploymentAdministratorGrant, DashboardIdentity, DashboardMapping,
 	DashboardRegistrationRequest, DashboardSession, PersonalTenantLink, TenantAdministrator,
+	TenantInvitation,
 };
 use crate::apps::identity::serializers::oidc::{
 	AdminMapping, Approval, ApprovedMapping, DeploymentAdministratorGrant, IdentityView,
-	Registration,
+	PendingRegistration, Registration,
 };
 use crate::apps::identity::services::dashboard_rules;
 use crate::authorization::Snapshot;
@@ -28,7 +29,7 @@ use reinhardt::query::{
 	QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 /// A sign-in retains its Display Attributes while its session is being started.
@@ -219,10 +220,16 @@ impl DashboardRegistrationRequest {
 			{
 				// A pending request addressed elsewhere, as when the identity's
 				// GCIP pool was bound to another Tenant since, can no longer be
-				// approved: it ends, and a request to the current address opens.
+				// approved: it ends now, and a request to the current address
+				// opens. Display retention reads an expired request's end from
+				// `expires_at`, so the deadline it never reached is not kept.
+				let ended: Vec<FieldAssignment> = vec![
+					(Self::field_status(), "expired".to_owned()).into(),
+					(Self::field_expires_at(), now).into(),
+				];
 				Self::objects()
 					.filter(Self::field_id().eq(previous.id))
-					.update_fields_with_conn(tx, [(Self::field_status(), "expired".to_owned())])
+					.update_fields_with_conn(tx, ended)
 					.await?;
 			} else if let Some(previous) = previous {
 				// A Personal Tenant's owner keeps that authority while requesting
@@ -263,17 +270,43 @@ impl DashboardRegistrationRequest {
 		.await
 	}
 
-	pub(crate) async fn pending(db: &Pool) -> Result<Vec<Registration>> {
-		db.atomic(&TenancyScope::NoTenant, async |tx| {
+	/// Every pending request, with the groups its Invitation proposed, which
+	/// may be in any Tenant.
+	pub(crate) async fn pending(db: &Pool) -> Result<Vec<PendingRegistration>> {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
+		db.atomic(&scope, async |tx| {
 			let now = database_time(tx).await?;
-			Ok(Self::objects()
+			let pending = Self::objects()
 				.filter(Self::field_status().eq("pending"))
 				.filter(Self::field_expires_at().gt(now))
 				.order_by(&["-created_at", "-id"])
 				.all_with_db(tx)
+				.await?;
+			let invitations: BTreeMap<Uuid, TenantInvitation> = TenantInvitation::objects()
+				.filter(
+					TenantInvitation::field_id().is_in(
+						pending
+							.iter()
+							.filter_map(|row| row.invitation_id)
+							.collect::<Vec<_>>(),
+					),
+				)
+				.all_with_db(tx)
 				.await?
 				.into_iter()
-				.map(Self::contract)
+				.map(|invitation| (invitation.id, invitation))
+				.collect();
+			Ok(pending
+				.into_iter()
+				.map(|row| PendingRegistration {
+					invitation_id: row.invitation_id,
+					proposed_groups: row
+						.invitation_id
+						.and_then(|id| invitations.get(&id))
+						.map(crate::apps::identity::repositories::invitations::proposed)
+						.unwrap_or_default(),
+					registration: row.contract(),
+				})
 				.collect())
 		})
 		.await

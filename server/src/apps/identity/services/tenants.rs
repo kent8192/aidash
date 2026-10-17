@@ -2,8 +2,7 @@
 //! a signed-in External Identity where the Tenancy Rules allow it, and a
 //! Deployment Administrator always. Subject Credentials, agents and peers never.
 use crate::apps::identity::models::{
-	AdministrationActor, AdministrationEvent, DashboardDeploymentAdministratorGrant,
-	DashboardIdentity, Tenant, database_time,
+	AdministrationActor, AdministrationEvent, DashboardIdentity, Tenant, database_time,
 };
 use crate::apps::identity::oidc::{
 	BrowserOrigin, csrf_allowed, required_config, session_from_headers,
@@ -63,13 +62,15 @@ impl Tenants {
 	/// The Deployment Administrator bearer token, a browser session in the
 	/// `deployment_administrator` context, or any other browser session as the External
 	/// Identity itself. A session needs no Mapping. Every other bearer token,
-	/// such as a Subject Credential, is refused.
-	async fn creator(&self, headers: &HeaderMap) -> Result<Creator> {
+	/// such as a Subject Credential, is refused. A browser Deployment
+	/// Administrator's grant is checked in the creation transaction, so its
+	/// origin is returned with it.
+	async fn creator(&self, headers: &HeaderMap) -> Result<(Creator, Option<BrowserOrigin>)> {
 		let f = &self.runtime;
 		let desktop = crate::apps::identity::repositories::desktop::access_token(headers).is_some();
 		if !desktop && let Some(token) = bearer(headers) {
 			return if crate::config::same_secret(token, &f.config.api_token) {
-				Ok(Creator::DeploymentAdministrator(None))
+				Ok((Creator::DeploymentAdministrator(None), None))
 			} else {
 				Err(Error::Forbidden)
 			};
@@ -84,19 +85,12 @@ impl Tenants {
 			.get("x-aidash-context")
 			.and_then(|value| value.to_str().ok());
 		if context == Some("deployment_administrator") {
-			let granted = f
-				.store
-				.pool
-				.atomic(&TenancyScope::NoTenant, async |tx| {
-					DashboardDeploymentAdministratorGrant::enabled_for_identity(tx, identity).await
-				})
-				.await?;
-			if !granted {
-				return Err(Error::Forbidden);
-			}
-			return Ok(Creator::DeploymentAdministrator(Some(identity)));
+			return Ok((
+				Creator::DeploymentAdministrator(Some(identity)),
+				Some(BrowserOrigin::deployment_administrator(config, &session)),
+			));
 		}
-		Ok(Creator::Identity(identity))
+		Ok((Creator::Identity(identity), None))
 	}
 
 	pub(crate) async fn create(
@@ -106,13 +100,19 @@ impl Tenants {
 	) -> Result<CreatedTenant> {
 		validate(&input)?;
 		let label = tenancy::label(&input.label)?;
-		let creator = self.creator(&headers).await?;
+		let (creator, origin) = self.creator(&headers).await?;
 		let f = self.runtime.clone();
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::TenantCreation);
 		let created = f
 			.store
 			.pool
 			.atomic(&scope, async |tx| {
+				// As at the authenticated write boundary, the identity, grant and
+				// session stay share-locked until the Tenant exists: a revocation
+				// committing meanwhile waits, or is seen here.
+				if let Some(origin) = &origin {
+					origin.require_deployment_administrator(tx, true).await?;
+				}
 				if let Creator::Identity(identity) = creator {
 					tenants::lock_creator(tx, identity).await?;
 					// Locked as Personal Tenant provisioning locks it: a

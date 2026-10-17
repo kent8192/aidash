@@ -252,9 +252,10 @@ async fn map_owner(tx: &mut AtomicTransaction, tenant: &str, identity: Uuid) -> 
 const PAGE: usize = 200;
 
 /// One page of root records, newest first, for Deployment Administrators.
+/// Both keys descend, so `tenants_created` serves the order backwards.
 pub(crate) async fn list(tx: &mut AtomicTransaction, offset: u64) -> Result<Vec<Tenant>> {
 	Ok(Tenant::objects()
-		.order_by(&["-created_at", "name"])
+		.order_by(&["-created_at", "-name"])
 		.limit(PAGE)
 		.offset(usize::try_from(offset).unwrap_or(usize::MAX))
 		.all_with_db(tx)

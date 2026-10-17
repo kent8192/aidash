@@ -500,7 +500,11 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	)
 	.await;
 	assert_eq!(status, 200);
-	assert_eq!(actionable, json!([fresh]));
+	// The queue adds what an Invitation proposed; this request had none.
+	let mut queued = fresh.clone();
+	queued["invitation_id"] = Value::Null;
+	queued["proposed_groups"] = json!([]);
+	assert_eq!(actionable, json!([queued]));
 	let path = format!(
 		"/api/dashboard/registrations/{}/approve",
 		fresh["id"].as_str().unwrap()
