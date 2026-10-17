@@ -104,41 +104,36 @@ async fn research_fixture(
 	c.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
 		json!({"kind":"agent"});
-	let (status, value) = request(
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	// The fixture research group is a built-in of every Tenant, which the
+	// Tenant approves with its members before use (ADR 0034).
+	let bundle =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"aidash.bundle.research_fixture",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
+	let members: Vec<Value> = bundle.config["members"].as_array().unwrap().clone();
+	let approvals: Vec<Value> = std::iter::once(json!({"id":bundle.id,"version":bundle.version}))
+		.chain(
+			members
+				.iter()
+				.map(|member| json!({"id":member["id"],"version":member["version"]})),
+		)
+		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0}))
+		.collect();
+	let (status, approved) = request(
 		&c.app,
-		&c.f.config.api_token,
+		&c.token,
 		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
+		"/api/authorization/acme/catalog/approvals",
+		json!({ "approvals": approvals }),
 	)
 	.await;
-	assert_eq!(status, 200, "{value}");
-	// Install, review and activate the fixture research package like any other.
-	let (status, pending) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/marketplace/host-packages",
-		json!({"tenant":"acme","groups":["research_fixture"],"idempotency_key":Uuid::new_v4()}),
-	)
-	.await;
-	assert_eq!(status, 200, "{pending}");
-	let installations = pending["installations"].as_array().unwrap().clone();
-	assert_eq!(installations.len(), 4, "{pending}");
-	let selection = json!({"tenant":"acme","installations":installations.iter().map(|r|json!({"installation":r["installation"]["id"],"revision":r["revision"],"digest":r["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),"approvals":installations.iter().map(|r|json!({"reference":{"id":r["entry"]["id"],"version":r["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
-	let (status, activated) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/marketplace/approval-sets",
-		selection,
-	)
-	.await;
-	assert_eq!(status, 200, "{activated}");
-	let bundle = installations
-		.iter()
-		.find(|row| row["entry"]["kind"] == "bundle")
-		.unwrap();
+	assert_eq!(status, 200, "{approved}");
 	let mut agent =
 		c.f.registry
 			.get(
@@ -151,7 +146,7 @@ async fn research_fixture(
 	agent.version = VERSION.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Research with the bound tools.");
-	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_node":c.f.config.node_id,"id":bundle["entry"]["id"],"version":bundle["entry"]["version"]},"narrow":{}}]);
+	agent.config["bindings"] = json!([{"kind":"bundle","target":{"registry_node":c.f.config.node_id,"id":bundle.id,"version":bundle.version},"narrow":{}}]);
 	agent.config["remove_default"] = json!([]);
 	for (method, path, body) in [
 		("POST", "/api/registry".to_owned(), json!(agent)),
@@ -161,15 +156,13 @@ async fn research_fixture(
 			json!({"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
 		),
 	] {
-		let (status, value) = request(&c.app, &c.f.config.api_token, method, &path, body).await;
+		let (status, value) = request(&c.app, &c.token, method, &path, body).await;
 		assert_eq!(status, 200, "{value}");
 	}
-	let search_tool = installations
+	let search_tool = members
 		.iter()
-		.find(|row| {
-			row["entry"]["kind"] == "tool" && row["entry"]["config"]["operation"] == "search"
-		})
-		.map(|row| json!({"id":row["entry"]["id"],"version":row["entry"]["version"]}))
+		.find(|member| member["id"].as_str().unwrap().ends_with(".search"))
+		.map(|member| json!({"id":member["id"],"version":member["version"]}))
 		.unwrap();
 	Research {
 		c,
@@ -203,15 +196,7 @@ impl Research {
 			"bundle"
 		]);
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-research","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["research"]}}));
-		let (status, value) = request(
-			&self.c.app,
-			&self.c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":3,"bundle":self.c.policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{value}");
+		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}
 	/// Registers `research@3.1.0`, which binds only Web search, under the
 	/// policy revision `expected_revision`.
@@ -1029,15 +1014,7 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 	// Everyone else gets one identical absence, whatever the reason. Bob is
 	// a member of the Tenant whose policy no longer lets him read Runs.
 	r.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"bob-reads-no-runs","effect":"deny","subjects":{"ids":["bob"]},"actions":["run.read"],"resources":{"kinds":["run"]}}));
-	let (status, value) = request(
-		&r.c.app,
-		&r.c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":3,"bundle":r.c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	crate::common::replace_policy(&r.c.f.store, "acme", r.c.policy.clone()).await;
 	let (_, bob) = request(
 		&r.c.app,
 		&r.c.f.config.api_token,

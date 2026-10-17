@@ -67,15 +67,14 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":config});
-		let (status, body) = request(
-			&app,
-			&deployment_administrator,
-			"POST",
-			"/api/registry",
-			entry,
-		)
-		.await;
-		assert_eq!(status, 200, "register dependency: {body}");
+		// Definitions are persisted in the Tenant's Registry (ADR 0029).
+		f.registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				serde_json::from_value(entry).unwrap(),
+			)
+			.await
+			.unwrap();
 	}
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
 	common::tenant_root(&f, "acme").await;
@@ -248,15 +247,14 @@ async fn draft_conflict_register_and_factual_inspection(
 	let app = application_fixture.application.clone();
 	let deployment_administrator = f.config.api_token.clone();
 	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
-	let (status, body) = request(
-		&app,
-		&deployment_administrator,
-		"POST",
-		"/api/registry",
-		model,
-	)
-	.await;
-	assert_eq!(status, 200, "model: {body}");
+	// Definitions are persisted in the Tenant's Registry (ADR 0029).
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(model).unwrap(),
+		)
+		.await
+		.unwrap();
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[
 		{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.register","agent_draft.test","agent_draft.share","agent_draft.transfer","agent_draft.archive","agent_dependency.read","agent_version.inspect","agent_incident.manage","agent_incident.read"],"resources":{"kinds":["agent_draft","registry_entry","agent_version","agent_incident"]}},
 		{"id":"editor","effect":"allow","subjects":{"ids":["bob"]},"actions":["agent_draft.read","agent_draft.write"],"resources":{"kinds":["agent_draft"]}}

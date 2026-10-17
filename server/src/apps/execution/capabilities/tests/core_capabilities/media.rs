@@ -56,15 +56,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	c.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.1.1")] =
 		json!({"kind":"agent"});
-	let (status, body) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	for entry in [model, agent] {
 		let (status, body) =
 			request(&c.app, &c.token, "POST", "/api/registry", json!(&entry)).await;

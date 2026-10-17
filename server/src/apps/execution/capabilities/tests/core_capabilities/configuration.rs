@@ -56,15 +56,7 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 	);
 	let mut policy = c.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-bob-configuration","effect":"deny","subjects":{"ids":["bob"]},"actions":["agent.configure"],"resources":{"kinds":["agent"]}}));
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (_, bob) = request(
 		&c.app,
 		&c.f.config.api_token,

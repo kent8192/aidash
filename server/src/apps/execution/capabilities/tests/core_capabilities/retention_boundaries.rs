@@ -317,15 +317,7 @@ async fn restore_rechecks_current_quota_and_administrator_policy(
 	);
 	f.c.policy["subjects"]["bob"]["attributes"] = json!({"file_administrator":true});
 	f.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-restore","effect":"deny","subjects":{"ids":["bob"]},"actions":["file.restore"],"resources":{"kinds":["working_area"]}}));
-	let (status, policy) = request(
-		&f.c.app,
-		&f.c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":f.c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{policy}");
+	crate::common::replace_policy(&f.c.f.store, "acme", f.c.policy.clone()).await;
 	assert_eq!(
 		request(&f.c.app, &f.bob, "POST", &path, input.clone())
 			.await
@@ -333,15 +325,7 @@ async fn restore_rechecks_current_quota_and_administrator_policy(
 		403
 	);
 	f.c.policy["policies"].as_array_mut().unwrap().pop();
-	let (status, policy) = request(
-		&f.c.app,
-		&f.c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":3,"bundle":f.c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{policy}");
+	crate::common::replace_policy(&f.c.f.store, "acme", f.c.policy.clone()).await;
 	let (status, restored) = request(&f.c.app, &f.bob, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{restored}");
 	assert_eq!(restored["owner"], "alice");
@@ -460,15 +444,7 @@ fn sharing_generation_fixture(
 		f.c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&f.c.f.config.node_id, "research", "1.2.0")] =
 			json!({"kind":"agent"});
-		let (status, saved) = request(
-			&f.c.app,
-			&f.c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":2,"bundle":f.c.policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{saved}");
+		crate::common::replace_policy(&f.c.f.store, "acme", f.c.policy.clone()).await;
 		let (status, area) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.2.0","title":"New generation","description":"Current receiver version"})).await;
 		assert_eq!(status, 200, "{area}");
 		assert_eq!(area["id"], f.area["id"]);

@@ -48,15 +48,7 @@ async fn working_files_require_explicit_agent_settings(
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
 		json!({"kind":"agent"});
-	let (status, body) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":1,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
+	common::replace_policy(&f.store, "acme", policy.clone()).await;
 	let (status, body) = request(
 		&app,
 		&token,
@@ -713,15 +705,7 @@ async fn files_preserve_unicode_revision_and_source_authority(
 		"id":"revoke-source", "effect":"deny", "subjects":{"any":true},
 		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[message.to_string()]}
 	}));
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":revoked}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	common::replace_policy(&c.f.store, "acme", revoked.clone()).await;
 	let (status, result) = request(
 		&c.app,
 		&c.token,
@@ -1027,15 +1011,7 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"human_request"
 	]);
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["outbound"]}}));
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	(c, run)
 }
 #[rstest::rstest]
@@ -1110,15 +1086,7 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 	assert_eq!(again["status"], "blocked");
 	let mut tightened = c.policy.clone();
 	tightened["policies"].as_array_mut().unwrap().push(json!({"id":"upper-network-deny","effect":"deny","subjects":{"any":true},"actions":["network.get"],"resources":{"kinds":["outbound"]}}));
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":3,"bundle":tightened}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	common::replace_policy(&c.f.store, "acme", tightened.clone()).await;
 	let (status, value) = request(
 		&c.app,
 		&c.token,
@@ -1228,15 +1196,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "reader", "1.1.0")] =
 		json!({"kind":"agent"});
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, task) = request(
 		&c.app,
 		&c.token,

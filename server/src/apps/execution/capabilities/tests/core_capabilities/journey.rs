@@ -489,15 +489,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
 			json!({"kind":"agent"});
-		let (status, result) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":2,"bundle":c.policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
+		crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 		c
 	}
 	.boxed()
