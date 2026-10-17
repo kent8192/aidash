@@ -110,7 +110,14 @@ impl RegistryManagement {
 			return Err(Error::Forbidden);
 		};
 		let mut access = Access::begin(&f.store, &identity).await?;
-		let resource = access.resource("registry", "skill/*", serde_json::json!({"kind": "skill"}));
+		let resource = access.resource(
+			"registry",
+			&format!(
+				"skill/{}",
+				aidash_domain::identity::tenant_administration::COLLECTION
+			),
+			serde_json::json!({"kind": "skill"}),
+		);
 		let result = access.require(&resource, "registry.create").await;
 		access.finish(result).await?;
 		crate::skill_import::import(request).await

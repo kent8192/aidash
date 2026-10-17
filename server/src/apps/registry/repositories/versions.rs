@@ -17,7 +17,11 @@ pub(crate) async fn page(
 	node: &str,
 	offset: u64,
 ) -> Result<Vec<RegistryVersion>> {
-	let resource = access.resource("registry", "*", serde_json::json!({}));
+	let resource = access.resource(
+		"registry",
+		aidash_domain::identity::tenant_administration::COLLECTION,
+		serde_json::json!({}),
+	);
 	access.require(&resource, "registry.read").await?;
 	let tenant = access.identity.tenant.clone();
 	let rows = Definition::objects()

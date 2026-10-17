@@ -129,7 +129,10 @@ pub async fn install(
 	// The copy becomes the Tenant's own definition (ADR 0029).
 	scope
 		.require(
-			&scope.registry_resource(&source.kind, "*"),
+			&scope.registry_resource(
+				&source.kind,
+				aidash_domain::identity::tenant_administration::COLLECTION,
+			),
 			"registry.create",
 		)
 		.await?;

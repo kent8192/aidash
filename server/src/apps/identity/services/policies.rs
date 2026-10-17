@@ -59,7 +59,11 @@ impl PolicyAdministration {
 		let identity = tenant_subject(actor, &tenant)?;
 		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
-			let resource = access.resource("registry", "*", serde_json::json!({}));
+			let resource = access.resource(
+				"registry",
+				aidash_domain::identity::tenant_administration::COLLECTION,
+				serde_json::json!({}),
+			);
 			access.require(&resource, "registry.read").await?;
 			Ok(AuthorizationCatalog::objects()
 				.filter(AuthorizationCatalog::field_tenant().eq(identity.tenant.clone()))
