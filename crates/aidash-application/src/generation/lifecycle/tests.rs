@@ -23,6 +23,7 @@ struct State {
 	replay: bool,
 	visible: bool,
 	allowed: bool,
+	catalog: bool,
 	retirement: Option<i64>,
 	failure: Option<&'static str>,
 	pause: Option<&'static str>,
@@ -72,6 +73,7 @@ impl Repository {
 				replay: false,
 				visible: true,
 				allowed: true,
+				catalog: true,
 				retirement: Some(37),
 				failure: None,
 				pause: None,
@@ -185,7 +187,7 @@ impl GenerationControlScope for Scope {
 	async fn decide_catalog(&mut self, _job: &Request) -> Result<bool> {
 		let mut state = self.state.lock().unwrap();
 		state.calls.push("catalog.approve".into());
-		Ok(state.allowed)
+		Ok(state.catalog)
 	}
 	async fn finish(mut self: Box<Self>, result: Result<Request>) -> Result<Request> {
 		Scope::finish(self.as_mut(), result)
@@ -405,6 +407,61 @@ async fn deployment_administrator_takes_the_policy_lock_before_job_load_and_noti
 			"event"
 		]
 	);
+}
+#[rstest]
+#[case::approve(Action::Approve, Err(()))]
+#[case::deny(Action::Deny, Ok("DENIED"))]
+#[tokio::test]
+async fn only_approval_needs_catalog_approve_on_the_published_version(
+	#[case] action: Action,
+	#[case] expected: std::result::Result<&str, ()>,
+) {
+	let repo = Repository::new(true);
+	{
+		let mut state = repo.state.lock().unwrap();
+		state.job.status = "PENDING_APPROVAL".into();
+		state.catalog = false;
+	}
+	let result = control(
+		&repo,
+		"tenant",
+		Uuid::from_u128(1),
+		&Control {
+			action,
+			reason: "decision".into(),
+		},
+	)
+	.await;
+	match expected {
+		Ok(status) => assert_eq!(result.unwrap().status, status),
+		Err(()) => {
+			assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+			let state = repo.state.lock().unwrap();
+			assert!(state.calls.contains(&"catalog.approve".into()));
+			assert!(!state.calls.contains(&"replay".into()));
+			assert!(state.effects.is_empty());
+			assert_eq!(state.notifications, 0);
+		}
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn a_deployment_administrator_cannot_approve_a_generation_request() {
+	let repo = Repository::new(false);
+	repo.state.lock().unwrap().job.status = "PENDING_APPROVAL".into();
+	let result = control(
+		&repo,
+		"tenant",
+		Uuid::from_u128(1),
+		&Control {
+			action: Action::Approve,
+			reason: "decision".into(),
+		},
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!repo.calls().contains(&"load".into()));
+	assert!(repo.state.lock().unwrap().effects.is_empty());
 }
 #[rstest]
 #[tokio::test]
