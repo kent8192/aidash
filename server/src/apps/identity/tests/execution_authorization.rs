@@ -1700,15 +1700,13 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		panic!("unexpected failure: {error:?}")
 	};
 	assert_eq!(error.database_error().unwrap().code(), Some("23505"));
-	let binding = authorization
-		.catalog("acme")
-		.await
-		.unwrap()
-		.into_iter()
-		.find(|b| b.entry_id == "model")
-		.unwrap();
-	assert_eq!(binding.revision, 1);
-	assert!(binding.enabled);
+	let binding: (i64, bool) = sqlx::query_as(
+		"SELECT revision, enabled FROM authorization_catalog WHERE tenant = 'acme' AND entry_id = 'model'",
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(binding, (1, true));
 	let history_query = Query::select()
 		.columns(["revision", "enabled", "actor"].map(Alias::new))
 		.from(Alias::new("authorization_catalog_history"))

@@ -707,15 +707,6 @@ pub(crate) fn catalog_administrator_scope<'a>(
 		principal,
 	}
 }
-pub(crate) fn catalog_administration_read(
-	pool: &crate::database::native::Pool,
-	principal: aidash_domain::identity::Principal,
-) -> crate::apps::identity::repositories::catalog_mutation::NativeAdministrationRead<'_> {
-	crate::apps::identity::repositories::catalog_mutation::NativeAdministrationRead {
-		pool,
-		principal,
-	}
-}
 
 /// Compose graph verification around the initiating reader's live authority lease.
 pub(crate) fn dependency_scope(

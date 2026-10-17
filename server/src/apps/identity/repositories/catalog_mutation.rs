@@ -5,9 +5,7 @@ use crate::{
 	authorization::Authorization,
 	registry::{EntityRef, Entry},
 };
-use aidash_application::ports::catalog::{
-	CatalogAdministrationRead, CatalogAdministrator, CatalogMutation,
-};
+use aidash_application::ports::catalog::{CatalogAdministrator, CatalogMutation};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::{Principal, catalog::Binding};
 use async_trait::async_trait;
@@ -277,7 +275,7 @@ async fn history(
 	};
 	Ok(())
 }
-async fn bindings(pool: &Pool, tenant: &str) -> Result<Vec<Binding>> {
+pub(crate) async fn bindings(pool: &Pool, tenant: &str) -> Result<Vec<Binding>> {
 	let rows: Vec<BindingRow> = {
 		let query_bind_1 = tenant;
 		crate::database::native::query_as(
@@ -361,18 +359,5 @@ impl CatalogAdministrator for NativeAdministrator<'_> {
 		crate::apps::marketplace::repositories::definitions::raw(self.mutation.0, reference)
 			.await
 			.map_err(Into::into)
-	}
-}
-pub(crate) struct NativeAdministrationRead<'a> {
-	pub(crate) pool: &'a Pool,
-	pub(crate) principal: Principal,
-}
-#[async_trait]
-impl CatalogAdministrationRead for NativeAdministrationRead<'_> {
-	fn principal(&self) -> &Principal {
-		&self.principal
-	}
-	async fn bindings(&mut self, tenant: &str) -> aidash_application::Result<Vec<Binding>> {
-		bindings(self.pool, tenant).await.map_err(Into::into)
 	}
 }

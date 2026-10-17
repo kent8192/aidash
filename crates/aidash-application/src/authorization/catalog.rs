@@ -112,14 +112,6 @@ pub async fn set_catalog(
 	set_in(scope, tenant, reference, expected_revision, enabled, actor).await
 }
 
-pub async fn administration(
-	scope: &mut dyn crate::ports::catalog::CatalogAdministrationRead,
-	tenant: &str,
-) -> Result<Vec<aidash_domain::identity::catalog::Binding>> {
-	super::require_deployment_administrator(scope.principal())?;
-	scope.bindings(tenant).await
-}
-
 #[cfg(test)]
 mod mutation_tests;
 

@@ -82,13 +82,4 @@ pub trait CatalogAdministrator: CatalogMutation {
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry>;
 }
 
-#[async_trait]
-pub trait CatalogAdministrationRead: Send {
-	fn principal(&self) -> &aidash_domain::identity::Principal;
-	async fn bindings(
-		&mut self,
-		tenant: &str,
-	) -> Result<Vec<aidash_domain::identity::catalog::Binding>>;
-}
-
 pub mod retained;
