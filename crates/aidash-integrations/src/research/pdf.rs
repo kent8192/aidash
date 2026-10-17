@@ -7,7 +7,9 @@
 //! never interpreted.
 use aidash_domain::research::{
 	Failure,
-	document::{Completeness, Line, MAX_LINE_BYTES, MAX_LINES, MAX_SNAPSHOT_BYTES},
+	document::{
+		Completeness, Line, MAX_LINE_BYTES, MAX_LINES, MAX_PAGES_WITHOUT_TEXT, MAX_SNAPSHOT_BYTES,
+	},
 };
 use async_trait::async_trait;
 use hayro::{
@@ -33,6 +35,8 @@ use std::{
 pub const MAX_PDF_BYTES: usize = 16 * 1024 * 1024;
 /// Pages read from one PDF; later pages make the snapshot incomplete.
 pub const MAX_PAGES: usize = 500;
+// Every page read may carry no text, and a snapshot lists each such page.
+const _: () = assert!(MAX_PAGES <= MAX_PAGES_WITHOUT_TEXT);
 /// A page with fewer non-whitespace characters of text carries no text.
 pub const MIN_PAGE_CHARACTERS: usize = 16;
 /// The hidden command of the `aidash` binary that runs one PDF job.

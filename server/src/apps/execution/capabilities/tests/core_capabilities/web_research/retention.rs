@@ -39,6 +39,69 @@ impl Research {
 			.unwrap_or_else(|| panic!("{messages:?}"));
 		(run, evidence_ref(answer).unwrap())
 	}
+	/// A research call in flight: its attempt is reserved and its stored
+	/// invocation has no result yet.
+	async fn in_flight(&self, run: Uuid, key: &str, input: Value) {
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let invocation = Query::insert()
+			.into_table(Alias::new("invocations"))
+			.columns(
+				[
+					"idempotency_key",
+					"run_id",
+					"tool",
+					"input",
+					"status",
+					"replay_safe",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(key))
+					.expr(Expr::value(run))
+					.expr(Expr::value("research_search"))
+					.expr(Expr::value(input))
+					.expr(Expr::value("STARTED"))
+					.expr(Expr::value(false))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		let attempt = Query::insert()
+			.into_table(Alias::new("research_attempts"))
+			.columns(
+				[
+					"id",
+					"run_id",
+					"invocation_key",
+					"operation",
+					"provider",
+					"destination",
+					"outcome",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value(run))
+					.expr(Expr::value(key))
+					.expr(Expr::value("search"))
+					.expr(Expr::value("research.search@1"))
+					.expr(Expr::value("research-fixture.invalid"))
+					.expr(Expr::value("dispatched"))
+					.expr(Expr::cust("now()"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		for sql in [invocation, attempt] {
+			sqlx::query(&sql)
+				.execute(self.c.f.store.pool.driver())
+				.await
+				.unwrap();
+		}
+	}
 	/// One column of every row of `table` for the Run, as JSON.
 	async fn column(&self, table: &str, expression: &str, run: Uuid) -> Vec<Value> {
 		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
@@ -280,6 +343,119 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 	}
 	assert_eq!(r.attempts(run.id).await, 0, "nothing was sent");
+	r.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn revocation_closes_an_approved_disclosure_and_redacts_a_call_in_flight(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the Run's Web disclosure is approved, but no step has consumed
+	// the approval yet; another research call is in flight.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let approval = r.until_waiting(run.id).await;
+	let card = |approvals: &Value| {
+		approvals["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["id"] == json!(approval))
+			.cloned()
+			.unwrap_or_else(|| panic!("{approvals}"))
+	};
+	let (status, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{approvals}");
+	let (status, decided) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card(&approvals)["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{decided}");
+	assert_eq!(decided["state"], "approved");
+	r.in_flight(run.id, "in-flight", json!({"query":"a query in flight"}))
+		.await;
+
+	// Act
+	let (status, record) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		&format!("/api/runs/{}/research-revocation", run.id),
+		json!({"reason":"The agreement with the source ended."}),
+	)
+	.await;
+	assert_eq!(status, 200, "{record}");
+
+	// Assert: the approval can no longer be consumed, and the call in flight
+	// no longer names its query, though it still has no result.
+	let (_, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(card(&approvals)["state"], "closed");
+	let in_flight = r
+		.column(
+			"invocations",
+			"jsonb_build_object('key', idempotency_key, 'input', input, 'result', result)",
+			run.id,
+		)
+		.await
+		.into_iter()
+		.find(|row| row["key"] == "in-flight")
+		.unwrap();
+	assert_eq!(
+		in_flight["input"],
+		aidash_domain::context::ContextEvent::revoked_arguments()
+	);
+	assert_eq!(in_flight["result"], Value::Null);
+	// The resumed Run's repeated call sends nothing.
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+	loop {
+		Harness {
+			federation: r.c.f.clone(),
+		}
+		.worker_once()
+		.await
+		.unwrap();
+		let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		let revoked = serde_json::to_value(stored.context.events().collect::<Vec<_>>())
+			.unwrap()
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|event| {
+				event["result"]["error"]["code"] == "evidence_revoked"
+					|| event["result"]["revoked"] == true
+			});
+		if revoked {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"no evidence_revoked result: phase={} error={:?}",
+			stored.phase(),
+			stored.error
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+	}
+	assert_eq!(r.attempts(run.id).await, 1, "only the call in flight");
 	r.close().await;
 }
 

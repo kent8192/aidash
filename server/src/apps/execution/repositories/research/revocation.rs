@@ -347,7 +347,10 @@ impl Scope<'_> {
 	/// Remove the exact content from every Web disclosure approval of the Run,
 	/// whatever its state, since the approval list shows it to the requester
 	/// and approver; then close those still waiting for a decision, so a Run
-	/// waiting on one continues, and without research.
+	/// waiting on one continues, and without research, and those approved but
+	/// not yet consumed, so no repeated call sends what they approved. A
+	/// consumption racing this one updates the same row under its revision,
+	/// so exactly one of the two takes effect.
 	async fn close_disclosures(&mut self, run: Uuid) -> Result<u32> {
 		let data = || Expr::col(Alias::new("data"));
 		let of_run = || json_text(data(), "run_id").eq(Expr::value(run.to_string()));
@@ -377,7 +380,7 @@ impl Scope<'_> {
 			.and_where(Expr::col("kind").eq(Expr::value(
 				aidash_application::capabilities::approvals::DISCLOSURE,
 			)))
-			.and_where(Expr::col("state").eq(Expr::value("pending")))
+			.and_where(Expr::col("state").is_in(["pending", "approved"]))
 			.and_where(of_run())
 			.build(PostgresQueryBuilder);
 		let closed = native(

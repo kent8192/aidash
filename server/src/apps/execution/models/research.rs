@@ -994,6 +994,44 @@ pub(crate) async fn revoke_invocations(
 			.await?
 			.rows_affected;
 	}
+	// A call still in flight, or interrupted after its attempt was reserved,
+	// has no result to recognize, but its research attempt names it and its
+	// input what was disclosed.
+	let revoked = revoked_arguments().to_string();
+	let attempted = Query::select()
+		.column(Alias::new("invocation_key"))
+		.from(Alias::new(ResearchAttempt::table_name()))
+		.and_where(
+			Expr::col((
+				Alias::new(ResearchAttempt::table_name()),
+				Alias::new("run_id"),
+			))
+			.equals((Alias::new("invocations"), Alias::new("run_id"))),
+		)
+		.to_owned();
+	let mut update = Query::update();
+	update
+		.table(Alias::new("invocations"))
+		.value(Alias::new("input"), revoked_arguments())
+		.and_where(Expr::col(Alias::new("result")).is_null())
+		.and_where(Expr::col(Alias::new("input")).ne(jsonb(&revoked)))
+		.and_where(Expr::col(Alias::new("idempotency_key")).in_subquery(attempted));
+	match run {
+		Some(run) => update.and_where(Expr::col("run_id").eq(Expr::value(run))),
+		None => update.and_where(
+			Expr::col("run_id").in_subquery(
+				Query::select()
+					.column(Alias::new("run_id"))
+					.from(Alias::new(ResearchRevocation::table_name()))
+					.to_owned(),
+			),
+		),
+	};
+	let (sql, values) = update.build(PostgresQueryBuilder);
+	removed += tx
+		.execute(&sql, convert_values(values))
+		.await?
+		.rows_affected;
 	revoke_tool_events(tx, run).await?;
 	Ok(u32::try_from(removed).unwrap_or(u32::MAX))
 }

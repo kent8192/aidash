@@ -19,6 +19,10 @@ pub const MAX_ORIGINAL_BYTES: usize = 16 * 1024 * 1024;
 /// The largest page count a snapshot records, the range its page numbers are
 /// stored in.
 pub const MAX_PAGES: u32 = i32::MAX as u32;
+/// The most pages a snapshot lists as carrying no text. Page reading reads
+/// no more pages than this, and the list, like the rest of a result, must fit
+/// within [`super::MAX_RESULT_BYTES`].
+pub const MAX_PAGES_WITHOUT_TEXT: usize = 500;
 /// Bytes of snapshot text one fetch delivers, unless the call asks for fewer.
 pub const DEFAULT_DELIVERY_BYTES: usize = 8 * 1024;
 pub const MAX_DELIVERY_BYTES: usize = 16 * 1024;
@@ -91,6 +95,7 @@ impl ExtractedPage {
 				.iter()
 				.any(|line| line.page.is_some_and(|page| !within(page)))
 			|| (!self.pages_without_text.is_empty() && self.page_count.is_none())
+			|| self.pages_without_text.len() > MAX_PAGES_WITHOUT_TEXT
 			|| !self.pages_without_text.iter().all(|page| within(*page))
 			|| !self
 				.pages_without_text
@@ -102,6 +107,9 @@ impl ExtractedPage {
 				line.page
 					.is_some_and(|page| self.pages_without_text.binary_search(&page).is_ok())
 			})
+			// A complete paginated source accounts for every page.
+			|| (self.completeness == Completeness::Complete
+				&& self.page_count.is_some_and(|count| !self.covers(count)))
 			|| self.original.as_ref().is_some_and(|original| {
 				self.pages_without_text.is_empty()
 					|| original.is_empty()
@@ -123,6 +131,19 @@ impl ExtractedPage {
 			));
 		}
 		Ok(())
+	}
+
+	/// Whether every page through `count` carries text or is listed as
+	/// carrying none. [`Self::validate`] keeps every page it names within
+	/// `count`, so counting the distinct pages suffices.
+	fn covers(&self, count: u32) -> bool {
+		let mut pages = self
+			.lines
+			.iter()
+			.filter_map(|line| line.page)
+			.collect::<std::collections::BTreeSet<_>>();
+		pages.extend(&self.pages_without_text);
+		usize::try_from(count).is_ok_and(|count| pages.len() == count)
 	}
 }
 

@@ -2312,7 +2312,7 @@ async fn originals_beyond_the_run_limit_are_not_retained() {
 		let read = research
 			.fetch(
 				&call(run, key, "research.page@1"),
-				&scanned(&[("Text on page one.", 1)], vec![2], 1024),
+				&scanned(&[("Text on page one.", 1)], vec![2, 3], 1024),
 				&json!({"url": address}),
 			)
 			.await
