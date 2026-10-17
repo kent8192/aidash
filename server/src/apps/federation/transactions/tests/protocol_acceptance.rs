@@ -167,13 +167,13 @@ fn pair(
 			200
 		);
 	}
-	let scope = common::tenant_scope(&a.f.store, "acme").await;
+	let scope = common::tenant_scope(&a.f.store, "atomic").await;
 	let wa =
 		a.f.store
 			.create_workspace(&scope, "alice", "A", "Atomic state")
 			.await
 			.unwrap();
-	let scope = common::tenant_scope(&b.f.store, "acme").await;
+	let scope = common::tenant_scope(&b.f.store, "atomic").await;
 	let wb =
 		b.f.store
 			.create_workspace(&scope, "alice", "B", "Atomic state")

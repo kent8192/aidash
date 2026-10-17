@@ -14,7 +14,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 	let mut nodes = tier_nodes;
 	let mut workspaces = Vec::new();
 	for node in &nodes {
-		let scope = common::tenant_scope(&node.f.store, "acme").await;
+		let scope = common::tenant_scope(&node.f.store, "atomic").await;
 		workspaces.push(
 			node.f
 				.store
