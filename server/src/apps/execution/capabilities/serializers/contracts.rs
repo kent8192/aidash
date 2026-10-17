@@ -329,6 +329,11 @@ pub struct Enqueue {
 	pub title: String,
 	#[validate(length(max = 64000))]
 	pub description: String,
+	/// URL intents: at most five pages the person asks the Run to read. The
+	/// host renders them into the description; they never approve a Web
+	/// disclosure.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub read_pages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -361,6 +366,9 @@ pub struct Steer {
 	pub expected_run_id: Uuid,
 	#[validate(length(min = 1, max = 64000))]
 	pub content: String,
+	/// URL intents rendered into the content, as for [`Enqueue::read_pages`].
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub read_pages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

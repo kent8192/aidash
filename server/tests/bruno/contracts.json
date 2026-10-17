@@ -6875,7 +6875,7 @@
     "source": "server/src/apps/execution/capabilities/views/management.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["cursor"],
+    "query_parameters": ["cursor", "role", "state"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/ApprovalPage"
@@ -6911,11 +6911,22 @@
             "targets",
             "action",
             "expires_at",
-            "grant_id"
+            "grant_id",
+            "viewer_is_approver",
+            "agent_id",
+            "agent_version",
+            "decided_by",
+            "decided_at"
           ],
           "properties": {
             "action": {
               "type": "string"
+            },
+            "agent_id": {
+              "type": ["string", "null"]
+            },
+            "agent_version": {
+              "type": ["string", "null"]
             },
             "approver": {
               "type": ["string", "null"]
@@ -6923,6 +6934,26 @@
             "area_id": {
               "type": ["string", "null"],
               "format": "uuid"
+            },
+            "closed_reason": {
+              "type": ["string", "null"],
+              "description": "Why a `closed` approval or Run grant was closed, such as\n`evidence_revoked`."
+            },
+            "decided_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "decided_by": {
+              "type": ["string", "null"]
+            },
+            "disclosure": {
+              "type": ["string", "null"],
+              "description": "For a Web disclosure approval, the exact query or page address that\nwould leave the Node."
+            },
+            "estimated_micro_usd": {
+              "type": ["integer", "null"],
+              "format": "int64",
+              "description": "The price of this one request, recorded when approval was requested\nand charged to the Research account holder: an estimate, not an\ninvoice. Absent for a provider without a price. The account itself is\nkept with the approval for audit and never shown."
             },
             "expires_at": {
               "type": ["string", "null"],
@@ -6938,6 +6969,16 @@
             },
             "kind": {
               "type": "string"
+            },
+            "operation": {
+              "type": ["string", "null"],
+              "description": "The research operation of a Web disclosure approval, or of the\napproval a Web disclosure Run grant came from."
+            },
+            "provider": {
+              "type": ["string", "null"]
+            },
+            "query": {
+              "description": "The validated search query in provider-independent form."
             },
             "requester": {
               "type": "string"
@@ -6958,6 +6999,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "viewer_is_approver": {
+              "type": "boolean",
+              "description": "Whether the reader is the approver this card is addressed to."
             }
           }
         }
@@ -29256,6 +29301,291 @@
     "json": false,
     "uuid_parameters": ["id"],
     "query_parameters": ["after"]
+  },
+  {
+    "method": "GET",
+    "path": "/api/runs/{id}/research",
+    "name": "run-research",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RunResearch"
+      },
+      "definitions": {
+        "RunResearch": {
+          "type": "object",
+          "description": "A Run's research usage against its limits, for anyone who may read the Run.",
+          "required": [
+            "limits",
+            "usage",
+            "estimated_micro_usd",
+            "uncertain_attempts",
+            "in_flight_attempts",
+            "url_intents"
+          ],
+          "properties": {
+            "estimated_micro_usd": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Recorded prices of the Run's charged attempts: an estimate, not an\ninvoice.",
+              "minimum": 0
+            },
+            "in_flight_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Attempts sent and not yet settled.",
+              "minimum": 0
+            },
+            "limits": {
+              "$ref": "#/components/schemas/ResearchLimits"
+            },
+            "uncertain_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Attempts the provider may have performed whose outcome is unknown.\nThey are never sent again automatically.",
+              "minimum": 0
+            },
+            "url_intents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RunUrlIntent"
+              },
+              "description": "The pages people asked the Run to read, oldest first. Each only asked\nfor a Page reading; none approved a Web disclosure."
+            },
+            "usage": {
+              "$ref": "#/components/schemas/ResearchUsage"
+            }
+          }
+        },
+        "ResearchUsage": {
+          "type": "object",
+          "description": "What one Run has used of its research limits.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        },
+        "RunUrlIntent": {
+          "type": "object",
+          "description": "The pages one input asked a Run to read.",
+          "required": ["input", "pages", "requested_by", "requested_at"],
+          "properties": {
+            "input": {
+              "$ref": "#/components/schemas/UrlIntentInput",
+              "description": "`task` for the input that started or queued the Run, `run_message`\nfor a later message steering it."
+            },
+            "pages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "requested_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "requested_by": {
+              "type": "string"
+            }
+          }
+        },
+        "UrlIntentInput": {
+          "type": "string",
+          "enum": ["task", "run_message"]
+        },
+        "ResearchLimits": {
+          "type": "object",
+          "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/research/providers",
+    "name": "research-providers",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ResearchProviders"
+      },
+      "definitions": {
+        "ResearchProviders": {
+          "type": "object",
+          "description": "The Research providers of this Deployment and the per-Run limits every\nRun is held to.",
+          "required": ["providers", "limits"],
+          "properties": {
+            "limits": {
+              "$ref": "#/components/schemas/ResearchLimits"
+            },
+            "providers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResearchProvider"
+              }
+            }
+          }
+        },
+        "ResearchProvider": {
+          "type": "object",
+          "description": "One Research provider this Deployment knows.",
+          "required": ["provider", "set_up", "operations"],
+          "properties": {
+            "operations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResearchProviderOperation"
+              }
+            },
+            "provider": {
+              "type": "string"
+            },
+            "set_up": {
+              "type": "boolean",
+              "description": "Whether whoever runs the Deployment has set the provider up, with\ncurrent account terms where it has any. It never says what is missing."
+            }
+          }
+        },
+        "ResearchProviderOperation": {
+          "type": "object",
+          "description": "One research operation of a provider and the tool definitions through\nwhich the reader's Tenant may bind it here.",
+          "required": ["operation", "approved_definitions"],
+          "properties": {
+            "approved_definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DefinitionRef"
+              },
+              "description": "The Tenant's tool definitions of this operation that have a Catalog\nApproval. A Run can use the operation only through one of them."
+            },
+            "operation": {
+              "type": "string"
+            }
+          }
+        },
+        "DefinitionRef": {
+          "type": "object",
+          "description": "A tool definition of the reader's Tenant, by identifier and version.",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "ResearchLimits": {
+          "type": "object",
+          "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
   },
   {
     "method": "GET",

@@ -261,10 +261,11 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-	contracts.query::<_, crate::apps::execution::capabilities::serializers::endpoints::Page>(
-		document,
-		views::management::approval_list,
-	)?;
+	contracts
+		.query::<_, crate::apps::execution::capabilities::serializers::endpoints::ApprovalQuery>(
+			document,
+			views::management::approval_list,
+		)?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::management::ApprovalDecided>(
 			document,

@@ -90,6 +90,7 @@ pub const TABLES: &[Table] = &[
 	table("execution", "run_inputs", Pending(265)),
 	table("execution", "run_task_snapshots", Pending(265)),
 	table("execution", "runs", Pending(265)),
+	table("execution", "url_intents", Pending(265)),
 	// federation
 	// cross-node transaction plumbing
 	table("federation", "atomic_authority_attempts", DeploymentWide),

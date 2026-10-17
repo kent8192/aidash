@@ -468,3 +468,51 @@ impl EvidenceStore for Evidence {
 		)
 	}
 }
+
+/// One Run's research usage, charges and unsettled attempts. The caller has
+/// already decided that the reader may read the Run.
+pub(crate) async fn run_research(
+	store: &Store,
+	scope: &aidash_application::tenancy::TenancyScope,
+	run: Uuid,
+	limits: Limits,
+) -> crate::Result<crate::apps::execution::serializers::runs::RunResearch> {
+	let usage = Evidence {
+		store: store.clone(),
+		scope: scope.clone(),
+	}
+	.usage(run)
+	.await?;
+	let mut tx = store
+		.pool
+		.begin(scope)
+		.await
+		.and_then(crate::database::native::Transaction::into_executor)?;
+	let (estimated_micro_usd, uncertain_attempts, in_flight_attempts) =
+		ResearchAttempt::run_charges(tx.as_mut(), run).await?;
+	let url_intents =
+		crate::apps::execution::models::url_intents::UrlIntentRecord::for_run(tx.as_mut(), run)
+			.await?;
+	tx.commit().await?;
+	use crate::apps::execution::serializers::runs::{RunUrlIntent, UrlIntentInput};
+	Ok(crate::apps::execution::serializers::runs::RunResearch {
+		limits: limits.into(),
+		usage: usage.into(),
+		estimated_micro_usd,
+		uncertain_attempts,
+		in_flight_attempts,
+		url_intents: url_intents
+			.into_iter()
+			.map(|record| RunUrlIntent {
+				input: if record.input_key.is_some() {
+					UrlIntentInput::RunMessage
+				} else {
+					UrlIntentInput::Task
+				},
+				pages: record.pages.0,
+				requested_by: record.requested_by,
+				requested_at: record.created_at,
+			})
+			.collect(),
+	})
+}

@@ -618,6 +618,23 @@ impl CleanupScope for Scope<'_> {
 				.execute(&mut **access.tx)
 				.await?
 			};
+			// A pending Web disclosure of the area ends with it, recorded as
+			// closed with the reason rather than left to expire.
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("core_records"))
+					.value(Alias::new("state"), "closed")
+					.value_expr(
+						Alias::new("data"),
+						Expr::cust("data || '{\"closed_reason\":\"area_cleaned\"}'::jsonb"),
+					)
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+					.and_where(Expr::col(Alias::new("kind")).eq("disclosure"))
+					.and_where(Expr::col(Alias::new("state")).eq("pending"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **access.tx)
+			.await?;
 			Ok(())
 		}
 		.await;

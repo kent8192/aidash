@@ -1063,6 +1063,16 @@ impl ExecutionEnvironment for Environment<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn url_intents(
+		&self,
+		run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		self.federation
+			.store
+			.url_intents(&self.run_store.scope, run.id)
+			.await
+			.map_err(Into::into)
+	}
 	async fn run_request_headroom(&self, run: &Run) -> Result<usize> {
 		self.federation
 			.run_request_headroom(run)

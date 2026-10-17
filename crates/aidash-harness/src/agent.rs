@@ -1178,6 +1178,47 @@ impl<'a> Executor<'a> {
 						);
 					}
 				}
+				// URL intents live beside their inputs, never in their text
+				// (ADR 0052): each run message names its own pages, and the
+				// instruction below is rendered only into steps that carry any.
+				let url_intents = self.environment.url_intents(run).await?;
+				let task_pages: Vec<String> = url_intents
+					.iter()
+					.filter(|intent| intent.input_key.is_none())
+					.flat_map(|intent| intent.pages.iter().cloned())
+					.collect();
+				// A run message folded into the run-message summary, or taken in
+				// by an earlier media-intake turn that offered no tools, is on no
+				// page again, so the pages it asked for are carried forward like
+				// the Task's own, up to a Run-level bound.
+				let carried: Vec<&[String]> = inputs
+					.iter()
+					.filter(|input| input.seq <= intake_seq)
+					.flat_map(|input| {
+						let key = input.idempotency_key.as_str();
+						url_intents
+							.iter()
+							.filter(move |intent| intent.input_key.as_deref() == Some(key))
+					})
+					.map(|intent| intent.pages.as_slice())
+					.collect();
+				let mut current: Vec<&[String]> = Vec::new();
+				for (position, (index, _)) in page.entries.iter().enumerate() {
+					let key = inputs[*index].idempotency_key.as_str();
+					let Some(intent) = url_intents
+						.iter()
+						.find(|intent| intent.input_key.as_deref() == Some(key))
+					else {
+						continue;
+					};
+					run_messages[position]["read_pages"] = json!(intent.pages);
+					current.push(&intent.pages);
+				}
+				let requested_pages = aidash_domain::research::intent::requested_pages(
+					&task_pages,
+					&carried,
+					&current,
+				);
 				let output = if run_message_catchup {
 					output_limit.min(RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT)
 				} else {
@@ -1329,7 +1370,19 @@ impl<'a> Executor<'a> {
 				// through its Estimate Snapshot.
 				let available =
 					estimate.bytes_for_tokens(budget.remaining(&Context::default(), &fixed_context));
-				let message_size = context::estimated_tokens(&json!(run_messages).to_string());
+				// Catch-up only summarizes; it never acts on a request. The URL
+				// intents render beside the snapshot, so they are reserved before
+				// it is bounded, like the run messages.
+				let intent_payload = (!requested_pages.is_empty() && !run_message_catchup).then(|| {
+					json!({
+						"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+						"pages": requested_pages,
+					})
+				});
+				let message_size = context::estimated_tokens(&json!(run_messages).to_string())
+					+ intent_payload
+						.as_ref()
+						.map_or(0, |payload| context::estimated_tokens(&payload.to_string()));
 				let volatile_budget = available.saturating_sub(message_size) / 4;
 				let snapshot_fit = if ordered {
 					// Stable fields use a Run-stable quota so every step renders the
@@ -1359,6 +1412,9 @@ impl<'a> Executor<'a> {
 				// workspace preview. Admission has already capped its aggregate size.
 				if !run_messages.is_empty() {
 					pinned["run_messages"] = json!(run_messages);
+				}
+				if let Some(payload) = intent_payload {
+					pinned["url_intents"] = payload;
 				}
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);

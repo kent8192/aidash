@@ -243,14 +243,28 @@ impl WorkerAuthority {
 		{
 			Ok(true) => Ok(aidash_application::ports::research::DisclosureState::Revoked),
 			Ok(false) => {
-				let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
-				aidash_application::capabilities::approvals::disclose(
-					&mut scope,
-					&run.metadata(),
-					request,
-				)
+				async {
+					// A core Run's approval belongs to its Working Area, so its Thread
+					// lists it; other Runs have none.
+					let area =
+						crate::apps::execution::repositories::sessions::run_area(&mut access, run.id)
+							.await?
+							.flatten()
+							.map(|area| area.id);
+					let request = aidash_application::capabilities::approvals::DisclosureRequest {
+						area,
+						..request.clone()
+					};
+					let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+					aidash_application::capabilities::approvals::disclose(
+						&mut scope,
+						&run.metadata(),
+						&request,
+					)
+					.await
+					.map_err(Error::from)
+				}
 				.await
-				.map_err(Error::from)
 			}
 			Err(error) => Err(error),
 		};

@@ -204,6 +204,7 @@ pub(crate) async fn enqueue(
 		if sessions::status(&mut access, &area).await?.queue.len() >= 100 {
 			return Err(Error::Conflict("QUEUE_LIMIT".into()));
 		}
+		check_url_intents(&input.read_pages)?;
 		let workspace = access.workspace(area.workspace_id).await?;
 		access.require(&workspace, "task.create").await?;
 		let creator = access.identity.subject.clone();
@@ -234,6 +235,10 @@ pub(crate) async fn enqueue(
 			},
 		)
 		.await?;
+		if !input.read_pages.is_empty() {
+			let run = run_of_task(&mut access, task.id).await?;
+			record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
+		}
 		let result = sessions::status(&mut access, &area).await?;
 		if result.queue.is_empty()
 			|| !result
@@ -252,6 +257,138 @@ pub(crate) async fn enqueue(
 	let result = access.finish(result).await?;
 	f.notify.notify_waiters();
 	Ok(result)
+}
+
+/// The Run just admitted for `task` in this transaction.
+async fn run_of_task(access: &mut Access, task: Uuid) -> Result<Run> {
+	aidash_server::database::query_as(
+		&sessions::select("runs")
+			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut **access.tx)
+	.await
+}
+
+fn invalid_url_intent(error: aidash_domain::research::intent::InvalidUrlIntent) -> Error {
+	Error::Invalid(format!("INVALID_URL_INTENT: {error}"))
+}
+
+/// Checks the pages one input asks the Run to read, before anything is
+/// written. They are recorded beside the input, never in its text (ADR 0052).
+fn check_url_intents(pages: &[String]) -> Result<()> {
+	aidash_domain::research::intent::validate(pages).map_err(invalid_url_intent)
+}
+
+/// Records the pages `requested_by` asked `run` to read with one input:
+/// its Task when `input_key` is `None`. A Run whose Agent binds no Page
+/// reading operation cannot act on them, so they are refused instead.
+async fn record_url_intents(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: &Run,
+	input_key: Option<&str>,
+	pages: &[String],
+	requested_by: &str,
+) -> Result<()> {
+	if pages.is_empty() {
+		return Ok(());
+	}
+	let reads = run
+		.context
+		.binding_snapshot
+		.as_deref()
+		.is_some_and(aidash_domain::research::intent::reads_pages);
+	if !reads {
+		return Err(invalid_url_intent(
+			aidash_domain::research::intent::InvalidUrlIntent::NoPageReading,
+		));
+	}
+	crate::apps::execution::models::url_intents::UrlIntentRecord::record(
+		tx,
+		run.id,
+		input_key,
+		pages,
+		requested_by,
+	)
+	.await
+}
+
+/// The Research providers of this Deployment, whether each is set up, and
+/// which of the reader's Tenant's tool definitions of each operation have a
+/// Catalog Approval. Only a Tenant's subjects read it.
+pub(crate) async fn research_providers(
+	f: Federation,
+	actor: Actor,
+) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
+	use crate::apps::execution::serializers::runs::DefinitionRef;
+	if !matches!(actor, Actor::Subject(_)) {
+		return Err(Error::Forbidden);
+	}
+	let mut access = access(&f, actor).await?.into_native()?;
+	let mut providers = crate::research::providers().availability();
+	let result = async {
+		let (tx, tenant) = access.tenant_transaction();
+		// Approved tool definitions of the Tenant that name a research
+		// provider, whatever their identifiers: installed copies have their own.
+		let (sql, values) = reinhardt::query::Query::select()
+			.column((Alias::new("r"), Alias::new("id")))
+			.column((Alias::new("r"), Alias::new("version")))
+			.expr_as(
+				Expr::cust("r.metadata->'config'->>'provider'"),
+				Alias::new("provider"),
+			)
+			.expr_as(
+				Expr::cust("r.metadata->'config'->>'operation'"),
+				Alias::new("operation"),
+			)
+			.from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+			.join(
+				reinhardt::query::JoinType::InnerJoin,
+				reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
+				Expr::cust("r.id = c.entry_id AND r.version = c.entry_version"),
+			)
+			.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
+			.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(Expr::value(true)))
+			.and_where(Expr::col((Alias::new("r"), Alias::new("kind"))).eq(Expr::value("tool")))
+			.and_where(Expr::cust(
+				"r.metadata->'config'->>'provider' LIKE 'research.%'",
+			))
+			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
+			.build(PostgresQueryBuilder);
+		let rows = tx
+			.fetch_all(&sql, reinhardt::db::orm::execution::convert_values(values))
+			.await?;
+		for row in rows {
+			let get = |column: &str| -> Result<String> {
+				row.get::<String>(column).map_err(|error| {
+					Error::Invalid(format!("research definition {column}: {error}"))
+				})
+			};
+			let (id, version, provider, operation) = (
+				get("id")?,
+				get("version")?,
+				get("provider")?,
+				get("operation")?,
+			);
+			if let Some(known) = providers
+				.providers
+				.iter_mut()
+				.find(|item| item.provider == provider)
+				.and_then(|item| {
+					item.operations
+						.iter_mut()
+						.find(|item| item.operation == operation)
+				}) {
+				known
+					.approved_definitions
+					.push(DefinitionRef { id, version });
+			}
+		}
+		Ok(providers)
+	}
+	.await;
+	access.finish(result).await
 }
 
 pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -> Result<Steered> {
@@ -280,6 +417,7 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 			.await?;
 		let limit = f.run_message_limit(&run).await?;
 		let sender = access.identity.subject.clone();
+		check_url_intents(&input.read_pages)?;
 		Ok((None, Some((run, sender, limit, digest))))
 	}
 	.await;
@@ -304,6 +442,14 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 				limit,
 			)
 			.await?;
+		record_url_intents(
+			access.tx.as_mut(),
+			&run,
+			Some(&format!("steer:{}:{}", run.id, input.idempotency_key)),
+			&input.read_pages,
+			&sender,
+		)
+		.await?;
 		let result = Steered {
 			accepted_run_id: run.id,
 		};
@@ -439,6 +585,7 @@ pub(crate) async fn thread_run(
 		access
 			.workspace_record(workspace, "message", channel.root_message_id)
 			.await?;
+		check_url_intents(&input.read_pages)?;
 		let resource = access.workspace(workspace).await?;
 		access.require(&resource, "task.create").await?;
 		let creator = access.identity.subject.clone();
@@ -469,20 +616,9 @@ pub(crate) async fn thread_run(
 			},
 		)
 		.await?;
-		let run: Run = {
-			let query_bind_1 = task.id;
-			aidash_server::database::query_as(
-				&sessions::select("runs")
-					.and_where(
-						Expr::col(Alias::new("task_id")).eq(Expr::value(query_bind_1.to_owned())),
-					)
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **access.tx)
-			.await?
-		};
+		let run = run_of_task(&mut access, task.id).await?;
 		let _ = delegation;
+		record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
 		let area = sessions::for_run(&mut access, &run).await?;
 		sessions::cache(
 			&mut access,
@@ -561,24 +697,124 @@ pub(crate) async fn outbound_history(
 pub(crate) async fn approval_list(
 	f: Federation,
 	actor: Actor,
-	QueryInput(page): QueryInput<Page>,
+	QueryInput(query): QueryInput<ApprovalQuery>,
 ) -> Result<ApprovalPage> {
 	let mut access = access(&f, actor).await?;
-	let result=async {
-        let rows:Vec<super::records::Record>={ let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); crate::database::native::query_as(&sessions::select("core_records")
-            .and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("kind")).is_in(["outbound","grant","disclosure"]))
-            .and_where(SimpleExpr::CustomWithExpr("(owner = ? OR data->>'approver' = ?)".into(), vec![Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-            .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned()))).order_by(Alias::new("id"),Order::Asc).limit(51).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? };
-        let next_cursor=(rows.len()==51).then(||rows[49].id);
-        let mut items=vec![];
-        for row in rows.into_iter().take(50) {
-			if !super::approvals::visible(&mut access, &row).await? { continue; }
-            let run:Uuid=serde_json::from_value(row.data["run_id"].clone())?;
-            // Designated approvers see only the scoped card, never Run output.
-            items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":row.data["action"].as_str().or_else(||row.data["actions"][0].as_str()).unwrap_or("network.get"),"expires_at":row.expires_at,"grant_id":row.data["grant_id"],"disclosure":if row.kind=="disclosure"{row.data["content"].clone()}else{serde_json::Value::Null}}));
-        }
-        Ok(json!({"items":items,"next_cursor":next_cursor}))
-    }.await;
+	let result = async {
+		let subject = access.identity.subject.clone();
+		let mut select = sessions::select("core_records")
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.to_owned())))
+			.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query.cursor.unwrap_or(Uuid::nil()))))
+			.order_by(Alias::new("id"), Order::Asc)
+			.limit(51)
+			.to_owned();
+		select.and_where(match query.role {
+			// An inbox lists only what the reader is asked to decide or gave.
+			Some(ApprovalRole::Approver) => SimpleExpr::CustomWithExpr(
+				"data->>'approver' = ?".into(),
+				vec![Expr::value(subject.clone()).into()],
+			),
+			None => SimpleExpr::CustomWithExpr(
+				"(owner = ? OR data->>'approver' = ?)".into(),
+				vec![Expr::value(subject.clone()).into(), Expr::value(subject.clone()).into()],
+			),
+		});
+		let (kinds, state): (&[&str], _) = match query.state {
+			Some(ApprovalState::Pending) => (&["outbound", "disclosure"], Some("pending")),
+			Some(ApprovalState::Active) => (&["grant"], Some("active")),
+			None => (&["outbound", "grant", "disclosure"], None),
+		};
+		select.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()));
+		if let Some(state) = state {
+			select
+				.and_where(Expr::col(Alias::new("state")).eq(Expr::value(state)))
+				.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())));
+		}
+		if query.state == Some(ApprovalState::Pending) {
+			// A disclosure ends with its Run: an inbox never offers one whose
+			// Run has ended, since no decision on it could take effect.
+			select.and_where(Expr::cust(
+				"(kind <> 'disclosure' OR NOT EXISTS (SELECT 1 FROM runs r \
+				 WHERE r.id::text = core_records.data->>'run_id' \
+				 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
+			));
+		}
+		let rows: Vec<super::records::Record> =
+			crate::database::native::query_as(&select.to_string(PostgresQueryBuilder))
+				.fetch_all(&mut **access.tx)
+				.await?;
+		let next_cursor = (rows.len() == 51).then(|| rows[49].id);
+		// Every view, not only the inbox, shows a pending disclosure whose Run
+		// has ended as closed, as a decision on it would close it, so no
+		// reader is offered it.
+		let waiting: Vec<Uuid> = rows
+			.iter()
+			.take(50)
+			.filter(|row| row.kind == "disclosure" && row.state == "pending")
+			.filter_map(|row| serde_json::from_value(row.data["run_id"].clone()).ok())
+			.collect();
+		let ended: std::collections::HashSet<Uuid> = if waiting.is_empty() {
+			Default::default()
+		} else {
+			crate::database::native::query_scalar(
+				&reinhardt::query::Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col(Alias::new("id")).is_in(waiting.into_iter().map(Expr::value)))
+					.and_where(
+						Expr::col(Alias::new("phase"))
+							.is_in(["COMPLETED", "FAILED", "CANCELLED"])
+							.or(Expr::col(Alias::new("control")).eq(Expr::value("CANCELLED"))),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut **access.tx)
+			.await?
+			.into_iter()
+			.collect()
+		};
+		let mut items = vec![];
+		for row in rows.into_iter().take(50) {
+			if !super::approvals::visible(&mut access, &row).await? {
+				continue;
+			}
+			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
+			let run_ended = row.kind == "disclosure" && row.state == "pending" && ended.contains(&run);
+			// A Run grant past its `expires_at` no longer admits anything, so
+			// it reads as expired rather than active and revocable.
+			let expired = matches!(row.state.as_str(), "pending" | "active")
+				&& row.expires_at.is_some_and(|t| t < chrono::Utc::now());
+			let data = &row.data;
+			// Designated approvers see only the scoped card, never Run output.
+			items.push(json!({
+				"id": row.id,
+				"kind": row.kind,
+				"run_id": run,
+				"area_id": row.area_id,
+				"state": if run_ended { "closed" } else if expired { "expired" } else { &row.state },
+				"revision": row.revision,
+				"requester": row.owner,
+				"approver": data["approver"],
+				"targets": data["targets"],
+				"action": data["action"].as_str().or_else(|| data["actions"][0].as_str()).unwrap_or("network.get"),
+				"expires_at": row.expires_at,
+				"grant_id": data["grant_id"],
+				"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
+				"viewer_is_approver": data["approver"] == json!(subject),
+				"agent_id": data["agent_id"],
+				"agent_version": data["agent_version"],
+				"operation": data["operation"],
+				"provider": data["provider"],
+				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
+				"query": data["query"],
+				"decided_by": data["decided_by"],
+				"decided_at": data["decided_at"],
+				"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
+			}));
+		}
+		Ok(json!({"items": items, "next_cursor": next_cursor}))
+	}
+	.await;
 	typed(access.finish(result).await?)
 }
 pub(crate) async fn approval_decide(
@@ -1123,8 +1359,8 @@ pub async fn provide(#[inject] runtime: Federation) -> CapabilitiesManagement {
 use reinhardt::injectable;
 
 pub(crate) use crate::apps::execution::capabilities::serializers::endpoints::{
-	AreaQuery, DownloadChunk, ExpectedRevision, Offset, OutboundPage, Page, RecipientQuery,
-	ReferencePage,
+	ApprovalQuery, ApprovalRole, ApprovalState, AreaQuery, DownloadChunk, ExpectedRevision, Offset,
+	OutboundPage, Page, RecipientQuery, ReferencePage,
 };
 
 use reinhardt::query::SimpleExpr;

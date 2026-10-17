@@ -2415,6 +2415,21 @@ impl Store {
 		)
 		.await
 	}
+	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
+	pub async fn url_intents(
+		&self,
+		scope: &TenancyScope,
+		run_id: Uuid,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		let records = self
+			.pool
+			.atomic(scope, async |tx| {
+				crate::apps::execution::models::url_intents::UrlIntentRecord::for_run(tx, run_id)
+					.await
+			})
+			.await?;
+		Ok(records.iter().map(|record| record.intent()).collect())
+	}
 	pub async fn run_inputs(&self, scope: &TenancyScope, run_id: Uuid) -> Result<Vec<RunInput>> {
 		self.pool
 			.atomic(scope, async |tx| InputRecord::for_run(tx, run_id).await)

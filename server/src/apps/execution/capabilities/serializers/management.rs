@@ -34,6 +34,31 @@ pub struct ApprovalCard {
 	/// would leave the Node.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub disclosure: Option<String>,
+	/// Whether the reader is the approver this card is addressed to.
+	pub viewer_is_approver: bool,
+	pub agent_id: Option<String>,
+	pub agent_version: Option<String>,
+	/// The research operation of a Web disclosure approval, or of the
+	/// approval a Web disclosure Run grant came from.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider: Option<String>,
+	/// The price of this one request, recorded when approval was requested
+	/// and charged to the Research account holder: an estimate, not an
+	/// invoice. Absent for a provider without a price. The account itself is
+	/// kept with the approval for audit and never shown.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub estimated_micro_usd: Option<i64>,
+	/// The validated search query in provider-independent form.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub query: Option<serde_json::Value>,
+	pub decided_by: Option<String>,
+	pub decided_at: Option<DateTime<Utc>>,
+	/// Why a `closed` approval or Run grant was closed, such as
+	/// `evidence_revoked`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub closed_reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

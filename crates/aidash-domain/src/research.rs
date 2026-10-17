@@ -8,6 +8,7 @@ pub mod account;
 pub mod citations;
 pub mod document;
 pub mod evidence;
+pub mod intent;
 pub mod revocation;
 pub mod search;
 
