@@ -591,7 +591,8 @@ impl Research<'_> {
 					.settle(call.run, call.key, AttemptOutcome::Unknown, &result)
 					.await
 				{
-					Ok(()) => Some(result),
+					// The tombstone instead when the Run was revoked meanwhile.
+					Ok(recorded) => Some(recorded),
 					// A late settlement or a concurrent replay came first:
 					// answer with what it recorded.
 					Err(Error::Conflict(_)) => {
