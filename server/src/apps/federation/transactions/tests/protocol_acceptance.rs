@@ -872,14 +872,14 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
 	b.f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("atomic").unwrap(),
 			model,
 		)
 		.await
 		.unwrap();
 	b.f.registry
 		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_domain::tenancy::TenantName::new("atomic").unwrap(),
 			agent.clone(),
 		)
 		.await
