@@ -522,15 +522,7 @@ mod scoped_pair_composition {
 			.await;
 			source_policy["subjects"]
 				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
-			let (status, body) = request(
-				&aa,
-				&a.config.api_token,
-				"POST",
-				"/api/authorization/acme",
-				json!({"expected_revision":2,"bundle":source_policy}),
-			)
-			.await;
-			assert_eq!(status, 200, "{body}");
+			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
 			Some(data)
 		} else {
 			None
@@ -3089,7 +3081,7 @@ async fn prepare_generated_pair(
 	.await;
 	let (_, child_template) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"GET",
 		if native {
 			"/api/registry/research-native/1.0.0"
