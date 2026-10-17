@@ -380,7 +380,7 @@ pub struct RuntimeFixture {
 }
 
 impl RuntimeFixture {
-	#[allow(dead_code)] // Process and protocol suites inspect the retained broker environment.
+	/// The disposable services that also bound this runtime's fixture stages.
 	pub fn environment(&self) -> Arc<TestEnvironment> {
 		self._database.environment.clone()
 	}
@@ -410,31 +410,47 @@ pub fn execution_database(
 		// The preserved baseline names public explicitly. Isolate databases, not
 		// search paths. TestEnvironment owns the container and every database, so
 		// unwinding also removes fixtures that never reach explicit cleanup.
-		let logins = postgres::prepare_database(&environment.database_url, &database).await;
+		// Each stage names the database, which the PostgreSQL snapshot of a
+		// hang lists for every session connected to it (#320).
+		let logins = environment
+			.bounded_setup(
+				format!("create the fixture database {database}"),
+				postgres::prepare_database(&environment.database_url, &database),
+			)
+			.await;
 		// Migrations run as the owner; everything else uses the server role.
-		let owner = PgPoolOptions::new()
-			.max_connections(2)
-			.connect(&logins.owner_url)
-			.await
-			.unwrap();
-		let migrations =
-			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+		environment
+			.bounded_setup(format!("migrate the fixture database {database}"), async {
+				let owner = PgPoolOptions::new()
+					.max_connections(2)
+					.connect(&logins.owner_url)
+					.await
+					.unwrap();
+				let migrations = FilesystemSource::new(
+					PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+				)
 				.all_migrations()
 				.await
 				.expect("load the native migration graph");
-		postgres::apply_migrations(
-			DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone()))),
-			&migrations,
-		)
-		.await;
-		owner.close().await;
+				postgres::apply_migrations(
+					DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone()))),
+					&migrations,
+				)
+				.await;
+				owner.close().await;
+			})
+			.await;
 		let url = logins.server_url;
 		let options = PgConnectOptions::from_str(&url)
 			.unwrap()
 			.application_name(&database);
-		let pool = PgPoolOptions::new()
-			.max_connections(max_connections)
-			.connect_with(options)
+		let pool = environment
+			.bounded_setup(
+				format!("connect the server pool to {database}"),
+				PgPoolOptions::new()
+					.max_connections(max_connections)
+					.connect_with(options),
+			)
 			.await
 			.unwrap();
 		Arc::new(ExecutionDatabase {
@@ -454,7 +470,12 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 	async move {
 		let database = execution_database.await;
 
-		let store = Store::from_pool(database.pool.clone(), "aidash://execution-test".into())
+		let store = database
+			.environment
+			.bounded_setup(
+				format!("open the Store on {}", database.schema),
+				Store::from_pool(database.pool.clone(), "aidash://execution-test".into()),
+			)
 			.await
 			.unwrap();
 		let federation = Federation {

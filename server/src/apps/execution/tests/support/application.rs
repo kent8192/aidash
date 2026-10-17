@@ -204,7 +204,14 @@ fn application_context(
 		let owner = runtime.await;
 		let runtime = owner.federation.clone();
 		// Production startup admits immutable system declarations before serving routes.
-		runtime.registry.seed_system().await.unwrap();
+		owner
+			.environment()
+			.bounded_setup(
+				format!("seed system declarations on {}", owner.schema),
+				runtime.registry.seed_system(),
+			)
+			.await
+			.unwrap();
 		let _ = tracing_subscriber::fmt()
 			.with_test_writer()
 			.with_env_filter(
@@ -393,8 +400,16 @@ pub fn native_application(
 	_clients: ClientsFuture,
 ) -> ApplicationFuture {
 	async move {
-		let transport = _transport.await;
-		let clients = _clients.await;
+		// The runtime stages bound themselves; this covers the context, router,
+		// listener and clients that every application test resolves (#320).
+		let runtime = _runtime.await;
+		let (transport, clients) = runtime
+			.environment()
+			.bounded_setup(
+				format!("serve the application on {}", runtime.schema),
+				async { (_transport.await, _clients.await) },
+			)
+			.await;
 		let application = TestApplication {
 			server: transport.server,
 			context: transport.context,
