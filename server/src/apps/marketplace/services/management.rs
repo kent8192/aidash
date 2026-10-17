@@ -310,7 +310,8 @@ impl MarketplaceManagement {
 			)
 			.await?;
 			require_approval(&mut access, &revision.entry).await?;
-			Ok(aidash_application::marketplace::operations::activate(
+			let enabled = input.enabled;
+			let installation = aidash_application::marketplace::operations::activate(
 				&mut crate::bootstrap::marketplace_tenant_activation_scope(
 					&f.store,
 					&mut access.tx,
@@ -326,7 +327,16 @@ impl MarketplaceManagement {
 					enabled: input.enabled,
 				},
 			)
-			.await?)
+			.await?;
+			if enabled {
+				crate::apps::identity::repositories::catalog_approvals::admit_agents(
+					&mut access,
+					&f.config.node_id,
+					&[revision.entry],
+				)
+				.await?;
+			}
+			Ok(installation)
 		}
 		.await;
 		access.finish(result).await
@@ -341,6 +351,7 @@ impl MarketplaceManagement {
 		let identity = approving_subject(&actor, &input.tenant)?;
 		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
 		let result = async {
+			let mut entries = Vec::with_capacity(input.installations.len());
 			for selection in &input.installations {
 				let revision = crate::apps::marketplace::repositories::installations::revision(
 					&mut access.tx,
@@ -349,8 +360,9 @@ impl MarketplaceManagement {
 				)
 				.await?;
 				require_approval(&mut access, &revision.entry).await?;
+				entries.push(revision.entry);
 			}
-			Ok(
+			let installations =
 				aidash_application::marketplace::operations::approval_set::approve_and_activate(
 					&mut crate::bootstrap::marketplace_tenant_activation_scope(
 						&f.store,
@@ -362,8 +374,14 @@ impl MarketplaceManagement {
 					&input,
 					&f.store.node_id,
 				)
-				.await?,
+				.await?;
+			crate::apps::identity::repositories::catalog_approvals::admit_agents(
+				&mut access,
+				&f.config.node_id,
+				&entries,
 			)
+			.await?;
+			Ok(installations)
 		}
 		.await;
 		access.finish(result).await

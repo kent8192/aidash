@@ -118,3 +118,23 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 		Ok(())
 	}
 }
+
+/// Agent versions approved through a Marketplace activation become subjects of
+/// the Tenant's policy too, in the default groups (ADR 0062).
+pub(crate) async fn admit_agents(access: &mut Access, node: &str, entries: &[Entry]) -> Result<()> {
+	use aidash_domain::identity::tenant_administration as rules;
+	let mut changed = false;
+	for entry in entries.iter().filter(|entry| entry.kind == "agent") {
+		let subject = aidash_domain::qualified_agent(node, &entry.id, &entry.version);
+		if access.snapshot.bundle.subjects.contains_key(&subject) {
+			continue;
+		}
+		let groups = rules::default_agent_groups(&access.snapshot.bundle);
+		rules::add_agent_subject(&mut access.snapshot.bundle, &subject, &groups)?;
+		changed = true;
+	}
+	if changed {
+		TenantCatalog { access, node }.save_policy().await?;
+	}
+	Ok(())
+}
