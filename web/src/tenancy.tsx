@@ -8,6 +8,8 @@ import { AuthCard } from "./shell/auth-card";
 import {
   apiFetch,
   authenticatedFetch,
+  dashboardContext,
+  SESSION_CHANGED,
   sessionFetch,
   signIn,
 } from "./transport";
@@ -58,10 +60,9 @@ async function failure(response: Response, english: boolean): Promise<string> {
   return body.error ?? `HTTP ${response.status}`;
 }
 
+export { SESSION_CHANGED } from "./transport";
+
 /** Creates a Tenant under a name Aidash assigns; the label is the readable one. */
-/** Dispatched after a change the browser session's Mappings show, such as a
- *  Tenant label, so every context selector reads the session again. */
-export const SESSION_CHANGED = "aidash:session-changed";
 
 export function CreateTenantForm({
   onCreated,
@@ -89,7 +90,8 @@ export function CreateTenantForm({
           method: "POST",
           headers: {
             "content-type": "application/json",
-            ...(asDeploymentAdministrator
+            // Before any context is chosen only; once one is, it is sent.
+            ...(asDeploymentAdministrator && !dashboardContext()
               ? { "x-aidash-context": "deployment_administrator" }
               : {}),
           },

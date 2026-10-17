@@ -61,6 +61,7 @@ import {
 } from "./components/patterns";
 import { cn } from "./lib/utils";
 import { CreateTenantForm, TenantInvitations } from "./tenancy";
+import { DeleteTenantForm, DeploymentTenants } from "./tenant-deletion";
 
 const PAGE_SIZE = 25;
 
@@ -116,6 +117,7 @@ export function AuthorizationPage({
         <div className="w-full max-w-sm">
           <CreateTenantForm onCreated={(created) => setTenant(created.name)} />
         </div>
+        <DeploymentTenants />
         <form
           className="flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
@@ -288,6 +290,11 @@ function TenantAuthorization({
             <JsonView value={current.bundle} />
           </Disclosure>
         </Panel>
+      )}
+      {current && (
+        <div className="w-full max-w-md">
+          <DeleteTenantForm key={tenant} tenant={tenant} />
+        </div>
       )}
       {current && (
         // A Tenant a Deployment Administrator created has nobody in it yet;

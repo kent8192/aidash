@@ -361,3 +361,98 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
     { groups: ["administrators"], expires_in_seconds: 604_800 },
   ]);
 });
+
+test("deleting the Tenant needs its name typed, and leaving asks to confirm", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture", {
+    tenant: "alpha",
+    name: "alice",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const deletions: unknown[] = [];
+  const leaves: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({ json: { access, node_id: "aidash://test" } });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access,
+          node: {
+            id: "aidash://test",
+            endpoint: "http://localhost",
+            protocol_version: "0.1",
+            capabilities: [],
+            clusters: [],
+          },
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+          peers: [],
+        },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/administration")
+      return route.fulfill({
+        json: {
+          tenant: "alpha",
+          actions: ["mapping.read", "tenant.delete"],
+          assignable_groups: ["members"],
+          policy_revision: 3,
+        },
+      });
+    if (path === "/api/tenants/alpha/deletion") {
+      deletions.push(request.postDataJSON());
+      return route.fulfill({
+        json: {
+          tenant: "alpha",
+          deleted_at: "2026-10-17T00:00:00Z",
+          deleted_by_kind: "tenant_administrator",
+          purge_after: "2026-11-16T00:00:00Z",
+          purged_at: null,
+        },
+      });
+    }
+    if (path === "/api/tenants/alpha/leave") {
+      leaves.push(request.method());
+      return route.fulfill({
+        status: 409,
+        json: {
+          error:
+            "appoint another Tenant Administrator or delete the Tenant before leaving",
+        },
+      });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+
+  const remove = page.getByRole("button", { name: "Delete Tenant" });
+  await expect(remove).toBeDisabled();
+  await page.getByLabel("Type the Tenant name alpha to confirm").fill("Alpha");
+  await expect(remove).toBeDisabled();
+  await page.getByLabel("Type the Tenant name alpha to confirm").fill("alpha");
+  await remove.click();
+  await expect.poll(() => deletions).toEqual([{ confirmation: "alpha" }]);
+
+  await page.getByRole("button", { name: "Leave Tenant" }).click();
+  expect(leaves).toEqual([]);
+  await page.getByRole("button", { name: "Leave now" }).click();
+  await expect(
+    page.getByText("You are the last Tenant Administrator."),
+  ).toBeVisible();
+  expect(leaves).toEqual(["POST"]);
+});
