@@ -11,7 +11,7 @@ pub struct Config {
 	pub api_token: String,
 	pub web_dir: String,
 	pub lease_seconds: i32,
-	pub default_host_packages: Vec<String>,
+	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
 	pub oidc: Option<OidcConfig>,
 	pub gcip: Option<GcipConfig>,
 }
@@ -38,6 +38,7 @@ impl Config {
 					google: false,
 					tenant_bindings: Some(gcip.tenant_bindings.clone()),
 					gcip_providers: gcip.providers.clone(),
+					personal_tenants: self.tenancy.personal_tenants,
 				},
 			)
 			.or_else(|| {
@@ -47,6 +48,7 @@ impl Config {
 						google: oidc.is_google(),
 						tenant_bindings: None,
 						gcip_providers: Default::default(),
+						personal_tenants: self.tenancy.personal_tenants,
 					}
 				})
 			})
@@ -59,6 +61,10 @@ impl Config {
 			.map_err(|error| Error::Invalid(error.to_string()))?;
 		settings
 			.dashboard
+			.validate(&Profile::parse("local"))
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		settings
+			.tenancy
 			.validate(&Profile::parse("local"))
 			.map_err(|error| Error::Invalid(error.to_string()))?;
 		let database = settings
@@ -82,7 +88,7 @@ impl Config {
 			api_token: node.api_token.clone(),
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
-			default_host_packages: node.default_host_packages.clone(),
+			tenancy: settings.tenancy.rules(),
 			gcip: settings
 				.dashboard
 				.gcip

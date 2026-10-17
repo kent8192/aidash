@@ -19,6 +19,7 @@ impl AgentConfig {
 			exposure: self.exposure,
 			projection_version: self.projection_version,
 			prompt_cache: self.prompt_cache,
+			completion: self.completion.clone(),
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
@@ -45,6 +46,7 @@ impl AgentConfig {
 			exposure: input.exposure,
 			projection_version: input.projection_version,
 			prompt_cache: input.prompt_cache,
+			completion: input.completion,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],
 			skill_roots: vec![],

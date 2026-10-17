@@ -191,6 +191,38 @@ impl WorkerAuthority {
 		}
 	}
 
+	/// Start a Completion Gate Check (#112) under the worker's current
+	/// authority lease, exactly as the model's own shell calls are admitted.
+	pub async fn check(&self, store: &Store, run: &Run, input: Value, key: &str) -> Result<Value> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			crate::capabilities::service::verify(store, &mut access, run, input, key).await;
+		access.finish(result).await
+	}
+
+	/// The current result of a Completion Gate Check this Run started.
+	pub async fn check_status(&self, store: &Store, run: &Run, operation: Uuid) -> Result<Value> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			crate::capabilities::service::verification(store, &mut access, run, operation).await;
+		access.finish(result).await
+	}
+
+	/// The Run's Working Area as the Completion Gate reads it; `None` when the
+	/// Run has none.
+	pub async fn working_area(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Option<aidash_domain::capabilities::sessions::Area>> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = crate::capabilities::service::working_area(store, &mut access, run).await;
+		access.finish(result).await
+	}
+
 	/// Web disclosure approval under the worker's current authority lease. It
 	/// shares the capability approval records, decision API and Run waiting.
 	pub async fn web_disclosure(

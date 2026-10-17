@@ -46,10 +46,19 @@ mod dashboard_registration_requests;
 pub use dashboard_registration_requests::DashboardRegistrationRequest;
 mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
+mod personal_tenants;
+pub use personal_tenants::PersonalTenantLink;
+mod tenant_invitations;
+pub use tenant_invitations::TenantInvitation;
+mod tenants;
+pub use tenants::Tenant;
 
 mod dashboard_administration;
 mod tenant_administration;
-pub(crate) use tenant_administration::{AdministrationActor, TenantAdministrator};
+pub(crate) use dashboard_administration::database_time;
+pub(crate) use tenant_administration::{
+	AdministrationActor, AdministrationEvent, TenantAdministrator,
+};
 mod dashboard_authentication;
 pub mod states;
 

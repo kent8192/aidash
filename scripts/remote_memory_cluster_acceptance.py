@@ -50,6 +50,12 @@ class RemoteMemory(Cluster):
         assert status == 200, (status, value)
         return value
 
+    @staticmethod
+    def created(response):
+        status, value = response
+        assert status == 201, (status, value)
+        return value
+
     def db(self, node, key, task=None, run=None):
         null = "00000000-0000-0000-0000-000000000000"
         result = self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
@@ -130,20 +136,22 @@ class RemoteMemory(Cluster):
         entry = {"id": name, "version": "1.0.0", "kind": kind, "name": {"en": name}, "description": {"en": "Synthetic cluster fixture"},
                  "capabilities": capabilities or [], "languages": ["en"], "schema": {"type": "object"}, "config": config}
         self.ok(self.api(node, "/api/registry", entry))
-        self.ok(self.api(node, "/api/authorization/acme/catalog", {"entry": ref(entry), "expected_revision": 0, "enabled": True}))
+        self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/catalog", {"entry": ref(entry), "expected_revision": 0, "enabled": True}))
         # Hash the canonical stored definition, including server-default fields.
         stored = self.ok(self.api(node, f"/api/registry/{name}/1.0.0"))
         self.entries[node][name] = stored
         return stored
 
     def configure(self):
+        # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
+        self.tenants = [self.created(self.api(node, "/api/tenants", {"label": "acme"}))["name"] for node in range(2)]
         for node in range(2):
             subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
-            bundle = {"tenant": "acme", "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-            self.ok(self.api(node, "/api/authorization/acme", {"expected_revision": 0, "bundle": bundle}))
-            credential = self.ok(self.api(node, "/api/authorization/acme/credentials", {"subject": "alice"}))
+            bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
+            credential = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/credentials", {"subject": "alice"}))
             self.tokens.append(credential["token"])
-            self.ok(self.api(node, "/api/authorization/acme/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": "acme", "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": self.tenants[1 - node], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
             self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
             self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "schema_version": 1, "bindings": [{"kind": "memory", "target": {"registry_node": f"aidash://tx-{node:02}", "id": "home-memory", "version": "1.0.0"}, "narrow": {}}], "remove_default": []})
@@ -225,9 +233,9 @@ class RemoteMemory(Cluster):
         parent["template"]["capabilities"] = [capability]
         parent["embedding"] = {"provider": {"id": "home-embedding", "version": "1.0.0"}, "calls_per_agent": 10, "call_budget": 40}
         parent["remote"] = {"inference": [self.descriptor(1, "model")]}
-        self.ok(self.api(0, f"/api/generation/acme/policies/{parent_policy}", {"expected_revision": 0, "spec": parent}))
+        self.ok(self.api(0, f"/api/generation/{self.tenants[0]}/policies/{parent_policy}", {"expected_revision": 0, "spec": parent}))
         parent_task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Generated origin", "description": "Delegate scoped memory research", "requirements": {"capability": capability}}))["id"]
-        assigned = self.ok(self.user(0, f"/api/generation/acme/tasks/{parent_task}/assign", {"policy_id": parent_policy, "reason": "Generated ancestor acceptance"}))
+        assigned = self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/tasks/{parent_task}/assign", {"policy_id": parent_policy, "reason": "Generated ancestor acceptance"}))
         assert assigned["kind"] == "generated", assigned
         self.scale(0, "worker", 1)
         def waiting():
@@ -244,7 +252,7 @@ class RemoteMemory(Cluster):
         child_spec = copy.deepcopy(common)
         child_spec.update(template=self.entries[1]["research"], approval_required=True,
             remote={"embedding": {"provider": self.descriptor(0, "home-embedding"), "calls_per_agent": 10, "call_budget": 40}})
-        self.ok(self.api(1, f"/api/generation/acme/policies/{child_policy}", {"expected_revision": 0, "spec": child_spec}))
+        self.ok(self.api(1, f"/api/generation/{self.tenants[1]}/policies/{child_policy}", {"expected_revision": 0, "spec": child_spec}))
         intent = {"id": str(uuid.uuid4()), "node_id": "aidash://tx-01", "policy_id": child_policy, "policy_revision": 1, "ttl_seconds": 1800, "reason": "Foreign generated child acceptance"}
         route = f"/api/tasks/{child}/remote-generation"
         pending = self.ok(self.user(0, route, intent))
@@ -254,7 +262,7 @@ class RemoteMemory(Cluster):
         self.peers_ready()
         assert self.ok(self.user(0, route, intent)) == pending
         assert not self.db(1, "runs", child), "preparation cannot start an unbound Run"
-        self.ok(self.api(1, f"/api/generation/acme/requests/{pending['request_id']}/control", {"action": "approve", "reason": "Approve the exact cluster intent"}))
+        self.ok(self.api(1, f"/api/generation/{self.tenants[1]}/requests/{pending['request_id']}/control", {"action": "approve", "reason": "Approve the exact cluster intent"}))
         prepared = self.ok(self.user(0, route, intent))
         assert prepared["prepared"] and prepared["agent"] == pending["agent"]
         assert len(self.db(1, "requests", child)) == 1

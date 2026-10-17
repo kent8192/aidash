@@ -386,9 +386,9 @@ impl SubjectIdentity {
 }
 
 impl HttpSession {
-	pub(crate) async fn current(
+	pub(crate) async fn current<E: TransactionExecutor + ?Sized>(
 		&self,
-		tx: &mut crate::database::native::Transaction,
+		tx: &mut E,
 		lock: bool,
 	) -> Result<()> {
 		let mut query = Query::select();
@@ -405,7 +405,7 @@ impl HttpSession {
 				.bind(self.id)
 				.bind(self.identity_id)
 				.bind(self.idle_seconds)
-				.scalar_optional(&mut **tx)
+				.scalar_optional(&mut *tx)
 				.await?;
 		if valid.is_none() {
 			return Err(Error::Unauthorized);
