@@ -286,7 +286,8 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             workspace, task = create_task(scenario)
             path = f"/api/tasks/{task['id']}/remote-grants"
             grant = str(uuid.uuid4())
-            preparation = {"id": grant, "node_id": node_b, "agent": agent, "ttl_seconds": 300}
+            # The grant must outlive both recovery waits and the setup between them.
+            preparation = {"id": grant, "node_id": node_b, "agent": agent, "ttl_seconds": 2 * RECOVERY_BUDGET_SECONDS + 120}
             prepared = api_request(base_a, path, preparation, token=token)
             assert api_request(base_a, path, preparation, token=token) == prepared
             denied(base_a, path, {**preparation, "id": str(uuid.uuid4())}, token=outsider["token"])
