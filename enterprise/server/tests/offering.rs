@@ -47,6 +47,11 @@ fn the_cloud_and_dedicated_offerings_pass_the_build_check() {
 			&format!("[deployment]\noffering = \"{offering}\"\n"),
 		);
 		let stderr = String::from_utf8_lossy(&output.stderr);
+		// The empty settings fail only at the next step, resolving `[core]`.
 		assert!(!stderr.contains("does not run"), "{offering}: {stderr}");
+		assert!(
+			stderr.contains("missing required field `secret_key`"),
+			"{offering}: {stderr}"
+		);
 	}
 }
