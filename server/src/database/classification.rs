@@ -188,6 +188,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_invitations", Pending(264)),
 	table("identity", "tenant_retention_rule_history", Pending(264)),
 	table("identity", "tenant_retention_rules", Pending(264)),
+	// Tenant Deletions outlive purge and are read while the Tenant refuses everyone (ADR 0060)
+	table("identity", "tenant_deletions", DeploymentWide),
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)
 	table("identity", "tenants", DeploymentWide),
 	// knowledge

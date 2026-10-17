@@ -865,7 +865,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	assert_eq!(status, 200, "{overview}");
 	assert_eq!(
 		overview["actions"].as_array().unwrap().len(),
-		10,
+		11,
 		"{overview}"
 	);
 	d.finish().await;
@@ -1196,3 +1196,6 @@ async fn display_retention_follows_the_request_that_ended_last(
 	);
 	d.finish().await;
 }
+
+#[path = "tenancy/deletion.rs"]
+mod deletion;

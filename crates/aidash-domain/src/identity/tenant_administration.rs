@@ -29,9 +29,10 @@ pub const ACTIONS: [&str; 9] = [
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
-/// requests, managing Mappings and groups, and inviting people. The
+/// requests, managing Mappings and groups, inviting people, and deleting the
+/// Tenant, so nobody leaves behind a Tenant no one can delete (ADR 0060). The
 /// last-administrator check requires one other subject holding all of them.
-pub const ADMINISTRATION_ACTIONS: [&str; 7] = [
+pub const ADMINISTRATION_ACTIONS: [&str; 8] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -39,6 +40,7 @@ pub const ADMINISTRATION_ACTIONS: [&str; 7] = [
 	MAPPING_DISABLE,
 	SUBJECT_GROUP_UPDATE,
 	INVITATION_CREATE,
+	crate::identity::tenancy::TENANT_DELETE,
 ];
 
 /// Resource ID used when a capability or collection, not one item, is checked.
@@ -50,7 +52,9 @@ pub fn resource_kind(action: &str) -> &'static str {
 		REGISTRATION_READ | REGISTRATION_APPROVE | REGISTRATION_REJECT => "registration",
 		MAPPING_READ | MAPPING_DISABLE => "mapping",
 		INVITATION_CREATE | INVITATION_READ | INVITATION_REVOKE => "invitation",
-		crate::identity::tenancy::TENANT_UPDATE => "tenant",
+		crate::identity::tenancy::TENANT_UPDATE | crate::identity::tenancy::TENANT_DELETE => {
+			"tenant"
+		}
 		_ => "subject",
 	}
 }
@@ -84,20 +88,30 @@ pub enum ApprovalTarget {
 	NewSubject,
 	/// The unchanged subject this External Identity was previously mapped to.
 	Reapproval,
+	/// The subject a member who left returns to through an Invitation. Its
+	/// Assignable Groups become the approved ones, so leaving and returning
+	/// never revives authority the Invitation did not offer.
+	Rejoin,
 }
 
 /// A Tenant Administrator never maps a person onto an existing subject it did
 /// not create, because that subject may hold authority outside Assignable Groups.
+/// `invited` is whether the request came through an Invitation.
 pub fn approval_target(
 	bundle: &PolicyBundle,
 	subject: &str,
 	previously_mapped: bool,
 	groups: &BTreeSet<String>,
+	invited: bool,
 ) -> Result<ApprovalTarget> {
 	identifier(subject)?;
 	if bundle.subjects.contains_key(subject) {
 		if !previously_mapped {
 			return Err(Error::Conflict("subject already exists".into()));
+		}
+		if invited {
+			require_assignable(bundle, groups)?;
+			return Ok(ApprovalTarget::Rejoin);
 		}
 		if !groups.is_empty() {
 			return Err(Error::Invalid(
@@ -110,13 +124,27 @@ pub fn approval_target(
 	Ok(ApprovalTarget::NewSubject)
 }
 
+/// Gives a rejoining subject exactly `groups` among the Assignable Groups,
+/// keeping the groups only a Deployment Administrator assigns.
+pub fn rejoin(bundle: &mut PolicyBundle, subject: &str, groups: &BTreeSet<String>) -> Result<()> {
+	require_assignable(bundle, groups)?;
+	let assignable = assignable_groups(bundle);
+	let entry = bundle
+		.subjects
+		.get_mut(subject)
+		.ok_or_else(|| Error::Conflict("subject does not exist".into()))?;
+	entry.groups.retain(|group| !assignable.contains(group));
+	entry.groups.extend(groups.iter().cloned());
+	bundle.validate()
+}
+
 /// Adds a user subject holding only the requested Assignable Groups.
 pub fn add_user_subject(
 	bundle: &mut PolicyBundle,
 	subject: &str,
 	groups: &BTreeSet<String>,
 ) -> Result<()> {
-	if approval_target(bundle, subject, false, groups)? != ApprovalTarget::NewSubject {
+	if approval_target(bundle, subject, false, groups, false)? != ApprovalTarget::NewSubject {
 		return Err(Error::Conflict("subject already exists".into()));
 	}
 	bundle.subjects.insert(

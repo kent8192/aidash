@@ -95,7 +95,21 @@ pub(crate) async fn creations(
 			.filter(Tenant::field_created_by_identity().eq(Some(identity)))
 			.filter(Tenant::field_personal().eq(false))
 	};
-	let total = created().count_with_db(tx).await?;
+	// A Tenant still in its grace period counts; a purged one frees its slot.
+	let (sql, values) = Query::select()
+		.expr_as(Expr::cust("count(*)"), Alias::new("total"))
+		.from(Alias::new(Tenant::table_name()))
+		.and_where(Expr::col("created_by_kind").eq(Expr::value("identity")))
+		.and_where(Expr::col("created_by_identity").eq(Expr::value(identity)))
+		.and_where(Expr::col("personal").eq(Expr::value(false)))
+		.and_where(Expr::cust(
+			"NOT EXISTS (SELECT 1 FROM tenant_deletions d WHERE d.tenant = tenants.name AND d.purged_at IS NOT NULL)",
+		))
+		.build(PostgresQueryBuilder);
+	let total: i64 = TransactionExecutor::fetch_one(tx, &sql, convert_values(values))
+		.await?
+		.get("total")
+		.map_err(reinhardt::core::exception::Error::from)?;
 	let recent = created()
 		.filter(Tenant::field_created_at().gt(now - chrono::Duration::hours(1)))
 		.all_with_db(tx)

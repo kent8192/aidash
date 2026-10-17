@@ -60,6 +60,12 @@ pub(crate) struct SessionView {
 	pub(crate) tenant_creation: bool,
 	/// Whether this Deployment issues Invitations.
 	pub(crate) invitations: bool,
+	/// Deleted Tenants this identity is mapped into. Their Mappings are not
+	/// in `mappings`, because nothing but a restore works in them.
+	pub(crate) deleted_tenants: Vec<crate::apps::identity::serializers::tenants::DeletedTenantView>,
+	/// Whether this identity's Personal Tenant is deleted, so it may ask for
+	/// a new one.
+	pub(crate) personal_tenant_deleted: bool,
 }
 
 #[derive(Serialize, JsonSchema)]

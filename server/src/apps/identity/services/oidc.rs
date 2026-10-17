@@ -1,7 +1,8 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
 use crate::apps::identity::models::{
-	AuthorizationCredential, DashboardDeploymentAdministratorGrant, DashboardIdentity,
-	DashboardLoginTransaction, DashboardMapping, DashboardRegistrationRequest, DashboardSession,
+	AuthorizationBundle, AuthorizationCredential, DashboardDeploymentAdministratorGrant,
+	DashboardIdentity, DashboardLoginTransaction, DashboardMapping, DashboardRegistrationRequest,
+	DashboardSession, database_time,
 };
 use crate::http::validate;
 use http::header;
@@ -366,17 +367,32 @@ pub async fn actor_from_headers(
 	// Tenant's scope and never reads across Tenants (ADR 0047).
 	let (tenant, id) = aidash_domain::identity::credentials::parse_mapping_selector(selector)
 		.ok_or(Error::Forbidden)?;
-	let mapping = pool
+	let (mapping, deleted) = pool
 		.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
-			DashboardMapping::find(tx, id).await
+			let mapping = DashboardMapping::find(tx, id).await?;
+			let deleted = crate::apps::identity::repositories::tenant_deletions::is_deleted(
+				tx,
+				tenant.as_str(),
+			)
+			.await?;
+			Ok((mapping, deleted))
 		})
-		.await?
-		.ok_or(Error::Forbidden)?;
+		.await?;
+	let mapping = mapping.ok_or(Error::Forbidden)?;
 	if mapping.identity_id() != session.identity_id()
 		|| !mapping.enabled
 		|| mapping.tenant != tenant.as_str()
 	{
 		return Err(Error::Forbidden);
+	}
+	// A member's browser learns that its Tenant is deleted; a desktop token,
+	// like a Subject Credential, sees what an unknown Tenant would (ADR 0060).
+	if deleted {
+		return Err(if session.desktop {
+			Error::Unauthorized
+		} else {
+			Error::TenantDeleted
+		});
 	}
 	let identity = SubjectIdentity {
 		http_session: Some(http_session.clone()),
@@ -602,7 +618,15 @@ impl DashboardSessions {
 		}
 		// The identity's Mappings in every Tenant, which the Tenant switcher lists.
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
-		let (personal, mappings, active, deployment_administrator, labels) = pool
+		let (
+			personal,
+			mappings,
+			active,
+			deployment_administrator,
+			labels,
+			deleted_tenants,
+			personal_tenant_deleted,
+		) = pool
 			.atomic(&scope, async |tx| {
 				let personal =
 					crate::apps::identity::repositories::personal_tenant::of(tx, external.id)
@@ -642,7 +666,67 @@ impl DashboardSessions {
 						.collect(),
 				)
 				.await?;
-				Ok((personal, mappings, active, deployment_administrator, labels))
+				let mut tenants: Vec<String> = mappings
+					.iter()
+					.map(|mapping| mapping.tenant.clone())
+					.collect();
+				tenants.extend(personal.clone());
+				let deletions =
+					crate::apps::identity::repositories::tenant_deletions::current_of(tx, tenants)
+						.await?;
+				let mut deleted = Vec::new();
+				let now = database_time(tx).await?;
+				for mapping in mappings
+					.iter()
+					.filter(|m| deletions.contains_key(&m.tenant))
+				{
+					let deletion = &deletions[&mapping.tenant];
+					let bundle = <AuthorizationBundle as reinhardt::db::orm::Model>::objects()
+						.filter(AuthorizationBundle::field_tenant().eq(mapping.tenant.clone()))
+						.all_with_db(tx)
+						.await?
+						.pop()
+						.and_then(|row| {
+							serde_json::from_value::<aidash_domain::policy::PolicyBundle>(
+								row.document.0,
+							)
+							.ok()
+						});
+					deleted.push(
+						crate::apps::identity::serializers::tenants::DeletedTenantView {
+							tenant: mapping.tenant.clone(),
+							label: labels.get(&mapping.tenant).cloned().flatten(),
+							mapping_id: mapping.id,
+							personal: personal.as_deref() == Some(mapping.tenant.as_str()),
+							purge_after: deletion.purge_after,
+							restorable: bundle
+								.is_some_and(|bundle| may_restore(&bundle, &mapping.subject))
+								&& deletion.rule().is_ok_and(|rule| {
+									aidash_domain::identity::tenancy::deletion::restorable(
+								&rule,
+								aidash_domain::identity::tenancy::deletion::Actor::TenantAdministrator,
+								now,
+							)
+								}),
+						},
+					);
+				}
+				let personal_deleted = personal
+					.as_ref()
+					.is_some_and(|tenant| deletions.contains_key(tenant));
+				let mappings = mappings
+					.into_iter()
+					.filter(|mapping| !deletions.contains_key(&mapping.tenant))
+					.collect::<Vec<_>>();
+				Ok((
+					personal,
+					mappings,
+					active,
+					deployment_administrator,
+					labels,
+					deleted,
+					personal_deleted,
+				))
 			})
 			.await?;
 		let mut response = Response::ok().with_json(
@@ -655,6 +739,12 @@ impl DashboardSessions {
 					external.disabled_at.is_some(),
 				),
 				invitations: f.config.tenancy.invitations,
+				deleted_tenants,
+				// Asking for a new one needs the Tenancy Rules that provide one.
+				personal_tenant_deleted: personal_tenant_deleted
+					&& policy
+						.as_ref()
+						.is_some_and(|policy| policy.provisions_personal(gcip_pool)),
 				deployment_administrator,
 				mappings: mappings
 					.into_iter()
@@ -1031,3 +1121,25 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+/// Whether `subject` may restore its deleted Tenant under the policy the
+/// Tenant was deleted with, for offering the action; restoring rechecks it.
+fn may_restore(bundle: &aidash_domain::policy::PolicyBundle, subject: &str) -> bool {
+	bundle
+		.subjects
+		.get(subject)
+		.is_some_and(|entry| entry.enabled)
+		&& bundle
+			.evaluate(&aidash_domain::policy::Evaluation {
+				subject: subject.into(),
+				action: aidash_domain::identity::tenancy::TENANT_DELETE.into(),
+				resource: aidash_domain::policy::Resource {
+					tenant: bundle.tenant.clone(),
+					kind: "tenant".into(),
+					id: bundle.tenant.clone(),
+					attributes: serde_json::json!({}),
+				},
+				environment: serde_json::json!({"transport": "api"}),
+			})
+			.allowed
+}

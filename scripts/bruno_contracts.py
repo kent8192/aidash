@@ -738,6 +738,30 @@ def render():
                 headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
+        if route["name"] == "tenants-personal":
+            # Only a signed-in browser session recreates its Personal Tenant.
+            add(endpoint, "Deployment Administrator bearer cannot recreate a Personal Tenant", 401,
+                headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            add(endpoint, "Subject Credential bearer cannot recreate a Personal Tenant", 401,
+                headers=SUBJECT, immutable=True)
+            continue
+        if route["name"] == "tenants-delete":
+            # Every scenario is refused: a recorded deletion would end the shared Tenant.
+            add(endpoint, "Subject Credential bearer never deletes a Tenant", 403,
+                headers=SUBJECT, body=json.dumps({"confirmation": "{{tenant}}"}), immutable=True)
+            add(endpoint, "Deletion requires the typed Tenant name", 400,
+                headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"confirmation": "bruno-other-tenant"}),
+                immutable=True)
+            add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            continue
+        if route["name"] == "tenants-restore":
+            # The service authenticates the caller itself (ADR 0060).
+            add(endpoint, "Subject Credential bearer never restores a Tenant", 401,
+                headers=SUBJECT, immutable=True)
+            add(endpoint, "Only a deleted Tenant can be restored", 409,
+                headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/tenants.rs":
             if method == "GET":
                 add(endpoint, "Subject Credential cannot list Tenants", 403, headers=SUBJECT)
