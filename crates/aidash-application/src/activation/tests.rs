@@ -106,6 +106,58 @@ async fn home_owned_human_waits_poll_without_querying_local_requests(
 	);
 }
 
+/// Newer input ends only the Run's own Completion Review (#112): the Run is due
+/// so its step answers the review on the Run's behalf. A request the model
+/// raised, or a review without newer input, still waits for its answer.
+#[rstest]
+#[case::review_with_newer_input(true, true, Some(4))]
+#[case::review_without_newer_input(true, false, Some(4))]
+#[case::model_request_with_newer_input(false, true, None)]
+#[tokio::test]
+async fn newer_input_makes_only_a_completion_review_due(
+	now: DateTime<Utc>,
+	repository: Repository,
+	#[case] review: bool,
+	#[case] input: bool,
+	#[case] asked: Option<i64>,
+) {
+	let request = Uuid::from_u128(9);
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	if review {
+		row.context["completion"] = serde_json::json!({"review": request});
+	}
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Human {
+			request_id: request,
+			resume: aidash_domain::ResumeState::ToolCall(Box::new(aidash_domain::ToolCallState {
+				included_input_seq: 4,
+				..Default::default()
+			})),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	repository.0.input.store(input, Ordering::Release);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let due = due(&mut scope, &row, now, repository.node_id())
+		.await
+		.unwrap();
+	assert_eq!(due, (review && input).then_some(now));
+	let events = repository.0.events.lock().unwrap().clone();
+	assert_eq!(
+		events
+			.iter()
+			.find_map(|event| event.strip_prefix("input_after:"))
+			.map(|seq| seq.parse::<i64>().unwrap()),
+		asked,
+		"{events:?}"
+	);
+}
+
 struct State {
 	now: DateTime<Utc>,
 	run: Mutex<Option<RawRun>>,
@@ -119,6 +171,8 @@ struct State {
 	newer: AtomicBool,
 	unblocked: AtomicBool,
 	answered: AtomicBool,
+	/// Whether the Run accepted input after the sequence asked about.
+	input: AtomicBool,
 	dependencies: AtomicBool,
 	claimable: AtomicBool,
 	repairable: AtomicBool,
@@ -157,6 +211,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		newer: AtomicBool::new(false),
 		unblocked: AtomicBool::new(true),
 		answered: AtomicBool::new(false),
+		input: AtomicBool::new(false),
 		dependencies: AtomicBool::new(false),
 		claimable: AtomicBool::new(true),
 		repairable: AtomicBool::new(true),
@@ -209,6 +264,10 @@ impl SchedulingScope for Scope {
 	async fn human_answered(&mut self, _: Uuid) -> Result<bool> {
 		self.state.record("answered");
 		Ok(self.state.answered.load(Ordering::Acquire))
+	}
+	async fn input_after(&mut self, _: Uuid, seq: i64) -> Result<bool> {
+		self.state.record(format!("input_after:{seq}"));
+		Ok(self.state.input.load(Ordering::Acquire))
 	}
 	async fn approval(&mut self, _: Uuid) -> Result<Option<Approval>> {
 		self.state.record("approval");

@@ -42,6 +42,14 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	{
 		return true;
 	}
+	// Deployment Administrators issue and revoke Invitations for any Tenant.
+	if *method == Method::POST
+		&& matches!(
+			path.split('/').collect::<Vec<_>>().as_slice(),
+			["", "tenants", _, "invitations"] | ["", "tenants", _, "invitations", _, "revoke"]
+		) {
+		return true;
+	}
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),

@@ -37,6 +37,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0026_remove_legacy_installations"),
 	("registry", "0027_remove_legacy_installations_state"),
 	("registry", "0028_tool_transport_secrets"),
+	("registry", "0029_completion_policy"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -87,7 +88,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		31
+		32
 	);
 	let tables = migrations
 		.iter()
@@ -136,7 +137,16 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 					"{}: {sql}",
 					migration.name
 				);
-				if sql.starts_with("ALTER TABLE") {
+				if sql.starts_with("ALTER TABLE")
+					&& (migration.app_label.as_str(), migration.name.as_str())
+						== ("identity", "0020_tenancy_schema")
+				{
+					// The pinned typed AlterColumn renders no NOT NULL change.
+					assert_eq!(
+						sql.trim(),
+						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
+					);
+				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
 					// assets because the filesystem loader resolves assets in RunSQL.
 					let check = match (migration.app_label.as_str(), migration.name.as_str()) {
@@ -579,7 +589,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		31
+		32
 	);
 }
 
@@ -1735,6 +1745,166 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 			vec![agent(summarized)]
 		)
 		.await,
+		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn completion_policy_migration_validates_policies_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |policy: serde_json::Value| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"context_policy":{"version":"context-recovery/1"},"completion":policy})
+	};
+	let check = |field: serde_json::Value| {
+		let mut check = json!({"name":"tests","capability":"shell","command":"cargo test"});
+		check
+			.as_object_mut()
+			.unwrap()
+			.extend(field.as_object().unwrap().clone());
+		json!({"version":"checks/1","checks":[check]})
+	};
+	let full = json!({"version":"checks/1","repair_allowance":16,"verification_seconds":3600,
+		"exception":true,"checks":[
+			{"name":"build","capability":"shell","command":"make","timeout_seconds":600,"when":"always"},
+			{"name":"unit-tests_2","capability":"shell","command":"make test","timeout_seconds":null,"when":"content_changed"}]});
+	// Assert: the contract mirrors CompletionPolicy::validate beside the 0022 keys.
+	for valid in [full.clone(), check(json!({})), json!(null)] {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(valid.clone())]
+			)
+			.await,
+			"{valid}"
+		);
+	}
+	for invalid in [
+		json!("checks/1"),
+		json!({"version":"checks/2","checks":[{"name":"t","capability":"shell","command":"x"}]}),
+		json!({"version":"checks/1","checks":[]}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"repair_allowance":17}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"verification_seconds":0}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"exception":"yes"}),
+		// CompletionPolicy has no Option for these, so an explicit null is not
+		// an omission.
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"repair_allowance":null}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"verification_seconds":null}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"exception":null}),
+		json!({"version":"checks/1","checks":null}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"}],"unknown":true}),
+		json!({"version":"checks/1","checks":[{"name":"t","capability":"shell","command":"x"},{"name":"t","capability":"shell","command":"y"}]}),
+		check(json!({"capability":"code_interpreter"})),
+		check(json!({"name":"Tests"})),
+		check(json!({"name":"-tests"})),
+		check(json!({"command":"  "})),
+		// Blank to Rust's `trim`, not just to one-argument `btrim`.
+		check(json!({"command":"\t\n\u{3000}"})),
+		check(json!({"command":"x".repeat(65_537)})),
+		check(json!({"timeout_seconds":0})),
+		check(json!({"timeout_seconds":601})),
+		check(json!({"when":"sometimes"})),
+		check(json!({"when":null})),
+		check(json!({"arguments":"chosen by the model"})),
+	] {
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(invalid.clone())]
+			)
+			.await,
+			"{invalid}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0029_completion_policy")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without stored policies the reverse restores the 0022 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let mut plain = agent(json!(null));
+	plain.as_object_mut().unwrap().remove("completion");
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![plain]).await);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(full.clone())]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path stores a valid policy.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Completion fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("verified")
+				.version("1.0.0")
+				.kind(DefinitionKind::Agent)
+				.metadata(
+					json!({"id":"verified","version":"1.0.0","kind":"agent",
+						"name":{"en":"Completion policy"},"description":{"en":"Migration test"},
+						"config":agent(full.clone())})
+					.into(),
+				)
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored policy refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains(
+			"registry 0029_completion_policy cannot be reversed: Agent definitions declare completion"
+		),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(full)]).await,
 		"the denied rollback must retain the upgraded contract"
 	);
 }

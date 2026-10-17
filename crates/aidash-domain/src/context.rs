@@ -91,6 +91,13 @@ pub struct Context {
 	/// Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs.
 	#[serde(default, skip_serializing_if = "ExposureState::is_empty")]
 	pub exposure: ExposureState,
+	/// Completion Gate progress of a Run whose Agent names a Completion
+	/// Policy; empty and absent otherwise. Never part of a model request.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::completion::CompletionProgress::is_empty"
+	)]
+	pub completion: crate::completion::CompletionProgress,
 }
 
 /// Stored contexts written before the Context Journal carry bare history
@@ -128,6 +135,8 @@ struct StoredContext {
 	message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
 	#[serde(default)]
 	exposure: ExposureState,
+	#[serde(default)]
+	completion: crate::completion::CompletionProgress,
 }
 
 #[derive(Deserialize)]
@@ -217,9 +226,15 @@ impl<'de> Deserialize<'de> for Context {
 			message_read_coverage: stored.message_read_coverage,
 			message_inference_coverage: stored.message_inference_coverage,
 			exposure: stored.exposure,
+			completion: stored.completion,
 		})
 	}
 }
+
+/// What an earlier repair request's diagnostics become once a later repair
+/// supersedes it.
+const SUPERSEDED_DIAGNOSTICS: &str =
+	"[superseded by a later Check run; the full diagnostics remain in the execution journal]";
 
 impl Context {
 	/// Append an event to the projection with the next Context Journal sequence.
@@ -228,6 +243,33 @@ impl Context {
 		self.history.push(HistoryEntry {
 			seq: self.journal.head,
 			event,
+		});
+	}
+
+	/// Append a Completion Gate repair request. Each repair reruns its Check,
+	/// so earlier requests' diagnostics are obsolete: the projection keeps only
+	/// that they happened (the journal keeps the originals), and repeated
+	/// repairs cannot fill a window that neither Jev nor the Summary Stage
+	/// compacts.
+	pub fn push_repair(
+		&mut self,
+		checks: Vec<crate::completion::RepairNote>,
+		instruction: String,
+		through_seq: i64,
+	) {
+		for entry in &mut self.history {
+			if let ContextEvent::CompletionRepairRequired { checks, .. } = &mut entry.event {
+				for note in checks {
+					if note.diagnostics.len() > SUPERSEDED_DIAGNOSTICS.len() {
+						note.diagnostics = SUPERSEDED_DIAGNOSTICS.into();
+					}
+				}
+			}
+		}
+		self.push(ContextEvent::CompletionRepairRequired {
+			checks,
+			instruction,
+			through_seq,
 		});
 	}
 
@@ -297,6 +339,10 @@ pub struct InspectionContext<'a> {
 	/// The Run's pinned Estimate Snapshot, without its sample count.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub estimate: Option<crate::provider::estimate::EstimateView>,
+	/// Completion Gate state with its Verification Evidence, so a person
+	/// answering a Completion Review sees each Check's exit code and output.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub completion: Option<&'a crate::completion::CompletionProgress>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -314,6 +360,7 @@ impl Context {
 			message_inference_coverage: &self.message_inference_coverage,
 			exposure: &self.exposure,
 			estimate: self.estimate.view(),
+			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
 		}
 	}
 }
@@ -760,6 +807,14 @@ pub enum ContextEvent {
 	/// second invalid answer to the same input is withheld.
 	CitationCorrectionRequired {
 		invalid: Vec<String>,
+		instruction: String,
+		through_seq: i64,
+	},
+	/// The Completion Gate refused a final answer because a Check did not pass
+	/// on the current files. Each one spends the Repair Allowance of the input
+	/// at `through_seq`.
+	CompletionRepairRequired {
+		checks: Vec<crate::completion::RepairNote>,
 		instruction: String,
 		through_seq: i64,
 	},

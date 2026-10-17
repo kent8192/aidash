@@ -6,6 +6,7 @@ from operation UUIDs; recovery observes those objects and never recreates a
 missing object after acceptance. No shell command runs on the controller host.
 """
 import base64
+from datetime import datetime
 import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +51,23 @@ def identity(value):
     if value != parsed:
         raise Rejected(400, "canonical UUID required")
     return parsed
+
+
+def termination_time(terminated, started_at, observed):
+    """When a command stopped, for charging a Check's runtime. The controller
+    polls, so `observed` can trail the stop, for example after a restart.
+    Kubernetes records `finishedAt` in whole seconds, so the stop came before
+    `finishedAt` + 1: cap the observation there. A missing or unparseable
+    `finishedAt`, or one the clocks put before the start, leaves `observed`.
+    This is an upper bound for charging only; whether the Check timed out is
+    the collector's `deadline_expired`."""
+    try:
+        finished = datetime.fromisoformat(terminated["finishedAt"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return observed
+    if started_at is not None and finished + 1 < started_at:
+        return observed
+    return min(observed, finished + 1)
 
 
 def settled(record):
@@ -264,7 +282,9 @@ class Runner:
         if set(request) - {"session_id"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
-        if request["kind"] not in ("shell", "python") or not isinstance(request["code"], str):
+        # "verify" runs like "shell" but never exports /work: a Completion Gate
+        # Check must not change the Working Area it verifies.
+        if request["kind"] not in ("shell", "verify", "python") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
@@ -711,7 +731,8 @@ class Runner:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.25)
-        exported = self.guard(record, 'export', working_bytes=self.writable_bytes(record))
+        exported = ({'files': []} if record['request']['kind'] == 'verify' else
+                    self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
         captured = self.guard(record, 'logs')
         operation = record['operation_id']
         directory = self.root / (operation + '.files')
@@ -788,23 +809,46 @@ class Runner:
                     elif prepared["digest"] != record["request"]["digest"]:
                         raise RuntimeError("running input identity changed")
                     self.update(operation, executed=True)
-                    self.exec_collector(operation, ["hydrate"], json.dumps(payload).encode(), timeout=120)
-                    self.update(operation, status="running", started_at=time.time())
+                    # The collector stamps the start when it sets the deadline
+                    # and publishes the command, after verifying the inputs,
+                    # and returns the same stamp when hydrate is repeated after
+                    # a restart: a Check is charged from its command's start,
+                    # never for input checks or controller downtime. The
+                    # watchdog below counts from when hydrate returned.
+                    hydrated_reply = json.loads(self.exec_collector(
+                        operation, ["hydrate"], json.dumps(payload).encode(), timeout=120).stdout)
+                    now = time.time()
+                    self.update(operation, status="running", running_at=now,
+                                started_at=hydrated_reply.get("started_at") or now)
                     hydrated = True
                 current = self.get(operation)
                 if current["cancel_requested"] and "running" in collector:
                     self.exec_collector(operation, ["cancel"])
                 if "terminated" in execution:
                     terminal = execution["terminated"]
-                    self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"])
+                    if current.get("started_at") is None and "running" in collector:
+                        # The controller stopped after hydrate published the
+                        # command but before it journaled the start, and the
+                        # command ended meanwhile: the collector kept the stamp.
+                        stamp = json.loads(self.exec_collector(operation, ["prepared"]).stdout).get("started_at")
+                        if stamp is not None:
+                            current = self.update(operation, started_at=stamp)
+                    # A Check is charged until its command stopped, not until
+                    # its output and files were harvested below.
+                    self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"],
+                                terminated_at=current.get("terminated_at")
+                                or termination_time(terminal, current.get("started_at"), time.time()))
                     if "running" not in collector:
                         self.recover_stopped_shell(self.get(operation))
                         break
-                    captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final"]).stdout)
+                    # A Check keeps the end of its output, where the failure is.
+                    captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
+                                                                          *(["tail"] if record["request"]["kind"] == "verify" else [])]).stdout)
                     diagnostic = None
                     if terminal["exitCode"] != 0 and not captured["stdout"]:
                         diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
-                    exported = json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout)
+                    exported = ({"files": []} if record["request"]["kind"] == "verify" else
+                                json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
                     directory = self.root / (operation + ".files")
                     directory.mkdir(exist_ok=True, mode=0o700)
                     for file in exported["files"]:
@@ -826,7 +870,8 @@ class Runner:
                     self.update(operation, status="cancelled" if current["cancel_requested"] else
                                 ("completed" if terminal["exitCode"] == 0 else "failed"),
                                 finished_at=time.time(), stdout=captured["stdout"],
-                                truncated=captured["truncated"], files=exported["files"], error=diagnostic)
+                                truncated=captured["truncated"], files=exported["files"], error=diagnostic,
+                                deadline_expired=captured.get("deadline_expired"))
                     # Retain the terminal journal and files before collecting Kubernetes resources.
                     self.kube(["delete", "pod", self.pod_name(operation), "--wait=false"], check=False)
                     break
@@ -839,7 +884,8 @@ class Runner:
                     preview_at = time.monotonic()
                 if not hydrated and time.monotonic() > startup_deadline:
                     raise RuntimeError("sandbox startup not confirmed")
-                if hydrated and time.time() > self.get(operation).get("started_at", time.time()) + record["request"]["seconds"] + 30:
+                running_at = self.get(operation).get("running_at") or self.get(operation).get("started_at", time.time())
+                if hydrated and time.time() > running_at + record["request"]["seconds"] + 30:
                     raise RuntimeError("sandbox termination not confirmed after deadline")
                 time.sleep(0.25)
         except Exception as error:

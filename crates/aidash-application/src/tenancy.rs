@@ -103,6 +103,10 @@ pub enum DeploymentScopeReason {
 	/// sign-in, when switching Tenants and when it asks to join one. It writes
 	/// only Deployment-wide sign-in and registration rows.
 	IdentityTenants,
+	/// Creating a Tenant: its root record, first policy and its Creator's
+	/// Mapping. The Tenant's name is drawn inside the transaction (ADR 0050),
+	/// so no Tenant Scope can name it when the transaction begins.
+	TenantCreation,
 	/// Revalidating External Identities that have work in any Tenant, and
 	/// stopping a disabled identity's Runs in every Tenant.
 	IdentityStatus,
@@ -144,6 +148,7 @@ impl DeploymentScopeReason {
 			Self::DeploymentAdministratorList => "deployment-administrator-list",
 			Self::DeploymentAdministration => "deployment-administration",
 			Self::IdentityTenants => "identity-tenants",
+			Self::TenantCreation => "tenant-creation",
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
@@ -172,6 +177,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministration
 			| Self::LegacyRun
 			| Self::IdentityTenants
+			| Self::TenantCreation
 			| Self::IdentityStatus => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
@@ -221,6 +227,7 @@ mod tests {
 			DeploymentScopeReason::DeploymentAdministratorList,
 			DeploymentScopeReason::DeploymentAdministration,
 			DeploymentScopeReason::IdentityTenants,
+			DeploymentScopeReason::TenantCreation,
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,

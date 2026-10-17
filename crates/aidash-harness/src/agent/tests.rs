@@ -138,6 +138,11 @@ struct State {
 	research_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
+	completion: Option<aidash_domain::completion::CompletionPolicy>,
+	/// Completion Gate Checks; `None` means the node cannot run them.
+	checks: Option<completion::FakeChecks>,
+	/// The Completion Basis each commit fence persisted.
+	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
 	/// Serve a model version that opts into the calibrated estimator.
 	calibrated_model: bool,
 	/// Calibration samples the store returns, newest first.
@@ -360,9 +365,15 @@ impl ExecutionStore for Backend {
 		Ok(self.0.inputs.lock().unwrap().clone())
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
-		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("completion.fence");
+		if self.0.permit_completion {
+			self.0
+				.fenced
+				.lock()
+				.unwrap()
+				.push(run.context.completion.basis);
+		}
 		Ok(self.0.permit_completion)
 	}
 	async fn human_request(
@@ -603,11 +614,45 @@ impl ExecutionCatalog for Backend {
 
 #[async_trait]
 impl ExecutionHome for Backend {
+	async fn human_request(
+		&self,
+		run: &Run,
+		kind: &str,
+		prompt: &str,
+		key: &str,
+	) -> Result<HumanRequest> {
+		let _ = key;
+		self.record("home.human_request");
+		let request = HumanRequest {
+			id: Uuid::new_v4(),
+			workspace_id: run.workspace_id,
+			run_id: run.id,
+			kind: kind.into(),
+			prompt: prompt.into(),
+			response: None,
+			created_at: run.updated_at,
+			answered_by: None,
+		};
+		*self.0.human.lock().unwrap() = Some(request.clone());
+		Ok(request)
+	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		self.record("home.human_read");
 		let request = self.0.human.lock().unwrap().clone().expect("Home request");
 		assert_eq!(request.id, id);
 		Ok(request)
+	}
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		self.record("home.human_close");
+		let mut human = self.0.human.lock().unwrap();
+		let request = human.as_mut().expect("Home request");
+		assert_eq!(request.id, id);
+		if request.response.is_some() {
+			return Err(Error::Conflict("human request already answered".into()));
+		}
+		request.response = Some(response);
+		request.answered_by = Some("system".into());
+		Ok(request.clone())
 	}
 	async fn task(&self) -> Result<Task> {
 		self.record("home.task");
@@ -833,6 +878,13 @@ impl ExecutionEnvironment for Backend {
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
+	fn completion_checks(
+		&self,
+	) -> Option<&dyn aidash_application::ports::execution::completion::CompletionChecks> {
+		self.0.checks.as_ref().map(|checks| {
+			checks as &dyn aidash_application::ports::execution::completion::CompletionChecks
+		})
+	}
 	async fn documents(&self, entry: &Entry) -> Result<Value> {
 		let _ = entry;
 		Ok(json!([]))
@@ -1014,6 +1066,7 @@ impl ExecutionEnvironment for Backend {
 			tool_parallelism: 1,
 			projection_version: self.0.projection,
 			prompt_cache: self.0.prompt_cache,
+			completion: self.0.completion.clone(),
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -1299,6 +1352,9 @@ fn fixture() -> Fixture {
 		research_revoked_after: None,
 		research_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
+		completion: None,
+		checks: None,
+		fenced: Mutex::new(vec![]),
 		calibrated_model: false,
 		calibration: Mutex::new(vec![]),
 	}));
@@ -4853,3 +4909,5 @@ async fn catch_up_steps_carry_no_breakpoints() {
 }
 
 mod research;
+
+mod completion;

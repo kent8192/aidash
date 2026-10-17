@@ -19,6 +19,55 @@ pub(crate) async fn settings(access: &mut Access, run: &Run) -> Result<AgentConf
 	.await
 	.map_err(Into::into)
 }
+/// Start a Completion Gate Check (#112) under the Run's bound shell capability.
+pub(crate) async fn verify(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	input: Value,
+	key: &str,
+) -> Result<Value> {
+	application::verify(
+		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
+		&run.metadata(),
+		input,
+		key,
+	)
+	.await
+	.map_err(Into::into)
+}
+/// The current result of a Completion Gate Check the Run started.
+pub(crate) async fn verification(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	operation: uuid::Uuid,
+) -> Result<Value> {
+	application::verification(
+		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
+		&run.metadata(),
+		operation,
+		&operation.to_string(),
+	)
+	.await
+	.map_err(Into::into)
+}
+/// The Run's Working Area; `None` when the Run has none.
+pub(crate) async fn working_area(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+) -> Result<Option<aidash_domain::capabilities::sessions::Area>> {
+	use aidash_application::ports::capabilities::files::FileScopePort as _;
+	match crate::bootstrap::file_scope(Some(store), access, Some(run))
+		.for_run(&run.metadata())
+		.await
+	{
+		Ok(area) => Ok(Some(area)),
+		Err(aidash_application::Error::NotFound(_)) => Ok(None),
+		Err(error) => Err(error.into()),
+	}
+}
 pub(crate) async fn invoke(
 	store: &Store,
 	access: &mut Access,
