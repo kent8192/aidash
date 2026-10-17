@@ -1,5 +1,5 @@
 meta {
-  name: 0340 sessions-backchannel-logout - Malformed logout token is rejected
+  name: 0340 sessions-backchannel-logout - Missing logout token is rejected
   type: http
   seq: 340
 }
@@ -16,7 +16,7 @@ headers {
 }
 
 body:form-urlencoded {
-  logout_token: malformed
+  unused: value
 }
 
 tests {

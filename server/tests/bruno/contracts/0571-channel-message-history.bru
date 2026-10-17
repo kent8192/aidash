@@ -1,11 +1,11 @@
 meta {
-  name: 0571 channel-message-history - Paging rejects nonnumeric or malformed cursors
+  name: 0571 channel-message-history - Typed resource IDs reject invalid UUIDs
   type: http
   seq: 571
 }
 
 get {
-  url: {{base_url}}/api/workspaces/{{workspace_id}}/message-history?limit=invalid
+  url: {{base_url}}/api/workspaces/not-a-uuid/message-history
   body: none
   auth: none
 }

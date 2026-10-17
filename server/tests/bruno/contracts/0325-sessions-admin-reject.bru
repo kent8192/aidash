@@ -1,5 +1,5 @@
 meta {
-  name: 0325 sessions-admin-reject - Unrecognized bearer cannot mutate state
+  name: 0325 sessions-admin-reject - Anonymous request is rejected
   type: http
   seq: 325
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 script:pre-request {

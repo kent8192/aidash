@@ -1,25 +1,19 @@
 meta {
-  name: 0371 transfermanagement-describe - Authenticated peer rejects malformed JSON
+  name: 0371 transfermanagement-describe - Require the peer node identity
   type: http
   seq: 371
 }
 
 post {
   url: {{base_url}}/federation/v0.1/scoped/files/describe
-  body: file
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
   Authorization: Bearer {{peer_token}}
-  X-Aidash-Node: {{peer_node}}
   X-Aidash-Protocol: 0.2
-  Content-Type: application/json
-}
-
-body:file {
-  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 script:pre-request {
@@ -35,6 +29,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
 }

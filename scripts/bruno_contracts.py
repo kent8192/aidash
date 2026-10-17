@@ -98,6 +98,32 @@ TENANT_ROUTES = {
     "POST /api/runs/{id}/message": {"body": {"content": "Must not persist"}},
     "POST /api/human-requests/{id}/answer": {"body": {"answer": "Must not persist"}},
 }
+# Tenant reads by subjects. Journey 05 gives the contract subject `registry.read`
+# on the Registry itself, which lists its versions and approvals, but on no
+# definition; the journey's denied subject holds no action at all.
+DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
+SUBJECT_READS = {
+    "GET /api/registry/versions": [
+        ("Tenant subject lists every version with its approval state", 200, SUBJECT, None,
+         'const builtin=res.getBody().find(version=>version.entry.id==="aidash.workspace_read"&&version.entry.version==="1.0.0");'
+         'expect(builtin.needs_approval).to.equal(false);expect(builtin.approval).to.equal(null);'
+         'expect(builtin.history).to.eql([]);expect(builtin.subject).to.equal(null);'),
+        ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT, None, ""),
+    ],
+    "GET /api/authorization/{tenant}/catalog": [
+        ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT, None,
+         "expect(res.getBody()).to.eql([]);"),
+        ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT, None, ""),
+    ],
+    "GET /api/registry": [
+        ("Subject discovers no definition it may not read", 200, SUBJECT, None,
+         "expect(res.getBody()).to.eql([]);"),
+    ],
+    "GET /api/registry/{id}/{version}": [
+        ("Subject cannot read a definition it may not read", 403, SUBJECT,
+         "/api/registry/aidash.workspace_read/1.0.0", ""),
+    ],
+}
 
 
 def key(route):
@@ -1184,6 +1210,11 @@ def render():
                 + "=invalid",
                 headers=headers,
             )
+        for read_label, read_status, read_headers, read_path, read_checks in SUBJECT_READS.get(
+            endpoint, []
+        ):
+            add(endpoint, read_label, read_status, path=read_path, headers=read_headers,
+                checks=read_checks)
 
     # Exact generated file set; no stale request can silently increase coverage.
     for path in directory.glob("[0-9]*.bru"):

@@ -1,5 +1,5 @@
 meta {
-  name: 0194 authorization-set-catalog - Wrong JSON media type is rejected
+  name: 0194 authorization-set-catalog - Deployment Administrator bearer has no Tenant authority
   type: http
   seq: 194
 }
@@ -13,11 +13,11 @@ post {
 headers {
   Accept: application/json
   Authorization: Bearer {{deployment_administrator_token}}
-  Content-Type: text/plain
+  Content-Type: application/json
 }
 
 body:text {
-  {}
+  {"entry": {"id": "aidash.workspace_read", "version": "1.0.0"}, "enabled": true, "expected_revision": 0}
 }
 
 script:pre-request {
@@ -33,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 415", function () { expect(res.getStatus()).to.equal(415); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

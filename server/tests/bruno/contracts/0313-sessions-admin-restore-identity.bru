@@ -1,5 +1,5 @@
 meta {
-  name: 0313 sessions-admin-restore-identity - Unrecognized bearer cannot mutate state
+  name: 0313 sessions-admin-restore-identity - Anonymous request is rejected
   type: http
   seq: 313
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 script:pre-request {
