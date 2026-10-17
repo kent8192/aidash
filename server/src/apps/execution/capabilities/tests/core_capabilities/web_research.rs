@@ -726,6 +726,57 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 		bob_research, bob_run,
 		"the research view follows exactly the Run's read authority"
 	);
+
+	// Once its `expires_at` passes, the grant reads as expired in the
+	// Thread's unfiltered view and leaves the active one.
+	{
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let grant_id: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+		let sql = Query::update()
+			.table(Alias::new("core_records"))
+			.value(
+				Alias::new("expires_at"),
+				chrono::Utc::now() - chrono::Duration::seconds(1),
+			)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(grant_id)))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&sql)
+			.execute(r.c.f.store.pool.driver())
+			.await
+			.unwrap();
+	}
+	let (all_status, all) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		Value::Null,
+	)
+	.await;
+	let (_, active) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals?state=active&role=approver",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(all_status, 200, "{all}");
+	let elapsed = all["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == decided["grant_id"])
+		.unwrap_or_else(|| panic!("{all}"));
+	assert_eq!(elapsed["state"], "expired", "{elapsed}");
+	assert!(
+		active["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|item| item["id"] != decided["grant_id"]),
+		"{active}"
+	);
 	r.close().await;
 }
 

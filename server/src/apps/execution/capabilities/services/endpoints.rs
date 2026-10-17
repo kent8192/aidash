@@ -780,7 +780,10 @@ pub(crate) async fn approval_list(
 			}
 			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
 			let run_ended = row.kind == "disclosure" && row.state == "pending" && ended.contains(&run);
-			let expired = row.state == "pending" && row.expires_at.is_some_and(|t| t < chrono::Utc::now());
+			// A Run grant past its `expires_at` no longer admits anything, so
+			// it reads as expired rather than active and revocable.
+			let expired = matches!(row.state.as_str(), "pending" | "active")
+				&& row.expires_at.is_some_and(|t| t < chrono::Utc::now());
 			let data = &row.data;
 			// Designated approvers see only the scoped card, never Run output.
 			items.push(json!({
