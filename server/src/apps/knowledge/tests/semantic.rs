@@ -59,231 +59,239 @@ fn context_runtime(
 	.shared()
 }
 
-#[rstest::fixture]
-async fn controlled_context(
-	#[default(true)] memory: bool,
-	#[default(true)] workspace_retrieval: bool,
-	#[default(false)] ordered: bool,
-	#[from(context_runtime)]
-	#[with(ordered)]
-	_runtime: common::RuntimeFuture,
-	#[future(awt)]
-	#[from(common::native_application)]
-	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|r| r), _runtime.clone())]
-	application_fixture: common::ApplicationFixture,
+mod controlled_context_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Each flag selects an independent context shape that tests combine through `#[with]`.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) async fn controlled_context(
+		#[default(true)] memory: bool,
+		#[default(true)] workspace_retrieval: bool,
+		#[default(false)] ordered: bool,
+		#[from(context_runtime)]
+		#[with(ordered)]
+		_runtime: common::RuntimeFuture,
+		#[future(awt)]
+		#[from(common::native_application)]
+		#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|r| r), _runtime.clone())]
+		application_fixture: common::ApplicationFixture,
 
-	#[future(awt)]
-	#[from(controlled_context_provider)]
-	fixture: ControlledContextProvider,
+		#[future(awt)]
+		#[from(controlled_context_provider)]
+		fixture: ControlledContextProvider,
 
-	#[from(embedding_fault)] fault: std::sync::Arc<EmbeddingFault>,
-	#[from(embeddings_router)]
-	#[with(fault.clone())]
-	_embeddings_router: std::sync::Arc<Router>,
-	#[future(awt)]
-	#[with(_embeddings_router.clone())]
-	embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
-) -> ControlledContext {
-	let captured = fixture.state.captured;
-	let tool_rounds = fixture.state.tool_rounds;
-	let model_server = fixture.server;
+		#[from(embedding_fault)] fault: std::sync::Arc<EmbeddingFault>,
+		#[from(embeddings_router)]
+		#[with(fault.clone())]
+		_embeddings_router: std::sync::Arc<Router>,
+		#[future(awt)]
+		#[with(_embeddings_router.clone())]
+		embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	) -> ControlledContext {
+		let captured = fixture.state.captured;
+		let tool_rounds = fixture.state.tool_rounds;
+		let model_server = fixture.server;
 
-	use aidash_server::domain::{ArtifactInput, qualified_agent};
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
+		use aidash_server::domain::{ArtifactInput, qualified_agent};
+		let (f, url, schema) = application_fixture.runtime.parts();
+		let app = application_fixture.application.clone();
 
-	let endpoint = model_server.url.clone();
-	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
-	agent.version = "1.0.1".into();
-	agent.binding_normalization = None;
-	if ordered {
-		// The bootstrap model declares only Legacy; an Ordered Agent needs a
-		// model that also declares Ordered.
-		let version = agent.config["model"]["version"]
-			.as_str()
-			.unwrap()
-			.to_owned();
-		let mut model = f
-			.registry
-			.get(agent.config["model"]["id"].as_str().unwrap(), &version)
-			.await
-			.unwrap();
-		model.id = "ordered-model".into();
-		model.binding_normalization = None;
-		model.config["projection_versions"] = json!(["legacy", "ordered"]);
-		f.registry.register(model).await.unwrap();
-		assert_eq!(
-			request(
-				&app,
-				&f.config.api_token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true})
-			)
-			.await
-			.0,
-			200
-		);
-		agent.config["model"] = json!({"id":"ordered-model","version":version});
-		agent.config["projection_version"] = json!("ordered");
-	}
-	let mut bindings = vec![];
-	for (enabled, id, kind, adapter) in [
-		(memory, "context-memory", "memory", "semantic_memory"),
-		(
-			workspace_retrieval,
-			"context-workspace",
-			"source",
-			"workspace_retrieval",
-		),
-	] {
-		if !enabled {
-			continue;
+		let endpoint = model_server.url.clone();
+		let (mut policy, token, task) =
+			common::bootstrap_with_context(&f, &app, &endpoint, true).await;
+		let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+		agent.version = "1.0.1".into();
+		agent.binding_normalization = None;
+		if ordered {
+			// The bootstrap model declares only Legacy; an Ordered Agent needs a
+			// model that also declares Ordered.
+			let version = agent.config["model"]["version"]
+				.as_str()
+				.unwrap()
+				.to_owned();
+			let mut model = f
+				.registry
+				.get(agent.config["model"]["id"].as_str().unwrap(), &version)
+				.await
+				.unwrap();
+			model.id = "ordered-model".into();
+			model.binding_normalization = None;
+			model.config["projection_versions"] = json!(["legacy", "ordered"]);
+			f.registry.register(model).await.unwrap();
+			assert_eq!(
+				request(
+					&app,
+					&f.config.api_token,
+					"POST",
+					"/api/authorization/acme/catalog",
+					json!({"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true})
+				)
+				.await
+				.0,
+				200
+			);
+			agent.config["model"] = json!({"id":"ordered-model","version":version});
+			agent.config["projection_version"] = json!("ordered");
 		}
-		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":adapter}}});
-		f.registry
-			.register(serde_json::from_value(entry).unwrap())
+		let mut bindings = vec![];
+		for (enabled, id, kind, adapter) in [
+			(memory, "context-memory", "memory", "semantic_memory"),
+			(
+				workspace_retrieval,
+				"context-workspace",
+				"source",
+				"workspace_retrieval",
+			),
+		] {
+			if !enabled {
+				continue;
+			}
+			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":adapter}}});
+			f.registry
+				.register(serde_json::from_value(entry).unwrap())
+				.await
+				.unwrap();
+			assert_eq!(
+				request(
+					&app,
+					&f.config.api_token,
+					"POST",
+					"/api/authorization/acme/catalog",
+					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
+				)
+				.await
+				.0,
+				200
+			);
+			bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
+		}
+		agent.config["bindings"] = json!(bindings);
+		f.registry.register(agent).await.unwrap();
+		let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
+		policy["subjects"][&owner] = json!({"kind":"agent"});
+		assert_eq!(
+			request(
+				&app,
+				&f.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":1,"bundle":policy})
+			)
 			.await
-			.unwrap();
+			.0,
+			200
+		);
 		assert_eq!(
 			request(
 				&app,
 				&f.config.api_token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
+				json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
 			)
 			.await
 			.0,
 			200
 		);
-		bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
-	}
-	agent.config["bindings"] = json!(bindings);
-	f.registry.register(agent).await.unwrap();
-	let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
-	policy["subjects"][&owner] = json!({"kind":"agent"});
-	assert_eq!(
-		request(
+		let workspace = f
+			.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.workspace_id;
+		let embedding_endpoint = embeddings.url.clone();
+		// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
+		f.store
+			.keyless
+			.permit_origin_of(&embedding_endpoint)
+			.unwrap();
+		let embedding_server = embeddings;
+		configure(
 			&app,
 			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":policy})
-		)
-		.await
-		.0,
-		200
-	);
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
-		)
-		.await
-		.0,
-		200
-	);
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	let embedding_endpoint = embeddings.url.clone();
-	// The embedding fixture is a Keyless endpoint on loopback (ADR 0036).
-	f.store
-		.keyless
-		.permit_origin_of(&embedding_endpoint)
-		.unwrap();
-	let embedding_server = embeddings;
-	configure(
-		&app,
-		&f.config.api_token,
-		workspace,
-		&spec(&embedding_endpoint),
-		0,
-	)
-	.await;
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task}/claim"),
-			json!({"revision":0,"agent":{"id":"research","version":"1.0.1"}})
-		)
-		.await
-		.0,
-		200
-	);
-	let worker = aidash_server::harness::Harness {
-		federation: f.for_workers().await.unwrap(),
-	};
-	worker.worker_once().await.unwrap();
-	let artifact = f
-		.store
-		.publish_artifact(
-			&TEST_FIXTURE,
-			task,
-			&owner,
-			"controlled-artifact",
-			&ArtifactInput {
-				kind: "text".into(),
-				name: "Car report".into(),
-				content: json!("A car has a steering wheel."),
-			},
-		)
-		.await
-		.unwrap();
-	let message = f
-		.store
-		.message_record(
-			&TEST_FIXTURE,
 			workspace,
-			"human",
-			"Vehicle safety",
-			Some("controlled-message"),
-		)
-		.await
-		.unwrap();
-	for (key, source) in [
-		(
-			"memory",
-			json!({"kind":"memory","text":"A car carries passengers."}),
-		),
-		("artifact", json!({"kind":"artifact","id":artifact.id})),
-		("message", json!({"kind":"message","id":message.id})),
-	] {
-		let (status, entry) = request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/workspaces/{workspace}/semantic/entries"),
-			json!({"key":key,"expected_revision":0,"source":source,"metadata":{}}),
+			&spec(&embedding_endpoint),
+			0,
 		)
 		.await;
-		assert_eq!(status, 200, "source: {entry}");
-	}
-	semantic::worker::sweep(&f.store).await.unwrap();
-	ControlledContext {
-		_fixture: application_fixture,
-		f,
-		worker,
-		url,
-		schema,
-		token,
-		captured,
-		tool_rounds,
-		model_server,
-		embedding_server,
-		fault,
+		assert_eq!(
+			request(
+				&app,
+				&token,
+				"POST",
+				&format!("/api/tasks/{task}/claim"),
+				json!({"revision":0,"agent":{"id":"research","version":"1.0.1"}})
+			)
+			.await
+			.0,
+			200
+		);
+		let worker = aidash_server::harness::Harness {
+			federation: f.for_workers().await.unwrap(),
+		};
+		worker.worker_once().await.unwrap();
+		let artifact = f
+			.store
+			.publish_artifact(
+				&TEST_FIXTURE,
+				task,
+				&owner,
+				"controlled-artifact",
+				&ArtifactInput {
+					kind: "text".into(),
+					name: "Car report".into(),
+					content: json!("A car has a steering wheel."),
+				},
+			)
+			.await
+			.unwrap();
+		let message = f
+			.store
+			.message_record(
+				&TEST_FIXTURE,
+				workspace,
+				"human",
+				"Vehicle safety",
+				Some("controlled-message"),
+			)
+			.await
+			.unwrap();
+		for (key, source) in [
+			(
+				"memory",
+				json!({"kind":"memory","text":"A car carries passengers."}),
+			),
+			("artifact", json!({"kind":"artifact","id":artifact.id})),
+			("message", json!({"kind":"message","id":message.id})),
+		] {
+			let (status, entry) = request(
+				&app,
+				&token,
+				"POST",
+				&format!("/api/workspaces/{workspace}/semantic/entries"),
+				json!({"key":key,"expected_revision":0,"source":source,"metadata":{}}),
+			)
+			.await;
+			assert_eq!(status, 200, "source: {entry}");
+		}
+		semantic::worker::sweep(&f.store).await.unwrap();
+		ControlledContext {
+			_fixture: application_fixture,
+			f,
+			worker,
+			url,
+			schema,
+			token,
+			captured,
+			tool_rounds,
+			model_server,
+			embedding_server,
+			fault,
+		}
 	}
 }
+use controlled_context_composition::controlled_context;
 
 #[rstest::rstest]
 #[case(false, false)]
