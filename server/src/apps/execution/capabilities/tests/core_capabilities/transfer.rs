@@ -818,7 +818,7 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	)
 	.await
 	.unwrap();
-	let (status,activated)=request(&c.app,&c.f.config.api_token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
+	let (status,activated)=request(&c.app,&c.token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
         json!({"tenant":"acme","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{activated}");
 	let (status, admitted) = request(

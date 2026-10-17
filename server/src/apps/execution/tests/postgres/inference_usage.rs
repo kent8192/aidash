@@ -241,7 +241,7 @@ async fn leased_run(store: &Store, token: Uuid) -> Run {
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	common::local_run(&store, &ACME, &task, &agent).await;
+	common::local_run(store, &ACME, &task, &agent).await;
 	store.lease_run(token, 30).await.unwrap().unwrap()
 }
 

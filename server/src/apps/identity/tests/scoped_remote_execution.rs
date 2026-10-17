@@ -1019,7 +1019,7 @@ async fn configure_semantic(
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		&token,
+		token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}),

@@ -112,7 +112,7 @@ impl RegistryManagement {
 		let mut access = Access::begin(&f.store, &identity).await?;
 		let resource = access.resource(
 			"registry",
-			&format!(
+			format!(
 				"skill/{}",
 				aidash_domain::identity::tenant_administration::COLLECTION
 			),
