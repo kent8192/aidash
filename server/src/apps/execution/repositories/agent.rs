@@ -31,6 +31,15 @@ use uuid::Uuid;
 
 #[async_trait]
 impl ExecutionStore for RunStore {
+	async fn research_revoked(&self, run: &Run) -> Result<bool> {
+		use aidash_application::ports::research::EvidenceStore;
+		super::research::Evidence {
+			store: self.store.clone(),
+			scope: self.scope.clone(),
+		}
+		.revoked(run.id)
+		.await
+	}
 	async fn unknown_evidence(
 		&self,
 		run: &Run,
@@ -1051,6 +1060,16 @@ impl ExecutionEnvironment for Environment<'_> {
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		self.federation
 			.run_message_limit(run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn url_intents(
+		&self,
+		run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		self.federation
+			.store
+			.url_intents(&self.run_store.scope, run.id)
 			.await
 			.map_err(Into::into)
 	}

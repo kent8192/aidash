@@ -364,9 +364,9 @@ pub async fn outbound_history(
 pub async fn approval_list(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Query(page): Query<Page>,
+	Query(query): Query<ApprovalQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(api::approval_list(service.runtime.clone(), actor, Query(page)).await)
+	crate::http::json(api::approval_list(service.runtime.clone(), actor, Query(query)).await)
 }
 
 #[post(

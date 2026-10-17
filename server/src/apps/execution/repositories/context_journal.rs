@@ -15,7 +15,7 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
-const EVENTS: &str = "run_context_events";
+pub(crate) const EVENTS: &str = "run_context_events";
 const ATTEMPTS: &str = "context_compaction_attempts";
 
 fn signed(value: u64) -> Result<i64> {

@@ -34,11 +34,13 @@ const registry = [
     provider_credential: "openrouter",
   }),
 ];
+// As `GET /api/authorization/{tenant}` returns it: every bundle has `groups`.
 const snapshot = {
   revision: 1,
   bundle: {
     tenant: "acme",
     subjects: { alice: { kind: "user" } },
+    groups: {},
     policies: [],
   },
 };
@@ -119,6 +121,7 @@ test("Catalog Approval says that a Keyless definition carries no data retention 
           bundle: {
             tenant: "acme",
             subjects: { alice: { kind: "user" } },
+            groups: {},
             policies: [],
           },
         },

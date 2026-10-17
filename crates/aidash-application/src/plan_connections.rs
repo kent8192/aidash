@@ -137,11 +137,17 @@ pub trait Authorization: Send + Sync {
 #[async_trait]
 pub trait Scope: Send {
 	async fn owned(&mut self, provider: Provider) -> Result<Option<PlanConnection>>;
-	/// External Identities with an active Mapping to the owner.
+	/// External Identities that are not disabled and hold an enabled Mapping to
+	/// the owner. Identity Disablement therefore pauses a connection (zero)
+	/// without deleting it.
 	async fn mapped_identities(&mut self) -> Result<usize>;
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn save(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn delete(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
+	/// Ends every pending Sign in with ChatGPT attempt of the owner for
+	/// `provider`, in any session, so none of their callbacks can bring a
+	/// disconnected connection back.
+	async fn cancel_attempts(&mut self, provider: Provider) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }
 #[async_trait]
@@ -149,6 +155,9 @@ pub trait Repository: Send + Sync {
 	async fn begin(&self, owner: &Owner) -> Result<Box<dyn Scope>>;
 	/// The owner of one connection, read without the lock to pick a scope.
 	async fn owner_of(&self, id: Uuid) -> Result<Option<Owner>>;
+	/// The owners of every Plan Connection in one Tenant, read without locks
+	/// to pick scopes.
+	async fn owners(&self, tenant: &str) -> Result<Vec<Owner>>;
 }
 
 /// What a pending authorization contributes to its completion.
@@ -339,6 +348,9 @@ impl Service {
 			CallbackResult::Code { code, client_id } => (code, client_id.as_deref()),
 		};
 		let client = domain::issued_client(pending.saved_client, returned_client)?;
+		// An attempt started with the connection's saved client renews that
+		// connection; if it is gone by now, a disconnect ended it.
+		let reconnecting = pending.saved_client.is_some();
 		let issued = self
 			.authorization
 			.exchange(ExchangeRequest {
@@ -378,7 +390,7 @@ impl Service {
 			// Keep the sign-in without plan usage: a later attempt reuses the
 			// issued client instead of registering another one.
 			if self
-				.register(owner, &client, &account, actor)
+				.register(owner, &client, &account, reconnecting, actor)
 				.await
 				.is_err()
 			{
@@ -394,7 +406,15 @@ impl Service {
 			}
 		};
 		match self
-			.write(owner, client.clone(), account, &issued, lifetime, actor)
+			.write(
+				owner,
+				client.clone(),
+				account,
+				&issued,
+				lifetime,
+				reconnecting,
+				actor,
+			)
 			.await
 		{
 			Ok(outcome) => Ok(outcome),
@@ -410,12 +430,15 @@ impl Service {
 	/// Token is stored. The row is the only pointer to its Store resource, so
 	/// tokens are never written where a disconnect or reconnect cannot find
 	/// them. Until tokens are pinned, the connection needs reconnection.
+	/// A reconnection never creates one: the connection it renews was
+	/// disconnected meanwhile, and recreating it would undo that.
 	/// Returns whether this call created it.
 	async fn register(
 		&self,
 		owner: &Owner,
 		client: &str,
 		account: &str,
+		reconnecting: bool,
 		actor: &str,
 	) -> Result<bool> {
 		let mut scope = self.repository.begin(owner).await?;
@@ -425,6 +448,12 @@ impl Service {
 		if scope.owned(Provider::Chatgpt).await?.is_some() {
 			scope.commit().await?;
 			return Ok(false);
+		}
+		if reconnecting {
+			scope.commit().await?;
+			return Err(Error::Conflict(
+				"the Plan Connection was disconnected while reconnecting".into(),
+			));
 		}
 		let now = Utc::now();
 		let id = Uuid::now_v7();
@@ -462,6 +491,7 @@ impl Service {
 		Ok(true)
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	async fn write(
 		&self,
 		owner: &Owner,
@@ -469,9 +499,12 @@ impl Service {
 		account: String,
 		issued: &Issued,
 		lifetime: Duration,
+		reconnecting: bool,
 		actor: &str,
 	) -> Result<Outcome> {
-		let first = self.register(owner, &client, &account, actor).await?;
+		let first = self
+			.register(owner, &client, &account, reconnecting, actor)
+			.await?;
 		let mut scope = self.repository.begin(owner).await?;
 		if scope.mapped_identities().await? != 1 {
 			return Err(shared_subject());
@@ -549,11 +582,19 @@ impl Service {
 		actor: &str,
 	) -> Result<Disconnection> {
 		let mut scope = self.repository.begin(owner).await?;
-		let row = scope
-			.owned(Provider::Chatgpt)
-			.await?
-			.ok_or_else(|| Error::NotFound("Plan Connection not found".into()))?;
+		let Some(row) = scope.owned(Provider::Chatgpt).await? else {
+			// Nothing is connected yet, but a pending first-time attempt
+			// still ends, so its callback cannot connect what the owner
+			// asked to end.
+			scope.cancel_attempts(Provider::Chatgpt).await?;
+			scope.commit().await?;
+			return Err(Error::NotFound("Plan Connection not found".into()));
+		};
 		row.check_revision(expected_revision)?;
+		// Pending attempts end with the disconnect, in its transaction, so a
+		// disconnect refused for a stale revision leaves them for their
+		// callbacks.
+		scope.cancel_attempts(Provider::Chatgpt).await?;
 		let revoked = self.revoke_row(&row).await;
 		// The row is the only pointer to the tokens: delete them first, so a
 		// failed cleanup leaves the connection for a retried disconnect.
@@ -575,6 +616,69 @@ impl Service {
 		self.revoke_row(&row).await;
 		self.delete_tokens(&row).await?;
 		scope.delete(&row, "plan_connection.retired", actor).await?;
+		scope.commit().await
+	}
+
+	/// Ends every Plan Connection in one Tenant, as recording a Tenant
+	/// Deletion requires before any purge (#239).
+	pub async fn retire_tenant(&self, tenant: &str, actor: &str) -> Result<()> {
+		for owner in self.repository.owners(tenant).await? {
+			self.retire(&owner, actor).await?;
+		}
+		Ok(())
+	}
+
+	/// Whether the connection admission pinned may serve a call now. Unlike
+	/// [`Self::bearer`] it neither reads Plan Tokens nor refreshes them.
+	pub async fn usable(&self, id: Uuid) -> Result<()> {
+		let owner = self
+			.repository
+			.owner_of(id)
+			.await?
+			.ok_or(Error::Plan(Failure::NotConnected))?;
+		let mut scope = self.repository.begin(&owner).await?;
+		let row = scope
+			.owned(Provider::Chatgpt)
+			.await?
+			.filter(|row| row.id == id)
+			.ok_or(Error::Plan(Failure::NotConnected))?;
+		let mapped = scope.mapped_identities().await?;
+		scope.commit().await?;
+		if mapped != 1 {
+			return Err(Error::Plan(Failure::NotConnected));
+		}
+		row.require_usable(Utc::now())
+			.map(drop)
+			.map_err(Error::Plan)
+	}
+
+	/// Records that a connection's pinned Plan Tokens became unreadable with a
+	/// lost Master Key. They cannot be revoked at OpenAI any more, so the
+	/// owner must connect again; the Store removes the versions itself. The
+	/// pin is kept although nothing can read it: a later disconnection then
+	/// fails to read the refresh token and reports the grant as not revoked,
+	/// where no pin would claim it had nothing left to revoke.
+	pub async fn mark_unreadable(&self, id: Uuid, actor: &str) -> Result<()> {
+		let Some(owner) = self.repository.owner_of(id).await? else {
+			return Ok(());
+		};
+		let mut scope = self.repository.begin(&owner).await?;
+		let Some(row) = scope.owned(Provider::Chatgpt).await?.filter(|row| {
+			row.id == id && row.pinned_version.is_some() && row.state != State::NeedsReconnection
+		}) else {
+			return scope.commit().await;
+		};
+		Self::strand(scope, row, actor).await
+	}
+
+	/// Asks for reconnection while keeping a pin nothing can read, as
+	/// [`Self::mark_unreadable`] explains.
+	async fn strand(mut scope: Box<dyn Scope>, mut row: PlanConnection, actor: &str) -> Result<()> {
+		row.state = State::NeedsReconnection;
+		row.revision += 1;
+		scope
+			.save(&row, "plan_connection.needs_reconnection", actor)
+			.await?;
 		scope.commit().await
 	}
 
@@ -623,7 +727,17 @@ impl Service {
 			scope.commit().await?;
 			return Err(plan_unavailable());
 		}
-		let tokens = self.tokens(&row, &version).await?;
+		let tokens = match self.tokens(&row, &version).await {
+			Ok(tokens) => tokens,
+			// The Store rejects this pin for good: a discard destroyed its
+			// version but lost the transition, or its Master Key is gone.
+			// Record the reconnection instead of failing every call on it.
+			Err(Error::Invalid(_)) => {
+				Self::strand(scope, row, SYSTEM_ACTOR).await?;
+				return Err(Error::Plan(Failure::NeedsReconnection));
+			}
+			Err(error) => return Err(error),
+		};
 		if !force && !row.needs_refresh(now) {
 			scope.commit().await?;
 			return Ok(tokens.access);
@@ -825,7 +939,9 @@ impl Service {
 		// a reconnect waiting on it pins a new version in the same resource,
 		// which must survive this cleanup. A failed cleanup commits nothing,
 		// so the call that next finds the connection retries the transition;
-		// the pinned version goes last, so until then it stays readable.
+		// the pinned version goes last, so until then it stays readable. A
+		// transition lost after that leaves a pin the Store rejects, which
+		// the next call records instead.
 		let mut versions = self
 			.store
 			.versions(&row.tenant, &row.secret_resource)

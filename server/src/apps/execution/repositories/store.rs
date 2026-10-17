@@ -48,6 +48,13 @@ pub struct Store {
 		Option<std::sync::Arc<dyn aidash_application::provider_access::TokenIssuer>>,
 	pub provider_credentials:
 		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
+	/// Present whenever the Store can hold Plan Tokens (PostgreSQL), so owners
+	/// can still read and disconnect their connections after
+	/// `plan_connections_enabled` is turned off (ADR 0007).
+	pub plan_connections: Option<std::sync::Arc<aidash_application::plan_connections::Service>>,
+	/// `[plan_connections] enabled`: new authorizations, model lists and
+	/// admission of `chatgpt` models.
+	pub plan_connections_enabled: bool,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
@@ -59,6 +66,8 @@ pub struct Store {
 	pub provider_clients: aidash_integrations::keyless::Clients,
 	/// Keyless provider access with this Deployment's permitted private origins.
 	pub keyless: aidash_application::provider_access::KeylessAccess,
+	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
+	pub research_retention: aidash_domain::retention::RetentionRules,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
 	/// clone of this Store.
@@ -448,11 +457,14 @@ impl Store {
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			keyless: Default::default(),
+			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			recovery_cursors: Default::default(),
 			tenancies: Default::default(),
 			tool_slots,
 			cache_salt: None,
 			provider_credentials: None,
+			plan_connections: None,
+			plan_connections_enabled: false,
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
@@ -478,6 +490,13 @@ impl Store {
 		self
 	}
 	/// Permit these private origins for Keyless endpoints (ADR 0036).
+	pub fn with_research_retention(
+		mut self,
+		rules: aidash_domain::retention::RetentionRules,
+	) -> Self {
+		self.research_retention = rules;
+		self
+	}
 	pub fn with_keyless_origins(
 		mut self,
 		origins: aidash_domain::keyless::PermittedOrigins,
@@ -533,11 +552,14 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			research_retention: self.research_retention,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			plan_connections: self.plan_connections.clone(),
+			plan_connections_enabled: self.plan_connections_enabled,
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -576,11 +598,14 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
+			research_retention: self.research_retention,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
 			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			plan_connections: self.plan_connections.clone(),
+			plan_connections_enabled: self.plan_connections_enabled,
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
@@ -1241,6 +1266,13 @@ impl Store {
 					.as_deref()
 					.expect("admitted Binding snapshot"),
 				self.provider_credentials.is_some(),
+				// Only a subject's own admission passes its Binding snapshot;
+				// its grant pins the Plan Connection next (ADR 0007).
+				if admitted.is_some() {
+					crate::apps::identity::repositories::provider_credentials::PlanAdmission::Deferred
+				} else {
+					crate::apps::identity::repositories::provider_credentials::PlanAdmission::Refused
+				},
 			)
 			.await?;
 		}
@@ -2383,6 +2415,21 @@ impl Store {
 		)
 		.await
 	}
+	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
+	pub async fn url_intents(
+		&self,
+		scope: &TenancyScope,
+		run_id: Uuid,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		let records = self
+			.pool
+			.atomic(scope, async |tx| {
+				crate::apps::execution::models::url_intents::UrlIntentRecord::for_run(tx, run_id)
+					.await
+			})
+			.await?;
+		Ok(records.iter().map(|record| record.intent()).collect())
+	}
 	pub async fn run_inputs(&self, scope: &TenancyScope, run_id: Uuid) -> Result<Vec<RunInput>> {
 		self.pool
 			.atomic(scope, async |tx| InputRecord::for_run(tx, run_id).await)
@@ -3162,6 +3209,9 @@ impl Store {
 				.as_deref()
 				.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?,
 			self.provider_credentials.is_some(),
+			// Accepted Runs come from a peer, a remote home or a Deployment
+			// Administrator claim, never from their owner's own admission.
+			crate::apps::identity::repositories::provider_credentials::PlanAdmission::Refused,
 		)
 		.await?;
 		tx.commit().await?;

@@ -47,7 +47,12 @@ not exposed to remote Runs).
   fragment** with an `evidence_ref`; a budget smaller than the next character
   still delivers that one character. Continue with `document_id` and the
   returned `next_cursor`; continuing reads the retained snapshot and never
-  fetches again.
+  fetches again. A PDF snapshot's lines carry their physical page, so its
+  passages report `pages`. Pages that carry no text are listed under
+  `pages_without_text` with `page_images` `no_view_operation` (the original
+  is retained, but no research operation shows page images yet) or
+  `original_not_retained`; a PDF whose pages all lack text
+  delivers no passage (`status: "empty"`).
 - **`find`** returns lines of a retained snapshot that contain `query`. Matching
   folds case (and `ß` to `ss`) unless `case_sensitive` is set. Every match is an
   Evidence fragment. Nothing leaves the Node.
@@ -187,10 +192,43 @@ host: a redirect to another host returns `cross_host_redirect` instead of being
 followed, a redirect from https to http returns `insecure_redirect`, and a
 same-host redirect is checked again before any request.
 
+The approval record keeps what the approver is shown, as it stood when the
+disclosure was requested: the operation and provider, the price of this one
+request with the Research account holder's account it is charged to (none for
+a provider without a price), the validated search query in a
+provider-independent form, and the Run's Working Area so that the approval
+appears in its Thread. The account is kept for audit and never shown. A
+decision records who decided and when (`decided_by`, `decided_at`). An "allow
+for this Run" decision on a search creates a Run grant for the provider's
+host, so it covers every later search of that Run through the provider,
+including queries the approver has not seen, until new user input or its
+expiry. A Page reading grant names the page's host, whichever provider reads
+it. A search grant never covers a page reading, nor a search through another
+provider. A Run grant lasts at least a minute and at most the Deployment's
+`grant_seconds` (an hour by default, and never less than 60); the dashboard
+offers 1 to 60 minutes and starts at 15. An approval covers only the charge
+its approver was shown: when the Research account or its price changes, the
+same request needs a new approval.
+
+A disclosure approval is never revoked: it ends by a decision, by expiry, or
+as `closed` with a `closed_reason`: `evidence_revoked` when the Run's research
+evidence is revoked, `area_cleaned` when its Working Area is cleaned up, and
+`run_ended` when someone decides it after its Run ended. The pending inbox
+never lists a disclosure whose Run has ended. One that no subject of the Tenant may
+approve is recorded as `blocked` and is never addressed to anyone.
+
+`GET /api/capabilities/approvals` takes two optional filters for an inbox:
+`state=pending` lists approvals awaiting a decision and `state=active` lists
+Run grants, both without expired ones, and `role=approver` keeps only records
+addressed to the reader as approver. Each card says whether its reader is that
+approver (`viewer_is_approver`). Only the signed-in Tenant's records are
+listed.
+
 ## Cost attribution and limits
 
-A search provider may name the Search account holder's account. The Brave
-package reads the Search account holder's account profile, which records the agreement,
+A search provider may name the Research account holder's account: whoever
+runs the Deployment holds it and pays for it. The Brave package reads that
+account's profile, which records the agreement,
 retention terms, request price and monthly limit. Before dispatch the host
 checks the terms are current and that one more request fits the month's limit
 (base fee plus every charged or still-unknown attempt). The reservation records
@@ -208,6 +246,58 @@ page is requested, so it counts against the Source record limit (and keeps the
 record if the read then fails); reading an existing Source record creates none.
 A page read in progress holds a snapshot slot until it settles, so concurrent
 reads cannot together exceed the snapshot limit.
+
+`GET /api/runs/{run}/research` returns a Run's usage against these limits, the
+recorded prices of its charged attempts (an estimate, not an invoice; attempts
+with an unknown outcome and attempts still in flight count), how many attempts
+have an unknown outcome or are still sent, and the Run's URL intents. A reader
+needs exactly the authority of `GET /api/runs/{run}`.
+
+`GET /api/research/providers` lists the Research providers this Deployment
+knows, whether each is set up now (account terms are checked on every
+request), and for each operation the reader's Tenant's tool definitions that
+have a Catalog Approval; it also returns the per-Run limits. It never says why
+a provider is not set up. Only a Tenant's subjects read it.
+
+## In the dashboard
+
+There is no research mode of a Thread or an Agent. When the Agent selected in
+a Thread's Agent work panel binds research operations, directly or through a
+bundle, the panel lists each operation with its provider and whether it is
+ready, not set up in this Deployment, or not approved for use here; the
+per-Run limits; and, for the Thread's Run, its usage, estimated research cost,
+attempts with an unknown outcome, its URL intents and the disclosures it is
+waiting on. A research tool call that failed for a Deployment reason, such as
+`budget_exhausted` or `account_unavailable`, is explained in words without
+amounts.
+
+A pasted `http(s)` address in the instruction offers "Read this page" when the
+Agent binds a Page reading operation that is ready. Each selected page is sent
+as a URL intent in `read_pages` (at most five) with the start, queue or steer
+request. The host refuses the whole request with `400 INVALID_URL_INTENT` when
+an address could not be read or the Run's Agent binds no Page reading
+operation, and otherwise records the pages beside the person's text, on the
+Task or the run input, never in it (ADR 0052). Each step whose Task or run
+messages carry URL intents renders a fixed instruction into its state
+(`url_intents`), and each such run message names its own `read_pages`. A URL
+intent only asks the Run to read the page: the Page reading it leads to still
+needs its own Web disclosure approval, even when the person who pasted it may
+approve. Non-public destinations are refused when the page is read.
+
+The header's decision queue is the approver's inbox. Besides human requests it
+lists the capability approvals addressed to the signed-in Designated approver
+in the signed-in Tenant and the Run grants they gave, which they can revoke,
+and a new approval raises the same in-app notification as a human approval
+request. The notification names the operation, destination, Agent and
+requester, never the content sent. A Designated approver decides in the inbox
+without access to the Thread. The disclosure card shows the operation,
+destination, provider, the Deployment account it is charged to, the estimated
+price, requester and Agent, a summary of the search query and, collapsed, the
+exact content sent. It never shows the Thread, the Run's output, the account
+ID or any remaining budget. In the Thread, a denied, expired, closed or
+blocked disclosure stays listed as such and is never sent, and the Run's
+active grants are listed with their scope for their requester and approver to
+revoke.
 
 ## Providers
 
@@ -248,7 +338,39 @@ and 443 for `https`. It decodes a page with its byte order mark, its declared
 `charset` or, for HTML, a `<meta>` declaration, and otherwise as UTF-8 or
 windows-1252; an encoding the Encoding Standard does not support returns
 `unsupported_media`. It strips markup, drops script, style and template content
-and never executes page content. PDF and other media return `unsupported_media`.
+and never executes page content. Other media return `unsupported_media`; PDFs
+are described below.
+
+### PDF pages
+
+The page provider also reads `application/pdf`, and `application/octet-stream`
+when the body starts with `%PDF-`, up to 16 MiB. Aidash never parses a PDF in
+the server process: it starts the `aidash` binary again as a child
+(`aidash __research-pdf extract`) that reads the PDF on standard input and
+answers on standard output. The child inherits no environment, so it holds no
+Deployment secret, and runs under operating-system limits: 20 s of CPU time, a
+1 GiB address space on Linux, a wall-clock deadline shared with the read, and a
+bounded reply. Decompression is bounded by that address space rather than by a
+per-stream budget, because the parser (`hayro`) has none. A child that fails for
+any reason is killed and leaves the page unreadable (`extraction_failed`). The
+parser reads page content streams and the fonts they use; it never interprets
+annotations, forms, scripts or attachments.
+
+- Lines follow content-stream order, one visual line each, with the page's
+  physical 1-based number; a page boundary always ends a line. Page labels are
+  not used. The first 500 pages are read.
+- A page whose text has fewer than 16 non-whitespace characters carries no
+  text and is listed in `pages_without_text`.
+- A PDF that needs a password returns `encrypted_document`; one whose
+  permissions forbid extracting its text returns `extraction_not_permitted`.
+- When some page carries no text, the snapshot keeps the original PDF apart from
+  its text, so that the Run's model can view that page as an image (ADR 0053).
+  A Run keeps at most 64 MiB of originals; beyond that a snapshot records only
+  the original's digest and size. Originals are snapshot contents: the
+  Retention Rules purge them and an Evidence Revocation removes them.
+
+On macOS the first PDF a server process reads can take about 30 s while the
+system assesses the unsigned binary; Linux has no such delay.
 
 ## Implementing another provider
 
@@ -257,7 +379,7 @@ or both ports of `aidash_application::ports::research`:
 
 - `SearchProvider`: `disclosure(query)` returns the exact destination and
   content it will send (or a contract failure if it cannot send the query
-  unchanged), `account()` returns the Search account holder's current terms
+  unchanged), `account()` returns the Research account holder's current terms
   or `None`, and `search(query)` returns raw candidates or a contract
   `Failure`. It must not relax the query's filters; the host filters again.
 - `PageProvider`: `admit(url)` performs literal destination checks before any
@@ -278,8 +400,6 @@ contract against it and a production-shaped provider.
 
 - No live Brave request has been made; account eligibility, ranking quality and
   billed-cost reconciliation need live verification with a real account.
-- Retained evidence has no separate retention period or revocation endpoint; it
-  lives and is deleted with its Run.
 - Citations from one Run cannot be shown in another Run's text; a parent Run
   that relays a child Run's answer does not carry the child's citations.
 - Third-party providers over the HTTP, MCP or Agent transports cannot declare

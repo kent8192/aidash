@@ -131,6 +131,11 @@ struct State {
 	explicit_cache_model: bool,
 	/// Evidence fragments the Run's evidence store holds.
 	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
+	/// The Run's Research evidence was revoked.
+	research_revoked: bool,
+	/// Revoked only once this many revocation checks have answered.
+	research_revoked_after: Option<usize>,
+	research_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -142,6 +147,8 @@ struct State {
 	calibrated_model: bool,
 	/// Calibration samples the store returns, newest first.
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
+	/// URL intents recorded beside the Run's Task and inputs.
+	url_intents: Vec<aidash_domain::research::intent::UrlIntent>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -330,6 +337,18 @@ impl ExecutionStore for Backend {
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
 		let _ = (workspace, kind, data);
 		unexpected("ExecutionStore.emit")
+	}
+	async fn research_revoked(&self, _: &Run) -> Result<bool> {
+		self.record("store.research_revoked");
+		let checks = self
+			.0
+			.research_checks
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(self.0.research_revoked
+			|| self
+				.0
+				.research_revoked_after
+				.is_some_and(|after| checks >= after))
 	}
 	async fn unknown_evidence(
 		&self,
@@ -964,6 +983,12 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		Ok(16000)
 	}
+	async fn url_intents(
+		&self,
+		_run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		Ok(self.0.url_intents.clone())
+	}
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
 		let _ = run;
 		self.record("inputs.deliver");
@@ -1331,12 +1356,16 @@ fn fixture() -> Fixture {
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
 		known_evidence: vec![],
+		research_revoked: false,
+		research_revoked_after: None,
+		research_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,
 		fenced: Mutex::new(vec![]),
 		calibrated_model: false,
 		calibration: Mutex::new(vec![]),
+		url_intents: vec![],
 	}));
 	Fixture { backend, run }
 }
@@ -3440,6 +3469,119 @@ async fn legacy_thinking_request_matches_byte_baseline(
 	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
 }
 
+/// The step state a Legacy request carries.
+fn step_state(request: &ModelRequest) -> Value {
+	serde_json::to_value(request).unwrap()["context"]["current"].clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_are_rendered_from_their_records_only_into_steps_that_carry_them(
+	mut fixture: Fixture,
+) {
+	// Arrange: the Task asks for one page and a run message for another;
+	// their text says nothing about pages.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents = vec![
+		aidash_domain::research::intent::UrlIntent {
+			input_key: None,
+			pages: vec!["https://example.com/notes".into()],
+		},
+		aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		},
+	];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(
+		state["url_intents"],
+		json!({
+			"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+			"pages": ["https://example.com/notes", "https://example.org/rollback"],
+		})
+	);
+	assert_eq!(
+		state["run_messages"][0]["read_pages"],
+		json!(["https://example.org/rollback"])
+	);
+	assert_eq!(
+		state["run_messages"][0]["content"], "Also include the rollback steps.",
+		"the person's text is never rewritten"
+	);
+	assert_eq!(
+		state["task"]["description"],
+		fixture.backend.0.task.lock().unwrap().description
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_of_summarized_run_messages_are_carried_forward(mut fixture: Fixture) {
+	// Arrange: the run message that asked for a page was folded into the
+	// run-message summary, so it is on no page of this step.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	fixture.run.context.run_message_summary = "Include the rollback steps.".into();
+	fixture.run.context.run_message_summary_seq = 2;
+	fixture.run.observed_input_seq = 2;
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents =
+		vec![aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		}];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert!(state.get("run_messages").is_none(), "{state}");
+	assert_eq!(
+		state["url_intents"]["pages"],
+		json!(["https://example.org/rollback"])
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_of_run_messages_taken_in_by_media_intake_are_carried_forward(
+	mut fixture: Fixture,
+) {
+	// Arrange: a media-intake turn, which offers no tools, already took in
+	// the run message that asked for a page; the summary does not cover it.
+	fixture.run.state = RunState::Thinking(ThinkingState {
+		media_intake_through_seq: Some(2),
+		..ThinkingState::default()
+	});
+	run_message(&mut fixture);
+	fixture.run.observed_input_seq = 2;
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents =
+		vec![aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		}];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: the page is still requested in the next actionable step.
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert!(state.get("run_messages").is_none(), "{state}");
+	assert_eq!(
+		state["url_intents"]["pages"],
+		json!(["https://example.org/rollback"])
+	);
+}
+
 /// A tool whose results the test scripts in call order; counts real invocations.
 struct Scripted {
 	specification: ToolSpec,
@@ -4720,6 +4862,41 @@ async fn oversized_fixed_content_truncates_the_snapshot_to_fit(
 	let content = requests[0].input_body().to_string();
 	assert!(content.contains("snapshot_truncated"));
 	assert!(requests[0].ensure_fits(128_000).is_ok());
+}
+
+/// URL intents render beside the bounded snapshot, so the snapshot leaves
+/// room for them rather than fitting alone and overflowing the request.
+#[rstest]
+#[tokio::test]
+async fn url_intents_are_reserved_before_the_snapshot_is_bounded(mut canonical: Fixture) {
+	let pages: Vec<String> = (0..5)
+		.map(|n| format!("https://example.com/{n}/{}", "p".repeat(4000)))
+		.collect();
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	// Leaves room for five long pages beside a snapshot bounded with them in
+	// view, but not beside one bounded as if they were absent.
+	state.instructions = "x".repeat(91_000);
+	state.url_intents = vec![aidash_domain::research::intent::UrlIntent {
+		input_key: None,
+		pages: pages.clone(),
+	}];
+	canonical.backend.0.task.lock().unwrap().description = "d".repeat(400_000);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[0].ensure_fits(128_000).is_ok());
+	assert!(
+		requests[0]
+			.input_body()
+			.to_string()
+			.contains("snapshot_truncated")
+	);
+	assert_eq!(
+		step_state(&requests[0])["url_intents"]["pages"],
+		json!(pages)
+	);
 }
 
 /// A semantic read that fills its whole budget must still fit beside fixed

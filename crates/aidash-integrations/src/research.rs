@@ -3,6 +3,7 @@
 pub mod brave;
 pub mod fixture;
 pub mod page;
+pub mod pdf;
 
 use aidash_domain::{capabilities::outbound::public_ip, research::Failure};
 use std::net::IpAddr;

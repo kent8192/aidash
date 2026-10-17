@@ -47,9 +47,11 @@
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
 use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
+use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
 use crate::apps::identity::serializers::managed_settings::ManagedGcipSource;
+use crate::apps::identity::serializers::plan_connections::PlanConnectionSettings;
 use crate::apps::identity::serializers::provider_credentials::ManagedSource;
 use crate::apps::identity::serializers::provider_credentials::Settings as ProviderCredentialSettings;
 use crate::apps::identity::serializers::settings::DashboardSettings;
@@ -64,7 +66,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_retention: ResearchRetentionSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -161,6 +163,8 @@ fn file_settings_builder(
                 .with_value("keyless_endpoints", serde_json::json!({}))
                 // Tenancy Rules default to the Self-hosted Offering's.
                 .with_value("tenancy", serde_json::json!({}))
+                .with_value("plan_connections", serde_json::json!({}))
+                .with_value("research_retention", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({})),
         )
         // Medium priority: Base TOML file

@@ -137,6 +137,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.sources_observed").await
 	}
+	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
+	/// without research evidence has nothing to revoke.
+	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
+		Ok(false)
+	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -482,6 +487,14 @@ pub trait ExecutionEnvironment: Send + Sync {
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 	) -> Result<Option<Value>>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
+	/// The pages people asked this Run to read, recorded beside the inputs
+	/// that carried them (ADR 0052). Empty when the Run has none.
+	async fn url_intents(
+		&self,
+		_run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		Ok(vec![])
+	}
 	async fn run_request_headroom(&self, run: &Run) -> Result<usize>;
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()>;
 	async fn reconcile_run_messages(&self, run: &Run) -> Result<()>;

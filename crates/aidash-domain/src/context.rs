@@ -11,6 +11,10 @@ pub struct MessageReadCoverage {
 	pub ranges: Vec<[usize; 2]>,
 }
 
+/// The contract marker of a revoked research result placeholder, which no
+/// other tool result carries (ADR 0046).
+pub const REVOKED_RESULT_CONTRACT: &str = "aidash.research.revoked/1";
+
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -54,6 +58,11 @@ pub struct Context {
 	/// one is readable again.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub revoked_summary_dependencies: Option<summary::SummaryDependencies>,
+	/// The Run's Research evidence was revoked (ADR 0046). Its research results
+	/// are placeholders here and no Execution Summary holds them; the Context
+	/// Journal keeps the originals.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub research_revoked: bool,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
@@ -106,6 +115,8 @@ struct StoredContext {
 	execution_summary: Option<Box<summary::ExecutionSummary>>,
 	#[serde(default)]
 	revoked_summary_dependencies: Option<summary::SummaryDependencies>,
+	#[serde(default)]
+	research_revoked: bool,
 	#[serde(default, rename = "summary")]
 	legacy_summary: Option<String>,
 	run_message_summary: String,
@@ -202,6 +213,7 @@ impl<'de> Deserialize<'de> for Context {
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
 			revoked_summary_dependencies: stored.revoked_summary_dependencies,
+			research_revoked: stored.research_revoked,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
 			media_inferred_seq: stored.media_inferred_seq,
@@ -817,6 +829,38 @@ impl ContextEvent {
 	/// rendered Model Turn still pairs the same `tool_call_id` (ADR 0015).
 	pub fn elided_result(call_id: &str) -> Value {
 		json!({"elided": true, "invocation": call_id})
+	}
+
+	/// Whether this result has the shape of an [`Self::elided_result`]. Any
+	/// tool may return it too, so only the journaled original tells what the
+	/// call returned.
+	pub fn is_elided_result(result: &Value) -> bool {
+		result["elided"] == json!(true) && result["invocation"].is_string()
+	}
+
+	/// A research tool result whose evidence was revoked. Later model requests
+	/// carry this instead; the Context Journal keeps the original (ADR 0046).
+	pub fn revoked_result(call_id: &str) -> Value {
+		json!({
+			"contract": REVOKED_RESULT_CONTRACT,
+			"revoked": true,
+			"invocation": call_id,
+			"explanation": "This Run's Research evidence was revoked. Its content can no longer be read or cited.",
+		})
+	}
+
+	/// Whether this result is already a [`Self::revoked_result`]. Only its
+	/// contract marker counts: any tool may return the other fields.
+	pub fn is_revoked_result(result: &Value) -> bool {
+		result["contract"] == REVOKED_RESULT_CONTRACT
+			&& result["revoked"] == json!(true)
+			&& result["invocation"].is_string()
+	}
+
+	/// What replaces a revoked research call's arguments, which name the
+	/// query or address that was disclosed.
+	pub fn revoked_arguments() -> Value {
+		json!({"revoked": true})
 	}
 }
 

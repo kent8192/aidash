@@ -242,3 +242,17 @@ test("history is bounded while every pending request remains reachable", () => {
   assert.equal(store.getSnapshot().pending.length, 75);
   assert.equal(store.takeBatch(100).length, 150);
 });
+
+test("a capability approval stays in the pending view after its toast", () => {
+  const store = new NoticeStore();
+  store.observe(frame([]));
+  const approval = {
+    ...entry("grant", "capability"),
+    target: { kind: "approval", node: "home", id: "grant", workspace: "one" },
+  };
+  store.observe(frame([approval]));
+  assert.deepEqual(
+    store.view.pending.map((item) => item.target.kind),
+    ["approval"],
+  );
+});
