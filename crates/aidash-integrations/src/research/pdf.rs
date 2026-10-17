@@ -192,26 +192,11 @@ pub fn extract(pdf: &[u8]) -> Result<PdfText, Failure> {
 		);
 		let mut device = TextDevice::default();
 		interpret_page(page, &mut context, &mut device);
-		let page_lines = device.finish();
-		let characters = page_lines
-			.iter()
-			.map(|line| line.chars().filter(|c| !c.is_whitespace()).count())
-			.sum::<usize>();
-		if characters < MIN_PAGE_CHARACTERS {
+		let Some(page_lines) = page_text(device.finish()) else {
 			pages_without_text.push(number);
 			continue;
-		}
-		for raw in page_lines {
-			let line = raw
-				.chars()
-				.map(|c| if c.is_control() { ' ' } else { c })
-				.collect::<String>()
-				.split_whitespace()
-				.collect::<Vec<_>>()
-				.join(" ");
-			if line.is_empty() {
-				continue;
-			}
+		};
+		for line in page_lines {
 			let (line, cut) = aidash_domain::research::bounded(&line, MAX_LINE_BYTES);
 			if lines.len() == MAX_LINES || bytes + line.len() > MAX_SNAPSHOT_BYTES {
 				completeness = Completeness::TextLimit;
@@ -234,6 +219,29 @@ pub fn extract(pdf: &[u8]) -> Result<PdfText, Failure> {
 		pages_without_text,
 		completeness,
 	})
+}
+
+/// A page's lines as a snapshot keeps them, or `None` when that text has
+/// fewer than [`MIN_PAGE_CHARACTERS`] non-whitespace characters. Control
+/// characters become spaces first, so they never make a page text-bearing.
+fn page_text(raw: Vec<String>) -> Option<Vec<String>> {
+	let lines = raw
+		.into_iter()
+		.map(|line| {
+			line.chars()
+				.map(|c| if c.is_control() { ' ' } else { c })
+				.collect::<String>()
+				.split_whitespace()
+				.collect::<Vec<_>>()
+				.join(" ")
+		})
+		.filter(|line| !line.is_empty())
+		.collect::<Vec<_>>();
+	let characters = lines
+		.iter()
+		.map(|line| line.chars().filter(|c| !c.is_whitespace()).count())
+		.sum::<usize>();
+	(characters >= MIN_PAGE_CHARACTERS).then_some(lines)
 }
 
 /// Open a PDF that needs no password and permits extracting its text.

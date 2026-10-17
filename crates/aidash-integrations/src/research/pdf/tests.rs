@@ -236,3 +236,19 @@ fn the_reply_cap_holds_an_escaped_text_at_the_snapshot_bounds() {
 fn titles_decode_as_pdf_text_strings(#[case] raw: Vec<u8>, #[case] expected: &str) {
 	assert_eq!(decode_text_string(&raw), expected);
 }
+
+/// Only text a snapshot keeps makes a page text-bearing: control characters
+/// count for nothing, as they become spaces.
+#[rstest]
+fn a_page_of_control_characters_carries_no_text() {
+	assert_eq!(page_text(vec!["\u{1}\u{2}\u{7}".repeat(8)]), None);
+	assert_eq!(
+		page_text(vec![format!("Quarterly\u{1}report {}", "\u{2}".repeat(20))]),
+		None,
+		"fifteen characters of text"
+	);
+	assert_eq!(
+		page_text(vec!["Quarterly\u{1}results".into(), " ".into()]),
+		Some(vec!["Quarterly results".to_owned()])
+	);
+}

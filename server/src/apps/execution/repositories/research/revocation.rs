@@ -4,7 +4,7 @@
 use super::{native, run_lock};
 use crate::apps::execution::models::research::{
 	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchRevocation, ResearchSnapshot,
-	ResearchSource, json_text, lock, revoke_invocations,
+	ResearchSource, json_field, json_text, lock, revoke_invocations,
 };
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
@@ -116,12 +116,18 @@ pub(crate) async fn scrub_projection(tx: &mut dyn TransactionExecutor, run: Uuid
 	let (sql, values) = Query::update()
 		.table(Alias::new("runs"))
 		.value(Alias::new("context"), serde_json::to_value(&context)?)
+		// A worker's live lease means its step saves next and moves the
+		// revision itself.
 		.value_expr(
 			Alias::new("revision"),
-			Expr::cust(
-				"CASE WHEN lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP \
-				 THEN revision + 1 ELSE revision END",
-			),
+			Expr::case()
+				.when(
+					Expr::col("lease_until")
+						.is_null()
+						.or(Expr::col("lease_until").lte(Expr::current_timestamp())),
+					Expr::col("revision").add(1),
+				)
+				.else_result(Expr::col("revision")),
 		)
 		.and_where(Expr::col("id").eq(Expr::value(run)))
 		.build(PostgresQueryBuilder);
@@ -343,17 +349,20 @@ impl Scope<'_> {
 	/// and approver; then close those still waiting for a decision, so a Run
 	/// waiting on one continues, and without research.
 	async fn close_disclosures(&mut self, run: Uuid) -> Result<u32> {
+		let data = || Expr::col(Alias::new("data"));
+		let of_run = || json_text(data(), "run_id").eq(Expr::value(run.to_string()));
 		let (sql, values) = Query::update()
 			.table(Alias::new("core_records"))
-			.value_expr(Alias::new("data"), Expr::cust("data - 'content'"))
+			// `data - 'content'`: the object without its content key.
+			.value_expr(
+				Alias::new("data"),
+				data().sub(Expr::value("content").cast_as("text")),
+			)
 			.and_where(Expr::col("kind").eq(Expr::value(
 				aidash_application::capabilities::approvals::DISCLOSURE,
 			)))
-			.and_where(Expr::cust("(data -> 'content') IS NOT NULL"))
-			.and_where(Expr::cust_with_values(
-				"(data->>'run_id') = ?",
-				[run.to_string()],
-			))
+			.and_where(json_field(data(), "content").is_not_null())
+			.and_where(of_run())
 			.build(PostgresQueryBuilder);
 		native(
 			self.executor()
@@ -364,15 +373,12 @@ impl Scope<'_> {
 		let (sql, values) = Query::update()
 			.table(Alias::new("core_records"))
 			.value(Alias::new("state"), "closed")
-			.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+			.value_expr(Alias::new("revision"), Expr::col("revision").add(1))
 			.and_where(Expr::col("kind").eq(Expr::value(
 				aidash_application::capabilities::approvals::DISCLOSURE,
 			)))
 			.and_where(Expr::col("state").eq(Expr::value("pending")))
-			.and_where(Expr::cust_with_values(
-				"(data->>'run_id') = ?",
-				[run.to_string()],
-			))
+			.and_where(of_run())
 			.build(PostgresQueryBuilder);
 		let closed = native(
 			self.executor()

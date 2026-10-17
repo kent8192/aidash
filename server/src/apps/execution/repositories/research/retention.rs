@@ -125,10 +125,11 @@ impl SnapshotRetention for Snapshots {
 		query
 			// A Run that ended within the shortest post-run period, or a
 			// snapshot younger than the shortest maximum age, keeps its basis.
+			// A cutoff itself is included: a period ends at its last instant.
 			.and_where(
 				ended()
-					.and(Expr::col((Alias::new("r"), Alias::new("updated_at"))).lt(Expr::value(ended_before)))
-					.or(Expr::col(snapshot("fetched_at")).lt(Expr::value(retrieved_before))),
+					.and(Expr::col((Alias::new("r"), Alias::new("updated_at"))).lte(Expr::value(ended_before)))
+					.or(Expr::col(snapshot("fetched_at")).lte(Expr::value(retrieved_before))),
 			)
 			.order_by(snapshot("id"), Order::Asc)
 			.limit(u64::from(limit));

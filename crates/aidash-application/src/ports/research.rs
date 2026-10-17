@@ -298,8 +298,8 @@ pub struct RetainedSnapshot {
 #[async_trait]
 pub trait SnapshotRetention: Send + Sync {
 	/// Up to `limit` unpurged snapshots after `after` in identifier order whose
-	/// Run ended before `ended_before` or that were retrieved before
-	/// `retrieved_before`. Others cannot have lost their basis yet.
+	/// Run ended at or before `ended_before` or that were retrieved at or
+	/// before `retrieved_before`. Others cannot have lost their basis yet.
 	async fn candidates(
 		&self,
 		after: Option<Uuid>,

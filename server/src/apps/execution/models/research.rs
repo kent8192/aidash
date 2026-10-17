@@ -776,7 +776,7 @@ impl ResearchSnapshot {
 		let mut update = Query::update();
 		update
 			.table(Alias::new(Self::table_name()))
-			.value_expr(Alias::new("lines"), Expr::cust("'[]'::jsonb"))
+			.value(Alias::new("lines"), Value::Array(Vec::new()))
 			.value(Alias::new("text_bytes"), 0_i64)
 			.value(Alias::new("original_retained"), false)
 			.value(Alias::new("purged_at"), at)
@@ -791,7 +791,10 @@ impl ResearchOriginal {
 		let (sql, values) = Query::select()
 			.expr_as(
 				Func::coalesce(vec![
-					Func::sum(Expr::cust("octet_length(bytes)").into()),
+					Func::sum(SimpleExpr::FunctionCall(
+						"octet_length".into_iden(),
+						vec![Expr::col(Alias::new("bytes")).into()],
+					)),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("held"),
@@ -1084,7 +1087,7 @@ async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>)
 }
 
 /// `json -> key`.
-fn json_field(json: Expr, key: &str) -> SimpleExpr {
+pub(crate) fn json_field(json: Expr, key: &str) -> SimpleExpr {
 	json.binary(
 		reinhardt::query::types::BinOper::PgOperator(
 			reinhardt::query::types::PgBinOper::JsonGetByIndex,

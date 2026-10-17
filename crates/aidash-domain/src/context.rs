@@ -776,6 +776,13 @@ impl ContextEvent {
 		json!({"elided": true, "invocation": call_id})
 	}
 
+	/// Whether this result has the shape of an [`Self::elided_result`]. Any
+	/// tool may return it too, so only the journaled original tells what the
+	/// call returned.
+	pub fn is_elided_result(result: &Value) -> bool {
+		result["elided"] == json!(true) && result["invocation"].is_string()
+	}
+
 	/// A research tool result whose evidence was revoked. Later model requests
 	/// carry this instead; the Context Journal keeps the original (ADR 0046).
 	pub fn revoked_result(call_id: &str) -> Value {
