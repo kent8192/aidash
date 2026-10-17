@@ -384,7 +384,7 @@ pub fn estimated_tokens(value: &str) -> usize {
 }
 
 /// Estimate how much one durable event adds to a complete provider request,
-/// under the Run's current Estimate Snapshot. Fixed instructions, tools, and pinned context cancel out, so this probe
+/// in the byte-quota unit of the Run's current Estimate Snapshot. Fixed instructions, tools, and pinned context cancel out, so this probe
 /// measures the same encoded context growth without storing that payload.
 /// Legacy and Ordered encode `history` as the same JSON array inside one
 /// escaped text value, so the Legacy probe measures Ordered growth exactly.
@@ -413,8 +413,9 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
-			// Growth is in the unit of the Run's current Request Estimates.
-			estimate: context.estimate.current(),
+			// Growth is in the unit of the Run's current byte quotas, so a
+			// tokenized Run does not count its whole context per event.
+			estimate: context.estimate.current().quota(),
 		}
 		.estimated_total_tokens()
 	};
