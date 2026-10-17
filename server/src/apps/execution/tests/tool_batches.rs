@@ -136,7 +136,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 		describes(descriptor(
 			"apply_patch",
 			"core.files@1",
-			"host",
+			"sandboxed",
 			"sequential"
 		))
 		.await
@@ -145,7 +145,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 		!describes(descriptor(
 			"apply_patch",
 			"core.files@1",
-			"host",
+			"sandboxed",
 			"shared_read"
 		))
 		.await
@@ -288,19 +288,11 @@ impl Batching {
 			agent.config["tool_parallelism"] = json!(parallelism);
 		}
 		agent.config["max_steps"] = json!(1000);
-		let deployment_administrator = f.config.api_token.clone();
-		let (status, body) = request(
-			&app,
-			&deployment_administrator,
-			"POST",
-			"/api/registry",
-			json!(agent),
-		)
-		.await;
+		let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			&app,
-			&deployment_administrator,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":AGENT_VERSION},"expected_revision":0,"enabled":true}),
@@ -312,15 +304,7 @@ impl Batching {
 			"research",
 			AGENT_VERSION,
 		)] = json!({"kind":"agent"});
-		let (status, body) = request(
-			&app,
-			&deployment_administrator,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
+		common::replace_policy(&f.store, "acme", policy.clone()).await;
 		Self {
 			_runtime: runtime,
 			_provider: provider,

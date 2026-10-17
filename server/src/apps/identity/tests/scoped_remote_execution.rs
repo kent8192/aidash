@@ -373,14 +373,14 @@ mod scoped_pair_composition {
 		let endpoint = model_server.url.clone();
 		let (mut source_policy, token, mut task) =
 			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
-		let (receiver_policy, _, _) =
+		let (receiver_policy, receiver_token, _) =
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
 		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
 		let (status, body) = request(
 			&ba,
-			&b.config.api_token,
+			&receiver_token,
 			"POST",
 			"/api/registry",
 			compactor_definition,
@@ -390,7 +390,7 @@ mod scoped_pair_composition {
 		assert_eq!(
 			request(
 				&ba,
-				&b.config.api_token,
+				&receiver_token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -637,6 +637,8 @@ async fn ordered_receiver_agent(
 	ba: &common::TestApplication,
 	source_policy: &mut Value,
 ) {
+	// Registry and catalog writes are a Tenant subject's (ADR 0029).
+	let receiver_token = common::tenant_token(&b.store, "acme").await;
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
 	let fetch = |id: &'static str| async move {
 		let (status, mut entry) = request(
@@ -664,11 +666,11 @@ async fn ordered_receiver_agent(
 	agent["config"]["projection_version"] = json!("ordered");
 	for entry in [model, agent] {
 		let id = entry["id"].as_str().unwrap().to_owned();
-		let (status, body) = request(ba, &b.config.api_token, "POST", "/api/registry", entry).await;
+		let (status, body) = request(ba, &receiver_token, "POST", "/api/registry", entry).await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			ba,
-			&b.config.api_token,
+			&receiver_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
@@ -1025,7 +1027,7 @@ async fn configure_semantic(
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		&a.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}),
