@@ -59,6 +59,12 @@ async fn registered(
 						.and_where(
 							Condition::all()
 								.add(
+									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
+										"tenant",
+									)))
+									.eq(Expr::cust("current_setting('aidash.tenant', true)")),
+								)
+								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id")))
 										.eq(SimpleExpr::CustomWithExpr(
 											"(?)".to_owned(),

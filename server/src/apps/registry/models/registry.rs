@@ -10,6 +10,8 @@ use serde_json::Value;
 #[derive(Serialize, Deserialize)]
 pub struct Definition {
 	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
+	#[field(primary_key = true, field_type = "text")]
 	pub id: String,
 	#[field(primary_key = true, field_type = "text")]
 	pub version: String,

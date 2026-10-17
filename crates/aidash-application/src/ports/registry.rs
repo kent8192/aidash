@@ -70,10 +70,14 @@ pub trait DefinitionWriter: DefinitionLookup {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool>;
 }
 
-/// Idempotency reservation, immutable insert and its event use this same scope.
+/// Idempotency reservation, the authority check, the immutable insert and its
+/// event use this same scope.
 #[async_trait]
 pub trait RegistrationScope: DefinitionWriter {
 	async fn assign_id(&mut self, entry: &mut Entry, key: Option<Uuid>) -> Result<()>;
+	/// Whether the requester may create this definition or version in its
+	/// Tenant (`registry.create`), decided in the same transaction as the write.
+	async fn authorize(&mut self, entry: &Entry) -> Result<()>;
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()>;
 }
 

@@ -29,7 +29,8 @@ pub(crate) async fn raw(
 				.column(Alias::new("metadata"))
 				.from(Alias::new("registry"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(id=? AND version=?)".to_owned(),
+					"(tenant=current_setting('aidash.tenant', true) AND id=? AND version=?)"
+						.to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),

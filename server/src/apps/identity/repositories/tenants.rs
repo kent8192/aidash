@@ -161,6 +161,7 @@ async fn insert_root(
 /// credential, as an approved Registration Request would be.
 pub(crate) async fn create(
 	tx: &mut AtomicTransaction,
+	node: &str,
 	label: &str,
 	personal: bool,
 	creator: Creator,
@@ -174,6 +175,13 @@ pub(crate) async fn create(
 		0,
 		serde_json::to_value(&bundle)?,
 		&creator.revision_actor(),
+	)
+	.await?;
+	// Every Tenant's Registry starts with the built-in definitions (ADR 0033).
+	crate::apps::registry::repositories::seed_tenant(
+		tx,
+		node,
+		&aidash_domain::tenancy::TenantName::new(name.clone())?,
 	)
 	.await?;
 	let mapping = match creator {

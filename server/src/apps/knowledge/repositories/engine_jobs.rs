@@ -411,8 +411,9 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 		workspace: bank_row.try_get("workspace_id")?,
 		participant: bank_row.try_get("participant_id")?,
 	};
-	let entry = crate::apps::registry::models::Definition::read_in(
+	let entry = crate::apps::registry::models::Definition::read_of(
 		&mut *claim_tx,
+		&bank.tenant,
 		&provider.id,
 		&provider.version,
 	)

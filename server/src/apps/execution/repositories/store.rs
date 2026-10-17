@@ -234,6 +234,16 @@ impl Store {
 		Ok(())
 	}
 
+	/// The Tenant of a Run, whose Registry holds its definitions. A Run without
+	/// one (only test fixtures create such Runs) has no Registry.
+	pub(crate) async fn run_tenant(&self, run: Uuid) -> Result<aidash_domain::tenancy::TenantName> {
+		self.run_tenancy(run)
+			.await?
+			.tenant_name()
+			.cloned()
+			.ok_or(Error::Forbidden)
+	}
+
 	/// The scope of a Run that a caller names only by id: its Tenant from the
 	/// local execution grant or the receiver's admission, found across Tenants
 	/// until #265 records the Tenant on the Run. A Run with neither has no

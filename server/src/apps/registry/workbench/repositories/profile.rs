@@ -68,7 +68,11 @@ impl ProfileRepository for Repository<'_> {
 	async fn definition(&self, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
 			.registry
-			.get(&reference.id, &reference.version)
+			.get(
+				&self.actor.registry_tenant()?,
+				&reference.id,
+				&reference.version,
+			)
 			.await
 			.map_err(Into::into)
 	}

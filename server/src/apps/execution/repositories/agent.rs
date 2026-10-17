@@ -844,8 +844,10 @@ impl ExecutionEnvironment for Environment<'_> {
 				context.source,
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
+				let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
 				let value =
-					crate::knowledge::load(&self.federation.registry, &binding.definition).await?;
+					crate::knowledge::load(&self.federation.registry, &tenant, &binding.definition)
+						.await?;
 				documents.extend(
 					value
 						.as_array()

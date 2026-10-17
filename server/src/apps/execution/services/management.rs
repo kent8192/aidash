@@ -10,7 +10,6 @@ use crate::{
 	authorization::{execution, identity::Actor, interaction},
 	domain::*,
 	federation::Federation,
-	registry::Search,
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::provider::progress::MARKER_PREFIX;
@@ -78,7 +77,8 @@ impl HarnessManagement {
 			let state = scope.state(f.config.identity(vec![])).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
-		let records = f.registry.list(&Search::default()).await?;
+		// Definitions belong to Tenants (ADR 0029): a Deployment Administrator sees none.
+		let records: Vec<crate::registry::Entry> = Vec::new();
 		// Scan newest first until 100 visible events are collected. Hidden
 		// required-Home events may occupy any number of candidate pages.
 		let mut events = Vec::new();
@@ -705,14 +705,15 @@ impl HarnessManagement {
 					attachment.content.clone(),
 				)?);
 			}
+			let tenant = f.store.run_tenant(run.id).await?;
 			let agent = f
 				.registry
-				.get_for_run(&run, &run.agent_id, &run.agent_version)
+				.get_for_run(&tenant, &run, &run.agent_id, &run.agent_version)
 				.await?;
 			let agent: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
 			let model = f
 				.registry
-				.get_for_run(&run, &agent.model.id, &agent.model.version)
+				.get_for_run(&tenant, &run, &agent.model.id, &agent.model.version)
 				.await?;
 			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
 			model.require_media_types(

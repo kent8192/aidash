@@ -8,18 +8,15 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub struct Federation {
-	node_id: String,
 	repository: Arc<dyn FederationRepository>,
 	transport: Arc<dyn PeerTransport>,
 }
 impl Federation {
 	pub fn new(
-		node_id: String,
 		repository: Arc<dyn FederationRepository>,
 		transport: Arc<dyn PeerTransport>,
 	) -> Self {
 		Self {
-			node_id,
 			repository,
 			transport,
 		}

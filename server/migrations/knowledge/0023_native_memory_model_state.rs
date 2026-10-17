@@ -297,18 +297,7 @@ pub(super) fn migration() -> Migration {
                 deferrable: None,
             },
         })
-        .add_operation(Operation::DropConstraintDefinition {
-            table: "memory_bank_settings".to_string(),
-            constraint: Constraint::ForeignKey {
-                name: "memory_settings_provider".to_string(),
-                columns: vec!["provider_id".to_string(), "provider_version".to_string()],
-                referenced_table: "registry".to_string(),
-                referenced_columns: vec!["id".to_string(), "version".to_string()],
-                on_delete: ForeignKeyAction::Restrict,
-                on_update: ForeignKeyAction::Restrict,
-                deferrable: None,
-            },
-        })
+
         .add_operation(Operation::DropConstraintDefinition {
             table: "memory_bank_settings".to_string(),
             constraint: Constraint::Check {
@@ -438,18 +427,7 @@ pub(super) fn migration() -> Migration {
                 deferrable: None,
             },
         })
-        .add_operation(Operation::DropConstraintDefinition {
-            table: "memory_engine_jobs".to_string(),
-            constraint: Constraint::ForeignKey {
-                name: "memory_job_provider".to_string(),
-                columns: vec!["provider_id".to_string(), "provider_version".to_string()],
-                referenced_table: "registry".to_string(),
-                referenced_columns: vec!["id".to_string(), "version".to_string()],
-                on_delete: ForeignKeyAction::Restrict,
-                on_update: ForeignKeyAction::Restrict,
-                deferrable: None,
-            },
-        })
+
         .add_operation(Operation::DropConstraintDefinition {
             table: "memory_engine_jobs".to_string(),
             constraint: Constraint::Check {
@@ -508,25 +486,14 @@ pub(super) fn migration() -> Migration {
                 deferrable: None,
             },
         })
-        .add_operation(Operation::DropConstraintDefinition {
-            table: "memory_model_operations".to_string(),
-            constraint: Constraint::ForeignKey {
-                name: "memory_operation_provider".to_string(),
-                columns: vec!["provider_id".to_string(), "provider_version".to_string()],
-                referenced_table: "registry".to_string(),
-                referenced_columns: vec!["id".to_string(), "version".to_string()],
-                on_delete: ForeignKeyAction::Restrict,
-                on_update: ForeignKeyAction::Restrict,
-                deferrable: None,
-            },
-        })
+
         .add_operation(Operation::DropConstraintDefinition {
             table: "memory_participants".to_string(),
             constraint: Constraint::ForeignKey {
                 name: "memory_participant_agent".to_string(),
-                columns: vec!["agent_id".to_string(), "agent_version".to_string()],
+                columns: vec!["tenant".to_string(), "agent_id".to_string(), "agent_version".to_string()],
                 referenced_table: "registry".to_string(),
-                referenced_columns: vec!["id".to_string(), "version".to_string()],
+                referenced_columns: vec!["tenant".to_string(), "id".to_string(), "version".to_string()],
                 on_delete: ForeignKeyAction::Restrict,
                 on_update: ForeignKeyAction::Restrict,
                 deferrable: None,
@@ -682,18 +649,7 @@ pub(super) fn migration() -> Migration {
                 deferrable: None,
             },
         })
-        .add_operation(Operation::DropConstraintDefinition {
-            table: "memory_run_bindings".to_string(),
-            constraint: Constraint::ForeignKey {
-                name: "memory_binding_provider".to_string(),
-                columns: vec!["provider_id".to_string(), "provider_version".to_string()],
-                referenced_table: "registry".to_string(),
-                referenced_columns: vec!["id".to_string(), "version".to_string()],
-                on_delete: ForeignKeyAction::Restrict,
-                on_update: ForeignKeyAction::Restrict,
-                deferrable: None,
-            },
-        })
+
         .add_operation(Operation::DropConstraintDefinition {
             table: "memory_run_bindings".to_string(),
             constraint: Constraint::ForeignKey {

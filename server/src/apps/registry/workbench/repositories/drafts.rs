@@ -61,14 +61,18 @@ impl DraftRepository for Repository {
 	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
 		self.runtime
 			.registry
-			.get(id, version)
+			.get(&self.actor.registry_tenant()?, id, version)
 			.await
 			.map_err(Into::into)
 	}
 	async fn original_documents(&self, entry: &Entry) -> Result<Value> {
-		crate::knowledge::load(&self.runtime.registry, entry)
-			.await
-			.map_err(Into::into)
+		crate::knowledge::load(
+			&self.runtime.registry,
+			&self.actor.registry_tenant()?,
+			entry,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {

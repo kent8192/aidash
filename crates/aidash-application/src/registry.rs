@@ -242,6 +242,7 @@ pub async fn register(
 	entry.normalize_agent(node)?;
 	if tracked {
 		scope.assign_id(&mut entry, key).await?;
+		scope.authorize(&entry).await?;
 	}
 	let inserted = register_definition(scope, validation, &entry, node).await?;
 	if tracked && inserted {

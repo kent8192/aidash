@@ -506,7 +506,6 @@ pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::to
 /// Discovery and worker retries share the native repository and rotating keys.
 pub(crate) fn federation(f: &Federation) -> aidash_application::federation::Federation {
 	aidash_application::federation::Federation::new(
-		f.config.node_id.clone(),
 		Arc::new(crate::apps::federation::remote::repositories::Repository {
 			federation: f.clone(),
 		}),
@@ -2221,8 +2220,9 @@ pub(crate) fn dashboard_logout(
 
 pub(crate) fn dashboard_login(
 	pool: crate::database::native::Pool,
+	node: &str,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(pool)
+	crate::apps::identity::repositories::dashboard::Login(pool, node.into())
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(
