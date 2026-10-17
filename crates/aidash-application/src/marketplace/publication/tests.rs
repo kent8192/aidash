@@ -264,11 +264,14 @@ async fn publication_keeps_immutable_bytes_and_orders_version_event_and_replay()
 }
 
 #[rstest]
-#[case("direct")]
-#[case("nested")]
-#[case("extra")]
+#[case::direct("direct", true)]
+#[case::nested("nested", true)]
+#[case::extra("extra", false)]
 #[tokio::test]
-async fn bundle_publication_rejects_builtin_dependencies_before_any_writes(#[case] path: &str) {
+async fn bundle_publication_names_builtin_members_but_never_ships_one(
+	#[case] path: &str,
+	#[case] published: bool,
+) {
 	use aidash_domain::{registry::bindings::QualifiedRef, tool::providers::core_descriptor};
 	let node = "aidash://publisher";
 	let mut scope = Fixture::new();
@@ -307,13 +310,25 @@ async fn bundle_publication_rejects_builtin_dependencies_before_any_writes(#[cas
 			version: "1.0.0".into(),
 		});
 	}
-	assert!(matches!(
-		publish(&mut scope, &validation(), &command, node).await,
-		Err(Error::Invalid(message)) if message.contains("system builtin")
-	));
-	assert!(scope.writes().is_empty());
-	assert!(scope.versions.is_empty());
-	assert!(scope.replay.is_none());
+	let result = publish(&mut scope, &validation(), &command, node).await;
+	if published {
+		assert!(result.is_ok(), "{:?}", result.err());
+		let version = scope.versions.values().next().unwrap();
+		assert!(
+			version
+				.dependencies
+				.iter()
+				.all(|dependency| !dependency.reference.id.starts_with("aidash."))
+		);
+	} else {
+		assert!(matches!(
+			result,
+			Err(Error::Invalid(message)) if message.contains("system builtin")
+		));
+		assert!(scope.writes().is_empty());
+		assert!(scope.versions.is_empty());
+		assert!(scope.replay.is_none());
+	}
 }
 
 #[tokio::test]

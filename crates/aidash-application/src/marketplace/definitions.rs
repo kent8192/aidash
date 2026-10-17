@@ -176,7 +176,18 @@ pub async fn publication_graph(
 	let mut result = vec![];
 	while let Some((r, kind)) = queue.pop() {
 		let entry = scope.catalog(&r, "registry.read").await?;
-		crate::registry::system::reject_distribution(&entry)?;
+		// Every Tenant holds the Deployment's definitions, so a reference to
+		// one travels by name and resolves in the recipient's Tenant. Only an
+		// explicit request to ship one as a dependency is refused.
+		if crate::registry::system::is_deployment_definition(&entry) {
+			if extra.contains(&r) {
+				crate::registry::system::reject_distribution(&entry)?;
+			}
+			if !kind.is_empty() && entry.kind != kind {
+				return Err(Error::Forbidden);
+			}
+			continue;
+		}
 		scope.require_export(&entry).await?;
 		if !kind.is_empty() && entry.kind != kind {
 			return Err(Error::Forbidden);
