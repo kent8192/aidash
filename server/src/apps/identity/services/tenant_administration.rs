@@ -73,7 +73,16 @@ impl TenantAdministrations {
 		tenant: String,
 	) -> Result<TenantAdministration> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		administrator.overview(&self.runtime.store.pool).await
+		let mut overview = administrator.overview(&self.runtime.store.pool).await?;
+		// With Invitations turned off for the Deployment nobody may issue one,
+		// whatever the policy allows, so the page offers no issue form;
+		// existing links stay listed and revocable.
+		if !self.runtime.config.tenancy.invitations {
+			overview.actions.retain(|action| {
+				action != aidash_domain::identity::tenant_administration::INVITATION_CREATE
+			});
+		}
+		Ok(overview)
 	}
 
 	pub(crate) async fn registrations(
@@ -81,9 +90,12 @@ impl TenantAdministrations {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		offset: u64,
 	) -> Result<Vec<TenantRegistration>> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let result = administrator.registrations(&self.runtime.store.pool).await;
+		let result = administrator
+			.registrations(&self.runtime.store.pool, offset)
+			.await;
 		self.finish(&administrator, result).await
 	}
 
@@ -104,6 +116,7 @@ impl TenantAdministrations {
 			Approval {
 				tenant,
 				subject: input.subject,
+				groups: None,
 			},
 			input.groups,
 			&AdministrationActor::TenantAdministrator(administrator.clone()),
@@ -184,7 +197,12 @@ impl TenantAdministrations {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let result = administrator
-			.update_memberships(&self.runtime.store.pool, subject, input)
+			.update_memberships(
+				&self.runtime.store.pool,
+				&AdministrationActor::TenantAdministrator(administrator.clone()),
+				subject,
+				input,
+			)
 			.await;
 		self.finish(&administrator, result).await
 	}

@@ -16,7 +16,12 @@ use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::policy::{Decision, Evaluation, Resource};
 use reinhardt::db::backends::TransactionExecutor;
+use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{AtomicTransaction, Model, QuerySet};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, IntoValue, JoinType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, TableRef,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -32,16 +37,23 @@ pub(crate) enum AdministrationActor {
 		identity: Uuid,
 	},
 	TenantAdministrator(Arc<TenantAdministrator>),
+	/// An External Identity acting for itself, such as creating a Tenant,
+	/// redeeming an Invitation or relabeling its Tenant through a Mapping.
+	Identity {
+		identity: Uuid,
+		mapping: Option<Uuid>,
+	},
 }
 
 /// The fields of one administration history row other than its actor.
 pub(crate) struct AdministrationEvent<'a> {
 	pub action: &'a str,
-	pub identity: Uuid,
+	pub identity: Option<Uuid>,
 	pub registration: Option<Uuid>,
 	pub mapping: Option<Uuid>,
 	pub tenant: Option<&'a str>,
 	pub subject: Option<&'a str>,
+	pub invitation: Option<Uuid>,
 }
 
 impl AdministrationActor {
@@ -53,6 +65,7 @@ impl AdministrationActor {
 			Self::TenantAdministrator(administrator) => {
 				format!("oidc:{}", administrator.identity_id)
 			}
+			Self::Identity { identity, .. } => format!("oidc:{identity}"),
 		}
 	}
 
@@ -63,12 +76,8 @@ impl AdministrationActor {
 		}
 	}
 
-	pub(crate) async fn record(
-		&self,
-		tx: &mut AtomicTransaction,
-		event: AdministrationEvent<'_>,
-	) -> Result<()> {
-		let (kind, identity, mapping) = match self {
+	fn parts(&self) -> (&'static str, Option<Uuid>, Option<Uuid>) {
+		match self {
 			Self::DeploymentAdministratorBearer => ("deployment_administrator", None, None),
 			Self::DeploymentAdministrator { identity } => {
 				("deployment_administrator", Some(*identity), None)
@@ -78,23 +87,59 @@ impl AdministrationActor {
 				Some(administrator.identity_id),
 				Some(administrator.mapping_id),
 			),
-		};
-		let row = DashboardAdministrationHistory::build()
-			.id(Uuid::new_v4())
-			.occurred_at(super::dashboard_administration::database_time(tx).await?)
-			.action(event.action.to_owned())
-			.identity_id(event.identity)
-			.registration_id(event.registration)
-			.mapping_id(event.mapping)
-			.tenant(event.tenant.map(str::to_owned))
-			.subject(event.subject.map(str::to_owned))
-			.actor_kind(kind.to_owned())
-			.actor_identity_id(identity)
-			.actor_mapping_id(mapping)
-			.finish();
-		DashboardAdministrationHistory::objects()
-			.create_with_conn(tx, &row)
-			.await?;
+			Self::Identity { identity, mapping } => ("identity", Some(*identity), *mapping),
+		}
+	}
+
+	/// The actor kind and acting External Identity, as Invitations record them.
+	pub(crate) fn kind_and_identity(&self) -> (&'static str, Option<Uuid>) {
+		let (kind, identity, _) = self.parts();
+		(kind, identity)
+	}
+
+	/// Appends one row to the administration history in the caller's transaction.
+	pub(crate) async fn record(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		event: AdministrationEvent<'_>,
+	) -> Result<()> {
+		let (kind, identity, mapping) = self.parts();
+		let occurred_at = super::dashboard_administration::database_time(tx).await?;
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new(DashboardAdministrationHistory::table_name()))
+			.columns(
+				[
+					"id",
+					"occurred_at",
+					"action",
+					"identity_id",
+					"registration_id",
+					"mapping_id",
+					"tenant",
+					"subject",
+					"actor_kind",
+					"actor_identity_id",
+					"actor_mapping_id",
+					"invitation_id",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				IntoValue::into_value(Uuid::new_v4()),
+				IntoValue::into_value(occurred_at),
+				IntoValue::into_value(event.action.to_owned()),
+				IntoValue::into_value(event.identity),
+				IntoValue::into_value(event.registration),
+				IntoValue::into_value(event.mapping),
+				IntoValue::into_value(event.tenant.map(str::to_owned)),
+				IntoValue::into_value(event.subject.map(str::to_owned)),
+				IntoValue::into_value(kind),
+				IntoValue::into_value(identity),
+				IntoValue::into_value(mapping),
+				IntoValue::into_value(event.invitation),
+			])
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())
 	}
 }
@@ -143,14 +188,21 @@ impl TenantAdministrator {
 		&self.identity.tenant
 	}
 
-	/// Whether a Registration Request from `identity` is addressed to this
-	/// Tenant: the identity belongs to the configured issuer's GCIP Tenant bound
-	/// to it. Without a Tenant Binding no request is, so only Deployment Administrators decide
-	/// them. Identities left by a previous issuer or Tenant Binding stay hidden.
-	pub(crate) fn sees(&self, identity: &DashboardIdentity) -> bool {
-		self.pool.as_deref().is_some_and(|pool| {
-			identity.issuer == self.policy.issuer && identity.gcip_tenant == pool
-		})
+	/// Whether this administrator may decide `registration` from `identity`: it
+	/// is addressed to this Tenant, through a Tenant Binding or an Invitation,
+	/// and comes from the configured issuer. Requests addressed to no Tenant
+	/// are decided only by Deployment Administrators.
+	pub(crate) fn sees(
+		&self,
+		registration: &DashboardRegistrationRequest,
+		identity: &DashboardIdentity,
+	) -> bool {
+		registration.tenant.as_deref() == Some(self.tenant())
+			&& identity.issuer == self.policy.issuer
+			&& self
+				.pool
+				.as_deref()
+				.is_none_or(|pool| identity.gcip_tenant.is_empty() || identity.gcip_tenant == pool)
 	}
 
 	/// Narrows `identities` to the configured issuer's and, under a Tenant
@@ -167,14 +219,129 @@ impl TenantAdministrator {
 		}
 	}
 
-	/// Display Attributes are disclosed only for identities of a bound GCIP
-	/// Tenant, whose people chose this Tenant by signing in to its pool.
-	fn view(&self, identity: &DashboardIdentity) -> TenantIdentity {
-		let bound = self.pool.is_some();
+	/// Display Attributes are disclosed only for people who chose this Tenant:
+	/// by addressing a Registration Request to it, through a Tenant Binding or
+	/// an Invitation, or by creating it.
+	fn view(&self, identity: &DashboardIdentity, chose: bool) -> TenantIdentity {
 		TenantIdentity {
 			id: identity.id,
-			verified_email: bound.then(|| identity.verified_email.clone()).flatten(),
-			display_name: bound.then(|| identity.display_name.clone()).flatten(),
+			verified_email: chose.then(|| identity.verified_email.clone()).flatten(),
+			display_name: chose.then(|| identity.display_name.clone()).flatten(),
+		}
+	}
+
+	/// The External Identities among `ids` that chose this Tenant.
+	async fn choosers(
+		&self,
+		tx: &mut AtomicTransaction,
+		ids: &BTreeSet<Uuid>,
+	) -> Result<BTreeSet<Uuid>> {
+		if ids.is_empty() {
+			return Ok(BTreeSet::new());
+		}
+		let mut chose: BTreeSet<Uuid> = DashboardRegistrationRequest::objects()
+			.filter(DashboardRegistrationRequest::field_tenant().eq(Some(self.tenant().to_owned())))
+			.filter(
+				DashboardRegistrationRequest::field_identity_id()
+					.is_in(ids.iter().copied().collect::<Vec<_>>()),
+			)
+			.all_with_db(tx)
+			.await?
+			.into_iter()
+			.map(|row| row.identity_id())
+			.collect();
+		chose.extend(
+			super::Tenant::objects()
+				.filter(super::Tenant::field_name().eq(self.tenant().to_owned()))
+				.filter(super::Tenant::field_created_by_kind().eq("identity".to_owned()))
+				.all_with_db(tx)
+				.await?
+				.into_iter()
+				.filter_map(|tenant| tenant.created_by_identity)
+				.filter(|identity| ids.contains(identity)),
+		);
+		Ok(chose)
+	}
+
+	/// Refuses a change by this Tenant's own members that would leave no
+	/// enabled Mapping whose subject `bundle` allows every administration
+	/// action without conditions (ADR 0026). `leaving` is a Mapping the change
+	/// disables. Deployment Administrators never pass through here.
+	pub(crate) async fn require_remaining_administrator(
+		&self,
+		tx: &mut AtomicTransaction,
+		bundle: &aidash_domain::policy::PolicyBundle,
+		leaving: Option<Uuid>,
+	) -> Result<()> {
+		use aidash_domain::identity::tenancy::has_unconditional_administrator;
+		let refused = || {
+			Err(Error::Conflict(
+				"the Tenant would be left without a Tenant Administrator".into(),
+			))
+		};
+		// Which subjects could be the administrator follows from the bundle
+		// alone, which is bounded; a subject the bundle does not list is
+		// judged like any other unlisted one.
+		let unlisted = format!("unlisted-{}", Uuid::new_v4().simple());
+		let any_subject = !bundle.subjects.contains_key(&unlisted)
+			&& has_unconditional_administrator(bundle, [unlisted.as_str()]);
+		let listed: Vec<String> = bundle
+			.subjects
+			.keys()
+			.filter(|subject| has_unconditional_administrator(bundle, [subject.as_str()]))
+			.cloned()
+			.collect();
+		if !any_subject && listed.is_empty() {
+			return refused();
+		}
+		// One bounded question, however many Mappings the Tenant has: does an
+		// enabled Mapping of an enabled External Identity, whose credential
+		// can still act, map such a subject?
+		let now = super::dashboard_administration::database_time(tx).await?;
+		let mapping = |column: &str| (Alias::new("m"), Alias::new(column));
+		let mut query = Query::select();
+		query
+			.expr(Expr::value(1_i32))
+			.from_as(Alias::new(DashboardMapping::table_name()), Alias::new("m"))
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(
+					Alias::new(DashboardIdentity::table_name()),
+					Alias::new("i"),
+				),
+				Expr::col((Alias::new("i"), Alias::new("id"))).equals(mapping("identity_id")),
+			)
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(
+					Alias::new(super::AuthorizationCredential::table_name()),
+					Alias::new("c"),
+				),
+				Expr::col((Alias::new("c"), Alias::new("id"))).equals(mapping("credential_id")),
+			)
+			.and_where(Expr::col(mapping("tenant")).eq(Expr::value(self.tenant().to_owned())))
+			.and_where(Expr::col(mapping("enabled")).eq(Expr::value(true)))
+			.and_where(Expr::col((Alias::new("i"), Alias::new("disabled_at"))).is_null())
+			// A Mapping whose credential is revoked or expired cannot act.
+			.and_where(Expr::col((Alias::new("c"), Alias::new("revoked_at"))).is_null())
+			.and_where(Expr::col((Alias::new("c"), Alias::new("expires_at"))).gt(Expr::value(now)))
+			.limit(1);
+		if let Some(leaving) = leaving {
+			query.and_where(Expr::col(mapping("id")).ne(Expr::value(leaving)));
+		}
+		if !any_subject {
+			query.and_where(
+				Expr::col(mapping("subject")).is_in(listed.into_iter().map(Expr::value)),
+			);
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		if TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
+			.await?
+			.is_some()
+		{
+			Ok(())
+		} else {
+			refused()
 		}
 	}
 
@@ -299,7 +466,27 @@ impl TenantAdministrator {
 				}
 			}
 			let administrator = !actions.is_empty();
+			let tenant = self.tenant().to_owned();
+			if self
+				.allowed(
+					tx,
+					&snapshot,
+					aidash_domain::identity::tenancy::TENANT_UPDATE,
+					&tenant,
+					json!({}),
+				)
+				.await?
+			{
+				actions.push(aidash_domain::identity::tenancy::TENANT_UPDATE.to_owned());
+			}
+			let label = super::Tenant::objects()
+				.filter(super::Tenant::field_name().eq(tenant))
+				.all_with_db(tx)
+				.await?
+				.pop()
+				.and_then(|root| root.label);
 			Ok(TenantAdministration {
+				label,
 				tenant: self.tenant().to_owned(),
 				actions,
 				assignable_groups: if administrator {
@@ -313,11 +500,16 @@ impl TenantAdministrator {
 		.await
 	}
 
-	/// Pending Registration Requests from the configured issuer's bound GCIP
-	/// Tenant only, other than this administrator's own. Requests from other
-	/// GCIP Tenants are excluded in SQL, so other Tenants' queues are not read.
-	/// Without a Tenant Binding no request is addressed to this Tenant.
-	pub(crate) async fn registrations(&self, db: &Pool) -> Result<Vec<TenantRegistration>> {
+	/// One page of pending Registration Requests addressed to this Tenant,
+	/// through a Tenant Binding or an Invitation, other than this
+	/// administrator's own, newest first. Requests addressed elsewhere or to no
+	/// Tenant, and those of hidden identities, are excluded in SQL before
+	/// paging, so a large bound pool never loads its whole queue.
+	pub(crate) async fn registrations(
+		&self,
+		db: &Pool,
+		offset: u64,
+	) -> Result<Vec<TenantRegistration>> {
 		db.atomic(&self.scope()?, async |tx| {
 			let snapshot = self.lock(tx, false).await?;
 			self.require(
@@ -328,11 +520,11 @@ impl TenantAdministrator {
 				json!({}),
 			)
 			.await?;
-			if self.pool.is_none() {
-				return Ok(Vec::new());
-			}
 			let now = super::dashboard_administration::database_time(tx).await?;
 			let pending = DashboardRegistrationRequest::objects()
+				.filter(
+					DashboardRegistrationRequest::field_tenant().eq(Some(self.tenant().to_owned())),
+				)
 				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
 				.filter(DashboardRegistrationRequest::field_expires_at().gt(now))
 				.filter(DashboardRegistrationRequest::field_identity_id().ne(self.identity_id))
@@ -340,20 +532,43 @@ impl TenantAdministrator {
 					self.visible(identities).values(&["id"])
 				})?
 				.order_by(&["-created_at", "-id"])
+				.limit(200)
+				.offset(offset as usize)
 				.all_with_db(tx)
 				.await?;
 			let identities = self
 				.identities(tx, pending.iter().map(|row| row.identity_id()).collect())
 				.await?;
+			let invitations: BTreeMap<Uuid, super::TenantInvitation> =
+				super::TenantInvitation::objects()
+					.filter(
+						super::TenantInvitation::field_id().is_in(
+							pending
+								.iter()
+								.filter_map(|row| row.invitation_id)
+								.collect::<Vec<_>>(),
+						),
+					)
+					.all_with_db(tx)
+					.await?
+					.into_iter()
+					.map(|invitation| (invitation.id, invitation))
+					.collect();
 			Ok(pending
 				.into_iter()
 				.filter_map(|row| {
 					let identity = identities.get(&row.identity_id())?;
 					Some(TenantRegistration {
 						id: row.id,
-						identity: self.view(identity),
+						identity: self.view(identity, true),
 						created_at: row.created_at,
 						expires_at: row.expires_at,
+						invitation_id: row.invitation_id,
+						proposed_groups: row
+							.invitation_id
+							.and_then(|id| invitations.get(&id))
+							.map(crate::apps::identity::repositories::invitations::proposed)
+							.unwrap_or_default(),
 					})
 				})
 				.collect())
@@ -387,6 +602,9 @@ impl TenantAdministrator {
 			let identities = self
 				.identities(tx, mappings.iter().map(|row| row.identity_id()).collect())
 				.await?;
+			let chose = self
+				.choosers(tx, &identities.keys().copied().collect())
+				.await?;
 			let own_subjects = self.own_subjects(tx).await?;
 			Ok(mappings
 				.into_iter()
@@ -394,7 +612,7 @@ impl TenantAdministrator {
 					let identity = identities.get(&row.identity_id())?;
 					Some(TenantMapping {
 						id: row.id,
-						identity: self.view(identity),
+						identity: self.view(identity, chose.contains(&identity.id)),
 						groups: rules::memberships(&snapshot.bundle, &row.subject),
 						own_identity: identity.id == self.identity_id,
 						own_subject: own_subjects.contains(&row.subject),
@@ -443,9 +661,12 @@ impl TenantAdministrator {
 	}
 
 	/// Replaces a user subject's Assignable Group memberships, never its own.
+	/// `actor` is this administrator, which records a change in the
+	/// administration history.
 	pub(crate) async fn update_memberships(
 		&self,
 		db: &Pool,
+		actor: &AdministrationActor,
 		subject: String,
 		input: MembershipUpdate,
 	) -> Result<Membership> {
@@ -468,7 +689,23 @@ impl TenantAdministrator {
 			.await?;
 			if rules::replace_assignable_memberships(&mut snapshot.bundle, &subject, &input.groups)?
 			{
+				self.require_remaining_administrator(tx, &snapshot.bundle, None)
+					.await?;
 				snapshot.revision = self.save_policy(tx, &snapshot).await?;
+				actor
+					.record(
+						tx,
+						AdministrationEvent {
+							action: rules::SUBJECT_GROUP_UPDATE,
+							identity: None,
+							registration: None,
+							mapping: None,
+							tenant: Some(self.tenant()),
+							subject: Some(&subject),
+							invitation: None,
+						},
+					)
+					.await?;
 			}
 			Ok(Membership {
 				groups: rules::memberships(&snapshot.bundle, &subject),

@@ -28,6 +28,11 @@ impl AuthorizationBundle {
 		actor: &str,
 	) -> Result<i64> {
 		authority_control(tx).await?;
+		// Only the Tenant creation API makes Tenants (ADR 0050); a first policy
+		// needs the root record it already wrote.
+		if expected_revision == 0 && !super::Tenant::exists(tx, tenant).await? {
+			return Err(Error::NotFound("tenant".into()));
+		}
 		let (sql, values) = if expected_revision == 0 {
 			Query::insert()
 				.into_table(Alias::new(Self::table_name()))

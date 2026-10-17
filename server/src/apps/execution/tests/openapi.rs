@@ -58,16 +58,18 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 	}
 	let mut operation_ids = BTreeSet::new();
 	for (path, operations) in paths {
+		// Public browser endpoints that publish a typed contract: desktop
+		// sign-in, and an Invitation holder opening or redeeming a link.
+		let public = path.starts_with("/auth/desktop/") || path.starts_with("/auth/invitations/");
 		assert!(
-			path.starts_with("/api/")
-				|| path.starts_with("/federation/v0.1/")
-				|| path.starts_with("/auth/desktop/")
+			path.starts_with("/api/") || path.starts_with("/federation/v0.1/") || public,
+			"{path}"
 		);
 		for operation in operations.as_object().unwrap().values() {
 			let id = operation["operationId"].as_str().expect("named operation");
 			assert!(operation_ids.insert(id), "duplicate operation {id}");
-			if path.starts_with("/auth/desktop/") {
-				assert_eq!(operation["security"], json!([{}]));
+			if public {
+				assert_eq!(operation["security"], json!([{}]), "{path}");
 			} else {
 				assert_eq!(operation["security"][0]["bearer_auth"], json!([]));
 			}

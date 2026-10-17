@@ -3,7 +3,7 @@ use super::DatabaseFixture;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::{AuthorizationBundle, AuthorizationWorkspace},
+	apps::identity::models::{AuthorizationBundle, AuthorizationWorkspace, Tenant},
 	registry::{Entry, Registry},
 	store::Store,
 };
@@ -223,6 +223,21 @@ pub(super) async fn setup_endpoint_policy(
 	let mut db = database.lease.handle();
 	let bundle: aidash_domain::policy::PolicyBundle =
 		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
+	// A policy references its Tenant's root record (ADR 0050).
+	Tenant::objects()
+		.create_with_conn(
+			&mut db,
+			&Tenant::build()
+				.name("acme".to_owned())
+				.label(Some("acme".to_owned()))
+				.personal(false)
+				.created_at(chrono::Utc::now())
+				.created_by_kind("deployment_administrator".to_owned())
+				.created_by_identity(None)
+				.finish(),
+		)
+		.await
+		.unwrap();
 	AuthorizationBundle::objects()
 		.create_with_conn(
 			&mut db,

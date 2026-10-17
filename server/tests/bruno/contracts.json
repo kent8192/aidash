@@ -30002,7 +30002,7 @@
     "source": "server/src/apps/identity/views/tenant_administration.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": []
+    "query_parameters": ["offset"]
   },
   {
     "method": "POST",
@@ -30045,6 +30045,78 @@
     "path": "/api/tenants/{tenant}/subjects/{subject}/groups",
     "name": "tenant-subject-groups",
     "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants",
+    "name": "tenants-create",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants",
+    "name": "tenants-list",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["offset"]
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/label",
+    "name": "tenants-label",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/invitations",
+    "name": "tenant-invitations-issue",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/invitations",
+    "name": "tenant-invitations",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/invitations/{id}/revoke",
+    "name": "tenant-invitations-revoke",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/auth/invitations/inspect",
+    "name": "invitations-inspect",
+    "source": "server/src/apps/identity/views/invitations.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/auth/invitations/redeem",
+    "name": "invitations-redeem",
+    "source": "server/src/apps/identity/views/invitations.rs",
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []

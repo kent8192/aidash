@@ -248,6 +248,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	);
 	let mut other_policy = common::policy(&f.config.node_id);
 	other_policy["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,
@@ -791,6 +792,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			 "resources":{"kinds":["workspace"],"ids":[final_id.to_string()]}}
 		]
 	});
+	common::tenant_root(&f, "sparse").await;
 	let (status, written) = request(
 		&app,
 		&f.config.api_token,

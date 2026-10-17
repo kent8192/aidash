@@ -395,6 +395,7 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	let mapping = json!({"source_node":SOURCE,"source_tenant":"remote","source_subject":"bob","credential_id":credential,"enabled":true,"expected_revision":0});
 	let mut other_policy = policy.clone();
 	other_policy["tenant"] = json!("other");
+	crate::endpoint::tenant_root(f, "other").await;
 	assert_eq!(
 		request(
 			app,

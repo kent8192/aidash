@@ -1,7 +1,7 @@
 //! Database-owned execution responsibility is independent of transport delivery.
 use crate::{Result, ports::activation::*};
 use aidash_domain::{
-	FailureTarget, Run, RunControl, RunState, WaitingState,
+	FailureTarget, ResumeState, Run, RunControl, RunState, WaitingState,
 	activation::{Envelope, QuarantineReason},
 	run_state::{PersistedCapability, RawRun, StateRequirements},
 };
@@ -42,6 +42,21 @@ fn skipped_for_capability(run: Uuid, unmet: &[String]) {
 	tracing::debug!(run_id=%run, missing=%unmet.join(","), "run waits for a worker with the capabilities its state needs");
 }
 
+/// The last input the candidate under review included, when request `id` is
+/// the Completion Review the Run waits on. Mirrors the step's own check.
+fn review_candidate_input(raw: &RawRun, wait: &WaitingState, id: Uuid) -> Option<i64> {
+	if raw.context["completion"]["review"] != id.to_string() {
+		return None;
+	}
+	Some(match wait {
+		WaitingState::Human {
+			resume: ResumeState::ToolCall(state),
+			..
+		} => state.included_input_seq,
+		_ => raw.metadata.observed_input_seq,
+	})
+}
+
 /// Database time and locked records govern readiness, including malformed state.
 pub async fn due(
 	scope: &mut dyn SchedulingScope,
@@ -75,6 +90,12 @@ pub async fn due(
 					// step after releasing this local scheduling transaction.
 					Some(m.updated_at + chrono::Duration::seconds(1))
 				} else if scope.human_answered(id).await? {
+					Some(now)
+				} else if let Some(included) = review_candidate_input(raw, wait, id)
+					&& scope.input_after(m.id, included).await?
+				{
+					// Newer input supersedes the Run's Completion Review (#112);
+					// the step answers the review on the Run's behalf.
 					Some(now)
 				} else {
 					wait.deadline()

@@ -781,7 +781,7 @@ fn federation(
 				api_token: "test-access-token".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
-				default_host_packages: vec![],
+				tenancy: Default::default(),
 				oidc: None,
 				gcip: None,
 			},
@@ -3480,7 +3480,7 @@ fn authenticated_runtime(
 			api_token: "test-access-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			default_host_packages: vec![],
+			tenancy: Default::default(),
 			oidc: None,
 			gcip: None,
 		};

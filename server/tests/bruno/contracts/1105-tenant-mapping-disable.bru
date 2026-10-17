@@ -1,5 +1,5 @@
 meta {
-  name: 1105 tenant-mapping-disable - Subject Credential bearer is never a Tenant Administrator
+  name: 1105 tenant-mapping-disable - Deployment Administrator bearer is never a Tenant Administrator
   type: http
   seq: 1105
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 

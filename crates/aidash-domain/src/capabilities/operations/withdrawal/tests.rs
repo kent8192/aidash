@@ -4,6 +4,7 @@ use rstest::{fixture, rstest};
 fn snapshot() -> Snapshot {
 	Snapshot {
 		operation_id: Uuid::from_u128(1),
+		kind: "shell".into(),
 		state: "running".into(),
 		epoch: 8,
 		generation: 3,
@@ -62,5 +63,30 @@ fn an_old_operation_cannot_change_a_newer_area(mut snapshot: Snapshot, #[case] c
 		"state" => snapshot.area_state = "active".into(),
 		_ => unreachable!(),
 	}
+	assert_eq!(snapshot.change(true).area_state, None);
+}
+/// A withdrawn Check keeps the Area fenced only while its writer may run: it
+/// never exports `/work`, so a confirmed stop reopens the Area, including one
+/// an earlier unconfirmed pass fenced.
+#[rstest]
+#[case::confirmed_running_area(true, "running", Some("active"))]
+#[case::pending_stop(false, "running", Some("uncertain"))]
+#[case::confirmed_after_a_fenced_pass(true, "uncertain", Some("active"))]
+#[case::still_unconfirmed(false, "uncertain", None)]
+fn a_withdrawn_check_reopens_the_area_once_its_writer_stopped(
+	mut snapshot: Snapshot,
+	#[case] stopped: bool,
+	#[case] area: &str,
+	#[case] expected: Option<&str>,
+) {
+	snapshot.kind = super::super::VERIFICATION.into();
+	snapshot.state = "cancelling".into();
+	snapshot.area_state = area.into();
+	assert_eq!(snapshot.change(stopped).area_state, expected);
+}
+#[rstest]
+fn a_withdrawn_shell_stays_fenced_after_a_confirmed_stop(mut snapshot: Snapshot) {
+	snapshot.state = "cancelling".into();
+	snapshot.area_state = "uncertain".into();
 	assert_eq!(snapshot.change(true).area_state, None);
 }

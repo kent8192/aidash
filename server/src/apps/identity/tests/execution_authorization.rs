@@ -354,6 +354,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	);
 	let mut other = policy.clone();
 	other["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	assert_eq!(
 		request(
 			&app,

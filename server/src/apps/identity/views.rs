@@ -35,3 +35,7 @@ pub mod desktop;
 pub mod provider_credentials;
 
 pub mod tenant_administration;
+
+pub mod tenants;
+
+pub mod invitations;

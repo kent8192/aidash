@@ -1421,7 +1421,7 @@ async fn child_runtime(
 			api_token: "fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			default_host_packages: vec![],
+			tenancy: Default::default(),
 			oidc: None,
 			gcip: None,
 		},
