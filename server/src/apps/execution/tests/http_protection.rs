@@ -223,18 +223,14 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		invalid.json_value().unwrap()["error"],
 		"invalid request fields: title"
 	);
-	assert_eq!(
-		deployment_administrator
-			.post(
-				"/api/workspaces",
-				&json!({"title":"first","goal":"valid"}),
-				"json"
-			)
-			.await
-			.unwrap()
-			.status_code(),
-		200
-	);
+	// Deployment Administrators no longer create work (ADR 0043); the
+	// Tenant's workspaces produce the events the stream resumes over.
+	let scope = common::tenant_scope(&federation.store, "acme").await;
+	federation
+		.store
+		.create_workspace(&scope, "alice", "first", "valid")
+		.await
+		.unwrap();
 	let before = federation
 		.store
 		.events(&TEST_FIXTURE, 0, None, 500)
@@ -243,18 +239,11 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.last()
 		.unwrap()
 		.sequence;
-	assert_eq!(
-		deployment_administrator
-			.post(
-				"/api/workspaces",
-				&json!({"title":"second","goal":"valid"}),
-				"json"
-			)
-			.await
-			.unwrap()
-			.status_code(),
-		200
-	);
+	federation
+		.store
+		.create_workspace(&scope, "alice", "second", "valid")
+		.await
+		.unwrap();
 	let after = federation
 		.store
 		.events(&TEST_FIXTURE, before, None, 500)

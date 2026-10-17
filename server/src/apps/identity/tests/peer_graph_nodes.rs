@@ -350,17 +350,21 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	}
 	assert!(bob_nodes.iter().any(|node| node["kind"] == "workspace"));
 	assert!(!bob_nodes.iter().any(|node| node["kind"] == "agent"));
-	let (status, withdrawn) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false,
-		}),
+	aidash_server::authorization::Authorization {
+		pool: b.f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200, "{withdrawn}");
+	.await
+	.unwrap();
 	assert_eq!(
 		expand(
 			&a,

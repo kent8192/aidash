@@ -1473,18 +1473,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		200
 	);
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-discovered-registry","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["discovered-only"]}}));
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":bundle})
-		)
-		.await
-		.0,
-		200
-	);
+	common::replace_policy(&f.store, "acme", bundle.clone()).await;
 	assert_eq!(
 		request(&app, &token, "GET", &path, Value::Null).await.0,
 		403

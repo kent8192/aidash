@@ -257,6 +257,7 @@ async fn draft_conflict_register_and_factual_inspection(
 		.unwrap();
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[
 		{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.register","agent_draft.test","agent_draft.share","agent_draft.transfer","agent_draft.archive","agent_dependency.read","agent_version.inspect","agent_incident.manage","agent_incident.read"],"resources":{"kinds":["agent_draft","registry_entry","agent_version","agent_incident"]}},
+		{"id":"registrar","effect":"allow","subjects":{"ids":["alice"]},"actions":["registry.create"],"resources":{"kinds":["*"]}},
 		{"id":"editor","effect":"allow","subjects":{"ids":["bob"]},"actions":["agent_draft.read","agent_draft.write"],"resources":{"kinds":["agent_draft"]}}
 	]});
 	common::tenant_root(&f, "acme").await;

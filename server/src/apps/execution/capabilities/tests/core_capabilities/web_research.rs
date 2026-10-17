@@ -198,9 +198,9 @@ impl Research {
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-research","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["research"]}}));
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}
-	/// Registers `research@3.1.0`, which binds only Web search, under the
-	/// policy revision `expected_revision`.
-	async fn register_search_only_agent(&mut self, expected_revision: i64) {
+	/// Registers `research@3.1.0`, which binds only Web search, at the
+	/// current policy revision.
+	async fn register_search_only_agent(&mut self) {
 		let node = self.c.f.config.node_id.clone();
 		self.c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&node, "research", "3.1.0")] = json!({"kind":"agent"});
@@ -218,19 +218,15 @@ impl Research {
 		agent.version = "3.1.0".into();
 		agent.binding_normalization = None;
 		agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":node,"id":self.search_tool["id"],"version":self.search_tool["version"]},"narrow":{}}]);
+		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 		for (path, body) in [
-			(
-				"/api/authorization/acme",
-				json!({"expected_revision":expected_revision,"bundle":self.c.policy}),
-			),
 			("/api/registry", json!(agent)),
 			(
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
 			),
 		] {
-			let (status, value) =
-				request(&self.c.app, &self.c.f.config.api_token, "POST", path, body).await;
+			let (status, value) = request(&self.c.app, &self.c.token, "POST", path, body).await;
 			assert_eq!(status, 200, "{path}: {value}");
 		}
 	}
@@ -455,7 +451,7 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 	);
 	// An Agent version that binds Web search but no Page reading cannot act
 	// on one, and nothing is created.
-	r.register_search_only_agent(4).await;
+	r.register_search_only_agent().await;
 	let (status, refused) = request(
 		&r.c.app,
 		&r.c.token,
