@@ -233,3 +233,34 @@ fn a_run_steered_many_times_carries_only_its_newest_pages() {
 	let newest = carried[carried.len() - MAX_CARRIED_PAGES / MAX_URL_INTENTS..].concat();
 	assert_eq!(requested, [task, newest, current].concat());
 }
+
+#[rstest]
+fn carried_pages_take_no_more_bytes_than_one_input_may() {
+	// Arrange: four taken-in inputs, each asking for five of the longest
+	// addresses a page may have.
+	let long = |input: usize, index: usize| {
+		let prefix = format!("https://example.org/{input}/{index}/");
+		format!(
+			"{prefix}{}",
+			"a".repeat(crate::research::search::MAX_URL_BYTES - prefix.len())
+		)
+	};
+	let carried = (0..4)
+		.map(|input| {
+			(0..MAX_URL_INTENTS)
+				.map(|index| long(input, index))
+				.collect::<Vec<_>>()
+		})
+		.collect::<Vec<_>>();
+
+	// Act
+	let requested = requested_pages(
+		&[],
+		&carried.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+		&[],
+	);
+
+	// Assert: only the newest input's pages fit, in their original order.
+	assert_eq!(requested, carried[3]);
+	assert!(requested.iter().map(String::len).sum::<usize>() <= MAX_CARRIED_PAGE_BYTES);
+}

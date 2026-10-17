@@ -627,7 +627,15 @@ async fn a_run_grant_covers_only_the_operation_and_search_provider_it_was_given_
 	let mut other = request();
 	other.digest = "sha256:other-provider".into();
 	other.provider = "research.other@1".into();
-	for request in [read, other] {
+	// Nor a search charged otherwise than the approver was shown, such as
+	// after the Deployment restarted with another account or price.
+	let mut charged = request();
+	charged.digest = "sha256:other-charge".into();
+	charged.attribution = Some(aidash_domain::research::account::CostAttribution {
+		account_id: "another-account".into(),
+		price_micro_usd: 5_000,
+	});
+	for request in [read, other, charged] {
 		assert!(matches!(
 			disclose(&mut scope, &run, &request).await.unwrap(),
 			DisclosureState::Pending { .. }

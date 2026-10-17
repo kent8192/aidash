@@ -17,10 +17,15 @@ pub const MAX_URL_INTENTS: usize = 5;
 /// later step renders stay bounded however long it runs.
 pub const MAX_CARRIED_PAGES: usize = 4 * MAX_URL_INTENTS;
 
+/// Most bytes of carried page addresses: no more than one input's own
+/// request may take, so carrying never renders more than a single input can.
+pub const MAX_CARRIED_PAGE_BYTES: usize = MAX_URL_INTENTS * super::search::MAX_URL_BYTES;
+
 /// The pages one step asks the model to read, each once and in order: the
-/// Task's own; the newest [`MAX_CARRIED_PAGES`] of those asked for by the
-/// inputs the Run already took in (`carried`, oldest first), which no page of
-/// the step shows; and those of the inputs on this step (`current`).
+/// Task's own; the newest of those asked for by the inputs the Run already
+/// took in (`carried`, oldest first), which no page of the step shows, up to
+/// [`MAX_CARRIED_PAGES`] pages and [`MAX_CARRIED_PAGE_BYTES`]; and those of
+/// the inputs on this step (`current`).
 pub fn requested_pages(
 	task: &[String],
 	carried: &[&[String]],
@@ -36,13 +41,16 @@ pub fn requested_pages(
 		add(&mut pages, page);
 	}
 	let mut newest: Vec<String> = Vec::new();
+	let mut bytes = 0;
 	for page in carried.iter().rev().flat_map(|pages| pages.iter().rev()) {
-		if newest.len() == MAX_CARRIED_PAGES {
+		if pages.contains(page) || newest.contains(page) {
+			continue;
+		}
+		if newest.len() == MAX_CARRIED_PAGES || bytes + page.len() > MAX_CARRIED_PAGE_BYTES {
 			break;
 		}
-		if !pages.contains(page) && !newest.contains(page) {
-			newest.push(page.clone());
-		}
+		bytes += page.len();
+		newest.push(page.clone());
 	}
 	pages.extend(newest.into_iter().rev());
 	for page in current.iter().flat_map(|pages| pages.iter()) {

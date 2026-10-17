@@ -249,10 +249,25 @@ impl ResearchAttempt {
 			.build(PostgresQueryBuilder);
 		let row = tx.fetch_one(&sql, convert_values(values)).await?;
 		let data = QueryRow::from_backend_row(row).data;
-		let charged = data["charged"]
-			.as_i64()
-			.or_else(|| data["charged"].as_str().and_then(|text| text.parse().ok()))
-			.unwrap_or(0);
+		// SUM(bigint) is numeric, which a Run's lifetime total may make wider
+		// than i64: a total beyond u64 saturates, and an unreadable one is an
+		// error, never a zero charge.
+		let total = &data["charged"];
+		let charged = total
+			.as_u64()
+			.or_else(|| {
+				total
+					.as_str()
+					.and_then(|text| text.parse::<u128>().ok())
+					.map(|sum| u64::try_from(sum).unwrap_or(u64::MAX))
+			})
+			.or_else(|| {
+				total
+					.as_f64()
+					.filter(|sum| *sum >= 0.0)
+					.map(|sum| sum as u64)
+			})
+			.ok_or_else(|| Error::External(format!("unreadable research charge total {total}")))?;
 		let unknown = count(
 			tx,
 			Self::table_name(),
@@ -261,7 +276,7 @@ impl ResearchAttempt {
 		)
 		.await?;
 		let dispatched = count(tx, Self::table_name(), run, &[("outcome", DISPATCHED)]).await?;
-		Ok((u64::try_from(charged).unwrap_or(0), unknown, dispatched))
+		Ok((charged, unknown, dispatched))
 	}
 
 	/// Charged attempts of one account since `since`, including attempts whose

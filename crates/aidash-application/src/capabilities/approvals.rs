@@ -277,7 +277,7 @@ pub async fn decide(
 			{
 				return Err(Error::Invalid("INVALID_GRANT_SCOPE".into()));
 			}
-			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"context_revision":record.data["context_revision"],"operation":record.data["operation"],"provider":record.data["provider"]}),expires:Some(expires)}).await?;
+			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"context_revision":record.data["context_revision"],"operation":record.data["operation"],"provider":record.data["provider"],"attribution":record.data["attribution"]}),expires:Some(expires)}).await?;
 			scope.transfer_owner(grant.id, &record.owner).await?;
 			record.data["grant_id"] = json!(grant.id);
 			record.data["approval_mode"] = json!("allow_run");
@@ -544,11 +544,13 @@ pub async fn disclose(
 				.as_array()
 				.is_some_and(|a| a.contains(&json!(DISCLOSE)))
 			// A grant covers what the approver was told it covers: a search
-			// grant only later searches through its provider, a Page reading
-			// grant only page readings of its host, through any provider.
+			// grant only later searches through its provider, charged to the
+			// same Research account at the same price, a Page reading grant
+			// only page readings of its host, through any provider.
 			&& g.data["operation"] == json!(request.operation)
 			&& (request.operation != aidash_domain::research::Operation::Search
-				|| g.data["provider"] == json!(request.provider))
+				|| (g.data["provider"] == json!(request.provider)
+					&& g.data["attribution"] == json!(request.attribution)))
 			&& g.data["subjects"] == json!(scope.subjects())
 			// New user input needs a new decision, as for one-time approvals.
 			&& g.data["context_revision"] == json!(request.context_revision)
