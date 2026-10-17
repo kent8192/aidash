@@ -92,6 +92,46 @@ fragment identities, instead of dispatching again. An attempt that was
 dispatched but never recorded (for example after a crash) returns
 `outcome_unknown` and is never repeated.
 
+### Provider results under the Research account terms
+
+Results a provider with Research account terms returned are Provider results:
+search results (titles, snippets, ranks, page ages and the list of
+addresses) and the contents of pages such a provider read. Pages that
+`research.page@1` read by address are not Provider results. Each attempt
+records the account and its `retention_days` when the result was retrieved
+(ADR 0058).
+
+A Provider result keeps its basis until the earlier of these times:
+
+- its retrieval plus the shorter of the recorded `retention_days` and the
+  account's current `retention_days`, if the account is still declared;
+- the account's `terminated_at` plus `deletion_after_termination_days`.
+
+Shorter terms apply to results already kept; longer terms never extend them.
+A removed declaration still expires its results by the recorded period.
+Aidash stores a `terminated_at` the first time a sweep reads it
+(`research_account_terminations`), so removing the declaration later does not
+undo it. From that time the account admits no request (`account_unavailable`).
+
+The hourly retention loop, which also runs at startup, purges Provider results
+without a basis in Deployment Scope. It replaces with tombstones the attempt's
+recorded result, the stored research results built from it in `invocations`
+and in `tool.completed` events, the titles of the Source records a search
+created, and the contents, originals and fragment text of the snapshots a
+read created. It keeps identities, addresses, charges, digests and what Aidash
+itself sent. Attempts are marked `purge_reason = account_terms`, and a
+snapshot keeps the reason of its first purge unless an Evidence Revocation
+replaces it. A tombstone is a `result_expired` failure.
+
+The Context Journal is not edited. Later model requests carry an
+`aidash.research.expired/1` placeholder instead of each research result built
+from an expired Provider result, and keep the call's arguments. An Execution
+Summary that absorbed one is discarded, and its range is restored from the
+journal, so the Run continues without pausing. Unlike an Evidence Revocation,
+the Run may keep researching and may read an expired Source again as a new,
+approved and charged attempt. The journal keeping its copy is a known limit
+(#331).
+
 ## Source citations
 
 A final answer cites Evidence fragments as `[[cite:ev_<uuid>]]`. When a Run binds
@@ -134,6 +174,11 @@ Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
   the passage. The Agent never received these lines; they let a reader judge
   the passage in its place. `context` is `null` once the snapshot's text is no
   longer retained, while the passage itself stays readable.
+- `passage_digest`, the `sha256:` digest of the passage as delivered, and
+  `expired`. When the Research account terms no longer keep the passage,
+  `expired` is `true` and `text` is empty, while the identities and digests
+  still verify the citation. The dashboard then says so instead of the
+  excerpt.
 
 The reader needs exactly the authority of `GET /api/runs/{run}`, evaluated at
 each read. A Subject needs `workspace.read` and the Run's visibility; an
@@ -309,6 +354,9 @@ revoke.
 
 The Brave key is a **tool secret**: the profile's `credential_env` names an
 `AIDASH_SECRET_*` environment variable. It is not a Provider Credential.
+When the agreement ends, add `"terminated_at"` (an RFC 3339 time) to the
+profile and restart; see
+[Provider results under the Research account terms](#provider-results-under-the-research-account-terms).
 
 ```json
 {
