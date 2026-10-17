@@ -1385,7 +1385,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -1443,7 +1443,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
@@ -1459,7 +1459,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})

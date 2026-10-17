@@ -248,18 +248,13 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	let hidden = json!({"id":"hidden","version":"1.0.0","kind":"agent","name":{"en":"Hidden B Agent"},
 		"description":{"en":"private"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},
 		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"private","schema_version":1,"bindings":[],"remove_default":[]}});
-	assert_eq!(
-		request(
-			&b.app,
-			&b.f.config.api_token,
-			"POST",
-			"/api/registry",
-			hidden
+	b.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(hidden).unwrap(),
 		)
 		.await
-		.0,
-		200
-	);
+		.unwrap();
 
 	let peers = request(
 		&a.app,

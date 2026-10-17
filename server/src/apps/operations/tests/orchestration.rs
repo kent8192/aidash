@@ -33,10 +33,12 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 		common::application(f.clone()),
 		common::application(f.clone())
 	);
+	// Deployment Administrators no longer create workspaces (ADR 0043).
+	let token = common::tenant_token(&f.store, "acme").await;
 	for app in [&a, &b, &c] {
 		let (status, workspace) = common::request(
 			app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/workspaces",
 			json!({"title":"Replica startup", "goal":"Use the migrated schema"}),

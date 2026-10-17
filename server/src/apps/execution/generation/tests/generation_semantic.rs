@@ -343,18 +343,21 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 ) {
 	let fixture = semantic_fixture_1;
 	if reason == "catalog" {
-		assert_eq!(
-			request(
-				&fixture.app,
-				&fixture.f.config.api_token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})
-			)
-			.await
-			.0,
-			200
-		);
+		aidash_server::authorization::Authorization {
+			pool: fixture.f.store.pool.clone(),
+		}
+		.set_catalog(
+			"acme",
+			&aidash_server::registry::EntityRef {
+				id: "embedding".into(),
+				version: "1.0.0".into(),
+			},
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
 	} else if reason == "policy" {
 		let authorization = aidash_server::authorization::Authorization {
 			pool: fixture.f.store.pool.clone(),
@@ -1523,7 +1526,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 		home: aidash_server::federation::Home::new(fixture.f.clone(), run.clone()),
 		store: fixture.f.store.clone(),
 		run,
-		scope: TEST_FIXTURE,
+		scope: aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 	};
 	let tools = aidash_server::tool::builtins();
 	let tool = &tools["memory_mutate"];

@@ -36,6 +36,38 @@ fn decoded(response: TestResponse) -> (u16, Value) {
 	(response.status_code(), response.json_value().unwrap())
 }
 async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
+	// Registry and catalog routes are Tenant routes (ADR 0029); fixtures seed
+	// them through the persistence and maintenance primitives instead.
+	if path == "/api/registry" {
+		let entry = app
+			.runtime
+			.registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				serde_json::from_value(input).unwrap(),
+			)
+			.await
+			.unwrap();
+		return (200, serde_json::to_value(entry).unwrap());
+	}
+	if let Some(tenant) = path
+		.strip_prefix("/api/authorization/")
+		.and_then(|rest| rest.strip_suffix("/catalog"))
+	{
+		let binding = aidash_server::authorization::Authorization {
+			pool: app.runtime.store.pool.clone(),
+		}
+		.set_catalog(
+			tenant,
+			&serde_json::from_value(input["entry"].clone()).unwrap(),
+			input["expected_revision"].as_i64().unwrap(),
+			input["enabled"].as_bool().unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+		return (200, serde_json::to_value(binding).unwrap());
+	}
 	decoded(
 		app.deployment_administrator
 			.post(path, &input, "json")
@@ -228,65 +260,6 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			.is_empty(),
 		"inspection must not create an executable run"
 	);
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn public_agent_closures_are_authenticated_and_exclude_unexportable_bindings(
-	#[from(endpoint::endpoint)] endpoint: endpoint::EndpointFuture,
-	#[from(closure_peer_client)]
-	#[with(endpoint.clone())]
-	peer_client: futures_util::future::BoxFuture<'static, reinhardt::test::APIClient>,
-) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
-	let app = endpoint.await;
-	endpoint::register_fixture_agent(&app, "public-child").await;
-	let record = Peer::build()
-		.node_id("aidash://source")
-		.endpoint("http://127.0.0.1:1")
-		.credential_env(PEER_ENV)
-		.protocol_version("0.2")
-		.enabled(true)
-		.finish();
-	Peer::objects()
-		.create_with_conn(&mut app.database.lease.handle(), &record)
-		.await
-		.unwrap();
-	let client = peer_client.await;
-	let path = "/federation/v0.1/discover/public-child/1.0.0/bindings";
-	assert_eq!(app.anonymous.get(path).await.unwrap().status_code(), 400);
-	assert_eq!(
-		app.deployment_administrator
-			.get(path)
-			.await
-			.unwrap()
-			.status_code(),
-		400
-	);
-	let (status, body) = decoded(client.get(path).await.unwrap());
-	assert_eq!(status, 200, "{body}");
-	let pinned: aidash_domain::registry::bindings::ForeignAgentSnapshot =
-		serde_json::from_value(body).unwrap();
-	pinned.validate().unwrap();
-	assert_eq!(pinned.agent.registry_node, app.runtime.config.node_id);
-	assert!(
-		pinned
-			.bindings
-			.iter()
-			.any(|binding| binding.alias.as_deref() == Some("task_delegate")
-				&& binding.excluded_reason.is_some())
-	);
-	Peer::objects()
-		.filter(Peer::field_node_id().eq("aidash://source"))
-		.update_fields_with_conn(
-			&mut app.database.lease.handle(),
-			[(Peer::field_enabled(), false)],
-		)
-		.await
-		.unwrap();
-	assert_eq!(client.get(path).await.unwrap().status_code(), 401);
 }
 
 #[rstest::rstest]

@@ -127,7 +127,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let peer_denied = async {
 		let client = &(server);
 		let mut request = client
-			.request(http::Method::POST, "/federation/v0.1/discover")
+			.request(http::Method::POST, "/federation/v0.1/scoped/discover")
 			.body(bytes::Bytes::copy_from_slice(b"{}"))
 			.header(http::header::CONTENT_TYPE, "application/json");
 		request = request.header("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION);

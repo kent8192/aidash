@@ -1793,7 +1793,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 		}
 		let (status, body) = request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({
