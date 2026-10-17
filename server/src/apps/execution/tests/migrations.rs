@@ -38,6 +38,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0027_remove_legacy_installations_state"),
 	("registry", "0028_tool_transport_secrets"),
 	("registry", "0029_completion_policy"),
+	("registry", "0030_plan_connection_models"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];

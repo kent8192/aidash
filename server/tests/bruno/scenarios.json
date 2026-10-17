@@ -1,153 +1,216 @@
 {
   "version": 1,
-  "endpoint_count": 309,
+  "endpoint_count": 314,
   "requests": [
     {
       "name": "Health reports the configured node",
       "file": "journeys/01-health-reports-the-configured-node.bru",
       "endpoint": "GET /health",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "OIDC configuration remains public",
       "file": "journeys/02-oidc-configuration-remains-public.bru",
       "endpoint": "GET /auth/config",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Anonymous task reads are unauthorized",
       "file": "journeys/03-anonymous-task-reads-are-unauthorized.bru",
       "endpoint": "GET /api/tasks",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Anonymous SSE reconnects are unauthorized",
       "file": "journeys/04-anonymous-sse-reconnects-are-unauthorized.bru",
       "endpoint": "GET /api/events/stream",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Create the scoped authorization policy",
       "file": "journeys/05-create-the-scoped-authorization-policy.bru",
       "endpoint": "POST /api/authorization/{tenant}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Issue alice credential",
       "file": "journeys/06-issue-alice-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Issue bob credential",
       "file": "journeys/07-issue-bob-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Subject creates an owned workspace",
       "file": "journeys/08-subject-creates-an-owned-workspace.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Denied subject cannot read the workspace",
       "file": "journeys/09-denied-subject-cannot-read-the-workspace.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Update the owned workspace",
       "file": "journeys/10-update-the-owned-workspace.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Stale updates retain conflict behavior",
       "file": "journeys/11-stale-updates-retain-conflict-behavior.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 409", "JSON response contract"]
+      "required_checks": [
+        "HTTP 409",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Denied writes cannot change the workspace",
       "file": "journeys/12-denied-writes-cannot-change-the-workspace.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Snapshot retains the committed state",
       "file": "journeys/13-snapshot-retains-the-committed-state.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Create a task through the scoped API",
       "file": "journeys/14-create-a-task-through-the-scoped-api.bru",
       "endpoint": "POST /api/workspaces/{id}/tasks",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Task paging retains the response contract",
       "file": "journeys/15-task-paging-retains-the-response-contract.bru",
       "endpoint": "GET /api/tasks",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Strict JSON rejects unknown input fields",
       "file": "journeys/16-strict-json-rejects-unknown-input-fields.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 422", "JSON response contract"]
+      "required_checks": [
+        "HTTP 422",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Wrong media type retains the rejection",
       "file": "journeys/17-wrong-media-type-retains-the-rejection.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 415", "JSON response contract"]
+      "required_checks": [
+        "HTTP 415",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Revoke the owned bearer credential",
       "file": "journeys/18-revoke-the-owned-bearer-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials/{id}/revoke",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Revocation is applied on subsequent reads",
       "file": "journeys/19-revocation-is-applied-on-subsequent-reads.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Start the browser login",
       "file": "journeys/20-start-the-browser-login.bru",
       "endpoint": "GET /auth/login",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 307", "Bound browser login redirect"]
+      "required_checks": [
+        "HTTP 307",
+        "Bound browser login redirect"
+      ]
     },
     {
       "name": "Authorize against the local OIDC fixture",
       "file": "journeys/21-authorize-against-the-local-oidc-fixture.bru",
       "endpoint": null,
       "scenario": "external OIDC authorization",
-      "required_checks": ["HTTP 307", "Callback stays on the configured origin"]
+      "required_checks": [
+        "HTTP 307",
+        "Callback stays on the configured origin"
+      ]
     },
     {
       "name": "Exchange code for the opaque browser session",
@@ -165,84 +228,119 @@
       "file": "journeys/23-browser-registration-requires-csrf.bru",
       "endpoint": "POST /auth/registration",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Create the browser registration",
       "file": "journeys/24-create-the-browser-registration.bru",
       "endpoint": "POST /auth/registration",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Approve the browser mapping as Deployment Administrator",
       "file": "journeys/25-approve-the-browser-mapping-as-deployment-administrator.bru",
       "endpoint": "POST /api/dashboard/registrations/{id}/approve",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Browser session reports its approved mapping",
       "file": "journeys/26-browser-session-reports-its-approved-mapping.bru",
       "endpoint": "GET /auth/session",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie writes require the CSRF token",
       "file": "journeys/27-cookie-writes-require-the-csrf-token.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie writes reject another origin",
       "file": "journeys/28-cookie-writes-reject-another-origin.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie writes accept matching origin and CSRF",
       "file": "journeys/29-cookie-writes-accept-matching-origin-and-csrf.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie reads use the approved authority",
       "file": "journeys/30-cookie-reads-use-the-approved-authority.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Logout requires CSRF",
       "file": "journeys/31-logout-requires-csrf.bru",
       "endpoint": "POST /auth/logout",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Logout invalidates the opaque session",
       "file": "journeys/32-logout-invalidates-the-opaque-session.bru",
       "endpoint": "POST /auth/logout",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 204"]
+      "required_checks": [
+        "HTTP 204"
+      ]
     },
     {
       "name": "Logged out cookies cannot authenticate",
       "file": "journeys/33-logged-out-cookies-cannot-authenticate.bru",
       "endpoint": "GET /auth/session",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Logged out cookies cannot read workspace data",
       "file": "journeys/34-logged-out-cookies-cannot-read-workspace-data.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "0101 authorization-issue-credential - Issue a fresh subject credential",
@@ -261,14 +359,20 @@
       "file": "contracts/0036-fresh-browser-session.bru",
       "endpoint": "GET /auth/login",
       "scenario": "fresh browser session",
-      "required_checks": ["HTTP 307", "Bound browser login redirect"]
+      "required_checks": [
+        "HTTP 307",
+        "Bound browser login redirect"
+      ]
     },
     {
       "name": "Fresh session: Authorize against the local OIDC fixture",
       "file": "contracts/0037-fresh-browser-session.bru",
       "endpoint": null,
       "scenario": "fresh browser session",
-      "required_checks": ["HTTP 307", "Callback stays on the configured origin"]
+      "required_checks": [
+        "HTTP 307",
+        "Callback stays on the configured origin"
+      ]
     },
     {
       "name": "Fresh session: Exchange code for the opaque browser session",
@@ -2384,7 +2488,10 @@
       "endpoint": "GET /auth/config",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0281 sessions-configuration - Untrusted bearer does not restrict public reads",
@@ -6523,7 +6630,10 @@
       "endpoint": "GET /.well-known/aidash",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0634 identity - Untrusted bearer does not restrict public reads",
@@ -9706,7 +9816,10 @@
       "endpoint": "GET /live",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0906 process-live - Untrusted bearer does not restrict public reads",
@@ -9736,7 +9849,10 @@
       "endpoint": "GET /ready",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0909 process-ready - Untrusted bearer does not restrict public reads",
@@ -9766,7 +9882,10 @@
       "endpoint": "GET /api/openapi.json",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0912 openapi - Untrusted bearer does not restrict public reads",
@@ -10131,7 +10250,10 @@
       "endpoint": "GET /api/events/stream",
       "scenario": "Initial event replay",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Initial event replay contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Initial event replay contract"
+      ]
     },
     {
       "name": "0944 stream - Last-Event-ID overrides the query cursor",
@@ -10273,7 +10395,10 @@
       "endpoint": "GET /health",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0957 health - Untrusted bearer does not restrict public reads",
@@ -10402,7 +10527,9 @@
       "endpoint": "GET /{<path:asset>}",
       "scenario": "Missing asset does not fall back to the SPA",
       "status": 404,
-      "required_checks": ["Exact HTTP 404"]
+      "required_checks": [
+        "Exact HTTP 404"
+      ]
     },
     {
       "name": "0969 frontend-asset - Client route falls back to the SPA",
@@ -10454,7 +10581,9 @@
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Missing asset does not fall back to the SPA",
       "status": 404,
-      "required_checks": ["Exact HTTP 404"]
+      "required_checks": [
+        "Exact HTTP 404"
+      ]
     },
     {
       "name": "0974 frontend-asset-head - Client route falls back to the SPA",
@@ -12666,8 +12795,345 @@
       ]
     },
     {
-      "name": "1163 run-evidence - Anonymous request is rejected",
-      "file": "contracts/1163-run-evidence.bru",
+      "name": "1163 plan-connection-status - Anonymous request is rejected",
+      "file": "contracts/1163-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1164 plan-connection-status - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1164-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1165 plan-connection-status - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1165-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1166 plan-connection-status - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1166-plan-connection-status.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1167 plan-authorization-start - Anonymous request is rejected",
+      "file": "contracts/1167-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1168 plan-authorization-start - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1168-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1169 plan-authorization-start - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1169-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1170 plan-authorization-start - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1170-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1171 plan-authorization-start - Wrong JSON media type is rejected",
+      "file": "contracts/1171-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1172 plan-authorization-start - Malformed JSON cannot reach the use case",
+      "file": "contracts/1172-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1173 plan-authorization-start - Plan Tokens are not an accepted field",
+      "file": "contracts/1173-plan-authorization-start.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations",
+      "scenario": "Plan Tokens are not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1174 plan-authorization-complete - Anonymous request is rejected",
+      "file": "contracts/1174-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1175 plan-authorization-complete - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1175-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1176 plan-authorization-complete - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1176-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1177 plan-authorization-complete - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1177-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1178 plan-authorization-complete - Wrong JSON media type is rejected",
+      "file": "contracts/1178-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1179 plan-authorization-complete - Malformed JSON cannot reach the use case",
+      "file": "contracts/1179-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1180 plan-authorization-complete - Plan Tokens are not an accepted field",
+      "file": "contracts/1180-plan-authorization-complete.bru",
+      "endpoint": "POST /api/tenants/{tenant}/plan-connections/{provider}/authorizations/complete",
+      "scenario": "Plan Tokens are not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1181 plan-connection-disconnect - Anonymous request is rejected",
+      "file": "contracts/1181-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1182 plan-connection-disconnect - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1182-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1183 plan-connection-disconnect - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1183-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1184 plan-connection-disconnect - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1184-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1185 plan-connection-disconnect - Wrong JSON media type is rejected",
+      "file": "contracts/1185-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1186 plan-connection-disconnect - Malformed JSON cannot reach the use case",
+      "file": "contracts/1186-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1187 plan-connection-disconnect - Plan Tokens are not an accepted field",
+      "file": "contracts/1187-plan-connection-disconnect.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/plan-connections/{provider}",
+      "scenario": "Plan Tokens are not an accepted field",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1188 plan-connection-models - Anonymous request is rejected",
+      "file": "contracts/1188-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1189 plan-connection-models - Forged bearer cannot reach a Plan Connection",
+      "file": "contracts/1189-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Forged bearer cannot reach a Plan Connection",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1190 plan-connection-models - Deployment Administrator bearer owns no Plan Connection",
+      "file": "contracts/1190-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Deployment Administrator bearer owns no Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1191 plan-connection-models - Subject Credential bearer never reaches a Plan Connection",
+      "file": "contracts/1191-plan-connection-models.bru",
+      "endpoint": "GET /api/tenants/{tenant}/plan-connections/{provider}/models",
+      "scenario": "Subject Credential bearer never reaches a Plan Connection",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1192 run-evidence - Anonymous request is rejected",
+      "file": "contracts/1192-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -12677,8 +13143,8 @@
       ]
     },
     {
-      "name": "1164 run-evidence - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1164-run-evidence.bru",
+      "name": "1193 run-evidence - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1193-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -12688,8 +13154,8 @@
       ]
     },
     {
-      "name": "1165 run-evidence - Application read preserves the typed response contract",
-      "file": "contracts/1165-run-evidence.bru",
+      "name": "1194 run-evidence - Application read preserves the typed response contract",
+      "file": "contracts/1194-run-evidence.bru",
       "endpoint": "GET /api/runs/{id}/evidence/{reference}",
       "scenario": "Application read preserves the typed response contract",
       "status": 404,
