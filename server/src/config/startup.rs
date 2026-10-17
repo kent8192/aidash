@@ -36,6 +36,11 @@ pub fn load_settings() -> Result<ProjectSettings> {
 		.map_err(|error| crate::Error::Invalid(error.to_string()))?
 		.into_parts()
 		.0;
+	// Commands that load settings themselves, not through the command
+	// provider, still refuse another build's Offering first.
+	crate::bootstrap::build::current()
+		.admit(settings.deployment.offering)
+		.map_err(|error| crate::Error::Invalid(error.to_string()))?;
 	let profile = std::env::var("REINHARDT_ENV").unwrap_or_else(|_| "local".into());
 	settings
 		.validate(&Profile::parse(&profile))
