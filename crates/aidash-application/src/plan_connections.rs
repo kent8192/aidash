@@ -10,7 +10,8 @@ use crate::{
 	provider_credentials::Store,
 };
 use aidash_domain::plan_connections::{
-	self as domain, Callback, CallbackResult, Failure, PlanConnection, PlanModel, State,
+	self as domain, Callback, CallbackResult, Failure, MappedIdentity, PlanConnection, PlanModel,
+	State,
 };
 use aidash_domain::provider_credentials::Provider;
 use async_trait::async_trait;
@@ -137,10 +138,10 @@ pub trait Authorization: Send + Sync {
 #[async_trait]
 pub trait Scope: Send {
 	async fn owned(&mut self, provider: Provider) -> Result<Option<PlanConnection>>;
-	/// External Identities that are not disabled and hold an enabled Mapping to
-	/// the owner. Identity Disablement therefore pauses a connection (zero)
-	/// without deleting it.
-	async fn mapped_identities(&mut self) -> Result<usize>;
+	/// External Identities that hold an enabled Mapping to the owner, each
+	/// marked when disabled. Identity Disablement therefore pauses a
+	/// connection without deleting it.
+	async fn mapped_identities(&mut self) -> Result<Vec<MappedIdentity>>;
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn save(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn delete(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
@@ -309,11 +310,12 @@ impl Service {
 		Ok(row.as_ref().map(Metadata::from))
 	}
 
-	/// Refuses before OpenAI issues anything when the owner may not hold a
-	/// Plan Connection: a subject shared by several External Identities.
-	pub async fn check(&self, owner: &Owner) -> Result<Option<String>> {
+	/// Refuses before OpenAI issues anything when `identity` may not hold the
+	/// owner's Plan Connection: it is not the only active External Identity
+	/// mapped to the subject.
+	pub async fn check(&self, owner: &Owner, identity: Uuid) -> Result<Option<String>> {
 		let mut scope = self.repository.begin(owner).await?;
-		let shared = scope.mapped_identities().await? != 1;
+		let shared = domain::sole_identity(&scope.mapped_identities().await?) != Some(identity);
 		let saved = scope
 			.owned(Provider::Chatgpt)
 			.await?
@@ -326,11 +328,13 @@ impl Service {
 	}
 
 	/// Completes one authorization from the callback URL a desktop client
-	/// relayed or the owner pasted. A declined or failed consent stores
-	/// nothing and never reaches the exchange.
+	/// relayed or the owner pasted, for the External Identity whose session
+	/// started it. A declined or failed consent stores nothing and never
+	/// reaches the exchange.
 	pub async fn complete(
 		&self,
 		owner: &Owner,
+		identity: Uuid,
 		pending: Pending<'_>,
 		callback: &Callback,
 		actor: &str,
@@ -390,7 +394,7 @@ impl Service {
 			// Keep the sign-in without plan usage: a later attempt reuses the
 			// issued client instead of registering another one.
 			if self
-				.register(owner, &client, &account, reconnecting, actor)
+				.register(owner, identity, &client, &account, reconnecting, actor)
 				.await
 				.is_err()
 			{
@@ -408,6 +412,7 @@ impl Service {
 		match self
 			.write(
 				owner,
+				identity,
 				client.clone(),
 				account,
 				&issued,
@@ -426,23 +431,25 @@ impl Service {
 		}
 	}
 
-	/// Records the issued client and the verified account before any Plan
-	/// Token is stored. The row is the only pointer to its Store resource, so
-	/// tokens are never written where a disconnect or reconnect cannot find
-	/// them. Until tokens are pinned, the connection needs reconnection.
+	/// Records the issued client, the verified account and the connecting
+	/// identity before any Plan Token is stored. The row is the only pointer
+	/// to its Store resource, so tokens are never written where a disconnect
+	/// or reconnect cannot find them. Until tokens are pinned, the connection
+	/// needs reconnection.
 	/// A reconnection never creates one: the connection it renews was
 	/// disconnected meanwhile, and recreating it would undo that.
 	/// Returns whether this call created it.
 	async fn register(
 		&self,
 		owner: &Owner,
+		identity: Uuid,
 		client: &str,
 		account: &str,
 		reconnecting: bool,
 		actor: &str,
 	) -> Result<bool> {
 		let mut scope = self.repository.begin(owner).await?;
-		if scope.mapped_identities().await? != 1 {
+		if domain::sole_identity(&scope.mapped_identities().await?) != Some(identity) {
 			return Err(shared_subject());
 		}
 		if scope.owned(Provider::Chatgpt).await?.is_some() {
@@ -463,6 +470,7 @@ impl Service {
 			id,
 			tenant: owner.tenant.clone(),
 			subject: owner.subject.clone(),
+			identity_id: identity,
 			provider: Provider::Chatgpt,
 			client_id: client.to_owned(),
 			account: account.to_owned(),
@@ -495,6 +503,7 @@ impl Service {
 	async fn write(
 		&self,
 		owner: &Owner,
+		identity: Uuid,
 		client: String,
 		account: String,
 		issued: &Issued,
@@ -503,10 +512,10 @@ impl Service {
 		actor: &str,
 	) -> Result<Outcome> {
 		let first = self
-			.register(owner, &client, &account, reconnecting, actor)
+			.register(owner, identity, &client, &account, reconnecting, actor)
 			.await?;
 		let mut scope = self.repository.begin(owner).await?;
-		if scope.mapped_identities().await? != 1 {
+		if domain::sole_identity(&scope.mapped_identities().await?) != Some(identity) {
 			return Err(shared_subject());
 		}
 		let mut row = scope.owned(Provider::Chatgpt).await?.ok_or_else(|| {
@@ -533,6 +542,8 @@ impl Service {
 			.add_version(&owner.tenant, &row.secret_resource, &Tokens::seal(issued))
 			.await?;
 		row.pinned_version = Some(version.clone());
+		// The identity that renewed the grant is the one it serves from now on.
+		row.identity_id = identity;
 		row.state = State::Active;
 		row.access_expires_at = now + lifetime;
 		row.earliest_refresh_at = earliest_refresh(issued, row.access_expires_at);
@@ -613,6 +624,25 @@ impl Service {
 		let Some(row) = scope.owned(Provider::Chatgpt).await? else {
 			return scope.commit().await;
 		};
+		self.end(scope, row, actor).await
+	}
+
+	/// [`Self::retire`] once the identity that connected the subject's
+	/// connection no longer holds an enabled Mapping to it. A Mapping of
+	/// another identity never keeps the connection, and Identity Disablement
+	/// alone only pauses it.
+	pub async fn retire_unmapped(&self, owner: &Owner, actor: &str) -> Result<()> {
+		let mut scope = self.repository.begin(owner).await?;
+		let Some(row) = scope.owned(Provider::Chatgpt).await? else {
+			return scope.commit().await;
+		};
+		if row.owner_mapped(&scope.mapped_identities().await?) {
+			return scope.commit().await;
+		}
+		self.end(scope, row, actor).await
+	}
+
+	async fn end(&self, mut scope: Box<dyn Scope>, row: PlanConnection, actor: &str) -> Result<()> {
 		self.revoke_row(&row).await;
 		self.delete_tokens(&row).await?;
 		scope.delete(&row, "plan_connection.retired", actor).await?;
@@ -644,7 +674,7 @@ impl Service {
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		let mapped = scope.mapped_identities().await?;
 		scope.commit().await?;
-		if mapped != 1 {
+		if !row.serves(&mapped) {
 			return Err(Error::Plan(Failure::NotConnected));
 		}
 		row.require_usable(Utc::now())
@@ -707,7 +737,7 @@ impl Service {
 			.await?
 			.filter(|row| row.id == id)
 			.ok_or(Error::Plan(Failure::NotConnected))?;
-		if scope.mapped_identities().await? != 1 {
+		if !row.serves(&scope.mapped_identities().await?) {
 			return Err(Error::Plan(Failure::NotConnected));
 		}
 		let now = Utc::now();

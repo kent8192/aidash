@@ -25,7 +25,9 @@ use aidash_server::{
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::FutureExt;
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use reinhardt::test::TestResponse;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
@@ -854,6 +856,7 @@ async fn turning_plan_connections_off_keeps_status_and_disconnect(
 	service
 		.complete(
 			&owner,
+			identity_of(&fixture.f, "plan-connection-alice").await,
 			aidash_application::plan_connections::Pending {
 				state: request.state.expose_secret(),
 				verifier: &request.verifier,
@@ -973,6 +976,133 @@ async fn approvals_retire_a_connection_left_without_a_mapping(
 	assert_eq!(status, 200);
 	assert_eq!(table_text(&fixture.f, "plan_connections").await, "");
 	assert!(fixture.store.plaintexts().is_empty());
+	fixture.cleanup().await;
+}
+
+/// The identity whose External Identity subject is `subject`.
+async fn identity_of(f: &Federation, subject: &str) -> Uuid {
+	let query = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("dashboard_identities"))
+		.and_where(Expr::col(Alias::new("subject")).eq(subject))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap()
+}
+
+/// Sets or clears the Identity Disablement of the identity whose External
+/// Identity subject is `subject`.
+async fn set_disabled(f: &Federation, subject: &str, disabled: bool) {
+	let value = if disabled {
+		"clock_timestamp()"
+	} else {
+		"NULL"
+	};
+	execute(
+		f,
+		format!(
+			"UPDATE dashboard_identities SET disabled_at = {value} WHERE subject = '{subject}'"
+		),
+	)
+	.await;
+}
+
+/// Identities A (alice's) and B (bob's) are both mapped to the subject alice
+/// while B is disabled, so A connects. Disabling A and restoring B leaves B
+/// the only active identity mapped there, yet B's Runs never use A's Plan
+/// Tokens; once A's Mapping is disabled the connection is retired although
+/// B's remains (#315).
+#[rstest::rstest]
+#[tokio::test]
+async fn connections_serve_only_the_identity_that_connected_them(
+	#[from(parts)] parts: Parts,
+	#[future(awt)]
+	#[from(plan_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
+) {
+	let fixture = Fixture::new(application, parts);
+	let f = fixture.f.clone();
+	let snapshot = snapshot(&f).await;
+	let admit_once = |run: Uuid| {
+		let f = f.clone();
+		let snapshot = snapshot.clone();
+		let grant = aidash_domain::identity::execution::ExecutionGrant {
+			run_id: run,
+			task_id: Uuid::new_v4(),
+			workspace_id: Uuid::new_v4(),
+			tenant: "alpha".into(),
+			credential_id: Uuid::new_v4(),
+			root_subject: "alice".into(),
+			subject_chain: vec!["alice".into()],
+		};
+		async move {
+			let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+			let result = admit(tx.as_mut(), &f.store, &grant, &snapshot, false).await;
+			if result.is_ok() {
+				tx.commit().await.unwrap();
+			}
+			result
+		}
+	};
+	let (_, owners) = map(&fixture, "browser-a", "alice").await;
+	let (status, _) = map(&fixture, "browser-c", "alice").await;
+	assert_eq!(status, 200);
+	set_disabled(&f, "plan-connection-bob", true).await;
+	connect(&fixture, "browser-a", &owners).await;
+	let admitted = Uuid::new_v4();
+	admit_once(admitted).await.unwrap();
+	let access = AdmittedAccess {
+		store: f.store.clone(),
+	};
+	let context = Context {
+		tenant: "alpha".into(),
+		run: Some(admitted),
+		..Context::default()
+	};
+	let source = Source::Plan {
+		provider: "chatgpt".into(),
+	};
+	let endpoint = Provider::Chatgpt.base_url();
+	access.check(&context, endpoint, &source).await.unwrap();
+
+	set_disabled(&f, "plan-connection-alice", true).await;
+	set_disabled(&f, "plan-connection-bob", false).await;
+	assert!(matches!(
+		admit_once(Uuid::new_v4()).await,
+		Err(aidash_server::Error::Plan(Failure::NotConnected))
+	));
+	// A Run admitted before is stopped at its next call as well.
+	assert!(matches!(
+		access.resolve(&context, endpoint, &source).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	// Identity Disablement only paused it.
+	assert!(table_text(&f, "plan_connections").await.contains("alice"));
+
+	let mapping = owners.strip_prefix("mapping:alpha:").unwrap();
+	let (status, _) = common::request(
+		&fixture.app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/dashboard/mappings/{mapping}/disable"),
+		json!({"expected_revision": 1}),
+	)
+	.await;
+	assert_eq!(status, 204);
+	assert_eq!(table_text(&f, "plan_connections").await, "");
+	assert!(fixture.store.plaintexts().is_empty());
+	assert!(
+		fixture
+			.openai
+			.calls
+			.lock()
+			.unwrap()
+			.revoked
+			.contains(&"plan-refresh-1".to_owned())
+	);
 	fixture.cleanup().await;
 }
 

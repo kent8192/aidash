@@ -5,11 +5,25 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const TENANT: &str = "brave-otter-k3m9q2xa";
 const HOST: &str = "urn:uuid:0d5c0e5e-5d5a-4c4b-9a8e-1b2c3d4e5f60";
+/// The External Identity whose session connects in these tests.
+const IDENTITY: Uuid = Uuid::from_u128(1);
+/// Another External Identity mapped to the same subject.
+const OTHER: Uuid = Uuid::from_u128(2);
+
+/// `n` active identities mapped to the owner, [`IDENTITY`] first.
+fn mapped(n: u128) -> Vec<MappedIdentity> {
+	(1..=n)
+		.map(|id| MappedIdentity {
+			id: Uuid::from_u128(id),
+			disabled: false,
+		})
+		.collect()
+}
 
 #[derive(Clone, Default)]
 struct Data {
 	rows: BTreeMap<Uuid, PlanConnection>,
-	mapped: usize,
+	mapped: Vec<MappedIdentity>,
 	events: Vec<String>,
 	/// Pending attempts ended by a committed disconnect.
 	cancelled_attempts: usize,
@@ -21,9 +35,9 @@ struct Data {
 #[derive(Clone)]
 struct Repo(Arc<Mutex<Data>>);
 impl Repo {
-	fn new(mapped: usize) -> Self {
+	fn new(identities: u128) -> Self {
 		Self(Arc::new(Mutex::new(Data {
-			mapped,
+			mapped: mapped(identities),
 			..Data::default()
 		})))
 	}
@@ -79,8 +93,8 @@ impl Scope for Lease {
 			})
 			.cloned())
 	}
-	async fn mapped_identities(&mut self) -> Result<usize> {
-		Ok(self.data.mapped)
+	async fn mapped_identities(&mut self) -> Result<Vec<MappedIdentity>> {
+		Ok(self.data.mapped.clone())
 	}
 	async fn insert(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
 		assert!(self.data.rows.insert(value.id, value.clone()).is_none());
@@ -380,8 +394,8 @@ struct Fixture {
 	authorization: Arc<FakeAuthorization>,
 	service: Service,
 }
-fn fixture(mapped: usize, authorization: FakeAuthorization) -> Fixture {
-	let repo = Repo::new(mapped);
+fn fixture(identities: u128, authorization: FakeAuthorization) -> Fixture {
+	let repo = Repo::new(identities);
 	let store = FakeStore::default();
 	let authorization = Arc::new(authorization);
 	let service = Service {
@@ -417,11 +431,20 @@ async fn connect(
 	saved: Option<&str>,
 	returned: Option<&str>,
 ) -> Result<Outcome> {
+	connect_as(fixture, IDENTITY, saved, returned).await
+}
+async fn connect_as(
+	fixture: &Fixture,
+	identity: Uuid,
+	saved: Option<&str>,
+	returned: Option<&str>,
+) -> Result<Outcome> {
 	let verifier = SecretString::from("verifier-1".to_owned());
 	fixture
 		.service
 		.complete(
 			&owner(),
+			identity,
 			Pending {
 				state: "state-1",
 				verifier: &verifier,
@@ -541,6 +564,7 @@ async fn declined_and_failed_consents_never_reach_the_exchange() {
 			.service
 			.complete(
 				&owner(),
+				IDENTITY,
 				Pending {
 					state: "state-1",
 					verifier: &verifier,
@@ -586,7 +610,12 @@ async fn grants_without_plan_usage_keep_only_the_issued_client() {
 	assert_eq!(row.state, State::NeedsReconnection);
 	assert!(row.pinned_version.is_none());
 	assert_eq!(
-		fixture.service.check(&owner()).await.unwrap().as_deref(),
+		fixture
+			.service
+			.check(&owner(), IDENTITY)
+			.await
+			.unwrap()
+			.as_deref(),
 		Some("oaiapp_1")
 	);
 	// Asking again reuses the same client and row.
@@ -618,7 +647,7 @@ async fn unverified_id_tokens_are_revoked_and_not_stored() {
 async fn shared_subjects_cannot_hold_a_plan_connection() {
 	let fixture = fixture(2, FakeAuthorization::default());
 	assert!(matches!(
-		fixture.service.check(&owner()).await,
+		fixture.service.check(&owner(), IDENTITY).await,
 		Err(Error::Conflict(_))
 	));
 	assert!(matches!(
@@ -645,7 +674,12 @@ async fn reconnecting_rotates_tokens_in_place_and_keeps_the_client() {
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	let first = only_row(&fixture).await;
 	assert_eq!(
-		fixture.service.check(&owner()).await.unwrap().as_deref(),
+		fixture
+			.service
+			.check(&owner(), IDENTITY)
+			.await
+			.unwrap()
+			.as_deref(),
 		Some("oaiapp_1")
 	);
 	assert_eq!(
@@ -841,7 +875,7 @@ async fn a_second_mapping_stops_the_connection_serving_calls() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	let id = only_row(&fixture).await.id;
-	fixture.repo.0.lock().await.mapped = 2;
+	fixture.repo.0.lock().await.mapped = mapped(2);
 	assert!(matches!(
 		fixture.service.bearer(id).await,
 		Err(Error::Plan(Failure::NotConnected))
@@ -889,7 +923,7 @@ async fn a_reconnection_completed_after_a_disconnect_is_refused() {
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	// The reconnect started while the connection existed, so it carries the
 	// saved client; the owner disconnects before its callback completes.
-	let saved = fixture.service.check(&owner()).await.unwrap();
+	let saved = fixture.service.check(&owner(), IDENTITY).await.unwrap();
 	assert_eq!(saved.as_deref(), Some("oaiapp_1"));
 	fixture
 		.service
@@ -1021,12 +1055,12 @@ async fn usability_checks_read_no_tokens() {
 	// An expired access token is refreshed by a call, not by a check.
 	fixture.service.usable(id).await.unwrap();
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
-	fixture.repo.0.lock().await.mapped = 0;
+	fixture.repo.0.lock().await.mapped = mapped(0);
 	assert!(matches!(
 		fixture.service.usable(id).await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
-	fixture.repo.0.lock().await.mapped = 1;
+	fixture.repo.0.lock().await.mapped = mapped(1);
 	set_row(&fixture, |row| row.state = State::Ineligible).await;
 	assert!(matches!(
 		fixture.service.usable(id).await,
@@ -1228,6 +1262,7 @@ async fn callbacks_from_another_attempt_are_refused() {
 			.service
 			.complete(
 				&owner(),
+				IDENTITY,
 				Pending {
 					state: "state-2",
 					verifier: &verifier,
@@ -1423,4 +1458,107 @@ async fn forced_refreshes_wait_for_the_earliest_refresh_time() {
 	set_row(&fixture, |row| row.earliest_refresh_at = Some(Utc::now())).await;
 	assert!(fixture.service.refresh_rejected(id).await.unwrap());
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
+}
+
+/// Identities A and B map to alice and B is disabled; A connects. Disabling A
+/// and restoring B leaves B the only active identity, yet B never uses A's
+/// Plan Tokens (#315).
+#[tokio::test]
+async fn connections_serve_only_the_identity_that_connected_them() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	fixture.repo.0.lock().await.mapped.push(MappedIdentity {
+		id: OTHER,
+		disabled: true,
+	});
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	let id = only_row(&fixture).await.id;
+	assert_eq!(only_row(&fixture).await.identity_id, IDENTITY);
+	fixture.service.usable(id).await.unwrap();
+	fixture.repo.0.lock().await.mapped = vec![
+		MappedIdentity {
+			id: IDENTITY,
+			disabled: true,
+		},
+		MappedIdentity {
+			id: OTHER,
+			disabled: false,
+		},
+	];
+	assert!(matches!(
+		fixture.service.usable(id).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert!(matches!(
+		fixture.service.bearer(id).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert!(matches!(
+		fixture.service.models(&owner()).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	// Only the identity that connected may start a connection while it is
+	// the sole active one.
+	assert!(matches!(
+		fixture.service.check(&owner(), IDENTITY).await,
+		Err(Error::Conflict(_))
+	));
+	// A reconnection by B, which must authenticate the same ChatGPT account,
+	// re-records the connection as B's.
+	assert_eq!(
+		fixture
+			.service
+			.check(&owner(), OTHER)
+			.await
+			.unwrap()
+			.as_deref(),
+		Some("oaiapp_1")
+	);
+	assert_eq!(
+		connect_as(&fixture, OTHER, Some("oaiapp_1"), None)
+			.await
+			.unwrap(),
+		Outcome::Reconnected
+	);
+	assert_eq!(only_row(&fixture).await.identity_id, OTHER);
+	fixture.service.usable(id).await.unwrap();
+}
+
+/// A connection ends once the identity that connected it holds no enabled
+/// Mapping to its subject, whatever other identities are mapped there;
+/// Identity Disablement alone keeps it.
+#[tokio::test]
+async fn connections_retire_with_their_owners_mapping() {
+	let fixture = fixture(1, FakeAuthorization::default());
+	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
+	fixture.repo.0.lock().await.mapped = vec![MappedIdentity {
+		id: IDENTITY,
+		disabled: true,
+	}];
+	fixture
+		.service
+		.retire_unmapped(&owner(), "tenant_administrator")
+		.await
+		.unwrap();
+	assert_eq!(fixture.repo.0.lock().await.rows.len(), 1);
+	fixture.repo.0.lock().await.mapped = vec![MappedIdentity {
+		id: OTHER,
+		disabled: false,
+	}];
+	fixture
+		.service
+		.retire_unmapped(&owner(), "tenant_administrator")
+		.await
+		.unwrap();
+	assert!(fixture.repo.0.lock().await.rows.is_empty());
+	assert_eq!(fixture.store.resources(), 0);
+	assert_eq!(
+		fixture.authorization.calls.lock().unwrap().revoked,
+		vec!["refresh-1"]
+	);
+	// Nothing left to retire is not an error.
+	fixture
+		.service
+		.retire_unmapped(&owner(), "tenant_administrator")
+		.await
+		.unwrap();
 }
