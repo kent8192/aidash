@@ -30992,6 +30992,8 @@
             "completeness",
             "text_digest",
             "text",
+            "passage_digest",
+            "expired",
             "line_start",
             "line_end",
             "pages",
@@ -31020,6 +31022,10 @@
               "type": "string",
               "description": "`ev_<uuid>`, as cited in the Run's text."
             },
+            "expired": {
+              "type": "boolean",
+              "description": "The Research account terms of the service that returned the page no\nlonger keep the passage (ADR 0058)."
+            },
             "fetched_at": {
               "type": "string",
               "format": "date-time",
@@ -31047,6 +31053,10 @@
                 "minimum": 0
               }
             },
+            "passage_digest": {
+              "type": "string",
+              "description": "`sha256:` digest of the passage as delivered. It outlives the text,\nso the citation can still be verified."
+            },
             "requested_url": {
               "type": "string",
               "description": "The address the Run asked for."
@@ -31061,7 +31071,7 @@
             },
             "text": {
               "type": "string",
-              "description": "The passage exactly as delivered to the Agent."
+              "description": "The passage exactly as delivered to the Agent; empty once `expired`."
             },
             "text_digest": {
               "type": "string",
