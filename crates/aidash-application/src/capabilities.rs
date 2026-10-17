@@ -6,7 +6,7 @@ use crate::{
 use aidash_domain::{
 	RunMetadata,
 	capabilities::operations::{
-		ShellRequest, available, package_files, request_validation_failure,
+		ShellRequest, VERIFICATION, available, package_files, request_validation_failure,
 	},
 };
 use serde_json::{Value, json};
@@ -44,7 +44,8 @@ pub async fn prepare<O: Send>(
 		return Err(Error::Conflict(code.into()));
 	}
 	scope.verified_health(kind == "code_interpreter").await?;
-	if matches!(kind, "shell" | "python_install") {
+	// A Check needs the Area's pod slot just as the model's shell does.
+	if matches!(kind, "shell" | "python_install" | VERIFICATION) {
 		scope
 			.release_python(if kind == "python_install" {
 				"packages_changed"

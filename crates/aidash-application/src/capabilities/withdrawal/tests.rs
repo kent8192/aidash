@@ -30,6 +30,7 @@ fn repository() -> Repository {
 	Repository(Arc::new(Mutex::new(State {
 		snapshot: Snapshot {
 			operation_id: Uuid::from_u128(1),
+			kind: "shell".into(),
 			state: "running".into(),
 			epoch: 8,
 			generation: 3,
