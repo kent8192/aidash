@@ -679,7 +679,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
 	let snapshot = store.snapshot(&ACME, workspace.id).await.unwrap();
-	assert_eq!(snapshot.messages[0].sender, "human");
+	assert_eq!(snapshot.messages[0].sender, "alice");
 	store
 		.control(
 			&ACME,

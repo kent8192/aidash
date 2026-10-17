@@ -231,14 +231,13 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 
 	// Discovery admitted both read and execution authority. Revoke only execution
 	// independently at each end while the catalog and credentials remain valid.
-	for (node, app, original, resource) in [
+	for (node, original, resource) in [
 		(
 			&a,
-			&a_app,
 			&a_policy,
 			aidash_server::domain::qualified_agent(&b.config.node_id, "remote-only", "1.0.0"),
 		),
-		(&b, &b_app, &b_policy, "remote-only".to_owned()),
+		(&b, &b_policy, "remote-only".to_owned()),
 	] {
 		let mut denied = original.clone();
 		denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-execution","effect":"deny","subjects":{"ids":["alice"]},"actions":["agent.execute"],"resources":{"kinds":["agent"],"ids":[resource]}}));
@@ -247,18 +246,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 			request(&a_app, &token, "GET", &path, Value::Null).await.0,
 			403
 		);
-		assert_eq!(
-			request(
-				app,
-				&node.config.api_token,
-				"POST",
-				"/api/authorization/acme",
-				json!({"expected_revision":2,"bundle":original})
-			)
-			.await
-			.0,
-			200
-		);
+		common::replace_policy(&node.store, "acme", original.clone()).await;
 		assert_eq!(
 			request(&a_app, &token, "GET", &path, Value::Null).await.0,
 			200
