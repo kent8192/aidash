@@ -3153,6 +3153,9 @@ async fn degrade_context(
 	cause: aidash_domain::semantic::degraded::OutageCause,
 ) -> Result<()> {
 	run.recovery.degraded.record(run.step, cause);
+	// The outage this step absorbed is over for retry purposes; a stale reason
+	// must not make a later step's first failure look like its last retry.
+	run.recovery.semantic_reason = None;
 	store.degrade_sources(run, token).await
 }
 
