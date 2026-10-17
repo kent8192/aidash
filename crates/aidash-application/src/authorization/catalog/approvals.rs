@@ -168,3 +168,6 @@ pub async fn approve(
 	}
 	Ok(bindings)
 }
+
+#[cfg(test)]
+mod tests;

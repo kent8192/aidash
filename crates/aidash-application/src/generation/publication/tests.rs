@@ -85,10 +85,21 @@ impl GenerationPublication for Publication {
 		self.effects.push("approve".into());
 		Ok(())
 	}
-	async fn catalog_history(&mut self, _job: &Request, _entry: &Entry) -> Result<()> {
+	async fn catalog_history(
+		&mut self,
+		_job: &Request,
+		_entry: &Entry,
+		_actor: &str,
+	) -> Result<()> {
 		self.point("history").await?;
 		self.effects.push("history".into());
 		Ok(())
+	}
+	async fn approver(&mut self, _job: &Request) -> Result<Option<String>> {
+		Ok(Some("owner".into()))
+	}
+	async fn may_approve(&mut self, _subject: &str, _entry: &Entry) -> Result<bool> {
+		Ok(true)
 	}
 }
 #[rstest]

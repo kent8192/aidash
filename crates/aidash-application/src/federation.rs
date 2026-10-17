@@ -1,4 +1,4 @@
-//! Deployment Administrator Agent discovery across enabled peers.
+//! Requests to enabled peers, with replies classified for retries.
 use crate::{
 	Error, Result,
 	ports::federation::{FederationRepository, PeerTransport},

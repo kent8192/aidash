@@ -145,6 +145,9 @@ impl DistributionScope for Fixture {
 	fn package_resource(&self, version: &Version) -> Resource {
 		self.resource("package", &version.key)
 	}
+	fn registry_resource(&self, kind: &str, id: &str) -> Resource {
+		self.resource("registry", &format!("{kind}/{id}"))
+	}
 	fn installation_resource(&self, installation: &Installation, _: Option<i64>) -> Resource {
 		self.resource("installation", &installation.id)
 	}

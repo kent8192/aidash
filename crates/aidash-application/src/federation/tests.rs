@@ -7,7 +7,6 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 struct Repository {
 	peers: Vec<Peer>,
-	pages: BTreeMap<u64, Value>,
 }
 #[async_trait]
 impl FederationRepository for Repository {
@@ -16,10 +15,6 @@ impl FederationRepository for Repository {
 	}
 	async fn peer(&self, node: &str) -> Result<Peer> {
 		Ok(peer(node))
-	}
-	async fn agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
-		assert_eq!(search.kind.as_deref(), Some("agent"));
-		Ok(serde_json::from_value(self.pages[&offset].clone())?)
 	}
 }
 struct Transport {
@@ -67,15 +62,9 @@ fn peer(node: &str) -> Peer {
 		enabled: true,
 	}
 }
-fn entry(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap()
-}
 #[fixture]
 fn repository() -> Repository {
-	Repository {
-		peers: vec![],
-		pages: BTreeMap::from([(0, json!({"entries":[],"next_offset":null}))]),
-	}
+	Repository { peers: vec![] }
 }
 #[fixture]
 fn transport() -> Transport {
@@ -88,7 +77,7 @@ fn transport() -> Transport {
 	}
 }
 fn federation(repository: Arc<Repository>, transport: Arc<Transport>) -> Federation {
-	Federation::new("aidash://local".into(), repository, transport)
+	Federation::new(repository, transport)
 }
 
 #[rstest]
@@ -133,77 +122,12 @@ async fn peer_status_and_protocol_headers_preserve_retry_classification(
 
 #[rstest]
 #[tokio::test]
-async fn discovery_reads_all_pages_and_keeps_other_peers_when_one_fails(
-	mut repository: Repository,
-	mut transport: Transport,
-) {
-	// Arrange
-	repository.pages = BTreeMap::from([
-		(
-			0,
-			json!({"entries":[entry("local-first")],"next_offset":100}),
-		),
-		(
-			100,
-			json!({"entries":[entry("local-last")],"next_offset":null}),
-		),
-	]);
-	let mut disabled = peer("aidash://disabled");
-	disabled.enabled = false;
-	repository.peers = vec![peer("aidash://remote"), peer("aidash://offline"), disabled];
-	transport.pages = BTreeMap::from([
-		(
-			("aidash://remote".into(), "/discover?offset=0".into()),
-			json!({"entries":[entry("remote-first")],"next_offset":50}),
-		),
-		(
-			("aidash://remote".into(), "/discover?offset=50".into()),
-			json!({"entries":[entry("remote-last")],"next_offset":null}),
-		),
-	]);
-	let transport = Arc::new(transport);
-	let f = federation(Arc::new(repository), transport.clone());
-	// Act
-	let result = f.discover(&Search::default()).await.unwrap();
-	// Assert
-	assert_eq!(
-		result
-			.agents
-			.iter()
-			.map(|agent| agent.entity.id.as_str())
-			.collect::<Vec<_>>(),
-		["local-first", "local-last", "remote-first", "remote-last"]
-	);
-	assert_eq!(result.errors.len(), 1);
-	assert_eq!(result.errors[0].node_id, "aidash://offline");
-	assert_eq!(transport.calls.lock().unwrap().len(), 3);
-}
-
-#[rstest]
-#[tokio::test]
-async fn a_nonadvancing_discovery_cursor_fails_instead_of_looping(
-	mut repository: Repository,
-	transport: Transport,
-) {
-	repository
-		.pages
-		.insert(0, json!({"entries":[],"next_offset":0}));
-	let result = federation(Arc::new(repository), Arc::new(transport))
-		.discover(&Search::default())
-		.await;
-	assert!(
-		matches!(result,Err(Error::External(message)) if message == "discovery cursor did not advance")
-	);
-}
-
-#[rstest]
-#[tokio::test]
 async fn malformed_peer_success_is_an_external_failure(
 	repository: Repository,
 	transport: Transport,
 ) {
 	let result = federation(Arc::new(repository), Arc::new(transport))
-		.request::<Entry>("aidash://remote", "GET", "/task", None)
+		.request::<aidash_domain::registry::Entry>("aidash://remote", "GET", "/task", None)
 		.await;
 	assert!(
 		matches!(result,Err(Error::External(message)) if message.starts_with("invalid response JSON:"))

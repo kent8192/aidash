@@ -303,8 +303,14 @@ impl GenerationPublication for Session {
 	async fn approve(&mut self, _: &Request, _: &Entry) -> Result<()> {
 		self.effect("approve").await
 	}
-	async fn catalog_history(&mut self, _: &Request, _: &Entry) -> Result<()> {
+	async fn catalog_history(&mut self, _: &Request, _: &Entry, _: &str) -> Result<()> {
 		self.effect("catalog_history").await
+	}
+	async fn approver(&mut self, _: &Request) -> Result<Option<String>> {
+		Ok(Some("owner".into()))
+	}
+	async fn may_approve(&mut self, _: &str, _: &Entry) -> Result<bool> {
+		Ok(true)
 	}
 }
 #[async_trait]

@@ -182,6 +182,11 @@ impl GenerationControlScope for Scope {
 		state.calls.push(action.into());
 		Ok(state.allowed)
 	}
+	async fn decide_catalog(&mut self, _job: &Request) -> Result<bool> {
+		let mut state = self.state.lock().unwrap();
+		state.calls.push("catalog.approve".into());
+		Ok(state.allowed)
+	}
 	async fn finish(mut self: Box<Self>, result: Result<Request>) -> Result<Request> {
 		Scope::finish(self.as_mut(), result)
 	}
