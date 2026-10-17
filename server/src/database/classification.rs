@@ -81,6 +81,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "invocations", Pending(265)),
 	table("execution", "research_attempts", Pending(265)),
 	table("execution", "research_fragments", Pending(265)),
+	table("execution", "research_originals", Pending(265)),
+	table("execution", "research_revocations", Pending(264)),
 	table("execution", "research_snapshots", Pending(265)),
 	table("execution", "research_sources", Pending(265)),
 	table("execution", "run_activations", Pending(265)),
@@ -184,6 +186,8 @@ pub const TABLES: &[Table] = &[
 	table("identity", "run_plan_connections", Pending(264)),
 	table("identity", "run_provider_credentials", Pending(264)),
 	table("identity", "tenant_invitations", Pending(264)),
+	table("identity", "tenant_retention_rule_history", Pending(264)),
+	table("identity", "tenant_retention_rules", Pending(264)),
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)
 	table("identity", "tenants", DeploymentWide),
 	// knowledge

@@ -9,6 +9,7 @@ pub mod citations;
 pub mod document;
 pub mod evidence;
 pub mod intent;
+pub mod revocation;
 pub mod search;
 
 /// Upper bound of one research result as recorded in a Run's history.
@@ -74,6 +75,10 @@ pub enum Failure {
 	ResponseTooLarge,
 	UnsupportedMedia,
 	ExtractionFailed,
+	/// A PDF that opens only with a password.
+	EncryptedDocument,
+	/// A PDF whose permissions forbid extracting its text.
+	ExtractionNotPermitted,
 	/// A page redirected to another host than the approved destination.
 	CrossHostRedirect,
 	/// A page redirected from https to an unencrypted address.
@@ -83,6 +88,10 @@ pub enum Failure {
 	ResponseStreamError,
 	/// A dispatched attempt has no recorded outcome; it is never repeated.
 	OutcomeUnknown,
+	/// The Document snapshot's contents were purged; read its Source again.
+	SnapshotPurged,
+	/// The Run's Research evidence was revoked; the Run can do no more research.
+	EvidenceRevoked,
 }
 
 impl Failure {
@@ -107,12 +116,16 @@ impl Failure {
 			Self::ResponseTooLarge => "response_too_large",
 			Self::UnsupportedMedia => "unsupported_media",
 			Self::ExtractionFailed => "extraction_failed",
+			Self::EncryptedDocument => "encrypted_document",
+			Self::ExtractionNotPermitted => "extraction_not_permitted",
 			Self::CrossHostRedirect => "cross_host_redirect",
 			Self::InsecureRedirect => "insecure_redirect",
 			Self::Timeout => "timeout",
 			Self::TransportError => "transport_error",
 			Self::ResponseStreamError => "response_stream_error",
 			Self::OutcomeUnknown => "outcome_unknown",
+			Self::SnapshotPurged => "snapshot_purged",
+			Self::EvidenceRevoked => "evidence_revoked",
 		}
 	}
 	fn explanation(self) -> &'static str {
@@ -136,6 +149,10 @@ impl Failure {
 			Self::ResponseTooLarge => "The response exceeded the configured size limit.",
 			Self::UnsupportedMedia => "The page has an unsupported media type.",
 			Self::ExtractionFailed => "No readable text could be extracted from the page.",
+			Self::EncryptedDocument => "The document opens only with a password.",
+			Self::ExtractionNotPermitted => {
+				"The document's permissions forbid extracting its text."
+			}
 			Self::CrossHostRedirect => {
 				"The page redirected to another host; request that address in a new call."
 			}
@@ -147,6 +164,12 @@ impl Failure {
 			}
 			Self::OutcomeUnknown => {
 				"An earlier attempt of this call has no recorded outcome and is not repeated."
+			}
+			Self::SnapshotPurged => {
+				"The snapshot's contents are no longer retained; read its source again to continue."
+			}
+			Self::EvidenceRevoked => {
+				"This Run's Research evidence was revoked; it cannot be read, cited or extended."
 			}
 		}
 	}
@@ -162,9 +185,15 @@ impl Failure {
 	}
 }
 
+/// Names the research result contract in every result, so a stored result is
+/// recognized as research by this field alone, never by fields an unrelated
+/// tool may also return.
+pub const RESULT_CONTRACT: &str = "aidash.research/1";
+
 /// The result envelope shared by every research operation.
 pub fn envelope(operation: Operation, status: &str, data: Value, truncated: bool) -> Value {
 	json!({
+		"contract": RESULT_CONTRACT,
 		"version": 1,
 		"operation": operation.as_str(),
 		"status": status,
@@ -176,6 +205,7 @@ pub fn envelope(operation: Operation, status: &str, data: Value, truncated: bool
 /// A recoverable research error returned to the model as an ordinary result.
 pub fn failure(operation: Operation, failure: Failure) -> Value {
 	json!({
+		"contract": RESULT_CONTRACT,
 		"version": 1,
 		"operation": operation.as_str(),
 		"status": if failure.uncertain() { "uncertain" } else { "error" },

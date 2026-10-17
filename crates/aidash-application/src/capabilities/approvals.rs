@@ -624,8 +624,12 @@ pub async fn consume_disclosure(
 	}
 	record.state = "consumed".into();
 	record.data["consumed_at"] = json!(Utc::now());
-	scope.update(&mut record).await?;
-	Ok(true)
+	match scope.update(&mut record).await {
+		// The approval changed since it was loaded: another call consumed it,
+		// or an Evidence Revocation closed it. Either wins the race.
+		Err(Error::Conflict(_)) => Ok(false),
+		other => other.map(|()| true),
+	}
 }
 
 #[cfg(test)]

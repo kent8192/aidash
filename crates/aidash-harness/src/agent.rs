@@ -749,6 +749,29 @@ impl<'a> Executor<'a> {
 			.await?;
 		Err(Error::Forbidden)
 	}
+	/// Revoked Research evidence never reaches a model provider again, not even
+	/// inside an Execution Summary (ADR 0046). Once the Run's evidence is
+	/// revoked, every research result in the projection becomes a placeholder,
+	/// and an Execution Summary that absorbed any is discarded: its range is
+	/// restored from the Context Journal and redacted the same way. Unlike a
+	/// revoked summary source this never pauses, because revoked evidence is
+	/// never readable again and the Run continues without research. The
+	/// Context Journal keeps what the model already read.
+	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
+		use aidash_application::research::revocation;
+		let store = self.environment.store();
+		if !run.context.research_revoked
+			&& (!revocation::may_carry_research(&run.context)
+				|| !store.research_revoked(run).await?)
+		{
+			return Ok(());
+		}
+		revocation::revoke_projection(
+			&mut run.context,
+			&revocation::RunJournal { store, run: run.id },
+		)
+		.await
+	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
 	async fn ordered_skill_context(
@@ -1005,6 +1028,7 @@ impl<'a> Executor<'a> {
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
+				self.apply_research_revocation(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
@@ -1486,6 +1510,17 @@ impl<'a> Executor<'a> {
                     }
                 }
 
+				// Building the request awaited many reads, and evidence revoked
+				// meanwhile must not reach the provider: decide once more right
+				// before dispatch, and redo the step from the redacted projection.
+				if !run.context.research_revoked
+					&& aidash_application::research::revocation::may_carry_research(&context)
+					&& store.research_revoked(run).await?
+				{
+					self.apply_research_revocation(run).await?;
+					store.save_run(run, token, "run.research_revoked").await?;
+					return Ok(());
+				}
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}

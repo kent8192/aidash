@@ -74,7 +74,8 @@ pub enum DeploymentScopeReason {
 	/// Semantic retention, engine jobs, memory decay and cleanup.
 	SemanticMaintenance,
 	/// Pruning inference progress, purging workbench and incident evidence,
-	/// and display retention.
+	/// display retention, and purging Research evidence and catching up the
+	/// Runs whose evidence was revoked.
 	Retention,
 	/// Listing atomic transactions that need recovery.
 	TransactionRecovery,

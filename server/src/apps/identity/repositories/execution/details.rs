@@ -25,16 +25,56 @@ pub(crate) struct Details<'a> {
 }
 struct Scope<'a> {
 	federation: &'a Federation,
-	access: Access,
+	access: Held<'a>,
+}
+/// The authorization transaction a scope reads through: its own, which it
+/// finishes, or a caller's, which the caller goes on using and finishes.
+enum Held<'a> {
+	Own(Box<Access>),
+	Borrowed(&'a mut Access),
+}
+impl Held<'_> {
+	fn get(&mut self) -> &mut Access {
+		match self {
+			Self::Own(access) => access,
+			Self::Borrowed(access) => access,
+		}
+	}
+	async fn finish<T>(self, result: NativeResult<T>) -> NativeResult<T> {
+		match self {
+			Self::Own(access) => access.finish(result).await,
+			Self::Borrowed(_) => result,
+		}
+	}
 }
 #[async_trait]
 impl RunDetailsRepository for Details<'_> {
 	async fn begin(&self) -> Result<Box<dyn RunDetailsScope + '_>> {
 		Ok(Box::new(Scope {
 			federation: self.federation,
-			access: Access::begin(&self.federation.store, self.identity).await?,
+			access: Held::Own(Box::new(
+				Access::begin(&self.federation.store, self.identity).await?,
+			)),
 		}))
 	}
+}
+/// Whether the subject of the caller's authorization transaction may see the
+/// Run, decided exactly as `GET /api/runs/{id}` decides it but inside that
+/// transaction, so the locks the decision takes also cover the caller's own
+/// changes. The transaction's policy context is left as it was.
+pub(crate) async fn visible_within(
+	federation: &Federation,
+	access: &mut Access,
+	run: Uuid,
+) -> Result<RunInspection> {
+	let context = access.context.clone();
+	let mut scope = Scope {
+		federation,
+		access: Held::Borrowed(&mut *access),
+	};
+	let result = aidash_application::authorization::run_details::visible_in(&mut scope, run).await;
+	scope.access.get().context = context;
+	result
 }
 #[async_trait]
 impl RunDetailsScope for Scope<'_> {
@@ -42,7 +82,7 @@ impl RunDetailsScope for Scope<'_> {
 		&self.federation.config.node_id
 	}
 	fn set_context(&mut self, context: Value) {
-		self.access.context = context;
+		self.access.get().context = context;
 	}
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>> {
 		let result: NativeResult<Option<RawRun>> = async {
@@ -62,7 +102,7 @@ impl RunDetailsScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.access.tx)
+				.fetch_optional(&mut **self.access.get().tx)
 				.await?
 			})
 		}
@@ -70,16 +110,17 @@ impl RunDetailsScope for Scope<'_> {
 		result.map_err(Into::into)
 	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+		self.access.get().workspace(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
+			.get()
 			.require(resource, action)
 			.await
 			.map_err(Into::into)
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
-		self.access.run_visible(run).await.map_err(Into::into)
+		self.access.get().run_visible(run).await.map_err(Into::into)
 	}
 	async fn invocations(&mut self, id: Uuid, offset: u64) -> Result<Vec<InvocationSummary>> {
 		let result: NativeResult<Vec<Invocation>> = async {
@@ -102,7 +143,7 @@ impl RunDetailsScope for Scope<'_> {
 						.offset(offset)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **self.access.tx)
+				.fetch_all(&mut **self.access.get().tx)
 				.await?
 			})
 		}
@@ -115,7 +156,7 @@ impl RunDetailsScope for Scope<'_> {
 		&mut self,
 		run: &RunMetadata,
 	) -> Result<Option<aidash_domain::memory::Binding>> {
-		crate::semantic::repositories::bindings::load(&mut **self.access.tx, run)
+		crate::semantic::repositories::bindings::load(&mut **self.access.get().tx, run)
 			.await
 			.map_err(Into::into)
 	}

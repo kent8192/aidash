@@ -31,7 +31,22 @@ use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
+use crate::apps::execution::repositories::research::Revocations;
+use crate::apps::execution::serializers::research::{
+	HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
+};
+use crate::apps::identity::repositories::retention::TenantRetention;
 use crate::apps::identity::services::http_auth::scoped;
+
+/// The dashboard identity of a Deployment Administrator acting in a browser.
+fn administrator(
+	actor: &Actor,
+	browser: Option<crate::dashboard_auth::BrowserOrigin>,
+) -> Option<Uuid> {
+	matches!(actor, Actor::DeploymentAdministrator)
+		.then(|| browser.map(|origin| origin.identity_id))
+		.flatten()
+}
 
 #[derive(Clone)]
 pub struct HarnessManagement {
@@ -323,6 +338,105 @@ impl HarnessManagement {
 				.await?
 				.into(),
 		)
+	}
+	/// Revoke all of one Run's Research evidence (ADR 0046).
+	pub(crate) async fn research_revocation(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		run: Uuid,
+		input: RevocationInput,
+	) -> Result<RevocationRecord> {
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor: &actor,
+			administrator: administrator(&actor, browser),
+		};
+		Ok(aidash_application::research::revocation::revoke(
+			&revocations,
+			run,
+			&input.reason,
+			chrono::Utc::now(),
+		)
+		.await?
+		.into())
+	}
+	/// One Tenant's Evidence Revocation records, newest first.
+	pub(crate) async fn research_revocations(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+		page: HistoryPage,
+	) -> Result<Vec<RevocationRecord>> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor: &actor,
+			administrator: administrator(&actor, browser),
+		};
+		Ok(aidash_application::research::revocation::records(
+			&revocations,
+			&tenant,
+			page.offset,
+			page.limit,
+		)
+		.await?
+		.into_iter()
+		.map(Into::into)
+		.collect())
+	}
+	/// The Retention Rules that apply to one Tenant (ADR 0045).
+	pub(crate) async fn retention(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+	) -> Result<aidash_application::retention::TenantRetention> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let repository = self.retention_repository(&actor, browser)?;
+		Ok(aidash_application::retention::rules(&repository, &tenant).await?)
+	}
+	/// Store or clear one Tenant's own, shorter periods.
+	pub(crate) async fn retention_update(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+		input: RetentionInput,
+	) -> Result<aidash_application::retention::TenantRetention> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let repository = self.retention_repository(&actor, browser)?;
+		Ok(aidash_application::retention::update(&repository, &tenant, input.rules).await?)
+	}
+	/// The history of one Tenant's periods, newest first.
+	pub(crate) async fn retention_history(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		tenant: String,
+		page: HistoryPage,
+	) -> Result<Vec<aidash_domain::retention::RetentionChange>> {
+		aidash_domain::policy::identifier(&tenant)?;
+		let repository = self.retention_repository(&actor, browser)?;
+		Ok(
+			aidash_application::retention::history(&repository, &tenant, page.offset, page.limit)
+				.await?,
+		)
+	}
+	fn retention_repository<'a>(
+		&'a self,
+		actor: &'a Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+	) -> Result<TenantRetention<'a>> {
+		Ok(TenantRetention {
+			store: &self.runtime.store,
+			actor,
+			administrator: administrator(actor, browser),
+			deployment: self.runtime.store.research_retention,
+		})
 	}
 	pub(crate) async fn run_control(
 		&self,

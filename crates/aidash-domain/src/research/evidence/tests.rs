@@ -93,6 +93,10 @@ fn snapshot(lines: Vec<Line>) -> DocumentSnapshot {
 		text_digest: "sha256:text".into(),
 		completeness: Completeness::TextLimit,
 		lines,
+		page_count: None,
+		pages_without_text: Vec::new(),
+		original: None,
+		purged: None,
 	}
 }
 

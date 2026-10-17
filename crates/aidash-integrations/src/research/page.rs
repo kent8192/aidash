@@ -1,7 +1,11 @@
-//! Page reading of public HTML and text pages. Every DNS answer is pinned and
-//! checked, and each redirect is admitted again before any I/O. Extraction is
-//! a bounded tag strip that never executes page content.
-use super::admit_public_url;
+//! Page reading of public HTML, text and PDF pages. Every DNS answer is pinned
+//! and checked, and each redirect is admitted again before any I/O. HTML
+//! extraction is a bounded tag strip that never executes page content; a PDF is
+//! parsed only by the bounded child of [`super::pdf`].
+use super::{
+	admit_public_url,
+	pdf::{ChildEngine, MAX_PDF_BYTES, PdfEngine, PdfText},
+};
 use crate::research::Failure;
 use aidash_application::ports::research::PageProvider;
 use aidash_domain::{
@@ -15,12 +19,15 @@ use chrono::Utc;
 use encoding_rs::{Encoding, REPLACEMENT, UTF_8, UTF_16BE, UTF_16LE, WINDOWS_1252};
 use reqwest::{StatusCode, Url, header};
 use sha2::{Digest, Sha256};
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 const MAX_RAW_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const MEDIA_TYPES: &[&str] = &["text/html", "application/xhtml+xml", "text/plain"];
+const PDF: &str = "application/pdf";
+/// A generic binary type is read only when the body turns out to be a PDF.
+const OCTET_STREAM: &str = "application/octet-stream";
 
 /// Resolves a host to the addresses a request may connect to.
 #[async_trait]
@@ -51,9 +58,11 @@ impl Resolver for PublicDns {
 pub struct PageReader {
 	resolver: Box<dyn Resolver>,
 	admit: fn(&Url) -> Result<(), Failure>,
-	/// Deadline of one whole read, redirects and body included.
+	/// Deadline of one whole read, redirects, body and PDF parsing included.
 	timeout: Duration,
 	max_raw_bytes: usize,
+	max_pdf_bytes: usize,
+	pdf: Arc<dyn PdfEngine>,
 }
 
 impl Default for PageReader {
@@ -63,11 +72,28 @@ impl Default for PageReader {
 			admit: admit_public_url,
 			timeout: TIMEOUT,
 			max_raw_bytes: MAX_RAW_BYTES,
+			max_pdf_bytes: MAX_PDF_BYTES,
+			// A binary that cannot name itself fails each PDF read instead.
+			pdf: Arc::new(ChildEngine::new(
+				std::env::current_exe().unwrap_or_else(|_| PathBuf::from("aidash")),
+			)),
 		}
 	}
 }
 
+/// A retrieved body: a page already extracted, or a PDF still to parse.
+enum Retrieved {
+	Page(ExtractedPage),
+	Pdf { url: Url, bytes: Vec<u8> },
+}
+
 impl PageReader {
+	/// Parse PDFs with `engine` instead of a child of this binary.
+	pub fn with_pdf_engine(mut self, engine: Arc<dyn PdfEngine>) -> Self {
+		self.pdf = engine;
+		self
+	}
+
 	async fn get(&self, url: &Url) -> Result<reqwest::Response, Failure> {
 		let host = url.host_str().ok_or(Failure::NonPublicDestination)?;
 		let port = url
@@ -91,7 +117,7 @@ impl PageReader {
 			.get(url.clone())
 			.header(
 				header::ACCEPT,
-				"text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8",
+				"text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8, application/pdf;q=0.8",
 			)
 			.send()
 			.await
@@ -113,6 +139,7 @@ impl PageProvider for PageReader {
 		(self.admit)(url)
 	}
 	async fn fetch(&self, url: &Url) -> Result<ExtractedPage, Failure> {
+		let started = tokio::time::Instant::now();
 		let mut url = url.clone();
 		let operation = async {
 			for _ in 0..=MAX_REDIRECTS {
@@ -149,9 +176,15 @@ impl PageProvider for PageReader {
 					.next()
 					.map(|value| value.trim().to_ascii_lowercase())
 					.unwrap_or_default();
-				if !MEDIA_TYPES.contains(&media_type.as_str()) {
+				let text = MEDIA_TYPES.contains(&media_type.as_str());
+				if !text && media_type != PDF && media_type != OCTET_STREAM {
 					return Err(Failure::UnsupportedMedia);
 				}
+				let max_bytes = if text {
+					self.max_raw_bytes
+				} else {
+					self.max_pdf_bytes
+				};
 				let charset = parameters.find_map(|parameter| {
 					let (name, value) = parameter.split_once('=')?;
 					name.trim()
@@ -164,19 +197,63 @@ impl PageProvider for PageReader {
 					.await
 					.map_err(|_| Failure::ResponseStreamError)?
 				{
-					if bytes.len().saturating_add(chunk.len()) > self.max_raw_bytes {
+					if bytes.len().saturating_add(chunk.len()) > max_bytes {
 						return Err(Failure::ResponseTooLarge);
 					}
 					bytes.extend_from_slice(&chunk);
 				}
-				return extract(&url, &media_type, charset.as_deref(), &bytes);
+				if text {
+					return extract(&url, &media_type, charset.as_deref(), &bytes)
+						.map(Retrieved::Page);
+				}
+				if !bytes.starts_with(b"%PDF-") {
+					return Err(Failure::UnsupportedMedia);
+				}
+				return Ok(Retrieved::Pdf {
+					url: url.clone(),
+					bytes,
+				});
 			}
 			Err(Failure::ProviderRequestRejected)
 		};
-		tokio::time::timeout(self.timeout, operation)
+		let retrieved = tokio::time::timeout(self.timeout, operation)
 			.await
-			.unwrap_or(Err(Failure::Timeout))
+			.unwrap_or(Err(Failure::Timeout))?;
+		match retrieved {
+			Retrieved::Page(page) => Ok(page),
+			Retrieved::Pdf { url, bytes } => {
+				// Parsing shares the read's deadline. The page was retrieved, so a
+				// parse that runs out of time leaves it unreadable rather than its
+				// retrieval uncertain.
+				let remaining = self.timeout.saturating_sub(started.elapsed());
+				let text = tokio::time::timeout(remaining, self.pdf.extract(bytes.clone()))
+					.await
+					.map_err(|_| Failure::ExtractionFailed)??;
+				pdf_page(&url, &bytes, text)
+			}
+		}
 	}
+}
+
+/// A parsed PDF as snapshot lines; each line names its physical page. When
+/// some page carries no text, the PDF itself travels with the page so that the
+/// host can retain it for viewing that page (ADR 0053).
+pub fn pdf_page(url: &Url, bytes: &[u8], text: PdfText) -> Result<ExtractedPage, Failure> {
+	if text.lines.is_empty() && text.pages_without_text.is_empty() {
+		return Err(Failure::ExtractionFailed);
+	}
+	Ok(ExtractedPage {
+		url: url.to_string(),
+		title: text.title,
+		media_type: PDF.into(),
+		fetched_at: Utc::now(),
+		raw_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
+		completeness: text.completeness,
+		lines: text.lines,
+		page_count: Some(text.page_count),
+		original: (!text.pages_without_text.is_empty()).then(|| bytes.to_vec()),
+		pages_without_text: text.pages_without_text,
+	})
 }
 
 /// The next address of a redirect. The Web disclosure approved one destination
@@ -250,6 +327,9 @@ pub fn extract(
 		raw_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
 		completeness,
 		lines,
+		page_count: None,
+		pages_without_text: Vec::new(),
+		original: None,
 	})
 }
 

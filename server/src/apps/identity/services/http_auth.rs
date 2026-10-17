@@ -37,7 +37,8 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	if path.starts_with("/tenants/")
 		&& (path.contains("/provider-credentials")
 			|| path.contains("/provider-credential-bindings")
-			|| path.contains("/provider-authorizations/"))
+			|| path.contains("/provider-authorizations/")
+			|| path.ends_with("/retention"))
 	{
 		return true;
 	}
@@ -52,7 +53,12 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),
-		["", "runs", _, "control" | "management"] | ["", "tasks", _, "abandon"]
+		[
+			"",
+			"runs",
+			_,
+			"control" | "management" | "research-revocation"
+		] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}

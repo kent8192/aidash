@@ -50,6 +50,8 @@ mod personal_tenants;
 pub use personal_tenants::PersonalTenantLink;
 mod tenant_invitations;
 pub use tenant_invitations::TenantInvitation;
+mod tenant_retention_rules;
+pub use tenant_retention_rules::{TenantRetentionRule, TenantRetentionRuleHistory};
 mod tenants;
 pub use tenants::Tenant;
 

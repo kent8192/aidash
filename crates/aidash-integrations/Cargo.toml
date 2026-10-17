@@ -30,6 +30,10 @@ reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
 ] }
 encoding_rs = "0.8"
+# Pure-Rust PDF reading and rendering for Page reading (#312). It runs only in
+# a bounded child process, because it caps neither decompression nor time.
+hayro = "0.8"
+aidash-runtime.workspace = true
 
 async-nats = "0.46"
 futures-util.workspace = true
@@ -69,3 +73,4 @@ rstest.workspace = true
 axum = "0.8"
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
+flate2 = "1"

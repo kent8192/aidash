@@ -21,6 +21,9 @@ struct Fake {
 	records: BTreeMap<Uuid, Record>,
 	cache: BTreeMap<Uuid, (String, Value)>,
 	run: Run,
+	/// Close the record the next update writes just before it does, as an
+	/// Evidence Revocation committing meanwhile would.
+	close_before_update: bool,
 }
 
 #[async_trait]
@@ -127,8 +130,17 @@ impl ApprovalScope for Fake {
 		Ok(())
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
+		let stored = self.records.get_mut(&record.id).unwrap();
+		if std::mem::take(&mut self.close_before_update) {
+			stored.state = "closed".into();
+			stored.revision += 1;
+		}
+		// Like the store, an update applies only to the revision it read.
+		if stored.revision != record.revision {
+			return Err(Error::Conflict("RECORD_CHANGED".into()));
+		}
 		record.revision += 1;
-		self.records.insert(record.id, record.clone());
+		*stored = record.clone();
 		Ok(())
 	}
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
@@ -175,6 +187,7 @@ fn scope(extra: Value) -> Fake {
 		bundle,
 		records: BTreeMap::new(),
 		cache: BTreeMap::new(),
+		close_before_update: false,
 		run: Run {
 			id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(2),
@@ -692,4 +705,27 @@ async fn only_the_requesting_run_can_consume_its_approval() {
 			.await
 			.unwrap()
 	);
+}
+
+/// An approval an Evidence Revocation closes after the call loaded it is not
+/// consumed: the call lost the race and sends nothing.
+#[tokio::test]
+async fn an_approval_closed_while_it_is_consumed_is_not_consumed() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	scope.close_before_update = true;
+	assert!(
+		!consume_disclosure(&mut scope, &run, approval_id)
+			.await
+			.unwrap()
+	);
+	assert_eq!(scope.records[&approval_id].state, "closed");
 }

@@ -137,6 +137,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.sources_observed").await
 	}
+	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
+	/// without research evidence has nothing to revoke.
+	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
+		Ok(false)
+	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {

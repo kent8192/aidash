@@ -11,7 +11,7 @@ fn settings_source() -> Value {
 			"engine":"postgresql", "name":"fixture", "host":"localhost",
 			"user":"fixture", "password":"fixture", "port":5432
 		}}},
-		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{}, "provider_credentials":{}, "cache_salt":{}, "keyless_endpoints":{}, "tenancy":{}, "plan_connections":{},
+		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{}, "provider_credentials":{}, "cache_salt":{}, "keyless_endpoints":{}, "tenancy":{}, "plan_connections":{}, "research_retention":{},
 		"node":{"node_id":"aidash://test-settings", "endpoint":"http://localhost",
 			"api_token":"test-only-deployment-administrator-secret"}
 	})
