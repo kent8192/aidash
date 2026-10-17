@@ -149,6 +149,20 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						sql.trim(),
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
 					);
+				} else if sql.starts_with("ALTER TABLE")
+					&& migration.name.ends_with("_row_level_security")
+				{
+					// Reinhardt has no row-level security operations (#6770). The
+					// database::policy unit tests compare these assets with the
+					// rendered template.
+					assert!(
+						sql.contains(&format!(
+							"CREATE POLICY {} ON",
+							aidash_server::database::policy::POLICY
+						)),
+						"{}: {sql}",
+						migration.name
+					);
 				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
 					// assets because the filesystem loader resolves assets in RunSQL.
