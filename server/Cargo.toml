@@ -381,6 +381,10 @@ path = "src/apps/identity/tests/desktop_review.rs"
 name = "registry_provider_bindings"
 path = "src/apps/registry/tests/provider_bindings.rs"
 
+[[test]]
+name = "tenant_registry_acceptance"
+path = "src/apps/registry/tests/tenant_registry_acceptance.rs"
+
 
 [[test]]
 name = "gcip_sign_in"
