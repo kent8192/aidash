@@ -67,7 +67,7 @@ pub async fn create(
 	let mut scope = repository.begin().await?;
 	scope.target_enabled(&tenant, &input.owner).await?;
 	scope.require_inspection(&reference).await?;
-	if scope.effective(&reference).await?.kind != "agent" {
+	if scope.effective(&tenant, &reference).await?.kind != "agent" {
 		return Err(Error::NotFound("agent version".into()));
 	}
 	let candidate = Incident {
