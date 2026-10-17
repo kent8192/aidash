@@ -1,14 +1,11 @@
 use super::*;
 use crate::ports::execution::media::MediaAttachment;
-use aidash_domain::{RunControl, RunPhase, model::MediaRouteEvidence};
+use aidash_domain::model::MediaRouteEvidence;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use rstest::{fixture, rstest};
 use serde_json::Value;
-use std::{
-	collections::BTreeMap,
-	sync::{Arc, Mutex},
-};
+use std::collections::BTreeMap;
 fn id(value: u128) -> Uuid {
 	Uuid::from_u128(value)
 }
