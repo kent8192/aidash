@@ -10,6 +10,7 @@ use aidash_application::{
 	plan_connections::{Authorization, ExchangeRequest, Issued, RefreshFailure, Service},
 	provider_access::{Context, KeyMaterialReader, ProviderAccess, Source},
 	provider_credentials::Store,
+	tenancy::TenancyScope,
 };
 use aidash_domain::plan_connections::{Failure, PlanModel, SCOPES};
 use aidash_domain::provider_credentials::Provider;
@@ -1038,7 +1039,12 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		let snapshot = snapshot.clone();
 		let grant = grant(run, subject);
 		async move {
-			let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+			let mut tx = f
+				.store
+				.control_pool
+				.begin(&TenancyScope::tenant("alpha").unwrap())
+				.await
+				.unwrap();
 			let result = admit(tx.as_mut(), &f.store, &grant, &snapshot, federated).await;
 			if result.is_ok() {
 				tx.commit().await.unwrap();
@@ -1066,7 +1072,12 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 	));
 	// Peer admission refuses Plan Connection models outright.
 	{
-		let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+		let mut tx = f
+			.store
+			.control_pool
+			.begin(&TenancyScope::tenant("alpha").unwrap())
+			.await
+			.unwrap();
 		assert!(matches!(
 			aidash_server::apps::identity::repositories::provider_credentials::admit(
 				tx.as_mut(),
