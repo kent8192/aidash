@@ -96,7 +96,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 					)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(local.store.pool.driver())
+			.execute(local.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -321,7 +321,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.store.pool.driver())
+		.execute(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -350,7 +350,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.store.pool.driver())
+		.execute(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -452,7 +452,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(b.store.pool.driver())
+	.fetch_one(b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(count, 1);
@@ -514,7 +514,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(b.store.pool.driver())
+		.fetch_one(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -536,7 +536,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(b.store.pool.driver())
+		.fetch_one(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -559,7 +559,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.execute(b.store.pool.driver())
+				.execute(b.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -574,7 +574,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 				.from(reinhardt::query::Alias::new("runs"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(

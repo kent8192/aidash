@@ -1010,7 +1010,7 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
 		pool: store.pool.clone(),
 	};
 	let policy: PolicyBundle = serde_json::from_value(bundle()).unwrap();
-	crate::endpoint::tenant_root_in(store.pool.driver(), "acme").await;
+	crate::endpoint::tenant_root_in(store.pool.fixture_driver(), "acme").await;
 	service
 		.replace("acme", 0, policy.clone(), "deployment_administrator")
 		.await

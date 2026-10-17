@@ -59,6 +59,35 @@ pub(crate) fn recorded(tenant: &str) -> Result<TenancyScope> {
 	}
 }
 
+/// A SQLx pool whose sessions hold the test-fixture Deployment Scope, for test
+/// fixtures that seed or inspect rows of every Tenant with plain SQL. A
+/// transaction opened with a scope still writes its own transaction-local
+/// settings, which take precedence until it ends, so server code on this pool
+/// behaves as on any other. Only debug builds have it, and clippy keeps it out
+/// of server code.
+#[cfg(debug_assertions)]
+pub fn test_fixture_driver(
+	options: sqlx::postgres::PgConnectOptions,
+	max_connections: u32,
+) -> sqlx::PgPool {
+	sqlx::postgres::PgPoolOptions::new()
+		.max_connections(max_connections)
+		.after_connect(|connection, _| {
+			Box::pin(async move {
+				sqlx::query(
+					"SELECT set_config($1, 'deployment', false), set_config($2, '', false), \
+					 set_config('application_name', 'deployment:test-fixture', false)",
+				)
+				.bind(SCOPE_SETTING)
+				.bind(TENANT_SETTING)
+				.execute(connection)
+				.await?;
+				Ok(())
+			})
+		})
+		.connect_lazy_with(options)
+}
+
 /// Write `scope` into the transaction's settings. Call it once, before any
 /// other statement of the transaction.
 pub(crate) async fn enter(tx: &mut dyn TransactionExecutor, scope: &TenancyScope) -> Result<()> {

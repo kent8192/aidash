@@ -996,7 +996,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		memory::operate(&store, &Actor::DeploymentAdministrator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
-	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.fixture_driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.
@@ -2324,7 +2324,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		// staged, before inference, rather than failing the read insert. Only
 		// the table owner can add a trigger; the server role holds DML.
 		let owner: aidash_server::database::native::Pool =
-			crate::native_database::owner_pool(store.pool.driver())
+			crate::native_database::owner_pool(store.pool.fixture_driver())
 				.await
 				.into();
 		let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();

@@ -190,7 +190,7 @@ fn successor_fixture(
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(f.c.f.store.pool.driver())
+			.execute(f.c.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -320,7 +320,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 ) {
 	use reinhardt::query::LockType;
 	let (f, child) = Box::pin(delegated_thread_child).await;
-	let mut blocker = f.c.f.store.pool.driver().begin().await.unwrap();
+	let mut blocker = f.c.f.store.pool.fixture_driver().begin().await.unwrap();
 	let _: Uuid = {
 		let query_bind_1 = f.thread;
 		sqlx::query_scalar(
@@ -350,8 +350,11 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]});
 	let deleting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });
-	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(f.c.f.store.pool.driver(), 1)
-		.await;
+	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(
+		f.c.f.store.pool.fixture_driver(),
+		1,
+	)
+	.await;
 	let app = f.c.app.clone();
 	let token = f.bob.clone();
 	let path = format!("/api/tasks/{child}/delegate");
@@ -359,8 +362,11 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	let child_path = path.clone();
 	let child_input = input.clone();
 	let admitting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });
-	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(f.c.f.store.pool.driver(), 2)
-		.await;
+	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(
+		f.c.f.store.pool.fixture_driver(),
+		2,
+	)
+	.await;
 	blocker.commit().await.unwrap();
 	let (status, deleted) = deleting.await.unwrap();
 	assert_eq!(status, 200, "{deleted}");
@@ -382,7 +388,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 			.and_where(Expr::col(Alias::new("agent_id")).eq("reviewer"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.c.f.store.pool.driver())
+	.fetch_one(f.c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(areas, 0);

@@ -12,5 +12,7 @@ mod harness;
 mod manage;
 #[path = "support/native_database.rs"]
 mod native_database;
+#[path = "row_level_security.rs"]
+mod row_level_security;
 #[path = "tenancy.rs"]
 mod tenancy;

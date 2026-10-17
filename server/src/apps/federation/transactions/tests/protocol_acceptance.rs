@@ -540,7 +540,13 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	let (a, b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await; // Both votes are prepared, still undecided.
-	let mut transition = a.f.store.control_pool.driver().begin().await.unwrap();
+	let mut transition =
+		a.f.store
+			.control_pool
+			.fixture_driver()
+			.begin()
+			.await
+			.unwrap();
 	{
 		let query_bind_1 = manifest.id.to_string();
 		sqlx::query(
@@ -591,7 +597,7 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 			.from(reinhardt::query::Alias::new("atomic_history"))
 			.and_where(SimpleExpr::CustomWithExpr("(transaction_id = ? AND role = 'coordinator' AND phase IN ('COMMIT', 'ABORT'))".to_owned(), vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()]))
 			.to_string(reinhardt::query::PostgresQueryBuilder))
-	.fetch_one(a.f.store.control_pool.driver())
+	.fetch_one(a.f.store.control_pool.fixture_driver())
 	.await }
 	.unwrap();
 	assert_eq!(decisions, 1);
@@ -714,7 +720,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(node.f.store.pool.driver())
+			.fetch_one(node.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -942,7 +948,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(a.f.store.pool.driver())
+		.execute(a.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -958,7 +964,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 			.await
 			.unwrap();
 	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
-        .execute(b.f.store.pool.driver())
+        .execute(b.f.store.pool.fixture_driver())
         .await }
         .unwrap();
 	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Atomic result","content":"one committed result"}})).unwrap());
@@ -989,7 +995,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.f.store.pool.driver())
+		.execute(b.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1027,7 +1033,7 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(b.f.store.pool.driver())
+		.execute(b.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1416,7 +1422,7 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(a.f.store.control_pool.driver())
+				.fetch_one(a.f.store.control_pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -1502,7 +1508,7 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(node.f.store.pool.driver())
+			.fetch_one(node.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -1762,7 +1768,7 @@ async fn mapped_transaction_admission_and_revocation(
 					.from(Alias::new("atomic_participants"))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(node.f.store.control_pool.driver())
+			.fetch_one(node.f.store.control_pool.fixture_driver())
 			.await
 			.unwrap();
 			assert_eq!(
@@ -1785,11 +1791,11 @@ async fn mapped_transaction_admission_and_revocation(
 			.from(Alias::new("authorization_decisions"))
 			.to_string(PostgresQueryBuilder);
 		let before_a: i64 = sqlx::query_scalar(&query)
-			.fetch_one(a.f.store.pool.driver())
+			.fetch_one(a.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		let before_b: i64 = sqlx::query_scalar(&query)
-			.fetch_one(b.f.store.pool.driver())
+			.fetch_one(b.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		for _ in 0..2 {
@@ -1800,14 +1806,14 @@ async fn mapped_transaction_admission_and_revocation(
 		}
 		assert_eq!(
 			sqlx::query_scalar::<_, i64>(&query)
-				.fetch_one(a.f.store.pool.driver())
+				.fetch_one(a.f.store.pool.fixture_driver())
 				.await
 				.unwrap(),
 			before_a
 		);
 		assert_eq!(
 			sqlx::query_scalar::<_, i64>(&query)
-				.fetch_one(b.f.store.pool.driver())
+				.fetch_one(b.f.store.pool.fixture_driver())
 				.await
 				.unwrap(),
 			before_b
@@ -2087,7 +2093,13 @@ async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_t
 	);
 	// Simulate loss of the existing communication credential after admission.
 	// The Deployment Administrator recovery route must restore that exact Node, not grant trust.
-	let mut tx = a.f.store.control_pool.driver().begin().await.unwrap();
+	let mut tx =
+		a.f.store
+			.control_pool
+			.fixture_driver()
+			.begin()
+			.await
+			.unwrap();
 	sqlx::query(
 		&Query::select()
 			.expr(Expr::cust(

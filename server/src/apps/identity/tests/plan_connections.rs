@@ -282,7 +282,7 @@ fn disabled_parts() -> Parts {
 
 async fn execute(f: &Federation, query: String) {
 	sqlx::query(&query)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 }
@@ -571,7 +571,7 @@ async fn table_text(f: &Federation, table: &str) -> String {
 		.from_as(Alias::new(table), Alias::new("t"))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -1169,7 +1169,7 @@ async fn context_header(fixture: &Fixture, subject: &str) -> String {
 		)))
 		.to_string(PostgresQueryBuilder);
 	let id: String = sqlx::query_scalar(&query)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	format!("mapping:alpha:{id}")

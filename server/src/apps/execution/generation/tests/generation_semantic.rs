@@ -119,7 +119,7 @@ impl Fixture {
 						.limit(1)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_optional(self.f.store.pool.driver())
+				.fetch_optional(self.f.store.pool.fixture_driver())
 				.await
 				.unwrap();
 				if let Some(entry) = entry {
@@ -177,7 +177,7 @@ impl Fixture {
 				.from(reinhardt::query::Alias::new("semantic_collections"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(self.f.store.pool.driver())
+		.fetch_all(self.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		for (collection, config) in collections {
@@ -301,7 +301,7 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 			.limit(1)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(fixture.f.store.pool.driver())
+	.fetch_one(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let usage = fixture.usage().await;
@@ -319,7 +319,7 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(fixture.f.store.pool.driver())
+	.execute(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	fixture.drive().await;
@@ -431,7 +431,7 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	// source. Maintenance must not acquire the workspace writer in this window:
 	// it could wait for those source locks while the reservation waits for the
 	// workspace foreign-key lock held by maintenance.
-	let pool = fixture.f.store.pool.driver();
+	let pool = fixture.f.store.pool.fixture_driver();
 	let request: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
 	let mut budget_barrier = pool.begin().await.unwrap();
 	sqlx::query(
@@ -533,7 +533,7 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -555,7 +555,7 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -580,7 +580,7 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -623,7 +623,7 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 					)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(fixture.f.store.pool.driver())
+			.execute(fixture.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		}
@@ -652,7 +652,7 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(fixture.f.store.pool.driver())
+			.fetch_one(fixture.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -699,7 +699,7 @@ async fn excessive_embedding_usage_retains_reservation_and_prevents_inference(
 			.from(reinhardt::query::Alias::new("generation_embedding_usage"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(fixture.f.store.pool.driver())
+	.fetch_one(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 2);
@@ -818,7 +818,7 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -851,7 +851,7 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(fixture.f.store.pool.driver())
+			.execute(fixture.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -959,7 +959,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_all(fixture.f.store.pool.driver())
+	.fetch_all(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(
@@ -981,7 +981,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 			.from(reinhardt::query::Alias::new("generation_embedding_usage"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(fixture.f.store.pool.driver())
+	.fetch_one(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(fixture.usage().await["used_tokens"], reserved);
@@ -996,7 +996,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(fixture.f.store.pool.driver())
+	.execute(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	// Restart after the killed provider call is the behavior under test.
@@ -1026,7 +1026,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 			.from(reinhardt::query::Alias::new("generation_embedding_usage"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(fixture.f.store.pool.driver())
+	.fetch_one(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(attempts, (2, 1));
@@ -1068,7 +1068,7 @@ async fn native_maintenance_retains_generated_origin_budgets_and_rechecks_expiry
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}
@@ -1079,7 +1079,7 @@ async fn native_maintenance_retains_generated_origin_budgets_and_rechecks_expiry
 				.value_expr(Alias::new("used_tokens"), Expr::col("token_limit"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}
@@ -1102,7 +1102,7 @@ async fn native_maintenance_retains_generated_origin_budgets_and_rechecks_expiry
 			.and_where(Expr::col("kind").eq("observation"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(fixture.f.store.pool.driver())
+	.fetch_one(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	if mode == "current" {
@@ -1207,7 +1207,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(fixture.f.store.pool.driver())
+	.execute(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let (status, child) = request(
@@ -1263,7 +1263,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("run_id").eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		let private = Bank {
@@ -1322,7 +1322,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("unit_id").eq(Expr::value(destination)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(fixture.f.store.pool.driver())
+		.fetch_all(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -1350,7 +1350,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("id").eq(Expr::value(child_request)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}
@@ -1362,12 +1362,12 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("request_id").eq(Expr::value(child_request)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(fixture.f.store.pool.driver())
+		.execute(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}
 	let before: Vec<(Uuid, i64)> = sqlx::query_as(&budget_query())
-		.fetch_all(fixture.f.store.pool.driver())
+		.fetch_all(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	fixture.maintenance_origins.store(2, Ordering::SeqCst);
@@ -1410,7 +1410,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	)
 	.await;
 	let after: Vec<(Uuid, i64)> = sqlx::query_as(&budget_query())
-		.fetch_all(fixture.f.store.pool.driver())
+		.fetch_all(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	if mode == "current" {
@@ -1430,7 +1430,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("unit_id").eq(Expr::value(target)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(fixture.f.store.pool.driver())
+		.fetch_all(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		origins.sort_unstable();
@@ -1455,7 +1455,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("attempt_id").in_subquery(attempts))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(fixture.f.store.pool.driver())
+		.fetch_all(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		charged.sort_unstable();
@@ -1480,7 +1480,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 				.and_where(Expr::col("id").eq(Expr::value(target)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(fixture.f.store.pool.driver())
+		.fetch_all(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert!(units.is_empty());
@@ -1971,10 +1971,10 @@ let embedding_calls = embeddings.clone();
 
 		let expected_origins = maintenance_origins.clone();
 		let derivation_mode = response_mode.clone();
-		let model_pool = f.store.pool.driver().clone();
+		let model_pool = f.store.pool.fixture_driver().clone();
 
 		let started = embedding_started.clone();
-		let pool = f.store.pool.driver().clone();
+		let pool = f.store.pool.fixture_driver().clone();
 		let provider = reinhardt::test::stub::StubRouter::new()
 .route("/v1/embeddings", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
                 let calls = embedding_calls.clone();

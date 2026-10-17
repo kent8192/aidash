@@ -438,7 +438,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	.unwrap();
 	// Real FK holds inject deletion failures in the current PostgreSQL adapter.
 	// Only the table owner can create the holds; the server role holds DML.
-	let owner: native::Pool = crate::native_database::owner_pool(store.pool.driver())
+	let owner: native::Pool = crate::native_database::owner_pool(store.pool.fixture_driver())
 		.await
 		.into();
 	let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();

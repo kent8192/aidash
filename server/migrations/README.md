@@ -216,6 +216,55 @@ workspaces:
   migrated database, so a migration that adds a table classifies it in the same
   change.
 
+## Row-level policies
+
+Every Tenant-owned table that carries a `tenant` column has one forced policy
+(#264, ADR 0040). It is `tenant_isolation`, `PERMISSIVE FOR ALL TO PUBLIC`, with
+the same `USING` and `WITH CHECK` expression:
+
+```sql
+(SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant())
+```
+
+`FORCE ROW LEVEL SECURITY` binds the owner too, so `aidash_owner`, the server
+login and the activity observer all need a scope.
+
+- `identity/0026_tenancy_policy_functions` creates both functions. They are
+  `STABLE` plpgsql with `search_path = pg_catalog`. SQL does not promise that
+  `OR` short-circuits, so each one is safe in every scope:
+
+  | `aidash.scope`               | `aidash_deployment_scope()` | `aidash_scope_tenant()` |
+  | ---------------------------- | --------------------------- | ----------------------- |
+  | `tenant`, with a name        | false                       | the Tenant name         |
+  | `tenant`, with an empty name | false                       | raises                  |
+  | `deployment`                 | true                        | NULL                    |
+  | `none`, unset or unknown     | raises                      | raises                  |
+
+  The raise uses SQLSTATE `TS001`. Its detail names the scope state and never a
+  Tenant. The server reports it, like a failed `WITH CHECK`, as an internal
+  error, because it means a server bug rather than a refused permission.
+
+- A row whose `tenant` is NULL or empty is visible only in a Deployment Scope.
+- Each app's `*_row_level_security` migration enables and forces the policy on
+  its own tables and depends on the functions migration: `execution/0034`,
+  `federation/0010`, `identity/0027`, `knowledge/0032`, `marketplace/0010` and
+  `registry/0031`. Reversal drops the policy, removes `FORCE`, then disables row
+  security. Reinhardt has no policy operations
+  ([#6770](https://github.com/kent8192/reinhardt-web/issues/6770)), so these are
+  `RunSQL` assets. `server/src/database/policy.rs` renders them, and a unit test
+  fails when an asset differs from its rendering or when the assets and the
+  classification name different tables.
+- A policy raises only when a statement scans a row. A migration that writes
+  Tenant-owned rows after their policy migration would pass on an empty
+  database and fail on a Deployment with data, so no migration may do so. A unit
+  test scans every migration source, outside function bodies, for such writes.
+  Seed Tenant-owned rows from the server inside a scope, or change the table's
+  baseline definition.
+- Test fixtures that seed or inspect Tenant-owned rows with plain SQLx use
+  `Pool::fixture_driver()`. Its sessions hold the `test-fixture` Deployment
+  Scope, and scoped transactions still override it. Only debug builds have it,
+  and clippy bans it outside tests.
+
 ## Maintenance cutover
 
 1. Stop new writes and request graceful shutdown of every old server and worker.
@@ -330,3 +379,5 @@ pruning or summary, journals those events as `imported`.
 `identity/0020_tenancy_schema` (after `identity/0019_provider_authorizations`) creates the Tenant root records (`tenants`, ADR 0050), `personal_tenants` and `tenant_invitations` (indexed by Tenant with `expires_at` and with `created_at`) with typed operations, adds the addressing `tenant` and `invitation_id` columns to `dashboard_registration_requests` (indexed with `status` and `expires_at` for one Tenant's pending requests) and `invitation_id` to `dashboard_administration_history`, and references `authorization_bundles.tenant` to its root record. A reversible SQL asset backfills a root record for every existing policy bundle, and a Personal Tenant link for every `personal-<identity>` Tenant, before the reference is added. Making `dashboard_administration_history.identity_id` nullable is the one `ALTER TABLE` statement in `RunSQL`: the pinned typed `AlterColumn` renders no `NOT NULL` change for PostgreSQL ([#6803](https://github.com/kent8192/reinhardt-web/issues/6803)). The state-only checkpoint `identity/0021_tenancy_state` records the matching models.
 
 `identity/0024_tenant_retention_rules` (after `identity/0023_plan_connection_constraints`) creates `tenant_retention_rules`, one row per Tenant that keeps its own snapshot periods, and `tenant_retention_rule_history`, one row per change, where a cleared change has no periods (ADR 0045). Checks bound every period to ten years. The tables carry a `tenant` column; their row-level policies come with RLS step 3 (#264). The generated state-only checkpoint `identity/0025_tenant_retention_rules_state` records both tables in the ORM snapshot without the checks and index.
+
+`identity/0026_tenancy_policy_functions` (after `identity/0025_tenant_retention_rules_state`) creates the row-level policy functions `aidash_deployment_scope()` and `aidash_scope_tenant()` (#264). `execution/0034_row_level_security` (after `execution/0033_research_event_run_index`), `federation/0010_row_level_security` (after `federation/0009_pinned_delegations_state`), `identity/0027_row_level_security`, `knowledge/0032_row_level_security` (after `knowledge/0031_embedding_provider_keys`), `marketplace/0010_row_level_security` (after `marketplace/0009_remove_compatibility_gate_state`) and `registry/0031_row_level_security` (after `registry/0030_plan_connection_models`) each also depend on it and enforce the forced policy on their app's Tenant-owned tables; see Row-level policies above. All seven are database-only `RunSQL` migrations with reversible SQL assets.

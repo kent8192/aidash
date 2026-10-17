@@ -66,7 +66,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	sqlx::query(&insert)
 		.bind(Sha256::digest(b"abandoned-state").to_vec())
 		.bind(Sha256::digest(b"abandoned-browser").to_vec())
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 
@@ -80,7 +80,13 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 			.unwrap()
 	});
 	discovery_started.notified().await;
-	let mut admission_probe = federation.store.pool.driver().begin().await.unwrap();
+	let mut admission_probe = federation
+		.store
+		.pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
 	let admission_lock_available: bool =
 		sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(71003204)")
 			.fetch_one(&mut *admission_probe)
@@ -131,7 +137,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 		.from(Alias::new("dashboard_login_transactions"))
 		.to_string(PostgresQueryBuilder);
 	let count: i64 = sqlx::query_scalar(&count_query)
-		.fetch_one(federation.store.pool.driver())
+		.fetch_one(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(count, 8);
@@ -239,7 +245,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]
 	}))
 	.unwrap();
-	common::tenant_root_in(federation.store.pool.driver(), "acme").await;
+	common::tenant_root_in(federation.store.pool.fixture_driver(), "acme").await;
 	Authorization {
 		pool: federation.store.pool.clone(),
 	}
@@ -263,7 +269,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.bind(identity_id)
 		.bind(issuer)
 		.bind("keycloak-user-1")
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let insert_session = Query::insert()
@@ -297,7 +303,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.bind(Sha256::digest(b"fixture-session").to_vec())
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity_id)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 
@@ -419,7 +425,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
 		.bind(first["id"].as_str().unwrap().parse::<Uuid>().unwrap())
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (_, expired) = call(
@@ -484,7 +490,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		sqlx::query(&insert_old)
 			.bind(Uuid::new_v4())
 			.bind(identity_id)
-			.execute(federation.store.pool.driver())
+			.execute(federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -530,7 +536,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.to_string(PostgresQueryBuilder);
 	let credential_id: Uuid = sqlx::query_scalar(&credential_query)
 		.bind(mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap())
-		.fetch_one(federation.store.pool.driver())
+		.fetch_one(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -598,7 +604,13 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	)
 	.await;
 	let revision = mapping_rows[0]["revision"].as_i64().unwrap();
-	let mut worker = federation.store.pool.driver().begin().await.unwrap();
+	let mut worker = federation
+		.store
+		.pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
 	let lock_credential = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("authorization_credentials"))
@@ -968,7 +980,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	)
 	.bind(own_registration)
 	.bind(identity_id)
-	.execute(federation.store.pool.driver())
+	.execute(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	for (decision, body) in [
@@ -1124,7 +1136,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire_session)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (stop, stopping) = expiry_control;
@@ -1140,7 +1152,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	tokio::time::timeout(std::time::Duration::from_secs(5), async {
 		loop {
 			let count: i64 = sqlx::query_scalar(&count_query)
-				.fetch_one(federation.store.pool.driver())
+				.fetch_one(federation.store.pool.fixture_driver())
 				.await
 				.unwrap();
 			if count == 0 {
@@ -1158,7 +1170,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.bind(Uuid::new_v4())
 			.bind(issuer)
 			.bind(format!("paged-{index:03}"))
-			.execute(federation.store.pool.driver())
+			.execute(federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -1248,7 +1260,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.bind(&subject)
 			.bind(Sha256::digest(format!("mapping-token-{index}")).to_vec())
 			.bind("deployment_administrator")
-			.execute(federation.store.pool.driver())
+			.execute(federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		sqlx::query(&insert_mapping)
@@ -1257,7 +1269,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.bind("acme")
 			.bind(subject)
 			.bind(credential_id)
-			.execute(federation.store.pool.driver())
+			.execute(federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -1305,7 +1317,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.bind(Sha256::digest(b"issuer-change-session").to_vec())
 		.bind(Sha256::digest(b"issuer-change-csrf").to_vec())
 		.bind(identity_id)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let mut changed_issuer = federation.clone();
@@ -1328,7 +1340,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		loop {
 			let disabled_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(&disabled)
 				.bind(identity_id)
-				.fetch_one(federation.store.pool.driver())
+				.fetch_one(federation.store.pool.fixture_driver())
 				.await
 				.unwrap();
 			if disabled_at.is_some() {
@@ -1373,7 +1385,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 	sqlx::query(&identity)
 		.bind(identity_id)
 		.bind(&issuer)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let session = Query::insert()
@@ -1407,7 +1419,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 		.bind(Sha256::digest(b"fixture-session").to_vec())
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity_id)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 
@@ -1487,7 +1499,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 		Option<chrono::DateTime<chrono::Utc>>,
 	) = sqlx::query_as(&status)
 		.bind(identity_id)
-		.fetch_one(federation.store.pool.driver())
+		.fetch_one(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert!(disabled_at.is_none() && revoked_at.is_none());
@@ -1539,7 +1551,7 @@ async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&identity_query)
 		.bind(identity)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let session_query = Query::insert()
@@ -1573,7 +1585,7 @@ async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture)
 		.bind(Sha256::digest(b"fixture-session").to_vec())
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let app = common::application(federation.clone()).await;
@@ -1604,7 +1616,7 @@ async fn google_session_provisions_private_access_without_registration(
 		"actions":["*"],"resources":{"kinds":["*"]}}]
 	}))
 	.unwrap();
-	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
+	common::tenant_root_in(fixture.federation.store.pool.fixture_driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -1854,7 +1866,7 @@ async fn google_session_provisions_private_access_without_registration(
 		.to_string(PostgresQueryBuilder);
 	let mapping_count: i64 = sqlx::query_scalar(&mappings_query)
 		.bind(fixture.identity)
-		.fetch_one(fixture.federation.store.pool.driver())
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(mapping_count, 2);
@@ -1877,7 +1889,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 	let authorization = Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	};
-	common::tenant_root_in(fixture.federation.store.pool.driver(), &tenant).await;
+	common::tenant_root_in(fixture.federation.store.pool.fixture_driver(), &tenant).await;
 	let before = authorization
 		.replace(&tenant, 0, policy, "deployment_administrator")
 		.await
@@ -1911,7 +1923,7 @@ async fn google_session_never_adopts_an_existing_personal_tenant(
 			.to_string(PostgresQueryBuilder);
 		let rows: i64 = sqlx::query_scalar(&count)
 			.bind(&tenant)
-			.fetch_one(fixture.federation.store.pool.driver())
+			.fetch_one(fixture.federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		assert_eq!(rows, 0, "{table}");
@@ -1963,7 +1975,7 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 		.to_string(PostgresQueryBuilder);
 	let credential: Uuid = sqlx::query_scalar(&credential_query)
 		.bind(mapping_id)
-		.fetch_one(fixture.federation.store.pool.driver())
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let authorization = Authorization {
@@ -2015,7 +2027,7 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 				.to_string(PostgresQueryBuilder);
 			sqlx::query(&update)
 				.bind(id)
-				.execute(fixture.federation.store.pool.driver())
+				.execute(fixture.federation.store.pool.fixture_driver())
 				.await
 				.unwrap();
 		}
@@ -2072,7 +2084,7 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 	);
 	let current_credential: Uuid = sqlx::query_scalar(&credential_query)
 		.bind(mapping_id)
-		.fetch_one(fixture.federation.store.pool.driver())
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(current_credential, credential);
@@ -2084,7 +2096,7 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 			.to_string(PostgresQueryBuilder);
 		let rows: i64 = sqlx::query_scalar(&count)
 			.bind(tenant)
-			.fetch_one(fixture.federation.store.pool.driver())
+			.fetch_one(fixture.federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		assert_eq!(rows, 1, "{table}");
@@ -2132,7 +2144,7 @@ async fn google_identity(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&identity_query)
 		.bind(identity)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let session_query = Query::insert()
@@ -2166,7 +2178,7 @@ async fn google_identity(
 		.bind(Sha256::digest(session.as_bytes()).to_vec())
 		.bind(Sha256::digest(format!("{session}-csrf").as_bytes()).to_vec())
 		.bind(identity)
-		.execute(federation.store.pool.driver())
+		.execute(federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	identity
@@ -2275,7 +2287,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		}]
 	}))
 	.unwrap();
-	common::tenant_root_in(fixture.federation.store.pool.driver(), "acme").await;
+	common::tenant_root_in(fixture.federation.store.pool.fixture_driver(), "acme").await;
 	Authorization {
 		pool: fixture.federation.store.pool.clone(),
 	}
@@ -2402,7 +2414,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		.to_string(PostgresQueryBuilder);
 	let denials = || async {
 		sqlx::query_scalar::<_, i64>(&denial)
-			.fetch_one(fixture.federation.store.pool.driver())
+			.fetch_one(fixture.federation.store.pool.fixture_driver())
 			.await
 			.unwrap()
 	};
@@ -2452,7 +2464,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		))
 		.to_string(PostgresQueryBuilder);
 	let recorded: i64 = sqlx::query_scalar(&history)
-		.fetch_one(fixture.federation.store.pool.driver())
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert!(recorded >= 1, "{recorded}");
@@ -2466,7 +2478,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		))
 		.to_string(PostgresQueryBuilder);
 	let group_changes: i64 = sqlx::query_scalar(&group_changes)
-		.fetch_one(fixture.federation.store.pool.driver())
+		.fetch_one(fixture.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(group_changes, 1);
