@@ -136,6 +136,8 @@ struct State {
 	/// Revoked only once this many revocation checks have answered.
 	research_revoked_after: Option<usize>,
 	research_checks: std::sync::atomic::AtomicUsize,
+	/// Provider results the Research account terms no longer keep.
+	expired_research: aidash_domain::research::expiry::ExpiredResults,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -349,6 +351,13 @@ impl ExecutionStore for Backend {
 				.0
 				.research_revoked_after
 				.is_some_and(|after| checks >= after))
+	}
+	async fn expired_research(
+		&self,
+		_: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		self.record("store.expired_research");
+		Ok(self.0.expired_research.clone())
 	}
 	async fn unknown_evidence(
 		&self,
@@ -1359,6 +1368,7 @@ fn fixture() -> Fixture {
 		research_revoked: false,
 		research_revoked_after: None,
 		research_checks: Default::default(),
+		expired_research: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,

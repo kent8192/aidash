@@ -74,6 +74,7 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 			account_id: account_id.into(),
 			price_micro_usd: price,
 		}),
+		retention: None,
 		limits: Limits {
 			search_attempts: 3,
 			..Limits::default()
@@ -368,6 +369,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
+		terminated_at: None,
 		credential_env: "AIDASH_SECRET_BRAVE_SEARCH".into(),
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),
@@ -444,6 +446,7 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 		provider: "research.page@1".into(),
 		destination: "example.com".into(),
 		attribution: None,
+		retention: None,
 		limits,
 		budget: None,
 		source_url: source_url.map(Into::into),
@@ -507,7 +510,7 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 		original: None,
 	};
 	let snapshot = evidence
-		.record_snapshot(run.id, created, &page.url, &page, &limits)
+		.record_snapshot(run.id, "r1", created, &page.url, &page, &limits)
 		.await
 		.unwrap()
 		.unwrap();
@@ -531,6 +534,7 @@ async fn a_dispatched_read_holds_a_snapshot_slot_until_it_settles(
 		provider: "research.page@1".into(),
 		destination: "example.com".into(),
 		attribution: None,
+		retention: None,
 		limits: Limits {
 			snapshots: 1,
 			..Limits::default()
@@ -596,6 +600,7 @@ async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapsho
 					provider: "research.page@1".into(),
 					destination: "example.com".into(),
 					attribution: None,
+					retention: None,
 					limits,
 					budget: None,
 					source_url: Some(address.into()),
@@ -623,7 +628,7 @@ async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapsho
 		};
 		snapshots.push(
 			evidence
-				.record_snapshot(run.id, source, address, &page, &limits)
+				.record_snapshot(run.id, "r1", source, address, &page, &limits)
 				.await
 				.unwrap()
 				.unwrap(),
@@ -666,3 +671,6 @@ async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapsho
 	);
 	cleanup(store, &url, &schema).await;
 }
+
+#[path = "research/account_terms.rs"]
+mod account_terms;

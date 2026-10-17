@@ -84,6 +84,9 @@ pub enum PurgeReason {
 	Retention,
 	/// An Evidence Revocation removed the contents.
 	Revocation,
+	/// The Research account terms of the provider that returned the
+	/// contents no longer keep them (ADR 0058).
+	AccountTerms,
 }
 
 impl PurgeReason {
@@ -91,12 +94,14 @@ impl PurgeReason {
 		match self {
 			Self::Retention => "retention",
 			Self::Revocation => "revocation",
+			Self::AccountTerms => "account_terms",
 		}
 	}
 	pub fn parse(reason: &str) -> Option<Self> {
 		Some(match reason {
 			"retention" => Self::Retention,
 			"revocation" => Self::Revocation,
+			"account_terms" => Self::AccountTerms,
 			_ => return None,
 		})
 	}
@@ -118,10 +123,20 @@ pub struct EvidenceFragment {
 	pub document_id: Uuid,
 	pub source_id: Uuid,
 	pub text_digest: String,
+	/// Empty once the Research account terms no longer keep the passage.
 	pub text: String,
+	/// `sha256:` digest of the passage as delivered; it outlives the text, so
+	/// a citation is still verified once the text is gone (ADR 0058).
+	pub passage_digest: String,
 	pub line_start: usize,
 	pub line_end: usize,
 	pub pages: Vec<u32>,
+}
+
+/// `sha256:` digest of one delivered passage.
+pub fn passage_digest(text: &str) -> String {
+	use sha2::{Digest, Sha256};
+	format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
 }
 
 impl EvidenceFragment {
@@ -133,6 +148,7 @@ impl EvidenceFragment {
 			source_id: document.source_id,
 			text_digest: document.text_digest.clone(),
 			text: passage.text.clone(),
+			passage_digest: passage_digest(&passage.text),
 			line_start: passage.line_start,
 			line_end: passage.line_end,
 			pages: passage.pages.clone(),
@@ -215,6 +231,11 @@ pub struct CitedEvidence {
 	/// `None` once the snapshot's text is no longer retained; the fragment
 	/// itself stays readable.
 	pub context: Option<SnapshotContext>,
+	/// The Research account terms no longer keep the passage: its text is
+	/// gone, while its identity and digests still verify the citation
+	/// (ADR 0058). Only that purge empties a delivered passage; a revoked
+	/// Run's evidence cannot be read at all.
+	pub expired: bool,
 }
 
 impl CitedEvidence {
@@ -222,6 +243,7 @@ impl CitedEvidence {
 		let context = (!document.lines.is_empty()).then(|| {
 			SnapshotContext::around(&document.lines, fragment.line_start, fragment.line_end)
 		});
+		let expired = fragment.text.is_empty();
 		Self {
 			fragment,
 			requested_url: document.requested_url.clone(),
@@ -231,6 +253,7 @@ impl CitedEvidence {
 			fetched_at: document.fetched_at,
 			completeness: document.completeness,
 			context,
+			expired,
 		}
 	}
 }

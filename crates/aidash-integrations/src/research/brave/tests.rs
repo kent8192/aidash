@@ -15,6 +15,7 @@ fn profile() -> AccountProfile {
 		evaluation_permitted: true,
 		retention_days: 90,
 		deletion_after_termination_days: 30,
+		terminated_at: None,
 		credential_env: "AIDASH_SECRET_BRAVE_SEARCH".into(),
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),

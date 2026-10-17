@@ -7,6 +7,7 @@ const COPY = {
     excerpt: "Excerpt the agent read",
     context: "Surrounding text (not given to the agent)",
     unavailable: "This source is unavailable.",
+    expired: /account terms no longer let this excerpt be kept/,
     results: /^Results/,
   },
   "ja-JP": {
@@ -14,6 +15,7 @@ const COPY = {
     excerpt: "エージェントが読んだ抜粋",
     context: "前後の文章（エージェントには渡していません）",
     unavailable: "この出典は利用できません。",
+    expired: /この抜粋の保持期限が切れました/,
     results: /^成果物/,
   },
 } as const;
@@ -31,6 +33,8 @@ const EVIDENCE = {
   completeness: "complete",
   text_digest: "sha256:text",
   text: "Alpha <script>inert</script>",
+  passage_digest: "sha256:passage",
+  expired: false,
   line_start: 1,
   line_end: 1,
   pages: [2],
@@ -156,5 +160,33 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     if (locale === "en-US")
       await page.screenshot({ path: "test-results/citations-viewer.png" });
     expect(errors).toEqual([]);
+  });
+}
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`an expired excerpt keeps its source but not its text in ${locale}`, async ({
+    page,
+  }) => {
+    const copy = COPY[locale];
+    await setup(page, { citations: true, locale });
+    // The Research account terms no longer keep the passage (ADR 0058).
+    await page.route("**/api/runs/*/evidence/*", (route) =>
+      route.fulfill({
+        json: { ...EVIDENCE, text: "", expired: true, context: null },
+      }),
+    );
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .locator("article", { hasText: "Evidence is ready" })
+      .getByRole("button", { name: copy.source(1), exact: true })
+      .first()
+      .click();
+    const popover = page.getByRole("dialog", { name: copy.source(1) });
+    await expect(
+      popover.getByRole("link", { name: "Die Straße" }),
+    ).toHaveAttribute("href", EVIDENCE.url);
+    const excerpt = popover.getByRole("region", { name: copy.excerpt });
+    await expect(excerpt.getByRole("status")).toHaveText(copy.expired);
+    await expect(excerpt.locator("blockquote")).toHaveCount(0);
   });
 }

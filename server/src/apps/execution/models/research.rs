@@ -74,6 +74,19 @@ pub struct ResearchAttempt {
 	pub created_at: DateTime<Utc>,
 	#[field(null = true)]
 	pub completed_at: Option<DateTime<Utc>>,
+	/// The account whose Research account terms govern the result, for a
+	/// provider with such terms (ADR 0058).
+	#[field(field_type = "text", null = true)]
+	pub retention_account_id: Option<String>,
+	/// The `retention_days` of those terms when the result was retrieved.
+	#[field(null = true)]
+	pub retention_days: Option<i32>,
+	/// When the result was replaced with a tombstone; null while it is kept.
+	#[field(null = true)]
+	pub purged_at: Option<DateTime<Utc>>,
+	/// `account_terms`, set together with `purged_at`.
+	#[field(field_type = "text", null = true)]
+	pub purge_reason: Option<String>,
 }
 
 #[model(app_label = "execution", table_name = "research_sources")]
@@ -89,6 +102,9 @@ pub struct ResearchSource {
 	pub title: String,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// The invocation key of the attempt that created the record.
+	#[field(field_type = "text", null = true)]
+	pub attempt_key: Option<String>,
 }
 
 #[model(app_label = "execution", table_name = "research_snapshots")]
@@ -127,7 +143,8 @@ pub struct ResearchSnapshot {
 	/// When the contents were purged; null while they are retained.
 	#[field(null = true)]
 	pub purged_at: Option<DateTime<Utc>>,
-	/// `retention` or `revocation`, set together with `purged_at`.
+	/// `retention`, `revocation` or `account_terms`, set together with
+	/// `purged_at`.
 	#[field(field_type = "text", null = true)]
 	pub purge_reason: Option<String>,
 	/// The page count of a paginated source such as a PDF.
@@ -144,6 +161,9 @@ pub struct ResearchSnapshot {
 	/// Whether `research_originals` still holds the original.
 	#[field]
 	pub original_retained: bool,
+	/// The invocation key of the attempt that read the page.
+	#[field(field_type = "text", null = true)]
+	pub attempt_key: Option<String>,
 }
 
 /// The original of a snapshot with pages that carry no text (ADR 0053). It is
@@ -180,6 +200,25 @@ pub struct ResearchFragment {
 	pub pages: Json<Value>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// `sha256:` digest of the passage as delivered, kept once `text` is gone.
+	#[field(field_type = "text", null = true)]
+	pub passage_digest: Option<String>,
+}
+
+/// The recorded end of one Research account holder's agreement (ADR 0058).
+/// It outlives the account's declaration, so removing the declaration never
+/// undoes it.
+#[model(app_label = "execution", table_name = "research_account_terminations")]
+#[derive(Serialize, Deserialize)]
+pub struct ResearchAccountTermination {
+	#[field(primary_key = true, field_type = "text")]
+	pub account_id: String,
+	#[field]
+	pub terminated_at: DateTime<Utc>,
+	#[field]
+	pub deletion_after_termination_days: i32,
+	#[field(auto_now_add = true)]
+	pub recorded_at: DateTime<Utc>,
 }
 
 /// The audit record of one Evidence Revocation (ADR 0046). It does not
@@ -440,6 +479,20 @@ impl ResearchAttempt {
 			.outcome(DISPATCHED.to_owned())
 			.result(None)
 			.completed_at(None)
+			.retention_account_id(
+				reservation
+					.retention
+					.as_ref()
+					.map(|terms| terms.account_id.clone()),
+			)
+			.retention_days(
+				reservation
+					.retention
+					.as_ref()
+					.map(|terms| i32::from(terms.retention_days)),
+			)
+			.purged_at(None)
+			.purge_reason(None)
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -448,7 +501,11 @@ impl ResearchAttempt {
 		// The Source record of a page read by address holds its slot from now
 		// on, under the same Run lock, so nothing is sent without it.
 		let source = match &reservation.source_url {
-			Some(url) => Some(ResearchSource::record(tx, run, url, "").await?.id),
+			Some(url) => Some(
+				ResearchSource::record(tx, run, &reservation.key, url, "")
+					.await?
+					.id,
+			),
 			None => None,
 		};
 		Ok(Reserved::Reserved { source })
@@ -483,6 +540,7 @@ impl ResearchSource {
 	pub(crate) async fn record(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
+		key: &str,
 		url: &str,
 		title: &str,
 	) -> Result<SourceRecord> {
@@ -491,6 +549,7 @@ impl ResearchSource {
 			.run_id(run)
 			.url(url.to_owned())
 			.title(title.to_owned())
+			.attempt_key(Some(key.to_owned()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -532,6 +591,7 @@ impl ResearchSource {
 impl ResearchSnapshot {
 	pub(crate) async fn record(
 		tx: &mut dyn TransactionExecutor,
+		key: &str,
 		snapshot: &DocumentSnapshot,
 	) -> Result<()> {
 		let bytes = snapshot
@@ -583,6 +643,7 @@ impl ResearchSnapshot {
 					.as_ref()
 					.is_some_and(|original| original.retained),
 			)
+			.attempt_key(Some(key.to_owned()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -694,6 +755,7 @@ impl ResearchFragment {
 			.line_start(stored(fragment.line_start))
 			.line_end(stored(fragment.line_end))
 			.pages(Json(serde_json::to_value(&fragment.pages)?))
+			.passage_digest(Some(fragment.passage_digest.clone()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -732,6 +794,9 @@ impl ResearchFragment {
 				document_id: snapshot.id,
 				source_id: snapshot.source_id,
 				text_digest: snapshot.text_digest,
+				passage_digest: record.passage_digest.unwrap_or_else(|| {
+					aidash_domain::research::evidence::passage_digest(&record.text)
+				}),
 				text: record.text,
 				line_start: usize::try_from(record.line_start).unwrap_or(0),
 				line_end: usize::try_from(record.line_end).unwrap_or(0),
@@ -1195,13 +1260,13 @@ pub(crate) fn json_text(json: Expr, key: &str) -> SimpleExpr {
 }
 
 /// A JSON text bound as a `jsonb` value.
-fn jsonb(text: &str) -> SimpleExpr {
+pub(crate) fn jsonb(text: &str) -> SimpleExpr {
 	Expr::value(text.to_owned()).cast_as("jsonb")
 }
 
 /// `json || jsonb_build_object(key, value)`: the object with its top-level
 /// `key` set to `value`, as `jsonb_set(json, '{key}', value)` sets it.
-fn with_key(json: Expr, key: &str, value: &str) -> SimpleExpr {
+pub(crate) fn with_key(json: Expr, key: &str, value: &str) -> SimpleExpr {
 	json.binary(
 		reinhardt::query::types::BinOper::PgOperator(
 			reinhardt::query::types::PgBinOper::Concatenate,
@@ -1287,4 +1352,189 @@ impl ResearchRevocation {
 /// What a research result is replaced with once its Run's evidence is revoked.
 pub(crate) fn revoked_result(operation: Operation) -> Value {
 	aidash_domain::research::revocation::tombstone(operation)
+}
+
+/// The research attempts of one Run whose Provider results expire together,
+/// by invocation key and operation (ADR 0058).
+pub(crate) struct ExpiringAttempts {
+	pub run: Uuid,
+	pub keys: Vec<(String, Operation)>,
+}
+
+impl ExpiringAttempts {
+	fn keys_of(&self, operation: Operation) -> Vec<String> {
+		self.keys
+			.iter()
+			.filter(|(_, of)| *of == operation)
+			.map(|(key, _)| key.clone())
+			.collect()
+	}
+
+	/// Replace every stored copy of these attempts' Provider results with
+	/// tombstones under the Run's research lock, keeping identities, digests
+	/// and what Aidash itself sent: the attempts' recorded results, the titles
+	/// of the Source records a search created, the contents and originals of
+	/// the Document snapshots a read created and the text of their Evidence
+	/// fragments, and every stored research result built from either, in
+	/// `invocations` and in `tool.completed` events. Attempts and snapshots
+	/// are marked purged at `at` unless an earlier purge already marked them.
+	/// Returns how many attempts were purged now.
+	pub(crate) async fn expire(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		at: DateTime<Utc>,
+	) -> Result<u64> {
+		lock(tx, &format!("research-run:{}", self.run)).await?;
+		let searches = self.keys_of(Operation::Search);
+		let reads = self.keys_of(Operation::Fetch);
+		let all = self
+			.keys
+			.iter()
+			.map(|(key, _)| key.clone())
+			.collect::<Vec<_>>();
+		if !searches.is_empty() {
+			let (sql, values) = Query::update()
+				.table(Alias::new(ResearchSource::table_name()))
+				.value(Alias::new("title"), "")
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					Expr::col("attempt_key")
+						.is_in(searches.iter().map(|key| Expr::value(key.clone()))),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		let documents = if reads.is_empty() {
+			Vec::new()
+		} else {
+			ResearchSnapshot::objects()
+				.filter(ResearchSnapshot::field_run_id().eq(self.run))
+				.filter(
+					ResearchSnapshot::field_attempt_key()
+						.is_in(reads.into_iter().map(Some).collect::<Vec<_>>()),
+				)
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.into_iter()
+				.map(|snapshot| snapshot.id)
+				.collect::<Vec<_>>()
+		};
+		if !documents.is_empty() {
+			let in_documents =
+				|| Expr::col("id").is_in(documents.iter().map(|id| Expr::value(*id)));
+			let (sql, values) = ResearchSnapshot::removal(at, PurgeReason::AccountTerms)
+				.and_where(in_documents())
+				.and_where(Expr::col("purged_at").is_null())
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+			ResearchOriginal::purge(tx, &documents).await?;
+			// Fragments of a snapshot an earlier purge emptied go too: their
+			// passages are copies of what the provider returned.
+			let (sql, values) = Query::update()
+				.table(Alias::new(ResearchFragment::table_name()))
+				.value(Alias::new("text"), "")
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					Expr::col("snapshot_id").is_in(documents.iter().map(|id| Expr::value(*id))),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		let mut purged = 0;
+		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+			let tombstone = aidash_domain::research::expiry::tombstone(operation);
+			// The attempts themselves, and any attempt of the Run whose result
+			// was built from an expired Document snapshot.
+			let mut attempts = Query::update();
+			attempts
+				.table(Alias::new(ResearchAttempt::table_name()))
+				.value(Alias::new("result"), tombstone.clone())
+				.value(Alias::new("purged_at"), at)
+				.value(
+					Alias::new("purge_reason"),
+					PurgeReason::AccountTerms.as_str(),
+				)
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(Expr::col("operation").eq(Expr::value(operation.as_str())))
+				.and_where(Expr::col("result").is_not_null())
+				.and_where(Expr::col("purged_at").is_null())
+				.and_where(produced_by(
+					Expr::col(Alias::new("invocation_key")),
+					json_text(
+						Expr::from(json_field(Expr::col(Alias::new("result")), "data")),
+						"document_id",
+					),
+					&all,
+					&documents,
+				));
+			let (sql, values) = attempts.build(PostgresQueryBuilder);
+			purged += tx
+				.execute(&sql, convert_values(values))
+				.await?
+				.rows_affected;
+			let (sql, values) = Query::update()
+				.table(Alias::new("invocations"))
+				.value(Alias::new("result"), tombstone.clone())
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					json_text(Expr::col(Alias::new("result")), "contract")
+						.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+				)
+				.and_where(
+					json_text(Expr::col(Alias::new("result")), "operation")
+						.eq(Expr::value(operation.as_str())),
+				)
+				.and_where(produced_by(
+					Expr::col(Alias::new("idempotency_key")),
+					json_text(
+						Expr::from(json_field(Expr::col(Alias::new("result")), "data")),
+						"document_id",
+					),
+					&all,
+					&documents,
+				))
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+			let data = || Expr::col(Alias::new("data"));
+			let result = || Expr::from(json_field(data(), "result"));
+			let (sql, values) = Query::update()
+				.table(Alias::new("events"))
+				.value_expr(
+					Alias::new("data"),
+					with_key(data(), "result", &tombstone.to_string()),
+				)
+				.and_where(Expr::col("kind").eq("tool.completed"))
+				.and_where(json_text(data(), "run_id").eq(Expr::value(self.run.to_string())))
+				.and_where(
+					json_text(result(), "contract")
+						.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+				)
+				.and_where(json_text(result(), "operation").eq(Expr::value(operation.as_str())))
+				.and_where(produced_by(
+					Expr::from(json_text(data(), "idempotency_key")),
+					json_text(Expr::from(json_field(result(), "data")), "document_id"),
+					&all,
+					&documents,
+				))
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		Ok(purged)
+	}
+}
+
+/// A stored research result produced by one of `keys`, or built from one of
+/// `documents`; false when both are empty.
+fn produced_by(key: Expr, document: SimpleExpr, keys: &[String], documents: &[Uuid]) -> SimpleExpr {
+	let by_key =
+		(!keys.is_empty()).then(|| key.is_in(keys.iter().map(|key| Expr::value(key.clone()))));
+	let by_document = (!documents.is_empty()).then(|| {
+		Expr::from(document).is_in(documents.iter().map(|id| Expr::value(id.to_string())))
+	});
+	match (by_key, by_document) {
+		(Some(key), Some(document)) => key.or(document),
+		(Some(only), None) | (None, Some(only)) => only,
+		(None, None) => Expr::value(false).into(),
+	}
 }

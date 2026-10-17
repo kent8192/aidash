@@ -297,6 +297,7 @@ impl EvidenceStore for Memory {
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
+		_key: &str,
 		source_id: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
@@ -1011,6 +1012,7 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
+		terminated_at: None,
 		credential_env: "AIDASH_SECRET_SEARCH".into(),
 		price_effective_at: now - Duration::days(1),
 		price_review_after: now + Duration::days(1),
@@ -1069,6 +1071,7 @@ async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
+		terminated_at: None,
 		credential_env: "AIDASH_SECRET_SEARCH".into(),
 		price_effective_at: now - Duration::days(1),
 		price_review_after: now + Duration::days(1),
@@ -1154,6 +1157,7 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				provider: "research.brave@1".into(),
 				destination: "api.search.brave.com".into(),
 				attribution: None,
+				retention: None,
 				limits: Limits::default(),
 				budget: None,
 				source_url: None,
@@ -1193,6 +1197,7 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				provider: "research.brave@1".into(),
 				destination: "api.search.brave.com".into(),
 				attribution: None,
+				retention: None,
 				limits: Limits::default(),
 				budget: None,
 				source_url: None,
@@ -1489,6 +1494,7 @@ impl DisclosureGate for Concurrent<'_> {
 					provider: "research.brave@1".into(),
 					destination: "api.search.brave.com".into(),
 					attribution: None,
+					retention: None,
 					limits: Limits {
 						search_attempts: 1,
 						..Limits::default()

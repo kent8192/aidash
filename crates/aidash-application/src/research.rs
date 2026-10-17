@@ -5,7 +5,7 @@ use crate::{
 	Error, Result,
 	ports::research::{
 		Budget, DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider,
-		Reservation, Reserved, SearchProvider, WebDisclosure,
+		Reservation, Reserved, RetrievalTerms, SearchProvider, WebDisclosure,
 	},
 };
 use aidash_domain::research::{
@@ -188,6 +188,7 @@ impl Research<'_> {
 					provider: call.provider.into(),
 					destination: outbound.destination,
 					attribution: account.as_ref().map(|account| account.attribution()),
+					retention: account.as_ref().map(RetrievalTerms::of),
 					limits: self.limits,
 					budget: account.as_ref().map(|account| Budget {
 						since: month_start(Utc::now()),
@@ -337,6 +338,11 @@ impl Research<'_> {
 		if let Err(error) = provider.admit(&url) {
 			return Ok(failure(operation, error));
 		}
+		// A service with Research account terms returns Provider results.
+		let account = match provider.account() {
+			Ok(account) => account,
+			Err(error) => return Ok(failure(operation, error)),
+		};
 		let usage = self.store.usage(call.run).await?;
 		if usage.fetch_attempts >= self.limits.fetch_attempts {
 			return Ok(failure(operation, Failure::AttemptLimit));
@@ -372,6 +378,7 @@ impl Research<'_> {
 					provider: call.provider.into(),
 					destination: outbound.destination,
 					attribution: None,
+					retention: account.as_ref().map(RetrievalTerms::of),
 					limits: self.limits,
 					budget: None,
 					source_url: source.is_none().then(|| url.to_string()),
@@ -404,7 +411,14 @@ impl Research<'_> {
 		// The store checks the snapshot limits under the Run's lock.
 		let snapshot = match self
 			.store
-			.record_snapshot(call.run, source, url.as_str(), &page, &self.limits)
+			.record_snapshot(
+				call.run,
+				call.key,
+				source,
+				url.as_str(),
+				&page,
+				&self.limits,
+			)
 			.await?
 		{
 			Ok(snapshot) => snapshot,
@@ -830,6 +844,7 @@ fn find_result(
 	)
 }
 
+pub mod account_terms;
 pub mod retention;
 pub mod revocation;
 
