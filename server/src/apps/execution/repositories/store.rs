@@ -3360,14 +3360,17 @@ impl Store {
 				return Err(Error::StaleInference);
 			}
 		}
-		// Source observation and a pinned Estimate Snapshot continue the same
-		// step. A revoked summary's restoration keeps the lease so the step's
-		// authority pause applies to the saved Run. An adopted compaction ends
-		// its step and releases the lease so the next poll can continue the Run
-		// immediately.
+		// Source observation, Degraded context and a pinned Estimate Snapshot
+		// continue the same step. A revoked summary's restoration keeps the
+		// lease so the step's authority pause applies to the saved Run. An
+		// adopted compaction ends its step and releases the lease so the next
+		// poll can continue the Run immediately.
 		let retain_lease = matches!(
 			kind,
-			"run.sources_observed" | "run.estimate_pinned" | "context.summary_revoked"
+			"run.sources_observed"
+				| "run.semantic_degraded"
+				| "run.estimate_pinned"
+				| "context.summary_revoked"
 		);
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
@@ -3400,8 +3403,20 @@ impl Store {
 		} else {
 			Vec::new()
 		};
-		self.event(tx, (run.home_node == self.node_id).then_some(run.workspace_id), kind,
-            json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage})).await?;
+		let mut data = json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage});
+		if kind == "run.semantic_degraded"
+			&& let Some(degraded) = run.recovery.degraded.recent.last()
+		{
+			// Only the typed cause: no endpoint, upstream body or query (ADR 0059).
+			data["cause"] = serde_json::to_value(degraded.cause)?;
+		}
+		self.event(
+			tx,
+			(run.home_node == self.node_id).then_some(run.workspace_id),
+			kind,
+			data,
+		)
+		.await?;
 		Ok((saved, closed))
 	}
 	pub async fn release_lease(&self, scope: &TenancyScope, id: Uuid, worker: Uuid) -> Result<()> {

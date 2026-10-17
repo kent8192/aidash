@@ -442,6 +442,34 @@ export function EntityConfiguration({
               ))}
             </NativeSelect>
           </Field>
+          {sourceAdapter === "workspace_retrieval" && (
+            <>
+              <Field label={t("contextOnUnavailable")}>
+                <NativeSelect
+                  name="context_on_unavailable"
+                  value={
+                    settings.on_unavailable === "degrade" ? "degrade" : "pause"
+                  }
+                  onChange={(e) => {
+                    const next = { ...settings };
+                    // Pause is the default and is never written.
+                    if (e.target.value === "degrade")
+                      next.on_unavailable = "degrade";
+                    else delete next.on_unavailable;
+                    setSourceValue(JSON.stringify(next));
+                  }}
+                >
+                  <option value="pause">
+                    {t("contextOnUnavailablePause")}
+                  </option>
+                  <option value="degrade">
+                    {t("contextOnUnavailableDegrade")}
+                  </option>
+                </NativeSelect>
+              </Field>
+              <Hint>{t("contextOnUnavailableHint")}</Hint>
+            </>
+          )}
           {sourceAdapter === "native_memory" ? (
             <MemoryRegistryFields
               key={kind}

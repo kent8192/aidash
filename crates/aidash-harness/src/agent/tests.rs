@@ -120,6 +120,8 @@ struct State {
 	source_failure: Mutex<Option<Error>>,
 	retrieval: Mutex<RetrievalScope>,
 	semantic_keys: Mutex<Vec<Option<String>>>,
+	/// `degrade_on_outage` of each semantic retrieval, in call order.
+	semantic_degrade: Mutex<Vec<bool>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	instructions: String,
 	/// The semantic read returns as much content as its budget allows.
@@ -959,6 +961,7 @@ impl ExecutionEnvironment for Backend {
 		budget: usize,
 		entry: &Entry,
 		key: Option<&RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let _ = (run, task, inputs, budget, entry);
 		self.0
@@ -966,6 +969,11 @@ impl ExecutionEnvironment for Backend {
 			.lock()
 			.unwrap()
 			.push(key.map(RetrievalKey::digest));
+		self.0
+			.semantic_degrade
+			.lock()
+			.unwrap()
+			.push(degrade_on_outage);
 		if self.0.conversation_memory {
 			self.record("source.memory");
 			if self.0.fill_semantic_budget {
@@ -1349,6 +1357,7 @@ fn fixture() -> Fixture {
 			corpus_digest: Some("corpus-1".into()),
 		}),
 		semantic_keys: Mutex::new(vec![]),
+		semantic_degrade: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
 		fill_semantic_budget: false,
@@ -4460,6 +4469,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 }
 
 mod batch;
+mod degraded;
 mod estimate;
 mod native;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.

@@ -1,4 +1,8 @@
-#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+#![allow(clippy::disallowed_methods)]
+// Fixtures reach the database outside a tenancy scope.
+// rstest 0.26.1 does not copy function-level allows onto generated partial_N
+// functions, and `controlled_context` takes one flag per Run shape.
+#![allow(clippy::too_many_arguments)]
 use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures as upstream;
 use reinhardt::ServerRouter as Router;
@@ -29,6 +33,7 @@ struct ControlledContext {
 async fn controlled_context(
 	#[default(true)] memory: bool,
 	#[default(true)] workspace_retrieval: bool,
+	#[default(false)] degrade: bool,
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
@@ -70,7 +75,11 @@ async fn controlled_context(
 		if !enabled {
 			continue;
 		}
-		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":adapter}}});
+		let mut source = json!({"adapter":adapter});
+		if degrade && adapter == "workspace_retrieval" {
+			source["on_unavailable"] = json!("degrade");
+		}
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
 		f.registry
 			.register(serde_json::from_value(entry).unwrap())
 			.await
@@ -435,28 +444,7 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 			assert!(retry.at > chrono::Utc::now(), "{run:?}");
 			// Advance only the persisted deadline after checking that the
 			// production path saved a delay and kept its failure counter.
-			{
-				let query_bind_1 = run.id;
-				sqlx::query(
-					&reinhardt::query::Query::update()
-						.table(reinhardt::query::Alias::new("runs"))
-						.value_expr(
-							reinhardt::query::Alias::new("pending"),
-							Expr::cust(
-								"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
-							),
-						)
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')"
-								.to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.execute(fixture.f.store.pool.driver())
-				.await
-			}
-			.unwrap();
+			expire_retry(&fixture, run.id).await;
 		} else {
 			assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
 			assert_eq!(reason, "retries_exhausted", "{run:?}");
@@ -491,6 +479,133 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 		"the resumed step carries semantic context: {}",
 		contexts[0]
 	);
+
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+/// Make a scheduled semantic retry due now.
+async fn expire_retry(fixture: &ControlledContext, run: uuid::Uuid) {
+	sqlx::query(
+		&reinhardt::query::Query::update()
+			.table(reinhardt::query::Alias::new("runs"))
+			.value_expr(
+				reinhardt::query::Alias::new("pending"),
+				Expr::cust(
+					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+				),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![Expr::value(run).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.execute(fixture.f.store.pool.driver())
+	.await
+	.unwrap();
+}
+
+/// Issue #234 (ADR 0059): an opted-in workspace source degrades after the
+/// bounded retry. The step reaches inference with the typed marker, records the
+/// degraded step and emits `run.semantic_degraded`. Missing vector points need
+/// repair, so they still pause even with the opt-in.
+#[rstest::rstest]
+#[case::embedding_outage(true)]
+#[case::missing_points(false)]
+#[tokio::test]
+async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
+	#[case] embedding_outage: bool,
+	#[future(awt)]
+	#[with(false, true, true)]
+	controlled_context: ControlledContext,
+) {
+	let fixture = controlled_context;
+	if embedding_outage {
+		fixture.fault.set(Fault::Unavailable);
+	} else {
+		let mut connection = fixture
+			.worker
+			.federation
+			.store
+			.pool
+			.begin(&TEST_FIXTURE)
+			.await
+			.unwrap();
+		aidash_server::database::native::query(
+			&reinhardt::query::Query::delete()
+				.from_table(reinhardt::query::Alias::new("semantic_vectors"))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.execute(&mut *connection)
+		.await
+		.unwrap();
+		connection.commit().await.unwrap();
+	}
+	for attempt in 1..=6 {
+		assert!(
+			fixture.worker.worker_once().await.unwrap(),
+			"attempt {attempt}"
+		);
+		let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+		if attempt < 6 {
+			assert!(
+				fixture.captured.lock().unwrap().is_empty(),
+				"attempt {attempt}"
+			);
+			assert_eq!(
+				run.recovery.retry.as_ref().unwrap().count,
+				attempt,
+				"{run:?}"
+			);
+			expire_retry(&fixture, run.id).await;
+			continue;
+		}
+		if !embedding_outage {
+			assert!(fixture.captured.lock().unwrap().is_empty());
+			assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+			assert_eq!(
+				serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+				"retries_exhausted"
+			);
+			assert!(run.recovery.degraded.is_empty(), "{run:?}");
+			continue;
+		}
+		let contexts = fixture.captured.lock().unwrap().clone();
+		assert_eq!(
+			contexts.len(),
+			1,
+			"the degraded step reaches inference: {run:?}"
+		);
+		let semantic = &contexts[0]["current"]["semantic_memory"];
+		assert_eq!(
+			semantic.get("workspace").unwrap_or(semantic),
+			&json!({"status":"unavailable","cause":"embedding_provider"}),
+			"{}",
+			contexts[0]
+		);
+		assert_ne!(run.control.as_str(), "PAUSED", "{run:?}");
+		assert_eq!(run.recovery.degraded.count, 1, "{run:?}");
+		assert_eq!(
+			serde_json::to_value(&run.recovery.degraded.recent).unwrap(),
+			json!([{"step":0,"cause":"embedding_provider"}])
+		);
+		let events = fixture
+			.f
+			.store
+			.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
+			.await
+			.unwrap();
+		let degraded = events
+			.iter()
+			.find(|event| event.kind == "run.semantic_degraded")
+			.expect("run.semantic_degraded");
+		assert_eq!(degraded.data["cause"], "embedding_provider");
+		assert_eq!(degraded.data["run_id"], json!(run.id));
+	}
 
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;

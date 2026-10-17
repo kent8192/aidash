@@ -2,7 +2,7 @@
 //! comes from exact Provider operations, not the adapter's convenience fields.
 use super::{AgentConfig, bindings::*};
 use crate::{Result, tool::providers::ToolDescriptor};
-use sources::{NativeContext, NativeSource};
+use sources::{NativeContext, NativeSource, OnUnavailable};
 
 impl AgentConfig {
 	pub fn definition(&self) -> AgentBindings {
@@ -34,6 +34,7 @@ impl AgentConfig {
 			conversation_memory: false,
 			semantic_memory: false,
 			workspace_context: false,
+			workspace_degrades: false,
 			schema_version: input.schema_version,
 			bindings: input.bindings,
 			remove_default: input.remove_default,
@@ -96,6 +97,7 @@ impl AgentConfig {
 		result.skills.clear();
 		result.memory = None;
 		result.sources.clear();
+		let mut workspace_policies = vec![];
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
 				continue;
@@ -128,7 +130,10 @@ impl AgentConfig {
 					match context.source {
 						NativeSource::ConversationMemory {} => result.conversation_memory = true,
 						NativeSource::SemanticMemory {} => result.semantic_memory = true,
-						NativeSource::WorkspaceRetrieval {} => result.workspace_context = true,
+						NativeSource::WorkspaceRetrieval { on_unavailable } => {
+							result.workspace_context = true;
+							workspace_policies.push(on_unavailable);
+						}
 						NativeSource::PrivateReferences { digest } => {
 							result.knowledge_digest = Some(digest)
 						}
@@ -148,6 +153,14 @@ impl AgentConfig {
 				_ => {}
 			}
 		}
+		// The workspace slot degrades only when every source feeding it opted in.
+		// Semantic memory without a native provider also reads the Workspace
+		// index and cannot opt in, so it keeps the slot fail-closed (ADR 0059).
+		result.workspace_degrades = !workspace_policies.is_empty()
+			&& workspace_policies
+				.iter()
+				.all(|policy| *policy == OnUnavailable::Degrade)
+			&& !(result.semantic_memory && result.memory.is_none());
 		crate::capabilities::references::validate_config(&result)?;
 		crate::capabilities::skills::validate_config(&result)?;
 		Ok(result)

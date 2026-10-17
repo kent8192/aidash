@@ -13910,6 +13910,10 @@
               ],
               "description": "Typed context-recovery reason for a paused Run; cleared on resume."
             },
+            "degraded": {
+              "$ref": "#/components/schemas/DegradedContext",
+              "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -15425,6 +15429,50 @@
             }
           },
           "additionalProperties": false
+        },
+        "DegradedContext": {
+          "type": "object",
+          "description": "What a Run remembers about its Degraded context.",
+          "required": ["count", "recent", "outage"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Every step that ran with Degraded context.",
+              "minimum": 0
+            },
+            "outage": {
+              "type": "boolean",
+              "description": "Set by a degraded step and cleared by a retrieval that succeeds. While\nit is set a step tries once and degrades at once if that try fails,\ninstead of waiting for the bounded retry again."
+            },
+            "recent": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DegradedStep"
+              },
+              "description": "The latest of those steps, oldest first."
+            }
+          },
+          "additionalProperties": false
+        },
+        "DegradedStep": {
+          "type": "object",
+          "required": ["step", "cause"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/SemanticOutageCause"
+            },
+            "step": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SemanticOutageCause": {
+          "type": "string",
+          "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
+          "enum": ["embedding_provider", "vector_backend"]
         }
       }
     }
@@ -23441,6 +23489,10 @@
               ],
               "description": "Typed context-recovery reason for a paused Run; cleared on resume."
             },
+            "degraded": {
+              "$ref": "#/components/schemas/DegradedContext",
+              "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -24878,6 +24930,50 @@
             }
           },
           "additionalProperties": false
+        },
+        "DegradedContext": {
+          "type": "object",
+          "description": "What a Run remembers about its Degraded context.",
+          "required": ["count", "recent", "outage"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Every step that ran with Degraded context.",
+              "minimum": 0
+            },
+            "outage": {
+              "type": "boolean",
+              "description": "Set by a degraded step and cleared by a retrieval that succeeds. While\nit is set a step tries once and degrades at once if that try fails,\ninstead of waiting for the bounded retry again."
+            },
+            "recent": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DegradedStep"
+              },
+              "description": "The latest of those steps, oldest first."
+            }
+          },
+          "additionalProperties": false
+        },
+        "DegradedStep": {
+          "type": "object",
+          "required": ["step", "cause"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/SemanticOutageCause"
+            },
+            "step": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SemanticOutageCause": {
+          "type": "string",
+          "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
+          "enum": ["embedding_provider", "vector_backend"]
         }
       }
     }
@@ -25661,6 +25757,10 @@
               ],
               "description": "Typed context-recovery reason for a paused Run; cleared on resume."
             },
+            "degraded": {
+              "$ref": "#/components/schemas/DegradedContext",
+              "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -27176,6 +27276,50 @@
             }
           },
           "additionalProperties": false
+        },
+        "DegradedContext": {
+          "type": "object",
+          "description": "What a Run remembers about its Degraded context.",
+          "required": ["count", "recent", "outage"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Every step that ran with Degraded context.",
+              "minimum": 0
+            },
+            "outage": {
+              "type": "boolean",
+              "description": "Set by a degraded step and cleared by a retrieval that succeeds. While\nit is set a step tries once and degrades at once if that try fails,\ninstead of waiting for the bounded retry again."
+            },
+            "recent": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DegradedStep"
+              },
+              "description": "The latest of those steps, oldest first."
+            }
+          },
+          "additionalProperties": false
+        },
+        "DegradedStep": {
+          "type": "object",
+          "required": ["step", "cause"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/SemanticOutageCause"
+            },
+            "step": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SemanticOutageCause": {
+          "type": "string",
+          "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
+          "enum": ["embedding_provider", "vector_backend"]
         }
       }
     }
@@ -27627,6 +27771,10 @@
               ],
               "description": "Typed context-recovery reason for a paused Run; cleared on resume."
             },
+            "degraded": {
+              "$ref": "#/components/schemas/DegradedContext",
+              "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -29142,6 +29290,50 @@
             }
           },
           "additionalProperties": false
+        },
+        "DegradedContext": {
+          "type": "object",
+          "description": "What a Run remembers about its Degraded context.",
+          "required": ["count", "recent", "outage"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Every step that ran with Degraded context.",
+              "minimum": 0
+            },
+            "outage": {
+              "type": "boolean",
+              "description": "Set by a degraded step and cleared by a retrieval that succeeds. While\nit is set a step tries once and degrades at once if that try fails,\ninstead of waiting for the bounded retry again."
+            },
+            "recent": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DegradedStep"
+              },
+              "description": "The latest of those steps, oldest first."
+            }
+          },
+          "additionalProperties": false
+        },
+        "DegradedStep": {
+          "type": "object",
+          "required": ["step", "cause"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/SemanticOutageCause"
+            },
+            "step": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SemanticOutageCause": {
+          "type": "string",
+          "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
+          "enum": ["embedding_provider", "vector_backend"]
         }
       }
     }

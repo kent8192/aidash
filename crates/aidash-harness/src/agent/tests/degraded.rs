@@ -1,0 +1,96 @@
+//! Degraded context (ADR 0059): a degraded workspace slot is recorded, emitted
+//! and never cached, and only the last outage retry may degrade.
+use super::*;
+use aidash_domain::semantic::{
+	Failure as SemanticFailure,
+	degraded::{DegradedStep, OutageCause, marker},
+};
+
+fn degraded_envelope() -> Value {
+	json!({"workspace":marker(OutageCause::EmbeddingProvider),"memory":{"status":"disabled"}})
+}
+
+fn saved(fixture: &Fixture, event: &str) -> Vec<Run> {
+	fixture
+		.backend
+		.0
+		.writes
+		.lock()
+		.unwrap()
+		.iter()
+		.filter(|(kind, _)| kind == event)
+		.map(|(_, run)| run.clone())
+		.collect()
+}
+
+#[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	*canonical.backend.0.memory_value.lock().unwrap() = degraded_envelope();
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	let degraded = saved(&canonical, "run.semantic_degraded");
+	assert_eq!(degraded.len(), 1);
+	assert_eq!(
+		degraded[0].recovery.degraded.recent,
+		[DegradedStep {
+			step: canonical.run.step,
+			cause: OutageCause::EmbeddingProvider
+		}]
+	);
+	assert!(degraded[0].recovery.degraded.outage);
+	// Never cached: no observation was saved for the degraded step.
+	assert!(saved(&canonical, "run.sources_observed").is_empty());
+	assert!(degraded[0].context.source_observation.is_none());
+
+	// The provider recovers. The next step retrieves again, even under the same
+	// Retrieval Key, and a successful retrieval ends the outage.
+	*canonical.backend.0.memory_value.lock().unwrap() = json!({"fact":"recovered"});
+	canonical.run.step += 1;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	assert_eq!(count(&canonical, "source.memory"), 2);
+	let observed = saved(&canonical, "run.sources_observed");
+	assert_eq!(observed.len(), 1);
+	assert!(!observed[0].recovery.degraded.outage);
+	assert_eq!(observed[0].recovery.degraded.count, 1);
+	if is_ordered {
+		let requests = canonical.backend.0.requests.lock().unwrap();
+		assert_eq!(semantic_memory(&requests[0]), degraded_envelope());
+		assert_eq!(semantic_memory(&requests[1]), json!({"fact":"recovered"}));
+	}
+}
+
+#[rstest]
+#[case::first_attempt(None, None, false, false)]
+#[case::fourth_retry(Some(SemanticFailure::Unavailable), Some(4), false, false)]
+#[case::last_retry(Some(SemanticFailure::Unavailable), Some(5), false, true)]
+#[case::last_pending_replay(Some(SemanticFailure::Pending), Some(5), false, false)]
+#[case::after_a_degraded_step(None, None, true, true)]
+#[tokio::test]
+async fn only_the_last_outage_retry_or_an_ongoing_outage_may_degrade(
+	mut canonical: Fixture,
+	#[case] reason: Option<SemanticFailure>,
+	#[case] retries: Option<u32>,
+	#[case] outage: bool,
+	#[case] degrade: bool,
+) {
+	canonical.run.recovery.semantic_reason = reason;
+	canonical.run.recovery.retry = retries.map(|count| RetryState {
+		count,
+		at: chrono::Utc::now(),
+	});
+	canonical.run.recovery.degraded.outage = outage;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	assert_eq!(
+		*canonical.backend.0.semantic_degrade.lock().unwrap(),
+		[degrade]
+	);
+}
