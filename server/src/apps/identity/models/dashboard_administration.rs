@@ -499,6 +499,12 @@ impl DashboardRegistrationRequest {
 				}
 			}
 			dashboard_rules::require_user_mapping(&snapshot, &input.subject)?;
+			crate::apps::identity::repositories::plan_connections::refuse_shared_holder(
+				tx,
+				&input.tenant,
+				&input.subject,
+			)
+			.await?;
 			// The secret never leaves the service; this record anchors a policy
 			// lease and cannot be used as a bearer credential.
 			let credential = AuthorizationCredential::build()

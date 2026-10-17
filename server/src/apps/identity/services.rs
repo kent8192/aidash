@@ -21,6 +21,7 @@ pub(crate) mod desktop_cors;
 pub mod credential_store_recovery;
 pub(crate) mod gcip;
 pub mod invitations;
+pub mod plan_connections;
 pub mod provider_authorizations;
 pub mod provider_credentials;
 pub mod tenant_administration;

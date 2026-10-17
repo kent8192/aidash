@@ -190,6 +190,8 @@ impl Scope for NativeScope {
 
 /// Pin all selected provider sources in the caller's admission transaction.
 /// Tenant comes from local authorization, including the receiving peer mapping.
+/// A peer-admitted Run arrived through Federation, so it never uses a Plan
+/// Connection (ADR 0007).
 pub async fn admit(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
@@ -197,12 +199,43 @@ pub async fn admit(
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	configured: bool,
 ) -> crate::Result<()> {
-	admit_providers(tx, run, tenant, selected_providers(snapshot)?, configured).await
+	let selected = selected_providers(snapshot)?;
+	refuse_plans(&selected)?;
+	admit_providers(tx, run, tenant, selected.credentials, configured).await
 }
 
-fn selected_providers(
+/// How a path that admits a Run treats Plan Connection models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanAdmission {
+	/// The owner's own admission: the grant it persists next pins the
+	/// connection of its delegation-chain root.
+	Deferred,
+	/// Remote commands, peer and scoped receivers, and Deployment
+	/// Administrator claims never use one.
+	Refused,
+}
+
+/// The Provider Catalog entries one admitted Binding closure calls.
+pub(crate) struct Selected {
+	/// Served by the Tenant's Provider Credentials.
+	pub credentials: std::collections::BTreeSet<String>,
+	/// Served by the Plan Connection of the Run's delegation-chain root.
+	pub plans: std::collections::BTreeSet<String>,
+}
+
+fn refuse_plans(selected: &Selected) -> crate::Result<()> {
+	if selected.plans.is_empty() {
+		Ok(())
+	} else {
+		Err(crate::Error::Plan(
+			aidash_domain::plan_connections::Failure::NotAdmitted,
+		))
+	}
+}
+
+pub(crate) fn selected_providers(
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
-) -> crate::Result<std::collections::BTreeSet<String>> {
+) -> crate::Result<Selected> {
 	use aidash_domain::registry::AgentConfig;
 	let config = AgentConfig::from_snapshot(snapshot)?;
 	// Resolve only the selected local closure that was already admitted. Live
@@ -254,7 +287,8 @@ fn selected_providers(
 		}
 	}
 	let mut providers = std::collections::BTreeSet::new();
-	for reference in definitions {
+	let mut plans = std::collections::BTreeSet::new();
+	for (index, reference) in definitions.into_iter().enumerate() {
 		let entry = definition(&reference)?;
 		if let Some(provider) = entry
 			.config
@@ -268,8 +302,27 @@ fn selected_providers(
 			)?;
 			providers.insert(provider.to_owned());
 		}
+		if let Some(provider) = entry
+			.config
+			.get("plan_connection")
+			.and_then(serde_json::Value::as_str)
+		{
+			// Only the Agent's own model reaches the Responses API. Memory
+			// extraction, reflection and reranking run as Tenant maintenance,
+			// which never uses a Plan Connection (ADR 0007).
+			if index != 0 {
+				return Err(crate::Error::Plan(
+					aidash_domain::plan_connections::Failure::NotAdmitted,
+				));
+			}
+			aidash_domain::provider_credentials::Provider::plan(provider)?;
+			plans.insert(provider.to_owned());
+		}
 	}
-	Ok(providers)
+	Ok(Selected {
+		credentials: providers,
+		plans,
+	})
 }
 
 async fn admit_providers(
@@ -381,6 +434,16 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
 		use aidash_application::provider_access::Source;
+		if let Source::Plan { provider } = source {
+			let (service, id) = self.plan(context, endpoint, provider).await?;
+			return Ok(aidash_application::provider_access::Access {
+				endpoint: aidash_domain::provider_credentials::Provider::Chatgpt
+					.base_url()
+					.into(),
+				bearer: service.bearer(id).await?,
+				keyless: None,
+			});
+		}
 		let Source::Tenant { provider } = source else {
 			return crate::bootstrap::keyless_provider_access(&self.store)
 				.resolve(context, endpoint, source)
@@ -396,6 +459,10 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		source: &aidash_application::provider_access::Source,
 	) -> Result<()> {
 		use aidash_application::provider_access::Source;
+		if let Source::Plan { provider } = source {
+			let (service, id) = self.plan(context, endpoint, provider).await?;
+			return service.usable(id).await;
+		}
 		let Source::Tenant { provider } = source else {
 			return crate::bootstrap::keyless_provider_access(&self.store)
 				.check(context, endpoint, source)
@@ -403,6 +470,28 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		};
 		let context = self.scoped(context, provider).await?;
 		self.tenant()?.check(&context, endpoint, source).await
+	}
+	/// One forced refresh after OpenAI rejected the access token, or marking
+	/// the owner's plan ineligible (ADR 0007).
+	async fn plan_rejected(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		disposition: aidash_domain::plan_connections::Disposition,
+	) -> Result<bool> {
+		use aidash_domain::plan_connections::Disposition;
+		use aidash_domain::provider_credentials::Provider;
+		let (service, id) = self
+			.plan(
+				context,
+				Provider::Chatgpt.base_url(),
+				Provider::Chatgpt.id(),
+			)
+			.await?;
+		match disposition {
+			Disposition::RefreshThenReconnect => service.refresh_rejected(id).await,
+			Disposition::MarkIneligible => service.mark_ineligible(id).await.map(|()| false),
+			Disposition::Fail(_) | Disposition::Transient => Ok(false),
+		}
 	}
 }
 impl AdmittedAccess {
@@ -417,6 +506,51 @@ impl AdmittedAccess {
 			reader: self.store.provider_key_material_reader.clone(),
 			issuer: self.store.capability_issuer.clone(),
 		})
+	}
+	/// The Plan Connection admission pinned for the Run. A Plan Connection
+	/// serves only a Run's own inference: never maintenance, and never a
+	/// Decision Attempt, which uses the Tenant's OpenRouter binding (ADR 0041).
+	async fn plan(
+		&self,
+		context: &aidash_application::provider_access::Context,
+		endpoint: &str,
+		provider: &str,
+	) -> Result<(
+		std::sync::Arc<aidash_application::plan_connections::Service>,
+		Uuid,
+	)> {
+		use aidash_domain::plan_connections::Failure;
+		let provider = aidash_domain::provider_credentials::Provider::plan(provider)?;
+		let Some(run) = context.run else {
+			return Err(aidash_application::Error::Plan(Failure::NotAdmitted));
+		};
+		if context.maintenance.is_some() || context.is_decision() {
+			return Err(aidash_application::Error::Plan(Failure::NotAdmitted));
+		}
+		if endpoint != provider.base_url() {
+			return Err(Error::Invalid(
+				"a Plan Connection serves only its Provider Catalog endpoint".into(),
+			));
+		}
+		let service = match (
+			self.store.plan_connections_enabled,
+			&self.store.plan_connections,
+		) {
+			(true, Some(service)) => service.clone(),
+			_ => {
+				return Err(Error::Invalid(
+					"Plan Connections are not enabled on this Deployment".into(),
+				));
+			}
+		};
+		let id = super::plan_connections::pinned(
+			&self.store.control_pool,
+			&context.tenant,
+			run,
+			provider,
+		)
+		.await?;
+		Ok((service, id))
 	}
 	/// The call scope with the Run's admitted Provider Credential pin. Runless
 	/// maintenance and a Run's Decision Attempts use the Tenant's current
@@ -474,6 +608,7 @@ pub(crate) async fn admit_workspace(
 	workspace: Uuid,
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	configured: bool,
+	plan: PlanAdmission,
 ) -> crate::Result<()> {
 	use reinhardt::query::{Alias, ExprTrait};
 	let (sql, values) = Query::select()
@@ -488,7 +623,11 @@ pub(crate) async fn admit_workspace(
 			.map_err(reinhardt::core::exception::Error::from)?,
 		None => String::new(),
 	};
-	let mut providers = selected_providers(snapshot)?;
+	let selected = selected_providers(snapshot)?;
+	if plan == PlanAdmission::Refused {
+		refuse_plans(&selected)?;
+	}
+	let mut providers = selected.credentials;
 	// Workspace retrieval is another admitted provider consumer, even when the
 	// Agent's own Model uses an environment source. Lock the index generation
 	// with the Run admission so configuration cannot change while pins are made.

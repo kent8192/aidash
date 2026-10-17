@@ -171,10 +171,16 @@ pub const TABLES: &[Table] = &[
 	table("identity", "desktop_refresh_credentials", DeploymentWide),
 	// the identity's one Personal Tenant, read at sign-in
 	table("identity", "personal_tenants", Pending(264)),
+	// pending Sign in with ChatGPT flows bound to a browser, like sign-in state
+	table("identity", "plan_authorizations", DeploymentWide),
+	// this Deployment's Plan Connection host ID
+	table("identity", "plan_connection_hosts", DeploymentWide),
+	table("identity", "plan_connections", Pending(264)),
 	// pending OAuth flows bound to a browser, like sign-in state
 	table("identity", "provider_authorizations", DeploymentWide),
 	table("identity", "provider_credential_bindings", Pending(264)),
 	table("identity", "provider_credentials", Pending(264)),
+	table("identity", "run_plan_connections", Pending(264)),
 	table("identity", "run_provider_credentials", Pending(264)),
 	table("identity", "tenant_invitations", Pending(264)),
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)

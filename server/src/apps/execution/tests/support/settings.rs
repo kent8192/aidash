@@ -34,7 +34,8 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 				.with_value("kubernetes", json!({}))
 				.with_value("cache_salt", json!({}))
 				.with_value("keyless_endpoints", json!({}))
-				.with_value("tenancy", json!({})),
+				.with_value("tenancy", json!({}))
+				.with_value("plan_connections", json!({})),
 		)
 		.build_composed::<ProjectSettings>()
 		.expect("valid native endpoint settings")

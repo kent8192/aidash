@@ -86,6 +86,13 @@ impl ExecutionGrantSession for Admission<'_> {
 		.remote_origin(task)
 		.await
 	}
+	async fn federated_origin(&mut self, task: Uuid) -> Result<bool> {
+		GrantScope {
+			access: self.access,
+		}
+		.federated_origin(task)
+		.await
+	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.workspace(id).await.map_err(Into::into)
 	}
@@ -242,6 +249,22 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+	async fn admit_plan_connections(
+		&mut self,
+		grant: &ExecutionGrant,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		federated: bool,
+	) -> Result<()> {
+		super::plan_connections::admit(
+			&mut **self.access.tx,
+			&self.f.store,
+			grant,
+			snapshot,
+			federated,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn dashboard_origin(&mut self, credential: Uuid) -> Result<Option<(Uuid, Uuid)>> {
 		let result: NativeResult<Option<(Uuid, Uuid)>> = async {
