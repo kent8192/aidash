@@ -53,6 +53,7 @@ const REGISTRY_KEYED_BY_TENANT: &[&str] = &[
 	"registry",
 	"registry_agent_model_refs",
 	"registry_agent_resource_refs",
+	"registry_memory_role_refs",
 	"registry_requests",
 ];
 

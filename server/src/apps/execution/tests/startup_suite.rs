@@ -14,3 +14,5 @@ mod manage;
 mod native_database;
 #[path = "tenancy.rs"]
 mod tenancy;
+#[path = "support/tenant_roots.rs"]
+mod tenant_roots;

@@ -403,15 +403,14 @@ async fn draft_conflict_register_and_factual_inspection(
 		.0,
 		200
 	);
-	let (_, catalog) = request(
-		&app,
-		&deployment_administrator,
-		"GET",
-		"/api/authorization/acme/catalog",
-		Value::Null,
-	)
-	.await;
-	assert_eq!(catalog, json!([]));
+	// Registration leaves the version unapproved in the Tenant's catalog.
+	let catalog = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.catalog("acme")
+	.await
+	.unwrap();
+	assert!(catalog.is_empty(), "{catalog:?}");
 	assert_eq!(
 		request(
 			&app,

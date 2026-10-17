@@ -1023,7 +1023,7 @@ async fn configure_semantic(
 		a.store.keyless.permit_origin_of(&endpoint).unwrap();
 		json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3})
 	};
-	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
+	let (status, body) = request(app, token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
