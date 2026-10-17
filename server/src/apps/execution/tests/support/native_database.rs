@@ -115,10 +115,16 @@ impl DatabaseFixture {
 
 	/// Begin a transaction in the test-fixture Deployment Scope.
 	pub async fn begin_fixture(&self) -> aidash_server::database::native::Transaction {
-		self.server_pool()
-			.begin(&aidash_application::tenancy::TEST_FIXTURE)
+		self.begin_in(&aidash_application::tenancy::TEST_FIXTURE)
 			.await
-			.unwrap()
+	}
+
+	/// Begin a transaction in `scope`, as the server would for the same work.
+	pub async fn begin_in(
+		&self,
+		scope: &aidash_application::tenancy::TenancyScope,
+	) -> aidash_server::database::native::Transaction {
+		self.server_pool().begin(scope).await.unwrap()
 	}
 
 	fn server_pool(&self) -> aidash_server::database::native::Pool {

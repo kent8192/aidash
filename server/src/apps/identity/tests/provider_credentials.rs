@@ -4,7 +4,7 @@
 mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
-use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_application::tenancy::{TEST_FIXTURE, TenancyScope};
 use aidash_application::{
 	Result,
 	provider_authorization::Target,
@@ -873,7 +873,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.unwrap();
 	assert_json(actor.post(&claim_path, &claim, "json").await.unwrap(), 200);
 	let run = f.runtime.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f.database.begin_fixture().await;
 	let pins = Pin::objects()
 		.filter(Pin::field_run_id().eq(run.id))
 		.all_with_executor(tx.as_mut())
@@ -1085,7 +1085,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.await
 		.unwrap();
 	let run = Uuid::now_v7();
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f
+		.database
+		.begin_in(&TenancyScope::tenant("beta").unwrap())
+		.await;
 	assert!(
 		admit(tx.as_mut(), run, "beta", &snapshot, true)
 			.await
@@ -1098,7 +1101,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.bind("beta", Provider::Openrouter, b.id, 0, "actor")
 		.await
 		.unwrap();
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f
+		.database
+		.begin_in(&TenancyScope::tenant("beta").unwrap())
+		.await;
 	// `beta` represents the receiving local Tenant, never the sender's Tenant `alpha`.
 	admit(tx.as_mut(), run, "beta", &snapshot, true)
 		.await
@@ -1152,12 +1158,15 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			.contains("credential broker not configured")
 	);
 	context.tenant = "alpha".into();
-	assert!(matches!(
+	// Row-level policies hide `beta`'s pin from `alpha`, which finds none.
+	assert!(
 		access
 			.resolve(&context, Provider::Openrouter.base_url(), &source)
-			.await,
-		Err(aidash_application::Error::Forbidden)
-	));
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("Run has no admitted Provider Credential pin")
+	);
 	context.tenant = "beta".into();
 	let rotated = service
 		.rotate(
@@ -1193,7 +1202,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.bind("beta", Provider::Openrouter, replacement.id, 1, "actor")
 		.await
 		.unwrap();
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f
+		.database
+		.begin_in(&TenancyScope::tenant("beta").unwrap())
+		.await;
 	admit(tx.as_mut(), run, "beta", &snapshot, true)
 		.await
 		.unwrap();
@@ -1297,7 +1309,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			.to_string()
 			.contains("not active")
 	);
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f
+		.database
+		.begin_in(&TenancyScope::tenant("beta").unwrap())
+		.await;
 	assert!(
 		admit(tx.as_mut(), run, "beta", &snapshot, true)
 			.await
@@ -1310,7 +1325,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.bind("beta", Provider::Openrouter, None, 2, "actor")
 		.await
 		.unwrap();
-	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut tx = f
+		.database
+		.begin_in(&TenancyScope::tenant("beta").unwrap())
+		.await;
 	assert!(
 		admit(tx.as_mut(), Uuid::now_v7(), "beta", &snapshot, true)
 			.await
