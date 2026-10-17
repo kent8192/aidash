@@ -217,6 +217,32 @@ fn a_page_count_of_zero_is_invalid(lines: Vec<Line>) {
 	assert!(page.validate().is_err());
 }
 
+/// A page count the snapshot cannot record is refused rather than stored
+/// smaller than the pages its lines name.
+#[rstest::rstest]
+fn a_page_count_beyond_the_recorded_range_is_invalid() {
+	let line = Line {
+		text: "Text on the last page.".into(),
+		page: Some(MAX_PAGES),
+	};
+	let mut page = pdf_page(vec![line], vec![]);
+	page.page_count = Some(MAX_PAGES);
+	assert!(page.validate().is_ok());
+	page.page_count = Some(MAX_PAGES + 1);
+	assert!(page.validate().is_err());
+}
+
+/// A page with text lines cannot also be listed as carrying no text.
+#[rstest::rstest]
+fn a_page_with_text_is_not_a_page_without_text() {
+	let line = Line {
+		text: "Text on page two.".into(),
+		page: Some(2),
+	};
+	assert!(pdf_page(vec![line.clone()], vec![1, 3]).validate().is_ok());
+	assert!(pdf_page(vec![line], vec![1, 2]).validate().is_err());
+}
+
 #[rstest::rstest]
 fn a_pdf_whose_pages_carry_no_text_is_a_valid_page_without_lines() {
 	assert!(pdf_page(vec![], vec![1, 2, 3]).validate().is_ok());

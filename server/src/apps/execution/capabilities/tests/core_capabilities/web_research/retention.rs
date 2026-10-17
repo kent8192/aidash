@@ -214,7 +214,25 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 	assert_eq!(status, 200, "{record}");
 	assert_eq!(record["revoked_by"], "deployment-administrator");
 
-	// Assert: the approval is closed, so the Run continues; its next search
+	// Assert: the waiting call's stored invocation, an approval_required
+	// result without `limits`, no longer names the query.
+	let stored = r
+		.column("invocations", "jsonb_build_array(result, input)", run.id)
+		.await
+		.into_iter()
+		.filter(|row| row[0]["contract"] == aidash_domain::research::RESULT_CONTRACT)
+		.collect::<Vec<_>>();
+	assert!(!stored.is_empty(), "the waiting call was stored");
+	for row in stored {
+		assert_eq!(row[0]["error"]["code"], "evidence_revoked", "{row}");
+		assert_eq!(
+			row[1],
+			aidash_domain::context::ContextEvent::revoked_arguments(),
+			"{row}"
+		);
+	}
+
+	// The approval is closed, so the Run continues; its next search
 	// returns evidence_revoked and nothing is sent.
 	let (_, approvals) = request(
 		&r.c.app,

@@ -101,6 +101,18 @@ fn run_lock(run: Uuid) -> String {
 	format!("research-run:{run}")
 }
 
+/// Take the Run's research lock in `tx` and report whether its evidence was
+/// revoked. A revocation holds the same lock while it closes the Run's Web
+/// disclosures, so one admitted under this lock either commits before that
+/// cleanup, which then closes it, or sees the revocation.
+pub(crate) async fn revoked_under_lock(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+) -> crate::Result<bool> {
+	lock(tx, &run_lock(run)).await?;
+	ResearchRevocation::exists(tx, run).await
+}
+
 #[async_trait]
 impl EvidenceStore for Evidence {
 	async fn revoked(&self, run: Uuid) -> Result<bool> {

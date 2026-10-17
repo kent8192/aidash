@@ -505,10 +505,14 @@ impl ResearchSnapshot {
 			.text_bytes(i64::try_from(bytes).unwrap_or(i64::MAX))
 			.purged_at(None)
 			.purge_reason(None)
+			// The domain bounds the count to the stored range; a larger one is
+			// refused rather than recorded smaller than its pages.
 			.page_count(
 				snapshot
 					.page_count
-					.map(|count| i32::try_from(count).unwrap_or(i32::MAX)),
+					.map(i32::try_from)
+					.transpose()
+					.map_err(|_| Error::Invalid("snapshot page count out of range".into()))?,
 			)
 			.pages_without_text(Json(serde_json::to_value(&snapshot.pages_without_text)?))
 			.original_digest(
@@ -949,30 +953,27 @@ pub(crate) async fn revoke_invocations(
 	let mut removed = 0;
 	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
 		let tombstone = revoked_result(operation);
+		let result = || Expr::col(Alias::new("result"));
 		let mut update = Query::update();
 		// The input names the query or address that was disclosed.
 		update
 			.table(Alias::new("invocations"))
 			.value(Alias::new("result"), tombstone.clone())
 			.value(Alias::new("input"), revoked_arguments())
-			// Only the shared research envelope counts, as the domain
-			// recognizer requires: another tool may return the other fields.
-			.and_where(Expr::cust_with_values(
-				"(result->>'contract') = ?",
-				[aidash_domain::research::RESULT_CONTRACT],
-			))
-			.and_where(Expr::cust("(result->>'version') = '1'"))
-			.and_where(Expr::cust("jsonb_typeof(result->'limits') = 'object'"))
-			.and_where(Expr::cust_with_values(
-				"(result->>'operation') = ?",
-				[operation.as_str()],
-			))
+			// Exactly the domain recognizer's test: the contract marker and
+			// the operation. A pending approval or a failure has no `limits`,
+			// and its input still names what was disclosed.
+			.and_where(
+				json_text(result(), "contract")
+					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+			)
+			.and_where(json_text(result(), "operation").eq(Expr::value(operation.as_str())))
 			// A result settled as a tombstone after the revocation still has
 			// its input to redact.
-			.and_where(Expr::cust_with_values(
-				"(result <> ?::jsonb OR input <> ?::jsonb)",
-				[tombstone.to_string(), revoked_arguments().to_string()],
-			));
+			.and_where(
+				result().ne(jsonb(&tombstone.to_string())).or(Expr::col(Alias::new("input"))
+					.ne(jsonb(&revoked_arguments().to_string()))),
+			);
 		match run {
 			Some(run) => update.and_where(Expr::col("run_id").eq(Expr::value(run))),
 			None => update.and_where(
@@ -1093,7 +1094,7 @@ fn json_field(json: Expr, key: &str) -> SimpleExpr {
 }
 
 /// `json ->> key`.
-fn json_text(json: Expr, key: &str) -> SimpleExpr {
+pub(crate) fn json_text(json: Expr, key: &str) -> SimpleExpr {
 	json.binary(
 		reinhardt::query::types::BinOper::PgOperator(
 			reinhardt::query::types::PgBinOper::JsonGetAsText,

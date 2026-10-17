@@ -218,6 +218,9 @@ pub enum DisclosureState {
 		expires_at: Option<DateTime<Utc>>,
 	},
 	Denied,
+	/// The Run's evidence was revoked before the disclosure was admitted, so
+	/// no approval is created to carry its content (ADR 0046).
+	Revoked,
 }
 
 /// The Node's Web disclosure approval, built on its capability approvals.

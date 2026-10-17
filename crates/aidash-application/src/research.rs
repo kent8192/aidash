@@ -612,6 +612,7 @@ impl Research<'_> {
 				},
 			})),
 			DisclosureState::Denied => Err(failure(operation, Failure::DisclosureDenied)),
+			DisclosureState::Revoked => Err(failure(operation, Failure::EvidenceRevoked)),
 		})
 	}
 

@@ -201,15 +201,26 @@ impl WorkerAuthority {
 	) -> Result<aidash_application::ports::research::DisclosureState> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result = {
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
-			aidash_application::capabilities::approvals::disclose(
-				&mut scope,
-				&run.metadata(),
-				request,
-			)
-			.await
-			.map_err(Error::from)
+		// Under the Run's research lock, so a revocation that commits after
+		// the caller's own check still closes, or prevents, this approval.
+		let result = match crate::apps::execution::repositories::research::revoked_under_lock(
+			access.tx.as_mut(),
+			run.id,
+		)
+		.await
+		{
+			Ok(true) => Ok(aidash_application::ports::research::DisclosureState::Revoked),
+			Ok(false) => {
+				let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+				aidash_application::capabilities::approvals::disclose(
+					&mut scope,
+					&run.metadata(),
+					request,
+				)
+				.await
+				.map_err(Error::from)
+			}
+			Err(error) => Err(error),
 		};
 		access.finish(result).await
 	}

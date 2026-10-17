@@ -4,7 +4,7 @@
 use super::{native, run_lock};
 use crate::apps::execution::models::research::{
 	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchRevocation, ResearchSnapshot,
-	ResearchSource, lock, revoke_invocations,
+	ResearchSource, json_text, lock, revoke_invocations,
 };
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
@@ -23,8 +23,8 @@ use async_trait::async_trait;
 use chrono::SubsecRound;
 use reinhardt::db::{backends::TransactionExecutor, orm::QueryRow, orm::execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, TableRef,
+	Alias, Expr, ExprTrait, Func, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder,
+	Query, QueryStatementBuilder, TableRef,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -180,9 +180,16 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 				Expr::col((Alias::new("v"), Alias::new("run_id")))
 					.equals((Alias::new("r"), Alias::new("id"))),
 			)
-			.and_where(Expr::cust(
-				"COALESCE(r.context->>'research_revoked', 'false') <> 'true'",
-			))
+			.and_where(
+				Func::coalesce(vec![
+					json_text(
+						Expr::col((Alias::new("r"), Alias::new("context"))),
+						"research_revoked",
+					),
+					Expr::value("false").into(),
+				])
+				.ne(Expr::value("true")),
+			)
 			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
 			.limit(SCRUB_BATCH);
 		if let Some(after) = after {

@@ -16,6 +16,9 @@ pub const MAX_LINES: usize = 20_000;
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// The largest original a snapshot retains (ADR 0053).
 pub const MAX_ORIGINAL_BYTES: usize = 16 * 1024 * 1024;
+/// The largest page count a snapshot records, the range its page numbers are
+/// stored in.
+pub const MAX_PAGES: u32 = i32::MAX as u32;
 /// Bytes of snapshot text one fetch delivers, unless the call asks for fewer.
 pub const DEFAULT_DELIVERY_BYTES: usize = 8 * 1024;
 pub const MAX_DELIVERY_BYTES: usize = 16 * 1024;
@@ -81,6 +84,7 @@ impl ExtractedPage {
 		let within = |page: u32| page > 0 && self.page_count.is_none_or(|count| page <= count);
 		if (self.lines.is_empty() && self.pages_without_text.is_empty())
 			|| self.page_count == Some(0)
+			|| self.page_count.is_some_and(|count| count > MAX_PAGES)
 			|| self.lines.len() > MAX_LINES
 			|| self
 				.lines
@@ -92,6 +96,12 @@ impl ExtractedPage {
 				.pages_without_text
 				.windows(2)
 				.all(|pair| pair[0] < pair[1])
+			// A page either carries text or is listed as carrying none. The
+			// list is sorted by the check above.
+			|| self.lines.iter().any(|line| {
+				line.page
+					.is_some_and(|page| self.pages_without_text.binary_search(&page).is_ok())
+			})
 			|| self.original.as_ref().is_some_and(|original| {
 				self.pages_without_text.is_empty()
 					|| original.is_empty()
