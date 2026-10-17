@@ -108,9 +108,15 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 	let app = common::application(f.clone()).await;
 	// Each ordinary route holds its visibility lease in the only control slot.
 	for path in ["catalog", "revisions", "decisions"] {
+		// The catalog is a Tenant route; its subject reads it (ADR 0029).
+		let reader = if path == "catalog" {
+			&token
+		} else {
+			&f.config.api_token
+		};
 		let (status, body) = request(
 			&app,
-			&f.config.api_token,
+			reader,
 			"GET",
 			&format!("/api/authorization/acme/{path}"),
 			Value::Null,

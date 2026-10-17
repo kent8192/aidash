@@ -278,25 +278,27 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	entry.binding_normalization = None;
 	entry.config["bindings"] = json!([]);
 	entry.config["remove_default"] = json!([]);
-	let (status, pending) = request(&app,&f.config.api_token,"POST","/api/marketplace/host-packages",json!({"tenant":"acme","groups":["shell","python","outbound_get","apply_patch","file_share","task_assign"],"idempotency_key":Uuid::new_v4()})).await;
-	assert_eq!(status, 200, "{pending}");
-	let installations = pending["installations"].as_array().unwrap();
-	assert!(
-		installations
-			.iter()
-			.all(|r| r["approved"] == false && r["installation"]["active_revision"].is_null())
-	);
-	let selection = json!({"tenant":"acme","installations":installations.iter().map(|r|json!({"installation":r["installation"]["id"],"revision":r["revision"],"digest":r["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),"approvals":installations.iter().map(|r|json!({"reference":{"id":r["entry"]["id"],"version":r["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
-	let (status, activated) = request(
+	// The Deployment offers the Sandboxed groups as built-ins of every Tenant,
+	// which the Tenant approves with their members before use (ADR 0034).
+	let groups = aidash_application::registry::system::packages::SANDBOXED_GROUPS;
+	let approvals: Vec<Value> = groups
+		.iter()
+		.flat_map(|(name, operations)| {
+			std::iter::once(format!("aidash.bundle.{name}"))
+				.chain(operations.iter().map(|operation| format!("aidash.{operation}")))
+		})
+		.map(|id| json!({"entry":{"id":id,"version":"1.0.0"},"enabled":true,"expected_revision":0}))
+		.collect();
+	let (status, approved) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
-		"/api/marketplace/approval-sets",
-		selection,
+		"/api/authorization/acme/catalog/approvals",
+		json!({ "approvals": approvals }),
 	)
 	.await;
-	assert_eq!(status, 200, "{activated}");
-	entry.config["bindings"] = json!(installations.iter().filter(|r|r["entry"]["kind"]=="bundle").map(|r|json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":r["entry"]["id"],"version":r["entry"]["version"]},"narrow":{}})).collect::<Vec<_>>());
+	assert_eq!(status, 200, "{approved}");
+	entry.config["bindings"] = json!(groups.iter().map(|(name, _)| json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":format!("aidash.bundle.{name}"),"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
 	let instructions = "---\nname: analysis\ndescription: Analyze the selected CSV\nlicense: MIT\n---\nLoad this only when selected. Scripts are data.";
 	let files = json!([{"path":"references/guide.md","content":"東京\n"},{"path":"scripts/analyze.py","content":"raise RuntimeError('must never run on activation')"}]);
 	let digest =
