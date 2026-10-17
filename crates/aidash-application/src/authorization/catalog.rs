@@ -123,6 +123,7 @@ pub async fn administration(
 #[cfg(test)]
 mod mutation_tests;
 
+pub mod approvals;
 pub mod retained;
 
 pub fn attributes(entry: &Entry) -> serde_json::Value {

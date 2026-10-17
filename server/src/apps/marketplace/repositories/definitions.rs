@@ -157,6 +157,13 @@ impl<Events: Send> aidash_application::ports::marketplace::DistributionScope
 	) -> aidash_domain::policy::Resource {
 		crate::marketplace::installations::resource(self.access, installation, revision)
 	}
+	fn registry_resource(&self, kind: &str, id: &str) -> aidash_domain::policy::Resource {
+		self.access.resource(
+			"registry",
+			format!("{kind}/{id}"),
+			serde_json::json!({"kind": kind, "id": id}),
+		)
+	}
 	async fn require(
 		&mut self,
 		resource: &aidash_domain::policy::Resource,

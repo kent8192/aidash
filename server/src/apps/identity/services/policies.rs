@@ -1,10 +1,15 @@
+use crate::apps::identity::models::AuthorizationCatalog;
+use crate::apps::identity::repositories::catalog_approvals::TenantCatalog;
 use crate::apps::identity::{
 	Authorization, Snapshot,
 	catalog::Binding,
 	identity::{Credential, IssuedCredential},
 	policy::{Decision, Evaluation},
 };
-use crate::{Result, federation::Federation};
+use crate::authorization::{access::Access, identity::Actor, identity::SubjectIdentity};
+use crate::{Error, Result, federation::Federation};
+use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::orm::Model;
 use reinhardt::injectable;
 
 use serde_json::Value;
@@ -38,22 +43,77 @@ pub async fn provide(#[inject] runtime: Federation) -> PolicyAdministration {
 	PolicyAdministration { runtime }
 }
 
-impl PolicyAdministration {
-	pub async fn catalog(&self, tenant: String) -> Result<Vec<Binding>> {
-		let f = self.runtime.clone();
-		service(f).catalog(&tenant).await
+/// A Tenant route acts only for a subject of the Tenant it names.
+fn tenant_subject(actor: Actor, tenant: &str) -> Result<SubjectIdentity> {
+	match actor {
+		Actor::Subject(identity) if identity.tenant == tenant => Ok(identity),
+		_ => Err(Error::Forbidden),
 	}
-	pub(crate) async fn set_catalog(&self, tenant: String, input: CatalogInput) -> Result<Binding> {
+}
+
+impl PolicyAdministration {
+	/// The Tenant's Catalog Approvals, under `registry.read`. A Deployment
+	/// Administrator reads none (ADR 0029).
+	pub(crate) async fn catalog(&self, actor: Actor, tenant: String) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
-		service(f)
-			.set_catalog(
-				&tenant,
-				&input.entry,
-				input.expected_revision,
-				input.enabled,
-				"deployment_administrator",
-			)
-			.await
+		let identity = tenant_subject(actor, &tenant)?;
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let result = async {
+			let resource = access.resource("registry", "*", serde_json::json!({}));
+			access.require(&resource, "registry.read").await?;
+			Ok(AuthorizationCatalog::objects()
+				.filter(AuthorizationCatalog::field_tenant().eq(identity.tenant.clone()))
+				.order_by(&["entry_id", "entry_version"])
+				.all_with_executor(&mut **access.tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.into_iter()
+				.map(|row| Binding {
+					tenant: row.tenant,
+					entry_id: row.entry_key,
+					entry_version: row.entry_version,
+					enabled: row.enabled,
+					revision: row.revision,
+				})
+				.collect())
+		}
+		.await;
+		access.finish(result).await
+	}
+	pub(crate) async fn set_catalog(
+		&self,
+		actor: Actor,
+		tenant: String,
+		input: CatalogInput,
+	) -> Result<Binding> {
+		let approval = aidash_application::authorization::catalog::approvals::Approval {
+			entry: input.entry,
+			enabled: input.enabled,
+			expected_revision: input.expected_revision,
+			groups: input.groups,
+		};
+		Ok(self.approve(actor, tenant, vec![approval]).await?.remove(0))
+	}
+	/// Approvals of one dependency closure in one transaction.
+	pub(crate) async fn approve(
+		&self,
+		actor: Actor,
+		tenant: String,
+		approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
+	) -> Result<Vec<Binding>> {
+		let f = self.runtime.clone();
+		let identity = tenant_subject(actor, &tenant)?;
+		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let result = aidash_application::authorization::catalog::approvals::approve(
+			&mut TenantCatalog {
+				access: &mut access,
+				node: &f.config.node_id,
+			},
+			&approvals,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
 	}
 	pub(crate) async fn issue_credential(
 		&self,

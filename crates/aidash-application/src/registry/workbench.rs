@@ -61,8 +61,9 @@ pub async fn authorize(
 	action: &str,
 	shares: bool,
 ) -> Result<()> {
+	// Drafts are Tenant content: a Deployment Administrator has none (ADR 0029).
 	let Principal::Subject { tenant, subject } = scope.principal() else {
-		return Ok(());
+		return Err(Error::Forbidden);
 	};
 	if tenant != draft.tenant {
 		return Err(Error::Forbidden);
@@ -82,6 +83,46 @@ pub async fn authorize(
 		return Err(Error::Forbidden);
 	}
 	let decision=scope.evaluate(&draft.tenant,&Evaluation{subject,action:action.into(),resource:Resource{tenant:draft.tenant.clone(),kind:"agent_draft".into(),id:draft.id.to_string(),attributes:json!({"owner":draft.owner,"agent_id":draft.entry["id"],"archived":draft.archived})},environment:json!({})}).await?;
+	if decision.allowed {
+		Ok(())
+	} else {
+		Err(Error::Forbidden)
+	}
+}
+/// Writing a definition or version needs `registry.create` in the Tenant as
+/// well as the path's own action (ADR 0029).
+pub async fn authorize_creation(
+	scope: &mut dyn DraftAuthority,
+	tenant: &str,
+	entry: &Entry,
+) -> Result<()> {
+	let Principal::Subject {
+		tenant: own,
+		subject,
+	} = scope.principal()
+	else {
+		return Err(Error::Forbidden);
+	};
+	if own != tenant {
+		return Err(Error::Forbidden);
+	}
+	let resource = Resource {
+		tenant: tenant.into(),
+		kind: "registry".into(),
+		id: format!("{}/{}", entry.kind, entry.id),
+		attributes: json!({"kind": entry.kind, "id": entry.id, "version": entry.version}),
+	};
+	let decision = scope
+		.evaluate(
+			tenant,
+			&Evaluation {
+				subject,
+				action: "registry.create".into(),
+				resource,
+				environment: json!({}),
+			},
+		)
+		.await?;
 	if decision.allowed {
 		Ok(())
 	} else {

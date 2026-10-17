@@ -53,7 +53,8 @@ pub async fn registry_create(
 #[post("/api/skills/import", name = "skill-import", auth = "protected")]
 pub async fn skill_import(
 	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
 	Json(request): Json<crate::skill_import::ImportRequest>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.skill_import(request).await)
+	crate::http::json(service.skill_import(actor, request).await)
 }

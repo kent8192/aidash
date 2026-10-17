@@ -660,6 +660,22 @@ pub(crate) fn marketplace_deployment_administrator_scope<'a>(
 	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
 		staging: marketplace_staging_scope(store, tx, "deployment-administrator-adoption"),
 		principal,
+		approving: None,
+	}
+}
+
+/// A Tenant subject's Marketplace activation, after its `catalog.approve`
+/// decisions on the same transaction.
+pub(crate) fn marketplace_tenant_activation_scope<'a>(
+	store: &'a Store,
+	tx: &'a mut crate::database::native::Transaction,
+	principal: aidash_domain::identity::Principal,
+	tenant: String,
+) -> crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator<'a> {
+	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
+		staging: marketplace_staging_scope(store, tx, "tenant-activation"),
+		principal,
+		approving: Some(tenant),
 	}
 }
 

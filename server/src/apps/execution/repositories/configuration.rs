@@ -97,6 +97,12 @@ impl ConfigurationScope for Scope<'_> {
 		Ok(snapshot)
 	}
 	async fn register(&mut self, entry: &Entry) -> Result<bool> {
+		let resource = self.access.resource(
+			"registry",
+			format!("{}/{}", entry.kind, entry.id),
+			serde_json::json!({"kind": entry.kind, "id": entry.id, "version": entry.version}),
+		);
+		self.access.require(&resource, "registry.create").await?;
 		crate::registry::register_in(
 			&mut self.access.tx,
 			entry,

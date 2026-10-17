@@ -29,6 +29,27 @@ fn subject(actor: &Actor) -> Result<&crate::authorization::identity::SubjectIden
 	}
 }
 
+/// A Tenant route acts only for a subject of the Tenant it names.
+fn approving_subject(
+	actor: &Actor,
+	tenant: &str,
+) -> Result<crate::authorization::identity::SubjectIdentity> {
+	match actor {
+		Actor::Subject(identity) if identity.tenant == tenant => Ok(identity.clone()),
+		_ => Err(Error::Forbidden),
+	}
+}
+
+/// `catalog.approve` on the exact version an activation approves.
+async fn require_approval(access: &mut Access, entry: &crate::registry::Entry) -> Result<()> {
+	let resource = access.resource(
+		"registry",
+		format!("{}/{}@{}", entry.kind, entry.id, entry.version),
+		aidash_application::authorization::catalog::attributes(entry),
+	);
+	access.require(&resource, "catalog.approve").await
+}
+
 fn principal(actor: &Actor) -> aidash_domain::identity::Principal {
 	match actor {
 		Actor::DeploymentAdministrator => {
@@ -270,60 +291,82 @@ impl MarketplaceManagement {
 		handoff(&f.store, access, result).await
 	}
 
+	/// Activating an installed revision approves it in the subject's Tenant,
+	/// under `catalog.approve` (ADR 0029).
 	pub(crate) async fn activate(
 		&self,
 		actor: Actor,
-		browser: Option<BrowserOrigin>,
 		id: String,
 		input: Activate,
 	) -> Result<Installation> {
 		let f = self.runtime.clone();
-		deployment_administrator(&actor)?;
-		let origin = browser.as_ref();
-		let mut tx = deployment_administrator_begin(&f.store, origin).await?;
-		let result = aidash_application::marketplace::operations::activate(
-			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-				&f.store,
-				&mut tx,
-				principal(&actor),
-			),
-			&id,
-			&aidash_application::marketplace::operations::ActivationCommand {
-				tenant: input.tenant,
-				revision: input.revision,
-				expected_activation_revision: input.expected_activation_revision,
-				expected_catalog_revision: input.expected_catalog_revision,
-				enabled: input.enabled,
-			},
-		)
-		.await?;
-		deployment_administrator_commit(tx, origin).await?;
-		Ok(result)
+		let identity = approving_subject(&actor, &input.tenant)?;
+		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let result = async {
+			let revision = crate::apps::marketplace::repositories::installations::revision(
+				&mut access.tx,
+				&id,
+				input.revision,
+			)
+			.await?;
+			require_approval(&mut access, &revision.entry).await?;
+			Ok(aidash_application::marketplace::operations::activate(
+				&mut crate::bootstrap::marketplace_tenant_activation_scope(
+					&f.store,
+					&mut access.tx,
+					principal(&actor),
+					identity.tenant.clone(),
+				),
+				&id,
+				&aidash_application::marketplace::operations::ActivationCommand {
+					tenant: input.tenant,
+					revision: input.revision,
+					expected_activation_revision: input.expected_activation_revision,
+					expected_catalog_revision: input.expected_catalog_revision,
+					enabled: input.enabled,
+				},
+			)
+			.await?)
+		}
+		.await;
+		access.finish(result).await
 	}
 
 	pub(crate) async fn approve_set(
 		&self,
 		actor: Actor,
-		browser: Option<BrowserOrigin>,
 		input: aidash_application::marketplace::operations::approval_set::ApprovalSet,
 	) -> Result<Vec<Installation>> {
-		deployment_administrator(&actor)?;
-		let origin = browser.as_ref();
-		let mut tx = deployment_administrator_begin(&self.runtime.store, origin).await?;
-		let result =
-			aidash_application::marketplace::operations::approval_set::approve_and_activate(
-				&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-					&self.runtime.store,
-					&mut tx,
-					principal(&actor),
-				),
-				&crate::bootstrap::registry_validation_for(&self.runtime.store),
-				&input,
-				&self.runtime.store.node_id,
+		let f = self.runtime.clone();
+		let identity = approving_subject(&actor, &input.tenant)?;
+		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let result = async {
+			for selection in &input.installations {
+				let revision = crate::apps::marketplace::repositories::installations::revision(
+					&mut access.tx,
+					&selection.installation,
+					selection.revision,
+				)
+				.await?;
+				require_approval(&mut access, &revision.entry).await?;
+			}
+			Ok(
+				aidash_application::marketplace::operations::approval_set::approve_and_activate(
+					&mut crate::bootstrap::marketplace_tenant_activation_scope(
+						&f.store,
+						&mut access.tx,
+						principal(&actor),
+						identity.tenant.clone(),
+					),
+					&crate::bootstrap::registry_validation_for(&f.store),
+					&input,
+					&f.store.node_id,
+				)
+				.await?,
 			)
-			.await?;
-		deployment_administrator_commit(tx, origin).await?;
-		Ok(result)
+		}
+		.await;
+		access.finish(result).await
 	}
 
 	pub(crate) async fn administration(

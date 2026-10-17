@@ -32,12 +32,22 @@ pub struct AdministrationPage {
 fn conflict() -> Error {
 	Error::Conflict("revision or immutable content changed".into())
 }
+/// Activation approves an installed revision in its Tenant, so only that
+/// Tenant's approving subject reaches it.
+pub fn require_approving(scope: &dyn DeploymentAdministratorScope, tenant: &str) -> Result<()> {
+	if scope.approving_tenant() == Some(tenant) {
+		Ok(())
+	} else {
+		Err(Error::Forbidden)
+	}
+}
+
 pub async fn activate(
 	scope: &mut dyn DeploymentAdministratorScope,
 	id: &str,
 	input: &ActivationCommand,
 ) -> Result<Installation> {
-	require_deployment_administrator(scope.principal())?;
+	require_approving(scope, &input.tenant)?;
 	scope.load_tenant(&input.tenant).await?;
 	scope.distribution_lock(true).await?;
 	scope.enable_writer().await?;
@@ -66,7 +76,7 @@ pub async fn activate(
 		.await?;
 	let install = activation(install, input.revision, input.enabled);
 	scope.save_installation(&install).await?;
-	scope.event("marketplace.activation_changed", json!({"installation":id,"tenant":input.tenant,"revision":input.revision,"enabled":input.enabled,"actor":"deployment_administrator"})).await?;
+	scope.event("marketplace.activation_changed", json!({"installation":id,"tenant":input.tenant,"revision":input.revision,"enabled":input.enabled,"actor":actor(scope.principal())})).await?;
 	Ok(install)
 }
 pub async fn administration(
@@ -109,5 +119,15 @@ pub async fn administration(
 mod tests;
 
 pub use crate::authorization::require_deployment_administrator;
+
+/// The label an activation event records for who decided it.
+pub fn actor(principal: &aidash_domain::identity::Principal) -> String {
+	match principal {
+		aidash_domain::identity::Principal::DeploymentAdministrator => {
+			"deployment_administrator".into()
+		}
+		aidash_domain::identity::Principal::Subject { subject, .. } => subject.clone(),
+	}
+}
 
 pub mod approval_set;

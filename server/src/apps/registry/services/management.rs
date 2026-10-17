@@ -78,10 +78,21 @@ impl RegistryManagement {
 		access.finish(result).await
 	}
 
+	/// Fetching a public Skill snapshot needs `registry.create`, because its only
+	/// use is to register it; the fixed GitHub host bounds what it reaches.
 	pub(crate) async fn skill_import(
 		&self,
+		actor: Actor,
 		request: crate::skill_import::ImportRequest,
 	) -> Result<crate::skill_import::ImportResult> {
+		let f = self.runtime.clone();
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let resource = access.resource("registry", "skill/*", serde_json::json!({"kind": "skill"}));
+		let result = access.require(&resource, "registry.create").await;
+		access.finish(result).await?;
 		crate::skill_import::import(request).await
 	}
 }

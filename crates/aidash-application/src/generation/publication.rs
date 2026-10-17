@@ -40,8 +40,20 @@ pub async fn publish(
 	scope.replace_snapshot(snapshot);
 	scope.save_authority(job).await?;
 	scope.register(&entry).await?;
+	// The version is approved for use only while the subject that approved the
+	// generation still may approve it; a receiver of a foreign generation, and
+	// an approver without that authority, leave it registered unapproved.
+	if !job.home_node.is_empty() {
+		return Ok(());
+	}
+	let Some(approver) = scope.approver(job).await? else {
+		return Ok(());
+	};
+	if !scope.may_approve(&approver, &entry).await? {
+		return Ok(());
+	}
 	scope.approve(job, &entry).await?;
-	scope.catalog_history(job, &entry).await
+	scope.catalog_history(job, &entry, &approver).await
 }
 /// Every ancestor is checked using the current policy under the inherited lease.
 pub async fn require_live(
