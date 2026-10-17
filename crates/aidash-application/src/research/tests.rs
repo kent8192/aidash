@@ -965,6 +965,20 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 	assert_eq!(unknown["status"], "uncertain");
 	assert_eq!(unknown["error"]["code"], "outcome_unknown");
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	// The replay settles the stranded attempt as unknown, so it is no longer
+	// reported as in flight, and a later replay returns the same result.
+	assert_eq!(
+		store.attempt(run, "k2").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Unknown,
+			result: unknown.clone(),
+		})
+	);
+	let again = research
+		.search(&call(run, "k2", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(again, unknown);
 
 	let mut failing = Search::new("brave", "api.search.brave.com");
 	failing.outcome = Some(Failure::Timeout);

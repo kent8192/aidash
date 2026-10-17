@@ -1157,7 +1157,7 @@ impl<'a> Executor<'a> {
 				// (ADR 0052): each run message names its own pages, and the
 				// instruction below is rendered only into steps that carry any.
 				let url_intents = self.environment.url_intents(run).await?;
-				let mut requested_pages: Vec<String> = url_intents
+				let task_pages: Vec<String> = url_intents
 					.iter()
 					.filter(|intent| intent.input_key.is_none())
 					.flat_map(|intent| intent.pages.iter().cloned())
@@ -1165,20 +1165,19 @@ impl<'a> Executor<'a> {
 				// A run message folded into the run-message summary, or taken in
 				// by an earlier media-intake turn that offered no tools, is on no
 				// page again, so the pages it asked for are carried forward like
-				// the Task's own.
-				for input in inputs.iter().filter(|input| input.seq <= intake_seq) {
-					let key = input.idempotency_key.as_str();
-					for intent in url_intents
-						.iter()
-						.filter(|intent| intent.input_key.as_deref() == Some(key))
-					{
-						for page in &intent.pages {
-							if !requested_pages.contains(page) {
-								requested_pages.push(page.clone());
-							}
-						}
-					}
-				}
+				// the Task's own, up to a Run-level bound.
+				let carried: Vec<&[String]> = inputs
+					.iter()
+					.filter(|input| input.seq <= intake_seq)
+					.flat_map(|input| {
+						let key = input.idempotency_key.as_str();
+						url_intents
+							.iter()
+							.filter(move |intent| intent.input_key.as_deref() == Some(key))
+					})
+					.map(|intent| intent.pages.as_slice())
+					.collect();
+				let mut current: Vec<&[String]> = Vec::new();
 				for (position, (index, _)) in page.entries.iter().enumerate() {
 					let key = inputs[*index].idempotency_key.as_str();
 					let Some(intent) = url_intents
@@ -1188,12 +1187,13 @@ impl<'a> Executor<'a> {
 						continue;
 					};
 					run_messages[position]["read_pages"] = json!(intent.pages);
-					for page in &intent.pages {
-						if !requested_pages.contains(page) {
-							requested_pages.push(page.clone());
-						}
-					}
+					current.push(&intent.pages);
 				}
+				let requested_pages = aidash_domain::research::intent::requested_pages(
+					&task_pages,
+					&carried,
+					&current,
+				);
 				let output = if run_message_catchup {
 					output_limit.min(RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT)
 				} else {

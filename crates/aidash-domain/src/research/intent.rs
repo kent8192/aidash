@@ -12,6 +12,45 @@ use serde::{Deserialize, Serialize};
 /// Most pages one input may ask the Run to read.
 pub const MAX_URL_INTENTS: usize = 5;
 
+/// Most pages carried forward from inputs the Run already took in. A Run
+/// steered many times keeps only the newest of them, so the pages every
+/// later step renders stay bounded however long it runs.
+pub const MAX_CARRIED_PAGES: usize = 4 * MAX_URL_INTENTS;
+
+/// The pages one step asks the model to read, each once and in order: the
+/// Task's own; the newest [`MAX_CARRIED_PAGES`] of those asked for by the
+/// inputs the Run already took in (`carried`, oldest first), which no page of
+/// the step shows; and those of the inputs on this step (`current`).
+pub fn requested_pages(
+	task: &[String],
+	carried: &[&[String]],
+	current: &[&[String]],
+) -> Vec<String> {
+	fn add(pages: &mut Vec<String>, page: &str) {
+		if !pages.iter().any(|known| known == page) {
+			pages.push(page.to_owned());
+		}
+	}
+	let mut pages = Vec::new();
+	for page in task {
+		add(&mut pages, page);
+	}
+	let mut newest: Vec<String> = Vec::new();
+	for page in carried.iter().rev().flat_map(|pages| pages.iter().rev()) {
+		if newest.len() == MAX_CARRIED_PAGES {
+			break;
+		}
+		if !pages.contains(page) && !newest.contains(page) {
+			newest.push(page.clone());
+		}
+	}
+	pages.extend(newest.into_iter().rev());
+	for page in current.iter().flat_map(|pages| pages.iter()) {
+		add(&mut pages, page);
+	}
+	pages
+}
+
 /// What a request's step state tells the model about recorded URL intents.
 /// It is rendered into every step that carries one and is never stored.
 pub const URL_INTENT_INSTRUCTION: &str = "The person asked you to read these pages with the page reading tool before you answer. Each page still needs its own Web disclosure approval.";

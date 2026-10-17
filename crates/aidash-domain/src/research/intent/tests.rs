@@ -183,3 +183,53 @@ fn a_remote_run_never_acts_on_a_url_intent() {
 	// Assert
 	assert!(!acts);
 }
+
+fn pages(prefix: &str, count: usize) -> Vec<String> {
+	(0..count)
+		.map(|index| format!("https://example.org/{prefix}/{index}"))
+		.collect()
+}
+
+#[rstest]
+fn requested_pages_keep_the_task_then_the_carried_then_the_current_pages_once() {
+	// Arrange
+	let task = pages("task", 2);
+	let carried = [pages("old", 1), vec![task[0].clone()]];
+	let current = [vec![carried[0][0].clone()], pages("new", 1)];
+
+	// Act
+	let requested = requested_pages(
+		&task,
+		&carried.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+		&current.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+	);
+
+	// Assert
+	assert_eq!(
+		requested,
+		[task.clone(), pages("old", 1), pages("new", 1)].concat()
+	);
+}
+
+#[rstest]
+fn a_run_steered_many_times_carries_only_its_newest_pages() {
+	// Arrange: far more taken-in inputs than the bound, each asking for the
+	// most pages one input may.
+	let task = pages("task", MAX_URL_INTENTS);
+	let carried = (0..20)
+		.map(|input| pages(&format!("input-{input}"), MAX_URL_INTENTS))
+		.collect::<Vec<_>>();
+	let current = pages("current", MAX_URL_INTENTS);
+
+	// Act
+	let requested = requested_pages(
+		&task,
+		&carried.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+		&[current.as_slice()],
+	);
+
+	// Assert: the Task's and the current pages stay; of the carried, the
+	// newest MAX_CARRIED_PAGES, in their original order.
+	let newest = carried[carried.len() - MAX_CARRIED_PAGES / MAX_URL_INTENTS..].concat();
+	assert_eq!(requested, [task, newest, current].concat());
+}
