@@ -55,7 +55,7 @@ impl ProviderResultRetention for ProviderResults {
 							Expr::value(termination.account_id.clone()),
 							Expr::value(termination.terminated_at),
 							Expr::value(i32::from(termination.deletion_after_termination_days)),
-							Expr::current_timestamp().into(),
+							Expr::value(Utc::now()),
 						])
 						// A recorded end is never replaced.
 						.on_conflict(OnConflict::column(Alias::new("account_id")).do_nothing().to_owned())

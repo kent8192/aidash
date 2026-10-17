@@ -238,6 +238,20 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	assert_eq!(expired.sources, [source].into());
 	assert_eq!(expired.documents, [document].into());
 	assert!(expired.through.is_some());
+	// The stored projection records the purges applied to it.
+	let sql = Query::select()
+		.expr(Expr::cust("context->>'research_expired_through'"))
+		.from(Alias::new("runs"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
+		.to_string(PostgresQueryBuilder);
+	let watermark: Option<String> = sqlx::query_scalar(&sql)
+		.fetch_one(store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		watermark.map(|at| at.parse::<chrono::DateTime<chrono::Utc>>().unwrap()),
+		expired.through
+	);
 	// A later sweep finds nothing left to purge.
 	assert_eq!(swept().await.unwrap(), 0);
 	cleanup(store, &url, &schema).await;
