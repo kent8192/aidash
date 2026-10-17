@@ -114,6 +114,12 @@ Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
 and an HTTPS endpoint for a deployed node.
 
+The backend starts with a PostgreSQL [Provider Credential Store](docs/provider-credentials.md),
+so a Tenant can connect OpenRouter under **Provider connections**. Compose
+generates the Store's Master Key and fingerprint key once, in the
+`provider-credentials` volume. `docker compose --profile dev down -v` deletes
+them together with the database that holds the encrypted credentials.
+
 For an existing local Keycloak realm, add this Compose override to `.env`,
 replacing an older `.ignore/local-oidc/compose.yaml` entry if present:
 
