@@ -65,11 +65,11 @@ impl ProfileRepository for Repository<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn definition(&self, reference: &EntityRef) -> Result<Entry> {
+	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
 			.registry
 			.get(
-				&self.actor.registry_tenant()?,
+				&aidash_domain::tenancy::TenantName::new(tenant)?,
 				&reference.id,
 				&reference.version,
 			)
