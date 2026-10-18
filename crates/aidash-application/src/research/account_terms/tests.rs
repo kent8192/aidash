@@ -13,12 +13,8 @@ fn day(day: i64) -> DateTime<Utc> {
 	Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap() + Duration::days(day)
 }
 
-fn terms(
-	account: &str,
-	retention_days: u16,
-	terminated_at: Option<DateTime<Utc>>,
-) -> AccountProfile {
-	let mut terms: AccountProfile = serde_json::from_value(json!({
+fn terms(account: &str, retention_days: u16, terminated_at: Option<DateTime<Utc>>) -> AccountTerms {
+	let mut terms: AccountTerms = serde_json::from_value(json!({
 		"account_id": account,
 		"agreement_reference": "agreement",
 		"verified_by": "deployment_administrator",
@@ -29,10 +25,9 @@ fn terms(
 		"evaluation_permitted": true,
 		"retention_days": retention_days,
 		"deletion_after_termination_days": 7,
-		"credential_env": "AIDASH_SECRET_SEARCH",
 		"price_effective_at": "2026-09-01T00:00:00Z",
 		"price_review_after": "2027-09-01T00:00:00Z",
-		"request_price_micro_usd": 5000,
+		"search_price_micro_usd": 5000,
 		"monthly_base_fee_micro_usd": 0,
 		"monthly_limit_micro_usd": 20_000_000
 	}))

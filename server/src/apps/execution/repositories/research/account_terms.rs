@@ -13,7 +13,7 @@ use aidash_application::{
 };
 use aidash_domain::research::{
 	Operation,
-	account::{AccountProfile, Termination},
+	account::{AccountTerms, Termination},
 	evidence::PurgeReason,
 	expiry::ExpiredResults,
 };
@@ -390,7 +390,7 @@ pub(crate) async fn scrub_expired_projections(store: &Store) -> Result<u32> {
 /// declares now: purge every Provider result without a basis, then scrub the
 /// stored projections that still carry one. Returns how many attempts were
 /// purged.
-pub(crate) async fn sweep(store: &Store, current: &[AccountProfile]) -> Result<u64> {
+pub(crate) async fn sweep(store: &Store, current: &[AccountTerms]) -> Result<u64> {
 	let purged = aidash_application::research::account_terms::sweep(
 		&ProviderResults {
 			store: store.clone(),

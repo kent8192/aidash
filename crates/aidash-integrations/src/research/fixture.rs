@@ -6,7 +6,7 @@ use super::admit_public_url;
 use crate::research::Failure;
 use aidash_application::ports::research::{Outbound, PageProvider, SearchProvider};
 use aidash_domain::research::{
-	account::AccountProfile,
+	account::AccountTerms,
 	document::{Completeness, ExtractedPage, Line, fold},
 	search::{ProviderCandidate, ProviderResults, SearchQuery},
 };
@@ -121,7 +121,7 @@ impl SearchProvider for FixtureResearch {
 			content: query.query.clone(),
 		})
 	}
-	fn account(&self) -> Result<Option<AccountProfile>, Failure> {
+	fn account(&self) -> Result<Option<AccountTerms>, Failure> {
 		Ok(None)
 	}
 	async fn search(&self, query: &SearchQuery) -> Result<ProviderResults, Failure> {

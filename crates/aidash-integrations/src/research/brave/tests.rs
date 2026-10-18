@@ -2,9 +2,9 @@ use super::*;
 use rstest::{fixture, rstest};
 
 #[fixture]
-fn profile() -> AccountProfile {
+fn profile() -> AccountTerms {
 	let now = Utc::now();
-	AccountProfile {
+	AccountTerms {
 		account_id: "brave-account".into(),
 		agreement_reference: "approved-contract-record".into(),
 		verified_by: "deployment_administrator".into(),
@@ -16,10 +16,10 @@ fn profile() -> AccountProfile {
 		retention_days: 90,
 		deletion_after_termination_days: 30,
 		terminated_at: None,
-		credential_env: "AIDASH_SECRET_BRAVE_SEARCH".into(),
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),
-		request_price_micro_usd: 5000,
+		search_price_micro_usd: Some(5000),
+		fetch_price_micro_usd: None,
 		monthly_base_fee_micro_usd: 0,
 		monthly_limit_micro_usd: 20_000_000,
 	}
@@ -30,7 +30,7 @@ fn query(input: Value) -> SearchQuery {
 }
 
 #[rstest]
-fn maps_filters_without_relaxing_them(profile: AccountProfile) {
+fn maps_filters_without_relaxing_them(profile: AccountTerms) {
 	let brave = BraveSearch::new(profile, "token").unwrap();
 	let query = query(json!({
 		"query":"Rust release",
@@ -62,7 +62,7 @@ fn maps_filters_without_relaxing_them(profile: AccountProfile) {
 }
 
 #[rstest]
-fn every_outbound_filter_is_part_of_the_disclosure(profile: AccountProfile) {
+fn every_outbound_filter_is_part_of_the_disclosure(profile: AccountTerms) {
 	let brave = BraveSearch::new(profile, "token").unwrap();
 	let base = json!({"query":"Rust release"});
 	let disclosed = |input: Value| brave.disclosure(&query(input)).unwrap().content;
@@ -82,7 +82,7 @@ fn every_outbound_filter_is_part_of_the_disclosure(profile: AccountProfile) {
 }
 
 #[rstest]
-fn mapped_queries_beyond_provider_limits_are_never_disclosed(profile: AccountProfile) {
+fn mapped_queries_beyond_provider_limits_are_never_disclosed(profile: AccountTerms) {
 	let brave = BraveSearch::new(profile, "token").unwrap();
 	let long = query(json!({
 		"query": "a ".repeat(70),
@@ -92,13 +92,19 @@ fn mapped_queries_beyond_provider_limits_are_never_disclosed(profile: AccountPro
 }
 
 #[rstest]
-fn account_terms_and_credential_are_checked(mut profile: AccountProfile) {
+fn account_terms_and_credential_are_checked(mut profile: AccountTerms) {
 	assert!(BraveSearch::new(profile.clone(), " ").is_err());
 	let brave = BraveSearch::new(profile.clone(), "token").unwrap();
 	assert_eq!(
 		brave.account().unwrap().unwrap().account_id,
 		"brave-account"
 	);
+	// Lapsed terms leave Brave without a current account, not unconstructible.
+	let mut lapsed = profile.clone();
+	lapsed.review_after = Utc::now() - chrono::Duration::hours(1);
+	lapsed.verified_at = lapsed.review_after - chrono::Duration::days(1);
+	let brave = BraveSearch::new(lapsed, "token").unwrap();
+	assert_eq!(brave.account(), Err(Failure::AccountUnavailable));
 	profile.query_training_prohibited = false;
 	assert!(BraveSearch::new(profile, "token").is_err());
 }
@@ -140,7 +146,7 @@ fn provider_statuses_map_to_contract_failures(
 
 #[rstest]
 #[tokio::test]
-async fn transport_keeps_the_credential_out_of_provider_errors(profile: AccountProfile) {
+async fn transport_keeps_the_credential_out_of_provider_errors(profile: AccountTerms) {
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let addr = listener.local_addr().unwrap();
@@ -190,7 +196,7 @@ async fn transport_keeps_the_credential_out_of_provider_errors(profile: AccountP
 
 #[rstest]
 #[tokio::test]
-async fn an_unreachable_endpoint_is_an_uncertain_transport_failure(profile: AccountProfile) {
+async fn an_unreachable_endpoint_is_an_uncertain_transport_failure(profile: AccountTerms) {
 	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 	let addr = listener.local_addr().unwrap();
 	drop(listener);

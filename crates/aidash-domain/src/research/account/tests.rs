@@ -1,8 +1,10 @@
 use super::*;
 use rstest::{fixture, rstest};
 
+const SEARCH: &[Operation] = &[Operation::Search];
+
 #[fixture]
-fn profile() -> AccountProfile {
+fn terms() -> AccountTerms {
 	serde_json::from_value(serde_json::json!({
 		"account_id":"search-account",
 		"agreement_reference":"approved-contract-record",
@@ -14,10 +16,9 @@ fn profile() -> AccountProfile {
 		"evaluation_permitted":true,
 		"retention_days":90,
 		"deletion_after_termination_days":30,
-		"credential_env":"AIDASH_SECRET_BRAVE_SEARCH",
 		"price_effective_at":"2026-09-01T00:00:00Z",
 		"price_review_after":"2026-10-01T00:00:00Z",
-		"request_price_micro_usd":5000,
+		"search_price_micro_usd":5000,
 		"monthly_base_fee_micro_usd":0,
 		"monthly_limit_micro_usd":20_000_000
 	}))
@@ -29,31 +30,27 @@ fn at(value: &str) -> DateTime<Utc> {
 }
 
 #[rstest]
-fn admission_requires_current_complete_terms(mut profile: AccountProfile) {
-	let now = at("2026-09-25T00:00:00Z");
-	assert!(profile.validate_at(now).is_ok());
-	profile.query_training_prohibited = false;
-	assert!(profile.validate_at(now).is_err());
-	profile.query_training_prohibited = true;
-	profile.monthly_base_fee_micro_usd = 20_000_000;
-	assert!(profile.validate_at(now).is_err());
-	profile.monthly_base_fee_micro_usd = 0;
-	profile.price_review_after = at("2026-09-24T00:00:00Z");
-	assert!(profile.validate_at(now).is_err());
-	profile.price_review_after = at("2026-10-01T00:00:00Z");
-	profile.credential_env = "INLINE_SECRET".into();
-	assert!(profile.validate_at(now).is_err());
-	profile.credential_env = "AIDASH_SECRET_BRAVE_SEARCH".into();
-	assert!(profile.validate_at(at("2026-10-02T00:00:00Z")).is_err());
+fn complete_terms_are_required_whatever_the_date(mut terms: AccountTerms) {
+	assert!(terms.validate(SEARCH).is_ok());
+	terms.query_training_prohibited = false;
+	assert!(terms.validate(SEARCH).is_err());
+	terms.query_training_prohibited = true;
+	terms.monthly_base_fee_micro_usd = 20_000_000;
+	assert!(terms.validate(SEARCH).is_err());
+	terms.monthly_base_fee_micro_usd = 0;
+	terms.price_review_after = terms.price_effective_at;
+	assert!(terms.validate(SEARCH).is_err());
 }
 
 #[rstest]
-fn a_terminated_account_admits_nothing_from_its_end(mut profile: AccountProfile) {
-	profile.terminated_at = Some(at("2026-09-25T00:00:00Z"));
-	assert!(profile.validate_at(at("2026-09-24T23:59:59Z")).is_ok());
-	assert!(profile.validate_at(at("2026-09-25T00:00:00Z")).is_err());
+fn a_terminated_account_admits_nothing_from_its_end(mut terms: AccountTerms) {
+	terms.terminated_at = Some(at("2026-09-25T00:00:00Z"));
+	assert!(terms.current_at(at("2026-09-24T23:59:59Z")).is_ok());
+	assert!(terms.current_at(at("2026-09-25T00:00:00Z")).is_err());
+	// The end is dated, so it never makes the terms incomplete.
+	assert!(terms.validate(SEARCH).is_ok());
 	assert_eq!(
-		profile.termination(),
+		terms.termination(),
 		Some(Termination {
 			account_id: "search-account".into(),
 			terminated_at: at("2026-09-25T00:00:00Z"),
@@ -63,11 +60,11 @@ fn a_terminated_account_admits_nothing_from_its_end(mut profile: AccountProfile)
 }
 
 #[rstest]
-fn terms_without_an_end_still_parse_and_have_no_termination(profile: AccountProfile) {
-	assert_eq!(profile.terminated_at, None);
-	assert_eq!(profile.termination(), None);
+fn terms_without_an_end_still_parse_and_have_no_termination(terms: AccountTerms) {
+	assert_eq!(terms.terminated_at, None);
+	assert_eq!(terms.termination(), None);
 	assert!(
-		serde_json::to_value(&profile)
+		serde_json::to_value(&terms)
 			.unwrap()
 			.get("terminated_at")
 			.is_none()
@@ -103,32 +100,72 @@ fn the_basis_ends_at_the_earliest_permitted_moment(
 }
 
 #[rstest]
-fn amounts_must_fit_the_recorded_charge_range(mut profile: AccountProfile) {
-	let now = at("2026-09-25T00:00:00Z");
-	profile.request_price_micro_usd = MAX_MICRO_USD;
-	profile.monthly_limit_micro_usd = MAX_MICRO_USD;
-	assert!(profile.validate_at(now).is_ok());
-	// A price beyond the recorded range needs a limit beyond it as well.
-	profile.request_price_micro_usd = MAX_MICRO_USD + 1;
-	profile.monthly_limit_micro_usd = u64::MAX;
-	assert!(profile.validate_at(now).is_err());
-	profile.request_price_micro_usd = 5_000;
-	assert!(profile.validate_at(now).is_err());
+fn the_key_reference_is_not_part_of_the_terms(terms: AccountTerms) {
+	let mut value = serde_json::to_value(terms).unwrap();
+	value["credential_env"] = "AIDASH_SECRET_BRAVE_SEARCH".into();
+	assert!(serde_json::from_value::<AccountTerms>(value).is_err());
 }
 
 #[rstest]
-fn the_monthly_limit_is_checked_before_one_more_request(mut profile: AccountProfile) {
-	profile.monthly_base_fee_micro_usd = 1_000;
-	profile.monthly_limit_micro_usd = 11_000;
-	assert!(profile.admits(5_000));
-	assert!(!profile.admits(5_001));
-	assert_eq!(
-		profile.attribution(),
-		CostAttribution {
-			account_id: "search-account".into(),
-			price_micro_usd: 5_000
-		}
+fn each_implemented_charged_operation_has_exactly_one_price(mut terms: AccountTerms) {
+	// A searching provider needs a search price and must not name a fetch one.
+	terms.fetch_price_micro_usd = Some(1_000);
+	assert!(terms.validate(SEARCH).is_err());
+	assert!(
+		terms
+			.validate(&[Operation::Search, Operation::Fetch, Operation::Find])
+			.is_ok()
 	);
+	terms.search_price_micro_usd = None;
+	assert!(terms.validate(&[Operation::Fetch]).is_ok());
+	assert!(terms.validate(SEARCH).is_err());
+}
+
+#[rstest]
+fn a_free_request_is_still_attributed(mut terms: AccountTerms) {
+	terms.search_price_micro_usd = Some(0);
+	terms.monthly_limit_micro_usd = 0;
+	assert!(terms.validate(SEARCH).is_ok());
+	assert!(terms.admits(Operation::Search, 0));
+	assert_eq!(
+		terms.attribution(Operation::Search),
+		Some(CostAttribution {
+			account_id: "search-account".into(),
+			price_micro_usd: 0
+		})
+	);
+}
+
+#[rstest]
+fn lapsed_terms_are_not_current(terms: AccountTerms) {
+	assert!(terms.current_at(at("2026-09-25T00:00:00Z")).is_ok());
+	assert!(terms.current_at(at("2026-08-31T00:00:00Z")).is_err());
+	assert!(terms.current_at(at("2026-10-02T00:00:00Z")).is_err());
+}
+
+#[rstest]
+fn amounts_must_fit_the_recorded_charge_range(mut terms: AccountTerms) {
+	terms.search_price_micro_usd = Some(MAX_MICRO_USD);
+	terms.monthly_limit_micro_usd = MAX_MICRO_USD;
+	assert!(terms.validate(SEARCH).is_ok());
+	// A price beyond the recorded range needs a limit beyond it as well.
+	terms.search_price_micro_usd = Some(MAX_MICRO_USD + 1);
+	terms.monthly_limit_micro_usd = u64::MAX;
+	assert!(terms.validate(SEARCH).is_err());
+	terms.search_price_micro_usd = Some(5_000);
+	assert!(terms.validate(SEARCH).is_err());
+}
+
+#[rstest]
+fn the_monthly_limit_is_checked_before_one_more_request(mut terms: AccountTerms) {
+	terms.monthly_base_fee_micro_usd = 1_000;
+	terms.monthly_limit_micro_usd = 11_000;
+	assert!(terms.admits(Operation::Search, 5_000));
+	assert!(!terms.admits(Operation::Search, 5_001));
+	// An operation without a price is never admitted or attributed.
+	assert!(!terms.admits(Operation::Fetch, 0));
+	assert_eq!(terms.attribution(Operation::Fetch), None);
+	assert_eq!(terms.request_allowance_micro_usd(), 10_000);
 }
 
 #[rstest]

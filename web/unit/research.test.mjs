@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   approvalNotice,
   dollars,
+  requestPrice,
   researchFailure,
   researchBindings,
   runGrantScope,
@@ -247,6 +248,9 @@ test("prices read as dollars and Run grant scopes say what they cover", () => {
   assert.equal(dollars(49), "$0.000049");
   assert.equal(dollars(12_345), "$0.012345");
   assert.equal(dollars(0), "$0.0000");
+  assert.equal(requestPrice(5000, false), "$0.0050 (estimate, not an invoice)");
+  assert.equal(requestPrice(0, false), "Free");
+  assert.equal(requestPrice(0, true), "無料");
   assert.match(
     runGrantScope(
       {

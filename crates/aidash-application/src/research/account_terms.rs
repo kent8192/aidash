@@ -9,7 +9,7 @@ use crate::{
 use aidash_domain::{
 	context::{Context, ContextEvent},
 	research::{
-		account::{AccountProfile, Termination, basis_ends_at},
+		account::{AccountTerms, Termination, basis_ends_at},
 		expiry::{self, ExpiredResults},
 	},
 };
@@ -26,13 +26,13 @@ pub const BATCH: u32 = 256;
 /// outlive their declarations. Returns how many attempts were purged.
 pub async fn sweep(
 	port: &dyn ProviderResultRetention,
-	current: &[AccountProfile],
+	current: &[AccountTerms],
 	now: DateTime<Utc>,
 	batch: u32,
 ) -> Result<u64> {
 	let declared = current
 		.iter()
-		.filter_map(AccountProfile::termination)
+		.filter_map(AccountTerms::termination)
 		.collect::<Vec<_>>();
 	if !declared.is_empty() {
 		port.record_terminations(&declared).await?;

@@ -4,7 +4,7 @@
 use crate::Result;
 use aidash_domain::research::{
 	Failure, Operation,
-	account::{AccountProfile, CostAttribution, Termination},
+	account::{AccountTerms, CostAttribution, Termination},
 	citations::EvidenceRef,
 	document::{ExtractedPage, Passage},
 	evidence::{
@@ -38,8 +38,8 @@ pub trait SearchProvider: Send + Sync {
 	/// is rejected here, before any approval is requested.
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure>;
 	/// The Research account holder's current account terms, or `None` for a
-	/// provider that sends nothing outside the Node.
-	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure>;
+	/// provider that charges nothing.
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure>;
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure>;
 }
 
@@ -49,10 +49,10 @@ pub trait SearchProvider: Send + Sync {
 pub trait PageProvider: Send + Sync {
 	/// Literal address checks performed before any disclosure or attempt.
 	fn admit(&self, url: &Url) -> std::result::Result<(), Failure>;
-	/// The Research account holder's current account terms for a service
-	/// that reads pages, or `None` for Aidash's own page reader, whose pages
-	/// are not Provider results (ADR 0058).
-	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure> {
+	/// The Research account holder's current account terms, or `None` for a
+	/// provider that charges nothing, such as Aidash's own page reader, whose
+	/// pages are not Provider results (ADR 0058).
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
 		Ok(None)
 	}
 	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure>;
@@ -91,7 +91,7 @@ pub struct RetrievalTerms {
 }
 
 impl RetrievalTerms {
-	pub fn of(account: &AccountProfile) -> Self {
+	pub fn of(account: &AccountTerms) -> Self {
 		Self {
 			account_id: account.account_id.clone(),
 			retention_days: account.retention_days,

@@ -15,7 +15,7 @@ import { apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
-import { dollars, runGrantScope } from "../research";
+import { requestPrice, runGrantScope } from "../research";
 
 const DISCLOSE = "research.disclose";
 
@@ -105,7 +105,7 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
       ja ? "推定費用（1回）" : "Estimated cost (this request)",
       item.estimated_micro_usd == null
         ? none
-        : `${dollars(item.estimated_micro_usd)} ${ja ? "（見積もり。請求額ではありません）" : "(estimate, not an invoice)"}`,
+        : requestPrice(item.estimated_micro_usd, ja),
     ],
     [
       "Agent",

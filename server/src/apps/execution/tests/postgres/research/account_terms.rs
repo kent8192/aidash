@@ -5,7 +5,7 @@ use super::*;
 use aidash_application::ports::research::{Outbound, PageProvider, SearchProvider};
 use aidash_domain::research::{
 	Failure,
-	account::AccountProfile,
+	account::AccountTerms,
 	evidence::{PurgeReason, passage_digest},
 	search::{ProviderResults, SearchQuery},
 };
@@ -15,7 +15,7 @@ use serde_json::Value;
 /// The fixture corpus served by a service with Research account terms.
 struct Termed {
 	fixture: FixtureResearch,
-	terms: AccountProfile,
+	terms: AccountTerms,
 }
 
 #[async_trait::async_trait]
@@ -23,7 +23,7 @@ impl SearchProvider for Termed {
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure> {
 		self.fixture.disclosure(query)
 	}
-	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure> {
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
 		Ok(Some(self.terms.clone()))
 	}
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure> {
@@ -36,7 +36,7 @@ impl PageProvider for Termed {
 	fn admit(&self, url: &reqwest::Url) -> std::result::Result<(), Failure> {
 		self.fixture.admit(url)
 	}
-	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure> {
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
 		Ok(Some(self.terms.clone()))
 	}
 	async fn fetch(&self, url: &reqwest::Url) -> std::result::Result<ExtractedPage, Failure> {
@@ -44,9 +44,9 @@ impl PageProvider for Termed {
 	}
 }
 
-fn terms(account: &str) -> AccountProfile {
+fn terms(account: &str) -> AccountTerms {
 	let now = chrono::Utc::now();
-	AccountProfile {
+	AccountTerms {
 		account_id: account.into(),
 		agreement_reference: "contract".into(),
 		verified_by: "deployment_administrator".into(),
@@ -58,10 +58,11 @@ fn terms(account: &str) -> AccountProfile {
 		retention_days: 30,
 		deletion_after_termination_days: 7,
 		terminated_at: None,
-		credential_env: "AIDASH_SECRET_TERMED".into(),
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),
-		request_price_micro_usd: 5_000,
+		// It both searches and reads pages, so both are priced.
+		search_price_micro_usd: Some(5_000),
+		fetch_price_micro_usd: Some(5_000),
 		monthly_base_fee_micro_usd: 0,
 		monthly_limit_micro_usd: 1_000_000,
 	}

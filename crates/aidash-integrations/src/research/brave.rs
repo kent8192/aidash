@@ -1,10 +1,11 @@
-//! Brave Web Search as a research search provider. Its key is a tool secret
-//! (`AIDASH_SECRET_*`) named by the Search account holder's account profile, never a
-//! Provider Credential. The host attributes every request to that account.
+//! Brave Web Search as a research search provider. Its key is a Deployment
+//! secret named by the provider's settings, never a Provider Credential. The
+//! host attributes every request to the Research account holder's account.
 use crate::research::Failure;
 use aidash_application::ports::research::{Outbound, SearchProvider};
 use aidash_domain::research::{
-	account::AccountProfile,
+	Operation,
+	account::AccountTerms,
 	search::{Language, Period, ProviderCandidate, ProviderResults, SearchQuery, ValidFreshness},
 };
 use async_trait::async_trait;
@@ -20,27 +21,21 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 pub struct BraveSearch {
 	client: reqwest::Client,
 	endpoint: Url,
-	profile: AccountProfile,
+	terms: AccountTerms,
 	token: header::HeaderValue,
 }
 
 impl BraveSearch {
-	/// `token` is the value of the profile's `credential_env` tool secret.
-	pub fn new(profile: AccountProfile, token: &str) -> crate::Result<Self> {
-		profile.validate_at(Utc::now())?;
-		Self::with_endpoint(
-			profile,
-			token,
-			Url::parse(ENDPOINT).expect("fixed Brave URL"),
-		)
+	/// `token` is the value of the Deployment secret the settings name. Terms
+	/// that are incomplete are refused; terms that lapse only leave the
+	/// provider without a current account.
+	pub fn new(terms: AccountTerms, token: &str) -> crate::Result<Self> {
+		terms.validate(&[Operation::Search])?;
+		Self::with_endpoint(terms, token, Url::parse(ENDPOINT).expect("fixed Brave URL"))
 	}
 
 	/// A Brave-compatible endpoint other than the public API, for fixtures.
-	pub fn with_endpoint(
-		profile: AccountProfile,
-		token: &str,
-		endpoint: Url,
-	) -> crate::Result<Self> {
+	pub fn with_endpoint(terms: AccountTerms, token: &str, endpoint: Url) -> crate::Result<Self> {
 		if token.trim().is_empty() {
 			return Err(crate::Error::Invalid(
 				"search credential is not configured".into(),
@@ -64,7 +59,7 @@ impl BraveSearch {
 		Ok(Self {
 			client,
 			endpoint,
-			profile,
+			terms,
 			token,
 		})
 	}
@@ -194,11 +189,11 @@ impl SearchProvider for BraveSearch {
 			content: self.request(query)?.to_string(),
 		})
 	}
-	fn account(&self) -> Result<Option<AccountProfile>, Failure> {
-		self.profile
-			.validate_at(Utc::now())
+	fn account(&self) -> Result<Option<AccountTerms>, Failure> {
+		self.terms
+			.current_at(Utc::now())
 			.map_err(|_| Failure::AccountUnavailable)?;
-		Ok(Some(self.profile.clone()))
+		Ok(Some(self.terms.clone()))
 	}
 	async fn search(&self, query: &SearchQuery) -> Result<ProviderResults, Failure> {
 		let body = self.request(query)?;
