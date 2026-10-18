@@ -138,6 +138,14 @@ impl ProfileRepository for Repository {
 			profile("partial", true, json!([rule(), foreign])),
 		])
 	}
+	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+		assert_eq!(tenant, "tenant");
+		self.state.lock().unwrap().calls.push("administered");
+		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+			return Err(Error::Forbidden);
+		}
+		Ok(vec![profile("allowed", true, json!([rule()]))])
+	}
 	async fn definition(&self, tenant: &str, entry: &EntityRef) -> Result<Entry> {
 		assert_eq!((tenant, entry), ("tenant", &reference("tool")));
 		self.state.lock().unwrap().calls.push("definition");
@@ -417,4 +425,22 @@ async fn cancelling_current_draft_authority_releases_the_uncommitted_scope() {
 	let s = r.state.lock().unwrap();
 	assert!(!s.active && !s.committed);
 	assert!(!s.calls.contains(&"page"));
+}
+#[rstest]
+#[case::writer(subject(), true, true)]
+#[case::without_the_action(subject(), false, false)]
+#[case::another_tenant(Principal::Subject { tenant: "other".into(), subject: "admin".into() }, true, false)]
+#[tokio::test]
+async fn profile_writers_read_their_tenants_profiles_with_rules(
+	#[case] principal: Principal,
+	#[case] authorized: bool,
+	#[case] reads: bool,
+) {
+	let mut r = Repository::new(principal);
+	r.authorized = authorized;
+	let result = administered(&r, "tenant".into()).await;
+	assert_eq!(result.is_ok(), reads);
+	if reads {
+		assert_eq!(result.unwrap()[0].rules, json!([rule()]));
+	}
 }

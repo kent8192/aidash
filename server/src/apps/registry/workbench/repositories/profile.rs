@@ -69,6 +69,23 @@ impl ProfileRepository for Repository<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+		let pool = &self.runtime.store.pool;
+		pool.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+			super::authority::require_tenant_action(
+				&mut *tx,
+				pool,
+				&self.actor,
+				tenant,
+				aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+				aidash_domain::identity::tenant_administration::COLLECTION,
+			)
+			.await?;
+			AgentTestProfile::page(tx, tenant).await
+		})
+		.await
+		.map_err(Into::into)
+	}
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
 			.registry

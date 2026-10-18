@@ -46,6 +46,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(profile::list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(profile::administered)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(profile::put)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(incident::create)

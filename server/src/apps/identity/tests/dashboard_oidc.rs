@@ -2263,7 +2263,10 @@ async fn tenant_administration_works_without_a_tenant_binding(
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": actions,
-			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
+			"resources": {"kinds": actions
+				.iter()
+				.map(|action| aidash_domain::identity::tenant_administration::resource_kind(action))
+				.collect::<std::collections::BTreeSet<_>>()},
 			"condition": null
 		}]
 	}))

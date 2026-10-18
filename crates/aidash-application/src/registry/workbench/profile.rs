@@ -122,6 +122,18 @@ pub async fn list(
 		})
 		.collect())
 }
+/// Every profile of a Tenant with its rules, for those who write them (#361).
+pub async fn administered(
+	repository: &dyn ProfileRepository,
+	tenant: String,
+) -> Result<Vec<TestProfile>> {
+	if let Principal::Subject { tenant: own, .. } = repository.principal()
+		&& own != tenant
+	{
+		return Err(Error::Forbidden);
+	}
+	repository.administered(&tenant).await
+}
 pub async fn put(
 	repository: &dyn ProfileRepository,
 	configuration: &dyn ProfileConfiguration,
