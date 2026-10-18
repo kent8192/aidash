@@ -159,6 +159,34 @@ test("a reader without the permission is not offered revocation and sees only th
   );
 });
 
+test("a reader who loses the permission no longer sees the record read before", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  let can = true;
+  await page.route("**/api/runs/*/research**", (route: Route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/research"))
+      return route.fulfill({
+        json: research("2026-10-17T09:00:00Z", can),
+      });
+    return route.fulfill({ json: record(path.split("/")[3]) });
+  });
+  await openRun(page);
+  const section = page.getByRole("region", {
+    name: "Research evidence",
+    exact: true,
+  });
+  const reason = "The rights holder asked us to remove the page.";
+  await expect(section).toContainText(reason);
+  can = false;
+  // The next refresh drops the permission; the cached record stays hidden.
+  await expect(section).not.toContainText(reason, { timeout: 10_000 });
+  await expect(section.getByRole("status")).toContainText(
+    "This Run's research evidence was revoked",
+  );
+});
+
 type View = {
   tenant_rules: ReturnType<typeof periods> | null;
   can: boolean;

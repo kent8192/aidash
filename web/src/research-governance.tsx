@@ -94,13 +94,16 @@ export function RunResearchEvidence({
     retry: false,
   });
   const revoked = research.data?.revoked_at ?? null;
+  // The current flag gates the facts too: a disabled query keeps the record
+  // it cached while the reader still had the permission.
+  const readable = !!revoked && !!research.data?.can_read_revocation;
   const record = useQuery({
     queryKey: ["run-research-revocation", run],
     queryFn: ({ signal }) =>
       apiFetch<RevocationRecord>(`/api/runs/${run}/research-revocation`, {
         signal,
       }),
-    enabled: !!revoked && !!research.data?.can_read_revocation,
+    enabled: readable,
     retry: false,
   });
   const data = research.data;
@@ -131,13 +134,13 @@ export function RunResearchEvidence({
           </Button>
         </div>
       )}
-      {record.data && (
+      {readable && record.data && (
         <RevocationFacts
           record={record.data}
           deploymentAdministrator={deploymentAdministrator}
         />
       )}
-      {record.isError && <Alert>{message(record.error)}</Alert>}
+      {readable && record.isError && <Alert>{message(record.error)}</Alert>}
       {revoking && <RevokeDialog run={run} close={() => setRevoking(false)} />}
     </section>
   );

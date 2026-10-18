@@ -436,17 +436,9 @@ impl HarnessManagement {
 		let repository = self.retention_repository(actor, administrator)?;
 		let can_update =
 			aidash_application::retention::may_update(&repository, &retention.tenant).await?;
-		let f = self.runtime.clone();
-		let revocations = Revocations {
-			federation: &f,
-			actor,
-			administrator,
-		};
-		let can_read_revocations = aidash_application::research::revocation::may_read_records(
-			&revocations,
-			&retention.tenant,
-		)
-		.await?;
+		let can_read_revocations = self
+			.may_read_revocations(actor, administrator, &retention.tenant)
+			.await?;
 		Ok(TenantRetentionView {
 			retention,
 			can_update,
@@ -454,6 +446,23 @@ impl HarnessManagement {
 			can_read_history: can_update,
 			can_read_revocations,
 		})
+	}
+	async fn may_read_revocations(
+		&self,
+		actor: &Actor,
+		administrator: Option<Uuid>,
+		tenant: &str,
+	) -> Result<bool> {
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor,
+			administrator,
+		};
+		Ok(
+			aidash_application::research::revocation::may_read_records(&revocations, tenant)
+				.await?,
+		)
 	}
 	/// Store or clear one Tenant's own, shorter periods.
 	pub(crate) async fn retention_update(
@@ -466,9 +475,21 @@ impl HarnessManagement {
 		aidash_domain::policy::identifier(&tenant)?;
 		let administrator = administrator(&actor, browser);
 		let repository = self.retention_repository(&actor, administrator)?;
+		// Nothing fallible may follow the commit, or a committed change would
+		// answer as an error and a retry would record it twice. The flags
+		// are therefore read first; the update itself proves the caller may
+		// update the periods and read their history.
+		let can_read_revocations = self
+			.may_read_revocations(&actor, administrator, &tenant)
+			.await?;
 		let retention =
 			aidash_application::retention::update(&repository, &tenant, input.rules).await?;
-		self.retention_view(&actor, administrator, retention).await
+		Ok(TenantRetentionView {
+			retention,
+			can_update: true,
+			can_read_history: true,
+			can_read_revocations,
+		})
 	}
 	/// The history of one Tenant's periods, newest first.
 	pub(crate) async fn retention_history(
