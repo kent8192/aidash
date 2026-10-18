@@ -327,6 +327,10 @@ const FAILURES: Record<string, [string, string]> = {
     "This Run's research evidence was revoked, so its research is closed.",
     "この Run の Research evidence が取り消されたため、調査は終了しています。",
   ],
+  result_expired: [
+    "The research service's account terms no longer let this result be kept. The agent may search or read again.",
+    "調査サービスの利用規約 (Research account terms) により、この結果の保持期限が切れました。エージェントは再度検索または読み取りできます。",
+  ],
 };
 
 /**

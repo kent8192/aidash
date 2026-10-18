@@ -138,6 +138,8 @@ struct State {
 	/// Revoked only once this many revocation checks have answered.
 	research_revoked_after: Option<usize>,
 	research_checks: std::sync::atomic::AtomicUsize,
+	/// Provider results the Research account terms no longer keep.
+	expired_research: aidash_domain::research::expiry::ExpiredResults,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -359,6 +361,13 @@ impl ExecutionStore for Backend {
 				.research_revoked_after
 				.is_some_and(|after| checks >= after))
 	}
+	async fn expired_research(
+		&self,
+		_: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		self.record("store.expired_research");
+		Ok(self.0.expired_research.clone())
+	}
 	async fn unknown_evidence(
 		&self,
 		_: &Run,
@@ -439,7 +448,7 @@ impl ExecutionStore for Backend {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
@@ -448,7 +457,7 @@ impl ExecutionStore for Backend {
 			.lock()
 			.unwrap()
 			.insert(key.to_owned(), ("COMPLETED".into(), Some(output.clone())));
-		Ok(())
+		Ok(output.clone())
 	}
 	async fn reconciliation_request(
 		&self,
@@ -1369,6 +1378,7 @@ fn fixture() -> Fixture {
 		research_revoked: false,
 		research_revoked_after: None,
 		research_checks: Default::default(),
+		expired_research: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,

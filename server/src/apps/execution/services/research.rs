@@ -16,7 +16,7 @@ use aidash_application::{
 	research::{Call, Research},
 };
 use aidash_domain::{
-	research::{Failure, Operation, evidence::Limits, failure},
+	research::{Failure, Operation, account::AccountTerms, evidence::Limits, failure},
 	tool::{
 		ToolContract,
 		providers::{ToolDescriptor, research_contract, research_operation},
@@ -39,6 +39,9 @@ pub struct Providers {
 	/// Renders pages of PDFs that page reading retained, in a bounded child.
 	renderer: Option<Arc<ChildEngine>>,
 	fixture: Option<Arc<FixtureResearch>>,
+	/// The Research account terms this Deployment declares, whether or not
+	/// their provider can be dispatched; the account-terms sweep applies them.
+	accounts: Vec<AccountTerms>,
 	pub limits: Limits,
 }
 
@@ -50,6 +53,7 @@ impl Default for Providers {
 			pages: None,
 			renderer: None,
 			fixture: None,
+			accounts: Vec::new(),
 			limits: Limits::default(),
 		}
 	}
@@ -60,6 +64,11 @@ impl Providers {
 	/// is not set leaves Brave not set up rather than refusing to start.
 	pub fn from_settings(settings: &ResearchProviderSettings) -> Self {
 		Self {
+			accounts: settings
+				.brave
+				.iter()
+				.map(|brave| brave.account.clone())
+				.collect(),
 			brave: settings
 				.brave
 				.as_ref()
@@ -79,6 +88,11 @@ impl Providers {
 				.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
 		}
+	}
+
+	/// The Research account terms this Deployment declares (ADR 0058).
+	pub fn account_terms(&self) -> &[AccountTerms] {
+		&self.accounts
 	}
 
 	/// Whether `descriptor` names a research provider this Node can dispatch.
@@ -376,4 +390,15 @@ impl Tool for ResearchTool {
 pub async fn sweep_retention(store: &crate::store::Store) -> crate::Result<u64> {
 	use crate::apps::execution::repositories::research::retention;
 	Ok(retention::sweep(store, &store.research_retention).await?)
+}
+
+/// One pass of the Provider results sweep in Deployment Scope under `terms`,
+/// as the hourly retention loop runs it under the account terms this
+/// Deployment declares (ADR 0058). Returns how many attempts were purged.
+pub async fn sweep_account_terms(
+	store: &crate::store::Store,
+	terms: &[AccountTerms],
+) -> crate::Result<u64> {
+	use crate::apps::execution::repositories::research::account_terms;
+	Ok(account_terms::sweep(store, terms).await?)
 }

@@ -552,7 +552,7 @@ impl ExecutionStore for Bench {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		assert_eq!(token, self.0.token);
 		let mut flight = Flight::enter(&self.0.lab);
 		{
@@ -572,7 +572,7 @@ impl ExecutionStore for Bench {
 		// The recording connection stays busy after the row is written.
 		tokio::time::sleep(Duration::from_millis(10)).await;
 		flight.returned = true;
-		Ok(())
+		Ok(output.clone())
 	}
 	async fn reconciliation_request(
 		&self,

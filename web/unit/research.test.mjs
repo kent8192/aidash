@@ -335,6 +335,14 @@ test("research failures read in plain words without amounts", () => {
     researchFailure(failure("disclosure_denied", "fetch"), false),
     /nothing was sent/,
   );
+  assert.match(
+    researchFailure(failure("result_expired"), false),
+    /account terms no longer let this result be kept/,
+  );
+  assert.match(
+    researchFailure(failure("result_expired", "fetch"), true),
+    /保持期限が切れました/,
+  );
   assert.equal(researchFailure(failure("rate_limited"), false), null);
   assert.equal(
     researchFailure({ error: { code: "budget_exhausted" } }, false),

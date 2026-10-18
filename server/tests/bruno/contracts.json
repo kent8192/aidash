@@ -13652,6 +13652,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -13699,6 +13703,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -23875,6 +23884,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -23922,6 +23935,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -26161,6 +26179,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -26208,6 +26230,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -28187,6 +28214,10 @@
               "format": "uint32",
               "minimum": 0
             },
+            "completion": {
+              "$ref": "#/components/schemas/CompletionProgress",
+              "description": "Completion Gate progress of a Run whose Agent names a Completion\nPolicy; empty and absent otherwise. Never part of a model request."
+            },
             "estimate": {
               "$ref": "#/components/schemas/EstimateState",
               "description": "Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one."
@@ -28234,6 +28265,11 @@
             },
             "recovery": {
               "$ref": "#/components/schemas/ContextRecoveryState"
+            },
+            "research_expired_through": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "The latest purge under the Research account terms already applied\nhere (ADR 0058): research results it expired are placeholders and no\nExecution Summary holds them. A purge after it is applied next."
             },
             "research_revoked": {
               "type": "boolean",
@@ -31966,6 +32002,8 @@
             "completeness",
             "text_digest",
             "text",
+            "passage_digest",
+            "expired",
             "line_start",
             "line_end",
             "pages",
@@ -31994,6 +32032,10 @@
             "evidence_ref": {
               "type": "string",
               "description": "`ev_<uuid>`, as cited in the Run's text."
+            },
+            "expired": {
+              "type": "boolean",
+              "description": "The Research account terms of the service that returned the page no\nlonger keep the passage (ADR 0058)."
             },
             "fetched_at": {
               "type": "string",
@@ -32033,6 +32075,10 @@
                 "minimum": 0
               }
             },
+            "passage_digest": {
+              "type": "string",
+              "description": "`sha256:` digest of the passage as delivered. It outlives the text,\nso the citation can still be verified."
+            },
             "requested_url": {
               "type": "string",
               "description": "The address the Run asked for."
@@ -32047,7 +32093,7 @@
             },
             "text": {
               "type": "string",
-              "description": "The passage exactly as delivered to the Agent."
+              "description": "The passage exactly as delivered to the Agent; empty once `expired`."
             },
             "text_digest": {
               "type": "string",

@@ -47,6 +47,8 @@ struct Memory {
 	revoke_after_snapshot_read: AtomicBool,
 	/// A retention purge that commits just after the next snapshot read.
 	purge_after_snapshot_read: AtomicBool,
+	/// An account-terms purge that commits just after the next snapshot read.
+	expire_after_snapshot_read: AtomicBool,
 	/// A revocation that commits just before the next settle.
 	revoke_at_settle: AtomicBool,
 	/// Revoke the Run's evidence after the nth snapshot read (0: never).
@@ -84,6 +86,20 @@ impl Memory {
 		for snapshot in self.snapshots.lock().unwrap().iter_mut() {
 			if snapshot.id == id {
 				purge(snapshot, PurgeReason::Retention);
+			}
+		}
+	}
+	/// What the account-terms sweep does to one snapshot and its passages.
+	fn expire_snapshot(&self, id: Uuid) {
+		for snapshot in self.snapshots.lock().unwrap().iter_mut() {
+			if snapshot.id == id {
+				purge(snapshot, PurgeReason::AccountTerms);
+				snapshot.title = None;
+			}
+		}
+		for fragment in self.fragments.lock().unwrap().iter_mut() {
+			if fragment.document_id == id {
+				fragment.text.clear();
 			}
 		}
 	}
@@ -309,6 +325,7 @@ impl EvidenceStore for Memory {
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
+		_key: &str,
 		source_id: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
@@ -397,6 +414,12 @@ impl EvidenceStore for Memory {
 		}
 		if self.purge_after_snapshot_read.swap(false, Ordering::SeqCst) {
 			self.purge_snapshot(id);
+		}
+		if self
+			.expire_after_snapshot_read
+			.swap(false, Ordering::SeqCst)
+		{
+			self.expire_snapshot(id);
 		}
 		Ok(snapshot)
 	}
@@ -764,6 +787,7 @@ fn terms(
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
+		terminated_at: None,
 		price_effective_at: now - Duration::days(1),
 		price_review_after: now + Duration::days(1),
 		search_price_micro_usd,
@@ -1324,6 +1348,7 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				provider: "research.brave@1".into(),
 				destination: "api.search.brave.com".into(),
 				attribution: None,
+				retention: None,
 				limits: Limits::default(),
 				budget: None,
 				source_url: None,
@@ -1363,6 +1388,7 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				provider: "research.brave@1".into(),
 				destination: "api.search.brave.com".into(),
 				attribution: None,
+				retention: None,
 				limits: Limits::default(),
 				budget: None,
 				source_url: None,
@@ -1659,6 +1685,7 @@ impl DisclosureGate for Concurrent<'_> {
 					provider: "research.brave@1".into(),
 					destination: "api.search.brave.com".into(),
 					attribution: None,
+					retention: None,
 					limits: Limits {
 						search_attempts: 1,
 						..Limits::default()
@@ -2351,6 +2378,29 @@ async fn a_snapshot_purged_during_the_read_gives_no_context() {
 	// Assert: the fragment stays readable, its purged context does not.
 	assert_eq!(evidence.fragment.reference, reference);
 	assert!(evidence.context.is_none());
+}
+
+#[tokio::test]
+async fn a_passage_expired_during_the_read_is_not_disclosed() {
+	// Arrange: the account-terms purge commits after the first snapshot read,
+	// when the passage has already been read once.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	store
+		.expire_after_snapshot_read
+		.store(true, Ordering::SeqCst);
+
+	// Act
+	let evidence = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap();
+
+	// Assert: the citation still verifies, but its passage is gone.
+	assert_eq!(evidence.fragment.reference, reference);
+	assert!(evidence.fragment.text.is_empty());
+	assert!(evidence.expired);
+	assert_eq!(evidence.title, None);
 }
 
 #[tokio::test]

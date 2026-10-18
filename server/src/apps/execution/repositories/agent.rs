@@ -40,6 +40,24 @@ impl ExecutionStore for RunStore {
 		.revoked(run.id)
 		.await
 	}
+	async fn expired_research(
+		&self,
+		run: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		let expired: crate::Result<_> = async {
+			let mut tx = self
+				.store
+				.pool
+				.begin(&self.scope)
+				.await
+				.and_then(crate::database::native::Transaction::into_executor)?;
+			let expired = super::research::account_terms::expired(tx.as_mut(), run.id).await?;
+			tx.commit().await?;
+			Ok(expired)
+		}
+		.await;
+		expired.map_err(Into::into)
+	}
 	async fn unknown_evidence(
 		&self,
 		run: &Run,
@@ -217,7 +235,7 @@ impl ExecutionStore for RunStore {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		Store::invocation_finish(&self.store, &self.scope, run, token, key, output)
 			.await
 			.map_err(Into::into)

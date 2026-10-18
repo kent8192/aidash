@@ -193,10 +193,16 @@ function PassageWithContext({ evidence }: { evidence: CitedEvidence }) {
     <>
       <section className="grid gap-1" aria-label={copy.excerpt}>
         <h4 className="text-[11px] font-medium text-faint">{copy.excerpt}</h4>
-        <blockquote className="whitespace-pre-wrap border-l-2 border-brand-line pl-2 leading-relaxed text-foreground [overflow-wrap:anywhere]">
-          {evidence.text}
-        </blockquote>
-        {evidence.completeness === "text_limit" && (
+        {evidence.expired ? (
+          <p role="status" className="text-[11px] text-faint">
+            {copy.expired}
+          </p>
+        ) : (
+          <blockquote className="whitespace-pre-wrap border-l-2 border-brand-line pl-2 leading-relaxed text-foreground [overflow-wrap:anywhere]">
+            {evidence.text}
+          </blockquote>
+        )}
+        {!evidence.expired && evidence.completeness === "text_limit" && (
           <p className="text-[11px] text-faint">{copy.partial}</p>
         )}
       </section>

@@ -8,6 +8,7 @@ pub mod account;
 pub mod citations;
 pub mod document;
 pub mod evidence;
+pub mod expiry;
 pub mod intent;
 pub mod revocation;
 pub mod search;
@@ -110,6 +111,8 @@ pub enum Failure {
 	SnapshotPurged,
 	/// The Run's Research evidence was revoked; the Run can do no more research.
 	EvidenceRevoked,
+	/// The Research account terms no longer keep this result (ADR 0058).
+	ResultExpired,
 }
 
 impl Failure {
@@ -149,6 +152,7 @@ impl Failure {
 			Self::OutcomeUnknown => "outcome_unknown",
 			Self::SnapshotPurged => "snapshot_purged",
 			Self::EvidenceRevoked => "evidence_revoked",
+			Self::ResultExpired => "result_expired",
 		}
 	}
 	fn explanation(self) -> &'static str {
@@ -204,6 +208,9 @@ impl Failure {
 			}
 			Self::EvidenceRevoked => {
 				"This Run's Research evidence was revoked; it cannot be read, cited or extended."
+			}
+			Self::ResultExpired => {
+				"The research service's account terms no longer let this result be kept; search or read again to continue."
 			}
 		}
 	}

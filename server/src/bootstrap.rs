@@ -271,6 +271,16 @@ impl RuntimeTasks {
 					{
 						tracing::warn!(%error, "research evidence retention sweep failed");
 					}
+					// Provider results under the Research account terms (ADR 0058).
+					if let Err(error) =
+						crate::apps::execution::services::research::sweep_account_terms(
+							&retention,
+							crate::apps::execution::services::research::providers().account_terms(),
+						)
+						.await
+					{
+						tracing::warn!(%error, "research account terms sweep failed");
+					}
 					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
 						tracing::warn!(%error, "agent test retention cleanup failed");
 					}

@@ -5,7 +5,7 @@ use crate::{
 	Error, Result,
 	ports::research::{
 		Budget, DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider,
-		PageRenderer, Reservation, Reserved, SearchProvider, WebDisclosure,
+		PageRenderer, Reservation, Reserved, RetrievalTerms, SearchProvider, WebDisclosure,
 	},
 };
 use aidash_domain::research::{
@@ -112,6 +112,8 @@ pub struct Call<'a> {
 struct Charge {
 	attribution: CostAttribution,
 	budget: Budget,
+	/// The terms a Provider result is retrieved under (ADR 0058).
+	retention: RetrievalTerms,
 }
 
 /// What an approver is shown besides the exact outbound content.
@@ -204,6 +206,7 @@ impl Research<'_> {
 					provider: call.provider.into(),
 					destination: outbound.destination,
 					attribution: charge.as_ref().map(|charge| charge.attribution.clone()),
+					retention: charge.as_ref().map(|charge| charge.retention.clone()),
 					limits: self.limits,
 					budget: charge.map(|charge| charge.budget),
 					source_url: None,
@@ -388,6 +391,7 @@ impl Research<'_> {
 					provider: call.provider.into(),
 					destination: outbound.destination,
 					attribution: charge.as_ref().map(|charge| charge.attribution.clone()),
+					retention: charge.as_ref().map(|charge| charge.retention.clone()),
 					limits: self.limits,
 					budget: charge.map(|charge| charge.budget),
 					source_url: source.is_none().then(|| url.to_string()),
@@ -420,7 +424,14 @@ impl Research<'_> {
 		// The store checks the snapshot limits under the Run's lock.
 		let snapshot = match self
 			.store
-			.record_snapshot(call.run, source, url.as_str(), &page, &self.limits)
+			.record_snapshot(
+				call.run,
+				call.key,
+				source,
+				url.as_str(),
+				&page,
+				&self.limits,
+			)
 			.await?
 		{
 			Ok(snapshot) => snapshot,
@@ -727,6 +738,7 @@ impl Research<'_> {
 				since,
 				limit_micro_usd: account.request_allowance_micro_usd(),
 			},
+			retention: RetrievalTerms::of(&account),
 		})))
 	}
 
@@ -950,6 +962,7 @@ fn find_result(
 	)
 }
 
+pub mod account_terms;
 pub mod retention;
 pub mod revocation;
 

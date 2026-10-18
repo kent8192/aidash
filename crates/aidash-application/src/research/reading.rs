@@ -9,8 +9,10 @@
 //! evidence is in hand and returns it only to a reader who may still read the
 //! Run, as if the read had stayed inside the authorization. The snapshot is
 //! read once more after that decision, so a retention purge committed during
-//! the read leaves the fragment without its surrounding context, and the
-//! Run's evidence is checked for revocation only after that last read.
+//! the read leaves the fragment without its surrounding context; the fragment
+//! is read again after it, so an account-terms purge committed meanwhile
+//! leaves no passage either. The Run's evidence is checked for revocation
+//! only after those last reads.
 //! Authority is decided one final time after all of them.
 use crate::{
 	Error, Result,
@@ -57,8 +59,17 @@ pub async fn read(
 		.snapshot(run, fragment.document_id)
 		.await?
 		.ok_or_else(unavailable)?;
-	// A page image is read with its fragment; it stays after the snapshot is
-	// purged, as a passage's text does (ADR 0053).
+	// The passage is read again after that: an account-terms purge empties it
+	// with its snapshot, and the copy read first would still hold the text.
+	let fragment = store
+		.fragments(run, &[reference])
+		.await?
+		.into_iter()
+		.next()
+		.ok_or_else(unavailable)?;
+	// A page image is read with its fragment; like a passage's text, it stays
+	// after a retention purge of the snapshot (ADR 0053). The account-terms
+	// purge removes it, and the citation is then unavailable.
 	let image = match &fragment.image {
 		Some(_) => Some(
 			store

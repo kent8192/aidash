@@ -11,6 +11,8 @@ export const citationCopy = {
     partial: "Only part of this page was kept.",
     context: "Surrounding text (not given to the agent)",
     noContext: "The surrounding text is no longer kept.",
+    expired:
+      "The research service's account terms no longer let this excerpt be kept. The source and its digest remain.",
     pageImage: "Page the agent viewed",
     pageImageAlt: (page: number) => `Page ${page} as the agent viewed it`,
   },
@@ -26,6 +28,8 @@ export const citationCopy = {
     partial: "このページは一部だけが保存されています。",
     context: "前後の文章（エージェントには渡していません）",
     noContext: "前後の文章はもう保持されていません。",
+    expired:
+      "調査サービスの利用規約 (Research account terms) により、この抜粋の保持期限が切れました。出典と digest は残っています。",
     pageImage: "エージェントが見たページ",
     pageImageAlt: (page: number) => `エージェントが見た ${page} ページ目`,
   },
