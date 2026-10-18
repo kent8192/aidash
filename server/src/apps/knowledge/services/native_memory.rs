@@ -274,7 +274,6 @@ async fn retry_cycle(lease: &mut Lease<'_>, run: Option<Uuid>) -> Result<i32> {
 	)
 	.scalar_one(&mut **lease.tx())
 	.await
-	.map_err(Into::into)
 }
 
 /// Stage source roots until the entire tool or combined inference context succeeds.
