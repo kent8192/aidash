@@ -24,7 +24,8 @@ AUXILIARY_IMAGES = {
 # Dockerfiles always come from this trusted checkout. Source kinds build the
 # deployed source context; privileged kinds build only trusted contexts.
 SOURCE_BUILDS = {
-    "app": ("Dockerfile", ".", ["--target", "runtime"]),
+    # Aidash's Environments run the Enterprise build (ADR 0032).
+    "app": ("enterprise/Dockerfile", ".", ["--target", "runtime"]),
     "postgres": ("deploy/postgres/Dockerfile", ".", []),
     "sandbox": ("runner/Dockerfile", "runner", []),
 }
@@ -52,6 +53,8 @@ def main():
         ).strip()
         if current != args.sha:
             raise SystemExit("build checkout does not match the authorized SHA")
+        if args.kind == "app" and not (args.source / "enterprise/Cargo.toml").is_file():
+            raise SystemExit("Selected source does not contain the Enterprise workspace")
         if (
             args.kind == "app"
             and "GOOGLE_OIDC_ISSUER" not in (args.source / "server/src/config.rs").read_text()

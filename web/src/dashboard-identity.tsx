@@ -5,8 +5,12 @@ import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, authenticatedFetch } from "./transport";
 import { Panel, useI18n } from "./ui";
-import { Alert, Hint, Pager } from "./components/patterns";
+import { Alert, GroupChoice, Hint, Pager } from "./components/patterns";
 import { TenantInvitations, TenantLabelForm } from "./tenancy";
+import {
+  REGISTRY_ACTIONS,
+  useTenantAdministration,
+} from "./tenant-administration";
 
 type Registration = {
   id: string;
@@ -68,11 +72,15 @@ export function DashboardIdentityAdministration() {
   const groupsOf = (request: Registration) =>
     groups[request.id] ?? (request.proposed_groups ?? []).join(", ");
   const [mappingOffset, setMappingOffset] = useState(0);
+  const [registrationOffset, setRegistrationOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const registrations = useQuery({
-    queryKey: ["dashboard-registrations"],
-    queryFn: () => apiFetch<Registration[]>("/api/dashboard/registrations"),
+    queryKey: ["dashboard-registrations", registrationOffset],
+    queryFn: () =>
+      apiFetch<Registration[]>(
+        `/api/dashboard/registrations?offset=${registrationOffset}`,
+      ),
   });
   const identities = useQuery({
     queryKey: ["dashboard-identities"],
@@ -249,6 +257,21 @@ export function DashboardIdentityAdministration() {
             </li>
           ))}
       </ul>
+      <Pager
+        className="justify-start"
+        page={registrationOffset / PAGE_SIZE + 1}
+        previous={{
+          disabled: registrationOffset === 0 || registrations.isFetching,
+          go: () =>
+            setRegistrationOffset(Math.max(0, registrationOffset - PAGE_SIZE)),
+        }}
+        next={{
+          disabled:
+            (registrations.data?.length ?? 0) < PAGE_SIZE ||
+            registrations.isFetching,
+          go: () => setRegistrationOffset(registrationOffset + PAGE_SIZE),
+        }}
+      />
       <h3 className={group}>{english ? "Mappings" : "紐づけ"}</h3>
       <ul className="divide-y divide-border border-y border-border">
         {(mappings.data ?? []).map((mapping) => (
@@ -417,13 +440,6 @@ export function DashboardIdentityAdministration() {
   );
 }
 
-type TenantAdministration = {
-  tenant: string;
-  label: string | null;
-  actions: string[];
-  assignable_groups: string[];
-  policy_revision: number | null;
-};
 type TenantIdentity = {
   id: string;
   verified_email: string | null;
@@ -449,49 +465,11 @@ type TenantMapping = {
   own_subject: boolean;
 };
 
-const groupChip =
-  "inline-flex h-7 cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 font-mono text-xs text-foreground transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft";
-
 function person(identity: TenantIdentity) {
   return (
     [identity.display_name, identity.verified_email]
       .filter(Boolean)
       .join(" · ") || identity.id
-  );
-}
-
-function GroupChoice({
-  groups,
-  selected,
-  disabled,
-  change,
-}: {
-  groups: string[];
-  selected: string[];
-  disabled: boolean;
-  change: (groups: string[]) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {groups.map((group) => (
-        <label key={group} className={groupChip}>
-          <input
-            type="checkbox"
-            className="size-3.5 shrink-0 accent-primary"
-            disabled={disabled}
-            checked={selected.includes(group)}
-            onChange={(event) =>
-              change(
-                event.target.checked
-                  ? [...selected, group]
-                  : selected.filter((name) => name !== group),
-              )
-            }
-          />
-          {group}
-        </label>
-      ))}
-    </div>
   );
 }
 
@@ -516,10 +494,7 @@ export function TenantIdentityAdministration({
   const [registrationOffset, setRegistrationOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const overview = useQuery({
-    queryKey: ["tenant-administration", tenant],
-    queryFn: () => apiFetch<TenantAdministration>(`${path}/administration`),
-  });
+  const overview = useTenantAdministration(tenant);
   const can = (action: string) =>
     overview.data?.actions.includes(action) ?? false;
   const registrations = useQuery({
@@ -555,7 +530,10 @@ export function TenantIdentityAdministration({
       setBusy(false);
     }
   };
-  if (overview.isError || overview.data?.actions.length === 0)
+  if (
+    overview.isError ||
+    overview.data?.actions.every((action) => REGISTRY_ACTIONS.includes(action))
+  )
     return <>{fallback}</>;
   if (!overview.data) return null;
   const assignable = overview.data.assignable_groups;

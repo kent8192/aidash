@@ -36,15 +36,29 @@ pub async fn registry_get(
 	crate::http::response(service.registry_get(actor, (id, version)).await)
 }
 
+#[get(
+	"/api/registry/versions",
+	name = "registry-versions",
+	auth = "protected"
+)]
+pub async fn registry_versions(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Query(page): Query<crate::apps::registry::serializers::contracts::VersionPage>,
+) -> ViewResult<Response> {
+	crate::http::json(service.registry_versions(actor, page).await)
+}
+
 #[post("/api/registry", name = "registry-create", auth = "protected")]
 pub async fn registry_create(
 	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
 	request: Request,
 	Json(entry): Json<Entry>,
 ) -> ViewResult<Response> {
 	crate::http::json(
 		service
-			.registry_create(request.headers.clone(), entry)
+			.registry_create(actor, request.headers.clone(), entry)
 			.await,
 	)
 }
@@ -52,7 +66,8 @@ pub async fn registry_create(
 #[post("/api/skills/import", name = "skill-import", auth = "protected")]
 pub async fn skill_import(
 	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
 	Json(request): Json<crate::skill_import::ImportRequest>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.skill_import(request).await)
+	crate::http::json(service.skill_import(actor, request).await)
 }

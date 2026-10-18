@@ -12,6 +12,17 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 ) {
 	// Arrange
 	let mut app = native_server.await;
+	let store = aidash_server::store::Store::from_pool(
+		app.database.connection.clone().into_postgres().unwrap(),
+		"aidash://manage-fixture".into(),
+	)
+	.await
+	.unwrap();
+	let token = crate::tenant_roots::tenant_token(&store, "acme").await;
+	app.client
+		.set_header("Authorization", &format!("Bearer {token}"))
+		.await
+		.unwrap();
 	// Act
 	let response = app
 		.client

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { expectSvgFitted } from "./graph-fit-assertions";
 import { installBearerDashboard } from "./auth-fixture";
+import { registryVersion, tenantSubject } from "./registry-fixture";
 
 function entity(
   id: string,
@@ -25,7 +26,7 @@ function entity(
 }
 function fixture() {
   return {
-    access: { kind: "deployment_administrator" },
+    access: tenantSubject,
     node: {
       id: "aidash://test",
       endpoint: "http://localhost",
@@ -119,21 +120,26 @@ async function setup(page: Page, locale = "en-US") {
         ? { access: data.access, node_id: data.node.id }
         : path === "/api/state"
           ? data
-          : path === "/api/mesh"
-            ? { nodes: [], errors: [] }
-            : path === "/api/discover"
-              ? { agents: [], errors: [] }
-              : path.startsWith("/api/runs/")
-                ? { run: data.runs[0], invocations: [], memory: [] }
-                : path === "/api/workspaces/workspace-1"
-                  ? {
-                      workspace: data.workspaces[0],
-                      tasks: data.tasks,
-                      artifacts: [],
-                      messages: [],
-                      events: [],
-                    }
-                  : [];
+          : path === "/api/registry/versions"
+            ? {
+                versions: data.registry.map((entry) => registryVersion(entry)),
+                next_offset: null,
+              }
+            : path === "/api/mesh"
+              ? { nodes: [], errors: [] }
+              : path === "/api/discover"
+                ? { agents: [], errors: [] }
+                : path.startsWith("/api/runs/")
+                  ? { run: data.runs[0], invocations: [], memory: [] }
+                  : path === "/api/workspaces/workspace-1"
+                    ? {
+                        workspace: data.workspaces[0],
+                        tasks: data.tasks,
+                        artifacts: [],
+                        messages: [],
+                        events: [],
+                      }
+                    : [];
     await route.fulfill({ json });
   });
   await page.goto("/agents");

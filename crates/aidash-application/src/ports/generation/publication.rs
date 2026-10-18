@@ -14,7 +14,12 @@ pub trait GenerationPublication: Send {
 	async fn save_authority(&mut self, job: &Request) -> Result<()>;
 	async fn register(&mut self, entry: &Entry) -> Result<()>;
 	async fn approve(&mut self, job: &Request, entry: &Entry) -> Result<()>;
-	async fn catalog_history(&mut self, job: &Request, entry: &Entry) -> Result<()>;
+	async fn catalog_history(&mut self, job: &Request, entry: &Entry, actor: &str) -> Result<()>;
+	/// The subject that approved the generation request, if one did.
+	async fn approver(&mut self, job: &Request) -> Result<Option<String>>;
+	/// Whether `subject` still holds `catalog.approve` on the generated version
+	/// under the current policy.
+	async fn may_approve(&mut self, subject: &str, entry: &Entry) -> Result<bool>;
 }
 #[async_trait]
 pub trait GenerationLive: Send {

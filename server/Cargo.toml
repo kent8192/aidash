@@ -30,7 +30,8 @@ aes-gcm = "=0.10.3"
 hkdf = "=0.12.4"
 zeroize = "1.9"
 secrecy = { version = "0.10", features = ["serde"] }
-aidash-domain.workspace = true
+# The server counts tokenized Request Estimates (ADR 0017).
+aidash-domain = { workspace = true, features = ["token-encodings"] }
 aidash-application.workspace = true
 aidash-harness.workspace = true
 aidash-runtime.workspace = true
@@ -286,10 +287,6 @@ name = "resource_authorization"
 path = "src/apps/identity/tests/resource_authorization.rs"
 
 [[test]]
-name = "run_message_fence"
-path = "src/apps/federation/remote/tests/run_message_fence.rs"
-
-[[test]]
 name = "run_message_finalization"
 path = "src/apps/execution/tests/run_message_finalization.rs"
 
@@ -386,8 +383,9 @@ name = "registry_provider_bindings"
 path = "src/apps/registry/tests/provider_bindings.rs"
 
 [[test]]
-name = "marketplace_host_packages"
-path = "src/apps/marketplace/tests/host_packages.rs"
+name = "tenant_registry_acceptance"
+path = "src/apps/registry/tests/tenant_registry_acceptance.rs"
+
 
 [[test]]
 name = "gcip_sign_in"

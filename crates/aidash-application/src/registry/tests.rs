@@ -112,6 +112,10 @@ impl RegistrationScope for Scope {
 		}
 		Ok(())
 	}
+	async fn authorize(&mut self, entry: &Entry) -> Result<()> {
+		self.trace.push(format!("authorize:{}", entry.id));
+		Ok(())
+	}
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
 		self.event(kind, payload);
 		Ok(())
@@ -199,9 +203,11 @@ async fn idempotent_registration_emits_one_event_and_preserves_input(
 		scope.trace,
 		[
 			"assign",
+			"authorize:assigned",
 			"insert",
 			"registry.registered",
 			"assign",
+			"authorize:assigned",
 			"insert"
 		]
 	);
@@ -212,41 +218,6 @@ async fn idempotent_registration_emits_one_event_and_preserves_input(
 			json!({"id":"assigned","version":"1.0.0","kind":"skill"})
 		)]
 	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn discovery_exclusions_are_counted_before_decoding_metadata() {
-	let mut scope = Scope::default();
-	scope.pages.push((
-		"installed".into(),
-		"1.0.0".into(),
-		json!({"installation":null}),
-	));
-	scope.pages.push((
-		"generated".into(),
-		"1.0.0".into(),
-		json!({"invalid":"excluded metadata"}),
-	));
-	scope.generated.insert("generated@1.0.0".into());
-	for index in 0..64 {
-		let entry = definition(&format!("agent-{index:03}"), "agent", json!({}));
-		scope
-			.pages
-			.push((entry.id.clone(), entry.version.clone(), json!(entry)));
-	}
-	let page = legacy_agents(&mut scope, &Search::default(), 0)
-		.await
-		.unwrap();
-	assert_eq!(page.entries.len(), 64);
-	assert_eq!(page.entries[0].id, "agent-000");
-	assert_eq!(page.entries[63].id, "agent-063");
-	assert_eq!(page.next_offset, Some(66));
-	let empty = legacy_agents(&mut scope, &Search::default(), 66)
-		.await
-		.unwrap();
-	assert!(empty.entries.is_empty());
-	assert_eq!(empty.next_offset, None);
 }
 
 #[rstest]

@@ -7,17 +7,14 @@ use crate::{
 use aidash_application::{
 	Error, Result,
 	ports::{
-		bindings::{BindingAuthority, ProviderCatalog, ProviderSet},
+		bindings::{ProviderCatalog, ProviderSet},
 		execution::ExecutionTool,
 	},
 };
 use aidash_domain::{
 	Run,
 	provider::ToolSpec,
-	registry::{
-		bindings::{QualifiedRef, ResolvedBinding},
-		rules::digest,
-	},
+	registry::bindings::{QualifiedRef, ResolvedBinding},
 	tool::{
 		ToolContract,
 		concurrency::{ConcurrentCall, ReadCeilings, batchable, core_call},
@@ -170,61 +167,5 @@ impl ExecutionTool for ProviderTool {
 				search_bytes: limits.search_bytes,
 			},
 		)
-	}
-}
-
-/// Unscoped execution is the operator path. Tenant installations still require
-/// a retained tenant/subject lease, so this adapter cannot borrow their grants.
-pub(crate) struct OperatorAuthority {
-	pub federation: Federation,
-}
-#[async_trait]
-impl BindingAuthority for OperatorAuthority {
-	async fn refresh(&self, run: &Run) -> Result<()> {
-		let snapshot = run
-			.context
-			.binding_snapshot
-			.as_ref()
-			.ok_or_else(|| Error::Invalid("Run has no Binding snapshot".into()))?;
-		snapshot.validate()?;
-		for pinned in &snapshot.foreign_agents {
-			let current: aidash_domain::registry::bindings::ForeignAgentSnapshot = self
-				.federation
-				.request(
-					&pinned.agent.registry_node,
-					reqwest::Method::GET,
-					&format!(
-						"/discover/{}/{}/bindings",
-						pinned.agent.id, pinned.agent.version
-					),
-					None,
-				)
-				.await?;
-			current.validate()?;
-			if current != *pinned {
-				return Err(Error::Conflict(
-					"admitted foreign Agent closure changed".into(),
-				));
-			}
-		}
-		Ok(())
-	}
-	async fn check(&self, _: &Run, binding: &ResolvedBinding) -> Result<()> {
-		if binding.identity.registry_node != self.federation.config.node_id
-			|| binding.installation.is_some()
-		{
-			return Err(Error::Forbidden);
-		}
-		let current = self
-			.federation
-			.registry
-			.get(&binding.identity.id, &binding.identity.version)
-			.await?;
-		if digest(&serde_json::to_value(current)?) != binding.digest {
-			return Err(Error::Conflict(
-				"admitted Binding definition changed".into(),
-			));
-		}
-		Ok(())
 	}
 }

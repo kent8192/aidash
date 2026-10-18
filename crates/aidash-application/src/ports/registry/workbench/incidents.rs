@@ -18,7 +18,8 @@ pub trait IncidentScope: Send {
 	async fn lock_identity(&mut self) -> Result<()>;
 	async fn evaluate(&mut self, tenant: &str, input: &Evaluation) -> Result<Decision>;
 	async fn require_inspection(&mut self, reference: &EntityRef) -> Result<()>;
-	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry>;
+	/// The version in the incident's Tenant, which the caller names.
+	async fn effective(&mut self, tenant: &str, reference: &EntityRef) -> Result<Entry>;
 	async fn target_enabled(&mut self, tenant: &str, subject: &str) -> Result<()>;
 	/// Preserve exclusive incident locks for updates and event history, unlocked projections for get.
 	async fn read(&mut self, id: Uuid, lock: bool) -> Result<Incident>;

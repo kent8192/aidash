@@ -1,7 +1,7 @@
 //! HTTP endpoints backed by native dependency injection.
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
-	AuthorizationPage, AuthorizationUpdate, CatalogInput, CredentialInput,
+	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CredentialInput,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
 use crate::http::json::Json;
@@ -20,9 +20,10 @@ use uuid::Uuid;
 )]
 pub async fn catalog(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
 	Path(tenant): Path<String>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.catalog(tenant).await)
+	crate::http::json(service.catalog(actor, tenant).await)
 }
 
 #[post(
@@ -32,10 +33,25 @@ pub async fn catalog(
 )]
 pub async fn set_catalog(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
 	Path(tenant): Path<String>,
 	Json(input): Json<CatalogInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.set_catalog(tenant, input).await)
+	crate::http::json(service.set_catalog(actor, tenant, input).await)
+}
+
+#[post(
+	"/api/authorization/{tenant}/catalog/approvals",
+	name = "authorization-approve-catalog",
+	auth = "protected"
+)]
+pub async fn approve_catalog(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: crate::authorization::identity::Actor,
+	Path(tenant): Path<String>,
+	Json(input): Json<CatalogApprovals>,
+) -> ViewResult<Response> {
+	crate::http::json(service.approve(actor, tenant, input.approvals).await)
 }
 
 #[post(

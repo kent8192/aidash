@@ -4,6 +4,7 @@ use crate::marketplace::installations::{
 	tests::{Fixture, input, published, validation},
 };
 use crate::ports::{marketplace::StagingScope, registry::PrivateKnowledgeRead};
+use aidash_domain::marketplace::Version;
 use aidash_domain::{
 	identity::Principal,
 	marketplace::{Audience, ConsentEdge, Revision},
@@ -12,10 +13,12 @@ use aidash_domain::{
 use async_trait::async_trait;
 use rstest::rstest;
 use std::collections::BTreeMap;
+use uuid::Uuid;
 
 pub(super) struct DeploymentAdministratorFixture {
 	pub(super) inner: Fixture,
 	pub(super) principal: Principal,
+	pub(super) approving: Option<String>,
 	pub(super) approved: BTreeSet<(String, String)>,
 	requests: BTreeMap<String, Value>,
 	pub(super) events: Vec<(String, Value)>,
@@ -26,6 +29,7 @@ impl DeploymentAdministratorFixture {
 		Self {
 			inner: published(),
 			principal: Principal::DeploymentAdministrator,
+			approving: Some("owner".into()),
 			approved: BTreeSet::new(),
 			requests: BTreeMap::new(),
 			events: vec![],
@@ -98,6 +102,9 @@ impl StagingScope for DeploymentAdministratorFixture {
 impl DeploymentAdministratorScope for DeploymentAdministratorFixture {
 	fn principal(&self) -> &Principal {
 		&self.principal
+	}
+	fn approving_tenant(&self) -> Option<&str> {
+		self.approving.as_deref()
 	}
 	async fn load_tenant(&mut self, _: &str) -> Result<()> {
 		self.inner.record("load_tenant")
@@ -242,15 +249,16 @@ fn activation_input(enabled: bool) -> ActivationCommand {
 #[case("activate")]
 #[case("administration")]
 #[tokio::test]
-async fn every_deployment_administrator_workflow_denies_subjects_before_persistence(
+async fn activation_needs_the_approving_tenant_and_administration_a_deployment_administrator(
 	#[case] operation: &str,
 ) {
-	// Arrange: trusted authentication says this caller is a subject, not a Deployment Administrator.
+	// Arrange: a subject with no `catalog.approve` decision for this Tenant.
 	let mut scope = DeploymentAdministratorFixture::new();
 	scope.principal = Principal::Subject {
 		tenant: "owner".into(),
 		subject: "subject".into(),
 	};
+	scope.approving = None;
 	// Act
 	let result = match operation {
 		"activate" => activate(&mut scope, "installation", &activation_input(true))

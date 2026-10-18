@@ -199,6 +199,44 @@ export function Check({
   );
 }
 
+const groupChip =
+  "inline-flex h-7 cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 font-mono text-xs text-foreground transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft";
+
+export function GroupChoice({
+  groups,
+  selected,
+  disabled,
+  change,
+}: {
+  groups: string[];
+  selected: string[];
+  disabled: boolean;
+  change: (groups: string[]) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {groups.map((group) => (
+        <label key={group} className={groupChip}>
+          <input
+            type="checkbox"
+            className="size-3.5 shrink-0 accent-primary"
+            disabled={disabled}
+            checked={selected.includes(group)}
+            onChange={(event) =>
+              change(
+                event.target.checked
+                  ? [...selected, group]
+                  : selected.filter((name) => name !== group),
+              )
+            }
+          />
+          {group}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 /** Fieldset grouped by a hairline (section) or a left rule (nested item). */
 export function Group({
   legend,

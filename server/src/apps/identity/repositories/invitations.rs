@@ -5,6 +5,7 @@ use crate::apps::identity::models::{
 	AdministrationActor, AdministrationEvent, DashboardIdentity, DashboardMapping,
 	DashboardRegistrationRequest, TenantInvitation, database_time,
 };
+use crate::apps::identity::services::identity::HttpSession;
 use crate::apps::identity::services::oidc::{digest, random_secret};
 use crate::{Error, Result};
 use aidash_domain::identity::tenancy::invitation::MAX_ACTIVE;
@@ -234,14 +235,15 @@ pub(crate) async fn usable(
 	Ok(rows.pop())
 }
 
-/// Spends `invitation` on a new Registration Request addressed to its Tenant.
-/// An identity already mapped into the Tenant, or already waiting for it,
-/// leaves the link unspent.
+/// Spends `invitation` on a new Registration Request addressed to its Tenant,
+/// for the identity signed in to `session`. An identity already mapped into
+/// the Tenant, or already waiting for it, leaves the link unspent.
 pub(crate) async fn redeem(
 	tx: &mut AtomicTransaction,
 	mut invitation: TenantInvitation,
-	identity: Uuid,
+	session: &HttpSession,
 ) -> Result<DashboardRegistrationRequest> {
+	let identity = session.identity_id;
 	// An approval maps the identity under this row lock, so taking it before
 	// the membership check means one committing meanwhile is seen here and
 	// the link stays unspent. `open_addressed` takes the same lock again.
@@ -251,6 +253,9 @@ pub(crate) async fn redeem(
 		.all_with_executor(tx)
 		.await
 		.map_err(FrameworkError::from)?;
+	// The session, after the identity as at the write boundary: a logout
+	// committing meanwhile waits, or is seen here and spends nothing.
+	session.current(tx, true).await?;
 	if DashboardMapping::objects()
 		.filter(DashboardMapping::field_identity_id().eq(identity))
 		.filter(DashboardMapping::field_tenant().eq(invitation.tenant.clone()))

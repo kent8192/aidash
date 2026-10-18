@@ -154,8 +154,19 @@ impl GenerationPublication for Activation {
 		&mut self,
 		job: &Request,
 		entry: &Entry,
+		actor: &str,
 	) -> aidash_application::Result<()> {
-		self.publication().catalog_history(job, entry).await
+		self.publication().catalog_history(job, entry, actor).await
+	}
+	async fn approver(&mut self, job: &Request) -> aidash_application::Result<Option<String>> {
+		self.publication().approver(job).await
+	}
+	async fn may_approve(
+		&mut self,
+		subject: &str,
+		entry: &Entry,
+	) -> aidash_application::Result<bool> {
+		self.publication().may_approve(subject, entry).await
 	}
 }
 #[async_trait]

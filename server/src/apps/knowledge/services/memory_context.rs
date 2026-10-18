@@ -80,7 +80,7 @@ pub(crate) async fn retrieve(
 	}
 	let mut declared = vec![(binding.bank.clone(), binding.provider.clone(), budget)];
 	for reference in &agent.sources {
-		let entry = memory::definition(lease, reference, "source").await?;
+		let entry = memory::definition(lease, &binding.bank.tenant, reference, "source").await?;
 		let source: SourceConfig = serde_json::from_value(entry.config.clone())?;
 		if let Some(access) = lease.access() {
 			access.track_registry(&[entry]).await?;
@@ -115,9 +115,10 @@ pub(crate) async fn retrieve(
 	for (ordinal, (bank, provider, declared_tokens)) in declared.into_iter().enumerate() {
 		memory::scope(store, lease, &bank, "memory.read").await?;
 		memory::bank_provider(lease, &bank, &provider).await?;
-		let policy = memory::policy(lease, &provider).await?;
+		let policy = memory::policy(lease, &bank.tenant, &provider).await?;
 		let roles = json!({"extraction":policy.extraction,"derivation":policy.derivation,"reflection":policy.reflection,"embedding":policy.embedding,"reranker":policy.reranker,"tokenizer":policy.tokenizer});
-		let mut dependencies = vec![memory::definition(lease, &provider, "memory").await?];
+		let mut dependencies =
+			vec![memory::definition(lease, &bank.tenant, &provider, "memory").await?];
 		for (reference, kind) in [
 			(&policy.extraction, "model"),
 			(&policy.derivation, "model"),
@@ -126,13 +127,13 @@ pub(crate) async fn retrieve(
 			(&policy.reranker, "reranker"),
 			(&policy.tokenizer, "tokenizer"),
 		] {
-			dependencies.push(memory::definition(lease, reference, kind).await?);
+			dependencies.push(memory::definition(lease, &bank.tenant, reference, kind).await?);
 		}
 		if let Some(access) = lease.access() {
 			access.track_registry(&dependencies).await?;
 		}
 		let tokenizer: TokenizerConfig = serde_json::from_value(
-			memory::definition(lease, &policy.tokenizer, "tokenizer")
+			memory::definition(lease, &bank.tenant, &policy.tokenizer, "tokenizer")
 				.await?
 				.config,
 		)?;

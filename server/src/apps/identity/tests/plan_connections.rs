@@ -1191,7 +1191,13 @@ async fn runs_admitted_for_another_identity_never_use_a_reconnection(
 async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingSnapshot {
 	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"plan-model","version":"1.0.0","kind":"model","name":{"en":"Plan model"},"description":{"en":"Plan model"},"config":{"provider":"chatgpt","model_id":"gpt-5.5","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"plan-agent","version":"1.0.0","kind":"agent","name":{"en":"Plan agent"},"description":{"en":"Plan agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"plan-model","version":"1.0.0"},"instructions":"Test admission","cluster":null}})).unwrap();
-	f.registry.register(model).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("alpha").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
 	struct Lookup<'a>(&'a aidash_server::registry::Registry);
 	#[async_trait]
 	impl aidash_application::ports::registry::DefinitionLookup for Lookup<'_> {
@@ -1200,7 +1206,14 @@ async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingS
 			id: &str,
 			version: &str,
 		) -> Result<aidash_domain::registry::Entry> {
-			self.0.get(id, version).await.map_err(Into::into)
+			self.0
+				.get(
+					&aidash_domain::tenancy::TenantName::new("alpha").unwrap(),
+					id,
+					version,
+				)
+				.await
+				.map_err(Into::into)
 		}
 	}
 	aidash_application::registry::bindings::resolve(

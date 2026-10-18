@@ -795,14 +795,6 @@ function Dashboard({
           request,
           node: data.node.id,
         })),
-        ...(deploymentAdministrator
-          ? (remote?.nodes.flatMap((node) =>
-              node.human_requests.map((request) => ({
-                request,
-                node: node.node_id,
-              })),
-            ) ?? [])
-          : []),
       ]
     : [];
   const visit = (target: NoticeTarget) => {
@@ -1025,7 +1017,6 @@ function Dashboard({
                       />
                     ) : (
                       <TrustTools
-                        entries={data.registry}
                         deploymentAdministrator={deploymentAdministrator}
                         invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}
@@ -1057,7 +1048,6 @@ function Dashboard({
           {!data && session.data && route.section === "trust" && (
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
               <TrustTools
-                entries={[]}
                 deploymentAdministrator={deploymentAdministrator}
                 invitations={browserSession?.invitations ?? false}
                 tenant={subjectTenant}

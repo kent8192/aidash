@@ -45,7 +45,8 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 	let mut fixture = execution.await;
 	let app = &fixture.app;
 	let mut template = assert_json(
-		app.deployment_administrator
+		fixture
+			.subject
 			.get("/api/registry/research/1.0.0")
 			.await
 			.unwrap(),

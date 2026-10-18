@@ -35,12 +35,11 @@ async fn policy(
 	openrouter.connect("acme").await;
 	*openrouter.endpoint.lock().unwrap() = endpoint.into();
 	let compactor = json!({"id":"jev","version":"1.0.0","kind":"compactor","name":{"en":"Approved Jev"},"description":{"en":"Local fixture"},"capabilities":[],"languages":[],"tags":[],"skills":[],"schema":{},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":200000,"max_questions":200,"max_response_bytes":16000}});
-	let (status, body) =
-		request(app, &f.config.api_token, "POST", "/api/registry", compactor).await;
+	let (status, body) = request(app, &token, "POST", "/api/registry", compactor).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"jev","version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -49,7 +48,7 @@ async fn policy(
 	assert_eq!(status, 200, "{body}");
 	let (_, mut template) = request(
 		app,
-		&f.config.api_token,
+		&token,
 		"GET",
 		"/api/registry/research/1.0.0",
 		Value::Null,
@@ -168,7 +167,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 ) {
 	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
-	let (_, mut spec) = policy(&mut f, &app, "http://127.0.0.1:9").await;
+	let (token, mut spec) = policy(&mut f, &app, "http://127.0.0.1:9").await;
 	let model = json!({
 		"id":"large-output-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Large output model"},"description":{"en":"Budget fixture"},
@@ -178,11 +177,11 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 			"endpoint":"https://openrouter.ai/api/v1","context_window":1048576,"max_output_tokens":65536,
 			"modalities":["text"],"cost":{}}
 	});
-	let (status, body) = request(&app, &f.config.api_token, "POST", "/api/registry", model).await;
+	let (status, body) = request(&app, &token, "POST", "/api/registry", model).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"large-output-model","version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -428,7 +427,7 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 		assert_eq!(
 			request(
 				&app,
-				&f.config.api_token,
+				&token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":"jev","version":"1.0.0"},"expected_revision":1,"enabled":false})

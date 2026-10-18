@@ -167,14 +167,16 @@ fn pair(
 			200
 		);
 	}
+	let scope = common::tenant_scope(&a.f.store, "atomic").await;
 	let wa =
 		a.f.store
-			.create_workspace(&TEST_FIXTURE, "A", "Atomic state")
+			.create_workspace(&scope, "alice", "A", "Atomic state")
 			.await
 			.unwrap();
+	let scope = common::tenant_scope(&b.f.store, "atomic").await;
 	let wb =
 		b.f.store
-			.create_workspace(&TEST_FIXTURE, "B", "Atomic state")
+			.create_workspace(&scope, "alice", "B", "Atomic state")
 			.await
 			.unwrap();
 	let manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
@@ -613,7 +615,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		a.f.request::<Value>(
 			&b.f.config.node_id,
 			reqwest::Method::POST,
-			"/discover",
+			"/scoped/discover",
 			Some(&json!({}))
 		)
 		.await,
@@ -868,8 +870,20 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 	let (a, b, mut manifest, wa, _wb) = pair;
 	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
-	b.f.registry.register(model).await.unwrap();
-	b.f.registry.register(agent.clone()).await.unwrap();
+	b.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("atomic").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	b.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("atomic").unwrap(),
+			agent.clone(),
+		)
+		.await
+		.unwrap();
 
 	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
 	let task =
@@ -946,17 +960,14 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 		.await
 	}
 	.unwrap();
-	let run =
-		b.f.store
-			.accept_run(
-				&TEST_FIXTURE,
-				&task,
-				&a.f.config.node_id,
-				&agent.id,
-				&agent.version,
-			)
-			.await
-			.unwrap();
+	let run = common::remote_run(
+		&b.f.store,
+		&task,
+		&a.f.config.node_id,
+		&agent.id,
+		&agent.version,
+	)
+	.await;
 	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
         .execute(b.f.store.pool.driver())
         .await }

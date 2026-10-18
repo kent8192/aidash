@@ -373,14 +373,14 @@ mod scoped_pair_composition {
 		let endpoint = model_server.url.clone();
 		let (mut source_policy, token, mut task) =
 			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
-		let (receiver_policy, _, _) =
+		let (receiver_policy, receiver_token, _) =
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
 		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
 		let (status, body) = request(
 			&ba,
-			&b.config.api_token,
+			&receiver_token,
 			"POST",
 			"/api/registry",
 			compactor_definition,
@@ -390,7 +390,7 @@ mod scoped_pair_composition {
 		assert_eq!(
 			request(
 				&ba,
-				&b.config.api_token,
+				&receiver_token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -522,15 +522,7 @@ mod scoped_pair_composition {
 			.await;
 			source_policy["subjects"]
 				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
-			let (status, body) = request(
-				&aa,
-				&a.config.api_token,
-				"POST",
-				"/api/authorization/acme",
-				json!({"expected_revision":2,"bundle":source_policy}),
-			)
-			.await;
-			assert_eq!(status, 200, "{body}");
+			common::replace_policy(&a.store, "acme", source_policy.clone()).await;
 			Some(data)
 		} else {
 			None
@@ -637,11 +629,12 @@ async fn ordered_receiver_agent(
 	ba: &common::TestApplication,
 	source_policy: &mut Value,
 ) {
+	let receiver_token = common::tenant_token(&b.store, "acme").await;
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
 	let fetch = |id: &'static str| async move {
 		let (status, mut entry) = request(
 			ba,
-			&b.config.api_token,
+			&common::tenant_token(&b.store, "acme").await,
 			"GET",
 			&format!("/api/registry/{id}/1.0.0"),
 			Value::Null,
@@ -664,11 +657,11 @@ async fn ordered_receiver_agent(
 	agent["config"]["projection_version"] = json!("ordered");
 	for entry in [model, agent] {
 		let id = entry["id"].as_str().unwrap().to_owned();
-		let (status, body) = request(ba, &b.config.api_token, "POST", "/api/registry", entry).await;
+		let (status, body) = request(ba, &receiver_token, "POST", "/api/registry", entry).await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			ba,
-			&b.config.api_token,
+			&receiver_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
@@ -711,7 +704,7 @@ async fn native_remote_fixture(
 ) -> Value {
 	let (_, home_agent) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"GET",
 		"/api/registry/research/1.0.0",
 		Value::Null,
@@ -719,7 +712,7 @@ async fn native_remote_fixture(
 	.await;
 	let (_, embedding) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"GET",
 		"/api/registry/home-embedding/1.0.0",
 		Value::Null,
@@ -766,11 +759,11 @@ async fn native_remote_fixture(
 			);
 		}
 		for (kind, id, config) in roles {
-			let (status,body)=request(app,&runtime.config.api_token,"POST","/api/registry",json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native remote fixture"},"config":config})).await;
+			let (status,body)=request(app,&common::tenant_token(&runtime.store, "acme").await,"POST","/api/registry",json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native remote fixture"},"config":config})).await;
 			assert_eq!(status, 200, "{body}");
 			let (status, body) = request(
 				app,
-				&runtime.config.api_token,
+				&common::tenant_token(&runtime.store, "acme").await,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":reference(id),"expected_revision":0,"enabled":true}),
@@ -780,7 +773,7 @@ async fn native_remote_fixture(
 		}
 		let (_, mut agent) = request(
 			app,
-			&runtime.config.api_token,
+			&common::tenant_token(&runtime.store, "acme").await,
 			"GET",
 			"/api/registry/research/1.0.0",
 			Value::Null,
@@ -804,7 +797,7 @@ async fn native_remote_fixture(
 		let id = agent["id"].as_str().unwrap().to_owned();
 		let (status, body) = request(
 			app,
-			&runtime.config.api_token,
+			&common::tenant_token(&runtime.store, "acme").await,
 			"POST",
 			"/api/registry",
 			agent,
@@ -813,7 +806,7 @@ async fn native_remote_fixture(
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			app,
-			&runtime.config.api_token,
+			&common::tenant_token(&runtime.store, "acme").await,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
@@ -1021,11 +1014,11 @@ async fn configure_semantic(
 		a.store.keyless.permit_origin_of(&endpoint).unwrap();
 		json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3})
 	};
-	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
+	let (status, body) = request(app, token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(
 		app,
-		&a.config.api_token,
+		token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -1277,6 +1270,55 @@ async fn write_home_entry(
 		assert!(tokio::time::Instant::now() < deadline, "indexing stalled");
 		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 	}
+}
+/// Make the receiver's scheduled semantic retry and the Home operation it
+/// waits on due now, leaving their counters as the production path saved them.
+async fn advance_semantic_retry(p: &Pair) {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value_expr(
+				Alias::new("pending"),
+				Expr::cust(
+					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+				),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![Expr::value(p.admission).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.driver())
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(grant_id=? AND state='WAITING')".to_owned(),
+				vec![Expr::value(p.grant).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+}
+/// The `semantic_memory` an Ordered model request carried in its volatile part.
+async fn ordered_semantic_memory(p: &Pair, request: usize) -> Value {
+	let requests = p.requests.lock().await;
+	let parts = requests[request - 1]["messages"][1]["content"]
+		.as_array()
+		.expect("an Ordered request")
+		.clone();
+	let volatile: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+	volatile["semantic_memory"].clone()
+}
+/// Home embedding calls so far, failed ones included.
+async fn home_embeddings(p: &Pair) -> usize {
+	p.semantic.as_ref().unwrap().requests.lock().await.len()
 }
 async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 	serde_json::to_string(&p.requests.lock().await[request - 1])
@@ -1530,6 +1572,104 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 		remote_retrievals(&p).await,
 		2,
 		"the new retrieval is reused"
+	);
+	p.close().await;
+}
+
+/// Issue #236: a remote Ordered Run keeps reusing its Home retrieval through an
+/// outage of the Home embedding provider while its Retrieval Key holds. A Run
+/// message sent during the outage changes the key's query inputs; only the
+/// step that then needs a new retrieval follows the outage policy. Once the
+/// provider recovers, the retry retrieves again and the next step reuses it.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(4, Ordering::Release);
+	let failing = &p.semantic.as_ref().unwrap().failing;
+
+	// Arrange: the first step retrieves while the Home provider is healthy.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let retrieved = ordered_semantic_memory(&p, 1).await;
+	assert!(!retrieved.is_null(), "step 1 carries semantic context");
+
+	// Act: the Home provider goes down; the next steps keep the same key.
+	failing.store(true, Ordering::Release);
+	let outage = home_embeddings(&p).await;
+	for step in 2..=3 {
+		step_to_model_request(&p, step).await;
+		// Assert: the reuse reaches inference with the same bytes, untouched.
+		assert_eq!(
+			ordered_semantic_memory(&p, step).await,
+			retrieved,
+			"step {step}"
+		);
+		let run = p.run().await;
+		assert_eq!(run.control.as_str(), "ACTIVE", "step {step}: {run:?}");
+		assert!(run.recovery.retry.is_none(), "step {step}: {run:?}");
+		assert!(
+			serde_json::to_value(run.recovery.semantic_reason)
+				.unwrap()
+				.is_null(),
+			"step {step}: {run:?}"
+		);
+	}
+	assert_eq!(remote_retrievals(&p).await, 1, "an unchanged key is reused");
+	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
+
+	// Act: a Run message changes the query inputs of the Retrieval Key.
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+		json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..10 {
+		if p.run().await.recovery.retry.is_some() {
+			break;
+		}
+		p.step().await;
+	}
+
+	// Assert: the step that needs a new retrieval follows the outage policy.
+	let run = p.run().await;
+	let retry = run
+		.recovery
+		.retry
+		.as_ref()
+		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
+	assert_eq!(retry.count, 1, "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable"
+	);
+	assert_eq!(run.control.as_str(), "ACTIVE");
+	assert_eq!(p.requests.lock().await.len(), 3, "no inference");
+	assert!(
+		home_embeddings(&p).await > outage,
+		"the Home tried to embed"
+	);
+
+	// Act: the provider recovers and the retry is due.
+	failing.store(false, Ordering::Release);
+	advance_semantic_retry(&p).await;
+	step_to_model_request(&p, 4).await;
+	// Assert: the retry retrieves again, and the next step reuses it.
+	assert_eq!(remote_retrievals(&p).await, 2, "the retry retrieves again");
+	assert!(p.run().await.recovery.retry.is_none());
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, 2, "step 5 reuses step 4");
+	assert_eq!(
+		ordered_semantic_memory(&p, 5).await,
+		ordered_semantic_memory(&p, 4).await
 	);
 	p.close().await;
 }
@@ -2113,31 +2253,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 			assert!(due > chrono::Utc::now());
 			// Advance only persisted fixture deadlines, after checking that the
 			// production path saved a delay and retained its failure counter.
-			{ let query_bind_1 = p.admission; sqlx::query(&Query::update()
-					.table(Alias::new("runs")).value_expr(Alias::new("pending"), Expr::cust(
-							"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
-						))
-					.and_where(SimpleExpr::CustomWithExpr("(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
-					.to_string(PostgresQueryBuilder))
-			.execute(p.b.store.pool.driver())
-			.await }
-			.unwrap();
-			{
-				let query_bind_1 = p.grant;
-				sqlx::query(
-					&Query::update()
-						.table(Alias::new("semantic_remote_operations"))
-						.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(grant_id=? AND state='WAITING')".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(p.a.store.pool.driver())
-				.await
-			}
-			.unwrap();
+			advance_semantic_retry(&p).await;
 		}
 	}
 	let count = || {
@@ -2614,18 +2730,21 @@ async fn a_changed_execution_boundary_stops_before_inference(
 			.unwrap();
 		}
 		"disabled_agent" => {
-			assert_eq!(
-				request(
-					&p.ba,
-					&p.b.config.api_token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false})
-				)
-				.await
-				.0,
-				200
-			);
+			aidash_server::authorization::Authorization {
+				pool: p.b.store.pool.clone(),
+			}
+			.set_catalog(
+				"acme",
+				&aidash_server::registry::EntityRef {
+					id: "research".into(),
+					version: "1.0.0".into(),
+				},
+				1,
+				false,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
 		}
 		"definition_substitution" => {
 			{
@@ -3059,6 +3178,18 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	p.close().await;
 }
 
+async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication, agent: &Value) {
+	let (status, body) = request(
+		ba,
+		&common::tenant_token(&b.store, "acme").await,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":agent,"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
 async fn prepare_generated_pair(
 	a: &Federation,
 	b: &Federation,
@@ -3076,7 +3207,7 @@ async fn prepare_generated_pair(
 		.workspace_id;
 	let (_, mut parent_template) = request(
 		aa,
-		&a.config.api_token,
+		&common::tenant_token(&a.store, "acme").await,
 		"GET",
 		"/api/registry/research/1.0.0",
 		Value::Null,
@@ -3084,7 +3215,7 @@ async fn prepare_generated_pair(
 	.await;
 	let (_, child_template) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"GET",
 		if native {
 			"/api/registry/research-native/1.0.0"
@@ -3098,7 +3229,7 @@ async fn prepare_generated_pair(
 	let model_ref = child_template["config"]["model"].clone();
 	let (_, model) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"GET",
 		&format!(
 			"/api/registry/{}/{}",
@@ -3112,7 +3243,7 @@ async fn prepare_generated_pair(
 	let embedding_descriptor = if semantic {
 		let (status, embedding) = request(
 			aa,
-			&a.config.api_token,
+			&common::tenant_token(&a.store, "acme").await,
 			"GET",
 			"/api/registry/home-embedding/1.0.0",
 			Value::Null,
@@ -3126,7 +3257,7 @@ async fn prepare_generated_pair(
 	let model_descriptor = descriptor(&b.config.node_id, &model);
 	let (_, compactor) = request(
 		ba,
-		&b.config.api_token,
+		&common::tenant_token(&b.store, "acme").await,
 		"GET",
 		"/api/registry/remote-compactor/1.0.0",
 		Value::Null,
@@ -3268,6 +3399,9 @@ async fn prepare_generated_pair(
 	let (status, replayed) = request(aa, token, "POST", &route, input.clone()).await;
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed, prepared);
+	if !approval {
+		approve_foreign_generated(b, ba, &prepared["agent"]).await;
+	}
 	let count: i64 = {
 		let query_bind_1 = task;
 		sqlx::query_scalar(
@@ -3352,15 +3486,9 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		pending["request_id"].as_str().unwrap()
 	);
 	let decision = json!({"action":"approve","reason":"Approve the exact foreign preparation"});
+	let approver = common::tenant_token(&p.b.store, "acme").await;
 	for _ in 0..2 {
-		let (status, body) = request(
-			&p.ba,
-			&p.b.config.api_token,
-			"POST",
-			&control,
-			decision.clone(),
-		)
-		.await;
+		let (status, body) = request(&p.ba, &approver, "POST", &control, decision.clone()).await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["status"], "QUEUED");
 	}
@@ -3398,6 +3526,14 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		count, 0,
 		"approval publishes the definition but cannot activate a Run"
 	);
+	assert_ne!(
+		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
+			.await
+			.0,
+		200,
+		"the receiver registers a foreign generation unapproved"
+	);
+	approve_foreign_generated(&p.b, &p.ba, &pending["agent"]).await;
 	let (status, body) = request(&p.aa, &p.token, "POST", &grant_route, grant).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, activated) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
@@ -3536,7 +3672,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 	);
 	let (status, _) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&common::tenant_token(&p.b.store, "acme").await,
 		"POST",
 		&route,
 		json!({"action":"approve","reason":"Late approval must not resurrect terminated work"}),
@@ -4086,7 +4222,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		// delivery, including receiver Run events without a Workspace FK.
 		let (status, body) = request(
 			app,
-			&f.config.api_token,
+			&common::tenant_token(&f.store, "acme").await,
 			"POST",
 			"/api/workspaces",
 			json!({"title":"deployment-administrator-stream-tail","goal":"Independent stream marker"}),
@@ -4177,19 +4313,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{independent}");
-	assert_eq!(
-		request(
-			&p.aa,
-			&p.a.config.api_token,
-			"GET",
-			&format!("/api/workspaces/{}", independent["id"].as_str().unwrap()),
-			Value::Null
-		)
-		.await
-		.0,
-		200
-	);
+	assert_eq!(status, 403, "{independent}");
 	p.close().await;
 }
 
@@ -4358,7 +4482,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	let (status, revoked) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false}),
@@ -4373,7 +4497,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	let (status, restored) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":2,"enabled":true}),
@@ -4425,7 +4549,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	let (status, revoked) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":run.agent_id,"version":run.agent_version},"expected_revision":catalog.1,"enabled":false}),
@@ -5231,7 +5355,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 		.unwrap();
 	}
 	if scenario == "catalog_revoked" {
-		assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
+		assert_eq!(request(&p.ba,&p.receiver_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
 	}
 	if scenario == "unbound" {
 		// Without a usable OpenRouter binding the receiver stops before any
@@ -5350,7 +5474,6 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 /// process from a live worker whose Run stopped progressing.
 struct ScopedWorkerCommand {
 	command: std::process::Command,
-	probe: std::net::SocketAddr,
 	log: std::path::PathBuf,
 	_settings_directory: tempfile::TempDir,
 	_binary: Arc<ScopedWorkerBinary>,
@@ -5397,11 +5520,6 @@ fn scoped_worker_command(
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
-		// Readiness uses the production probe listener on its own port.
-		let probe = std::net::TcpListener::bind("127.0.0.1:0")
-			.unwrap()
-			.local_addr()
-			.unwrap();
 		let log = directory.path().join("worker.log");
 		let output = std::fs::File::create(&log).unwrap();
 		let mut command = std::process::Command::new(&scoped_worker_binary.path);
@@ -5417,7 +5535,6 @@ fn scoped_worker_command(
 			))
 			.env("AIDASH_ACTIVATION_NAMESPACE", &p.bschema)
 			.env("AIDASH_ENV", "test")
-			.env("AIDASH_PROBE_LISTEN", probe.to_string())
 			// Activation claims and deferred step recovery are logged by the
 			// harness and application crates.
 			.env(
@@ -5429,7 +5546,6 @@ fn scoped_worker_command(
 			.stderr(output);
 		ScopedWorkerCommand {
 			command,
-			probe,
 			log,
 			_settings_directory: directory,
 			_binary: scoped_worker_binary,
@@ -5440,6 +5556,7 @@ fn scoped_worker_command(
 struct ScopedWorkerProcess {
 	child: std::process::Child,
 	spawned: std::time::Instant,
+	probe: std::net::SocketAddr,
 	command: ScopedWorkerCommand,
 }
 impl ScopedWorkerProcess {
@@ -5459,10 +5576,23 @@ impl ScopedWorkerProcess {
 
 	// Process primitive used by the initial fixture and by the explicit restart Act.
 	fn spawn(mut command: ScopedWorkerCommand) -> Self {
-		let child = command.command.spawn().unwrap();
+		// Readiness uses the production probe listener, which cannot inherit a
+		// descriptor. Reserve its port just before each spawn: a port reserved
+		// when the restart command is built stays released for the whole
+		// initial Run, and another process can take it.
+		let probe = std::net::TcpListener::bind("127.0.0.1:0")
+			.unwrap()
+			.local_addr()
+			.unwrap();
+		let child = command
+			.command
+			.env("AIDASH_PROBE_LISTEN", probe.to_string())
+			.spawn()
+			.unwrap();
 		Self {
 			child,
 			spawned: std::time::Instant::now(),
+			probe,
 			command,
 		}
 	}
@@ -5503,7 +5633,7 @@ impl ScopedWorkerProcess {
 			);
 			if !probed {
 				probed = http_client
-					.get(format!("http://{}/ready", self.command.probe))
+					.get(format!("http://{}/ready", self.probe))
 					.timeout(std::time::Duration::from_millis(500))
 					.send()
 					.await
@@ -5936,7 +6066,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 			.unwrap();
 		}
 		"home_catalog" => {
-			assert_eq!(request(&p.aa, &p.a.config.api_token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
+			assert_eq!(request(&p.aa, &p.token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
 		}
 		"receiver_expiry" => {
 			sqlx::query(
