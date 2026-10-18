@@ -305,10 +305,10 @@ revoke.
 Whoever runs the Deployment declares its Research providers in the
 `[research_providers]` settings (see `server/settings/base.example.toml`):
 
-| Provider             | Tier      | Availability                                                                                                    |
-| -------------------- | --------- | --------------------------------------------------------------------------------------------------------------- |
+| Provider             | Tier      | Availability                                                                                                     |
+| -------------------- | --------- | ---------------------------------------------------------------------------------------------------------------- |
 | `research.brave@1`   | `host`    | `[research_providers.brave]` declares current account terms and its Deployment secret is set                     |
-| `research.page@1`    | `host`    | `page_reading = true`                                                                                           |
+| `research.page@1`    | `host`    | `page_reading = true`                                                                                            |
 | `research.fixture@1` | `fixture` | `fixture = true`; a deterministic in-memory corpus that sends nothing outside the Node, for tests and evaluation |
 
 The production profile refuses `fixture = true`. The Brave key is a

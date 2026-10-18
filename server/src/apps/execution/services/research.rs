@@ -62,8 +62,12 @@ impl Providers {
 				.as_ref()
 				.ok_or_else(|| "is not configured".to_owned())
 				.and_then(brave),
-			pages: settings.page_reading.then(|| Arc::new(PageReader::default())),
-			fixture: settings.fixture.then(|| Arc::new(FixtureResearch::default())),
+			pages: settings
+				.page_reading
+				.then(|| Arc::new(PageReader::default())),
+			fixture: settings
+				.fixture
+				.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
 		}
 	}
@@ -202,8 +206,9 @@ impl Providers {
 /// this before serving, after refusing a malformed declaration.
 pub fn configure(settings: &ResearchProviderSettings, profile: &Profile) -> Result<()> {
 	settings.check(profile)?;
-	*PROVIDERS.write().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-		Arc::new(Providers::from_settings(settings));
+	*PROVIDERS
+		.write()
+		.unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(Providers::from_settings(settings));
 	Ok(())
 }
 

@@ -31,19 +31,11 @@ impl BraveSearch {
 	/// provider without a current account.
 	pub fn new(terms: AccountTerms, token: &str) -> crate::Result<Self> {
 		terms.validate(&[Operation::Search])?;
-		Self::with_endpoint(
-			terms,
-			token,
-			Url::parse(ENDPOINT).expect("fixed Brave URL"),
-		)
+		Self::with_endpoint(terms, token, Url::parse(ENDPOINT).expect("fixed Brave URL"))
 	}
 
 	/// A Brave-compatible endpoint other than the public API, for fixtures.
-	pub fn with_endpoint(
-		terms: AccountTerms,
-		token: &str,
-		endpoint: Url,
-	) -> crate::Result<Self> {
+	pub fn with_endpoint(terms: AccountTerms, token: &str, endpoint: Url) -> crate::Result<Self> {
 		if token.trim().is_empty() {
 			return Err(crate::Error::Invalid(
 				"search credential is not configured".into(),

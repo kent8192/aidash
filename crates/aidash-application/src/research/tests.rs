@@ -1032,7 +1032,12 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 		limits: Limits::default(),
 	};
 	let mut provider = Search::new("brave", "api.search.brave.com");
-	provider.account = Some(terms("deployment-administrator-account", Some(5_000), None, 5_000));
+	provider.account = Some(terms(
+		"deployment-administrator-account",
+		Some(5_000),
+		None,
+		5_000,
+	));
 	let run = Uuid::new_v4();
 	let first = research
 		.search(
