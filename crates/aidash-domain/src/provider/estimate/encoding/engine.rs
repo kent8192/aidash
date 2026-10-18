@@ -10,16 +10,16 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 
 /// The gpt-oss `tokenizer.json`, revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a.
 const O200K_BASE: &[u8] = include_bytes!(concat!(
-	env!("CARGO_MANIFEST_DIR"),
-	"/assets/token-encodings/o200k_base.json.zst"
+	env!("AIDASH_WORKSPACE_DIR"),
+	"/crates/aidash-domain/assets/token-encodings/o200k_base.json.zst"
 ));
 /// SHA-256 of the decompressed gpt-oss `tokenizer.json`.
 pub(super) const O200K_BASE_SHA256: &str =
 	"0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3";
 /// The Gemma 4 E4B `tokenizer.json`, revision ee0ef6023621cff504d758262d4e04895a5af4a2.
 const GEMMA4: &[u8] = include_bytes!(concat!(
-	env!("CARGO_MANIFEST_DIR"),
-	"/assets/token-encodings/gemma4.json.zst"
+	env!("AIDASH_WORKSPACE_DIR"),
+	"/crates/aidash-domain/assets/token-encodings/gemma4.json.zst"
 ));
 /// SHA-256 of the decompressed Gemma 4 `tokenizer.json`.
 pub(super) const GEMMA4_SHA256: &str =
