@@ -307,6 +307,10 @@ test("a Tenant shortens its periods within the Deployment's ceiling after review
   await expect(retention).toContainText(
     "Saving makes both periods this Tenant's own.",
   );
+  // Every unit stays selectable, seconds included, whatever the period.
+  await expect(
+    retention.getByRole("combobox", { name: "Unit" }).first().locator("option"),
+  ).toHaveText(["days", "hours", "minutes", "seconds"]);
 
   // Longer than the ceiling is refused before anything is sent.
   const after = retention.getByRole("spinbutton", {
@@ -404,6 +408,22 @@ test("a subject without the permissions reads the periods and nothing else", asy
   await expect(
     page.getByRole("region", { name: "Evidence revocations" }),
   ).toHaveCount(0);
+});
+
+test("a subject who loses the permissions no longer sees the history and records read before", async ({
+  page,
+}) => {
+  const view: View = { tenant_rules: null, can: true };
+  await trust(page, SUBJECT, view);
+  await page.goto("/trust?view=evidence");
+  const history = page.getByRole("region", { name: "Retention history" });
+  const records = page.getByRole("region", { name: "Evidence revocations" });
+  await expect(history).toHaveCount(1);
+  await expect(records).toHaveCount(1);
+  view.can = false;
+  // The next refresh of the Tenant's flags hides what was read before.
+  await expect(history).toHaveCount(0, { timeout: 10_000 });
+  await expect(records).toHaveCount(0);
 });
 
 test("a Deployment Administrator revokes by Run ID only within the chosen Tenant", async ({

@@ -396,13 +396,6 @@ export function periodWords(seconds: number, ja: boolean): string {
   return ja ? `${value} ${japanese}` : `${value} ${value === 1 ? one : many}`;
 }
 
-/** The unit names offered for a period; seconds only when it needs them. */
-export function periodUnits(seconds: number): PeriodUnit[] {
-  return PERIOD_UNITS.map(([unit]) => unit).filter(
-    (unit) => unit !== "seconds" || seconds % 60 !== 0,
-  );
-}
-
 /** Which periods `next` shortens compared with `current`. */
 export function shortenedPeriods(
   current: Periods,

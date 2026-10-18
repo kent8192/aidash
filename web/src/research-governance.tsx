@@ -20,7 +20,6 @@ import {
   exceedsCeiling,
   hasResearch,
   periodSeconds,
-  periodUnits,
   periodWords,
   recordedActor,
   shortenedPeriods,
@@ -388,6 +387,9 @@ function TenantResearchEvidence({
     queryKey: ["tenant-retention", tenant],
     queryFn: ({ signal }) =>
       apiFetch<TenantRetentionView>(`${path}/retention`, { signal }),
+    // Like the Run's own flags: a permission removed while the view stays
+    // open hides the history and records it gated.
+    refetchInterval: 5000,
     retry: false,
   });
   if (retention.isPending)
@@ -630,14 +632,11 @@ function RetentionEditor({
                   })
                 }
               >
-                {/* Seconds only for a period already kept in seconds. */}
-                {periodUnits(draft[period].unit === "seconds" ? 1 : 0).map(
-                  (unit) => (
-                    <option key={unit} value={unit}>
-                      {UNITS[unit][ja ? 1 : 0]}
-                    </option>
-                  ),
-                )}
+                {(Object.keys(UNITS) as PeriodUnit[]).map((unit) => (
+                  <option key={unit} value={unit}>
+                    {UNITS[unit][ja ? 1 : 0]}
+                  </option>
+                ))}
               </NativeSelect>
               <Hint>
                 {ja

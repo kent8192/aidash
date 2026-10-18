@@ -6,7 +6,6 @@ import {
   exceedsCeiling,
   hasResearch,
   periodSeconds,
-  periodUnits,
   periodWords,
   recordedActor,
   requestPrice,
@@ -381,8 +380,6 @@ test("a retention period reads in the longest unit that divides it", () => {
   assert.equal(periodSeconds(25, "hours"), 90_000);
   assert.equal(periodWords(86_400, false), "1 day");
   assert.equal(periodWords(86_400 * 7, true), "7 日");
-  assert.deepEqual(periodUnits(3_600), ["days", "hours", "minutes"]);
-  assert.deepEqual(periodUnits(90), ["days", "hours", "minutes", "seconds"]);
 });
 
 const periods = (after, max) => ({
