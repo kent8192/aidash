@@ -138,8 +138,8 @@ pub(crate) async fn context_in(
 	query: &str,
 	budget: usize,
 	agent: &crate::registry::AgentConfig,
-) -> Result<Option<SearchResult>> {
-	aidash_application::semantic::retrieval::context(
+) -> Result<aidash_application::semantic::retrieval::WorkspaceContext> {
+	aidash_application::semantic::retrieval::workspace_context(
 		&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
 		&crate::bootstrap::semantic_transport(store),
 		run,

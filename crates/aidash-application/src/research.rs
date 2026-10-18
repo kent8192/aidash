@@ -10,7 +10,7 @@ use crate::{
 };
 use aidash_domain::research::{
 	Failure, MAX_RESULT_BYTES, Operation,
-	account::month_start,
+	account::{AccountTerms, CostAttribution, month_start},
 	document::{
 		self, Completeness, Cursor, DEFAULT_DELIVERY_BYTES, MAX_DELIVERY_BYTES, MAX_FIND_MATCHES,
 		MAX_FIND_QUERY_CHARS, Passage, Position,
@@ -96,10 +96,17 @@ pub struct Call<'a> {
 	pub disclosure_approval: bool,
 }
 
+/// One request's charge to a Research account, checked again under the
+/// reservation's lock.
+struct Charge {
+	attribution: CostAttribution,
+	budget: Budget,
+}
+
 /// What an approver is shown besides the exact outbound content.
 #[derive(Debug, Default)]
 struct Card {
-	attribution: Option<aidash_domain::research::account::CostAttribution>,
+	attribution: Option<CostAttribution>,
 	query: Option<Value>,
 }
 
@@ -154,25 +161,16 @@ impl Research<'_> {
 		if usage.sources >= self.limits.sources {
 			return Ok(failure(operation, Failure::SourceLimit));
 		}
-		let account = match provider.account() {
-			Ok(account) => account,
-			Err(error) => return Ok(failure(operation, error)),
+		let charge = match self.charge(operation, provider.account()).await? {
+			Ok(charge) => charge,
+			Err(blocked) => return Ok(blocked),
 		};
-		if let Some(account) = &account {
-			let spent = self
-				.store
-				.account_spend(&account.account_id, month_start(Utc::now()))
-				.await?;
-			if !account.admits(spent) {
-				return Ok(failure(operation, Failure::BudgetExhausted));
-			}
-		}
 		let outbound = match provider.disclosure(&query) {
 			Ok(outbound) => outbound,
 			Err(error) => return Ok(failure(operation, error)),
 		};
 		let card = Card {
-			attribution: account.as_ref().map(|account| account.attribution()),
+			attribution: charge.as_ref().map(|charge| charge.attribution.clone()),
 			query: Some(query.effective()),
 		};
 		let approval = match self.disclose(call, operation, &outbound, card).await? {
@@ -187,14 +185,9 @@ impl Research<'_> {
 					operation,
 					provider: call.provider.into(),
 					destination: outbound.destination,
-					attribution: account.as_ref().map(|account| account.attribution()),
+					attribution: charge.as_ref().map(|charge| charge.attribution.clone()),
 					limits: self.limits,
-					budget: account.as_ref().map(|account| Budget {
-						since: month_start(Utc::now()),
-						limit_micro_usd: account
-							.monthly_limit_micro_usd
-							.saturating_sub(account.monthly_base_fee_micro_usd),
-					}),
+					budget: charge.map(|charge| charge.budget),
 					source_url: None,
 				},
 			)
@@ -350,14 +343,19 @@ impl Research<'_> {
 		if source.is_none() && usage.sources >= self.limits.sources {
 			return Ok(failure(operation, Failure::SourceLimit));
 		}
+		let charge = match self.charge(operation, provider.account()).await? {
+			Ok(charge) => charge,
+			Err(blocked) => return Ok(blocked),
+		};
 		let outbound = Outbound {
 			destination: host,
 			content: url.to_string(),
 		};
-		let approval = match self
-			.disclose(call, operation, &outbound, Card::default())
-			.await?
-		{
+		let card = Card {
+			attribution: charge.as_ref().map(|charge| charge.attribution.clone()),
+			query: None,
+		};
+		let approval = match self.disclose(call, operation, &outbound, card).await? {
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
@@ -371,9 +369,9 @@ impl Research<'_> {
 					operation,
 					provider: call.provider.into(),
 					destination: outbound.destination,
-					attribution: None,
+					attribution: charge.as_ref().map(|charge| charge.attribution.clone()),
 					limits: self.limits,
-					budget: None,
+					budget: charge.map(|charge| charge.budget),
 					source_url: source.is_none().then(|| url.to_string()),
 				},
 			)
@@ -606,6 +604,36 @@ impl Research<'_> {
 			}
 			Some(AttemptState::Settled { result, .. }) => Some(result),
 		})
+	}
+
+	/// The charge of one `operation` request to the provider's Research
+	/// account, if it has one, once the month's charges leave room for it.
+	/// `Err` is the result to return instead of dispatching.
+	async fn charge(
+		&self,
+		operation: Operation,
+		account: std::result::Result<Option<AccountTerms>, Failure>,
+	) -> Result<std::result::Result<Option<Charge>, Value>> {
+		let account = match account {
+			Ok(Some(account)) => account,
+			Ok(None) => return Ok(Ok(None)),
+			Err(error) => return Ok(Err(failure(operation, error))),
+		};
+		let Some(attribution) = account.attribution(operation) else {
+			return Ok(Err(failure(operation, Failure::AccountUnavailable)));
+		};
+		let since = month_start(Utc::now());
+		let spent = self.store.account_spend(&account.account_id, since).await?;
+		if !account.admits(operation, spent) {
+			return Ok(Err(failure(operation, Failure::BudgetExhausted)));
+		}
+		Ok(Ok(Some(Charge {
+			attribution,
+			budget: Budget {
+				since,
+				limit_micro_usd: account.request_allowance_micro_usd(),
+			},
+		})))
 	}
 
 	/// `Err` is the result to return instead of dispatching; `Ok` carries a

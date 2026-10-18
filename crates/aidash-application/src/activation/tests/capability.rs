@@ -4,12 +4,15 @@ use super::*;
 use aidash_domain::run_state::encode;
 
 const OLD_WORKER: &[PersistedCapability] = &[];
-const NEW_WORKER: &[PersistedCapability] = &[PersistedCapability::ToolBatchState];
+const NEW_WORKER: &[PersistedCapability] = PersistedCapability::ALL;
 
 /// The envelope a new worker writes once its state needs `tool_batch_state`.
 fn reserved(now: DateTime<Utc>) -> RawRun {
+	requiring(now, PersistedCapability::ToolBatchState)
+}
+fn requiring(now: DateTime<Utc>, capability: PersistedCapability) -> RawRun {
 	let mut row = raw(now);
-	row.pending["requires"] = serde_json::json!(["tool_batch_state"]);
+	row.pending["requires"] = serde_json::json!([capability.name()]);
 	row
 }
 fn deploy(repository: &Repository, capabilities: &'static [PersistedCapability]) {
@@ -42,13 +45,16 @@ fn wrote_nothing(repository: &Repository) -> bool {
 }
 
 #[rstest]
+#[case::tool_batch_state(PersistedCapability::ToolBatchState)]
+#[case::degraded_context(PersistedCapability::DegradedContext)]
 #[tokio::test]
-async fn an_old_worker_leaves_a_run_needing_tool_batch_state_untouched_until_a_capable_one_claims_it(
+async fn an_old_worker_leaves_a_gated_run_untouched_until_a_capable_one_claims_it(
 	repository: Repository,
 	now: DateTime<Utc>,
+	#[case] capability: PersistedCapability,
 ) {
 	// Arrange: a new worker persisted state that only new workers can load.
-	*repository.0.run.lock().unwrap() = Some(reserved(now));
+	*repository.0.run.lock().unwrap() = Some(requiring(now, capability));
 	deploy(&repository, OLD_WORKER);
 
 	// Act: the old worker keeps polling, by recovery scan and by notification.

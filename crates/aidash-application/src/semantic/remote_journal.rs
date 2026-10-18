@@ -96,6 +96,7 @@ pub async fn claim(repository: &dyn JournalRepository, id: Uuid) -> Result<Claim
 		operation_id: id,
 		id: Uuid::new_v4(),
 		fence: record.fence + 1,
+		cycle: record.cycle,
 	};
 	scope.activate(id, &attempt, &record).await?;
 	scope.commit().await?;

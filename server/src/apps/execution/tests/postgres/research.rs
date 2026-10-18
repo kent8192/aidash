@@ -347,7 +347,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		socket.write_all(response.as_bytes()).await.unwrap();
 	});
 	let now = chrono::Utc::now();
-	let profile = aidash_domain::research::account::AccountProfile {
+	let profile = aidash_domain::research::account::AccountTerms {
 		account_id: "deployment_administrator".into(),
 		agreement_reference: "contract".into(),
 		verified_by: "deployment_administrator".into(),
@@ -358,10 +358,10 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
-		credential_env: "AIDASH_SECRET_BRAVE_SEARCH".into(),
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),
-		request_price_micro_usd: 5_000,
+		search_price_micro_usd: Some(5_000),
+		fetch_price_micro_usd: None,
 		monthly_base_fee_micro_usd: 0,
 		monthly_limit_micro_usd: 1_000_000,
 	};
