@@ -21,5 +21,12 @@ name = "manage"
 path = "src/bin/manage.rs"
 
 [dependencies]
+aidash-application.workspace = true
 aidash-domain.workspace = true
+aidash-gcp.workspace = true
 aidash-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true

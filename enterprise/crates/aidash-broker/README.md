@@ -166,9 +166,9 @@ bookkeeping are bounded to 10,000 entries. Cross-instance rates are approximate.
 Build from the repository root:
 
 ```sh
-docker build -f crates/aidash-broker/Dockerfile -t aidash-broker .
-cargo test --locked -p aidash-capability -p aidash-broker
-cargo test --locked -p aidash-integrations capability::tests
+docker build -f enterprise/crates/aidash-broker/Dockerfile -t aidash-broker .
+cargo test --locked -p aidash-capability
+cargo test --locked --manifest-path enterprise/Cargo.toml -p aidash-broker -p aidash-gcp
 python3 -m unittest discover -s infra/gcp/tests -p test_broker_terraform.py -v
 bash infra/gcp/check.sh
 ```

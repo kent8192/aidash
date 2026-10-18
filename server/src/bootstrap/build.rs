@@ -7,7 +7,7 @@
 use aidash_domain::offering::Offering;
 use reinhardt::conf::settings::builder::BuildError;
 use reinhardt::conf::settings::scoped::ScopedSettings;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 static INSTALLED: OnceLock<&'static Build> = OnceLock::new();
 
@@ -34,6 +34,45 @@ pub struct Build {
 	/// The migration roots of those apps, relative to `core.base_dir` like
 	/// Community's own `migrations`, so that an image mirrors the source tree.
 	pub migrations: &'static [&'static str],
+	/// The adapters this build installs into the server.
+	pub extension: &'static dyn Extension,
+}
+
+/// What a build adds to the Community server. Community defines each hook and
+/// adds nothing; an Enterprise build implements them with its own crates, so
+/// Community never names them (ADR 0032).
+pub trait Extension: Sync + std::fmt::Debug {
+	/// The Provider Credential Store of an Enterprise `kind`, from its settings
+	/// fields, and the Capability Token issuer of its Credential Broker.
+	fn provider_credential_store(
+		&self,
+		store: &serde_json::Map<String, serde_json::Value>,
+		broker: Option<&serde_json::Value>,
+	) -> crate::Result<ProvidedStore>;
+}
+
+pub struct ProvidedStore {
+	pub store: Arc<dyn aidash_application::provider_credentials::Store>,
+	pub issuer: Option<Arc<dyn aidash_application::provider_access::TokenIssuer>>,
+}
+
+#[derive(Debug)]
+struct Community;
+
+impl Extension for Community {
+	fn provider_credential_store(
+		&self,
+		store: &serde_json::Map<String, serde_json::Value>,
+		_: Option<&serde_json::Value>,
+	) -> crate::Result<ProvidedStore> {
+		let kind = store
+			.get("kind")
+			.and_then(serde_json::Value::as_str)
+			.unwrap_or_default();
+		Err(crate::Error::Invalid(format!(
+			"the Community build has no {kind} Provider Credential Store; it needs the Enterprise build"
+		)))
+	}
 }
 
 impl Build {
@@ -44,6 +83,7 @@ impl Build {
 		package: env!("CARGO_PKG_NAME"),
 		apps: &[],
 		migrations: &[],
+		extension: &Community,
 	};
 
 	/// Community's installed apps followed by this build's.

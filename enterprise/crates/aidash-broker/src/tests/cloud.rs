@@ -11,7 +11,7 @@ use aidash_application::{
 use aidash_domain::provider_credentials::{
 	Binding, Provider, ProviderCredential, State as CredentialState,
 };
-use aidash_integrations::capability::issuer::{CapabilityIssuer, WorkerConfiguration};
+use aidash_gcp::capability::issuer::{CapabilityIssuer, WorkerConfiguration};
 use base64::Engine;
 use uuid::Uuid;
 

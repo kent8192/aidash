@@ -42,7 +42,6 @@ def violations(metadata, root):
         "aidash-integrations",
         "aidash-server",
         "aidash-capability",
-        "aidash-broker",
     }
     if set(members) != expected:
         errors.append(f"workspace packages must be {sorted(expected)}, found {sorted(members)}")
@@ -126,7 +125,7 @@ def enterprise_violations(metadata, root):
     packages = {package["id"]: package for package in metadata["packages"]}
     members = {packages[member]["name"]: member for member in metadata["workspace_members"]}
     errors = []
-    expected = {"aidash-enterprise-server"}
+    expected = {"aidash-enterprise-server", "aidash-gcp", "aidash-broker"}
     if set(members) != expected:
         errors.append(f"Enterprise workspace packages must be {sorted(expected)}, found {sorted(members)}")
     for name, member in members.items():
@@ -136,8 +135,8 @@ def enterprise_violations(metadata, root):
     workspace = manifest["workspace"]
     if workspace.get("resolver") != "3":
         errors.append("the Enterprise workspace must use resolver 3")
-    if workspace.get("members") != ["server"]:
-        errors.append("the Enterprise workspace must include server")
+    if workspace.get("members") != ["crates/*", "server"]:
+        errors.append("the Enterprise workspace must include crates/* and server")
     if "package" in manifest:
         errors.append("the Enterprise root manifest must be a virtual workspace")
     community = root.parent
@@ -147,7 +146,7 @@ def enterprise_violations(metadata, root):
             continue
         if path != community / "server" and path.parent != community / "crates":
             errors.append(f"Enterprise may depend locally only on Community crates: {package['name']}")
-    errors.extend(module_violations(root, (root / "server",)))
+    errors.extend(module_violations(root, (root / "crates", root / "server")))
     return errors
 
 

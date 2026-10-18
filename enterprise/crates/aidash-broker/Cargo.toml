@@ -10,7 +10,8 @@ workspace = true
 
 [dependencies]
 aidash-domain.workspace = true
-aidash-capability = { path = "../aidash-capability" }
+aidash-capability.workspace = true
+aidash-gcp.workspace = true
 aidash-integrations.workspace = true
 async-stream = "0.3"
 axum = "0.8"

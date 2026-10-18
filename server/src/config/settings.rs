@@ -261,24 +261,22 @@ mod tests {
 		let settings = &resolved.settings().provider_credentials;
 		settings.validate(&Profile::parse("local")).unwrap();
 		// Assert: Store and broker both reach worker composition without any Key Material.
-		let crate::apps::identity::serializers::provider_credentials::StoreConfig::SecretManager {
-			environment_id,
-			..
-		} = settings.store.as_ref().unwrap()
+		let crate::apps::identity::serializers::provider_credentials::StoreConfig::Enterprise(
+			store,
+		) = settings.store.as_ref().unwrap()
 		else {
-			panic!("managed Cloud settings must select Secret Manager");
+			panic!("managed Cloud settings must select an Enterprise Store");
 		};
-		assert_eq!(environment_id, "test");
+		assert_eq!(store["kind"], "secret_manager");
+		assert_eq!(store["environment_id"], "test");
 		assert_eq!(
 			settings.fingerprint_key.as_ref().unwrap().env.as_deref(),
 			Some("AIDASH_PROVIDER_FINGERPRINT_KEY")
 		);
-		assert_eq!(
-			settings.broker.as_ref().unwrap().endpoint,
-			"https://broker.run.app/api/v1"
-		);
-		assert_eq!(settings.broker.as_ref().unwrap().audience, "test");
-		std::fs::write(directory.path().join("local.toml"), format!("[provider_credentials]\nfingerprint_key = {{ env = 'AIDASH_PROVIDER_FINGERPRINT_KEY' }}\n[provider_credentials.store]\nkind = 'secret_manager'\nbyok_project_id = 'aidash-byok-fixture'\nenvironment_id = 'test'\n[provider_credentials.broker]\nendpoint = 'https://fallback.run.app/api/v1'\nissuer = 'aidash'\naudience = 'test'\nkid = '{}'\n", settings.broker.as_ref().unwrap().kid)).unwrap();
+		let broker = settings.broker.as_ref().unwrap();
+		assert_eq!(broker["endpoint"], "https://broker.run.app/api/v1");
+		assert_eq!(broker["audience"], "test");
+		std::fs::write(directory.path().join("local.toml"), format!("[provider_credentials]\nfingerprint_key = {{ env = 'AIDASH_PROVIDER_FINGERPRINT_KEY' }}\n[provider_credentials.store]\nkind = 'secret_manager'\nbyok_project_id = 'aidash-byok-fixture'\nenvironment_id = 'test'\n[provider_credentials.broker]\nendpoint = 'https://fallback.run.app/api/v1'\nissuer = 'aidash'\naudience = 'test'\nkid = '{}'\n", broker["kid"].as_str().unwrap())).unwrap();
 		std::fs::write(
 			&path,
 			r#"{"provider_credentials":{"fingerprint_key":null,"store":null,"broker":null}}"#,
@@ -295,7 +293,7 @@ mod tests {
 	) {
 		let path = directory.path().join("managed.json");
 		let mut invalid = managed_descriptor();
-		invalid["provider_credentials"]["broker"]["audience"] = serde_json::json!("other");
+		invalid["provider_credentials"]["store"] = serde_json::Value::Null;
 		for value in [
 			invalid,
 			serde_json::json!({"provider_credentials": {}, "core": {"debug": true}}),
@@ -367,15 +365,14 @@ mod tests {
 		let credentials = &resolved.settings().provider_credentials;
 		let config = &credentials.store;
 		if enabled {
-			let crate::apps::identity::serializers::provider_credentials::StoreConfig::SecretManager {
-				byok_project_id,
-				environment_id,
-			} = config.as_ref().unwrap()
+			let crate::apps::identity::serializers::provider_credentials::StoreConfig::Enterprise(
+				store,
+			) = config.as_ref().unwrap()
 			else {
-				panic!("managed Cloud settings must select Secret Manager");
+				panic!("managed Cloud settings must select an Enterprise Store");
 			};
-			assert_eq!(byok_project_id, "aidash-byok-fixture");
-			assert_eq!(environment_id, "pr-42");
+			assert_eq!(store["byok_project_id"], "aidash-byok-fixture");
+			assert_eq!(store["environment_id"], "pr-42");
 			let key = credentials.fingerprint_key.as_ref().unwrap();
 			assert_eq!(key.env.as_deref(), Some("AIDASH_PROVIDER_FINGERPRINT_KEY"));
 			assert!(key.file.is_none());

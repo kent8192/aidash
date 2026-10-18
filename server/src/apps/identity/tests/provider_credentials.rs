@@ -1949,9 +1949,16 @@ fn store_settings_validate_shape_without_loading_keys() {
 			.validate(&Profile::parse("local"))
 			.is_err()
 	);
-	let mut cloud_master = valid;
-	cloud_master["store"] = json!({"kind":"secret_manager","byok_project_id":"byok-project","environment_id":"local","master_key":current});
-	assert!(serde_json::from_value::<Settings>(cloud_master).is_err());
+	let mut brokered = valid;
+	brokered["broker"] = json!({"endpoint":"https://broker.example.test/api/v1"});
+	assert!(
+		serde_json::from_value::<Settings>(brokered)
+			.unwrap()
+			.validate(&Profile::parse("local"))
+			.unwrap_err()
+			.to_string()
+			.contains("a Credential Broker serves only an Enterprise Provider Credential Store")
+	);
 }
 
 #[rstest]
@@ -2024,11 +2031,13 @@ async fn bootstrap_loads_trimmed_keys_and_fails_closed_without_valid_key_sources
 	);
 
 	let cloud: Settings = serde_json::from_value(json!({"fingerprint_key":{"file":fingerprint},"store":{"kind":"secret_manager","byok_project_id":"fixture-byok","environment_id":"local"}})).unwrap();
-	aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &cloud)
-		.await
-		.unwrap();
-	assert!(f.runtime.store.provider_credentials.is_some());
-	assert!(f.runtime.store.provider_key_material_reader.is_none());
+	assert_eq!(
+		aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &cloud)
+			.await
+			.unwrap_err()
+			.to_string(),
+		"the Community build has no secret_manager Provider Credential Store; it needs the Enterprise build"
+	);
 }
 
 const MANAGE_CASE_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);

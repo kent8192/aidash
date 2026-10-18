@@ -1,7 +1,7 @@
 //! Cloud-only composition. No private signing key or provider key is configured here.
 use aidash_broker::{Broker, CloudLogging, Config};
 use aidash_capability::PublicKeys;
-use aidash_integrations::capability::{MetadataTokenSource, SecretManagerKeyMaterialSource};
+use aidash_gcp::capability::{MetadataTokenSource, SecretManagerKeyMaterialSource};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 fn env(name: &str) -> Result<String, &'static str> {

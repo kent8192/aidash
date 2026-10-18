@@ -118,7 +118,8 @@ enabled = false
 # master_key = { file = "/run/secrets/aidash-master-key" }
 # Or master_key = { env = "AIDASH_PROVIDER_STORE_MASTER_KEY" }
 # retired_master_keys = [{ env = "AIDASH_PROVIDER_STORE_MASTER_KEY_OLD" }]
-# Cloud alternative (omit master_key and retired_master_keys):
+# Cloud and Dedicated alternative, only in the Enterprise build (omit
+# master_key and retired_master_keys):
 # kind = "secret_manager"
 # byok_project_id = "your-aidash-byok-project"
 # environment_id = "develop"

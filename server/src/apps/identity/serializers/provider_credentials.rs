@@ -91,18 +91,60 @@ impl KeySource {
 		Ok(value.expose_secret().trim().to_owned().into())
 	}
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Where Key Material lives. Community provides the PostgreSQL Store; any
+/// other kind, such as `secret_manager`, is an Enterprise build's, which reads
+/// its fields (ADR 0032).
+#[derive(Debug, Clone)]
 pub enum StoreConfig {
+	Postgres {
+		master_key: KeySource,
+		retired_master_keys: Vec<KeySource>,
+	},
+	Enterprise(serde_json::Map<String, serde_json::Value>),
+}
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Postgres {
 	Postgres {
 		master_key: KeySource,
 		#[serde(default)]
 		retired_master_keys: Vec<KeySource>,
 	},
-	SecretManager {
-		byok_project_id: String,
-		environment_id: String,
-	},
+}
+impl<'de> Deserialize<'de> for StoreConfig {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		use serde::de::Error as _;
+		let fields = serde_json::Map::deserialize(deserializer)?;
+		match fields.get("kind").and_then(serde_json::Value::as_str) {
+			Some("postgres") => {
+				let Postgres::Postgres {
+					master_key,
+					retired_master_keys,
+				} = serde_json::from_value(fields.into()).map_err(D::Error::custom)?;
+				Ok(Self::Postgres {
+					master_key,
+					retired_master_keys,
+				})
+			}
+			Some(_) => Ok(Self::Enterprise(fields)),
+			None => Err(D::Error::custom("a Provider Credential Store needs a kind")),
+		}
+	}
+}
+impl Serialize for StoreConfig {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			Self::Postgres {
+				master_key,
+				retired_master_keys,
+			} => Postgres::Postgres {
+				master_key: master_key.clone(),
+				retired_master_keys: retired_master_keys.clone(),
+			}
+			.serialize(serializer),
+			Self::Enterprise(fields) => fields.serialize(serializer),
+		}
+	}
 }
 impl StoreConfig {
 	pub(crate) async fn load_postgres_keys(
@@ -147,8 +189,9 @@ pub struct Settings {
 	pub fingerprint_key: Option<KeySource>,
 	#[setting(default = "None", leaf)]
 	pub store: Option<StoreConfig>,
+	/// The Credential Broker of an Enterprise Store, read by that build.
 	#[setting(default = "None", leaf)]
-	pub broker: Option<aidash_integrations::capability::issuer::WorkerConfiguration>,
+	pub broker: Option<serde_json::Value>,
 }
 impl Settings {
 	pub(crate) async fn load_fingerprint_key(&self) -> crate::Result<secrecy::SecretString> {
@@ -180,16 +223,10 @@ impl SettingsValidation for Settings {
 		if let Some(key) = &self.fingerprint_key {
 			key.validate_shape().map_err(invalid)?;
 		}
-		if let Some(broker) = &self.broker {
-			broker.validate().map_err(|e| invalid(e.to_string()))?;
-			// Only Cloud Secret Manager Stores are served by a Credential Broker.
-			if !matches!(
-				&self.store,
-				Some(StoreConfig::SecretManager { environment_id, .. })
-					if *environment_id == broker.audience
-			) {
-				return Err(invalid("Credential Broker audience must match the configured Provider Credential Store environment".into()));
-			}
+		if self.broker.is_some() && !matches!(self.store, Some(StoreConfig::Enterprise(_))) {
+			return Err(invalid(
+				"a Credential Broker serves only an Enterprise Provider Credential Store".into(),
+			));
 		}
 		if let Some(store) = &self.store {
 			if self.fingerprint_key.is_none() {
@@ -207,24 +244,7 @@ impl SettingsValidation for Settings {
 						key.validate_shape().map_err(invalid)?;
 					}
 				}
-				StoreConfig::SecretManager {
-					byok_project_id,
-					environment_id,
-				} => {
-					if byok_project_id.is_empty()
-						|| !byok_project_id
-							.bytes()
-							.all(|b| b.is_ascii_alphanumeric() || b == b'-')
-						|| environment_id.is_empty()
-						|| !environment_id
-							.bytes()
-							.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-					{
-						return Err(invalid(
-							"invalid Provider Credential Store project or environment".into(),
-						));
-					}
-				}
+				StoreConfig::Enterprise(_) => {}
 			}
 		}
 		Ok(())

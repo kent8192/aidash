@@ -93,6 +93,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "aidash-broker"
+version = "0.1.0"
+dependencies = [
+ "aidash-application",
+ "aidash-capability",
+ "aidash-domain",
+ "aidash-gcp",
+ "aidash-integrations",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "reqwest 0.13.5",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "aidash-capability"
 version = "0.1.0"
 dependencies = [
@@ -131,8 +158,38 @@ dependencies = [
 name = "aidash-enterprise-server"
 version = "0.1.0"
 dependencies = [
+ "aidash-application",
  "aidash-domain",
+ "aidash-gcp",
  "aidash-server",
+ "rstest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aidash-gcp"
+version = "0.1.0"
+dependencies = [
+ "aidash-application",
+ "aidash-capability",
+ "aidash-domain",
+ "aidash-integrations",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "crc32c",
+ "percent-encoding",
+ "reqwest 0.13.5",
+ "rstest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -156,7 +213,6 @@ name = "aidash-integrations"
 version = "0.1.0"
 dependencies = [
  "aidash-application",
- "aidash-capability",
  "aidash-domain",
  "aidash-runtime",
  "async-nats",
@@ -164,7 +220,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "crc32c",
  "encoding_rs",
  "futures-util",
  "gcp_auth",
@@ -185,7 +240,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -792,10 +846,13 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit 0.8.4",
  "memchr",
@@ -803,10 +860,15 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -825,6 +887,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -9405,6 +9468,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9414,12 +9487,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

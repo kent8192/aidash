@@ -7,7 +7,7 @@ use aidash_application::{
 use aidash_broker::{Audit, AuditSink, CloudLogging};
 use aidash_capability::{Claims, InMemorySigner, Operation, SignError, TokenSigner};
 use aidash_domain::provider_credentials::{Provider, ProviderCredential, State};
-use aidash_integrations::capability::issuer::{CapabilityIssuer, WorkerConfiguration};
+use aidash_gcp::capability::issuer::{CapabilityIssuer, WorkerConfiguration};
 use axum::{
 	Router,
 	extract::{Json, State as HttpState},
