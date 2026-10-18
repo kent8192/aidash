@@ -17,6 +17,8 @@ use tokio::{
 	task::JoinHandle,
 };
 
+/// Which build a binary belongs to and the Offerings it runs.
+pub mod build;
 /// Assemble management adapters before any runtime settings are resolved.
 pub mod management;
 

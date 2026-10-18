@@ -42,6 +42,24 @@ workers. Apps are ordinary Rust modules. The harness depends on application/doma
 contracts; application/domain do not depend on the harness. Domain/application/harness
 production dependency closures exclude runtime, integrations, the server, Reinhardt,
 Axum, SQLx, SeaORM, and reqwest; CI checks these boundaries against locked Cargo metadata.
+
+### Community and Enterprise builds
+
+The packages above form the **Community build**, which runs only the
+`self-hosted` Offering. `enterprise/` is a separate Cargo workspace with its own
+`Cargo.lock`. It composes `aidash-server` into the **Enterprise build**, which
+runs only the `cloud` and `dedicated` Offerings. Each Deployment selects its
+Offering in `[deployment] offering` of its settings, and `self-hosted` is the
+default. A build refuses to start with an Offering it does not run.
+
+```sh
+cargo test --locked --manifest-path enterprise/Cargo.toml
+cargo run --locked --manifest-path enterprise/Cargo.toml --bin aidash -- serve
+```
+
+The Enterprise server needs `offering = "cloud"` in `server/settings/local.toml`.
+See [Community and Enterprise builds](docs/operations/community-and-enterprise-builds.md)
+for the layout, the alignment and export checks, and the images.
 The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
@@ -227,7 +245,7 @@ Direct OpenAI and Anthropic inference configurations are no longer supported. Re
 
 **Upgrading past #158 (breaking):** `credential_env` and `AIDASH_SECRET_OPENROUTER` / `AIDASH_SECRET_EMBEDDING` no longer configure model or embedding providers. Registry model and embedding entries, their installation overrides, and semantic index specs that contain `credential_env` no longer load, and the `registry/0024_model_provider_keys` and `knowledge/0031_embedding_provider_keys` migrations refuse to run while such records exist. Delete those entries or remove the key from those overrides (or reset the development database), connect OpenRouter for each Tenant through Provider connections, then register new versions with `provider_credential: "openrouter"` (or without a key for an unauthenticated endpoint). Jev moved to OpenRouter as well: `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` are ignored, `compactor` entries drop `provider`, `endpoint` and `credential_env` for `provider_credential: "openrouter"` and a `typesafe/jev-X.Y` model, and `registry/0025_compactor_provider_keys` refuses to run while an old compactor exists. Ordinary Runs are no longer pruned (see History compaction).
 
-**Upgrading past #108 (breaking):** the `compactor` Registry kind is gone, and `registry/0031_decider_kind` refuses to run while a compactor entry exists. Register a `decider` entry instead (an exact `typesafe/jev-X.Y` release, its mode, per-Run call limit and state budget), approve its exact version in each Node's tenant catalog, and bind it to the Agents that should be pruned. Generation policies and RequiredHome remote execution name Decider versions where they named compactors, and the `compaction.invoke` action is now `decision.invoke`. Decision Evidence moved to version 3; `execution/0034_decision_evidence_v3` refuses to run while version 2 Decision Attempts exist. The `prune_unavailable` pause reason is replaced by `decider_unapproved`, `decider_calls_exhausted` and `decider_unavailable`.
+**Upgrading past #108 (breaking):** the `compactor` Registry kind is gone, and `registry/0032_decider_kind` refuses to run while a compactor entry exists. Register a `decider` entry instead (an exact `typesafe/jev-X.Y` release, its mode, per-Run call limit and state budget), approve its exact version in each Node's tenant catalog, and bind it to the Agents that should be pruned. Generation policies and RequiredHome remote execution name Decider versions where they named compactors, and the `compaction.invoke` action is now `decision.invoke`. Decision Evidence moved to version 3; `execution/0034_decision_evidence_v3` refuses to run while version 2 Decision Attempts exist. The `prune_unavailable` pause reason is replaced by `decider_unapproved`, `decider_calls_exhausted` and `decider_unavailable`.
 
 **Upgrading past #256 (breaking):** a model or embedding configuration without `provider_credential` now connects only to public addresses. An existing one that points at a private, loopback or in-cluster server, such as a local Ollama, stops with an authority failure until a Deployment Administrator lists its origin in `[keyless_endpoints] permitted_private_origins`, `AIDASH_KEYLESS_PRIVATE_ORIGINS` or the Helm value `keylessEndpoints.permittedPrivateOrigins`.
 
