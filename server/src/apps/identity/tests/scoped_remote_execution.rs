@@ -3056,6 +3056,20 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	p.close().await;
 }
 
+/// A receiver registers a foreign generation's definition unapproved (P1 Q23),
+/// so its Tenant approves the version before a grant may name it.
+async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication, agent: &Value) {
+	let (status, body) = request(
+		ba,
+		&common::tenant_token(&b.store, "acme").await,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":agent,"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
 async fn prepare_generated_pair(
 	a: &Federation,
 	b: &Federation,
@@ -3265,6 +3279,9 @@ async fn prepare_generated_pair(
 	let (status, replayed) = request(aa, token, "POST", &route, input.clone()).await;
 	assert_eq!(status, 200, "{replayed}");
 	assert_eq!(replayed, prepared);
+	if !approval {
+		approve_foreign_generated(b, ba, &prepared["agent"]).await;
+	}
 	let count: i64 = {
 		let query_bind_1 = task;
 		sqlx::query_scalar(
@@ -3349,15 +3366,10 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		pending["request_id"].as_str().unwrap()
 	);
 	let decision = json!({"action":"approve","reason":"Approve the exact foreign preparation"});
+	// The receiver Tenant's subject approves; a Deployment Administrator cannot.
+	let approver = common::tenant_token(&p.b.store, "acme").await;
 	for _ in 0..2 {
-		let (status, body) = request(
-			&p.ba,
-			&p.b.config.api_token,
-			"POST",
-			&control,
-			decision.clone(),
-		)
-		.await;
+		let (status, body) = request(&p.ba, &approver, "POST", &control, decision.clone()).await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["status"], "QUEUED");
 	}
@@ -3395,6 +3407,14 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		count, 0,
 		"approval publishes the definition but cannot activate a Run"
 	);
+	assert_ne!(
+		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
+			.await
+			.0,
+		200,
+		"the receiver registers a foreign generation unapproved"
+	);
+	approve_foreign_generated(&p.b, &p.ba, &pending["agent"]).await;
 	let (status, body) = request(&p.aa, &p.token, "POST", &grant_route, grant).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, activated) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
@@ -3531,9 +3551,10 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 		(0, 0, 0),
 		"only unused allocations are released, exactly once"
 	);
+	// Only a Tenant subject may approve a generation; its late approval conflicts.
 	let (status, _) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&common::tenant_token(&p.b.store, "acme").await,
 		"POST",
 		&route,
 		json!({"action":"approve","reason":"Late approval must not resurrect terminated work"}),
@@ -4166,6 +4187,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	let artifact = snapshot.artifacts.first().unwrap();
 	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
+	// A Deployment Administrator has no untenanted work of its own (ADR 0043).
 	let (status, independent) = request(
 		&p.aa,
 		&p.a.config.api_token,
@@ -4174,19 +4196,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		json!({"title":"Independent Deployment Administrator work","goal":"Unrelated legacy access"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{independent}");
-	assert_eq!(
-		request(
-			&p.aa,
-			&p.a.config.api_token,
-			"GET",
-			&format!("/api/workspaces/{}", independent["id"].as_str().unwrap()),
-			Value::Null
-		)
-		.await
-		.0,
-		200
-	);
+	assert_eq!(status, 403, "{independent}");
 	p.close().await;
 }
 
@@ -4355,7 +4365,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	let (status, revoked) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false}),
@@ -4370,7 +4380,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	let (status, restored) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":2,"enabled":true}),
@@ -4422,7 +4432,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	let (status, revoked) = request(
 		&p.ba,
-		&p.b.config.api_token,
+		&p.receiver_token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":run.agent_id,"version":run.agent_version},"expected_revision":catalog.1,"enabled":false}),
@@ -5228,7 +5238,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 		.unwrap();
 	}
 	if scenario == "catalog_revoked" {
-		assert_eq!(request(&p.ba,&p.b.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
+		assert_eq!(request(&p.ba,&p.receiver_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
 	}
 	if scenario == "unbound" {
 		// Without a usable OpenRouter binding the receiver stops before any
@@ -5933,7 +5943,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 			.unwrap();
 		}
 		"home_catalog" => {
-			assert_eq!(request(&p.aa, &p.a.config.api_token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
+			assert_eq!(request(&p.aa, &p.token, "POST", "/api/authorization/acme/catalog", json!({"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0, 200);
 		}
 		"receiver_expiry" => {
 			sqlx::query(
