@@ -122,9 +122,6 @@ export function SemanticPage({
             key={workspace}
             workspace={workspace}
             data={data}
-            deploymentAdministrator={
-              data.access.kind === "deployment_administrator"
-            }
           />
         </>
       ) : (
@@ -133,14 +130,15 @@ export function SemanticPage({
     </div>
   );
 }
+/** A Workspace's semantic index. Configuring it needs
+ *  `semantic.index.manage`, which members hold by default (#360); the server
+ *  refuses anyone else, so the controls stay visible and show its answer. */
 function SemanticWorkspace({
   data,
   workspace,
-  deploymentAdministrator,
 }: {
   data: State;
   workspace: string;
-  deploymentAdministrator: boolean;
 }) {
   const { t } = useI18n();
   const labels = useRecordLabels();
@@ -233,7 +231,7 @@ function SemanticWorkspace({
   const cleanup = useQuery({
     queryKey: ["semantic", workspace, "cleanup"],
     queryFn: () => semanticCleanup(workspace),
-    enabled: deploymentAdministrator && !!index.data && !index.isError,
+    enabled: !!index.data && !index.isError,
     refetchInterval: 3000,
   });
   const current = !index.isError ? index.data : null;
@@ -285,11 +283,9 @@ function SemanticWorkspace({
       <Panel
         title={t("semanticIndex")}
         action={
-          deploymentAdministrator && (
-            <Button variant="outline" size="sm" onClick={openConfiguring}>
-              {t("semanticConfigure")}
-            </Button>
-          )
+          <Button variant="outline" size="sm" onClick={openConfiguring}>
+            {t("semanticConfigure")}
+          </Button>
         }
       >
         {current && spec ? (
@@ -466,7 +462,7 @@ function SemanticWorkspace({
             )}
             {!entries.isError && entries.data?.length === 0 && <Empty />}
           </Panel>
-          {deploymentAdministrator && cleanup.data && !cleanup.isError && (
+          {cleanup.data && !cleanup.isError && (
             <Panel title={t("semanticCleanup")}>
               <Hint>{t("semanticCleanupHelp")}</Hint>
               <div className="semantic-summary flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">

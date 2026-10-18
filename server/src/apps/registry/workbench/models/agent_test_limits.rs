@@ -24,4 +24,7 @@ pub struct AgentTestLimit {
 	pub payload_days: i32,
 	#[field(default = 90)]
 	pub incident_evidence_days: i32,
+	/// Advanced by each write; 0 until the Tenant first sets its limits.
+	#[field(default = 0)]
+	pub revision: i64,
 }

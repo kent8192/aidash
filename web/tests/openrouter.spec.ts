@@ -19,37 +19,41 @@ test.beforeEach(async ({ page }) => {
       await route.abort();
     } else if (path === "/api/providers/openrouter/models") {
       await route.fulfill({
-        json: [
-          {
-            id: "vendor/fixture-model",
-            name: "Fixture Chat",
-            context_length: 65536,
-            top_provider: { max_completion_tokens: 65536 },
-            pricing: { prompt: "0.000001", completion: "0.000003" },
-            architecture: {
-              input_modalities: ["text"],
-              output_modalities: ["text"],
+        json: {
+          stale: false,
+          fetched_at: "2026-10-18T00:00:00Z",
+          models: [
+            {
+              id: "vendor/fixture-model",
+              name: "Fixture Chat",
+              context_length: 65536,
+              top_provider: { max_completion_tokens: 65536 },
+              pricing: { prompt: "0.000001", completion: "0.000003" },
+              architecture: {
+                input_modalities: ["text"],
+                output_modalities: ["text"],
+              },
+              supported_parameters: ["tools", "reasoning"],
+              reasoning: {
+                supported_efforts: ["high", "low", "none"],
+                mandatory: true,
+                default_effort: "low",
+              },
             },
-            supported_parameters: ["tools", "reasoning"],
-            reasoning: {
-              supported_efforts: ["high", "low", "none"],
-              mandatory: true,
-              default_effort: "low",
+            {
+              id: "other/model",
+              name: "Other Model",
+              context_length: 8192,
+              top_provider: { max_completion_tokens: 4096 },
+              pricing: { prompt: "0", completion: "0" },
+              architecture: {
+                input_modalities: ["text"],
+                output_modalities: ["text"],
+              },
+              supported_parameters: ["tools"],
             },
-          },
-          {
-            id: "other/model",
-            name: "Other Model",
-            context_length: 8192,
-            top_provider: { max_completion_tokens: 4096 },
-            pricing: { prompt: "0", completion: "0" },
-            architecture: {
-              input_modalities: ["text"],
-              output_modalities: ["text"],
-            },
-            supported_parameters: ["tools"],
-          },
-        ],
+          ],
+        },
       });
     } else if (path === "/api/session") {
       await route.fulfill({

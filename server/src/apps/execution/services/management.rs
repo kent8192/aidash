@@ -262,8 +262,14 @@ impl HarnessManagement {
 		.await?;
 		Ok(Response::ok().with_json(&state)?)
 	}
-	pub(crate) async fn openrouter_models(&self) -> Result<Vec<crate::openrouter::CatalogModel>> {
-		Ok(self.catalog.models().await?)
+	/// The OpenRouter catalog for model definitions, which any member may
+	/// read, from one process-wide copy (#362).
+	pub(crate) async fn openrouter_models(
+		&self,
+	) -> Result<aidash_domain::catalog::CatalogSnapshot> {
+		static CATALOG: aidash_application::catalog::CatalogCache =
+			aidash_application::catalog::CatalogCache::new();
+		Ok(CATALOG.get(self.catalog.as_ref(), chrono::Utc::now).await?)
 	}
 	pub(crate) async fn task_claim(
 		&self,

@@ -1,6 +1,7 @@
 //! How Tenants come to exist and who administers them: Tenant names, Tenant
 //! labels, the deployment-wide Tenancy Rules, the initial policy of a Tenant
-//! created through Aidash, and the conservative last-administrator check.
+//! created through Aidash, the conservative last-administrator check, and
+//! Tenant Deletion.
 use crate::identity::tenant_administration::{self as administration, COLLECTION};
 use crate::policy::{
 	Effect, Evaluation, Group, Policy, PolicyBundle, Resource, ResourceSelector, Subject,
@@ -11,6 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use std::collections::BTreeSet;
 
+pub mod deletion;
 mod words;
 
 /// The subject a Tenant Creator is mapped to.
@@ -21,6 +23,8 @@ pub const ADMINISTRATORS: &str = "administrators";
 pub const MEMBERS: &str = "members";
 /// Changing the Tenant label.
 pub const TENANT_UPDATE: &str = "tenant.update";
+/// Deleting the Tenant, and restoring it within its grace period (ADR 0060).
+pub const TENANT_DELETE: &str = "tenant.delete";
 
 /// What every ordinary member may do: use the Tenant and author definitions,
 /// never administer people, change Tenant settings, approve use, hold Provider
@@ -47,6 +51,7 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"compaction.invoke",
 	"conversation.create",
 	"conversation.read",
+	"credential.create",
 	"decision.evidence.read",
 	"decision.invoke",
 	"decision.state.read",
@@ -89,6 +94,7 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"run.control",
 	"run.message",
 	"run.read",
+	"semantic.index.manage",
 	"semantic.read",
 	"semantic.search",
 	"semantic.use",
@@ -179,6 +185,8 @@ pub struct TenancyRules {
 	pub creation_per_hour: u32,
 	pub creation_total: u32,
 	pub invitations: bool,
+	/// How long a deleted Tenant stays restorable before it is purged.
+	pub deletion_grace_days: u32,
 }
 
 impl Default for TenancyRules {
@@ -189,6 +197,7 @@ impl Default for TenancyRules {
 			creation_per_hour: 5,
 			creation_total: 20,
 			invitations: true,
+			deletion_grace_days: deletion::DEFAULT_GRACE_DAYS,
 		}
 	}
 }

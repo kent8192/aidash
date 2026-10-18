@@ -77,6 +77,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("revoked_at", FieldType::TimestampTz),
 				ColumnDefinition::new("issued_by", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("mapping_id", FieldType::Uuid),
 			],
 			constraints: vec![
 				Constraint::Check {
@@ -210,6 +211,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("created_at", FieldType::TimestampTz)
 					.with_not_null(true)
 					.with_default(Some(r#"now()"#.to_owned())),
+				ColumnDefinition::new("actor_mapping_id", FieldType::Uuid),
 			],
 			constraints: vec![Constraint::Check {
 				name: "authorization_revisions_positive".to_owned(),

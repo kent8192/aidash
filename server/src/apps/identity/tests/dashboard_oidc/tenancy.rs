@@ -158,7 +158,7 @@ impl Deployment {
 
 	async fn count(&self, sql: &str) -> i64 {
 		sqlx::query_scalar(sql)
-			.fetch_one(self.federation.store.pool.driver())
+			.fetch_one(self.federation.store.pool.fixture_driver())
 			.await
 			.unwrap()
 	}
@@ -750,7 +750,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 		.await;
 	sqlx::query("UPDATE tenant_invitations SET created_at = created_at - interval '2 minutes', expires_at = expires_at - interval '2 minutes' WHERE id = $1")
 		.bind(Uuid::parse_str(expired["id"].as_str().unwrap()).unwrap())
-		.execute(d.federation.store.pool.driver())
+		.execute(d.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (status, _) = d
@@ -877,8 +877,17 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		.await;
 	assert_eq!(status, 200, "{overview}");
 	let actions = overview["actions"].as_array().unwrap();
-	assert_eq!(actions.len(), 13, "{overview}");
-	for action in ["registry.create", "catalog.approve", "marketplace.install"] {
+	// Every Tenant Administrator and Registry action, `tenant.update`,
+	// `tenant.delete` and `credential.create` for its own subject.
+	assert_eq!(actions.len(), 25, "{overview}");
+	for action in [
+		"tenant.delete",
+		"registry.create",
+		"catalog.approve",
+		"marketplace.install",
+		"policy.update",
+		"credential.create",
+	] {
 		assert!(actions.contains(&json!(action)), "{action}: {overview}");
 	}
 	d.finish().await;
@@ -1289,3 +1298,8 @@ async fn display_retention_follows_the_request_that_ended_last(
 	);
 	d.finish().await;
 }
+
+#[path = "tenancy/deletion.rs"]
+mod deletion;
+#[path = "tenant_authority.rs"]
+mod tenant_authority;

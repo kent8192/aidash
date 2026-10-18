@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::apps::knowledge::models::cleanup;
+use crate::apps::knowledge::services::core::service::Lease;
 use crate::apps::knowledge::*;
 use crate::{authorization::identity::Actor, federation::Federation};
 use reinhardt::injectable;
@@ -16,9 +17,14 @@ pub async fn provide(#[inject] runtime: Federation) -> SemanticEntries {
 }
 
 impl SemanticEntries {
-	pub async fn configure(&self, workspace: Uuid, input: ConfigureIndex) -> Result<Index> {
+	pub async fn configure(
+		&self,
+		actor: Actor,
+		workspace: Uuid,
+		input: ConfigureIndex,
+	) -> Result<Index> {
 		let f = self.runtime.clone();
-		service::configure(&f.store, workspace, input).await
+		service::configure(&f.store, &actor, workspace, input).await
 	}
 	pub async fn index(&self, actor: Actor, workspace: Uuid) -> Result<Index> {
 		let f = self.runtime.clone();
@@ -90,14 +96,17 @@ impl SemanticEntries {
 		let f = self.runtime.clone();
 		service::history_list(&f.store, &actor, workspace).await
 	}
-	pub async fn cleanup(&self, workspace: Uuid) -> Result<CleanupStatus> {
+	/// The Workspace's cleanup state, under `semantic.read` for a Subject.
+	pub async fn cleanup(&self, actor: Actor, workspace: Uuid) -> Result<CleanupStatus> {
 		let store = &self.runtime.store;
-		let scope = store.workspace_tenancy(workspace).await?;
-		store
-			.pool
-			.scoped(&scope, async |tx| {
-				cleanup::status(&mut **tx, workspace).await
-			})
-			.await
+		let mut lease = Lease::begin(store, &actor, workspace).await?;
+		let result = async {
+			if lease.access().is_some() {
+				lease.workspace(workspace, "semantic.read").await?;
+			}
+			cleanup::status(&mut **lease.tx(), workspace).await
+		}
+		.await;
+		lease.finish(result).await
 	}
 }

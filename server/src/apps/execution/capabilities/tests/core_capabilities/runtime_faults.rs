@@ -67,7 +67,7 @@ async fn idle_heap_is_physically_stopped_without_deleting_saved_files(
 				.and_where(Expr::col(Alias::new("kind")).eq("python_session"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(c.f.store.pool.driver())
+		.execute(c.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -80,7 +80,7 @@ async fn idle_heap_is_physically_stopped_without_deleting_saved_files(
 				.and_where(Expr::col(Alias::new("kind")).eq("python_session"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(c.f.store.pool.driver())
+		.fetch_one(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		if state == "reset" {
@@ -243,7 +243,7 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 			.and_where(Expr::col(Alias::new("kind")).eq("output"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(c.f.store.pool.driver())
+	.fetch_all(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(captured, vec![8 << 20]);
@@ -292,7 +292,7 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 				.and_where(Expr::col(Alias::new("kind")).eq("python_session"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(c.f.store.pool.driver())
+		.fetch_one(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		if state == "reset" {

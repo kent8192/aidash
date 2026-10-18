@@ -88,6 +88,7 @@ impl AuthorizationTransaction for PolicyTransaction {
 			expected_revision,
 			document,
 			actor,
+			None,
 		)
 		.await?)
 	}
@@ -144,6 +145,7 @@ pub(crate) mod dashboard;
 
 pub(crate) mod personal_tenant;
 
+pub(crate) mod tenant_deletions;
 pub(crate) mod tenants;
 
 pub(crate) mod invitations;

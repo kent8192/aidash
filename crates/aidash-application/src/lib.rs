@@ -1,5 +1,6 @@
 //! Authorized use cases and the external capabilities they require.
 pub mod authorization;
+pub mod catalog;
 pub mod context;
 pub mod decision;
 pub mod deployment;

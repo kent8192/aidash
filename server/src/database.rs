@@ -1,6 +1,7 @@
 //! Database-boundary compatibility for the pinned Reinhardt revision.
 pub mod classification;
 pub mod native;
+pub mod policy;
 mod records;
 pub mod runtime;
 pub mod scope;

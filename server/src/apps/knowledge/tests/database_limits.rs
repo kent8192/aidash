@@ -1,4 +1,5 @@
 use crate::native_database::{DatabaseFixture, database};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::Error;
 use aidash_server::apps::knowledge::models::{SemanticEntry, SemanticIndexe};
 use aidash_server::authorization::identity::Actor;
@@ -30,6 +31,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 		.unwrap();
 	service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 0,
@@ -70,10 +72,16 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 				.is_err()
 		);
 	}
+	// The index holds a row-level policy, so only a scoped write reaches the limit.
 	assert!(
-		SemanticIndexe::objects()
-			.filter(SemanticIndexe::field_revision().eq(1))
-			.update_fields_with_conn(&mut db, [(SemanticIndexe::field_revision(), i64::MAX)])
+		store
+			.pool
+			.atomic(&TEST_FIXTURE, async |tx| {
+				Ok(SemanticIndexe::objects()
+					.filter(SemanticIndexe::field_revision().eq(1))
+					.update_fields_with_conn(tx, [(SemanticIndexe::field_revision(), i64::MAX)])
+					.await?)
+			})
 			.await
 			.is_err()
 	);
@@ -155,6 +163,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 		.unwrap();
 	service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 0,
@@ -191,6 +200,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	spec.max_input_bytes = 128;
 	let reduced = service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 1,
@@ -215,6 +225,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	spec.max_input_bytes = 240;
 	let equal = service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 1,
@@ -247,6 +258,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		.unwrap();
 	service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 0,
@@ -265,6 +277,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		),
 		service::configure(
 			&store,
+			&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 			workspace.id,
 			ConfigureIndex {
 				expected_revision: 1,

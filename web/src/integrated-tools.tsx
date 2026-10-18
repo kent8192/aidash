@@ -44,9 +44,12 @@ const ResearchEvidenceGovernance = lazy(() =>
     default: m.ResearchEvidenceGovernance,
   })),
 );
-const TenantIdentityAdministration = lazy(() =>
-  import("./dashboard-identity").then((m) => ({
-    default: m.TenantIdentityAdministration,
+const TenantAccess = lazy(() =>
+  import("./tenant-access").then((m) => ({ default: m.TenantAccess })),
+);
+const LeaveTenantButton = lazy(() =>
+  import("./tenant-deletion").then((m) => ({
+    default: m.LeaveTenantButton,
   })),
 );
 
@@ -110,6 +113,7 @@ export function TrustTools({
   deploymentAdministrator,
   invitations,
   tenant,
+  subject,
   initiallyOpen,
   evidenceOpen = false,
 }: {
@@ -118,6 +122,8 @@ export function TrustTools({
   invitations: boolean;
   /** The selected Mapping's Tenant, whose Tenant Administrators manage it here. */
   tenant: string | null;
+  /** The subject the selected Mapping acts as. */
+  subject: string | null;
   initiallyOpen: boolean;
   /** Whether the Research evidence retention and revocation tools start open. */
   evidenceOpen?: boolean;
@@ -144,10 +150,16 @@ export function TrustTools({
           </Suspense>
         ) : tenant ? (
           <Suspense fallback={loading}>
-            <TenantIdentityAdministration
+            <TenantAccess
               key={tenant}
               tenant={tenant}
-              fallback={administratorsOnly}
+              subject={subject}
+              fallback={
+                <>
+                  {administratorsOnly}
+                  <LeaveTenantButton tenant={tenant} />
+                </>
+              }
             />
           </Suspense>
         ) : (

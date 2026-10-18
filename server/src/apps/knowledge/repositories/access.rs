@@ -131,7 +131,7 @@ impl Lease<'_> {
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		if self.access().is_none() && action != "semantic.index.manage" {
+		if self.access().is_none() && action != super::mutations::SEMANTIC_INDEX_MANAGE {
 			crate::authorization::remote::deployment_administrator::require(self.tx(), workspace)
 				.await?;
 		}

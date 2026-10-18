@@ -19,6 +19,22 @@ const SECRET_LENGTH: usize = 64;
 /// encoded, `_` and the secret.
 pub const SUBJECT_MAX_LENGTH: usize = SUBJECT_PREFIX.len() + 3 * 256 + 1 + SECRET_LENGTH;
 
+/// The longest a Subject Credential may last: 30 days.
+pub const MAX_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
+/// The most Subject Credentials one Mapping may hold active for its own
+/// subject (ADR 0063).
+pub const MAX_ACTIVE_PER_MAPPING: usize = 20;
+
+/// Lifetimes run from one second to 30 days.
+pub fn validate_lifetime(seconds: i64) -> crate::Result<()> {
+	if !(1..=MAX_LIFETIME_SECONDS).contains(&seconds) {
+		return Err(crate::Error::Invalid(format!(
+			"credential lifetime must be 1..{MAX_LIFETIME_SECONDS} seconds"
+		)));
+	}
+	Ok(())
+}
+
 /// A new Subject Credential for `tenant`.
 pub fn subject_token(tenant: &TenantName) -> String {
 	format!(
