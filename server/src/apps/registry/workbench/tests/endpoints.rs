@@ -182,23 +182,31 @@ async fn tenants_set_their_own_test_limits_at_the_revision_they_read(
 		200,
 	);
 	assert_json(alice.get(path).await.unwrap(), 403);
-	let denied = AuthorizationDecision::objects()
-		.filter(AuthorizationDecision::field_tenant().eq("endpoint"))
-		.filter(AuthorizationDecision::field_action().eq("workbench.test_limits.update"))
-		.order_by(&["-sequence"])
-		.first_with_db(&mut app.database.lease.handle())
+	let denied = app
+		.database
+		.fixture(async |tx| {
+			Ok(AuthorizationDecision::objects()
+				.filter(AuthorizationDecision::field_tenant().eq("endpoint"))
+				.filter(AuthorizationDecision::field_action().eq("workbench.test_limits.update"))
+				.order_by(&["-sequence"])
+				.first_with_db(tx)
+				.await?)
+		})
 		.await
-		.unwrap()
 		.expect("the denial is audited after its transaction rolled back");
 	assert_eq!(
 		denied.decision.0["allowed"], false,
 		"{:?}",
 		denied.decision.0
 	);
-	let saved = AgentTestLimit::objects()
-		.filter(AgentTestLimit::field_tenant().eq("endpoint"))
-		.get_with_db(&mut app.database.lease.handle())
-		.await
-		.unwrap();
+	let saved = app
+		.database
+		.fixture(async |tx| {
+			Ok(AgentTestLimit::objects()
+				.filter(AgentTestLimit::field_tenant().eq("endpoint"))
+				.get_with_db(tx)
+				.await?)
+		})
+		.await;
 	assert_eq!((saved.max_concurrent, saved.revision), (3, 1));
 }
