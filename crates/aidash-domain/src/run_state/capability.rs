@@ -4,7 +4,7 @@
 //! The state a Run persists computes which of them it needs, and `encode` stores
 //! that requirement in the `pending` envelope beside the state so Run leasing can
 //! filter without decoding. Decoding recomputes it as a consistency check.
-use super::{ResumeState, RunState, ToolCallState, WaitingState};
+use super::{RecoveryState, ResumeState, RunState, ToolCallState, WaitingState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -29,9 +29,11 @@ use std::collections::BTreeSet;
 pub enum PersistedCapability {
 	/// `ToolCallState` carries the end of an admitted Tool Batch.
 	ToolBatchState,
+	/// `RecoveryState` remembers steps that ran with Degraded context (ADR 0059).
+	DegradedContext,
 }
 impl PersistedCapability {
-	pub const ALL: &'static [Self] = &[Self::ToolBatchState];
+	pub const ALL: &'static [Self] = &[Self::ToolBatchState, Self::DegradedContext];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
 	pub fn supported() -> &'static [Self] {
@@ -40,6 +42,7 @@ impl PersistedCapability {
 	pub fn name(self) -> &'static str {
 		match self {
 			Self::ToolBatchState => "tool_batch_state",
+			Self::DegradedContext => "degraded_context",
 		}
 	}
 }
@@ -55,6 +58,13 @@ impl ToolCallState {
 	fn required_capabilities(&self) -> impl IntoIterator<Item = PersistedCapability> {
 		// A persisted Tool Batch end (#119) is rejected by workers built before it.
 		self.batch_end.map(|_| PersistedCapability::ToolBatchState)
+	}
+}
+impl RecoveryState {
+	fn required_capabilities(&self) -> Option<PersistedCapability> {
+		// Degraded context (#234) is rejected by workers built before it. It is
+		// omitted while empty, so a Run that never degraded needs nothing.
+		(!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext)
 	}
 }
 impl RunState {
@@ -87,11 +97,12 @@ impl RunState {
 pub struct StateRequirements(Vec<String>);
 impl StateRequirements {
 	/// Derived from the state itself, so it cannot drift from what is saved.
-	pub fn of(state: &RunState) -> Self {
+	pub fn of(state: &RunState, recovery: &RecoveryState) -> Self {
 		let needed: BTreeSet<PersistedCapability> = state
 			.tool_states()
 			.into_iter()
 			.flat_map(ToolCallState::required_capabilities)
+			.chain(recovery.required_capabilities())
 			.collect();
 		Self(needed.into_iter().map(|c| c.name().to_owned()).collect())
 	}

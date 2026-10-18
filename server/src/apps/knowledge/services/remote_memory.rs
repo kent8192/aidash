@@ -244,6 +244,7 @@ pub(crate) async fn retrieve(
 	receiver: &str,
 	binding: &NativeBinding,
 	operation: &Operation,
+	cycle: i32,
 	budget: usize,
 ) -> Result<NativeContext> {
 	stamp(&runtime.store, lease, binding).await?;
@@ -297,6 +298,9 @@ pub(crate) async fn retrieve(
 				None,
 			)
 			.await?;
+			// A resume keeps the remote operation ID but opens a new journal
+			// cycle, which renews this Home's memory retry ledger (ADR 0057).
+			models.cycle = cycle;
 			models.remote = Some(super::remote_memory_models::Origin {
 				runtime: runtime.clone(),
 				receiver: receiver.into(),

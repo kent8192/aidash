@@ -234,6 +234,18 @@ pub(crate) fn combine(
 	};
 	let output = json!({"workspace":semantic,"memory":memory});
 	if serde_json::to_vec(&output)?.len() > budget {
+		// Degraded context stays visible when only memory runs out of space, so
+		// the step is still recorded as degraded and never cached (ADR 0059).
+		if semantic
+			.as_ref()
+			.and_then(aidash_domain::semantic::degraded::cause)
+			.is_some()
+		{
+			let output = json!({"workspace":semantic,"memory":{"status":"no_space"}});
+			if serde_json::to_vec(&output)?.len() <= budget {
+				return Ok(Some(output));
+			}
+		}
 		return bounded_status("no_space", budget);
 	}
 	Ok(Some(output))
