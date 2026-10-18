@@ -184,6 +184,7 @@ impl Research {
 			"run",
 			"tool",
 			"installation",
+			"registry",
 			"registry_entry",
 			"message",
 			"agent",
