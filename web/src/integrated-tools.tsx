@@ -44,6 +44,11 @@ const TenantIdentityAdministration = lazy(() =>
     default: m.TenantIdentityAdministration,
   })),
 );
+const LeaveTenantButton = lazy(() =>
+  import("./tenant-deletion").then((m) => ({
+    default: m.LeaveTenantButton,
+  })),
+);
 
 export function ToolSection({
   title,
@@ -138,7 +143,12 @@ export function TrustTools({
           <TenantIdentityAdministration
             key={tenant}
             tenant={tenant}
-            fallback={administratorsOnly}
+            fallback={
+              <>
+                {administratorsOnly}
+                <LeaveTenantButton tenant={tenant} />
+              </>
+            }
           />
         </Suspense>
       ) : (

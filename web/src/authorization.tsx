@@ -54,6 +54,7 @@ import {
 } from "./components/patterns";
 import { cn } from "./lib/utils";
 import { CreateTenantForm, TenantInvitations } from "./tenancy";
+import { DeleteTenantForm, DeploymentTenants } from "./tenant-deletion";
 
 const PAGE_SIZE = 25;
 
@@ -99,6 +100,7 @@ export function AuthorizationPage({
   invitations: boolean;
 }) {
   const { t } = useI18n();
+  const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   return (
     <div className="authorization-page grid min-w-0 gap-6">
@@ -107,6 +109,7 @@ export function AuthorizationPage({
         <div className="w-full max-w-sm">
           <CreateTenantForm onCreated={(created) => setTenant(created.name)} />
         </div>
+        <DeploymentTenants />
         <form
           className="flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
@@ -136,6 +139,15 @@ export function AuthorizationPage({
           key={tenant}
           tenant={tenant}
           invitations={invitations}
+          onDeleted={() => {
+            // The deleted Tenant's policy now answers 410; stop polling it and
+            // show the list with its deletion.
+            setTenant("");
+            client.removeQueries({ queryKey: ["authorization", tenant] });
+            void client.invalidateQueries({
+              queryKey: ["deployment-tenants"],
+            });
+          }}
         />
       )}
     </div>
@@ -145,9 +157,12 @@ export function AuthorizationPage({
 function TenantAuthorization({
   tenant,
   invitations,
+  onDeleted,
 }: {
   tenant: string;
   invitations: boolean;
+  /** The Deployment Administrator deleted this Tenant. */
+  onDeleted: () => void;
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
@@ -269,6 +284,16 @@ function TenantAuthorization({
             <JsonView value={current.bundle} />
           </Disclosure>
         </Panel>
+      )}
+      {current && (
+        <div className="w-full max-w-md">
+          <DeleteTenantForm
+            key={tenant}
+            tenant={tenant}
+            deleter="deployment_administrator"
+            onDeleted={onDeleted}
+          />
+        </div>
       )}
       {current && (
         // A Tenant a Deployment Administrator created has nobody in it yet;

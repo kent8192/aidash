@@ -53,6 +53,27 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 		contracts.path(document, views::tenants::relabel, &["String"])?;
+		contracts.response::<_, t::CreatedTenant>(
+			document,
+			views::tenants::recreate_personal,
+			201,
+			"application/json",
+		)?;
+		contracts.request::<_, t::TenantDeletionRequest>(document, views::tenants::delete)?;
+		contracts.response::<_, t::TenantDeletionView>(
+			document,
+			views::tenants::delete,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::tenants::delete, &["String"])?;
+		contracts.response::<_, t::TenantDeletionView>(
+			document,
+			views::tenants::restore,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::tenants::restore, &["String"])?;
 		contracts.request::<_, inv::InvitationRequest>(document, views::invitations::issue)?;
 		contracts.response::<_, inv::IssuedInvitation>(
 			document,

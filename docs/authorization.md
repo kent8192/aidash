@@ -66,11 +66,11 @@ A Tenant Administrator exists in any Tenant whose policy permits these actions; 
 
 A Deployment Administrator marks the groups a Tenant Administrator may confer by setting `"assignable": true` on a group in the Tenant's policy bundle. These Assignable Groups are the only authority a Tenant Administrator can grant:
 
-- Approval creates a new `user` subject with only the requested Assignable Groups, no roles and no delegator. It cannot hand out an existing subject (409), because that subject may hold authority outside the Assignable Groups. The one exception is re-approving an External Identity into the subject it was previously mapped to; a re-approval sends no groups and keeps the subject unchanged.
+- Approval creates a new `user` subject with only the requested Assignable Groups, no roles and no delegator. It cannot hand out an existing subject (409), because that subject may hold authority outside the Assignable Groups. The one exception is re-approving an External Identity into the subject it was previously mapped to. Without an Invitation, a re-approval sends no groups and keeps the subject unchanged. When a Tenant Administrator approves such a request through an Invitation, such as a member returning after leaving, the approved groups replace the subject's Assignable Group memberships, so leaving and returning never revives authority the Invitation did not offer.
 - `PUT /api/tenants/{tenant}/subjects/{subject}/groups` with `{"groups":[...],"expected_policy_revision":n}` replaces only Assignable Group memberships. Other groups and roles are retained.
 - Neither operation edits roles, group definitions or any other part of the policy. Policy edits remain Deployment Administrator-only.
 
-A Tenant created through Aidash starts with two Assignable Groups: `administrators`, allowed every action, and `members`, allowed an explicit list of actions to use the Tenant and author definitions. Tenant Administrators can therefore appoint each other; a Deployment Administrator can unmark `administrators` to stop that. A Tenant Administrator cannot act on its own Mapping or subject (403). Before a Tenant Administrator disables a Mapping or changes Assignable Groups, the same transaction checks that another enabled Mapping of an enabled External Identity keeps every administration action (the six above plus `invitation.create`) without conditions; otherwise it answers 409. Conditional allows, and allows limited to particular resources, do not count, and every deny counts as matching. Deployment Administrator actions, including replacing the whole policy, are never blocked.
+A Tenant created through Aidash starts with two Assignable Groups: `administrators`, allowed every action, and `members`, allowed an explicit list of actions to use the Tenant and author definitions. Tenant Administrators can therefore appoint each other; a Deployment Administrator can unmark `administrators` to stop that. A Tenant Administrator cannot act on its own Mapping or subject (403). Before a Tenant Administrator disables a Mapping or changes Assignable Groups, and before a member leaves, the same transaction checks that another enabled Mapping of an enabled External Identity keeps every administration action (the six above plus `invitation.create` and `tenant.delete`) without conditions; otherwise it answers 409. `tenant.delete` counts so that nobody leaves behind a Tenant no one can delete (ADR 0060). Conditional allows, and allows limited to particular resources, do not count, and every deny counts as matching. Deployment Administrator actions, including replacing the whole policy, are never blocked.
 
 Subjects created and memberships changed by a Tenant Administrator advance the policy revision with the actor `oidc:<identity id>`. A Deployment Administrator replacing the policy at an older `expected_revision` receives 409 and must reload.
 
@@ -83,10 +83,11 @@ Subjects created and memberships changed by a Tenant Administrator advance the p
 | GET    | `/api/tenants/{tenant}/mappings?offset=0`          |                                                                                                            |
 | POST   | `/api/tenants/{tenant}/mappings/{id}/disable`      | `{"expected_revision":1}`                                                                                  |
 | PUT    | `/api/tenants/{tenant}/subjects/{subject}/groups`  | `{"groups":[],"expected_policy_revision":2}`                                                               |
+| POST   | `/api/tenants/{tenant}/leave`                      | Disables the caller's own Mapping                                                                          |
 
 Responses forbid caching. In the dashboard, a Tenant Administrator who selects that Mapping sees the permitted parts of **Access and accounts**; restore, Deployment Administrator grants and policy editing are not shown. Each listed Mapping carries `own_identity` (the caller's External Identity holds it, so it cannot be disabled) and `own_subject` (the caller acts as, or was ever mapped to, that subject in this Tenant, so its groups cannot be changed). The dashboard omits the Disable and group controls these flags rule out.
 
-Approvals, rejections, Mapping disables, group changes, Tenant creation, label changes and Invitation issue, revocation and redemption are appended to `dashboard_administration_history`. Each row records the action, the External Identity it concerns (if any), request, Mapping, Tenant, subject and Invitation, the actor kind (`deployment_administrator`, `tenant_administrator` or `identity`), the acting External Identity (absent for the Deployment Administrator bearer token) and the Mapping it acted through. Rows are never updated.
+Approvals, rejections, Mapping disables, group changes, leaving, Tenant creation, deletion and restore, label changes and Invitation issue, revocation and redemption are appended to `dashboard_administration_history`. Each row records the action, the External Identity it concerns (if any), request, Mapping, Tenant, subject and Invitation, the actor kind (`deployment_administrator`, `tenant_administrator` or `identity`), the acting External Identity (absent for the Deployment Administrator bearer token) and the Mapping it acted through. Rows are never updated.
 
 ### Tenancy Rules, Tenant creation and Invitations
 
@@ -94,13 +95,14 @@ Every Tenant has a root record keyed by its Tenant name, `<adjective>-<noun>-<8 
 
 The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's policy decides them. Identities of a GCIP Tenant with a Tenant Binding are never covered: they hold no Personal Tenant, create no Tenants and redeem no other Tenant's Invitation.
 
-| Setting             | Default | Meaning                                                                   |
-| ------------------- | ------- | ------------------------------------------------------------------------- |
-| `personal_tenants`  | `false` | Provision a Personal Tenant at an identity's first sign-in                |
-| `tenant_creation`   | `false` | Let signed-in External Identities create Tenants                          |
-| `creation_per_hour` | `5`     | Creations per External Identity within any 60 minutes                     |
-| `creation_total`    | `20`    | Tenants one External Identity created and has not had purged              |
-| `invitations`       | `true`  | Let Tenant Administrators and Deployment Administrators issue Invitations |
+| Setting               | Default | Meaning                                                                    |
+| --------------------- | ------- | -------------------------------------------------------------------------- |
+| `personal_tenants`    | `false` | Provision a Personal Tenant at an identity's first sign-in                 |
+| `tenant_creation`     | `false` | Let signed-in External Identities create Tenants                           |
+| `creation_per_hour`   | `5`     | Creations per External Identity within any 60 minutes                      |
+| `creation_total`      | `20`    | Tenants one External Identity created and has not had purged               |
+| `invitations`         | `true`  | Let Tenant Administrators and Deployment Administrators issue Invitations  |
+| `deletion_grace_days` | `30`    | Days a deleted Tenant stays restorable before its data is purged (1 to 90) |
 
 `POST /api/tenants` with `{"label":"Research"}` creates a Tenant and answers 201 with `{name, label, created_at, mapping_id}`. The label must have 1 to 64 characters after trimming and no control characters. The route authenticates itself:
 
@@ -108,11 +110,28 @@ The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's po
 - Any other browser session creates a Tenant for its External Identity, without needing a Mapping, where `tenant_creation` allows it. The identity becomes the Tenant Creator: it receives the first Mapping, to `owner` in `administrators`, and the first policy revision's actor is `oidc:<identity>`. Exceeding `creation_per_hour` answers 429 with `Retry-After` until a slot frees; exceeding `creation_total` answers 403 `tenant_limit_reached`. Personal Tenants never count. An advisory lock per identity serializes concurrent creations.
 - Subject Credentials, agents and peers never create Tenants (403).
 
-`GET /api/tenants?offset=0` lists root records for Deployment Administrators, newest first, 200 per page. `PUT /api/tenants/{tenant}/label` changes the label under `tenant.update`, through a browser Mapping of that Tenant.
+`GET /api/tenants?offset=0` lists root records for Deployment Administrators, newest first, 200 per page, each with its current `deletion`, if any. `PUT /api/tenants/{tenant}/label` changes the label under `tenant.update`, through a browser Mapping of that Tenant.
 
 An Invitation is a single-use, expiring link. `POST /api/tenants/{tenant}/invitations` with `{"groups":["members"],"expires_in_seconds":86400}` issues one under `invitation.create`, or as a Deployment Administrator. The groups must be Assignable Groups and default to `members`; the lifetime defaults to, and may not exceed, 7 days. At most 100 Invitations of a Tenant are active at once. The response carries `link`, `https://<origin>/invitations/<tenant>#<secret>` with the Tenant name percent-encoded as one path segment, and the secret, only this once; Aidash stores a SHA-256 digest. The secret travels in the URL fragment, so it never reaches server logs. `GET /api/tenants/{tenant}/invitations` lists them with their state (`active`, `redeemed`, `revoked` or `expired`), and `POST /api/tenants/{tenant}/invitations/{id}/revoke` revokes an unused one.
 
 Whoever holds a link signs in first. `POST /auth/invitations/inspect` with `{tenant, secret}` shows the inviting Tenant's label and spends nothing. `POST /auth/invitations/redeem` spends the link on a pending Registration Request addressed to that Tenant, which a Tenant Administrator or Deployment Administrator still approves; the request lasts 7 days and carries the Invitation's proposed groups for the approval. The first redemption spends the link whatever happens to the request. The redemption share-locks the browser session after the identity, so a logout committing meanwhile answers 401 and spends nothing. A disabled identity, an identity with a Tenant Binding, an identity already holding an enabled Mapping in the Tenant or already waiting for it, and turned-off Invitations are refused without spending it. Expired, revoked and spent links all answer 404 `invalid link`. An identity has at most one pending request without an Invitation, plus one pending request per Tenant; the 24-hour wait after a rejection applies only to the former.
+
+### Tenant Deletion and leaving
+
+A Tenant Deletion is a recorded decision (ADR 0060). `POST /api/tenants/{tenant}/deletion` with `{"confirmation":"<Tenant name>"}` records one, through a browser Mapping of that Tenant whose subject the policy allows `tenant.delete` (the `administrators` group, by default), or as a Deployment Administrator. The Tenant name must be typed exactly. From that moment:
+
+- Every authenticated boundary refuses the Tenant once it holds the policy. A member's browser Mapping receives 410 `tenant_deleted`; Subject Credentials and desktop tokens receive 401, as for an unknown Tenant. The session no longer lists the Tenant's Mappings and lists it under `deleted_tenants` instead. Its policy cannot be replaced, nobody is approved into it, and nobody leaves it.
+- Its unfinished Runs stop: they are paused with the reason `tenant deleted`, so no worker reclaims them, and a restore turns them into cancelled Runs. Nothing resumes them.
+- Its pending Invitations are revoked, and its Plan Connections are revoked at OpenAI and deleted. A restore revives neither; every owner connects again.
+- Subject Credentials and Provider Credentials are only refused. A restore brings them back.
+
+The Tenant stays restorable for `deletion_grace_days`. `POST /api/tenants/{tenant}/restore` restores it before then, as a Deployment Administrator or through a browser session that names its own Mapping in the deleted Tenant in `x-aidash-context`. That Mapping's subject must be allowed `tenant.delete` by the policy the Tenant was deleted with, and the Mapping, its External Identity and its credential must still be usable. The usual authentication refuses a deleted Tenant, so this route authenticates the caller itself and uses only that Mapping and that Tenant's policy. A Tenant a Deployment Administrator deleted is restored only by a Deployment Administrator (409 otherwise). Deleting a restored Tenant again starts a new grace period. Deletions are kept in `tenant_deletions`, one Deployment-wide row per deletion, which outlives purge.
+
+Purging a deleted Tenant's data after its grace period is not implemented yet (ADR 0061, #239). Tenant-creation limits already count a deleted Tenant until it is purged.
+
+`POST /api/tenants/{tenant}/leave` disables the caller's own Mapping and retires its Plan Connection. It answers 409 when the Tenant would be left without a Tenant Administrator, and for a member mapped through the Tenant's Tenant Binding, whom signing in would map again. A member who left returns only through a new Invitation, as the same user subject.
+
+A deleted Personal Tenant is never re-created at sign-in. `GET /auth/session` reports `personal_tenant_deleted: true` while the identity's Personal Tenant is deleted and the Tenancy Rules still provide Personal Tenants; `POST /api/tenants/personal` then creates a new one under a new Tenant name, which replaces the identity's Personal Tenant link and counts toward no limit. The dashboard first offers to restore the deleted one. If the deleted one is restored afterwards, it is no longer the identity's Personal Tenant.
 
 ### Switching issuers
 

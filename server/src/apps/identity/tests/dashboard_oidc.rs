@@ -2277,6 +2277,14 @@ async fn tenant_administration_works_without_a_tenant_binding(
 			"actions": actions,
 			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
+		}, {
+			// The last-administrator guard also needs someone who can delete the Tenant.
+			"id": "tenant-deletion",
+			"effect": "allow",
+			"subjects": {"groups": ["administrators"]},
+			"actions": ["tenant.delete"],
+			"resources": {"kinds": ["tenant"]},
+			"condition": null
 		}]
 	}))
 	.unwrap();
@@ -2339,7 +2347,9 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	)
 	.await;
 	assert_eq!(status, 200, "{overview}");
-	assert_eq!(overview["actions"], json!(actions));
+	let mut expected = actions.to_vec();
+	expected.push(aidash_domain::identity::tenancy::TENANT_DELETE);
+	assert_eq!(overview["actions"], json!(expected));
 	assert_eq!(overview["assignable_groups"], json!(["members"]));
 	// No Registration Request is addressed to an unbound Tenant.
 	let (status, registrations) = call(

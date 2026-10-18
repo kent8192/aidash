@@ -15,6 +15,7 @@ import type { ThemePreference } from "../theme";
 import { useI18n, type Locale } from "../ui";
 import { authCopy, shellCopy } from "./copy";
 import { CreateTenantForm, type CreatedTenant } from "../tenancy";
+import { DeletedTenants, type DeletedTenant } from "../tenant-deletion";
 
 export type Account = {
   name: string;
@@ -32,6 +33,10 @@ export type Account = {
   tenantCreated: (created: CreatedTenant) => void;
   /** A direct Google account may request shared access even after its personal Mapping is disabled. */
   personalAccount: boolean;
+  /** Deleted Tenants this identity is mapped into, with Restore where allowed. */
+  deletedTenants: DeletedTenant[];
+  /** Whether this identity's Personal Tenant is deleted and it may start a new one. */
+  personalTenantDeleted: boolean;
   sharedAccess: {
     status?: string;
     loading: boolean;
@@ -143,6 +148,12 @@ export function AccountPanel({ account }: { account: Account }) {
             <CreateTenantForm onCreated={account.tenantCreated} />
           </div>
         )}
+        <div className="pt-1">
+          <DeletedTenants
+            tenants={account.deletedTenants}
+            personalTenantDeleted={account.personalTenantDeleted}
+          />
+        </div>
         {account.personalAccount && (
           <div className="grid gap-2 pt-1">
             <p
