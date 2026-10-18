@@ -8,7 +8,6 @@ use aidash_domain::{
 	registry::{EntityRef, Entry},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const CATALOG_APPROVE: &str = "catalog.approve";
@@ -28,57 +27,13 @@ pub struct Approval {
 }
 
 /// The exact versions a definition names directly, which must be approved (or
-/// be built-ins that need no approval) before it is.
-pub fn dependencies(entry: &Entry) -> Vec<EntityRef> {
-	let config = &entry.config;
-	let mut references = Vec::new();
-	let mut push = |value: &Value| {
-		if let (Some(id), Some(version)) = (
-			value.get("id").and_then(Value::as_str),
-			value.get("version").and_then(Value::as_str),
-		) {
-			references.push(EntityRef {
-				id: id.into(),
-				version: version.into(),
-			});
-		}
-	};
-	match entry.kind.as_str() {
-		"agent" => {
-			for field in ["model", "cluster"] {
-				if let Some(value) = config.get(field) {
-					push(value);
-				}
-			}
-			for binding in config
-				.get("bindings")
-				.and_then(Value::as_array)
-				.into_iter()
-				.flatten()
-			{
-				if let Some(target) = binding.get("target") {
-					push(target);
-				}
-			}
-		}
-		"bundle" => {
-			for member in config
-				.get("members")
-				.and_then(Value::as_array)
-				.into_iter()
-				.flatten()
-			{
-				push(member);
-			}
-		}
-		"cluster" => {
-			if let Some(coordinator) = config.get("coordinator") {
-				push(coordinator);
-			}
-		}
-		_ => {}
-	}
-	references
+/// be built-ins that need no approval) before it is: the edges Marketplace
+/// distribution follows.
+pub fn dependencies(entry: &Entry, node: &str) -> Result<Vec<EntityRef>> {
+	Ok(crate::marketplace::definitions::refs(entry, node)?
+		.into_iter()
+		.map(|(reference, _)| reference)
+		.collect())
 }
 
 /// Decide every approval in one transaction. The caller commits it.
@@ -103,17 +58,23 @@ pub async fn approve(
 		scope.require(&entry, CATALOG_APPROVE).await?;
 		definitions.insert(key, entry);
 	}
-	let enabling: BTreeSet<_> = approvals
+	let requested: BTreeMap<_, _> = approvals
 		.iter()
-		.filter(|approval| approval.enabled)
-		.map(|approval| (approval.entry.id.clone(), approval.entry.version.clone()))
+		.map(|approval| {
+			(
+				(approval.entry.id.clone(), approval.entry.version.clone()),
+				approval.enabled,
+			)
+		})
 		.collect();
 	for approval in approvals.iter().filter(|approval| approval.enabled) {
 		let entry = &definitions[&(approval.entry.id.clone(), approval.entry.version.clone())];
-		for dependency in dependencies(entry) {
+		for dependency in dependencies(entry, scope.node())? {
 			let satisfied = crate::registry::system::builtin_reference(&dependency)
-				|| enabling.contains(&(dependency.id.clone(), dependency.version.clone()))
-				|| scope.approved(&dependency).await?;
+				|| match requested.get(&(dependency.id.clone(), dependency.version.clone())) {
+					Some(enabled) => *enabled,
+					None => scope.approved(&dependency).await?,
+				};
 			if !satisfied {
 				return Err(Error::Invalid(format!(
 					"CATALOG_DEPENDENCY_UNAPPROVED: {}@{}",

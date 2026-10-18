@@ -6,9 +6,9 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use rstest::rstest;
-use serde_json::json;
+use serde_json::{Value, json};
 
-const NODE: &str = "node-a";
+const NODE: &str = "aidash://node-a";
 
 struct Fixture {
 	definitions: BTreeMap<(String, String), Entry>,
@@ -273,4 +273,24 @@ async fn withdrawing_a_dependency_is_not_blocked() {
 	// Assert
 	assert!(result.is_ok(), "{result:?}");
 	assert_eq!(fixture.writes[0], "approve:model:false");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_dependency_withdrawn_in_the_same_request_is_unapproved() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![agent("model", &[]), model()]);
+	fixture.approved.insert(("model".into(), "1.0.0".into()));
+	// Act
+	let result = approve(
+		&mut fixture,
+		&[approval("agent", true), approval("model", false)],
+	)
+	.await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == "CATALOG_DEPENDENCY_UNAPPROVED: model@1.0.0"),
+		"{result:?}"
+	);
+	assert!(fixture.writes.is_empty());
 }

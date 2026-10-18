@@ -206,7 +206,13 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 			.get(&name, &reference.id, &reference.version)
 			.await
 			.expect("an approved graph is registered in its Tenant");
-		pending.extend(aidash_application::authorization::catalog::approvals::dependencies(&entry));
+		pending.extend(
+			aidash_application::authorization::catalog::approvals::dependencies(
+				&entry,
+				&f.config.node_id,
+			)
+			.unwrap(),
+		);
 		order.push(reference);
 	}
 	for reference in order.into_iter().rev() {
