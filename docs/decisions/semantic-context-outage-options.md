@@ -141,7 +141,7 @@ Filed after the decision: item 1 → [#233](https://github.com/kent8192/aidash/i
 
 The 2026-10-17 grilling for #234 refined section 4. ADR 0059 records the result.
 
-- **Opt-in.** The opt-in is `on_unavailable: pause | degrade` on the `workspace_retrieval` source Binding (`NativeSource::WorkspaceRetrieval`), and it defaults to `pause`. No other adapter can carry it. Registry migration `0031_degraded_context` admits it in `aidash_context_is_valid`. The workspace slot degrades only if every source feeding it opted in. A `semantic_memory` source without a native provider also reads the Workspace index and has no opt-in, so with one bound the step pauses (`AgentConfig::workspace_degrades`).
+- **Opt-in.** The opt-in is `on_unavailable: pause | degrade` on the `workspace_retrieval` source Binding (`NativeSource::WorkspaceRetrieval`), and it defaults to `pause`. No other adapter can carry it. Registry migration `0032_degraded_context` admits it in `aidash_context_is_valid`. The workspace slot degrades only if every source feeding it opted in. A `semantic_memory` source without a native provider also reads the Workspace index and has no opt-in, so with one bound the step pauses (`AgentConfig::workspace_degrades`).
 - **When a step degrades.** The attempt that may degrade is the last one of the bounded retry: `retry.count` is five and the reason is `unavailable`. It may also be any attempt after an earlier step of the same Run degraded and no retrieval has succeeded since. That attempt tries once and degrades at once if the try fails (`RecoveryState::degrades_on_outage`).
 - **Causes.** Only outages that waiting can fix degrade:
   - an embedding transport failure, timeout or HTTP 408/429/5xx (`embedding_provider`);

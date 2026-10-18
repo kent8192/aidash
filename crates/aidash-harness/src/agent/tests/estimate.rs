@@ -1,6 +1,8 @@
-//! Request Estimates pinned per Run step (ADR 0017, #179).
+//! Request Estimates pinned per Run step (ADR 0017, #179, #276).
 use super::*;
-use aidash_domain::provider::estimate::{CalibrationSample, EstimateSnapshot, EstimateState};
+use aidash_domain::provider::estimate::{
+	Calibration, CalibrationSample, EstimateSnapshot, EstimateState, TokenEncoding,
+};
 
 /// Twenty samples at a quarter token per byte: enough to calibrate.
 fn warm(ratio_denominator: u64) -> Vec<CalibrationSample> {
@@ -14,8 +16,16 @@ fn warm(ratio_denominator: u64) -> Vec<CalibrationSample> {
 }
 
 fn calibrated(fixture: &mut Fixture, samples: Vec<CalibrationSample>) {
+	estimating(fixture, json!("calibrated"), samples);
+}
+
+fn tokenized(fixture: &mut Fixture, samples: Vec<CalibrationSample>) {
+	estimating(fixture, json!({"tokenized": "o200k_base"}), samples);
+}
+
+fn estimating(fixture: &mut Fixture, estimator: Value, samples: Vec<CalibrationSample>) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.calibrated_model = true;
+	state.request_estimator = Some(estimator);
 	*state.calibration.lock().unwrap() = samples;
 }
 
@@ -120,10 +130,16 @@ async fn a_cold_key_pins_the_conservative_snapshot(mut fixture: Fixture) {
 }
 
 #[rstest]
+#[case::calibrated(calibrated as fn(&mut Fixture, Vec<CalibrationSample>), "calibrated")]
+#[case::tokenized(tokenized as fn(&mut Fixture, Vec<CalibrationSample>), "tokenized")]
 #[tokio::test]
-async fn an_overflow_after_a_calibrated_estimate_demotes_the_run(mut fixture: Fixture) {
+async fn an_overflow_after_a_scaled_estimate_demotes_the_run(
+	mut fixture: Fixture,
+	#[case] estimating: fn(&mut Fixture, Vec<CalibrationSample>),
+	#[case] estimator: &str,
+) {
 	// Arrange
-	calibrated(&mut fixture, warm(4));
+	estimating(&mut fixture, warm(4));
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(false));
 	*state.overflows.lock().unwrap() = 1;
@@ -141,7 +157,7 @@ async fn an_overflow_after_a_calibrated_estimate_demotes_the_run(mut fixture: Fi
 		}
 	);
 	let overflowed = fixture.backend.0.requests.lock().unwrap()[0].clone();
-	assert!(overflowed.estimate.is_calibrated());
+	assert!(!overflowed.estimate.is_conservative());
 	assert_eq!(
 		fixture.run.context.recovery.overflow_request_tokens,
 		Some(overflowed.byte_estimate().total() as u64)
@@ -157,7 +173,7 @@ async fn an_overflow_after_a_calibrated_estimate_demotes_the_run(mut fixture: Fi
 		.into_iter()
 		.map(|dispatch| dispatch.estimate.estimator)
 		.collect::<Vec<_>>();
-	assert_eq!(estimators, ["calibrated", "bytes", "bytes"]);
+	assert_eq!(estimators, [estimator, "bytes", "bytes"]);
 	assert!(fixture.run.context.estimate.demoted);
 }
 
@@ -224,11 +240,120 @@ async fn calibration_never_moves_the_stable_prefix_or_the_semantic_budget() {
 	// Assert
 	let conservative = bytes.backend.0.requests.lock().unwrap()[0].clone();
 	let scaled = calibrated.backend.0.requests.lock().unwrap()[0].clone();
-	assert!(!conservative.estimate.is_calibrated());
-	assert!(scaled.estimate.is_calibrated());
+	assert!(conservative.estimate.is_conservative());
+	assert!(!scaled.estimate.is_conservative());
 	let (stable, _) = ordered_parts(&scaled);
 	assert_eq!(stable, ordered_parts(&conservative).0);
 	assert!(stable.len() < 40_000, "the snapshot quota must bind");
 	assert_eq!(semantic_memory(&scaled), semantic_memory(&conservative));
 	assert_eq!(scaled.cache_identity(), conservative.cache_identity());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_tokenized_model_counts_its_request_and_calibrates_only_its_quotas(mut fixture: Fixture) {
+	// Arrange
+	tokenized(&mut fixture, warm(4));
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the encoding and the quota ratio are pinned before dispatch.
+	let calls = calls(&fixture);
+	assert!(position(&calls, "calibration.samples") < position(&calls, "save"));
+	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	let snapshot = EstimateSnapshot::tokenized(
+		0,
+		TokenEncoding::O200kBase,
+		Some(Calibration {
+			ratio_ppm: 250_000,
+			samples: 20,
+		}),
+	);
+	assert_eq!(fixture.run.context.estimate.snapshot, Some(snapshot));
+	let request = fixture.backend.0.requests.lock().unwrap()[0].clone();
+	assert_eq!(request.estimate, snapshot);
+	let bytes = request.byte_estimate();
+	let counted = bytes.tokenized.expect("the request is counted");
+	let [dispatch] = dispatches(&fixture).try_into().unwrap();
+	assert_eq!(dispatch.estimate.estimator, "tokenized");
+	assert_eq!(dispatch.estimate.confidence, EstimateConfidence::Tokenized);
+	assert_eq!(dispatch.estimate.ratio_ppm, Some(250_000));
+	assert_eq!(dispatch.estimate.byte_basis, bytes.basis as u64);
+	assert_eq!(
+		dispatch.estimate.tokens,
+		(counted + bytes.media + bytes.output + bytes.framing) as u64
+	);
+	assert!(dispatch.estimate.tokens < bytes.total() as u64);
+	// The fixture reports fewer input tokens than estimated.
+	assert!(!fixture.run.context.estimate.demoted);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_resumed_step_whose_encoding_is_gone_runs_on_bytes(mut fixture: Fixture) {
+	// Arrange: an older worker pinned an encoding this binary no longer lists.
+	tokenized(&mut fixture, warm(4));
+	let retired: EstimateSnapshot = serde_json::from_value(json!({
+		"step": 0,
+		"estimator": {"id":"tokenized","version":1,"encoding":"cl100k_base","encoding_version":1,"margin_permille":100}
+	}))
+	.unwrap();
+	fixture.run.context.estimate.snapshot = Some(retired);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the step is not re-pinned from calibration; it uses bytes.
+	assert_eq!(count(&fixture, "calibration.samples"), 0);
+	assert_eq!(
+		fixture.run.context.estimate.snapshot,
+		Some(EstimateSnapshot::conservative(0))
+	);
+	let [dispatch] = dispatches(&fixture).try_into().unwrap();
+	assert_eq!(dispatch.estimate.estimator, "bytes");
+	// Act: the next step pins the encoding the model names.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.step += 1;
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(count(&fixture, "calibration.samples"), 1);
+	assert_eq!(
+		dispatches(&fixture).last().unwrap().estimate.estimator,
+		"tokenized"
+	);
+}
+
+#[rstest]
+#[case::calibrated(calibrated as fn(&mut Fixture, Vec<CalibrationSample>), "calibrated")]
+#[case::tokenized(tokenized as fn(&mut Fixture, Vec<CalibrationSample>), "tokenized")]
+#[tokio::test]
+async fn more_reported_input_than_estimated_demotes_the_run_from_the_next_step(
+	mut fixture: Fixture,
+	#[case] estimating: fn(&mut Fixture, Vec<CalibrationSample>),
+	#[case] estimator: &str,
+) {
+	// Arrange: the provider reports far more input than any estimate.
+	estimating(&mut fixture, warm(4));
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.reported_input_tokens = Some(1_000_000);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the step keeps its snapshot; the demotion is saved with the step.
+	let pinned = fixture.run.context.estimate.snapshot.unwrap();
+	assert_eq!(pinned.id(), estimator);
+	assert!(fixture.run.context.estimate.demoted);
+	let writes = fixture.backend.0.writes.lock().unwrap().clone();
+	assert!(writes.last().unwrap().1.context.estimate.demoted);
+	// Act: the next step.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.step += 1;
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: bytes, without consulting calibration again.
+	assert_eq!(count(&fixture, "calibration.samples"), 1);
+	let estimators = dispatches(&fixture)
+		.into_iter()
+		.map(|dispatch| dispatch.estimate.estimator)
+		.collect::<Vec<_>>();
+	assert_eq!(estimators, [estimator, "bytes"]);
 }

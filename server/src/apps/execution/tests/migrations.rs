@@ -39,7 +39,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0028_tool_transport_secrets"),
 	("registry", "0029_completion_policy"),
 	("registry", "0030_plan_connection_models"),
-	("registry", "0031_degraded_context"),
+	("registry", "0031_model_request_estimator"),
+	("registry", "0032_degraded_context"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -314,14 +315,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0034_policy_probe")
+		.get_migration("execution", "0035_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0033_research_event_run_index".to_owned()
+			"0034_tokenized_estimate_confidence".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -1963,7 +1964,7 @@ async fn degraded_context_migration_admits_only_workspace_opt_ins_and_refuses_ro
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0031_degraded_context")
+			.find(|m| m.app_label == "registry" && m.name == "0032_degraded_context")
 			.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -2006,7 +2007,7 @@ async fn degraded_context_migration_admits_only_workspace_opt_ins_and_refuses_ro
 	assert!(
 		error
 			.to_string()
-			.contains("registry 0031_degraded_context cannot be reversed: 1 Definitions"),
+			.contains("registry 0032_degraded_context cannot be reversed: 1 Definitions"),
 		"{error}"
 	);
 	assert!(

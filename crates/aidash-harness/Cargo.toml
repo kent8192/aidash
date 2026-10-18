@@ -21,6 +21,7 @@ tracing = "0.1"
 metrics = "0.24"
 
 [dev-dependencies]
+aidash-domain = { workspace = true, features = ["token-encodings"] }
 async-trait.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

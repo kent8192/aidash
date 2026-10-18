@@ -1,5 +1,5 @@
 meta {
-  name: 1166 plan-connection-status - Subject Credential bearer never reaches a Plan Connection
+  name: 1166 plan-connection-status - Deployment Administrator bearer owns no Plan Connection
   type: http
   seq: 1166
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {
