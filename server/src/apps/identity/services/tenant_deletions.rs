@@ -21,7 +21,7 @@ use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::tenancy::{TENANT_DELETE, deletion};
 use http::{HeaderMap, Method};
-use reinhardt::db::orm::AtomicTransaction;
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::injectable;
 use serde_json::json;
 use std::sync::Arc;
@@ -91,7 +91,7 @@ impl Steward {
 	/// the Tenant was deleted with, for a restore.
 	async fn authorize(
 		&self,
-		tx: &mut AtomicTransaction,
+		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 		deleted: bool,
 	) -> Result<()> {
@@ -206,6 +206,21 @@ impl TenantDeletions {
 		aidash_domain::policy::identifier(&tenant)?;
 		let steward = self.restorer(&headers, &tenant).await?;
 		let f = &self.runtime;
+		let scope = TenancyScope::tenant(&tenant)?;
+		// Retiring at OpenAI cannot be undone, so it waits until this caller
+		// is known to restore a deleted Tenant. The check rolls back; the
+		// restore below decides again under its locks and keeps that
+		// decision, and a denial here is audited as one there would be.
+		let mut check = f.store.pool.begin(&scope).await?;
+		let checked = async {
+			steward.authorize(&mut check, &tenant, true).await?;
+			tenant_deletions::current_locked(&mut check, &tenant)
+				.await?
+				.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))
+		}
+		.await;
+		check.rollback().await?;
+		steward.finish(f, checked).await?;
 		// A retirement that failed at deletion is retried before the Tenant
 		// works again: no Plan Connection outlives its Tenant's deletion, and
 		// a failure leaves the Tenant deleted (ADR 0007).
@@ -217,7 +232,7 @@ impl TenantDeletions {
 		let result = f
 			.store
 			.pool
-			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
+			.atomic(&scope, async |tx| {
 				steward.authorize(tx, &tenant, true).await?;
 				let deletion = tenant_deletions::current(tx, &tenant)
 					.await?
