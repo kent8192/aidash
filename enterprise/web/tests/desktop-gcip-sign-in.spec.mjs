@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { expect, test } from "@playwright/test";
-import { mockGcip } from "../tests/fixtures/gcip";
+import { mockGcip } from "./fixtures/gcip";
 
 test("GCIP browser sign-in returns through the existing desktop consent and loopback callback", async ({
   page,

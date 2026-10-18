@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import { installBearerDashboard } from "../../../web/tests/auth-fixture";
 
 async function openAccount(
   page: Page,

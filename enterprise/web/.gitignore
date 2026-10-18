@@ -1,0 +1,4 @@
+# node_modules links to the Community dashboard's (see package.json).
+node_modules
+dist/
+test-results/

@@ -1,0 +1,17 @@
+{
+  "name": "aidash-enterprise-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "link": "ln -sfn ../../web/node_modules node_modules",
+    "generate:api": "mkdir -p ../../openapi && cargo run --locked --quiet --manifest-path ../Cargo.toml -p aidash-enterprise-server --bin aidash -- openapi > ../../openapi/aidash.json && npm run generate:api --prefix ../../web",
+    "pretypecheck": "npm run link",
+    "typecheck": "tsc -p .",
+    "prebuild": "npm run link",
+    "build": "tsc -p . && vite build --config vite.config.ts",
+    "prelint": "npm run link",
+    "lint": "eslint .",
+    "pretest:gcip": "npm run link",
+    "test:gcip": "playwright test --config playwright.config.ts"
+  }
+}
