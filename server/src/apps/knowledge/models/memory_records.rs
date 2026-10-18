@@ -187,6 +187,9 @@ pub struct MemoryModelAttempt {
 	pub operation_id: Uuid,
 	#[field]
 	pub ordinal: i32,
+	/// The Retry Cycle the attempt was charged in (ADR 0057).
+	#[field(default = 0)]
+	pub cycle: i32,
 	#[field(field_type = "text")]
 	pub digest: String,
 	#[field(field_type = "text")]

@@ -2126,3 +2126,56 @@ async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descr
 		"{error}"
 	);
 }
+
+#[rstest::rstest]
+#[case::one_opted_in(&["degrade"], false, true)]
+#[case::default_pause(&["pause"], false, false)]
+#[case::one_source_without_opt_in(&["degrade", "pause"], false, false)]
+#[case::semantic_memory_shares_the_slot(&["degrade"], true, false)]
+#[case::no_workspace_source(&[], false, false)]
+#[tokio::test]
+async fn the_workspace_slot_degrades_only_when_every_source_feeding_it_opted_in(
+	#[case] policies: &[&str],
+	#[case] semantic_memory: bool,
+	#[case] degrades: bool,
+) {
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	let mut bind = |kind, id: String, source: serde_json::Value| {
+		catalog.insert(entry(
+			&id,
+			if kind == BindingKind::Memory {
+				"memory"
+			} else {
+				"source"
+			},
+			json!({"schema_version":1,"source":source}),
+		));
+		config.bindings.push(Binding {
+			kind,
+			target: reference(&id),
+			alias: None,
+			narrow: Default::default(),
+			members: vec![],
+			exposure: None,
+		});
+	};
+	for (index, policy) in policies.iter().enumerate() {
+		bind(
+			BindingKind::Source,
+			format!("workspace-{index}"),
+			json!({"adapter":"workspace_retrieval","on_unavailable":policy}),
+		);
+	}
+	if semantic_memory {
+		bind(
+			BindingKind::Memory,
+			"memory".into(),
+			json!({"adapter":"semantic_memory"}),
+		);
+	}
+	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
+	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
+	assert_eq!(settings.workspace_context, !policies.is_empty());
+	assert_eq!(settings.workspace_degrades, degrades);
+}

@@ -290,6 +290,7 @@ async fn request_estimators_persist_through_the_registry_api(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let registrar = tenant_subject(&app, "registrar").await;
 	let mut connection = app.database.lease.handle();
 	for estimator in ["calibrated", "bytes"] {
 		let id = format!("estimator-{estimator}");
@@ -298,7 +299,7 @@ async fn request_estimators_persist_through_the_registry_api(
 		entry["config"]["request_estimator"] = json!(estimator);
 		// Act
 		let created = assert_json(
-			app.deployment_administrator
+			registrar
 				.post("/api/registry", &entry, "json")
 				.await
 				.unwrap(),

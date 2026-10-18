@@ -59,6 +59,9 @@ pub struct PlanConnection {
 	pub tenant: String,
 	/// The user subject that owns the connection. Nobody else's Runs use it.
 	pub subject: String,
+	/// The External Identity that connected it, re-recorded by a reconnection.
+	/// Another identity mapped to the same subject never uses it.
+	pub identity_id: Uuid,
 	pub provider: Provider,
 	/// OpenAI's issued client ID, bound to one ChatGPT account and workspace.
 	/// It is not secret, but it is reused only for this connection.
@@ -79,7 +82,61 @@ pub struct PlanConnection {
 	pub refreshed_at: Option<DateTime<Utc>>,
 	pub revision: i64,
 }
+/// What a Run's admission pinned: one connection, as the identity it served
+/// then. A pin never follows the connection to another identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pin {
+	pub connection: Uuid,
+	pub identity: Uuid,
+}
+/// An External Identity that holds an enabled Mapping to a subject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappedIdentity {
+	pub id: Uuid,
+	/// Identity Disablement keeps the Mapping; it only pauses what the
+	/// identity holds.
+	pub disabled: bool,
+}
+
+/// The identity that may connect or use a Plan Connection of the subject
+/// these identities are mapped to: the only one that is not disabled. A
+/// subject shared by several has none (ADR 0007).
+pub fn sole_identity(mapped: &[MappedIdentity]) -> Option<Uuid> {
+	let mut active = mapped.iter().filter(|identity| !identity.disabled);
+	match (active.next(), active.next()) {
+		(Some(identity), None) => Some(identity.id),
+		_ => None,
+	}
+}
+
 impl PlanConnection {
+	/// Whether the identity that connected this is the only active one mapped
+	/// to its subject. Restoring another identity mapped there while the owner
+	/// is disabled never hands it the owner's plan.
+	pub fn serves(&self, mapped: &[MappedIdentity]) -> bool {
+		sole_identity(mapped) == Some(self.identity_id)
+	}
+	/// The pin an admission records for this connection now.
+	pub fn pin(&self) -> Pin {
+		Pin {
+			connection: self.id,
+			identity: self.identity_id,
+		}
+	}
+	/// Whether `pin` still names this connection as the identity it serves.
+	/// A pin read before a reconnection by another identity then fails,
+	/// however late its call reaches the owner's lock.
+	pub fn holds(&self, pin: Pin) -> bool {
+		self.pin() == pin
+	}
+	/// Whether the identity that connected this still holds an enabled
+	/// Mapping to its subject, even while disabled. Once it does not, the
+	/// owner lost access and the connection is retired.
+	pub fn owner_mapped(&self, mapped: &[MappedIdentity]) -> bool {
+		mapped
+			.iter()
+			.any(|identity| identity.id == self.identity_id)
+	}
 	pub fn check_revision(&self, expected: i64) -> Result<()> {
 		if self.revision != expected {
 			return Err(Error::Conflict("stale Plan Connection revision".into()));
