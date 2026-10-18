@@ -2283,7 +2283,6 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 	#[with(_store_fixture.clone())]
 	_federation: common::RuntimeFuture,
 ) {
-	use aidash_server::tool::{PluginTool, Tool, ToolConfig, ToolContext};
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
@@ -2313,66 +2312,127 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		)
 		.await
 		.unwrap();
+	let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	f.registry
+		.register(
+			&acme,
+			entry(
+				"tool",
+				"delegate-tool",
+				json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":f.config.node_id,"agent":{"id":agent.id,"version":agent.version}}}),
+			),
+		)
+		.await
+		.unwrap();
+	let delegating = f
+		.registry
+		.register(
+			&acme,
+			entry(
+				"agent",
+				"delegating",
+				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"delegate-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
+			),
+		)
+		.await
+		.unwrap();
+	// The delegated agent runs in the Tenant too, so it is approved and a subject.
+	common::approve_agent(&f, "acme", &agent).await;
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Agent tool", "Await delegated results")
 		.await
 		.unwrap();
-	let task = running_task(&f, &agent, workspace.id, None).await;
-	let run: Run = {
+	let task = running_task(&f, &delegating, workspace.id, None).await;
+	// A local Run delegates only under its worker authority (ADR 0043), so the
+	// agent tool runs through the worker, once without and once with a null parent.
+	let response = aidash_server::provider::ModelResponse {
+		tool_calls: [
+			json!({"title":"Child","description":"Delegated work"}),
+			json!({"title":"Child","description":"Delegated work","parent_id":null}),
+		]
+		.into_iter()
+		.enumerate()
+		.map(|(index, arguments)| aidash_server::provider::ToolCall {
+			id: index.to_string(),
+			name: "plugin_0".into(),
+			arguments,
+		})
+		.collect(),
+		..Default::default()
+	};
+	{
 		let query_bind_1 = task.id;
-		aidash_server::database::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("runs"))
+		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
+		sqlx::query(
+			&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs"))
+				.value_expr(
+					reinhardt::query::Alias::new("phase"),
+					reinhardt::query::Expr::cust("'TOOL_CALL'"),
+				)
+				.value_expr(
+					reinhardt::query::Alias::new("pending"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(task_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.in_scope(&ACME))
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
-	let config = ToolConfig::Agent {
-		node_id: store.node_id.clone(),
-		agent: aidash_server::registry::EntityRef {
-			id: agent.id,
-			version: agent.version,
-		},
+	let harness = aidash_server::harness::Harness { federation: f };
+	let children = async || -> Vec<Option<Uuid>> {
+		let query_bind_1 = workspace.id;
+		let query_bind_2 = task.id;
+		sqlx::query_scalar(
+			&reinhardt::query::Query::select()
+				.column(reinhardt::query::Alias::new("parent_id"))
+				.from(reinhardt::query::Alias::new("tasks"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(workspace_id = ? AND id <> ?)".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_all(store.pool.driver())
+		.await
+		.unwrap()
 	};
-	let plugin = PluginTool {
-		entry: entry(
-			"tool",
-			"delegate-tool",
-			serde_json::to_value(&config).unwrap(),
-		),
-		alias: "plugin_0".into(),
-		config,
-		client: f.client.clone(),
-	};
-	let context = ToolContext {
-		home: aidash_server::federation::Home::new(f, run.clone()),
-		store: store.clone(),
-		run,
-		scope: ACME.clone(),
-	};
-	for (index, parent) in [None, Some(serde_json::Value::Null)]
-		.into_iter()
-		.enumerate()
-	{
-		let mut input = json!({"title":"Child","description":"Delegated work"});
-		if let Some(parent) = parent {
-			input["parent_id"] = parent;
+	for _ in 0..6 {
+		if children().await.len() == 2 {
+			break;
 		}
-		let result = plugin
-			.invoke(&context, input, &format!("delegated-{index}"))
-			.await
-			.unwrap();
-		assert_eq!(result["task"]["parent_id"], task.id.to_string());
+		harness.worker_once().await.unwrap();
 	}
+	assert_eq!(children().await, vec![Some(task.id); 2]);
+	let delegated: i64 = {
+		let query_bind_1 = task.id;
+		sqlx::query_scalar(
+			&reinhardt::query::Query::select()
+				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
+				.from_as(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(r.task_id IN (SELECT id FROM tasks WHERE parent_id = ?) AND r.agent_id = 'research')"
+						.to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_one(store.pool.driver())
+		.await
+	}
+	.unwrap();
+	assert_eq!(delegated, 2, "each child is delegated to the bound agent");
 	cleanup(store, &url, &schema).await;
 }
 
