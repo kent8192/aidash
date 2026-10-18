@@ -492,7 +492,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	assert_eq!(status, 200, "{task}");
 	let task: Uuid = task["id"].as_str().unwrap().parse().unwrap();
 	// A Run of the Tenant as a worker would hold it, recorded directly.
-	let pool = d.federation.store.pool.driver();
+	let pool = d.federation.store.pool.fixture_driver();
 	let run = Uuid::new_v4();
 	let mut tx = pool.begin().await.unwrap();
 	sqlx::query("SELECT set_config('aidash.input_ledger_worker', 'true', true)")

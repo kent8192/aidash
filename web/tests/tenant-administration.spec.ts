@@ -575,6 +575,7 @@ test("a Deployment Administrator restores what the server marks restorable and l
   const reads = policyReads;
   await page.waitForTimeout(6_000);
   expect(policyReads).toBe(reads);
+});
 
 test("a member issues its own API token, and a policy reader simulates without recording (#363)", async ({
   page,
