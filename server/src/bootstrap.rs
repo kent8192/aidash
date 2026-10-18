@@ -1832,7 +1832,10 @@ pub(crate) fn semantic_status_repository(
 pub(crate) fn peer_mapping_repository(
 	runtime: &crate::federation::Federation,
 ) -> crate::apps::identity::repositories::peer_mappings::Repository<'_> {
-	crate::apps::identity::repositories::peer_mappings::Repository { runtime }
+	crate::apps::identity::repositories::peer_mappings::Repository {
+		runtime,
+		administrator: None,
+	}
 }
 
 /// Borrow the current draft authority transaction for HTTP and contained workers.

@@ -9,6 +9,16 @@ use uuid::Uuid;
 pub trait MappingWrite: Send + Sized {
 	async fn policy(&mut self, tenant: &str) -> Result<()>;
 	async fn credential_subject(&mut self, tenant: &str, id: Uuid) -> Result<Option<String>>;
+	/// Decides whether the writer may set `input`, whose credential acts as
+	/// `subject`, in the same transaction as the write.
+	async fn authorize(
+		&mut self,
+		_tenant: &str,
+		_input: &PeerMappingInput,
+		_subject: &str,
+	) -> Result<()> {
+		Ok(())
+	}
 	async fn lock_credential(&mut self, tenant: &str, id: Uuid, subject: &str) -> Result<()>;
 	async fn insert(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>>;
 	async fn update(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>>;

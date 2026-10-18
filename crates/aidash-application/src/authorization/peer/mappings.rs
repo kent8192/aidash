@@ -33,6 +33,7 @@ pub async fn write<R: MappingRepository>(
 		.credential_subject(tenant, input.credential_id)
 		.await?
 		.ok_or(Error::Forbidden)?;
+	scope.authorize(tenant, &input, &subject).await?;
 	if input.enabled {
 		scope
 			.lock_credential(tenant, input.credential_id, &subject)

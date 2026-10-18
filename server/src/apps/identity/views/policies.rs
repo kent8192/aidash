@@ -1,9 +1,12 @@
 //! HTTP endpoints backed by native dependency injection.
+use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
 	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogInput, CredentialInput,
+	CredentialPage,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
+use crate::authorization::identity::Actor;
 use crate::http::json::Json;
 use reinhardt::Depends;
 use reinhardt::Path;
@@ -61,10 +64,12 @@ pub async fn approve_catalog(
 )]
 pub async fn issue_credential(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Json(input): Json<CredentialInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.issue_credential(tenant, input).await)
+	crate::http::json(service.issue_credential(actor, origin, tenant, input).await)
 }
 
 #[get(
@@ -74,10 +79,12 @@ pub async fn issue_credential(
 )]
 pub async fn credentials(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
-	Query(page): Query<crate::apps::workspaces::serializers::tasks::PageQuery>,
+	Query(page): Query<CredentialPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.credentials(tenant, page).await)
+	crate::http::json(service.credentials(actor, origin, tenant, page).await)
 }
 
 #[post(
@@ -87,9 +94,11 @@ pub async fn credentials(
 )]
 pub async fn revoke_credential(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path((tenant, id)): Path<(String, Uuid)>,
 ) -> ViewResult<Response> {
-	match service.revoke_credential((tenant, id)).await {
+	match service.revoke_credential(actor, origin, (tenant, id)).await {
 		Ok((status, value)) => crate::http::json_status(Ok(value), status),
 		Err(error) => Ok(error.http_response()),
 	}
@@ -102,9 +111,11 @@ pub async fn revoke_credential(
 )]
 pub async fn snapshot(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.snapshot(tenant).await)
+	crate::http::json(service.snapshot(actor, origin, tenant).await)
 }
 
 #[post(
@@ -114,10 +125,12 @@ pub async fn snapshot(
 )]
 pub async fn replace(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Json(input): Json<AuthorizationUpdate>,
 ) -> ViewResult<Response> {
-	match service.replace(tenant, input).await {
+	match service.replace(actor, origin, tenant, input).await {
 		Ok((status, value)) => crate::http::json_status(Ok(value), status),
 		Err(error) => Ok(error.http_response()),
 	}
@@ -143,10 +156,12 @@ pub async fn evaluate(
 )]
 pub async fn simulate(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Json(input): Json<Evaluation>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.simulate(tenant, input).await)
+	crate::http::json(service.simulate(actor, origin, tenant, input).await)
 }
 
 #[get(
@@ -156,10 +171,12 @@ pub async fn simulate(
 )]
 pub async fn revisions(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Query(page): Query<AuthorizationPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.revisions(tenant, page).await)
+	crate::http::json(service.revisions(actor, origin, tenant, page).await)
 }
 
 #[get(
@@ -169,10 +186,12 @@ pub async fn revisions(
 )]
 pub async fn decisions(
 	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Query(page): Query<AuthorizationPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.decisions(tenant, page).await)
+	crate::http::json(service.decisions(actor, origin, tenant, page).await)
 }
 
 #[get(
