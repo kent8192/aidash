@@ -1,5 +1,5 @@
 meta {
-  name: 1125 tenants-list - Deployment Administrator lists every Tenant root record
+  name: 1125 tenants-list - Subject Credential cannot list Tenants
   type: http
   seq: 1125
 }
@@ -12,10 +12,10 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Deployment Administrator lists every Tenant root record contract", function () { expect(res.getBody()).to.be.an("array");expect(res.getBody().map(tenant => tenant.name)).to.include(bru.getEnvVar("tenant")); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

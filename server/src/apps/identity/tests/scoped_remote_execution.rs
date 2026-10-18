@@ -1278,6 +1278,55 @@ async fn write_home_entry(
 		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 	}
 }
+/// Make the receiver's scheduled semantic retry and the Home operation it
+/// waits on due now, leaving their counters as the production path saved them.
+async fn advance_semantic_retry(p: &Pair) {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value_expr(
+				Alias::new("pending"),
+				Expr::cust(
+					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+				),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![Expr::value(p.admission).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(grant_id=? AND state='WAITING')".to_owned(),
+				vec![Expr::value(p.grant).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+}
+/// The `semantic_memory` an Ordered model request carried in its volatile part.
+async fn ordered_semantic_memory(p: &Pair, request: usize) -> Value {
+	let requests = p.requests.lock().await;
+	let parts = requests[request - 1]["messages"][1]["content"]
+		.as_array()
+		.expect("an Ordered request")
+		.clone();
+	let volatile: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+	volatile["semantic_memory"].clone()
+}
+/// Home embedding calls so far, failed ones included.
+async fn home_embeddings(p: &Pair) -> usize {
+	p.semantic.as_ref().unwrap().requests.lock().await.len()
+}
 async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 	serde_json::to_string(&p.requests.lock().await[request - 1])
 		.unwrap()
@@ -1530,6 +1579,104 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 		remote_retrievals(&p).await,
 		2,
 		"the new retrieval is reused"
+	);
+	p.close().await;
+}
+
+/// Issue #236: a remote Ordered Run keeps reusing its Home retrieval through an
+/// outage of the Home embedding provider while its Retrieval Key holds. A Run
+/// message sent during the outage changes the key's query inputs; only the
+/// step that then needs a new retrieval follows the outage policy. Once the
+/// provider recovers, the retry retrieves again and the next step reuses it.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(4, Ordering::Release);
+	let failing = &p.semantic.as_ref().unwrap().failing;
+
+	// Arrange: the first step retrieves while the Home provider is healthy.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let retrieved = ordered_semantic_memory(&p, 1).await;
+	assert!(!retrieved.is_null(), "step 1 carries semantic context");
+
+	// Act: the Home provider goes down; the next steps keep the same key.
+	failing.store(true, Ordering::Release);
+	let outage = home_embeddings(&p).await;
+	for step in 2..=3 {
+		step_to_model_request(&p, step).await;
+		// Assert: the reuse reaches inference with the same bytes, untouched.
+		assert_eq!(
+			ordered_semantic_memory(&p, step).await,
+			retrieved,
+			"step {step}"
+		);
+		let run = p.run().await;
+		assert_eq!(run.control.as_str(), "ACTIVE", "step {step}: {run:?}");
+		assert!(run.recovery.retry.is_none(), "step {step}: {run:?}");
+		assert!(
+			serde_json::to_value(run.recovery.semantic_reason)
+				.unwrap()
+				.is_null(),
+			"step {step}: {run:?}"
+		);
+	}
+	assert_eq!(remote_retrievals(&p).await, 1, "an unchanged key is reused");
+	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
+
+	// Act: a Run message changes the query inputs of the Retrieval Key.
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+		json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..10 {
+		if p.run().await.recovery.retry.is_some() {
+			break;
+		}
+		p.step().await;
+	}
+
+	// Assert: the step that needs a new retrieval follows the outage policy.
+	let run = p.run().await;
+	let retry = run
+		.recovery
+		.retry
+		.as_ref()
+		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
+	assert_eq!(retry.count, 1, "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable"
+	);
+	assert_eq!(run.control.as_str(), "ACTIVE");
+	assert_eq!(p.requests.lock().await.len(), 3, "no inference");
+	assert!(
+		home_embeddings(&p).await > outage,
+		"the Home tried to embed"
+	);
+
+	// Act: the provider recovers and the retry is due.
+	failing.store(false, Ordering::Release);
+	advance_semantic_retry(&p).await;
+	step_to_model_request(&p, 4).await;
+	// Assert: the retry retrieves again, and the next step reuses it.
+	assert_eq!(remote_retrievals(&p).await, 2, "the retry retrieves again");
+	assert!(p.run().await.recovery.retry.is_none());
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, 2, "step 5 reuses step 4");
+	assert_eq!(
+		ordered_semantic_memory(&p, 5).await,
+		ordered_semantic_memory(&p, 4).await
 	);
 	p.close().await;
 }
@@ -2113,31 +2260,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 			assert!(due > chrono::Utc::now());
 			// Advance only persisted fixture deadlines, after checking that the
 			// production path saved a delay and retained its failure counter.
-			{ let query_bind_1 = p.admission; sqlx::query(&Query::update()
-					.table(Alias::new("runs")).value_expr(Alias::new("pending"), Expr::cust(
-							"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
-						))
-					.and_where(SimpleExpr::CustomWithExpr("(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
-					.to_string(PostgresQueryBuilder))
-			.execute(p.b.store.pool.fixture_driver())
-			.await }
-			.unwrap();
-			{
-				let query_bind_1 = p.grant;
-				sqlx::query(
-					&Query::update()
-						.table(Alias::new("semantic_remote_operations"))
-						.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(grant_id=? AND state='WAITING')".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(p.a.store.pool.fixture_driver())
-				.await
-			}
-			.unwrap();
+			advance_semantic_retry(&p).await;
 		}
 	}
 	let count = || {
@@ -5356,7 +5479,6 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 /// process from a live worker whose Run stopped progressing.
 struct ScopedWorkerCommand {
 	command: std::process::Command,
-	probe: std::net::SocketAddr,
 	log: std::path::PathBuf,
 	_settings_directory: tempfile::TempDir,
 	_binary: Arc<ScopedWorkerBinary>,
@@ -5403,11 +5525,6 @@ fn scoped_worker_command(
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
-		// Readiness uses the production probe listener on its own port.
-		let probe = std::net::TcpListener::bind("127.0.0.1:0")
-			.unwrap()
-			.local_addr()
-			.unwrap();
 		let log = directory.path().join("worker.log");
 		let output = std::fs::File::create(&log).unwrap();
 		let mut command = std::process::Command::new(&scoped_worker_binary.path);
@@ -5423,7 +5540,6 @@ fn scoped_worker_command(
 			))
 			.env("AIDASH_ACTIVATION_NAMESPACE", &p.bschema)
 			.env("AIDASH_ENV", "test")
-			.env("AIDASH_PROBE_LISTEN", probe.to_string())
 			// Activation claims and deferred step recovery are logged by the
 			// harness and application crates.
 			.env(
@@ -5435,7 +5551,6 @@ fn scoped_worker_command(
 			.stderr(output);
 		ScopedWorkerCommand {
 			command,
-			probe,
 			log,
 			_settings_directory: directory,
 			_binary: scoped_worker_binary,
@@ -5446,6 +5561,7 @@ fn scoped_worker_command(
 struct ScopedWorkerProcess {
 	child: std::process::Child,
 	spawned: std::time::Instant,
+	probe: std::net::SocketAddr,
 	command: ScopedWorkerCommand,
 }
 impl ScopedWorkerProcess {
@@ -5465,10 +5581,23 @@ impl ScopedWorkerProcess {
 
 	// Process primitive used by the initial fixture and by the explicit restart Act.
 	fn spawn(mut command: ScopedWorkerCommand) -> Self {
-		let child = command.command.spawn().unwrap();
+		// Readiness uses the production probe listener, which cannot inherit a
+		// descriptor. Reserve its port just before each spawn: a port reserved
+		// when the restart command is built stays released for the whole
+		// initial Run, and another process can take it.
+		let probe = std::net::TcpListener::bind("127.0.0.1:0")
+			.unwrap()
+			.local_addr()
+			.unwrap();
+		let child = command
+			.command
+			.env("AIDASH_PROBE_LISTEN", probe.to_string())
+			.spawn()
+			.unwrap();
 		Self {
 			child,
 			spawned: std::time::Instant::now(),
+			probe,
 			command,
 		}
 	}
@@ -5509,7 +5638,7 @@ impl ScopedWorkerProcess {
 			);
 			if !probed {
 				probed = http_client
-					.get(format!("http://{}/ready", self.command.probe))
+					.get(format!("http://{}/ready", self.probe))
 					.timeout(std::time::Duration::from_millis(500))
 					.send()
 					.await

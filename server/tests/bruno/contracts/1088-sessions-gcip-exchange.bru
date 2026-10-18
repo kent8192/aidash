@@ -1,12 +1,12 @@
 meta {
-  name: 1088 sessions-gcip-exchange - Malformed token envelope is rejected
+  name: 1088 sessions-gcip-exchange - Exchange requires its typed token envelope
   type: http
   seq: 1088
 }
 
 post {
   url: {{base_url}}/auth/gcip/exchange
-  body: file
+  body: text
   auth: none
 }
 
@@ -15,11 +15,11 @@ headers {
   Content-Type: application/json
 }
 
-body:file {
-  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
+body:text {
+  {}
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Exact HTTP 422", function () { expect(res.getStatus()).to.equal(422); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

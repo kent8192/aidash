@@ -12,6 +12,8 @@ mod harness;
 mod manage;
 #[path = "support/native_database.rs"]
 mod native_database;
+#[path = "offering.rs"]
+mod offering;
 #[path = "row_level_security.rs"]
 mod row_level_security;
 #[path = "tenancy.rs"]
