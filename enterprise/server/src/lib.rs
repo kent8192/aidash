@@ -8,4 +8,6 @@ pub const BUILD: Build = Build {
 	offerings: &[Offering::Cloud, Offering::Dedicated],
 	manifest_dir: env!("CARGO_MANIFEST_DIR"),
 	package: env!("CARGO_PKG_NAME"),
+	apps: &[],
+	migrations: &[],
 };

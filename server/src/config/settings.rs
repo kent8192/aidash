@@ -163,7 +163,7 @@ fn file_settings_builder(
         // Lowest priority: Default values
         .add_source(
             DefaultSource::new()
-                .with_value("core", serde_json::json!({ "base_dir": base_dir, "installed_apps": super::apps::APP_LABELS }))
+                .with_value("core", serde_json::json!({ "base_dir": base_dir, "installed_apps": crate::bootstrap::build::current().installed_apps() }))
                 // Initialize the standard REST scaffold contact defaults.
                 .with_value("contacts", serde_json::json!({}))
                 // Initialize optional Aidash fragments without enabling OIDC, Kubernetes

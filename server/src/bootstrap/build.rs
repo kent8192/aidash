@@ -29,6 +29,11 @@ pub struct Build {
 	/// The launcher package, for Reinhardt's Cargo checks.
 	pub manifest_dir: &'static str,
 	pub package: &'static str,
+	/// The labels of the apps this build adds to Community's.
+	pub apps: &'static [&'static str],
+	/// The migration roots of those apps, relative to `core.base_dir` like
+	/// Community's own `migrations`, so that an image mirrors the source tree.
+	pub migrations: &'static [&'static str],
 }
 
 impl Build {
@@ -37,7 +42,26 @@ impl Build {
 		offerings: &[Offering::SelfHosted],
 		manifest_dir: env!("CARGO_MANIFEST_DIR"),
 		package: env!("CARGO_PKG_NAME"),
+		apps: &[],
+		migrations: &[],
 	};
+
+	/// Community's installed apps followed by this build's.
+	pub fn installed_apps(&self) -> Vec<&'static str> {
+		crate::config::apps::APP_LABELS
+			.iter()
+			.chain(self.apps)
+			.copied()
+			.collect()
+	}
+
+	/// Community's migration root followed by this build's.
+	pub fn migration_roots(&self, base_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+		std::iter::once("migrations")
+			.chain(self.migrations.iter().copied())
+			.map(|root| base_dir.join(root))
+			.collect()
+	}
 
 	pub fn admit(&self, offering: Offering) -> Result<(), BuildError> {
 		if self.offerings.contains(&offering) {
