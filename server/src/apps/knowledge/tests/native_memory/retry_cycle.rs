@@ -123,7 +123,9 @@ async fn attempts(store: &Store, operation: Uuid) -> Vec<(i32, String)> {
 	.collect()
 }
 
-fn failure(result: &aidash_server::Result<memory::Outcome>) -> Option<aidash_domain::semantic::Failure> {
+fn failure(
+	result: &aidash_server::Result<memory::Outcome>,
+) -> Option<aidash_domain::semantic::Failure> {
 	match result {
 		Err(aidash_server::Error::RemoteSemantic(reason)) => Some(*reason),
 		_ => None,
@@ -292,7 +294,11 @@ async fn manual_retry_renews_a_spent_memory_retry_ledger_after_the_provider_reco
 	down.store(false, Ordering::Release);
 	let spent = run_recall(&f.store, &run).await;
 	// Assert: this was the dead end of #291.
-	assert_eq!(failure(&spent), Some(Failure::RetriesExhausted), "{spent:?}");
+	assert_eq!(
+		failure(&spent),
+		Some(Failure::RetriesExhausted),
+		"{spent:?}"
+	);
 
 	// Act: pause the Run as the harness does, then retry it manually.
 	aidash_server::database::native::query(

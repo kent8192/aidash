@@ -3659,7 +3659,7 @@ impl Store {
 					.table(Alias::new("runs"))
 					.value_expr(
 						Alias::new("semantic_retry_cycle"),
-						Expr::cust("semantic_retry_cycle + 1"),
+						Expr::col(Alias::new("semantic_retry_cycle")).add(Expr::value(1_i32)),
 					)
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 					.returning([Alias::new("semantic_retry_cycle")])

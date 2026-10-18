@@ -729,7 +729,13 @@ impl SemanticSearchScope for Scope {
 		cycle: i32,
 		budget: usize,
 	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
-		self.native.as_ref().unwrap().cycles.lock().unwrap().push(cycle);
+		self.native
+			.as_ref()
+			.unwrap()
+			.cycles
+			.lock()
+			.unwrap()
+			.push(cycle);
 		if self.native.as_ref().unwrap().fault == "pending" {
 			return Err(Error::RemoteSemantic(Failure::Pending));
 		}
