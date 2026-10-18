@@ -822,6 +822,19 @@ impl Deployment {
 		assert_eq!(queued["tenant"], tenant);
 		assert_eq!(queued["invitation_id"], invitation["id"]);
 		assert_eq!(queued["proposed_groups"], groups);
+		// The queue is paged; past its end a page is empty.
+		let (status, past) = self
+			.as_deployment_administrator(
+				"GET",
+				&format!(
+					"/api/dashboard/registrations?offset={}",
+					queue.as_array().unwrap().len()
+				),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(status, 200, "{past}");
+		assert_eq!(past, json!([]));
 		let (status, approved) = self
 			.as_deployment_administrator(
 				"POST",
@@ -867,6 +880,86 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		overview["actions"].as_array().unwrap().len(),
 		10,
 		"{overview}"
+	);
+	d.finish().await;
+}
+
+/// Waits until `count` backends of this test's database wait on a lock.
+async fn lock_waiters(d: &Deployment, count: i64) {
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		while d
+			.count(
+				"SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+			)
+			.await != count
+		{
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.unwrap_or_else(|_| panic!("{count} backends never waited on a lock"));
+}
+
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logout_committing_during_redemption_leaves_the_link_unspent(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, TenancyRules::default()).await;
+	let bob = d.person("bob").await;
+	let (_, created) = d
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Customer"}))
+		.await;
+	let tenant = created["name"].as_str().unwrap().to_owned();
+	let (status, invitation) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	// Bob logs out while redeeming. The logout's update holds his session row
+	// until it commits, and the sign-in check before the redemption
+	// transaction still sees the session as live.
+	let mut logout = d.federation.store.pool.driver().begin().await.unwrap();
+	let revoke = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value_expr(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
+		.and_where(Expr::col(Alias::new("identity_id")).eq(Expr::value(bob.identity)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&revoke).execute(&mut *logout).await.unwrap();
+
+	let redeem = d.as_person(
+		&bob,
+		"POST",
+		"/auth/invitations/redeem",
+		None,
+		json!({"tenant":tenant,"secret":invitation["secret"]}),
+	);
+	let commit = async {
+		// The redemption waits on the session under its identity lock.
+		lock_waiters(&d, 1).await;
+		logout.commit().await.unwrap();
+	};
+	let ((status, body), ()) = tokio::join!(redeem, commit);
+
+	assert_eq!(status, 401, "{body}");
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM tenant_invitations WHERE id = '{}' AND redeemed_at IS NULL",
+			invitation["id"].as_str().unwrap()
+		))
+		.await,
+		1
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM dashboard_registration_requests WHERE identity_id = '{}'",
+			bob.identity
+		))
+		.await,
+		0
 	);
 	d.finish().await;
 }

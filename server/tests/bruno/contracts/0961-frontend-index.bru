@@ -1,5 +1,5 @@
 meta {
-  name: 0961 frontend-index - Stale conditional request serves current content
+  name: 0961 frontend-index - Conditional request matches the content ETag
   type: http
   seq: 961
 }
@@ -12,10 +12,10 @@ get {
 
 headers {
   Accept: application/json
-  If-None-Match: "stale"
+  If-None-Match: {{frontendEtag}}
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Stale conditional request serves current content contract", function () { expect(res.getBody()).to.include("Bruno frontend fixture"); });
+  test("Exact HTTP 304", function () { expect(res.getStatus()).to.equal(304); });
+  test("Conditional request matches the content ETag contract", function () { expect(res.getBody()).to.equal(""); });
 }

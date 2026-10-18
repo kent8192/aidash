@@ -1,5 +1,5 @@
 meta {
-  name: 1099 tenant-registration-approve - Subject Credential bearer is never a Tenant Administrator
+  name: 1099 tenant-registration-approve - Deployment Administrator bearer is never a Tenant Administrator
   type: http
   seq: 1099
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 
