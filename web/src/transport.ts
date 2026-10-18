@@ -3,6 +3,10 @@ import ja from "./locales/ja-JP.json";
 import { desktop, desktopAvailable, type ConnectionProfile } from "./desktop";
 export const AUTHENTICATION_EXPIRED = "aidash:unauthorized";
 export const CONNECTION_CHANGED = "aidash:connection-changed";
+/** Dispatched after a change the browser session's Mappings show, such as a
+ *  Tenant label or a deleted Tenant, so every context selector reads the
+ *  session again. */
+export const SESSION_CHANGED = "aidash:session-changed";
 const CONTEXT_KEY = "aidash-context";
 let contextGeneration = 0;
 let activeConnection: ConnectionProfile | null = null;
@@ -92,8 +96,11 @@ export async function sessionFetch(
   options.signal?.addEventListener("abort", abort, { once: true });
   if (parent.aborted || options.signal?.aborted) abort();
   const headers = new Headers(options.headers);
+  // A caller naming a context, such as a deleted Tenant's Mapping to
+  // restore it, keeps it; every other request carries the chosen one.
   const context = dashboardContext();
-  if (context) headers.set("x-aidash-context", context);
+  if (context && !headers.has("x-aidash-context"))
+    headers.set("x-aidash-context", context);
   const native = desktopAvailable();
   if (native) {
     headers.delete("x-aidash-csrf");
@@ -181,6 +188,14 @@ export async function sessionFetch(
     throw error;
   }
 }
+/** Whether the session itself is still valid; it ignores the context. */
+async function sessionHolds(): Promise<boolean> {
+  const response = await sessionFetch("/auth/session", {
+    cache: "no-store",
+  }).catch(() => null);
+  await response?.body?.cancel();
+  return response?.ok === true;
+}
 export async function authenticatedFetch(
   url: string,
   options: RequestInit = {},
@@ -195,6 +210,17 @@ export async function authenticatedFetch(
     const messages =
       localStorage.getItem("aidash-locale") === "en-US" ? en : ja;
     if (response.status === 401) {
+      // A desktop token sees a deleted Tenant as unknown (ADR 0060). While
+      // its session still holds, refresh the contexts instead of signing out.
+      if (desktopAvailable() && dashboardContext() && (await sessionHolds())) {
+        current(generation);
+        window.dispatchEvent(new Event(SESSION_CHANGED));
+        throw new ApiError(
+          typeof data.error === "string" ? data.error : response.statusText,
+          response.status,
+          true,
+        );
+      }
       window.dispatchEvent(
         new CustomEvent(AUTHENTICATION_EXPIRED, {
           detail: messages.credentialInvalid,
@@ -204,6 +230,9 @@ export async function authenticatedFetch(
     }
     if (response.status === 403)
       throw new ApiError(messages.accessDenied, response.status, true);
+    // The chosen Tenant was deleted; the session no longer offers it.
+    if (response.status === 410)
+      window.dispatchEvent(new Event(SESSION_CHANGED));
     throw new ApiError(
       typeof data.error === "string"
         ? data.error

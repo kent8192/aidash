@@ -225,6 +225,68 @@ impl TenantAdministrations {
 		Ok(http::StatusCode::NO_CONTENT)
 	}
 
+	/// Leaves the Tenant: the caller's own Mapping is disabled, unless that
+	/// leaves the Tenant without a Tenant Administrator. A member mapped
+	/// through the Tenant's Binding cannot leave, since signing in maps it again.
+	pub(crate) async fn leave(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<http::StatusCode> {
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let actor = AdministrationActor::Identity {
+			identity: administrator.identity_id,
+			mapping: Some(administrator.mapping_id),
+		};
+		let pool = &self.runtime.store.pool;
+		let result = pool
+			.atomic(&administrator.scope()?, async |tx| {
+				let snapshot = administrator.lock(tx, true).await?;
+				let member = crate::apps::identity::models::DashboardIdentity::find(
+					tx,
+					administrator.identity_id,
+				)
+				.await?;
+				if administrator
+					.bound_pool()
+					.is_some_and(|pool| pool == member.gcip_tenant)
+				{
+					return Err(Error::Conflict(
+						"a member mapped through the Tenant Binding cannot leave".into(),
+					));
+				}
+				administrator
+					.require_remaining_administrator(
+						tx,
+						&snapshot.bundle,
+						Some(administrator.mapping_id),
+					)
+					.await
+					.map_err(|_| {
+						Error::Conflict(
+							"appoint another Tenant Administrator or delete the Tenant before leaving"
+								.into(),
+						)
+					})?;
+				DashboardMapping::find(tx, administrator.mapping_id)
+					.await?
+					.filter(|mapping| mapping.enabled)
+					.ok_or_else(|| Error::Conflict("mapping revision changed".into()))?
+					.disable_in(tx, "tenant.leave", &actor)
+					.await
+			})
+			.await;
+		self.finish(&administrator, result).await?;
+		super::plan_connections::retire_disabled_mapping(
+			&self.runtime,
+			administrator.mapping_id,
+			&actor.decision_actor(),
+		)
+		.await;
+		Ok(http::StatusCode::NO_CONTENT)
+	}
+
 	pub(crate) async fn update_memberships(
 		&self,
 		actor: Actor,

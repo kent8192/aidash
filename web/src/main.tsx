@@ -91,6 +91,7 @@ import {
   SESSION_CHANGED,
   type CreatedTenant,
 } from "./tenancy";
+import { DeletedTenants, type DeletedTenant } from "./tenant-deletion";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
 // Move any discovery email handoff out of sessionStorage immediately.
@@ -157,6 +158,10 @@ type BrowserSession = {
     personal?: boolean;
     credential_active?: boolean;
   }[];
+  /** Deleted Tenants this identity is mapped into; not in `mappings`. */
+  deleted_tenants?: DeletedTenant[];
+  /** Whether this identity's Personal Tenant is deleted and it may start a new one. */
+  personal_tenant_deleted?: boolean;
 };
 type Registration = { status: string; expires_at: string } | null;
 function sessionContext(session: BrowserSession, selected: string | null) {
@@ -702,6 +707,12 @@ function Dashboard({
                 )}
               </div>
             )}
+            <DeletedTenants
+              tenants={browserSession.deleted_tenants ?? []}
+              personalTenantDeleted={
+                browserSession.personal_tenant_deleted ?? false
+              }
+            />
             {(browserSession.tenant_creation ||
               browserSession.deployment_administrator) && (
               <CreateTenantForm
@@ -871,6 +882,9 @@ function Dashboard({
             deploymentAdministratorAllowed:
               browserSession?.deployment_administrator ?? false,
             personalAccount: browserSession?.personal_account ?? false,
+            deletedTenants: browserSession?.deleted_tenants ?? [],
+            personalTenantDeleted:
+              browserSession?.personal_tenant_deleted ?? false,
             tenantCreation:
               (browserSession?.tenant_creation ?? false) ||
               (context === "deployment_administrator" &&

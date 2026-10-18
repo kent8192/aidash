@@ -31374,6 +31374,15 @@
   },
   {
     "method": "POST",
+    "path": "/api/tenants/{tenant}/leave",
+    "name": "tenant-leave",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
     "path": "/api/tenants",
     "name": "tenants-create",
     "source": "server/src/apps/identity/views/tenants.rs",
@@ -31396,6 +31405,33 @@
     "name": "tenants-label",
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/personal",
+    "name": "tenants-personal",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/deletion",
+    "name": "tenants-delete",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/restore",
+    "name": "tenants-restore",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
     "uuid_parameters": [],
     "query_parameters": []
   },

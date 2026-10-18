@@ -980,6 +980,43 @@ async fn approvals_retire_a_connection_left_without_a_mapping(
 	fixture.cleanup().await;
 }
 
+/// A refused restore, here of a Tenant that is not deleted, by a member who
+/// may not restore it, never reaches OpenAI: the Tenant's live Plan
+/// Connections survive it (ADR 0060).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_refused_restore_keeps_an_active_tenants_connections(
+	#[from(parts)] parts: Parts,
+	#[future(awt)]
+	#[from(plan_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
+) {
+	// Arrange
+	let fixture = Fixture::new(application, parts);
+	let (_, context) = map(&fixture, "browser-a", "alice").await;
+	connect(&fixture, "browser-a", &context).await;
+	// Act
+	let response = send(
+		&fixture,
+		"browser-a",
+		&context,
+		"POST",
+		"/api/tenants/alpha/restore",
+		Value::Null,
+	)
+	.await;
+	// Assert
+	assert_ne!(response.status(), 200, "{}", json_body(&response));
+	assert!(fixture.openai.calls.lock().unwrap().revoked.is_empty());
+	assert!(
+		table_text(&fixture.f, "plan_connections")
+			.await
+			.contains("alice")
+	);
+	fixture.cleanup().await;
+}
+
 /// The identity whose External Identity subject is `subject`.
 async fn identity_of(f: &Federation, subject: &str) -> Uuid {
 	let query = Query::select()

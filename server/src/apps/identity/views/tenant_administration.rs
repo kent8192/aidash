@@ -128,3 +128,19 @@ pub async fn update_memberships(
 			.await,
 	)
 }
+
+/// Leaves the Tenant through the caller's own Mapping (ADR 0026, ADR 0060).
+#[post(
+	"/api/tenants/{tenant}/leave",
+	name = "tenant-leave",
+	auth = "protected"
+)]
+pub async fn leave(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::status(service.leave(actor, origin, tenant).await)
+		.map(|r| r.with_header("Cache-Control", "no-store"))
+}

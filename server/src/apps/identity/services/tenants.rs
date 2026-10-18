@@ -2,12 +2,14 @@
 //! a signed-in External Identity where the Tenancy Rules allow it, and a
 //! Deployment Administrator always. Subject Credentials, agents and peers never.
 use crate::apps::identity::models::{
-	AdministrationActor, AdministrationEvent, DashboardIdentity, Tenant, database_time,
+	AdministrationActor, AdministrationEvent, DashboardIdentity, Tenant, TenantDeletion,
+	database_time,
 };
 use crate::apps::identity::oidc::{
 	BrowserOrigin, csrf_allowed, required_config, session_from_headers,
 };
 use crate::apps::identity::repositories::tenants::{self, Created, Creator};
+use crate::apps::identity::repositories::{personal_tenant, tenant_deletions};
 use crate::apps::identity::serializers::tenants::{
 	CreatedTenant, LabelUpdate, TenantCreation, TenantLabel, TenantRecord,
 };
@@ -46,15 +48,28 @@ impl From<Created> for CreatedTenant {
 	}
 }
 
-impl From<Tenant> for TenantRecord {
-	fn from(tenant: Tenant) -> Self {
-		Self {
-			name: tenant.name,
-			label: tenant.label,
-			personal: tenant.personal,
-			created_at: tenant.created_at,
-			created_by_kind: tenant.created_by_kind,
-		}
+fn record(
+	tenant: Tenant,
+	deletion: Option<TenantDeletion>,
+	now: chrono::DateTime<chrono::Utc>,
+) -> TenantRecord {
+	let restorable = deletion.as_ref().is_some_and(|deletion| {
+		deletion.rule().is_ok_and(|rule| {
+			aidash_domain::identity::tenancy::deletion::restorable(
+				&rule,
+				aidash_domain::identity::tenancy::deletion::Actor::DeploymentAdministrator,
+				now,
+			)
+		})
+	});
+	TenantRecord {
+		name: tenant.name,
+		label: tenant.label,
+		personal: tenant.personal,
+		created_at: tenant.created_at,
+		created_by_kind: tenant.created_by_kind,
+		deletion: deletion.map(Into::into),
+		restorable,
 	}
 }
 
@@ -161,13 +176,64 @@ impl Tenants {
 			return Err(Error::Forbidden);
 		}
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
-		let tenants = self
+		let (tenants, mut deletions, now) = self
 			.runtime
 			.store
 			.pool
-			.atomic(&scope, async |tx| tenants::list(tx, page.offset).await)
+			.atomic(&scope, async |tx| {
+				let tenants = tenants::list(tx, page.offset).await?;
+				let deletions = tenant_deletions::current_of(
+					tx,
+					tenants.iter().map(|tenant| tenant.name.clone()).collect(),
+				)
+				.await?;
+				Ok((tenants, deletions, database_time(tx).await?))
+			})
 			.await?;
-		Ok(tenants.into_iter().map(Into::into).collect())
+		Ok(tenants
+			.into_iter()
+			.map(|tenant| {
+				let deletion = deletions.remove(&tenant.name);
+				record(tenant, deletion, now)
+			})
+			.collect())
+	}
+
+	/// Creates a new Personal Tenant for a signed-in External Identity whose
+	/// Personal Tenant was deleted, where the Tenancy Rules still provide
+	/// Personal Tenants. The dashboard first offers to restore the deleted one.
+	pub(crate) async fn recreate_personal(&self, headers: HeaderMap) -> Result<CreatedTenant> {
+		let f = &self.runtime;
+		let config = required_config(f)?;
+		let session = session_from_headers(f, &headers).await?;
+		// A desktop session is accepted as by ordinary Tenant creation;
+		// `csrf_allowed` requires its access token.
+		if !csrf_allowed(config, &headers, &session, &Method::POST) {
+			return Err(Error::Forbidden);
+		}
+		let origin = BrowserOrigin::unmapped(config, &session);
+		let identity = session.identity_id();
+		let account = f
+			.store
+			.pool
+			.atomic(&TenancyScope::NoTenant, async |tx| {
+				DashboardIdentity::find(tx, identity).await
+			})
+			.await?;
+		let pool = (!account.gcip_tenant.is_empty()).then_some(account.gcip_tenant.as_str());
+		if account.disabled_at.is_some()
+			|| !f
+				.config
+				.dashboard_policy()
+				.is_some_and(|policy| policy.provisions_personal(pool))
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(
+			personal_tenant::recreate(&f.store.pool, &f.config.node_id, identity, &origin.session)
+				.await?
+				.into(),
+		)
 	}
 
 	/// Changes the label of the caller's Tenant under `tenant.update`, through

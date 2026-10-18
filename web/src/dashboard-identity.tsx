@@ -7,6 +7,7 @@ import { apiFetch, authenticatedFetch } from "./transport";
 import { Panel, useI18n } from "./ui";
 import { Alert, GroupChoice, Hint, Pager } from "./components/patterns";
 import { TenantInvitations, TenantLabelForm } from "./tenancy";
+import { DeleteTenantForm, LeaveTenantButton } from "./tenant-deletion";
 import {
   MEMBER_LEVEL_ACTIONS,
   useTenantAdministration,
@@ -778,6 +779,8 @@ export function TenantIdentityAdministration({
           />
         </>
       )}
+      <LeaveTenantButton tenant={tenant} />
+      {can("tenant.delete") && <DeleteTenantForm tenant={tenant} />}
     </Panel>
   );
 }

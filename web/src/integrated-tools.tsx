@@ -42,6 +42,11 @@ const DashboardIdentityAdministration = lazy(() =>
 const TenantAccess = lazy(() =>
   import("./tenant-access").then((m) => ({ default: m.TenantAccess })),
 );
+const LeaveTenantButton = lazy(() =>
+  import("./tenant-deletion").then((m) => ({
+    default: m.LeaveTenantButton,
+  })),
+);
 
 export function ToolSection({
   title,
@@ -140,7 +145,12 @@ export function TrustTools({
             key={tenant}
             tenant={tenant}
             subject={subject}
-            fallback={administratorsOnly}
+            fallback={
+              <>
+                {administratorsOnly}
+                <LeaveTenantButton tenant={tenant} />
+              </>
+            }
           />
         </Suspense>
       ) : (

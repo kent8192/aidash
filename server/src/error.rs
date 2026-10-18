@@ -33,6 +33,10 @@ pub enum Error {
 	/// The Tenancy Rules refuse this Tenant creation now.
 	#[error("{}", tenant_creation_message(.0))]
 	TenantCreation(aidash_domain::identity::tenancy::CreationRefusal),
+	/// The Tenant is deleted (ADR 0060). Its members' browser Mappings see
+	/// this; credentials that could be probed from outside see 401 instead.
+	#[error("tenant_deleted")]
+	TenantDeleted,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	#[error("verified model media route unavailable for {0}")]
@@ -85,6 +89,7 @@ impl Error {
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
+			Self::TenantDeleted => (StatusCode::GONE, self.to_string()),
 			Self::TenantCreation(refusal) => (
 				match refusal {
 					CreationRefusal::HourlyLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -329,7 +334,8 @@ impl From<Error> for aidash_application::Error {
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::NotFound(message) => Self::NotFound(message),
-			Error::Forbidden => Self::Forbidden,
+			// Work stopped by a Tenant Deletion pauses like any refused authority.
+			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
 			Error::Unauthorized => Self::Unauthorized,
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),

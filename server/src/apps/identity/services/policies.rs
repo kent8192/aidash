@@ -237,6 +237,22 @@ impl PolicyAdministration {
 		input: AuthorizationUpdate,
 	) -> Result<(reinhardt::StatusCode, PolicyReplacement)> {
 		let f = self.runtime.clone();
+		// The replacement itself refuses a deleted Tenant too, but its error
+		// crosses the authorization port as a plain refusal.
+		let deleted = f
+			.store
+			.pool
+			.atomic(
+				&aidash_application::tenancy::TenancyScope::tenant(&tenant)?,
+				async |tx| {
+					crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &tenant)
+						.await
+				},
+			)
+			.await?;
+		if deleted {
+			return Err(crate::Error::TenantDeleted);
+		}
 		let snapshot = if matches!(actor, Actor::DeploymentAdministrator) {
 			// A browser session records which Deployment Administrator replaced it.
 			let revision_actor = match &origin {
