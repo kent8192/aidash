@@ -20,6 +20,7 @@ async fn deployment_administrators_delegate_no_tasks_of_their_own(
 		.post(&path, &input, "json")
 		.await
 		.unwrap();
+	// Assert: tasks belong to Tenants, so the Deployment Administrator is refused before any lookup (ADR 0043).
 	assert_json(anonymous, 401);
 	assert_json(deployment_administrator, 403);
 }

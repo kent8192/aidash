@@ -146,9 +146,11 @@ async fn count(fixture: &EndpointFixture, sql: &str, tenant: &str) -> i64 {
 async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment_administrator(
 	#[future] endpoint: EndpointFixture,
 ) {
+	// Arrange
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	let owner = credential(&fixture, "acme", "owner").await;
+	// Act: two versions of one agent and its model, registered by the Tenant.
 	for entry in [
 		model("model"),
 		agent("helper", "1.0.0", "model"),
@@ -176,6 +178,7 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		)
 		.await
 		.unwrap();
+	// Assert
 	assert_eq!(refused, 400, "{message}");
 	assert!(
 		message
@@ -211,6 +214,7 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 	#[future] endpoint: EndpointFixture,
 ) {
+	// Arrange
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	tenant(&fixture, "globex").await;
@@ -223,6 +227,7 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 			.0,
 		200
 	);
+	// Act
 	let read = globex
 		.get("/api/registry/model/1.0.0")
 		.await
@@ -241,6 +246,7 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 		.unwrap()
 		.status_code();
 	let listed = assert_json(globex.get("/api/registry/versions").await.unwrap(), 200);
+	// Assert
 	assert_ne!(read, 200);
 	assert_ne!(reference, 200);
 	assert_ne!(approval_status, 200);
@@ -270,6 +276,7 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 async fn idempotency_keys_belong_to_a_tenant_and_a_replay_decides_again(
 	#[future] endpoint: EndpointFixture,
 ) {
+	// Arrange
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	tenant(&fixture, "globex").await;
@@ -280,6 +287,7 @@ async fn idempotency_keys_belong_to_a_tenant_and_a_replay_decides_again(
 	for client in [&acme, &globex] {
 		client.set_header("Idempotency-Key", &key).await.unwrap();
 	}
+	// Act
 	let (first, created) = register(&acme, &unnamed).await;
 	let (other_tenant, elsewhere) = register(&globex, &unnamed).await;
 	let (replayed, again) = register(&acme, &unnamed).await;
@@ -289,6 +297,7 @@ async fn idempotency_keys_belong_to_a_tenant_and_a_replay_decides_again(
 	let reader = credential(&fixture, "acme", "reader").await;
 	reader.set_header("Idempotency-Key", &key).await.unwrap();
 	let (denied, _) = register(&reader, &unnamed).await;
+	// Assert
 	assert_eq!(first, 200, "{created}");
 	assert_eq!(other_tenant, 200, "{elsewhere}");
 	assert_eq!(replayed, 200);
@@ -303,6 +312,7 @@ async fn idempotency_keys_belong_to_a_tenant_and_a_replay_decides_again(
 async fn a_denied_write_leaves_no_definition_request_approval_or_event(
 	#[future] endpoint: EndpointFixture,
 ) {
+	// Arrange
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	let reader = credential(&fixture, "acme", "reader").await;
@@ -311,6 +321,7 @@ async fn a_denied_write_leaves_no_definition_request_approval_or_event(
 		.set_header("Idempotency-Key", &Uuid::new_v4().to_string())
 		.await
 		.unwrap();
+	// Act
 	let (registration, _) = register(&reader, &model("model")).await;
 	let (registered, _) = register(&member, &model("model")).await;
 	let (approval_status, _) =
@@ -321,6 +332,7 @@ async fn a_denied_write_leaves_no_definition_request_approval_or_event(
 		.await
 		.unwrap()
 		.status_code();
+	// Assert
 	assert_eq!(registration, 403);
 	assert_eq!(registered, 200);
 	assert_eq!(approval_status, 403);
@@ -368,6 +380,7 @@ async fn a_denied_write_leaves_no_definition_request_approval_or_event(
 async fn a_sandboxed_built_in_is_usable_only_after_the_tenant_approves_it(
 	#[future] endpoint: EndpointFixture,
 ) {
+	// Arrange
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	let owner = credential(&fixture, "acme", "owner").await;
@@ -381,6 +394,7 @@ async fn a_sandboxed_built_in_is_usable_only_after_the_tenant_approves_it(
 		.clone();
 	assert_eq!(bundle["needs_approval"], true);
 	assert_eq!(bundle["approval"], Value::Null);
+	// Act
 	let (alone, refusal) = approve(
 		&owner,
 		"acme",
@@ -396,6 +410,7 @@ async fn a_sandboxed_built_in_is_usable_only_after_the_tenant_approves_it(
 		]),
 	)
 	.await;
+	// Assert
 	assert_eq!(alone, 400, "{refusal}");
 	assert_eq!(closure, 200);
 }
@@ -405,6 +420,7 @@ async fn a_sandboxed_built_in_is_usable_only_after_the_tenant_approves_it(
 async fn agent_groups_need_group_authority_and_approval_never_restores_a_disabled_agent(
 	#[future] endpoint: EndpointFixture,
 ) {
+	// Arrange: a member holding `catalog.approve` but not `subject.group.update`.
 	let fixture = endpoint.await;
 	tenant(&fixture, "acme").await;
 	let owner = credential(&fixture, "acme", "owner").await;
@@ -443,6 +459,7 @@ async fn agent_groups_need_group_authority_and_approval_never_restores_a_disable
 	let member = credential(&fixture, "acme", "member").await;
 	let mut elevated = approval("helper", "1.0.0", true);
 	elevated["groups"] = json!([ADMINISTRATORS]);
+	// Act
 	let (named, _) = approve(&member, "acme", json!([elevated])).await;
 	let (defaulted, _) = approve(&member, "acme", json!([approval("helper", "1.0.0", true)])).await;
 	let subject = format!("{NODE}/agents/helper@1.0.0");
@@ -479,6 +496,7 @@ async fn agent_groups_need_group_authority_and_approval_never_restores_a_disable
 		.await
 		.unwrap()
 		.status_code();
+	// Assert
 	assert_eq!(named, 403);
 	assert_eq!(defaulted, 200);
 	assert_eq!(withdrawn, 200);

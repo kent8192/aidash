@@ -252,6 +252,7 @@ fn activation_input(enabled: bool) -> ActivationCommand {
 async fn activation_needs_the_approving_tenant_and_administration_a_deployment_administrator(
 	#[case] operation: &str,
 ) {
+	// Arrange: a subject with no `catalog.approve` decision for this Tenant.
 	let mut scope = DeploymentAdministratorFixture::new();
 	scope.principal = Principal::Subject {
 		tenant: "owner".into(),
