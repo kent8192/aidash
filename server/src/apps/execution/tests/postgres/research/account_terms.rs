@@ -156,6 +156,20 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		.unwrap();
 	let source: Uuid =
 		serde_json::from_value(found["data"]["sources"][0]["source_id"].clone()).unwrap();
+	// The Harness records the search's tool result only after the sweep.
+	let token = run.lease_owner.unwrap();
+	store
+		.invocation_start(
+			&ACME,
+			&run,
+			token,
+			"s1",
+			"research_search",
+			&json!({"query":"strasse"}),
+			true,
+		)
+		.await
+		.unwrap();
 	let read = research
 		.fetch(&call("f1"), &termed, &json!({"source_id":source}))
 		.await
@@ -198,6 +212,13 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 
 	// Assert: both Provider results are tombstones, marked by their reason.
 	assert_eq!(purged, 2);
+	// A result recorded after its terms ended is stored, and carried on by
+	// the Harness, as its tombstone.
+	let carried = store
+		.invocation_finish(&ACME, &run, token, "s1", &found)
+		.await
+		.unwrap();
+	assert_eq!(carried["error"]["code"], "result_expired", "{carried}");
 	for key in ["s1", "f1"] {
 		assert_eq!(
 			attempt(&store, run.id, key).await,

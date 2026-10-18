@@ -448,7 +448,7 @@ impl ExecutionStore for Backend {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
@@ -457,7 +457,7 @@ impl ExecutionStore for Backend {
 			.lock()
 			.unwrap()
 			.insert(key.to_owned(), ("COMPLETED".into(), Some(output.clone())));
-		Ok(())
+		Ok(output.clone())
 	}
 	async fn reconciliation_request(
 		&self,

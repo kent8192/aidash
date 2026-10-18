@@ -214,13 +214,16 @@ pub trait ExecutionStore: Send + Sync {
 		token: Uuid,
 		calls: &[BatchInvocation<'_>],
 	) -> Result<Vec<InvocationOutcome>>;
+	/// Records `output` and returns the result as stored, which the caller
+	/// carries on: an expired research result's tombstone when its account
+	/// terms ended meanwhile (ADR 0058).
 	async fn invocation_finish(
 		&self,
 		run: &Run,
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()>;
+	) -> Result<Value>;
 	async fn reconciliation_request(
 		&self,
 		run: &mut Run,

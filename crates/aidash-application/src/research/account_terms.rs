@@ -67,6 +67,10 @@ pub async fn sweep(
 	let batch = batch.max(1);
 	let mut after: Option<Uuid> = None;
 	let mut purged = 0;
+	// Each batch commits on its own, and a Run may apply one before the next
+	// commits; a strictly later purge time keeps every batch fresh against
+	// the projection's watermark.
+	let mut at = now;
 	loop {
 		let candidates = port
 			.candidates(after, retrieved_before, &ended, batch)
@@ -81,7 +85,8 @@ pub async fn sweep(
 			.map(|candidate| candidate.attempt_id)
 			.collect::<Vec<_>>();
 		if !ids.is_empty() {
-			purged += port.purge(&ids, now).await?;
+			purged += port.purge(&ids, at).await?;
+			at += Duration::microseconds(1);
 		}
 		if candidates.len() < batch as usize {
 			break;

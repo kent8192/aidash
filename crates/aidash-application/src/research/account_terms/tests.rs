@@ -41,6 +41,7 @@ struct Results {
 	all: Vec<RetainedResult>,
 	terminations: Mutex<Vec<Termination>>,
 	purged: Mutex<Vec<Uuid>>,
+	purge_times: Mutex<Vec<DateTime<Utc>>>,
 	asked: Mutex<Vec<(DateTime<Utc>, Vec<String>)>>,
 }
 
@@ -100,7 +101,8 @@ impl ProviderResultRetention for Results {
 			.cloned()
 			.collect())
 	}
-	async fn purge(&self, attempts: &[Uuid], _: DateTime<Utc>) -> crate::Result<u64> {
+	async fn purge(&self, attempts: &[Uuid], at: DateTime<Utc>) -> crate::Result<u64> {
+		self.purge_times.lock().unwrap().push(at);
 		self.purged.lock().unwrap().extend(attempts);
 		Ok(attempts.len() as u64)
 	}
@@ -294,4 +296,26 @@ async fn no_expired_results_leave_the_projection_unchanged() {
 			.unwrap()
 	);
 	assert_eq!(serde_json::to_value(&context).unwrap(), before);
+}
+
+#[tokio::test]
+async fn every_purge_batch_reads_as_fresh_against_the_watermark() {
+	// Arrange: three expired results, purged two per batch.
+	let results = Results::new(vec![
+		retained("brave", day(0), 30),
+		retained("brave", day(0), 30),
+		retained("brave", day(0), 30),
+	]);
+
+	// Act
+	let purged = sweep(&results, &[terms("brave", 30, None)], day(31), 2)
+		.await
+		.unwrap();
+
+	// Assert: a Run that applied the first batch still finds the second
+	// newer than its watermark.
+	assert_eq!(purged, 3);
+	let times = results.purge_times.lock().unwrap().clone();
+	assert_eq!(times.len(), 2);
+	assert!(times[0] == day(31) && times[1] > times[0], "{times:?}");
 }

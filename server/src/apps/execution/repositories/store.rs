@@ -3728,7 +3728,7 @@ impl Store {
 		worker: Uuid,
 		key: &str,
 		result: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		let mut tx = self
 			.pool
 			.begin(scope)
@@ -3760,7 +3760,8 @@ impl Store {
 			.await?;
 		}
 		tx.commit().await?;
-		Ok(())
+		// The caller carries on with what was stored, never the expired copy.
+		Ok(result.clone())
 	}
 	/// Durable before provider I/O. Like other worker writes, a lost lease
 	/// cannot dispatch; this lease supersedes every attempt left dispatched.

@@ -203,7 +203,9 @@ impl<'a> Executor<'a> {
 						Err(error) => return Err(error),
 					},
 				};
-				store
+				// The stored result replaces a research result whose account
+				// terms ended meanwhile (ADR 0058).
+				let output = store
 					.invocation_finish(admitted, token, key, &output)
 					.await?;
 				Ok((offset, output))
@@ -2648,9 +2650,13 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-				if invocation.status != "COMPLETED" {
-					store.invocation_finish(run, token, &key, &output).await?;
-				}
+				// The stored result replaces a research result whose account
+				// terms ended meanwhile (ADR 0058).
+				let output = if invocation.status != "COMPLETED" {
+					store.invocation_finish(run, token, &key, &output).await?
+				} else {
+					output
+				};
 				// Load/Unload results are staged with the same save that records
 				// them and take effect with the next inference.
 				if contract.behavior.exposure_update

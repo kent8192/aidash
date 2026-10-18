@@ -235,7 +235,7 @@ impl ExecutionStore for RunStore {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		Store::invocation_finish(&self.store, &self.scope, run, token, key, output)
 			.await
 			.map_err(Into::into)
