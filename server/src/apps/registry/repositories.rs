@@ -204,8 +204,6 @@ impl<E: OrmExecutor + TransactionExecutor> RegistrationScope for OrmScope<'_, E>
 		entry: &mut Entry,
 		key: Option<Uuid>,
 	) -> aidash_application::Result<()> {
-		// Idempotency keys belong to a requesting principal, which only a
-		// subject's Access has.
 		if key.is_some() {
 			return Err(aidash_application::Error::Forbidden);
 		}
@@ -213,8 +211,6 @@ impl<E: OrmExecutor + TransactionExecutor> RegistrationScope for OrmScope<'_, E>
 			.await
 			.map_err(Into::into)
 	}
-	/// Only a subject's Access decides `registry.create`; this adapter serves
-	/// fixtures and Aidash's own seeding, which register no request.
 	async fn authorize(&mut self, _: &Entry) -> aidash_application::Result<()> {
 		Err(aidash_application::Error::Forbidden)
 	}

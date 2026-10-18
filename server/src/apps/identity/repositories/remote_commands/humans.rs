@@ -8,7 +8,6 @@ use reinhardt::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// A scoped admission owns the journal.
 #[derive(Clone, Copy)]
 pub(crate) enum Journal {
 	Scoped(Uuid),

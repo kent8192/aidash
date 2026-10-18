@@ -40,9 +40,6 @@ pub async fn publish(
 	scope.replace_snapshot(snapshot);
 	scope.save_authority(job).await?;
 	scope.register(&entry).await?;
-	// The version is approved for use only while the subject that approved the
-	// generation still may approve it; a receiver of a foreign generation, and
-	// an approver without that authority, leave it registered unapproved.
 	if !job.home_node.is_empty() {
 		return Ok(());
 	}

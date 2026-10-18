@@ -297,7 +297,6 @@ export function ScopedMarketplace({
   }
   const activate = (item: MarketplaceInstallationRevision, enabled: boolean) =>
     run(async () => {
-      // Read the approval fence at the decision; the server checks it again.
       const binding = (
         await authorizationCatalog(encodeURIComponent(tenant))
       ).find(

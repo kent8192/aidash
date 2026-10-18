@@ -36,7 +36,7 @@ export function EntityDetails({
     ? undefined
     : versions.data?.find((value) => same(value.entry));
   // Re-resolve on every authorized snapshot instead of retaining the modal's
-  // old metadata. A version awaiting approval is only in the Tenant's Registry.
+  // old metadata.
   const current =
     data.registry.find(same) ??
     (version && ["unapproved", "withdrawn"].includes(approvalState(version))

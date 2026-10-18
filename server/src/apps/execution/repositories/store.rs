@@ -234,8 +234,6 @@ impl Store {
 		Ok(())
 	}
 
-	/// The Tenant of a Run, whose Registry holds its definitions. A Run without
-	/// one (only test fixtures create such Runs) has no Registry.
 	pub(crate) async fn run_tenant(&self, run: Uuid) -> Result<aidash_domain::tenancy::TenantName> {
 		self.run_tenancy(run)
 			.await?
@@ -657,8 +655,6 @@ impl Store {
 			})
 			.await
 	}
-	/// Persistence primitive without authorization: every workspace belongs to
-	/// a Tenant and its owning subject (ADR 0043).
 	pub async fn create_workspace(
 		&self,
 		scope: &TenancyScope,
@@ -1080,8 +1076,6 @@ impl Store {
 		};
 		Ok(task)
 	}
-	/// Persistence primitive without admission. No API reaches it: Runs are
-	/// admitted under a Tenant's authority (ADR 0043), so this only seeds records.
 	pub async fn claim(
 		&self,
 		scope: &TenancyScope,

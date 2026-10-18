@@ -31,8 +31,6 @@ pub async fn control(
 	let mut scope = repository.begin(&TenancyScope::tenant(tenant)?).await?;
 	let result = async {
 		if matches!(principal, Principal::DeploymentAdministrator) {
-			// Approval publishes into the Tenant's Registry and catalog, which
-			// a Deployment Administrator never writes (ADR 0029).
 			if matches!(input.action, Action::Approve) {
 				return Err(Error::Forbidden);
 			}

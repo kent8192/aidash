@@ -351,11 +351,8 @@ impl Home {
 			)
 			.await;
 		}
-		// Remote Runs execute only under a Remote Execution Grant (ADR 0043).
 		Err(Error::Forbidden)
 	}
-	/// Granted Homes answer every operation; `None` was only for the removed
-	/// legacy workspace protocol, so callers keep their optional contract.
 	pub(crate) async fn optional_command<T: DeserializeOwned>(
 		&self,
 		op: &str,
@@ -566,7 +563,6 @@ impl Home {
 			return Ok(task.clone());
 		}
 		if self.local() {
-			// A local Run's task is claimed at admission (ADR 0043).
 			return Err(Error::Forbidden);
 		}
 		self.command("claim", json!({"revision":task.revision,"entry":agent}))
@@ -732,7 +728,6 @@ impl Home {
 				.await;
 		}
 		if self.local() {
-			// Local Runs delegate only under their worker authority (ADR 0043).
 			return Err(Error::Forbidden);
 		}
 		self.command(

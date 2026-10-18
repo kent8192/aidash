@@ -466,7 +466,6 @@ impl TenantAdministrator {
 				}
 			}
 			let administrator = !actions.is_empty();
-			// Registry controls follow the same server-computed actions.
 			for action in rules::REGISTRY_ACTIONS {
 				if self
 					.allowed(tx, &snapshot, action, rules::COLLECTION, json!({}))

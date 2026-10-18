@@ -79,7 +79,6 @@ impl IncidentScope for Scope {
 		.await
 	}
 	async fn effective(&mut self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
-		// A Deployment Administrator's transaction has no Tenant of its own.
 		crate::apps::registry::models::Definition::read_of(
 			&mut self.tx,
 			tenant,

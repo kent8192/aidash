@@ -1165,7 +1165,6 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			home: self.native_home(),
 			scope: self.run_store.scope.clone(),
 		});
-		// Only admitted Runs execute, each under its worker authority (ADR 0043).
 		let Some(authority) = &self.authority else {
 			return Err(aidash_application::Error::Forbidden);
 		};

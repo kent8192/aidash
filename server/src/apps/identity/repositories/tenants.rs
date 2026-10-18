@@ -177,7 +177,6 @@ pub(crate) async fn create(
 		&creator.revision_actor(),
 	)
 	.await?;
-	// Every Tenant's Registry starts with the built-in definitions (ADR 0033).
 	crate::apps::registry::repositories::seed_tenant(
 		tx,
 		node,

@@ -126,7 +126,6 @@ pub async fn install(
 	scope
 		.require(&scope.package_resource(&source), "marketplace.install")
 		.await?;
-	// The copy becomes the Tenant's own definition (ADR 0029).
 	scope
 		.require(
 			&scope.registry_resource(

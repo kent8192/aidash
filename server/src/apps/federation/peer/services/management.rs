@@ -31,7 +31,6 @@ impl PeerManagement {
 	pub(crate) async fn discover(&self, actor: Actor, query: Search) -> Result<Discovery> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Definitions belong to Tenants; a Deployment Administrator discovers none (ADR 0029).
 			return Err(Error::Forbidden);
 		};
 		execution::discover(&f, &identity, &query).await

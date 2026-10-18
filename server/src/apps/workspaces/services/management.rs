@@ -60,7 +60,6 @@ impl CollaborationManagement {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope.create(&input.title, &input.goal).await
@@ -86,7 +85,6 @@ impl CollaborationManagement {
 	) -> Result<Workspace> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope.update(id, input.revision, input.state).await
@@ -100,7 +98,6 @@ impl CollaborationManagement {
 	) -> Result<Task> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope
@@ -124,7 +121,6 @@ impl CollaborationManagement {
 		}
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		scope
@@ -166,7 +162,6 @@ impl CollaborationManagement {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		interaction::conversation(

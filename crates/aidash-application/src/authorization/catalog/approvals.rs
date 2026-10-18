@@ -97,7 +97,6 @@ pub async fn approve(
 			return Err(Error::Invalid("CATALOG_APPROVAL_DUPLICATE".into()));
 		}
 		let entry = scope.definition(&approval.entry).await?;
-		// An installed copy is approved with its Marketplace activation.
 		if !aidash_domain::marketplace::installations::catalog_update_allowed(&entry) {
 			return Err(Error::Forbidden);
 		}
@@ -147,7 +146,6 @@ pub async fn approve(
 		}
 		let subject = aidash_domain::qualified_agent(scope.node(), &entry.id, &entry.version);
 		if scope.policy().subjects.contains_key(&subject) {
-			// Approving again leaves the subject as it is, enabled or disabled.
 			if approval.groups.is_some() {
 				return Err(Error::Conflict("AGENT_SUBJECT_EXISTS".into()));
 			}

@@ -121,11 +121,9 @@ export function OperationsDialog({
   )?.find((value) => value.id === d.request?.id);
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
-  // Peers are the Deployment's; definitions belong to Tenants (ADR 0029).
   const unavailable = isDeploymentAdministrator
     ? d.kind === "entity" || d.kind === "cluster"
     : d.kind === "peer";
-  // Every workspace, task and Run belongs to a Tenant (ADR 0043).
   const execution = ["workspace", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
@@ -482,8 +480,6 @@ function RunPanel({
     : (remoteNode?.invocations.filter((value) => value.run_id === id) ?? []);
   const managed =
     local && run.home_node !== data.node.id && data.access.kind === "subject";
-  // Runs observed on another node are read-only here; each node controls its
-  // own Runs (ADR 0043).
   const controllable = local && !terminal && !managed;
   const home = run.home_node === data.node.id;
   return (

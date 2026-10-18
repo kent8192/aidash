@@ -202,7 +202,6 @@ export function Check({
 const groupChip =
   "inline-flex h-7 cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 font-mono text-xs text-foreground transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft";
 
-/** One chip per group, each a checkbox named by the group. */
 export function GroupChoice({
   groups,
   selected,

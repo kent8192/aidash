@@ -6,9 +6,6 @@ use crate::{
 };
 
 impl Authorization {
-	/// Unrouted maintenance primitive for fixtures and repair: it writes a
-	/// Catalog Approval without a Tenant subject's authority and creates no
-	/// agent subject. The actor string labels history and grants no authority.
 	pub async fn set_catalog(
 		&self,
 		tenant: &str,
@@ -38,7 +35,6 @@ impl Authorization {
 		Ok(binding)
 	}
 
-	/// Unrouted read for fixtures and repair, beside `set_catalog`.
 	pub async fn catalog(&self, tenant: &str) -> Result<Vec<Binding>> {
 		crate::apps::identity::repositories::catalog_mutation::bindings(&self.pool, tenant).await
 	}

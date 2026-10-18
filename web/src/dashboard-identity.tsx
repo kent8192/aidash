@@ -511,7 +511,6 @@ export function TenantIdentityAdministration({
       setBusy(false);
     }
   };
-  // Members hold Registry actions too; only an administration action opens this.
   if (
     overview.isError ||
     overview.data?.actions.every((action) => REGISTRY_ACTIONS.includes(action))

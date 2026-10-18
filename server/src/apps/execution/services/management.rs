@@ -77,7 +77,6 @@ impl HarnessManagement {
 			let state = scope.state(f.config.identity(vec![])).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
-		// Definitions belong to Tenants (ADR 0029): a Deployment Administrator sees none.
 		let records: Vec<crate::registry::Entry> = Vec::new();
 		// Scan newest first until 100 visible events are collected. Hidden
 		// required-Home events may occupy any number of candidate pages.
@@ -274,7 +273,6 @@ impl HarnessManagement {
 	) -> Result<Task> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		execution::claim(&f, &identity, id, input.revision, &input.agent).await
@@ -465,7 +463,6 @@ impl HarnessManagement {
 		}
 
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
@@ -480,7 +477,6 @@ impl HarnessManagement {
 	) -> Result<HumanRequest> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		interaction::answer(&f, &identity, id, response).await
@@ -626,7 +622,6 @@ impl HarnessManagement {
 	) -> Result<SentResponse> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = &actor else {
-			// Work belongs to a Tenant; a Deployment Administrator runs none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		let run = {

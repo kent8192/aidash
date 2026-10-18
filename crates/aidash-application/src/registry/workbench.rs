@@ -61,7 +61,6 @@ pub async fn authorize(
 	action: &str,
 	shares: bool,
 ) -> Result<()> {
-	// Drafts are Tenant content: a Deployment Administrator has none (ADR 0029).
 	let Principal::Subject { tenant, subject } = scope.principal() else {
 		return Err(Error::Forbidden);
 	};

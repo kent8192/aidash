@@ -618,8 +618,6 @@ pub(crate) async fn run_recall(
 }
 
 /// Role configuration comes from the immutable definition, never an installation overlay.
-/// `tenant` owns the row the definition serves, such as a Bank's Tenant, because
-/// maintenance reads it in a Deployment Scope; a Tenant scope reads only its own.
 pub(crate) async fn definition(
 	lease: &mut Lease<'_>,
 	tenant: &str,

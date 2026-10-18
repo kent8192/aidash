@@ -105,7 +105,6 @@ export function CatalogApprovalSection({
     version.needs_approval &&
     !installed;
   const newSubject = entry.kind === "agent" && !version.subject;
-  // Without `subject.group.update` the server's default (`members`) applies.
   const choosesGroups =
     newSubject && can("subject.group.update") && assignable.length > 0;
   const groups = (

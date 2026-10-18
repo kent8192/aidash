@@ -25,7 +25,6 @@ impl RemoteManagement {
 		input: DelegateInput,
 	) -> Result<Delegation> {
 		let Actor::Subject(identity) = actor else {
-			// Tasks belong to Tenants; a Deployment Administrator delegates none of its own (ADR 0043).
 			return Err(Error::Forbidden);
 		};
 		execution::delegate(
