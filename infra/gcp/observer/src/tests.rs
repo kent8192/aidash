@@ -51,7 +51,7 @@ async fn run(
 fn policies(tables: &[&str]) -> String {
 	let assets = [
 		include_str!(
-			"../../../../server/migrations/execution/sql/forward/0034_row_level_security.sql"
+			"../../../../server/migrations/execution/sql/forward/0035_row_level_security.sql"
 		),
 		include_str!(
 			"../../../../server/migrations/registry/sql/forward/0032_row_level_security.sql"
