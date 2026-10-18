@@ -479,6 +479,10 @@ impl Narrowing {
 					},
 					preserve_recent: a.preserve_recent.max(b.preserve_recent),
 					forbid_apply: a.forbid_apply || b.forbid_apply,
+					max_calls_per_run: match (a.max_calls_per_run, b.max_calls_per_run) {
+						(Some(a), Some(b)) => Some(a.min(b)),
+						(a, b) => a.or(b),
+					},
 				}),
 				(Some(a), None) | (None, Some(a)) => Some(a.clone()),
 				(None, None) => None,
@@ -736,6 +740,40 @@ pub struct BindingSnapshot {
 	pub foreign_agents: Vec<ForeignAgentSnapshot>,
 }
 
+impl BindingSnapshot {
+	/// Whether the Agent's pinned model can be given a page image now (ADR
+	/// 0053): it declares image input and holds a current media route for the
+	/// PNG a viewed page is delivered as.
+	pub fn model_reads_page_images(&self) -> bool {
+		let Some(model) = self
+			.definitions
+			.iter()
+			.find(|definition| definition.identity == self.agent)
+			.map(|agent| &agent.definition.config["model"])
+		else {
+			return false;
+		};
+		let (Some(id), Some(version)) = (model["id"].as_str(), model["version"].as_str()) else {
+			return false;
+		};
+		self.definitions
+			.iter()
+			.find(|definition| {
+				definition.definition.kind == "model"
+					&& definition.identity.id == id
+					&& definition.identity.version == version
+			})
+			.and_then(|model| {
+				serde_json::from_value::<crate::model::ModelConfig>(model.definition.config.clone())
+					.ok()
+			})
+			.is_some_and(|model| {
+				model.modalities.iter().any(|modality| modality == "image")
+					&& model.has_current_media_route_for_type("image/png")
+			})
+	}
+}
+
 /// One authenticated receiver's public closure. Nested foreign or private
 /// dependencies require their own supported disclosure/admission protocol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -824,6 +862,16 @@ impl ResolvedDefinition {
 impl BindingSnapshot {
 	/// Reconstruct an explicit exact Decider from the retained admission closure.
 	pub fn decider(&self, hook: crate::decision::Hook) -> Result<crate::decision::BoundDecider> {
+		self.bound_decider(hook)?
+			.map(|(bound, _)| bound)
+			.ok_or_else(|| Error::Invalid("Run has no explicit Decider for this hook".into()))
+	}
+	/// The Decider bound for `hook` with its pinned definition, or `None` when
+	/// the Run has none for it.
+	pub fn bound_decider(
+		&self,
+		hook: crate::decision::Hook,
+	) -> Result<Option<(crate::decision::BoundDecider, super::Entry)>> {
 		self.validate()?;
 		let mut found = None;
 		for binding in self
@@ -854,11 +902,11 @@ impl BindingSnapshot {
 				config,
 				restrictions: binding.narrow.decision.clone().unwrap_or_default(),
 			};
-			if found.replace(bound).is_some() {
+			if found.replace((bound, binding.definition.clone())).is_some() {
 				return Err(Error::Invalid("duplicate retained Decider hook".into()));
 			}
 		}
-		found.ok_or_else(|| Error::Invalid("Run has no explicit Decider for this hook".into()))
+		Ok(found)
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.agent.validate()?;

@@ -24,8 +24,11 @@ WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY web ./
+COPY enterprise/web /build/enterprise/web
 COPY --from=rust /out/aidash.json /build/openapi/aidash.json
-RUN npm run generate:api && npx tsc -b && npx vite build
+RUN npm run generate:api
+WORKDIR /build/enterprise/web
+RUN npm run build
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
@@ -39,7 +42,7 @@ COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml && \
     sed -i 's/^offering = "self-hosted"$/offering = "cloud"/' /app/server/settings/base.toml && \
     grep -qx 'offering = "cloud"' /app/server/settings/base.toml
-COPY --from=web /build/web/dist /app/web
+COPY --from=web /build/enterprise/web/dist /app/web
 RUN mkdir -p /var/lib/aidash/memory-recovery && chown -R 10001:10001 /var/lib/aidash
 WORKDIR /app/server
 USER 10001:10001

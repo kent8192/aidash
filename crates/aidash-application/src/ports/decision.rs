@@ -103,6 +103,8 @@ pub struct DispatchRecord {
 	pub request_digest: String,
 	pub state_digest: String,
 	pub questions: Vec<String>,
+	/// Commits to the definitions of `questions`, which the request carried.
+	pub question_digest: String,
 	pub mode: Mode,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +126,7 @@ pub enum Reservation {
 	Recovered(RecoveredAttempt),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RetainedState {
 	pub id: Uuid,
 	pub digest: String,
@@ -191,4 +193,14 @@ pub trait DecisionJournal: Send + Sync {
 	/// Retention cleanup deletes state bytes and atomically leaves an expired marker.
 	async fn expire_states(&self, now: DateTime<Utc>) -> Result<usize>;
 	async fn append_outcome(&self, outcome: &OutcomeLink) -> Result<()>;
+}
+
+/// The compaction Decider bound to one Run and the Node adapters that serve its
+/// decisions during one step.
+pub struct DecisionPorts<'a> {
+	pub decider: BoundDecider,
+	pub definition: aidash_domain::registry::Entry,
+	pub authority: Box<dyn DecisionAuthority + 'a>,
+	pub journal: Box<dyn DecisionJournal + 'a>,
+	pub provider: Box<dyn DecisionProvider + 'a>,
 }

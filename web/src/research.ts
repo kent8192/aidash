@@ -327,6 +327,10 @@ const FAILURES: Record<string, [string, string]> = {
     "This Run's research evidence was revoked, so its research is closed.",
     "この Run の Research evidence が取り消されたため、調査は終了しています。",
   ],
+  result_expired: [
+    "The research service's account terms no longer let this result be kept. The agent may search or read again.",
+    "調査サービスの利用規約 (Research account terms) により、この結果の保持期限が切れました。エージェントは再度検索または読み取りできます。",
+  ],
 };
 
 /**
@@ -345,4 +349,121 @@ export function researchFailure(result: unknown, ja: boolean): string | null {
     return null;
   const words = FAILURES[error.code];
   return words ? words[ja ? 1 : 0] : null;
+}
+
+/** The periods of Retention Rules, in seconds (ADR 0045). */
+export type Periods = {
+  document_snapshots: { after_run_seconds: number; max_age_seconds: number };
+};
+
+/** The units a retention period is entered in, longest first. */
+export const PERIOD_UNITS = [
+  ["days", 86_400],
+  ["hours", 3_600],
+  ["minutes", 60],
+  ["seconds", 1],
+] as const;
+
+export type PeriodUnit = (typeof PERIOD_UNITS)[number][0];
+
+const UNIT_WORDS: Record<PeriodUnit, [string, string, string]> = {
+  days: ["day", "days", "日"],
+  hours: ["hour", "hours", "時間"],
+  minutes: ["minute", "minutes", "分"],
+  seconds: ["second", "seconds", "秒"],
+};
+
+/**
+ * `seconds` in the longest unit that divides it evenly, so a period reads
+ * as it was meant ("7 days", not "168 hours"). Zero reads in hours.
+ */
+export function splitPeriod(seconds: number): {
+  value: number;
+  unit: PeriodUnit;
+} {
+  if (seconds === 0) return { value: 0, unit: "hours" };
+  const [unit, size] =
+    PERIOD_UNITS.find(([, size]) => seconds % size === 0) ??
+    PERIOD_UNITS[PERIOD_UNITS.length - 1];
+  return { value: seconds / size, unit };
+}
+
+/** A period entered as a whole number of `unit`s, in seconds. */
+export function periodSeconds(value: number, unit: PeriodUnit): number {
+  return value * PERIOD_UNITS.find(([name]) => name === unit)![1];
+}
+
+/** A period in words, such as "24 hours" or "7 日". */
+export function periodWords(seconds: number, ja: boolean): string {
+  const { value, unit } = splitPeriod(seconds);
+  const [one, many, japanese] = UNIT_WORDS[unit];
+  return ja ? `${value} ${japanese}` : `${value} ${value === 1 ? one : many}`;
+}
+
+/** Which periods `next` shortens compared with `current`. */
+export function shortenedPeriods(
+  current: Periods,
+  next: Periods,
+): ("after_run_seconds" | "max_age_seconds")[] {
+  return (["after_run_seconds", "max_age_seconds"] as const).filter(
+    (period) =>
+      next.document_snapshots[period] < current.document_snapshots[period],
+  );
+}
+
+/** Whether a Tenant's stored period exceeds the Deployment's current one. */
+export function exceedsCeiling(tenant: Periods | null, deployment: Periods) {
+  return (
+    !!tenant &&
+    (["after_run_seconds", "max_age_seconds"] as const).some(
+      (period) =>
+        tenant.document_snapshots[period] >
+        deployment.document_snapshots[period],
+    )
+  );
+}
+
+/**
+ * Who revoked evidence or changed Retention Rules, as recorded:
+ * `subject:<tenant>/<subject>` shows the subject. A Deployment
+ * Administrator's identity is shown only to Deployment Administrators.
+ */
+export function recordedActor(
+  recorded: string,
+  deploymentAdministrator: boolean,
+  ja: boolean,
+): string {
+  const administrator = ja
+    ? "デプロイメント管理者"
+    : "Deployment Administrator";
+  if (recorded.startsWith("subject:"))
+    return recorded.slice(recorded.indexOf("/") + 1) || recorded;
+  if (recorded.startsWith("deployment-administrator:"))
+    return deploymentAdministrator
+      ? `${administrator} (${recorded.slice("deployment-administrator:".length)})`
+      : administrator;
+  if (recorded === "deployment-administrator")
+    return deploymentAdministrator
+      ? `${administrator} (${ja ? "API トークン" : "API token"})`
+      : administrator;
+  return recorded;
+}
+
+/** Longest revocation reason the server accepts, in characters. */
+export const MAX_REVOCATION_REASON = 1000;
+
+/** Whether a Run has done any research a revocation would remove. */
+export function hasResearch(research: {
+  usage: { search_attempts: number; fetch_attempts: number; sources: number };
+  uncertain_attempts: number;
+  in_flight_attempts: number;
+}): boolean {
+  return (
+    research.usage.search_attempts +
+      research.usage.fetch_attempts +
+      research.usage.sources +
+      research.uncertain_attempts +
+      research.in_flight_attempts >
+    0
+  );
 }

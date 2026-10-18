@@ -418,7 +418,7 @@ def main():
     profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
     profile = pathlib.Path(profile_directory.name) / "profile.json"
     profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
-    # Approved compactors name the Tenant's OpenRouter Provider Credential
+    # Compaction Deciders name the Tenant's OpenRouter Provider Credential
     # (ADR 0041), so each Node runs a disposable PostgreSQL Provider Credential
     # Store whose keys exist only for this run.
     provider_credentials = pathlib.Path(profile_directory.name) / "provider-credentials.json"

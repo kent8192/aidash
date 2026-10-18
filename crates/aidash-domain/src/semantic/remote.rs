@@ -38,8 +38,10 @@ pub enum Request {
 		/// and similarly named Registry entries never substitute for this mapping.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		native: Option<Box<NativeRequest>>,
+		/// The compaction Decider version approved at the execution Node; the
+		/// executing Node calls it with its own Tenant's credential (ADR 0042).
 		#[serde(default, skip_serializing_if = "Option::is_none")]
-		compactor: Option<EntityRef>,
+		decider: Option<EntityRef>,
 		/// Exact Summary Stage model pinned by the Agent's Context Policy.
 		/// Omitted for peers and Agents without a Summary Stage.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,10 +92,10 @@ impl Default for Request {
 	}
 }
 impl Request {
-	pub fn compactor(&self) -> Option<&EntityRef> {
+	pub fn decider(&self) -> Option<&EntityRef> {
 		match self {
 			Self::Disabled { .. } => None,
-			Self::RequiredHome { compactor, .. } => compactor.as_ref(),
+			Self::RequiredHome { decider, .. } => decider.as_ref(),
 		}
 	}
 	pub fn summarizer(&self) -> Option<&EntityRef> {
@@ -137,8 +139,9 @@ pub enum Binding {
 		embedding: Box<Provider>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		native: Option<Box<NativeBinding>>,
+		/// Exact compaction Decider pin at the execution Node.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
-		compactor: Option<Box<Provider>>,
+		decider: Option<Box<Provider>>,
 		/// Home-disclosed Summary Stage model pin; absent means no Summary
 		/// Stage may run for this remote execution.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,7 +166,7 @@ impl Binding {
 			},
 			Self::RequiredHome {
 				embedding,
-				compactor,
+				decider,
 				summarizer,
 				native,
 				..
@@ -172,7 +175,7 @@ impl Binding {
 				native: native
 					.as_ref()
 					.map(|binding| Box::new(binding.selection.clone())),
-				compactor: compactor.as_ref().map(|p| p.entry.clone()),
+				decider: decider.as_ref().map(|p| p.entry.clone()),
 				summarizer: summarizer.as_ref().map(|p| p.entry.clone()),
 			},
 		}

@@ -115,6 +115,8 @@ async fn research_fixture(
 			.await
 			.unwrap();
 	let members: Vec<Value> = bundle.config["members"].as_array().unwrap().clone();
+	// search, fetch, find and view.
+	assert_eq!(members.len(), 4, "{members:?}");
 	let approvals: Vec<Value> = std::iter::once(json!({"id":bundle.id,"version":bundle.version}))
 		.chain(
 			members
@@ -1120,3 +1122,5 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 
 #[path = "web_research/retention.rs"]
 mod retention;
+#[path = "web_research/view.rs"]
+mod view;

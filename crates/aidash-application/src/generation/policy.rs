@@ -230,7 +230,7 @@ async fn write_in(
 			.chain(
 				spec.compaction
 					.iter()
-					.map(|c| (c.provider.clone(), "compactor")),
+					.map(|c| (c.provider.clone(), "decider")),
 			)
 			.chain(
 				spec.embedding

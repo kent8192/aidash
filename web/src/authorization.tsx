@@ -196,7 +196,8 @@ function TenantAuthorization({
 }: {
   tenant: string;
   invitations: boolean;
-  /** The Deployment Administrator deleted this Tenant. */
+  /** The Deployment Administrator deleted this Tenant. Only the Deployment
+   *  Administrator's page passes it; members delete from their Tenant page. */
   onDeleted?: () => void;
   access: PolicyAccess;
 }) {
@@ -324,7 +325,7 @@ function TenantAuthorization({
           </Disclosure>
         </Panel>
       )}
-      {current && access.deploymentAdministrator && (
+      {current && onDeleted && (
         <div className="w-full max-w-md">
           <DeleteTenantForm
             key={tenant}

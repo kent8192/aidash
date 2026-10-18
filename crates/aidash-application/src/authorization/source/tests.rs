@@ -42,7 +42,7 @@ fn inspection(kind: &str) -> Inspection {
 			metadata,
 		}],
 		semantic_memory: 0,
-		compactor: None,
+		decider: None,
 	}
 }
 fn task() -> Task {
@@ -109,7 +109,7 @@ impl SourceAuthorityScope for Scope {
 #[case("tool", "tool.invoke")]
 #[case("skill", "skill.use")]
 #[case("cluster", "cluster.execute")]
-#[case("compactor", "compaction.invoke")]
+#[case("decider", "decision.invoke")]
 #[tokio::test]
 async fn exact_receiver_dependencies_require_read_and_execution_authority(
 	#[case] kind: &str,

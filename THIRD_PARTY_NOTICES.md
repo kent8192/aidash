@@ -18,11 +18,6 @@ file is an upstream file itself, unchanged apart from compression.
 
 Files that contain adapted material:
 
-- `crates/aidash-application/src/context/compaction.rs`: compaction defaults, state fitting and the keep, shorten or drop decision (lineage)
-- `crates/aidash-application/src/context.rs`: Jev answer validation (lineage)
-- `crates/aidash-integrations/src/compaction.rs`: the Jev client and its request limits (lineage)
-- `crates/aidash-integrations/src/compaction/tests.rs`: tests of the Jev client (lineage)
-- `server/src/apps/execution/services/context/jev.rs`: the port that asks Jev (lineage)
 - `crates/aidash-application/src/decision/state.rs`: the compaction rubric and the per-call question pair, rewritten rather than copied (content)
 
 ### How the files were traced
@@ -42,6 +37,18 @@ pinned revision with the tree. It searched for the upstream defaults (0.5, 6,
 25,000, 30,000 and 300), the input caps (1,000, 200 and 60), the state text and
 the question structure. It found the decision rubric in addition to the files
 above.
+
+#108 (commits `8ae3d9d81` and `7b6880532`) replaced the compactor with the
+compaction Decider. It deleted `crates/aidash-application/src/context/compaction.rs`,
+`crates/aidash-integrations/src/compaction.rs` with its tests and
+`server/src/apps/execution/services/context/jev.rs`, and removed the Jev answer
+validation from `crates/aidash-application/src/context.rs`. The same blame on
+the #108 head traces no lines to the two paths beyond generic code: the
+`reqwest` client builder in `crates/aidash-integrations/src/decision.rs` and
+imports and a route in its tests. `crates/aidash-domain/src/decision/pruning.rs`
+carries lines from the deleted `context/compaction.rs`, but they were written
+in that file after the split and do not trace to either path. The content
+search found none of the upstream defaults or input caps outside the rubric.
 
 ## Hindsight
 

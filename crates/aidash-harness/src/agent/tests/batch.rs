@@ -552,7 +552,7 @@ impl ExecutionStore for Bench {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		assert_eq!(token, self.0.token);
 		let mut flight = Flight::enter(&self.0.lab);
 		{
@@ -572,7 +572,7 @@ impl ExecutionStore for Bench {
 		// The recording connection stays busy after the row is written.
 		tokio::time::sleep(Duration::from_millis(10)).await;
 		flight.returned = true;
-		Ok(())
+		Ok(output.clone())
 	}
 	async fn reconciliation_request(
 		&self,
@@ -637,6 +637,7 @@ impl ExecutionStore for Bench {
 		_token: Uuid,
 		_attempt: Uuid,
 		_settlement: &aidash_domain::context::recovery::Settlement,
+		_staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		unexpected("ExecutionStore.adopt_compaction")
 	}
@@ -741,7 +742,10 @@ impl ExecutionAuthority for Bench {
 	async fn human_read(&self, _id: Uuid) -> Result<()> {
 		unexpected("ExecutionAuthority.human_read")
 	}
-	async fn model_media(&self, _selections: &[Selection]) -> Result<Vec<ContentPart>> {
+	async fn model_media(
+		&self,
+		_selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>> {
 		unexpected("ExecutionAuthority.model_media")
 	}
 	async fn human_message_media(
@@ -784,6 +788,9 @@ impl ExecutionAuthority for Bench {
 		_summarizer: &aidash_domain::context::summary::SummaryProvider,
 	) -> Result<()> {
 		unexpected("ExecutionAuthority.recheck_summary")
+	}
+	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
+		unexpected("ExecutionAuthority.recheck_decider")
 	}
 }
 
@@ -846,9 +853,6 @@ impl ExecutionEnvironment for Bench {
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		unexpected("ExecutionEnvironment.provider")
-	}
-	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
-		unexpected("ExecutionEnvironment.compactor")
 	}
 	fn binding_resolver(&self) -> &dyn BindingResolver {
 		self

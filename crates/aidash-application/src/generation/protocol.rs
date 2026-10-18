@@ -70,7 +70,7 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 		}
 		Purpose::Compaction => {
 			let Binding::RequiredHome {
-				compactor: Some(provider),
+				decider: Some(provider),
 				..
 			} = &description.semantic
 			else {
@@ -85,13 +85,14 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				.inspection
 				.definitions
 				.iter()
-				.find(|d| d.kind == "compactor" && d.entry == usage.provider.entry)
+				.find(|d| d.kind == "decider" && d.entry == usage.provider.entry)
 				.ok_or(Error::Forbidden)?;
-			let config: aidash_domain::registry::CompactorConfig =
+			let config: aidash_domain::decision::DeciderConfig =
 				serde_json::from_value(definition.metadata.config.clone())?;
-			// Home cannot verify the execution peer's compaction body. Charge
-			// the approved maximum instead of trusting its claimed byte count.
-			if usage.reserved_tokens != (config.max_request_bytes + 1024) as i64 {
+			// Home cannot verify the execution peer's Decision Attempt. Charge
+			// the Decider version's largest request instead of trusting its
+			// claimed byte count.
+			if usage.reserved_tokens != (config.state_budget.max_request_bytes() + 1024) as i64 {
 				return Err(Error::Forbidden);
 			}
 		}
@@ -352,7 +353,7 @@ pub async fn admit(
 		}
 		Purpose::Compaction => match &description.semantic {
 			Binding::RequiredHome {
-				compactor: Some(provider),
+				decider: Some(provider),
 				..
 			} => (**provider).clone(),
 			_ => return Err(Error::RemoteSemantic(Failure::ContextBudget)),
