@@ -21,11 +21,10 @@ references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
 transports can no longer name one (#296).
 
 Jev also runs through OpenRouter, at `POST {base}/systemone` with
-`provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
+`provider.zdr = true` (ADR 0041). `decider` configurations name
 `provider_credential = "openrouter"` and an exact release such as
-`typesafe/jev-1.13`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
-`AIDASH_JEV_MODEL` are gone, and the `registry_compactor_config` constraint
-rejects the old shape. Each request is a Decision Attempt of the Run whose
+`typesafe/jev-1.14`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
+`AIDASH_JEV_MODEL` are gone, and the `compactor` kind was removed (#108). Each request is a Decision Attempt of the Run whose
 context it reduces, and it uses the Provider Credential that the Tenant's
 OpenRouter binding names at the time of the call, not the Run's admitted
 inference pin: Runs on a Plan Connection or a Keyless endpoint have no such

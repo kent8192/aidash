@@ -13,6 +13,9 @@ fn config() -> DeciderConfig {
 		rule: RULE.into(),
 		keep_threshold: Probability::half(),
 		mode: Mode::Enforce,
+		max_calls_per_run: 20,
+		state_retention: policy::StateRetention::default(),
+		state_budget: StateBudget::default(),
 	}
 }
 #[test]
@@ -124,16 +127,33 @@ fn narrowing_cannot_increase_deletion_and_intersections_preserve_both_constraint
 		keep_threshold: Probability::new(0.25).unwrap(),
 		preserve_recent: 8,
 		forbid_apply: false,
+		max_calls_per_run: Some(10),
 	};
 	let b = Restrictions {
 		keep_threshold: Probability::new(0.1).unwrap(),
 		preserve_recent: 6,
 		forbid_apply: true,
+		max_calls_per_run: None,
 	};
 	let intersection = a.intersect(&b, &c).unwrap();
 	assert_eq!(intersection.keep_threshold, b.keep_threshold);
 	assert_eq!(intersection.preserve_recent, 8);
 	assert!(intersection.forbid_apply);
+	assert_eq!(intersection.max_calls_per_run, Some(10));
+	assert!(intersection.at_least_as_strict(&a) && intersection.at_least_as_strict(&b));
+	assert!(!b.at_least_as_strict(&a));
+	// A Binding may lower the call limit, never raise it or spend nothing.
+	for limit in [21, 0] {
+		assert!(
+			Restrictions {
+				max_calls_per_run: Some(limit),
+				..a.clone()
+			}
+			.validate(&c)
+			.is_err(),
+			"{limit}"
+		);
+	}
 	assert!(
 		Restrictions {
 			keep_threshold: Probability::new(0.6).unwrap(),
@@ -236,4 +256,189 @@ fn tool_descriptors_cannot_smuggle_decision_restrictions() {
 		..Default::default()
 	};
 	assert!(crate::tool::providers::validate_restrictions("file_read", &narrow).is_err());
+}
+#[test]
+fn state_budgets_stay_in_the_default_mode_unless_long_context_is_declared() {
+	let budget = StateBudget::default();
+	budget.validate().unwrap();
+	assert_eq!(budget.request_limit(24_000), Some(32_000));
+	assert_eq!(budget.request_limit(24_001), Some(600_000));
+	assert_eq!(budget.request_limit(560_001), None);
+	let default_only = StateBudget {
+		long_context_request_bytes: None,
+		long_context_state_bytes: None,
+		..budget.clone()
+	};
+	default_only.validate().unwrap();
+	assert_eq!(default_only.request_limit(24_001), None);
+	for invalid in [
+		StateBudget {
+			default_request_bytes: 32_001,
+			..budget.clone()
+		},
+		StateBudget {
+			default_state_bytes: 32_000,
+			..budget.clone()
+		},
+		StateBudget {
+			long_context_state_bytes: None,
+			..budget.clone()
+		},
+		// A long-context bound below the default one would under-charge.
+		StateBudget {
+			long_context_request_bytes: Some(25_001),
+			long_context_state_bytes: Some(25_000),
+			..budget.clone()
+		},
+		StateBudget {
+			input_stages: vec![],
+			..budget.clone()
+		},
+		StateBudget {
+			input_stages: vec![Some(200), None],
+			..budget.clone()
+		},
+		StateBudget {
+			input_stages: vec![None, Some(60), Some(200)],
+			..budget.clone()
+		},
+		StateBudget {
+			input_stages: vec![None, Some(10)],
+			..budget.clone()
+		},
+	] {
+		assert!(invalid.validate().is_err(), "{invalid:?}");
+	}
+	let mut json = serde_json::to_value(config()).unwrap();
+	json["max_calls_per_run"] = 0.into();
+	assert!(
+		serde_json::from_value::<DeciderConfig>(json)
+			.unwrap()
+			.validate()
+			.is_err()
+	);
+}
+#[test]
+fn the_configuration_pin_commits_to_the_mode() {
+	let enforce = config();
+	let shadow = DeciderConfig {
+		mode: Mode::Shadow,
+		..config()
+	};
+	assert_eq!(
+		enforce.parameters_digest().unwrap(),
+		shadow.parameters_digest().unwrap()
+	);
+	assert_ne!(enforce.digest().unwrap(), shadow.digest().unwrap());
+}
+#[test]
+fn the_admitted_allowance_takes_the_lower_call_limit() {
+	let bound = |limit| BoundDecider {
+		pin: DeciderPin {
+			identity: QualifiedRef::builtin("aidash://node", "decision"),
+			definition_digest: format!("sha256:{}", "a".repeat(64)),
+			configuration_digest: format!("sha256:{}", "b".repeat(64)),
+			provider_implementation: "node-decision-adapter:23".into(),
+		},
+		config: config(),
+		restrictions: Restrictions {
+			max_calls_per_run: limit,
+			..Default::default()
+		},
+	};
+	assert_eq!(bound(None).allowance().max_calls_per_run, 20);
+	assert_eq!(bound(Some(4)).allowance().max_calls_per_run, 4);
+}
+mod pruning_rules {
+	use super::*;
+	use crate::context::{ContextEvent, HistoryEntry};
+	use crate::decision::pruning::{Units, apply, protected};
+	use crate::provider::ToolCall;
+	use serde_json::json;
+
+	fn assistant(seq: u64, text: &str, calls: &[&str]) -> HistoryEntry {
+		HistoryEntry {
+			seq,
+			event: ContextEvent::Assistant {
+				epoch: 1,
+				text: text.into(),
+				calls: calls.iter().map(|call| (*call).to_owned()).collect(),
+			},
+		}
+	}
+	fn tool(seq: u64, id: &str, result: &str) -> HistoryEntry {
+		HistoryEntry {
+			seq,
+			event: ContextEvent::Tool {
+				call: ToolCall {
+					id: id.into(),
+					name: "file_read".into(),
+					arguments: json!({"path": id}),
+				},
+				result: json!(result),
+			},
+		}
+	}
+
+	#[test]
+	fn legacy_protects_events_and_native_protects_whole_turns() {
+		assert!(protected(0, None, 20, None, 6));
+		assert!(!protected(13, None, 20, None, 6));
+		assert!(protected(14, None, 20, None, 6));
+		// Event 13 sits in the third of nine turns, far from the protected tail.
+		assert!(!protected(13, Some(2), 20, Some(9), 6));
+		assert!(protected(13, Some(3), 20, Some(9), 6));
+		assert!(protected(1, Some(0), 20, Some(9), 6));
+	}
+
+	#[test]
+	fn native_elides_dropped_results_and_removes_a_turn_only_as_a_whole() {
+		let history = vec![
+			assistant(1, "", &["a", "b"]),
+			tool(2, "a", "first"),
+			tool(3, "b", "second"),
+			assistant(4, "I read c", &["c"]),
+			tool(5, "c", "third"),
+		];
+		let units = Units::of(&history, true);
+		assert_eq!(units.turns, Some(2));
+		let whole = apply(
+			&history,
+			&BTreeMap::from([(1, Branch::Drop), (2, Branch::Drop), (4, Branch::Drop)]),
+			&units,
+		);
+		// The first turn has no text, so it leaves whole; the second keeps its
+		// response and elides the dropped result under its call.
+		assert_eq!(whole.removed, 3);
+		assert_eq!(whole.history.len(), 2);
+		let ContextEvent::Tool { result, .. } = &whole.history[1].event else {
+			panic!("tool expected");
+		};
+		assert!(ContextEvent::is_elided_result(result));
+		let partial = apply(&history, &BTreeMap::from([(1, Branch::Drop)]), &units);
+		assert_eq!(partial.removed, 0);
+		assert_eq!(partial.history.len(), 5);
+	}
+
+	#[test]
+	fn legacy_removes_dropped_events_and_truncates_long_results_only() {
+		let history = vec![
+			tool(1, "a", "short"),
+			tool(2, "b", &"x".repeat(500)),
+			tool(3, "c", "short"),
+		];
+		let units = Units::of(&history, false);
+		let pruned = apply(
+			&history,
+			&BTreeMap::from([
+				(0, Branch::TruncateResult),
+				(1, Branch::TruncateResult),
+				(2, Branch::Drop),
+			]),
+			&units,
+		);
+		assert_eq!((pruned.removed, pruned.truncated), (1, 1));
+		assert_eq!(pruned.history.len(), 2);
+		assert_eq!(pruned.history[0], history[0]);
+	}
 }

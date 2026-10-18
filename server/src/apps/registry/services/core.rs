@@ -17,16 +17,6 @@ pub fn validate(entry: &Entry) -> Result<()> {
 		.map_err(Into::into)
 }
 
-pub trait CompactorValidation {
-	fn validate(&self) -> Result<()>;
-}
-impl CompactorValidation for CompactorConfig {
-	fn validate(&self) -> Result<()> {
-		crate::bootstrap::registry_validation()
-			.validate_compactor(self, true)
-			.map_err(Into::into)
-	}
-}
 #[path = "knowledge.rs"]
 pub mod knowledge;
 #[path = "skill_import.rs"]

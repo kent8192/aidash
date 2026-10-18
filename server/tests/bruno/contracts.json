@@ -92,7 +92,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -196,7 +198,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -354,7 +358,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -362,7 +366,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -885,7 +890,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1003,7 +1010,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1161,7 +1170,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1312,7 +1323,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1528,7 +1541,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -1536,7 +1549,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -1874,7 +1888,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -1992,7 +2008,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -4077,7 +4095,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4085,7 +4103,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4457,7 +4476,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -4465,7 +4484,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -14728,7 +14748,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -15485,7 +15507,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -15495,9 +15522,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -18242,7 +18276,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -18252,9 +18291,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -18686,7 +18732,7 @@
                 "embedding"
               ],
               "properties": {
-                "compactor": {
+                "decider": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -18694,7 +18740,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "Exact compaction Decider pin at the execution Node."
                 },
                 "embedding": {
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
@@ -25067,7 +25114,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -25639,7 +25688,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -25649,9 +25703,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -27255,7 +27316,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -28012,7 +28075,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -28022,9 +28090,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -29278,7 +29353,9 @@
           "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
           "enum": [
             "context_unreducible",
-            "prune_unavailable",
+            "decider_unapproved",
+            "decider_calls_exhausted",
+            "decider_unavailable",
             "summary_unavailable",
             "summary_invalid",
             "overflow_retries_exhausted",
@@ -30035,7 +30112,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -30045,9 +30127,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }

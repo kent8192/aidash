@@ -79,7 +79,7 @@ pub struct InspectInput {
 	pub agent: EntityRef,
 	pub requirements: Search,
 	#[serde(default)]
-	pub compactor: Option<EntityRef>,
+	pub decider: Option<EntityRef>,
 }
 #[derive(Clone)]
 pub struct Record {

@@ -8,7 +8,7 @@ pub use aidash_domain::registry::{Search, SkillFile};
 
 pub use aidash_domain::registry::{AgentConfig, AgentPage};
 
-pub use aidash_domain::registry::{ClusterConfig, CompactorConfig, Package};
+pub use aidash_domain::registry::{ClusterConfig, Package};
 
 /// One version in the Tenant's Registry with its approval state and history.
 /// Discovery and execution see only approved versions; this view sees every

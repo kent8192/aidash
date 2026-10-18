@@ -42,7 +42,7 @@ Cargo fetching crates for the first build. It
    Cache Salt Key, so Ordered Runs are possible;
 4. serves the scripted provider (`scripts/fixed_task_fixture.py`): the model at
    `/v1/chat/completions` and the fixture tools at `/tools/{task}/{alias}`
-   (there is no Jev classifier: ordinary Runs are not pruned, ADR 0041);
+   (there is no Jev classifier: the fixture Agents bind no compaction Decider);
 5. creates a Tenant, a subject token and one Agent definition per task arm,
    runs every task arm `--repeats` times (default 1) as Tenant-scoped Runs,
    up to `--parallel` (default 4) at a time, reads each Run's Usage Records from
@@ -105,9 +105,9 @@ request shape and Usage Records, not provider prices. Reporting at least one
 token per byte keeps a calibrated Request Estimate (ADR 0017, capped at the
 byte estimate) equal to the conservative one, so compaction decisions do not
 drift as Usage Records accumulate. Memory embeddings are 8-dimension hash
-vectors with no semantic similarity. Ordinary Runs are not pruned until #108
-binds the built-in compaction Decider (ADR 0041), so a long-context task stops
-with `prune_unavailable` when it outgrows its window. The provider rejects
+vectors with no semantic similarity. The fixture Agents bind no compaction
+Decider and have no Summary Stage, so a long-context task stops with
+`context_unreducible` when it outgrows its window. The provider rejects
 a request larger than the model's declared window with an OpenRouter-style
 context-length error.
 
@@ -218,12 +218,11 @@ dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
 `external_compaction: "disabled"` attests that the evaluated Tenant approves
-no `compactor`. Ordinary Runs are never pruned (ADR 0041); only a Run whose
-generation policy names an approved compactor calls Jev, on the Tenant's own
-OpenRouter Provider Credential. Those calls have no price in the approval and
+no compaction Decider. Only a Run bound to an approved compaction Decider calls
+Jev, on the Tenant's own OpenRouter Provider Credential (ADR 0041, ADR 0042). Those calls have no price in the approval and
 no HTTP surface that reports the Tenant's approvals, so the live tier cannot
 reserve them. A Run whose context records an applied compaction proves a
-compactor answered: the manifest records the error and no further Run is
+compaction Decider answered: the manifest records the error and no further Run is
 dispatched.
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
@@ -513,7 +512,7 @@ utility; this branch measures only the first deterministically.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
 - The live tier cannot reserve or price Jev compaction calls; it relies on the
-  evaluator's attestation that the evaluated Tenant approves no compactor and
+  evaluator's attestation that the evaluated Tenant approves no compaction Decider and
   stops dispatching when a Run shows an applied compaction.
-- Neither tier measures pruning until #108 binds the built-in compaction
-  Decider: ordinary Runs are not pruned (ADR 0041).
+- Neither tier measures pruning: the evaluated Agents bind no compaction
+  Decider.

@@ -8,8 +8,6 @@ use serde_json::json;
 use uuid::Uuid;
 #[path = "budget.rs"]
 pub mod budget;
-#[path = "compaction.rs"]
-pub mod compaction;
 #[path = "embedding.rs"]
 pub mod embedding;
 #[path = "foreign.rs"]

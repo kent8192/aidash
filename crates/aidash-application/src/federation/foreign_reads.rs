@@ -135,7 +135,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 			"tool" => "tool.invoke",
 			"skill" => "skill.use",
 			"cluster" => "cluster.execute",
-			"compactor" => "compaction.invoke",
+			"decider" => "decision.invoke",
 			"bundle" | "memory" | "source" | "embedding" | "reranker" | "tokenizer" => {
 				"registry.read"
 			}

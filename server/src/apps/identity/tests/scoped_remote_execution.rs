@@ -315,7 +315,7 @@ mod scoped_pair_composition {
 		#[default(false)] semantic: bool,
 		#[default(false)] generated: bool,
 		#[default(false)] approval: bool,
-		#[default(false)] compactor: bool,
+		#[default(false)] decider: bool,
 		#[default(false)] native: bool,
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
 		#[default(false)] ordered: bool,
@@ -359,7 +359,7 @@ mod scoped_pair_composition {
 			embedding
 		});
 		let ba = receiver.application;
-		// The receiver's approved compactor calls Jev with its Tenant's OpenRouter
+		// The receiver's approved compaction Decider calls Jev with its Tenant's OpenRouter
 		// Provider Credential (ADR 0041); the fake issuer routes to the model fixture.
 		let receiver_openrouter = tenant_openrouter::install(&mut b);
 		ba.context.set_singleton(b.clone());
@@ -377,13 +377,13 @@ mod scoped_pair_composition {
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
-		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
+		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_contract":"typesafe.jev/1","provider_credential":"openrouter","model":"typesafe/jev-1.13","builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce","max_calls_per_run":20,"state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}});
 		let (status, body) = request(
 			&ba,
 			&receiver_token,
 			"POST",
 			"/api/registry",
-			compactor_definition,
+			decider_definition,
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -393,7 +393,7 @@ mod scoped_pair_composition {
 				&receiver_token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":0,"enabled":true})
+				json!({"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":0,"enabled":true})
 			)
 			.await
 			.0,
@@ -559,8 +559,8 @@ mod scoped_pair_composition {
 		if let Some(native) = &native {
 			mode["native"] = native["selection"].clone();
 		}
-		if compactor {
-			mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
+		if decider {
+			mode["decider"] = json!({"id":"remote-decider","version":"1.0.0"});
 		}
 		let admission = if approval {
 			Uuid::nil()
@@ -3255,22 +3255,22 @@ async fn prepare_generated_pair(
 		None
 	};
 	let model_descriptor = descriptor(&b.config.node_id, &model);
-	let (_, compactor) = request(
+	let (_, decider) = request(
 		ba,
 		&common::tenant_token(&b.store, "acme").await,
 		"GET",
-		"/api/registry/remote-compactor/1.0.0",
+		"/api/registry/remote-decider/1.0.0",
 		Value::Null,
 	)
 	.await;
-	let compactor_descriptor = descriptor(&b.config.node_id, &compactor);
+	let decider_descriptor = descriptor(&b.config.node_id, &decider);
 	let common = json!({"enabled":true,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":4,"max_concurrent":4,"max_depth":4,"token_budget":4000000,"tokens_per_agent":800000,"lifetime_seconds":3600}});
 	let mut parent_spec = common.clone();
 	parent_spec["template"] = parent_template;
 	if semantic {
 		parent_spec["embedding"] = json!({"provider":{"id":"home-embedding","version":"1.0.0"},"calls_per_agent":10,"call_budget":40});
 	}
-	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":compactor_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
+	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":decider_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
 	let (status, body) = request(
 		aa,
 		&a.config.api_token,
@@ -3378,7 +3378,7 @@ async fn prepare_generated_pair(
 	let mut child_spec = common;
 	child_spec["approval_required"] = json!(approval);
 	child_spec["template"] = child_template;
-	child_spec["compaction"] = json!({"provider":{"id":"remote-compactor","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
+	child_spec["compaction"] = json!({"provider":{"id":"remote-decider","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
 	if let Some(embedding_descriptor) = embedding_descriptor {
 		child_spec["remote"] = json!({"embedding":{"provider":embedding_descriptor,"calls_per_agent":10,"call_budget":40},"memory":if native {vec![embedding_descriptor.clone()]} else {vec![]}});
 	}
@@ -5317,14 +5317,16 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 }
 
 #[rstest::rstest]
+// Home allowance and authority failures keep their semantic reason; a Decider
+// that cannot run pauses the Run with its context reason (ADR 0042).
 #[case("approved", 0, None)]
 #[case("unnecessary", 0, None)]
-#[case("ancestor_limit", 0, Some("allowance"))]
-#[case("catalog_revoked", 0, Some("authority"))]
-#[case("outage", 503, Some("unavailable"))]
-#[case("bad_answers", 1, Some("provider_contract"))]
-#[case("credential_rejected", 401, Some("configuration"))]
-#[case("unbound", 0, Some("configuration"))]
+#[case("ancestor_limit", 0, Some(("semantic_reason", "allowance")))]
+#[case("catalog_revoked", 0, Some(("semantic_reason", "authority")))]
+#[case("outage", 503, Some(("context_reason", "decider_unavailable")))]
+#[case("bad_answers", 1, Some(("context_reason", "decider_unavailable")))]
+#[case("credential_rejected", 401, Some(("context_reason", "decider_unavailable")))]
+#[case("unbound", 0, Some(("context_reason", "decider_unavailable")))]
 #[tokio::test]
 async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	#[future(awt)]
@@ -5332,7 +5334,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	scoped_pair: Pair,
 	#[case] scenario: &str,
 	#[case] status: usize,
-	#[case] reason: Option<&str>,
+	#[case] reason: Option<(&str, &str)>,
 ) {
 	let p = scoped_pair;
 	if scenario != "unnecessary" {
@@ -5361,7 +5363,18 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 		.unwrap();
 	}
 	if scenario == "catalog_revoked" {
-		assert_eq!(request(&p.ba,&p.receiver_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
+		assert_eq!(
+			request(
+				&p.ba,
+				&p.receiver_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			)
+			.await
+			.0,
+			200
+		);
 	}
 	if scenario == "unbound" {
 		// Without a usable OpenRouter binding the receiver stops before any
@@ -5379,27 +5392,17 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 		}
 	}
 	let run = p.run().await;
-	if let Some(reason) = reason {
-		assert_eq!(
-			serde_json::to_value(run.recovery.semantic_reason).unwrap(),
-			reason,
-			"{run:?}"
-		);
-		assert_eq!(
-			run.control.as_str(),
-			if scenario == "outage" {
-				"ACTIVE"
-			} else {
-				"PAUSED"
-			}
-		);
+	if let Some((field, reason)) = reason {
+		let recovery = serde_json::to_value(&run.recovery).unwrap();
+		assert_eq!(recovery[field], reason, "{run:?}");
+		assert_eq!(run.control.as_str(), "PAUSED");
 		assert_ne!(run.phase().as_str(), "FAILED");
 		assert!(p.requests.lock().await.is_empty());
 		assert!(
 			!run.error
 				.as_deref()
 				.unwrap_or_default()
-				.contains("private compactor response")
+				.contains("private decider response")
 		);
 	} else {
 		assert_eq!(p.requests.lock().await.len(), 1, "{run:?}");
@@ -5413,10 +5416,15 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	if let Some(call) = calls.first() {
 		assert_eq!(call["model"], "typesafe/jev-1.13");
 		assert_eq!(call["provider"], json!({"zdr": true}));
+		// The Decider classifies the Run's own history; pinned context such as
+		// Home memory is never part of its state (ADR 0042).
 		assert!(
-			call.to_string().contains("ochre falcon"),
-			"approved context must reach the exact compactor"
+			call["state"]["history"]
+				.as_array()
+				.is_some_and(|history| history.iter().any(|entry| entry["result_chars"] == 150000)),
+			"the Run's history must reach the exact decider"
 		);
+		assert!(!call.to_string().contains("ochre falcon"));
 	}
 	drop(calls);
 	for node in [&p.a, &p.b] {
@@ -6233,8 +6241,8 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
 		script.compactions.lock().await.push(input.clone());
 		match script.compaction_status.load(Ordering::Acquire) {
-			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
-			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
 			// OpenRouter names the dated snapshot that served the pinned release.
 			1 => reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":{}})).unwrap(),
 			_ => {

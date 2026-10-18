@@ -36,7 +36,7 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 		super::authorize(producer.as_mut(), &task, node, &inspection).await?;
 		let binding: Binding = serde_json::from_value(grant.semantic)?;
 		if let Binding::RequiredHome {
-			compactor,
+			decider,
 			summarizer,
 			..
 		} = binding
@@ -46,7 +46,7 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 			let mut workspace = producer.source_workspace(task.workspace_id).await?;
 			workspace.attributes["remote_node"] = json!(node);
 			workspace.attributes["inference_model"] = json!(agent.model);
-			workspace.attributes["compactor"] = json!(compactor.map(|provider| provider.entry));
+			workspace.attributes["decider"] = json!(decider.map(|provider| provider.entry));
 			workspace.attributes["summarizer"] = json!(summarizer.map(|provider| provider.entry));
 			producer
 				.source_require(&workspace, "semantic.disclose")

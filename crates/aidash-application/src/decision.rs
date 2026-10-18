@@ -2,7 +2,7 @@
 use crate::ports::decision::*;
 use crate::{Error, Result};
 use aidash_domain::{
-	context::{Context, ContextEvent, HistoryEntry, RequestBudget},
+	context::{Context, ContextEvent, RequestBudget},
 	decision::*,
 	registry::rules::digest,
 };
@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 mod dispatch;
 mod state;
-pub use dispatch::decision_identity;
-pub use state::{BuiltState, build_compaction_state};
+pub use dispatch::{attempt_identity, decision_identity};
+pub use state::{BuiltState, build_compaction_state, compaction_disclosure};
 
 /// Digest the complete inference input before redacting its classification view.
 pub fn compaction_input_digest(
@@ -38,11 +38,39 @@ pub struct Evaluation<'a> {
 	pub disclosure: &'a Disclosure,
 	pub now: DateTime<Utc>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CompactionResult {
 	AlreadyFits,
+	/// The pruned context fits; it is saved and the step ends.
 	Applied(Summary),
+	/// The proposal is recorded but never applied.
 	Shadow(Summary),
+	/// Nothing could be classified, so pruning changes nothing.
+	Unpruned(Summary),
+	/// Pruning did not make the request fit. Nothing is recorded yet: the
+	/// Summary Stage either completes it or the decision is recorded as
+	/// rejected (ADR 0056).
+	Insufficient(Box<StagedDecision>),
+}
+
+/// An Enforce decision whose pruning was not enough on its own. Its evidence
+/// is recorded with the adopted summary, or rejected when none is adopted.
+#[derive(Debug, Clone)]
+pub struct StagedDecision {
+	/// Evidence with the `staged` outcome and the pruned projection's digest.
+	pub evidence: Evidence,
+	/// The pruned projection the Summary Stage continues from.
+	pub pruned: Context,
+	pub state: Option<RetainedState>,
+}
+impl StagedDecision {
+	/// The same decision when no summary is adopted: it changes nothing.
+	pub fn rejected(&self) -> Evidence {
+		let mut evidence = self.evidence.clone();
+		evidence.outcome = Outcome::Rejected;
+		evidence.projection_digest = None;
+		evidence
+	}
 }
 
 impl DecisionGate<'_> {
@@ -64,6 +92,8 @@ impl DecisionGate<'_> {
 				"decision input differs from its admitted revision".into(),
 			));
 		}
+		let native =
+			budget.projection.version() == aidash_domain::projection::ProjectionVersion::Native;
 		let config = input.decider.pin.check(input.definition)?;
 		if config != input.decider.config {
 			return Err(Error::Invalid(
@@ -86,6 +116,8 @@ impl DecisionGate<'_> {
 			input.boundary,
 			input.disclosure,
 			&input.decider.restrictions,
+			&config.state_budget,
+			native,
 		)?;
 		let state_digest = digest(&built.state);
 		let id = dispatch::decision_id(input, &state_digest, budget.window);
@@ -104,11 +136,13 @@ impl DecisionGate<'_> {
 			rule: config.rule.clone(),
 			state_digest: state_digest.clone(),
 			history_length: context.history.len(),
+			turns: built.units.turns,
 			sources: input.disclosure.sources.clone(),
 			candidates: built.candidates,
 			questions: built.questions,
 			answers: BTreeMap::new(),
 			restrictions: restrictions.clone(),
+			binding_restrictions: input.decider.restrictions.clone(),
 			mode: config.mode,
 			branches: BTreeMap::new(),
 			attempts: vec![],
@@ -119,9 +153,11 @@ impl DecisionGate<'_> {
 				proposed: before,
 				window: budget.window,
 				retained: context.history.len(),
+				removed: 0,
 				dropped: 0,
 				truncated: 0,
 			},
+			projection_digest: None,
 			state: StateReference::Disabled,
 			state_retention: StateRetentionWitness::Disabled,
 		};
@@ -162,21 +198,17 @@ impl DecisionGate<'_> {
 			return Err(error);
 		}
 
-		if evidence.questions.is_empty()
-			|| restrictions.forbid_apply && config.mode == Mode::Enforce
-		{
-			evidence.reason = if evidence.questions.is_empty() {
-				Reason::NoCandidates
-			} else {
-				Reason::Forbidden
-			};
+		if evidence.questions.is_empty() {
+			// Every event is protected or undisclosed: pruning changes nothing,
+			// and the Summary Stage may still reduce the context.
+			evidence.candidates.clear();
 			self.journal.commit(&evidence, None, None).await?;
-			if evidence.reason == Reason::Forbidden {
-				return Err(Error::Forbidden);
-			}
-			return Err(Error::Invalid(
-				"decision cannot compact the protected context".into(),
-			));
+			return Ok(CompactionResult::Unpruned(evidence.summary()));
+		}
+		if restrictions.forbid_apply && config.mode == Mode::Enforce {
+			evidence.reason = Reason::Forbidden;
+			self.journal.commit(&evidence, None, None).await?;
+			return Err(Error::Forbidden);
 		}
 		let requests = match self.provider.plan(&built.state, &evidence.questions) {
 			Ok(requests) if validate_plan(&requests, &evidence.questions).is_ok() => requests,
@@ -188,10 +220,10 @@ impl DecisionGate<'_> {
 				));
 			}
 		};
-		let records: Vec<_> = requests
+		let records = requests
 			.iter()
 			.map(|request| dispatch::record(input, id, &state_digest, request))
-			.collect();
+			.collect::<Result<Vec<_>>>()?;
 		if let Err(error) = dispatch::validate_recovered_plan(&records, &requests, &recovered) {
 			evidence.reason = Reason::JournalFailure;
 			self.journal.commit(&evidence, None, None).await?;
@@ -228,7 +260,7 @@ impl DecisionGate<'_> {
 		evidence.restrictions = restrictions.clone();
 		if failure.is_none() && validate_answers(&evidence.questions, &evidence.answers).is_err() {
 			failure = Some((
-				Reason::InvalidAnswers,
+				Reason::IncompleteAnswers,
 				Error::Invalid("incomplete durable decision answers".into()),
 			));
 		}
@@ -272,12 +304,13 @@ impl DecisionGate<'_> {
 		let mut candidate = context.clone();
 		let mut selected = BTreeMap::new();
 		for option in &evidence.candidates {
-			let protected = option.history_index == 0
-				|| option.history_index
-					>= context
-						.history
-						.len()
-						.saturating_sub(restrictions.preserve_recent);
+			let protected = aidash_domain::decision::pruning::protected(
+				option.history_index,
+				option.turn,
+				context.history.len(),
+				built.units.turns,
+				restrictions.preserve_recent,
+			);
 			let choice = if protected {
 				Branch::Keep
 			} else {
@@ -290,24 +323,16 @@ impl DecisionGate<'_> {
 			selected.insert(option.history_index, choice);
 			evidence.branches.insert(option.id.clone(), choice);
 		}
-		candidate.history = context.history.iter().enumerate().filter_map(|(index, entry)| {
-            match selected.get(&index).copied().unwrap_or(Branch::Keep) {
-                Branch::Keep => Some(entry.clone()),
-                Branch::Drop => { evidence.fit.dropped += 1; None },
-                Branch::TruncateResult => {
-                    let ContextEvent::Tool { call, result } = &entry.event else { return Some(entry.clone()); };
-                    evidence.fit.truncated += 1;
-                    let text = result.as_str().map(str::to_owned).unwrap_or_else(||result.to_string());
-                    let length = text.chars().count();
-                    if length <= 420 { evidence.fit.truncated -= 1; return Some(entry.clone()); }
-                    // The 300-character prefix is the historical action rule, not a
-                    // classification-state/evidence limit. It stays in inference only.
-                    let head: String = text.chars().take(300).collect();
-                    Some(HistoryEntry { seq: entry.seq, event: ContextEvent::Tool { call: call.clone(), result: json!(format!("{head}\n[decision compaction truncated {} chars of this tool result; full result remains in the execution journal]",length-300)) } })
-                }
-            }
-        }).collect();
-		evidence.fit.retained = candidate.history.len();
+		let pruned =
+			aidash_domain::decision::pruning::apply(&context.history, &selected, &built.units);
+		candidate.history = pruned.history;
+		evidence.fit.removed = pruned.removed;
+		evidence.fit.truncated = pruned.truncated;
+		evidence.fit.dropped = selected
+			.values()
+			.filter(|choice| **choice == Branch::Drop)
+			.count();
+		evidence.fit.retained = context.history.len() - pruned.removed;
 		evidence.fit.proposed = size(&candidate);
 		evidence.reason = if restrictions.forbid_apply {
 			Reason::Forbidden
@@ -320,9 +345,16 @@ impl DecisionGate<'_> {
 			Outcome::Shadow
 		} else if evidence.reason == Reason::Fits {
 			Outcome::Applied
+		} else if evidence.reason == Reason::Insufficient {
+			Outcome::Staged
 		} else {
 			Outcome::Rejected
 		};
+		if matches!(evidence.outcome, Outcome::Applied | Outcome::Staged) {
+			evidence.projection_digest = Some(aidash_domain::decision::pruning::projection_digest(
+				&candidate.history,
+			)?);
+		}
 		let retained = state_expiry.and_then(|expires_at| {
 			let state_id = Uuid::new_v4();
 			evidence.state_retention = StateRetentionWitness::Enabled {
@@ -353,6 +385,15 @@ impl DecisionGate<'_> {
 			};
 		}
 		evidence.replay()?;
+		if evidence.outcome == Outcome::Staged {
+			let staged = StagedDecision {
+				evidence,
+				pruned: candidate,
+				state: retained,
+			};
+			staged.rejected().replay()?;
+			return Ok(CompactionResult::Insufficient(Box::new(staged)));
+		}
 		if evidence.outcome == Outcome::Applied {
 			candidate.compactions = candidate
 				.compactions
@@ -370,9 +411,13 @@ impl DecisionGate<'_> {
 		if evidence.outcome == Outcome::Shadow {
 			return Ok(CompactionResult::Shadow(evidence.summary()));
 		}
-		Err(Error::Invalid(
-			"decision could not fit the complete inference context".into(),
-		))
+		Err(Error::Forbidden)
+	}
+	/// Record a staged decision as rejected because no summary was adopted.
+	pub async fn reject_staged(&self, staged: &StagedDecision) -> Result<()> {
+		self.journal
+			.commit(&staged.rejected(), None, staged.state.as_ref())
+			.await
 	}
 	pub async fn replay(&self, evidence: &Evidence) -> Result<BTreeMap<String, Branch>> {
 		self.authority.read(evidence, false).await?;

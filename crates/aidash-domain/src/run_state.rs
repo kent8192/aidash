@@ -343,12 +343,20 @@ pub struct RecoveryState {
 	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
+	/// How many times a person resumed this Run from a pause. A compaction
+	/// decision commits to it, so a resume starts a new decision while a
+	/// recovered lease continues the same one (#108).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decision_cycle: u32,
 	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
 	#[serde(
 		default,
 		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
 	)]
 	pub degraded: crate::semantic::degraded::DegradedContext,
+}
+fn is_zero(value: &u32) -> bool {
+	*value == 0
 }
 impl RecoveryState {
 	/// Whether this attempt may degrade an unavailable workspace slot: it is

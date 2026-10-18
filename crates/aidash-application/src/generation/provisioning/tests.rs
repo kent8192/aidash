@@ -528,7 +528,7 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 			"catalog:tool:registry.read",
 			"catalog:tool:tool.invoke",
 			"catalog:compact:registry.read",
-			"catalog:compact:compaction.invoke",
+			"catalog:compact:decision.invoke",
 			"catalog:embed:registry.read",
 			"catalog:embed:embedding.invoke"
 		]
