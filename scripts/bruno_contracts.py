@@ -1088,8 +1088,9 @@ def render():
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,
-        # Marketplace subject dispatch and the Tenant Registry (ADR 0029). Deployment
-        # Administrator credentials cannot replace a subject or browser-bound graph grant.
+        # Marketplace subject dispatch, the Tenant Registry (ADR 0029) and workbench
+        # inspection of a Tenant's version. Deployment Administrator credentials cannot
+        # replace a subject or browser-bound graph grant.
         denied_reads = {
             "memory-participant-current",
             "remote-semantic-home-provenance",
@@ -1112,6 +1113,8 @@ def render():
             "registry-get",
             "registry-versions",
             "authorization-catalog",
+            "workbench-inspect-version",
+            "workbench-export-report",
         }
         if route["name"] in denied_reads:
             status = 403
