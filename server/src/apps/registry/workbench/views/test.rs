@@ -23,6 +23,19 @@ pub async fn get_limits(
 	crate::http::json(service.get_limits(actor, id).await)
 }
 
+#[get(
+	"/api/workbench/test-limits/{tenant}",
+	name = "workbench-tenant-test-limits",
+	auth = "protected"
+)]
+pub async fn tenant_limits(
+	#[inject] service: Depends<BehavioralTests>,
+	#[inject] actor: Actor,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::json(service.tenant_limits(actor, tenant).await)
+}
+
 #[put(
 	"/api/workbench/test-limits/{tenant}",
 	name = "workbench-set-test-limits",

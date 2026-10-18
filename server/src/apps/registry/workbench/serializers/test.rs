@@ -26,6 +26,10 @@ pub struct TestLimits {
 	pub payload_days: i32,
 	#[validate(range(min = 1, max = 3650))]
 	pub incident_evidence_days: i32,
+	/// The revision the limits were read at. A write sends it back and fails
+	/// with a conflict when another write came first.
+	#[serde(default)]
+	pub revision: i64,
 }
 crate::native_record!(TestLimits {
 	tenant,
@@ -36,7 +40,8 @@ crate::native_record!(TestLimits {
 	max_duration_secs,
 	max_concurrent,
 	payload_days,
-	incident_evidence_days
+	incident_evidence_days,
+	revision
 });
 
 impl From<AgentTestSession> for TestSession {
@@ -72,6 +77,7 @@ impl From<TestLimits> for aidash_domain::registry::workbench::sandbox::TestLimit
 			max_concurrent: value.max_concurrent,
 			payload_days: value.payload_days,
 			incident_evidence_days: value.incident_evidence_days,
+			revision: value.revision,
 		}
 	}
 }
@@ -88,6 +94,7 @@ impl From<aidash_domain::registry::workbench::sandbox::TestLimits> for TestLimit
 			max_concurrent: value.max_concurrent,
 			payload_days: value.payload_days,
 			incident_evidence_days: value.incident_evidence_days,
+			revision: value.revision,
 		}
 	}
 }

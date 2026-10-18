@@ -26,6 +26,15 @@ pub(crate) struct CredentialInput {
 	#[serde(default = "credential_lifetime")]
 	pub(crate) expires_in_seconds: i64,
 }
+/// A page of credentials; `mine` keeps only those the caller issued for
+/// itself through its Mapping.
+#[derive(Deserialize, JsonSchema)]
+pub(crate) struct CredentialPage {
+	#[serde(default)]
+	pub(crate) offset: u64,
+	#[serde(default)]
+	pub(crate) mine: bool,
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthorizationUpdate {

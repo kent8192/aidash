@@ -11,19 +11,19 @@ use crate::{
 use aidash_application::{
 	capabilities::approvals::DisclosureRequest,
 	ports::research::{
-		DisclosureGate, DisclosureState, PageProvider, SearchProvider, WebDisclosure,
+		DisclosureGate, DisclosureState, PageProvider, PageRenderer, SearchProvider, WebDisclosure,
 	},
 	research::{Call, Research},
 };
 use aidash_domain::{
-	research::{Operation, account::AccountTerms, evidence::Limits},
+	research::{Failure, Operation, account::AccountTerms, evidence::Limits, failure},
 	tool::{
 		ToolContract,
 		providers::{ToolDescriptor, research_contract, research_operation},
 	},
 };
 use aidash_integrations::research::{
-	brave::BraveSearch, fixture::FixtureResearch, page::PageReader,
+	brave::BraveSearch, fixture::FixtureResearch, page::PageReader, pdf::ChildEngine,
 };
 use async_trait::async_trait;
 use reinhardt::conf::settings::profile::Profile;
@@ -36,6 +36,8 @@ use uuid::Uuid;
 pub struct Providers {
 	brave: std::result::Result<Arc<BraveSearch>, String>,
 	pages: Option<Arc<PageReader>>,
+	/// Renders pages of PDFs that page reading retained, in a bounded child.
+	renderer: Option<Arc<ChildEngine>>,
 	fixture: Option<Arc<FixtureResearch>>,
 	/// The Research account terms this Deployment declares, whether or not
 	/// their provider can be dispatched; the account-terms sweep applies them.
@@ -49,6 +51,7 @@ impl Default for Providers {
 		Self {
 			brave: Err("is not configured".into()),
 			pages: None,
+			renderer: None,
 			fixture: None,
 			accounts: Vec::new(),
 			limits: Limits::default(),
@@ -74,6 +77,12 @@ impl Providers {
 			pages: settings
 				.page_reading
 				.then(|| Arc::new(PageReader::default())),
+			// A binary that cannot name itself fails each render instead.
+			renderer: settings.page_reading.then(|| {
+				Arc::new(ChildEngine::new(
+					std::env::current_exe().unwrap_or_else(|_| "aidash".into()),
+				))
+			}),
 			fixture: settings
 				.fixture
 				.then(|| Arc::new(FixtureResearch::default())),
@@ -175,6 +184,24 @@ impl Providers {
 				.fixture
 				.clone()
 				.map(|fixture| fixture as Arc<dyn PageProvider>)
+				.ok_or_else(|| unavailable(provider)),
+			_ => Err(unavailable(provider)),
+		}
+	}
+}
+
+impl Providers {
+	fn renderer(&self, provider: &str) -> Result<Arc<dyn PageRenderer>> {
+		match provider {
+			"research.page@1" => self
+				.renderer
+				.clone()
+				.map(|renderer| renderer as Arc<dyn PageRenderer>)
+				.ok_or_else(|| unavailable(provider)),
+			"research.fixture@1" => self
+				.fixture
+				.clone()
+				.map(|fixture| fixture as Arc<dyn PageRenderer>)
 				.ok_or_else(|| unavailable(provider)),
 			_ => Err(unavailable(provider)),
 		}
@@ -337,6 +364,22 @@ impl Tool for ResearchTool {
 					.await
 			}
 			Operation::Find => research.find(&call, &input).await,
+			Operation::View => {
+				// A viewed page reaches the model as a PNG image (ADR 0053); a
+				// model without a current route for it would never see the
+				// page the view records and counts.
+				if !run
+					.context
+					.binding_snapshot
+					.as_ref()
+					.is_some_and(|snapshot| snapshot.model_reads_page_images())
+				{
+					return Ok(failure(Operation::View, Failure::ImageInputRequired));
+				}
+				research
+					.view(&call, providers.renderer(&self.provider)?.as_ref(), &input)
+					.await
+			}
 		};
 		result.map_err(Into::into)
 	}

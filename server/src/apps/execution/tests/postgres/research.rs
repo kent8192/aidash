@@ -21,6 +21,7 @@ use aidash_domain::research::{
 	search::SourceCandidate,
 };
 use aidash_integrations::research::fixture::FixtureResearch;
+use sha2::{Digest, Sha256};
 
 struct Permit;
 #[async_trait::async_trait]
@@ -659,6 +660,106 @@ async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapsho
 			.unwrap(),
 		None
 	);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_viewed_page_is_stored_as_a_page_image_fragment_within_the_view_limit(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let run = leased_run(&store, &agent(&store).await).await;
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
+	let research = Research {
+		store: &evidence,
+		gate: &Permit,
+		limits: Limits {
+			page_views: 1,
+			..Limits::default()
+		},
+	};
+	let fixture = FixtureResearch::default();
+	let call = |key| Call {
+		run: run.id,
+		context_revision: 0,
+		key,
+		provider: "research.fixture@1",
+		disclosure_approval: true,
+	};
+	let read = research
+		.fetch(
+			&call("f1"),
+			&fixture,
+			&json!({"url":"https://research-fixture.example/annual-report.pdf"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		read["data"]["pages_without_text"]["pages"],
+		json!([2]),
+		"{read}"
+	);
+	let document = read["data"]["document_id"].clone();
+
+	// The fixture renders its own PDF in process; the image is evidence.
+	let viewed = research
+		.view(
+			&call("v1"),
+			&fixture,
+			&json!({"document_id":document,"page":2}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(viewed["status"], "ok", "{viewed}");
+	assert_eq!(viewed["data"]["page"], 2);
+	let reference: EvidenceRef = viewed["data"]["evidence_ref"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	let (media_type, bytes) = evidence
+		.page_image(run.id, &reference)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(media_type, "image/png");
+	assert_eq!(
+		viewed["data"]["image"]["digest"],
+		json!(format!("sha256:{:x}", Sha256::digest(&bytes)))
+	);
+	let fragments = evidence
+		.fragments(run.id, std::slice::from_ref(&reference))
+		.await
+		.unwrap();
+	assert_eq!(fragments[0].pages, vec![2]);
+	assert_eq!(fragments[0].image.as_ref().unwrap().page, 2);
+	assert_eq!(evidence.usage(run.id).await.unwrap().page_views, 1);
+	// Another Run never reads it. Viewing the page again, as a replay after a
+	// lost result does, returns the same evidence and takes no second view.
+	assert_eq!(
+		evidence
+			.page_image(Uuid::new_v4(), &reference)
+			.await
+			.unwrap(),
+		None
+	);
+	let again = research
+		.view(
+			&call("v2"),
+			&fixture,
+			&json!({"document_id":document,"page":2}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(again["status"], "ok", "{again}");
+	assert_eq!(
+		again["data"]["evidence_ref"],
+		viewed["data"]["evidence_ref"]
+	);
+	assert_eq!(evidence.usage(run.id).await.unwrap().page_views, 1);
 	cleanup(store, &url, &schema).await;
 }
 

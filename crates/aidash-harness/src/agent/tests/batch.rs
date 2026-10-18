@@ -741,7 +741,10 @@ impl ExecutionAuthority for Bench {
 	async fn human_read(&self, _id: Uuid) -> Result<()> {
 		unexpected("ExecutionAuthority.human_read")
 	}
-	async fn model_media(&self, _selections: &[Selection]) -> Result<Vec<ContentPart>> {
+	async fn model_media(
+		&self,
+		_selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>> {
 		unexpected("ExecutionAuthority.model_media")
 	}
 	async fn human_message_media(

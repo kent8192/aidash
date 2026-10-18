@@ -181,7 +181,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.c.f.store.pool.driver())
+		.execute(f.c.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -226,7 +226,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 		.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 		.to_string(PostgresQueryBuilder);
 	let baseline: i64 = sqlx::query_scalar(&quota)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (status, patched) = request(&f.c.app, &f.c.token, "POST", &format!("/api/runs/{run}/patch"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":admitted["revision"],"preconditions":{"saved.txt":old["digest"]},"patch":"*** Begin Patch\n*** Update File: saved.txt\n@@\n-Keep 東京 exactly\n+replacement\n*** End Patch"})).await;
@@ -240,7 +240,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 		.to_string(PostgresQueryBuilder);
 	let kind: String = sqlx::query_scalar(&object_kind)
 		.bind(old_id)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(kind, "superseded_working");
@@ -254,7 +254,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	loop {
 		let kind: Option<String> = sqlx::query_scalar(&object_kind)
 			.bind(old_id)
-			.fetch_optional(f.c.f.store.pool.driver())
+			.fetch_optional(f.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		if kind.is_none() {
@@ -268,7 +268,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	}
 	assert!(!f.c.root.join(old_id.simple().to_string()).exists());
 	let used: i64 = sqlx::query_scalar(&quota)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -360,12 +360,12 @@ async fn restoring_into_a_new_thread_rolls_back_message_and_thread_when_restore_
 	let thread_query = count("channel_threads");
 	let messages_before: i64 = sqlx::query_scalar(&message_query)
 		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let threads_before: i64 = sqlx::query_scalar(&thread_query)
 		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let mut profile = (*f.c.f.store.capabilities.0).clone();
@@ -389,12 +389,12 @@ async fn restoring_into_a_new_thread_rolls_back_message_and_thread_when_restore_
 	assert_eq!(rejected["error"]["code"], "WORKING_QUOTA");
 	let messages_after: i64 = sqlx::query_scalar(&message_query)
 		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let threads_after: i64 = sqlx::query_scalar(&thread_query)
 		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.driver())
+		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -606,7 +606,7 @@ fn completed_share(
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(f.c.f.store.pool.driver())
+			.execute(f.c.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();

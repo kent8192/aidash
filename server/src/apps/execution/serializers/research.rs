@@ -3,6 +3,7 @@ use aidash_domain::research::{
 	document::{Completeness, Line},
 	evidence::{CitedEvidence as Cited, SnapshotContext},
 };
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -43,6 +44,24 @@ pub struct CitedEvidence {
 	/// Snapshot lines around the passage that were not delivered to the Agent;
 	/// absent once the snapshot's text is no longer retained.
 	pub context: Option<EvidenceContext>,
+	/// The page image delivered to the Agent, for a fragment that is a page
+	/// image rather than a passage (ADR 0053); then `text` is empty and the
+	/// lines are zero.
+	pub image: Option<EvidenceImage>,
+}
+
+/// One page of a PDF rendered from the retained original, as the Agent saw it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EvidenceImage {
+	/// The 1-based physical page.
+	pub page: u32,
+	pub media_type: String,
+	pub width: u32,
+	pub height: u32,
+	/// `sha256:` digest of the image bytes.
+	pub digest: String,
+	/// The image bytes, base64-encoded.
+	pub data: String,
 }
 
 /// Up to 20 whole lines and 4 KiB of snapshot text on each side of a passage.
@@ -83,6 +102,17 @@ impl From<Cited> for CitedEvidence {
 			line_end: fragment.line_end,
 			pages: fragment.pages,
 			context: cited.context.map(Into::into),
+			image: fragment
+				.image
+				.zip(cited.image)
+				.map(|(image, bytes)| EvidenceImage {
+					page: image.page,
+					media_type: image.media_type,
+					width: image.width,
+					height: image.height,
+					digest: image.digest,
+					data: base64::engine::general_purpose::STANDARD.encode(bytes),
+				}),
 		}
 	}
 }
@@ -95,6 +125,10 @@ pub struct RevocationInput {
 	/// history after the Run is deleted, so do not include URLs, page content
 	/// or personal data.
 	pub reason: String,
+	/// The Tenant the caller expects the Run to belong to. When present, a Run
+	/// of any other Tenant answers 404 and nothing is revoked.
+	#[serde(default)]
+	pub tenant: Option<String>,
 }
 
 /// The audit record of one Evidence Revocation. It holds digests but no
@@ -157,6 +191,20 @@ pub struct HistoryPage {
 
 fn history_limit() -> u32 {
 	50
+}
+
+/// The Retention Rules that apply to one Tenant, with what the caller may do
+/// about them, so a dashboard offers only that.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TenantRetentionView {
+	#[serde(flatten)]
+	pub retention: aidash_application::retention::TenantRetention,
+	/// Whether the caller may change or clear the Tenant's periods.
+	pub can_update: bool,
+	/// Whether the caller may read the history of the Tenant's periods.
+	pub can_read_history: bool,
+	/// Whether the caller may read the Tenant's Evidence Revocation records.
+	pub can_read_revocations: bool,
 }
 
 /// A change of a Tenant's own Retention Rules (ADR 0045).

@@ -105,6 +105,24 @@ impl Authorization {
 			.await?;
 		let (revision, document) =
 			row.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
+		// Checked once the policy is held, as `AuthorizationBundle::lock_snapshot` does.
+		let deleted: Option<i32> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::value(1_i32))
+				.from(Alias::new("tenant_deletions"))
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant")))
+						.eq(Expr::cust("$1")),
+				)
+				.and_where(Expr::col(Alias::new("restored_at")).is_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(tenant)
+		.scalar_optional(&mut **tx)
+		.await?;
+		if deleted.is_some() {
+			return Err(Error::TenantDeleted);
+		}
 		Ok(Snapshot {
 			revision,
 			bundle: serde_json::from_value(document)?,

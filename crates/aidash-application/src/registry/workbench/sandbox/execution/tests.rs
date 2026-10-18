@@ -176,7 +176,13 @@ impl SandboxScope for Scope<'_> {
 	async fn limits(&mut self, _: &str) -> Result<TestLimits> {
 		panic!("admitted limits must remain pinned")
 	}
-	async fn save_limits(&mut self, _: &TestLimits) -> Result<()> {
+	async fn authorize_tenant(&mut self, _: &str, _: &str, _: &str) -> Result<()> {
+		panic!("execution authorizes the draft")
+	}
+	async fn stored_limits(&mut self, _: &str) -> Result<TestLimits> {
+		panic!("admitted limits must remain pinned")
+	}
+	async fn save_limits(&mut self, _: &TestLimits) -> Result<TestLimits> {
 		panic!("execution must not alter limits")
 	}
 	async fn session(&mut self, _: Uuid, _: bool) -> Result<TestSession> {
@@ -261,20 +267,9 @@ impl ExecutionScope for Scope<'_> {
 		}
 	}
 }
-impl Credentials for Repository {
-	fn resolve(&self, name: &str) -> Result<String> {
-		assert_eq!(name, "MODEL_TEST");
-		Ok(if self.failing("credential") {
-			"rotated-fixture"
-		} else {
-			"fixture"
-		}
-		.into())
-	}
-}
 impl ProfileConfiguration for Repository {
-	fn require_secret(&self, _: &str) -> Result<()> {
-		panic!("fixtures must not resolve tool credentials")
+	fn destination(&self, _: &str) -> Result<aidash_domain::keyless::Destination> {
+		panic!("fixtures must not reach a test endpoint")
 	}
 }
 impl RealToolTransport for Repository {
@@ -343,7 +338,6 @@ fn response(tool: bool) -> ModelResponse {
 fn execution(repository: Arc<Repository>) -> Execution {
 	Execution {
 		repository: repository.clone(),
-		credentials: repository.clone(),
 		configuration: repository.clone(),
 		transport: repository,
 	}
@@ -379,6 +373,7 @@ fn job(model: Arc<Model>) -> Job {
 			max_concurrent: 2,
 			payload_days: 3,
 			incident_evidence_days: 7,
+			revision: 0,
 		},
 		context_window: 20000,
 		agent_max_steps: 3,
@@ -684,7 +679,6 @@ async fn changed_profile_prevents_inference(#[case] failure: &'static str) {
 		revision: 7,
 		tenant: "tenant".into(),
 		rules: vec![],
-		credential_fingerprints: BTreeMap::new(),
 	});
 	assert!(matches!(
 		simulate(&execution(repository.clone()), session().id, &job).await,

@@ -1,7 +1,7 @@
 //! PostgreSQL Research evidence for the host-owned research use cases.
 use crate::apps::execution::models::research::{
-	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchRevocation, ResearchSnapshot,
-	ResearchSource, lock, revoked_result,
+	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchPageImage, ResearchRevocation,
+	ResearchSnapshot, ResearchSource, lock, revoked_result,
 };
 use crate::store::Store;
 use crate::{authorization::identity::Actor, federation::Federation};
@@ -12,10 +12,10 @@ use aidash_application::{
 use aidash_domain::research::{
 	Failure, Operation,
 	citations::EvidenceRef,
-	document::{ExtractedPage, Passage, text_digest},
+	document::{ExtractedPage, Passage, RenderedPage, text_digest},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, Original,
-		RunUsage, SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, FragmentImage, Limits,
+		Original, RunUsage, SourceRecord,
 	},
 	search::SourceCandidate,
 };
@@ -163,6 +163,7 @@ impl EvidenceStore for Evidence {
 					ResearchAttempt::count(tx.as_mut(), run, Operation::Fetch).await?;
 				let sources = ResearchSource::count(tx.as_mut(), run).await?;
 				let (snapshots, snapshot_bytes) = ResearchSnapshot::usage(tx.as_mut(), run).await?;
+				let page_views = ResearchFragment::page_views(tx.as_mut(), run).await?;
 				tx.commit().await?;
 				Ok(RunUsage {
 					search_attempts,
@@ -170,6 +171,7 @@ impl EvidenceStore for Evidence {
 					sources,
 					snapshots,
 					snapshot_bytes,
+					page_views,
 				})
 			}
 			.await,
@@ -441,6 +443,126 @@ impl EvidenceStore for Evidence {
 			.await,
 		)
 	}
+	async fn record_page_image(
+		&self,
+		run: Uuid,
+		document: &DocumentSnapshot,
+		page: u32,
+		image: &RenderedPage,
+		limits: &Limits,
+	) -> Result<std::result::Result<EvidenceFragment, Failure>> {
+		native(
+			async {
+				let fragment = EvidenceFragment::page_image(
+					EvidenceRef(Uuid::new_v4()),
+					document,
+					FragmentImage {
+						page,
+						media_type: image.media_type.clone(),
+						width: image.width,
+						height: image.height,
+						digest: image.digest(),
+					},
+				);
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
+				lock(tx.as_mut(), &run_lock(run)).await?;
+				if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					return Ok(Err(Failure::EvidenceRevoked));
+				}
+				// A purge that committed since the caller read the snapshot took
+				// the original the image was rendered from.
+				if let Err(unreadable) =
+					ResearchSnapshot::hold(tx.as_mut(), run, document.id).await?
+				{
+					return Ok(Err(unreadable));
+				}
+				// A concurrent view of the same page recorded it first.
+				if let Some(viewed) =
+					ResearchFragment::viewed(tx.as_mut(), run, document.id, page).await?
+				{
+					tx.commit().await?;
+					return Ok(Ok(viewed));
+				}
+				if ResearchFragment::page_views(tx.as_mut(), run).await? >= limits.page_views {
+					return Ok(Err(Failure::ViewLimit));
+				}
+				ResearchFragment::record(tx.as_mut(), &fragment).await?;
+				ResearchPageImage::record(tx.as_mut(), run, fragment.reference.0, &image.bytes)
+					.await?;
+				tx.commit().await?;
+				Ok(Ok(fragment))
+			}
+			.await,
+		)
+	}
+	async fn viewed_page(
+		&self,
+		run: Uuid,
+		document: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>> {
+		native(
+			async {
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
+				let viewed = if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					None
+				} else {
+					ResearchFragment::viewed(tx.as_mut(), run, document, page).await?
+				};
+				tx.commit().await?;
+				Ok(viewed)
+			}
+			.await,
+		)
+	}
+	async fn page_image(
+		&self,
+		run: Uuid,
+		reference: &EvidenceRef,
+	) -> Result<Option<(String, Vec<u8>)>> {
+		native(
+			async {
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
+				let image = if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					None
+				} else {
+					let media_type = ResearchFragment::delivered(
+						tx.as_mut(),
+						run,
+						std::slice::from_ref(reference),
+					)
+					.await?
+					.pop()
+					.and_then(|fragment| fragment.image)
+					.map(|image| image.media_type);
+					match media_type {
+						Some(media_type) => ResearchPageImage::get(tx.as_mut(), run, reference.0)
+							.await?
+							.map(|bytes| (media_type, bytes)),
+						None => None,
+					}
+				};
+				tx.commit().await?;
+				Ok(image)
+			}
+			.await,
+		)
+	}
 	async fn fragments(
 		&self,
 		run: Uuid,
@@ -473,7 +595,8 @@ impl EvidenceStore for Evidence {
 }
 
 /// One Run's research usage, charges and unsettled attempts. The caller has
-/// already decided that the reader may read the Run.
+/// already decided that the reader may read the Run, and fills in the
+/// reader's standing towards the Run's Evidence Revocation.
 pub(crate) async fn run_research(
 	store: &Store,
 	scope: &aidash_application::tenancy::TenancyScope,
@@ -517,5 +640,8 @@ pub(crate) async fn run_research(
 				requested_at: record.created_at,
 			})
 			.collect(),
+		revoked_at: None,
+		can_revoke: false,
+		can_read_revocation: false,
 	})
 }

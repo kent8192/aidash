@@ -49,7 +49,6 @@ impl Repository {
 	fn dispatch(&self) -> Dispatch<'_> {
 		Dispatch {
 			repository: self,
-			credentials: self,
 			configuration: self,
 			transport: self,
 		}
@@ -84,22 +83,16 @@ fn rule() -> RealToolRule {
 			version: "1.0.0".into(),
 		},
 		endpoint: "https://test.example/rpc".into(),
-		credential_env: Some("TEST_TOOL".into()),
 		allowed_actions: vec!["read".into()],
 		allowed_resources: vec!["fixture".into()],
 	}
 }
-fn pin(repository: &Repository) -> ProfilePin {
+fn pin() -> ProfilePin {
 	ProfilePin {
 		id: "profile".into(),
 		revision: 7,
 		tenant: "tenant".into(),
 		rules: vec![rule()],
-		credential_fingerprints: [(
-			"TEST_TOOL".into(),
-			credential_fingerprint(repository, "TEST_TOOL").unwrap(),
-		)]
-		.into(),
 	}
 }
 fn bound_tool() -> Entry {
@@ -212,7 +205,13 @@ impl SandboxScope for Scope<'_> {
 	async fn limits(&mut self, _: &str) -> Result<TestLimits> {
 		panic!("dispatch must not change limits")
 	}
-	async fn save_limits(&mut self, _: &TestLimits) -> Result<()> {
+	async fn authorize_tenant(&mut self, _: &str, _: &str, _: &str) -> Result<()> {
+		panic!("dispatch authorizes the draft")
+	}
+	async fn stored_limits(&mut self, _: &str) -> Result<TestLimits> {
+		panic!("dispatch must not read limits")
+	}
+	async fn save_limits(&mut self, _: &TestLimits) -> Result<TestLimits> {
 		panic!("dispatch must not change limits")
 	}
 	async fn sessions(&mut self, _: Uuid) -> Result<Vec<TestSession>> {
@@ -303,25 +302,14 @@ impl RealDispatchScope for Scope<'_> {
 		Ok(())
 	}
 }
-impl Credentials for Repository {
-	fn resolve(&self, name: &str) -> Result<String> {
-		assert_eq!(name, "TEST_TOOL");
-		Ok(if self.failing("credential") {
-			"rotated-fixture"
-		} else {
-			"fixture"
-		}
-		.into())
-	}
-}
 impl ProfileConfiguration for Repository {
-	fn require_secret(&self, name: &str) -> Result<()> {
-		assert_eq!(name, "TEST_TOOL");
-		if self.failing("configuration") {
-			Err(Error::Invalid("test credential missing".into()))
+	fn destination(&self, endpoint: &str) -> Result<aidash_domain::keyless::Destination> {
+		assert_eq!(endpoint, "https://test.example/rpc");
+		Ok(if self.failing("configuration") {
+			aidash_domain::keyless::Destination::Forbidden
 		} else {
-			Ok(())
-		}
+			aidash_domain::keyless::Destination::PublicOnly
+		})
 	}
 }
 struct Request {
@@ -395,7 +383,7 @@ async fn pending_is_durable_before_send_and_current_leases_cover_result(
 	// Arrange a prior settled call so replacement cannot erase earlier evidence.
 	let mut repository = Repository::new();
 	repository.response = outcome;
-	let pin = pin(&repository);
+	let pin = pin();
 	// Act through both current-authority transactions.
 	let (result, actual) = invoke(&repository.dispatch(), session().id, &pin, &rule(), &call())
 		.await
@@ -451,7 +439,7 @@ async fn invalid_or_unlisted_arguments_never_open_a_transaction(
 	#[case] value: Value,
 ) {
 	let repository = Repository::new();
-	let pin = pin(&repository);
+	let pin = pin();
 	let mut input = call();
 	input.arguments[field] = value;
 	assert!(
@@ -470,14 +458,13 @@ async fn invalid_or_unlisted_arguments_never_open_a_transaction(
 #[case("profile_revision")]
 #[case("disabled")]
 #[case("rules")]
-#[case("credential")]
 #[case("schema")]
 #[case("configuration")]
 #[case("prepare")]
 #[tokio::test]
 async fn invalid_initial_authority_or_request_leaves_no_new_marker(#[case] failure: &'static str) {
 	let mut repository = Repository::new();
-	let pin = pin(&repository);
+	let pin = pin();
 	repository.failure = Some((1, failure));
 	assert!(
 		invoke(&repository.dispatch(), session().id, &pin, &rule(), &call())
@@ -498,7 +485,6 @@ async fn invalid_initial_authority_or_request_leaves_no_new_marker(#[case] failu
 #[case("draft_revision")]
 #[case("disabled")]
 #[case("rules")]
-#[case("credential")]
 #[case("schema")]
 #[case("prepare")]
 #[tokio::test]
@@ -506,7 +492,7 @@ async fn changed_authority_after_marker_records_denial_without_sending(
 	#[case] failure: &'static str,
 ) {
 	let mut repository = Repository::new();
-	let pin = pin(&repository);
+	let pin = pin();
 	repository.failure = Some((2, failure));
 	let error = invoke(&repository.dispatch(), session().id, &pin, &rule(), &call())
 		.await
@@ -524,7 +510,7 @@ async fn changed_authority_after_marker_records_denial_without_sending(
 async fn transport_error_preserves_unknown_durable_outcome() {
 	let mut repository = Repository::new();
 	repository.response = "network_error";
-	let pin = pin(&repository);
+	let pin = pin();
 	assert!(matches!(
 		invoke(&repository.dispatch(), session().id, &pin, &rule(), &call()).await,
 		Err(Error::External(_))
@@ -541,7 +527,7 @@ async fn transport_error_preserves_unknown_durable_outcome() {
 async fn cancellation_during_dispatch_releases_leases_and_preserves_unknown_marker() {
 	let mut repository = Repository::new();
 	repository.response = "pending";
-	let pin = pin(&repository);
+	let pin = pin();
 	let dispatch = repository.dispatch();
 	let rule = rule();
 	let call = call();
@@ -566,7 +552,7 @@ async fn cancellation_during_dispatch_releases_leases_and_preserves_unknown_mark
 async fn result_never_overwrites_a_changed_or_lost_marker(#[case] response: &'static str) {
 	let mut repository = Repository::new();
 	repository.response = response;
-	let pin = pin(&repository);
+	let pin = pin();
 	assert!(matches!(
 		invoke(&repository.dispatch(), session().id, &pin, &rule(), &call()).await,
 		Err(Error::Conflict(_))

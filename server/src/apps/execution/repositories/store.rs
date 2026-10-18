@@ -68,6 +68,9 @@ pub struct Store {
 	pub keyless: aidash_application::provider_access::KeylessAccess,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
+	/// The Deployment's ceilings on Tenants' Test Limits from
+	/// `[workbench_test_limits]` (#361).
+	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
 	/// clone of this Store.
@@ -423,6 +426,7 @@ impl Store {
 			provider_clients,
 			keyless: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
+			test_limit_ceilings: Default::default(),
 			recovery_cursors: Default::default(),
 			tenancies: Default::default(),
 			tool_slots,
@@ -460,6 +464,13 @@ impl Store {
 		rules: aidash_domain::retention::RetentionRules,
 	) -> Self {
 		self.research_retention = rules;
+		self
+	}
+	pub fn with_test_limit_ceilings(
+		mut self,
+		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
+	) -> Self {
+		self.test_limit_ceilings = ceilings;
 		self
 	}
 	pub fn with_keyless_origins(
@@ -518,6 +529,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
 			research_retention: self.research_retention,
+			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),
@@ -564,6 +576,7 @@ impl Store {
 			provider_clients: self.provider_clients.clone(),
 			keyless: self.keyless.clone(),
 			research_retention: self.research_retention,
+			test_limit_ceilings: self.test_limit_ceilings,
 			recovery_cursors: self.recovery_cursors.clone(),
 			tenancies: self.tenancies.clone(),
 			tool_slots: self.tool_slots.clone(),

@@ -294,6 +294,12 @@ impl ModelConfig {
 		}))
 	}
 
+	/// Whether a current route accepts `media_type` (an image MIME type or an
+	/// audio format name).
+	pub fn has_current_media_route_for_type(&self, media_type: &str) -> bool {
+		self.has_current_media_route([media_type])
+	}
+
 	fn has_current_media_route<'a>(&self, formats: impl IntoIterator<Item = &'a str>) -> bool {
 		let formats: Vec<_> = formats.into_iter().collect();
 		if formats.is_empty() || self.uses_plan_connection() {

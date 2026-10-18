@@ -1,6 +1,6 @@
 //! HTTP/native sharing DTOs adapt to one application snapshot-delivery transaction.
 use super::contracts::Area;
-pub use crate::apps::execution::capabilities::serializers::sharing::{Recipient, Selection, Share};
+pub use crate::apps::execution::capabilities::serializers::sharing::{Recipient, Share};
 pub(crate) use crate::apps::execution::repositories::sharing::serialize;
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
 use serde_json::Value;

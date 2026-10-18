@@ -21,6 +21,13 @@ export const REGISTRY_ACTIONS: readonly string[] = [
   "marketplace.install",
 ];
 
+/** Overview actions that any member may hold: the Registry actions and
+ *  issuing Subject Credentials for oneself (ADR 0063). */
+export const MEMBER_LEVEL_ACTIONS: readonly string[] = [
+  ...REGISTRY_ACTIONS,
+  "credential.create",
+];
+
 export function useTenantAdministration(tenant: string | null) {
   return useQuery({
     queryKey: ["tenant-administration", tenant],

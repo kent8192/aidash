@@ -988,12 +988,13 @@ impl Guard {
 		self.authorize_inference_with(&mut access).await
 	}
 
-	/// Resolve an explicit one-inference file selection under the same execution
-	/// authority as the provider request. Only immutable references are durable.
+	/// Resolve an explicit one-inference file selection or page image under the
+	/// same execution authority as the provider request. Only immutable
+	/// references are durable.
 	pub async fn model_media(
 		&self,
 		store: &Store,
-		selections: &[crate::capabilities::sharing::Selection],
+		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
 			&mut crate::bootstrap::selected_media(store, &self.run, self.access.clone()),

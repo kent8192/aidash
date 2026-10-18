@@ -9,6 +9,8 @@ const COPY = {
     unavailable: "This source is unavailable.",
     expired: /account terms no longer let this excerpt be kept/,
     results: /^Results/,
+    pageImage: "Page the agent viewed",
+    pageImageAlt: "Page 2 as the agent viewed it",
   },
   "ja-JP": {
     source: (ordinal: number) => `出典 ${ordinal}`,
@@ -17,6 +19,8 @@ const COPY = {
     unavailable: "この出典は利用できません。",
     expired: /この抜粋の保持期限が切れました/,
     results: /^成果物/,
+    pageImage: "エージェントが見たページ",
+    pageImageAlt: "エージェントが見た 2 ページ目",
   },
 } as const;
 
@@ -188,5 +192,64 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     const excerpt = popover.getByRole("region", { name: copy.excerpt });
     await expect(excerpt.getByRole("status")).toHaveText(copy.expired);
     await expect(excerpt.locator("blockquote")).toHaveCount(0);
+  });
+}
+
+/** A one-pixel PNG, as the view operation stores it. */
+const PIXEL =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+const PAGE_IMAGE = {
+  ...EVIDENCE,
+  url: "https://research-fixture.example/annual-report.pdf",
+  requested_url: "https://research-fixture.example/annual-report.pdf",
+  title: "Annual report",
+  media_type: "application/pdf",
+  text: "",
+  line_start: 0,
+  line_end: 0,
+  pages: [2],
+  context: null,
+  image: {
+    page: 2,
+    media_type: "image/png",
+    width: 1,
+    height: 1,
+    digest: "sha256:image",
+    data: PIXEL,
+  },
+};
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`a cited page view shows the image the agent saw in ${locale}`, async ({
+    page,
+  }) => {
+    const copy = COPY[locale];
+    const { errors } = await setup(page, { citations: true, locale });
+    await page.route("**/api/runs/*/evidence/*", (route) =>
+      route.fulfill({ json: PAGE_IMAGE }),
+    );
+    await page.goto("/collaboration?channel=workspace-one");
+
+    await page
+      .locator("article", { hasText: "Evidence is ready" })
+      .getByRole("button", { name: copy.source(1), exact: true })
+      .first()
+      .click();
+
+    const popover = page.getByRole("dialog", { name: copy.source(1) });
+    const image = popover
+      .getByRole("region", { name: copy.pageImage })
+      .getByRole("img", { name: copy.pageImageAlt });
+    await expect(image).toHaveAttribute(
+      "src",
+      `data:image/png;base64,${PIXEL}`,
+    );
+    // A page image has no passage and no surrounding text to offer.
+    await expect(
+      popover.getByRole("region", { name: copy.excerpt }),
+    ).toHaveCount(0);
+    await expect(popover.getByText(copy.context)).toHaveCount(0);
+    expect(errors).toEqual([]);
   });
 }

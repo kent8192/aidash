@@ -693,7 +693,7 @@ pub fn result_plan_mut(
 pub fn defer_result(
 	fitting: ResultFitting,
 	call: &aidash_domain::provider::ToolCall,
-	selected_media: Vec<aidash_domain::media::Selection>,
+	selected_media: Vec<aidash_domain::media::ModelMedia>,
 ) -> (ThinkingState, &'static str) {
 	let mut state = ThinkingState {
 		force_workspace_read_compaction: true,
@@ -840,7 +840,7 @@ pub fn read_only_after_model_media_selection(name: &str) -> bool {
 		.is_some_and(|contract| contract.behavior.permits(ToolUseMode::MediaPending))
 }
 
-pub fn pending_selected_media(pending: &ToolCallState) -> Vec<aidash_domain::media::Selection> {
+pub fn pending_selected_media(pending: &ToolCallState) -> Vec<aidash_domain::media::ModelMedia> {
 	pending.selected_media()
 }
 

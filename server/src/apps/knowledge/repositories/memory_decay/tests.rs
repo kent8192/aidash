@@ -185,6 +185,7 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 			.unwrap();
 	crate::semantic::service::configure(
 		&store,
+		&Actor::DeploymentAdministrator,
 		other.id,
 		crate::semantic::ConfigureIndex {
 			expected_revision: 0,

@@ -33,8 +33,8 @@ impl ExpiredResults {
 	}
 
 	/// Whether a research result carries an expired Provider result. A search
-	/// result is matched by the Sources it created and a read or find result
-	/// by its Document snapshot only, so reading a searched Source with
+	/// result is matched by the Sources it created and a read, find or view
+	/// result by its Document snapshot only, so reading a searched Source with
 	/// Aidash's own page reader never expires with the search.
 	pub fn covers(&self, result: &Value) -> bool {
 		let uuid = |value: &Value| value.as_str().and_then(|id| id.parse::<Uuid>().ok());
@@ -47,7 +47,7 @@ impl ExpiredResults {
 						.any(|id| self.sources.contains(&id))
 				})
 			}
-			Some(Operation::Fetch | Operation::Find) => {
+			Some(Operation::Fetch | Operation::Find | Operation::View) => {
 				uuid(&result["data"]["document_id"]).is_some_and(|id| self.documents.contains(&id))
 			}
 			None => false,

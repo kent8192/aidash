@@ -92,7 +92,8 @@ pub async fn initialize(
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
 		// An invalid Deployment retention period refuses to start (ADR 0045).
-		.with_research_retention(settings.research_retention.rules()?);
+		.with_research_retention(settings.research_retention.rules()?)
+		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	configure_plan_connections(
 		&mut store,
@@ -432,13 +433,6 @@ pub(crate) fn keyless_provider_access(
 	store: &Store,
 ) -> Arc<dyn aidash_application::provider_access::ProviderAccess> {
 	Arc::new(store.keyless.clone())
-}
-
-struct EnvironmentCredentials;
-impl aidash_application::ports::Credentials for EnvironmentCredentials {
-	fn resolve(&self, reference: &str) -> aidash_application::Result<String> {
-		crate::config::secret(reference).map_err(Into::into)
-	}
 }
 
 pub mod migrations;
@@ -1137,11 +1131,13 @@ pub(crate) fn semantic_entries_scope<'a, 'scope>(
 
 pub(crate) fn semantic_configuration_repository(
 	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
+	actor: &crate::authorization::identity::Actor,
+	workspace: uuid::Uuid,
 ) -> crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 	crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 		store: store.clone(),
-		scope,
+		actor: actor.clone(),
+		workspace,
 	}
 }
 
@@ -1848,7 +1844,10 @@ pub(crate) fn semantic_status_repository(
 pub(crate) fn peer_mapping_repository(
 	runtime: &crate::federation::Federation,
 ) -> crate::apps::identity::repositories::peer_mappings::Repository<'_> {
-	crate::apps::identity::repositories::peer_mappings::Repository { runtime }
+	crate::apps::identity::repositories::peer_mappings::Repository {
+		runtime,
+		administrator: None,
+	}
 }
 
 /// Borrow the current draft authority transaction for HTTP and contained workers.
@@ -2013,10 +2012,13 @@ pub(crate) fn workbench_profile_repository(
 ) -> crate::apps::registry::workbench::repositories::profile::Repository<'_> {
 	crate::apps::registry::workbench::repositories::profile::Repository { runtime, actor }
 }
-/// Presence checks use the same configured secret references as native sandbox execution.
-pub(crate) fn workbench_profile_configuration()
--> crate::apps::registry::workbench::repositories::profile::Configuration {
-	crate::apps::registry::workbench::repositories::profile::Configuration
+/// Test endpoints reach the Deployment's permitted private origins only.
+pub(crate) fn workbench_profile_configuration(
+	runtime: &Federation,
+) -> crate::apps::registry::workbench::repositories::profile::Configuration {
+	crate::apps::registry::workbench::repositories::profile::Configuration {
+		keyless: runtime.store.keyless.clone(),
+	}
 }
 
 /// Sandbox HTTP and background callers share the native persistence and current actor.
@@ -2027,30 +2029,37 @@ pub(crate) fn workbench_sandbox_repository(
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
 		node_id: runtime.config.node_id.clone(),
+		tenant_actions:
+			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
+				actor.clone(),
+				runtime.config.node_id.clone(),
+			),
 		actor,
 	}
 }
 
-/// Sandbox credentials resolve the same live configured references as model and Tool adapters.
-pub(crate) fn workbench_sandbox_credentials() -> Arc<dyn aidash_application::ports::Credentials> {
-	Arc::new(EnvironmentCredentials)
-}
-/// Isolated test HTTP requests retain their original timeout, redirect and response limits.
-pub(crate) fn workbench_sandbox_real_tools() -> aidash_integrations::sandbox::RealTools {
-	aidash_integrations::sandbox::RealTools::new(workbench_sandbox_credentials())
+/// Isolated test HTTP requests retain their original timeout, redirect and
+/// response limits, and reach public addresses unless the origin is permitted.
+pub(crate) fn workbench_sandbox_real_tools(
+	runtime: &Federation,
+) -> Result<aidash_integrations::sandbox::RealTools> {
+	Ok(aidash_integrations::sandbox::RealTools::new(
+		runtime.store.keyless.clone(),
+	)?)
 }
 
 /// Assemble owned adapters for a background sandbox session with the admitted actor's identity.
 pub(crate) fn workbench_sandbox_execution(
 	runtime: &Federation,
 	actor: crate::authorization::identity::Actor,
-) -> aidash_application::registry::workbench::sandbox::execution::Execution {
-	aidash_application::registry::workbench::sandbox::execution::Execution {
-		repository: Arc::new(workbench_sandbox_repository(runtime, actor)),
-		credentials: workbench_sandbox_credentials(),
-		configuration: Arc::new(workbench_profile_configuration()),
-		transport: Arc::new(workbench_sandbox_real_tools()),
-	}
+) -> Result<aidash_application::registry::workbench::sandbox::execution::Execution> {
+	Ok(
+		aidash_application::registry::workbench::sandbox::execution::Execution {
+			repository: Arc::new(workbench_sandbox_repository(runtime, actor)),
+			configuration: Arc::new(workbench_profile_configuration(runtime)),
+			transport: Arc::new(workbench_sandbox_real_tools(runtime)?),
+		},
+	)
 }
 
 /// Sandbox models retain Keyless access until they have Tenant admission authority.

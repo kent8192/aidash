@@ -736,6 +736,40 @@ pub struct BindingSnapshot {
 	pub foreign_agents: Vec<ForeignAgentSnapshot>,
 }
 
+impl BindingSnapshot {
+	/// Whether the Agent's pinned model can be given a page image now (ADR
+	/// 0053): it declares image input and holds a current media route for the
+	/// PNG a viewed page is delivered as.
+	pub fn model_reads_page_images(&self) -> bool {
+		let Some(model) = self
+			.definitions
+			.iter()
+			.find(|definition| definition.identity == self.agent)
+			.map(|agent| &agent.definition.config["model"])
+		else {
+			return false;
+		};
+		let (Some(id), Some(version)) = (model["id"].as_str(), model["version"].as_str()) else {
+			return false;
+		};
+		self.definitions
+			.iter()
+			.find(|definition| {
+				definition.definition.kind == "model"
+					&& definition.identity.id == id
+					&& definition.identity.version == version
+			})
+			.and_then(|model| {
+				serde_json::from_value::<crate::model::ModelConfig>(model.definition.config.clone())
+					.ok()
+			})
+			.is_some_and(|model| {
+				model.modalities.iter().any(|modality| modality == "image")
+					&& model.has_current_media_route_for_type("image/png")
+			})
+	}
+}
+
 /// One authenticated receiver's public closure. Nested foreign or private
 /// dependencies require their own supported disclosure/admission protocol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

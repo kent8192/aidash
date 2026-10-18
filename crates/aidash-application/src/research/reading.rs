@@ -67,6 +67,19 @@ pub async fn read(
 		.into_iter()
 		.next()
 		.ok_or_else(unavailable)?;
+	// A page image is read with its fragment; like a passage's text, it stays
+	// after a retention purge of the snapshot (ADR 0053). The account-terms
+	// purge removes it, and the citation is then unavailable.
+	let image = match &fragment.image {
+		Some(_) => Some(
+			store
+				.page_image(run, &fragment.reference)
+				.await?
+				.ok_or_else(unavailable)?
+				.1,
+		),
+		None => None,
+	};
 	// The evidence itself is decided last, after every read: a revocation
 	// committed during any of them withholds what was already read.
 	if store.revoked(run).await? {
@@ -78,5 +91,7 @@ pub async fn read(
 	if !reader.readable(run).await? {
 		return Err(unavailable());
 	}
-	Ok(CitedEvidence::new(fragment, &document))
+	let mut cited = CitedEvidence::new(fragment, &document);
+	cited.image = image;
+	Ok(cited)
 }
