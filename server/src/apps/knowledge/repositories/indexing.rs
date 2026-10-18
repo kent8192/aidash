@@ -553,11 +553,15 @@ impl SemanticIndexingSession for Session {
 			) {
 			use aidash_application::ports::memory::Allowance;
 			let provider = serde_json::from_value(row.metadata["provider"].clone())?;
-			let bank = serde_json::from_value(row.metadata["bank"].clone())?;
-			let policy = crate::semantic::native_memory::policy(&mut self.lease, &provider).await?;
+			let bank: aidash_domain::memory::Bank =
+				serde_json::from_value(row.metadata["bank"].clone())?;
+			let policy =
+				crate::semantic::native_memory::policy(&mut self.lease, &bank.tenant, &provider)
+					.await?;
 			let pinned: EmbeddingConfig = serde_json::from_value(
 				crate::semantic::native_memory::definition(
 					&mut self.lease,
+					&bank.tenant,
 					&policy.embedding,
 					"embedding",
 				)

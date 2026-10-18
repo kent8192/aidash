@@ -51,7 +51,8 @@ async fn unexpired(lease: &mut Lease<'_>, bank: &Bank, row: &native::Row) -> Res
 	let settings = super::bank_settings::get(lease, bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &bank.tenant, &settings.provider).await?;
 	let created: chrono::DateTime<Utc> = row.try_get("created_at")?;
 	if created
 		.checked_add_signed(chrono::Duration::days(i64::from(
@@ -152,7 +153,7 @@ pub(crate) async fn propose(
 		id: binding.try_get("provider_id")?,
 		version: binding.try_get("provider_version")?,
 	};
-	let policy = crate::semantic::native_memory::policy(lease, &provider).await?;
+	let policy = crate::semantic::native_memory::policy(lease, &bank.tenant, &provider).await?;
 	if !policy.learn_from_runs {
 		return Err(Error::Forbidden);
 	}
@@ -334,7 +335,8 @@ pub(crate) async fn review(
 	let settings = super::bank_settings::get(lease, bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &bank.tenant, &settings.provider).await?;
 	repository::record_capacity(
 		lease,
 		bank_id,

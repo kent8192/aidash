@@ -437,15 +437,21 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.any(|edge| edge["source"] == paused["id"] && edge["target"] == task["id"])
 	);
 	assert!(run_page["next_cursor"].is_string());
-	let (status, _) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	let (status, unapproved) = graph_custom(
 		&app,
 		&peer_token,
@@ -462,15 +468,21 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.all(|node| node["kind"] != "agent")
 	);
 	assert!(unapproved["edges"].as_array().unwrap().is_empty());
-	let (status, _) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		2,
+		true,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	let (status, mapping) = request(
 		&app,
 		&f.config.api_token,
@@ -505,17 +517,21 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.0,
 		409
 	);
-	let (status, catalog) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":3,"enabled":false,
-		}),
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		3,
+		false,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200, "{catalog}");
+	.await
+	.unwrap();
 	let (status, without_agent) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
 	assert_eq!(status, 200, "{without_agent}");
 	assert!(
@@ -525,17 +541,21 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["resource_id"] == "research")
 	);
-	let (status, catalog) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":4,"enabled":true,
-		}),
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		4,
+		true,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200, "{catalog}");
+	.await
+	.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-workspace-graph","effect":"deny","subjects":{"any":true},
 		"actions":["workspace.read"],"resources":{"kinds":["workspace"]},

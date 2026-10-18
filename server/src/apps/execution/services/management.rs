@@ -10,7 +10,6 @@ use crate::{
 	authorization::{execution, identity::Actor, interaction},
 	domain::*,
 	federation::Federation,
-	registry::Search,
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::provider::progress::MARKER_PREFIX;
@@ -78,7 +77,7 @@ impl HarnessManagement {
 			let state = scope.state(f.config.identity(vec![])).await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
-		let records = f.registry.list(&Search::default()).await?;
+		let records: Vec<crate::registry::Entry> = Vec::new();
 		// Scan newest first until 100 visible events are collected. Hidden
 		// required-Home events may occupy any number of candidate pages.
 		let mut events = Vec::new();
@@ -273,24 +272,10 @@ impl HarnessManagement {
 		input: ClaimInput,
 	) -> Result<Task> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return execution::claim(&f, &identity, id, input.revision, &input.agent).await;
-		}
-		let entry = f
-			.registry
-			.get(&input.agent.id, &input.agent.version)
-			.await?;
-		let owner = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
-		// Deployment Administrator execution creates a Run without an execution grant.
-		let legacy = TenancyScope::Deployment(DeploymentScopeReason::LegacyRun);
-		let task = f
-			.store
-			.claim(&legacy, id, input.revision, &owner, &entry)
-			.await?;
-		f.store
-			.accept_run(&legacy, &task, &f.config.node_id, &entry.id, &entry.version)
-			.await?;
-		Ok(task)
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		execution::claim(&f, &identity, id, input.revision, &input.agent).await
 	}
 	pub(crate) async fn run_get(
 		&self,
@@ -536,24 +521,11 @@ impl HarnessManagement {
 			return self.run_media_message(actor, id, input).await;
 		}
 
-		if let Actor::Subject(identity) = actor {
-			interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
-				.await?;
-			return Ok(SentResponse { sent: true });
-		}
-		let run = f.store.run(&f.store.run_tenancy(id).await?, id).await?;
-		let key = format!(
-			"human:{id}:{}",
-			input.idempotency_key.unwrap_or_else(Uuid::new_v4)
-		);
-		f.require_terminal_safe_delivery(&run).await?;
-		let limit = f.run_message_limit(&run).await?;
-		f.admit_run_message(&run, "human", &input.content, &key, limit)
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
 			.await?;
-		if let Err(error) = f.deliver_run_messages(&run).await {
-			tracing::warn!(run_id=%id, %error, "accepted run message awaits home delivery");
-		}
-		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
 	}
 	pub(crate) async fn human_answer(
@@ -563,24 +535,10 @@ impl HarnessManagement {
 		response: Value,
 	) -> Result<HumanRequest> {
 		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = actor {
-			return interaction::answer(&f, &identity, id, response).await;
-		}
-		let request = f.store.human_request_by_id(&listing(), id).await?;
-		let scope = f.store.run_tenancy(request.run_id).await?;
-		let run = f.store.run(&scope, request.run_id).await?;
-		if run.home_node != f.config.node_id
-			&& crate::authorization::peer::admission::run_grant(&f.store, &run.metadata())
-				.await?
-				.is_none()
-		{
-			crate::federation::Home::new(f.clone(), run)
-				.answer_home_human(id, response.clone())
-				.await?;
-		}
-		let h = f.store.answer(&scope, id, response).await?;
-		f.notify.notify_waiters();
-		Ok(h)
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		interaction::answer(&f, &identity, id, response).await
 	}
 	pub(crate) async fn events(&self, actor: Actor, q: EventQuery) -> Result<Response> {
 		let f = self.runtime.clone();
@@ -722,22 +680,17 @@ impl HarnessManagement {
 		input: MessageInput,
 	) -> Result<SentResponse> {
 		let f = self.runtime.clone();
-		let run = match &actor {
-			Actor::Subject(identity) => {
-				let mut access =
-					crate::authorization::access::Access::begin(&f.store, identity).await?;
-				let result = access.run_for_interaction(id).await;
-				access.finish(result).await?
-			}
-			Actor::DeploymentAdministrator => {
-				f.store.run(&f.store.run_tenancy(id).await?, id).await?
-			}
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		let run = {
+			let mut access =
+				crate::authorization::access::Access::begin(&f.store, identity).await?;
+			let result = access.run_for_interaction(id).await;
+			access.finish(result).await?
 		};
 		let external = input.idempotency_key.unwrap_or_else(Uuid::new_v4);
-		let key = match &actor {
-			Actor::Subject(identity) => interaction::run_message_key(identity, id, external),
-			Actor::DeploymentAdministrator => format!("human:{id}:{external}"),
-		};
+		let key = interaction::run_message_key(identity, id, external);
 		let mut lease = crate::collaboration::access::Lease::begin_message_create(
 			&f.store,
 			actor,
@@ -806,14 +759,15 @@ impl HarnessManagement {
 					attachment.content.clone(),
 				)?);
 			}
+			let tenant = f.store.run_tenant(run.id).await?;
 			let agent = f
 				.registry
-				.get_for_run(&run, &run.agent_id, &run.agent_version)
+				.get_for_run(&tenant, &run, &run.agent_id, &run.agent_version)
 				.await?;
 			let agent: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
 			let model = f
 				.registry
-				.get_for_run(&run, &agent.model.id, &agent.model.version)
+				.get_for_run(&tenant, &run, &agent.model.id, &agent.model.version)
 				.await?;
 			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
 			model.require_media_types(

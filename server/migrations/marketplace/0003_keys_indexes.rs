@@ -64,7 +64,11 @@ pub(super) fn migration() -> Migration {
 			table: "marketplace_revisions".to_owned(),
 			constraint: Constraint::Unique {
 				name: "marketplace_revisions_entry_id_entry_version_key".to_owned(),
-				columns: vec!["entry_id".to_owned(), "entry_version".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"entry_id".to_owned(),
+					"entry_version".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {

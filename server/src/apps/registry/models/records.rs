@@ -1,18 +1,22 @@
-//! Native persistence for immutable registry versions.
+//! Native persistence for immutable registry versions. Every read and write
+//! names its Tenant: a Registry identity is `(tenant, id, version)`.
 use super::states::DefinitionKind;
 use super::{AgentKnowledge, Definition, RegistryRequest};
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
-use reinhardt::db::orm::{AtomicTransaction, Model, OrmExecutor};
+use aidash_domain::tenancy::TenantName;
+use reinhardt::db::orm::{Model, OrmExecutor};
 use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) async fn definition<E: OrmExecutor>(
 	db: &mut E,
+	tenant: &TenantName,
 	id: &str,
 	version: &str,
 ) -> Result<Definition> {
 	Definition::objects()
+		.filter(Definition::field_tenant().eq(tenant.as_str().to_owned()))
 		.filter(Definition::field_id().eq(id.to_owned()))
 		.filter(Definition::field_version().eq(version.to_owned()))
 		.first_with_db(db)
@@ -22,12 +26,13 @@ pub(crate) async fn definition<E: OrmExecutor>(
 
 pub(crate) async fn definitions<E: OrmExecutor>(
 	db: &mut E,
+	tenant: &TenantName,
 	kind: Option<&str>,
 	offset: usize,
 	limit: Option<usize>,
 ) -> Result<Vec<Definition>> {
 	let mut query = Definition::objects()
-		.all()
+		.filter(Definition::field_tenant().eq(tenant.as_str().to_owned()))
 		.order_by(&["id", "version"])
 		.offset(offset);
 	if let Some(kind) = kind {
@@ -44,13 +49,18 @@ pub(crate) async fn definitions<E: OrmExecutor>(
 }
 
 /// A conflicting insert waits for the winning transaction before reading it.
-pub(crate) async fn insert_definition<E: OrmExecutor>(db: &mut E, entry: &Entry) -> Result<bool> {
+pub(crate) async fn insert_definition<E: OrmExecutor>(
+	db: &mut E,
+	tenant: &TenantName,
+	entry: &Entry,
+) -> Result<bool> {
 	let value = serde_json::to_value(entry)?;
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new("registry"))
-		.columns(["id", "version", "kind", "metadata"].map(Alias::new))
+		.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
 		.from_subquery(
 			reinhardt::query::Query::select()
+				.expr(Expr::value(tenant.as_str()))
 				.expr(Expr::value(&entry.id))
 				.expr(Expr::value(&entry.version))
 				.expr(Expr::value(&entry.kind))
@@ -58,7 +68,7 @@ pub(crate) async fn insert_definition<E: OrmExecutor>(db: &mut E, entry: &Entry)
 				.to_owned(),
 		)
 		.on_conflict(
-			OnConflict::columns(["id", "version"])
+			OnConflict::columns(["tenant", "id", "version"])
 				.do_nothing()
 				.to_owned(),
 		)
@@ -68,7 +78,7 @@ pub(crate) async fn insert_definition<E: OrmExecutor>(db: &mut E, entry: &Entry)
 		.await?
 		.rows_affected
 		== 1;
-	let stored = definition(db, &entry.id, &entry.version).await?;
+	let stored = definition(db, tenant, &entry.id, &entry.version).await?;
 	if stored.metadata.0 != value {
 		return Err(Error::Conflict(
 			"published versions are immutable; choose a new version".into(),
@@ -77,8 +87,11 @@ pub(crate) async fn insert_definition<E: OrmExecutor>(db: &mut E, entry: &Entry)
 	Ok(inserted)
 }
 
+/// An idempotency key belongs to one principal in one Tenant.
 pub(crate) async fn assign_id<E: OrmExecutor>(
 	db: &mut E,
+	tenant: &TenantName,
+	principal: &str,
 	entry: &mut Entry,
 	key: Option<Uuid>,
 ) -> Result<()> {
@@ -90,6 +103,8 @@ pub(crate) async fn assign_id<E: OrmExecutor>(
 		return Ok(());
 	};
 	let draft = RegistryRequest::build()
+		.tenant(tenant.as_str())
+		.principal(principal)
 		.key(key)
 		.request(request.clone().into())
 		.entity_id(&entry.id)
@@ -98,6 +113,8 @@ pub(crate) async fn assign_id<E: OrmExecutor>(
 		.bulk_create_with_conn(db, vec![draft], None, true, false)
 		.await?;
 	let stored = RegistryRequest::objects()
+		.filter(RegistryRequest::field_tenant().eq(tenant.as_str().to_owned()))
+		.filter(RegistryRequest::field_principal().eq(principal.to_owned()))
 		.filter(RegistryRequest::field_key().eq(key))
 		.get_with_db(db)
 		.await?;
@@ -110,40 +127,18 @@ pub(crate) async fn assign_id<E: OrmExecutor>(
 	Ok(())
 }
 
-pub(crate) async fn documents<E: OrmExecutor>(db: &mut E, entry: &Entry) -> Result<Option<Value>> {
+pub(crate) async fn documents<E: OrmExecutor>(
+	db: &mut E,
+	tenant: &TenantName,
+	entry: &Entry,
+) -> Result<Option<Value>> {
 	Ok(AgentKnowledge::objects()
+		.filter(AgentKnowledge::field_tenant().eq(tenant.as_str().to_owned()))
 		.filter(AgentKnowledge::field_agent_key().eq(entry.id.clone()))
 		.filter(AgentKnowledge::field_agent_version().eq(entry.version.clone()))
 		.first_with_db(db)
 		.await?
 		.map(|record| record.documents.0))
-}
-
-pub(crate) async fn insert_documents(
-	db: &mut AtomicTransaction,
-	entry: &Entry,
-	documents: Value,
-) -> Result<()> {
-	let _definition = definition(db, &entry.id, &entry.version).await?;
-	let draft = AgentKnowledge::build()
-		.agent_key(&entry.id)
-		.agent_version(&entry.version)
-		.documents(documents.clone().into())
-		.finish();
-	AgentKnowledge::objects()
-		.bulk_create_with_conn(db, vec![draft], None, true, false)
-		.await?;
-	let stored = AgentKnowledge::objects()
-		.filter(AgentKnowledge::field_agent_key().eq(entry.id.clone()))
-		.filter(AgentKnowledge::field_agent_version().eq(entry.version.clone()))
-		.get_with_db(db)
-		.await?;
-	if stored.documents.0 != documents {
-		return Err(Error::Conflict(
-			"private documents are immutable; choose a new version".into(),
-		));
-	}
-	Ok(())
 }
 
 use reinhardt::db::orm::execution::convert_values;

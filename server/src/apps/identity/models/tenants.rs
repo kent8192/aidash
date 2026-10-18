@@ -35,6 +35,19 @@ use reinhardt::query::{
 };
 
 impl Tenant {
+	/// The name of every Tenant, oldest first.
+	pub(crate) async fn names<E: reinhardt::db::orm::OrmExecutor>(
+		db: &mut E,
+	) -> Result<Vec<aidash_domain::tenancy::TenantName>> {
+		Self::objects()
+			.all()
+			.order_by(&["created_at", "name"])
+			.all_with_db(db)
+			.await?
+			.into_iter()
+			.map(|tenant| Ok(aidash_domain::tenancy::TenantName::new(tenant.name)?))
+			.collect()
+	}
 	/// Whether `tenant` has a root record, held against deletion until the
 	/// transaction ends.
 	pub(crate) async fn exists(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<bool> {

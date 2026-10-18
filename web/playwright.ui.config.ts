@@ -32,6 +32,7 @@ export default defineConfig({
     "tenant-administration.spec.ts",
     "tenancy.spec.ts",
     "keyless-approval.spec.ts",
+    "catalog-approval.spec.ts",
     "citations.spec.ts",
   ],
   workers: 1,

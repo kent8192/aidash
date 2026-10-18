@@ -29,7 +29,8 @@ pub(crate) async fn raw(
 				.column(Alias::new("metadata"))
 				.from(Alias::new("registry"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(id=? AND version=?)".to_owned(),
+					"(tenant=current_setting('aidash.tenant', true) AND id=? AND version=?)"
+						.to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),
@@ -155,6 +156,13 @@ impl<Events: Send> aidash_application::ports::marketplace::DistributionScope
 		revision: Option<i64>,
 	) -> aidash_domain::policy::Resource {
 		crate::marketplace::installations::resource(self.access, installation, revision)
+	}
+	fn registry_resource(&self, kind: &str, id: &str) -> aidash_domain::policy::Resource {
+		self.access.resource(
+			"registry",
+			format!("{kind}/{id}"),
+			serde_json::json!({"kind": kind, "id": id}),
+		)
 	}
 	async fn require(
 		&mut self,
