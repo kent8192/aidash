@@ -28,6 +28,13 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 					.add(
 						reinhardt::query::SimpleExpr::from(Expr::col((
 							Alias::new("r"),
+							Alias::new("tenant"),
+						)))
+						.eq(Expr::col((Alias::new("c"), Alias::new("tenant")))),
+					)
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("r"),
 							Alias::new("id"),
 						)))
 						.eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
@@ -74,6 +81,13 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 				JoinType::InnerJoin,
 				TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
 				Condition::all()
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("r"),
+							Alias::new("tenant"),
+						)))
+						.eq(Expr::col((Alias::new("c"), Alias::new("tenant")))),
+					)
 					.add(
 						reinhardt::query::SimpleExpr::from(Expr::col((
 							Alias::new("r"),
@@ -139,6 +153,13 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 					.add(
 						reinhardt::query::SimpleExpr::from(Expr::col((
 							Alias::new("r"),
+							Alias::new("tenant"),
+						)))
+						.eq(Expr::col((Alias::new("c"), Alias::new("tenant")))),
+					)
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("r"),
 							Alias::new("id"),
 						)))
 						.eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
@@ -173,6 +194,13 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 				JoinType::InnerJoin,
 				TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
 				Condition::all()
+					.add(
+						reinhardt::query::SimpleExpr::from(Expr::col((
+							Alias::new("r"),
+							Alias::new("tenant"),
+						)))
+						.eq(Expr::col((Alias::new("c"), Alias::new("tenant")))),
+					)
 					.add(
 						reinhardt::query::SimpleExpr::from(Expr::col((
 							Alias::new("r"),

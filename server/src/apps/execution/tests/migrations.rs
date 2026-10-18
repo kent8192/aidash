@@ -39,6 +39,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0028_tool_transport_secrets"),
 	("registry", "0029_completion_policy"),
 	("registry", "0030_plan_connection_models"),
+	("registry", "0031_model_request_estimator"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -313,14 +314,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0034_policy_probe")
+		.get_migration("execution", "0035_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0033_research_event_run_index".to_owned()
+			"0034_tokenized_estimate_confidence".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -1257,6 +1258,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 				"modalities":["text"],"cost":{},
 				"projection_versions":["legacy","ordered"],"cache_mode":cache_mode}});
 		Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(DefinitionKind::Model)
@@ -1465,6 +1467,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1495,6 +1498,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 			.create_with_conn(
 				&mut connection,
 				&Definition::build()
+					.tenant("acme")
 					.id(id.clone())
 					.version("1.0.0")
 					.kind(DefinitionKind::Agent)
@@ -1543,6 +1547,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("parallel")
 				.version("1.0.0")
 				.kind(DefinitionKind::Agent)
@@ -1687,6 +1692,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1697,6 +1703,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 		.unwrap();
 	let definition = |id: &str, policy: serde_json::Value| {
 		Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(DefinitionKind::Agent)
@@ -1868,6 +1875,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1880,6 +1888,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("verified")
 				.version("1.0.0")
 				.kind(DefinitionKind::Agent)
@@ -2258,6 +2267,7 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		("exposure-agent", DefinitionKind::Agent, agent),
 	] {
 		let definition = Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(kind)

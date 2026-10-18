@@ -1,14 +1,15 @@
-//! Node declarations for the host and research package groups. No executable payloads.
+//! The Sandboxed and research groups a Deployment offers every Tenant as
+//! built-in definitions that each Tenant approves before use (ADR 0034). No
+//! executable payloads.
 use super::*;
 use crate::{Error, ports::bindings::ProviderCatalog};
 use aidash_domain::{
-	identity::Principal,
 	registry::bindings::{BundleConfig, QualifiedRef},
 	tool::providers::{ToolDescriptor, ToolTier, research_descriptor},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-pub const HOST_GROUPS: &[(&str, &[&str])] = &[
+pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	("shell", &["shell", "shell_poll", "shell_cancel"]),
 	(
 		"python",
@@ -22,7 +23,6 @@ pub const HOST_GROUPS: &[(&str, &[&str])] = &[
 	("outbound_get", &["outbound_get"]),
 	("apply_patch", &["apply_patch"]),
 	("file_share", &["file_share"]),
-	("task_assign", &["task_assign"]),
 ];
 /// Research provider packages, one group per Node provider. Every group's
 /// operations share the research contract, so a Run binding the fixture group
@@ -55,16 +55,24 @@ impl PackageGroup {
 		Ok(())
 	}
 }
-/// Authority comes from authentication, never the author's display name.
-pub fn declarations(
-	principal: &Principal,
+/// The groups whose provider the Deployment runs. A Deployment without a
+/// runner offers no Sandboxed group (ADR 0034).
+pub fn offered(
 	validation: &DefinitionValidation,
+	providers: &dyn ProviderCatalog,
 	node: &str,
 ) -> Result<Vec<PackageGroup>> {
-	crate::authorization::require_deployment_administrator(principal)?;
+	Ok(declarations(validation, node)?
+		.into_iter()
+		.filter(|group| group.verify_provider(providers).is_ok())
+		.collect())
+}
+
+/// Every Sandboxed and research group, whether or not the Deployment runs it.
+pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<PackageGroup>> {
 	aidash_domain::configuration::validate_node_id(node)?;
 	let specs = validation.node_specifications();
-	HOST_GROUPS
+	SANDBOXED_GROUPS
 		.iter()
 		.map(|(name, operations)| {
 			let operations = operations
@@ -74,8 +82,10 @@ pub fn declarations(
 						Error::Invalid(format!("provider has no specification for {operation}"))
 					})?;
 					let descriptor = core_descriptor(node, operation)?;
-					if descriptor.tier != ToolTier::Host {
-						return Err(Error::Invalid("host package contains a builtin".into()));
+					if descriptor.tier != ToolTier::Sandboxed {
+						return Err(Error::Invalid(
+							"a Sandboxed group contains a builtin".into(),
+						));
 					}
 					Ok(Entry {
 						binding_normalization: None,
@@ -86,7 +96,7 @@ pub fn declarations(
 						name: BTreeMap::from([("en".into(), operation.to_string())]),
 						description: BTreeMap::from([("en".into(), spec.description.clone())]),
 						capabilities: vec![operation.to_string()],
-						tags: vec!["deployment_administrator".into()],
+						tags: vec!["sandboxed".into()],
 						languages: vec![],
 						skills: vec![],
 						schema: spec.parameters.clone(),
@@ -96,7 +106,7 @@ pub fn declarations(
 				.collect::<Result<Vec<_>>>()?;
 			Ok(PackageGroup {
 				name: (*name).into(),
-				bundle: bundle_entry(node, name, &operations)?,
+				bundle: bundle_entry(node, name, "sandboxed", &operations)?,
 				operations,
 			})
 		})
@@ -122,7 +132,7 @@ pub fn declarations(
 						name: BTreeMap::from([("en".into(), spec.name.clone())]),
 						description: BTreeMap::from([("en".into(), spec.description)]),
 						capabilities: vec![format!("research.{operation}")],
-						tags: vec!["deployment_administrator".into(), "research".into()],
+						tags: vec!["research".into()],
 						languages: vec![],
 						skills: vec![],
 						schema: spec.parameters,
@@ -132,14 +142,14 @@ pub fn declarations(
 				.collect::<Result<Vec<_>>>()?;
 			Ok(PackageGroup {
 				name: (*name).into(),
-				bundle: bundle_entry(node, name, &operations)?,
+				bundle: bundle_entry(node, name, "research", &operations)?,
 				operations,
 			})
 		}))
 		.collect()
 }
 
-fn bundle_entry(node: &str, name: &str, operations: &[Entry]) -> Result<Entry> {
+fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Result<Entry> {
 	Ok(Entry {
 		binding_normalization: None,
 		installation: None,
@@ -152,7 +162,7 @@ fn bundle_entry(node: &str, name: &str, operations: &[Entry]) -> Result<Entry> {
 			.iter()
 			.flat_map(|entry| entry.capabilities.clone())
 			.collect(),
-		tags: vec!["deployment_administrator".into()],
+		tags: vec![tag.into()],
 		languages: vec![],
 		skills: vec![],
 		schema: json!({}),
@@ -167,44 +177,6 @@ fn bundle_entry(node: &str, name: &str, operations: &[Entry]) -> Result<Entry> {
 				.collect(),
 		})?,
 	})
-}
-
-pub struct ProvisioningPlan {
-	pub pending: Vec<PackageGroup>,
-	pub unavailable: BTreeMap<String, String>,
-}
-/// Called only for a newly created tenant. The returned entries are candidates
-/// for pending revisions; provider loss never selects an older package or makes
-/// an approved installation. Existing tenants have no startup adoption path.
-pub fn configured_defaults(
-	principal: &Principal,
-	validation: &DefinitionValidation,
-	providers: &dyn ProviderCatalog,
-	node: &str,
-	selected: &[String],
-) -> Result<ProvisioningPlan> {
-	let groups = declarations(principal, validation, node)?;
-	let mut seen = BTreeSet::new();
-	let mut result = ProvisioningPlan {
-		pending: vec![],
-		unavailable: BTreeMap::new(),
-	};
-	for name in selected {
-		if !seen.insert(name) {
-			return Err(Error::Invalid("duplicate default host package".into()));
-		}
-		let group = groups
-			.iter()
-			.find(|group| &group.name == name)
-			.ok_or_else(|| Error::Invalid(format!("unknown default host package: {name}")))?;
-		match group.verify_provider(providers) {
-			Ok(()) => result.pending.push(group.clone()),
-			Err(error) => {
-				result.unavailable.insert(name.clone(), error.to_string());
-			}
-		}
-	}
-	Ok(result)
 }
 
 #[cfg(test)]

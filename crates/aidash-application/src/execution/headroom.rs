@@ -19,7 +19,7 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 				source.source,
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
-				let contents = scope.documents(&binding.definition).await?;
+				let contents = scope.documents(run, &binding.definition).await?;
 				documents.extend(
 					contents
 						.as_array()

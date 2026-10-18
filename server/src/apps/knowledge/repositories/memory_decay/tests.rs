@@ -166,23 +166,16 @@ async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback
 	#[case] contender_kind: &str,
 	#[case] commit_winner: bool,
 ) {
-	use crate::apps::identity::models::AuthorizationWorkspace;
 	use reinhardt::query::SimpleExpr;
 	use reinhardt::query::prelude::IntoIden;
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
-		.create_workspace(&TEST_FIXTURE, "Other", "Independent workspace lock")
-		.await
-		.unwrap();
-	AuthorizationWorkspace::objects()
-		.create_with_conn(
-			&mut database.lease.handle(),
-			&AuthorizationWorkspace::build()
-				.workspace_id(other.id)
-				.tenant("acme")
-				.owner_subject("deployment_administrator")
-				.finish(),
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
+			"Other",
+			"Independent workspace lock",
 		)
 		.await
 		.unwrap();
@@ -810,7 +803,9 @@ async fn live_derived_support_reactivates_and_remains_evidence_even_when_dormant
 	lease.finish(result).await.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	assert!(super::live_support(&mut lease, &admitted[0]).await.unwrap());
-	let current_policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let current_policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	assert_eq!(
 		super::scores(
 			&mut lease,
@@ -959,10 +954,23 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		ids[..2]
 	);
 	lease.finish(Ok(())).await.unwrap();
-	let mut disabled = registry.get("p", "1.0.0").await.unwrap();
+	let mut disabled = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	disabled.id = "disabled".into();
 	disabled.config["policy"]["decay"] = json!(null);
-	registry.register(disabled).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			disabled,
+		)
+		.await
+		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
 	bank_settings::set(&mut lease, &bank, &reference("disabled"), 1)
 		.await
@@ -1388,7 +1396,9 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		.await
 		.unwrap();
 	}
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	let scores = super::scores(
 		&mut lease,
 		&bank,
@@ -1432,7 +1442,9 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		.await
 		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	let scores = super::scores(
 		&mut lease,
 		&bank,
@@ -1729,7 +1741,9 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 		.await
 		.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &bank.tenant, &reference("p"))
+		.await
+		.unwrap();
 	let models = Models::resolve(
 		&store,
 		&mut lease,
@@ -1838,7 +1852,9 @@ async fn diversity_vectors_serve_only_units_of_the_authorized_bank(
 	}
 	crate::semantic::worker::sweep(&store).await.unwrap();
 	let mut lease = Lease::within(&store, &TEST_FIXTURE).await.unwrap();
-	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let policy = memory::policy(&mut lease, &banks[0].tenant, &reference("p"))
+		.await
+		.unwrap();
 	let models = Models::resolve(
 		&store,
 		&mut lease,

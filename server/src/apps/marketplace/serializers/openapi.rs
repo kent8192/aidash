@@ -5,18 +5,6 @@ use crate::{Result, config::openapi::Contracts, registry::Entry};
 use reinhardt::rest::openapi::OpenApiSchema;
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	contracts
-		.request::<_, aidash_application::marketplace::operations::host_packages::HostPackages>(
-			document,
-			views::management::host_packages,
-		)?;
-	contracts
-		.response::<_, aidash_application::marketplace::operations::host_packages::PendingHostPackages>(
-			document,
-			views::management::host_packages,
-			200,
-			"application/json",
-		)?;
-	contracts
 		.request::<_, aidash_application::marketplace::operations::approval_set::ApprovalSet>(
 			document,
 			views::management::approve_set,

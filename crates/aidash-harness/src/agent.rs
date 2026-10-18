@@ -1048,18 +1048,30 @@ impl<'a> Executor<'a> {
 				// Pin this step's Estimate Snapshot before any fitting relies on it
 				// (ADR 0017). Only an opted-in, undemoted model needs calibration,
 				// and only its snapshot is saved: a resumed step reuses it even if
-				// the calibration data changed meanwhile. Every other step is
+				// the calibration data changed meanwhile. A tokenized model also
+				// calibrates, for its byte quotas. Every other step is
 				// conservative, so its Run keeps the context bytes it had.
 				let estimate = match run.context.estimate.pinned(run.step) {
-					Some(snapshot) => snapshot,
-					None if model_cfg.request_estimator() == RequestEstimator::Calibrated
+					Some(snapshot) if snapshot.usable() => snapshot,
+					// The step pinned a Token Encoding this worker lacks: it
+					// resumes on bytes, and the next step pins afresh.
+					Some(_) => {
+						let snapshot = EstimateSnapshot::conservative(run.step);
+						run.context.estimate.snapshot = Some(snapshot);
+						snapshot
+					}
+					None if model_cfg.request_estimator() != RequestEstimator::Bytes
 						&& !run.context.estimate.demoted =>
 					{
 						let samples = store
 							.calibration_samples(&model_cfg.model_id, agent.projection_version.number())
 							.await?;
-						let snapshot =
-							EstimateSnapshot::choose(run.step, RequestEstimator::Calibrated, false, &samples);
+						let snapshot = EstimateSnapshot::choose(
+							run.step,
+							model_cfg.request_estimator(),
+							false,
+							&samples,
+						);
 						run.context.estimate.snapshot = Some(snapshot);
 						store.pin_estimate(run, token).await?;
 						snapshot
@@ -1537,7 +1549,8 @@ impl<'a> Executor<'a> {
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
-				let request_tokens = request.estimated_total_tokens();
+				let request_estimate = request.request_estimate();
+				let request_tokens = request_estimate.tokens as usize;
 				let request_bytes = request.byte_estimate().total();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
@@ -1564,7 +1577,7 @@ impl<'a> Executor<'a> {
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
 							upstream_model: model_cfg.model_id.clone(),
-							estimate: request.request_estimate(),
+							estimate: request_estimate.clone(),
 							// Media tokens are an allowance, not text, so they never calibrate.
 							calibration_sample: request.content_parts.is_empty(),
 							cache_identity: request.cache_identity(),
@@ -1776,6 +1789,15 @@ impl<'a> Executor<'a> {
 				context.recovery.inference_accepted();
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
+				}
+				// More input than a calibrated or tokenized estimate predicted is
+				// an estimator defect, such as a wrong Token Encoding: the Run
+				// estimates in bytes from its next step (ADR 0017).
+				if let Some(reported) = result.reported.input_tokens
+					&& context.estimate.underestimated(&request_estimate, reported)
+				{
+					metrics::counter!("aidash_estimate_underestimated_total", "estimator" => estimate.id())
+						.increment(1);
 				}
 				// Unreported counts are known only through the Usage Record. The
 				// durable context keeps the shape older workers' strict decoders
@@ -2861,7 +2883,7 @@ async fn prepare_tool_result(
 }
 async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
-	run: &Run,
+	_run: &Run,
 	guard: Option<&dyn ExecutionAuthority>,
 	selections: &[Selection],
 	messages: &[(i64, Uuid, usize)],
@@ -2886,11 +2908,10 @@ async fn resolve_model_input_media(
 			through_seq: messages.last().map(|(seq, _, _)| *seq),
 			has_more: false,
 		}
-	} else if let Some(guard) = guard {
-		guard.human_message_media(messages, model).await?
 	} else {
-		environment
-			.operator_human_message_media(run, messages, model)
+		guard
+			.ok_or(Error::Forbidden)?
+			.human_message_media(messages, model)
 			.await?
 	};
 	let batch_headroom = human

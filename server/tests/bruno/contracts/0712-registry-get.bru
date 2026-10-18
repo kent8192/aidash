@@ -1,5 +1,5 @@
 meta {
-  name: 0712 registry-get - Anonymous request is rejected
+  name: 0712 registry-get - Malformed bearer syntax is rejected
   type: http
   seq: 712
 }
@@ -12,6 +12,7 @@ get {
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

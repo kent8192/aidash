@@ -55,6 +55,9 @@ jobs:
           - workspace: observer
             directory: infra/gcp/observer
             features: ""
+          - workspace: enterprise
+            directory: enterprise
+            features: ""
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -210,6 +213,41 @@ jobs:
           flags: rust
           disable_search: true
           fail_ci_if_error: true
+  enterprise:
+    name: Enterprise workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: enterprise
+          workspaces: "enterprise -> target"
+      - name: Check that Enterprise composes only Community crates on aligned versions
+        run: |
+          cargo metadata --locked --format-version 1 --manifest-path enterprise/Cargo.toml | python3 scripts/check-workspace-boundaries.py --workspace enterprise
+          python3 scripts/check-enterprise-alignment.py
+          python3 -m unittest discover -s scripts -p test_enterprise_alignment.py
+      - name: Build and test the Enterprise build
+        run: cargo test --locked --manifest-path enterprise/Cargo.toml --workspace
+  community-export:
+    name: Community export
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - name: Build and serve the Community build from a tree without enterprise/
+        run: scripts/check-community-export.sh
   infrastructure-tests:
     name: Infrastructure contract tests
     runs-on: ubuntu-latest
@@ -314,6 +352,8 @@ jobs:
         rust-tests,
         rust-coverage,
         infrastructure-tests,
+        enterprise,
+        community-export,
         bruno,
         acceptance,
       ]

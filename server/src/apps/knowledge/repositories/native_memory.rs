@@ -168,7 +168,9 @@ pub(crate) async fn mutate_origin(
 		}
 		return Ok(result);
 	}
-	let policy = crate::semantic::native_memory::policy(lease, &mutation.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &mutation.bank.tenant, &mutation.provider)
+			.await?;
 	let record_count: i64 = native::query_scalar(
 		&Query::select()
 			.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
@@ -559,10 +561,14 @@ async fn save_origin(
 	refresh_dependencies(lease, bank_id, unit).await?;
 	let max_origins = if !unit.stale && !unit.deleted {
 		Some(
-			crate::semantic::native_memory::policy(lease, provider.ok_or(Error::Forbidden)?)
-				.await?
-				.bounds
-				.max_graph_visits,
+			crate::semantic::native_memory::policy(
+				lease,
+				&unit.bank.tenant,
+				provider.ok_or(Error::Forbidden)?,
+			)
+			.await?
+			.bounds
+			.max_graph_visits,
 		)
 	} else {
 		None
@@ -916,7 +922,8 @@ pub(crate) async fn list_mode(
 		let settings = super::bank_settings::get(lease, bank)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+		let policy =
+			crate::semantic::native_memory::policy(lease, &bank.tenant, &settings.provider).await?;
 		if policy.decay.as_ref().is_some_and(|d| d.dormancy.is_some()) {
 			let dormant = super::memory_decay::dormant_filter(bank_id, &settings.provider)?;
 			if matches!(mode, ListMode::Dormant) {
@@ -987,7 +994,8 @@ pub(crate) async fn recall_including_dormant(
 	let settings = super::bank_settings::get(lease, bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &bank.tenant, &settings.provider).await?;
 	let dormant = if policy
 		.decay
 		.as_ref()

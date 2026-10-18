@@ -929,14 +929,6 @@ impl ExecutionEnvironment for Bench {
 			.map_err(|_| Error::Conflict("cancellation channel closed".into()))?;
 		Ok(InferenceInterruption::Cancelled)
 	}
-	async fn operator_human_message_media(
-		&self,
-		_run: &Run,
-		_messages: &[(i64, Uuid, usize)],
-		_model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		unexpected("ExecutionEnvironment.operator_human_message_media")
-	}
 	async fn summary_dependencies_current(
 		&self,
 		_run: &Run,

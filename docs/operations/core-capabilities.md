@@ -2,12 +2,13 @@
 
 Core capabilities are Node-provided operations declared through immutable
 Registry descriptors. The Node owns their provider contracts and implementation;
-the declarations are distributed as system Builtins or Node Host packages.
+the declarations are built-in definitions in every Tenant's Registry, and the
+Sandboxed ones need the Tenant's Catalog Approval before use (ADR 0034).
 See the [capability glossary](registry-capability-glossary.md) and
 [Registry capability operations](registry-capabilities.md).
 
 Native Agent registration and execution use immutable, qualified Bindings and
-Provider descriptors. Required/default Builtins and approved Host Bundles determine
+Provider descriptors. Required/default Builtins and approved Sandboxed Bundles determine
 the exposed tool set. The runtime gate below verifies these implementations. Registry
 declarations and catalog approvals do not grant authority over target resources.
 
@@ -79,7 +80,7 @@ installation, not a production rollout policy.
 
 Without `AIDASH_CAPABILITY_PROFILE`, admission defaults to disabled and core
 reconciliation workers do not allocate database pools. Agents receive no implicit
-Host packages; installing and binding an approved package is explicit. An explicitly configured profile with
+Sandboxed tools; approving and binding a Sandboxed bundle is explicit. An explicitly configured profile with
 `admission: false` keeps reconciliation running for rollback. Production
 whoever runs the Deployment must provision the trusted controller, persistent private
 journal/object storage and equivalent
@@ -90,7 +91,7 @@ secret bytes belong only in the trusted services' environment.
 1. Deploy the additive database migration while admission is disabled. Preserve
    the existing database, working objects and runner journal through upgrades.
 2. Run admission and the runtime gate against the deployed isolation profile.
-3. Prepare and approve the exact Host package set. Register explicit Skill or
+3. Approve the exact Sandboxed bundles in the Tenant. Register explicit Skill or
    reference Sources, create a Binding-only version of a selected Agent and
    approve that exact Registry version. Saving configuration does not grant
    execution or file permissions. Follow the [drained fleet rollout](registry-capabilities.md#drained-fleet-rollout-and-rollback).

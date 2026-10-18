@@ -198,7 +198,7 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let token = app.runtime.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
 	let (_, a) = request(
 		&app,
 		&token,
@@ -254,7 +254,7 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 ) {
 	let app = Box::pin(endpoint).await;
 	let f = app.runtime.clone();
-	let token = f.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&f.store, "acme").await;
 
 	let (_, workspace) = request(
 		&app,

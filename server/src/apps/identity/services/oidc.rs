@@ -542,7 +542,7 @@ impl DashboardSessions {
 			exchange_identity(config, metadata, &transaction, query.code).await?;
 		let identity = crate::bootstrap::dashboard_authority(&f)
 			.admit_login(
-				&mut crate::bootstrap::dashboard_login(pool.clone()),
+				&mut crate::bootstrap::dashboard_login(pool.clone(), &f.config.node_id),
 				&sign_in,
 			)
 			.await?;
@@ -597,8 +597,12 @@ impl DashboardSessions {
 			.as_ref()
 			.is_some_and(|policy| policy.provisions_personal(gcip_pool))
 		{
-			crate::apps::identity::repositories::personal_tenant::provision(pool, external.id)
-				.await?;
+			crate::apps::identity::repositories::personal_tenant::provision(
+				pool,
+				&f.config.node_id,
+				external.id,
+			)
+			.await?;
 		}
 		// The identity's Mappings in every Tenant, which the Tenant switcher lists.
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
@@ -718,8 +722,9 @@ impl DashboardSessions {
 	}
 	pub(crate) async fn admin_registrations(
 		&self,
+		page: AdminMappingPage,
 	) -> Result<Vec<crate::apps::identity::serializers::oidc::PendingRegistration>> {
-		DashboardRegistrationRequest::pending(&self.runtime.store.pool).await
+		DashboardRegistrationRequest::pending(&self.runtime.store.pool, page.offset).await
 	}
 	pub(crate) async fn admin_identity(&self, id: Uuid) -> Result<IdentityView> {
 		Ok(self
