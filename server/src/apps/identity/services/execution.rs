@@ -958,10 +958,12 @@ impl Guard {
 				config,
 			)
 			.await?;
+			// The Home correlates its reservation by the Decision Attempt, so
+			// that, not the shared remote Run, is the receipt.
 			return Ok((
 				std::collections::BTreeMap::from([(
 					format!("home/runs/{}", self.run.id),
-					reservation.usage.admission_id,
+					reservation.usage.attempt_id,
 				)]),
 				Some(reservation),
 			));

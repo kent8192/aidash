@@ -447,11 +447,13 @@ async fn admission_errors_remain_identifiable_without_extra_retries(
 }
 #[rstest]
 #[tokio::test]
-async fn authority_lost_after_admission_keeps_the_open_charge(world: World) {
+async fn authority_lost_after_admission_settles_the_charge(world: World) {
 	world.0.lock().unwrap().available = VecDeque::from([false]);
 	assert!(matches!(admit_attempt(&world).await, Err(Error::Forbidden)));
 	let state = world.0.lock().unwrap();
+	// No caller received the reservation, so the Home closes it at once.
 	assert!(state.input.is_some());
+	assert_eq!(state.settled, 1);
 	assert!(!state.held);
 }
 #[rstest]

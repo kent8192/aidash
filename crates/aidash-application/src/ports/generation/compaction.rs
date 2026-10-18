@@ -21,6 +21,8 @@ pub trait GenerationCompactionAuthority: Send {
 pub trait GenerationCompactionSession: Send {
 	async fn charge(&mut self, request: Uuid) -> Result<bool>;
 	async fn reserve(&mut self, request: Uuid, attempt: &Attempt) -> Result<()>;
+	/// Whether `request` already holds the usage record of `attempt`.
+	async fn reserved(&mut self, request: Uuid, attempt: Uuid) -> Result<bool>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }
 

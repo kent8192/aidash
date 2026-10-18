@@ -849,6 +849,10 @@ impl ExecutionAuthority for Backend {
 		}
 		Ok(())
 	}
+	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
+		self.record("authority.decider_recheck");
+		Ok(())
+	}
 	async fn suspend(&self) -> Result<()> {
 		self.record("authority.suspend");
 		Ok(())

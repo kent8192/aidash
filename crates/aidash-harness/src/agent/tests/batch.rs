@@ -786,6 +786,9 @@ impl ExecutionAuthority for Bench {
 	) -> Result<()> {
 		unexpected("ExecutionAuthority.recheck_summary")
 	}
+	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
+		unexpected("ExecutionAuthority.recheck_decider")
+	}
 }
 
 #[async_trait]

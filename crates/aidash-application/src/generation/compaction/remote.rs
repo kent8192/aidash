@@ -62,10 +62,16 @@ pub async fn admit(
 	let reservation = authority
 		.admit(run, attempt, request_digest, amount)
 		.await?;
-	if !authority.refresh(run).await? {
-		return Err(Error::Forbidden);
+	match authority.refresh(run).await {
+		Ok(true) => Ok(reservation),
+		// Nothing was dispatched, but the Home keeps an admitted reservation
+		// open until it is settled, and no caller holds it yet: settle it now.
+		refreshed => {
+			authority.settle(&reservation).await?;
+			refreshed?;
+			Err(Error::Forbidden)
+		}
 	}
-	Ok(reservation)
 }
 
 /// Settle an admitted Decision Attempt once its result is recorded: it reports

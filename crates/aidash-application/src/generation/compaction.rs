@@ -111,6 +111,12 @@ pub async fn charge(
 	let mut transaction = repository.begin().await?;
 	let mut receipts = BTreeMap::new();
 	for id in jobs {
+		// The charge commits before the Decision Attempt is recorded; a retry
+		// of the same attempt after a failed recording reuses it.
+		if transaction.reserved(id, attempt).await? {
+			receipts.insert(format!("{}/generation/{id}", repository.node_id()), attempt);
+			continue;
+		}
 		if !transaction.charge(id).await? {
 			return Err(Error::Context(Failure::DeciderCallsExhausted));
 		}

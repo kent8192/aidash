@@ -114,8 +114,13 @@ impl StateBudget {
 			self.long_context_state_bytes,
 		) {
 			(None, None) => true,
+			// Each long-context bound exceeds its default-mode bound, so
+			// `max_request_bytes` bounds every request this version sends.
 			(Some(request), Some(state)) => {
-				state < request && state > self.default_state_bytes && request <= 1_048_576
+				state < request
+					&& state > self.default_state_bytes
+					&& request > self.default_request_bytes
+					&& request <= 1_048_576
 			}
 			_ => false,
 		};

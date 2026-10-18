@@ -53,15 +53,7 @@ impl DecisionAuthority for CatalogAuthority<'_> {
 		if !sources.is_empty() {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let unapproved = || aidash_application::Error::Context(Failure::DeciderUnapproved);
-		let entry = match self.guard.decider_entry(&decider.identity.local()).await {
-			Ok(entry) => entry,
-			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Err(unapproved()),
-			Err(error) => return Err(error.into()),
-		};
-		if digest(&serde_json::to_value(&entry)?) != decider.definition_digest {
-			return Err(unapproved());
-		}
+		require_approved(self.guard, decider).await?;
 		Ok(Approval {
 			restrictions: Restrictions::default(),
 			state_retention: self.config.state_retention.clone(),
@@ -71,6 +63,23 @@ impl DecisionAuthority for CatalogAuthority<'_> {
 	async fn read(&self, _: &Evidence, _: bool) -> aidash_application::Result<()> {
 		Err(aidash_application::Error::Forbidden)
 	}
+}
+
+/// The exact pinned Decider version holds its Catalog Approval on this Node.
+pub(crate) async fn require_approved(
+	guard: &Guard,
+	decider: &DeciderPin,
+) -> aidash_application::Result<()> {
+	let unapproved = || aidash_application::Error::Context(Failure::DeciderUnapproved);
+	let entry = match guard.decider_entry(&decider.identity.local()).await {
+		Ok(entry) => entry,
+		Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Err(unapproved()),
+		Err(error) => return Err(error.into()),
+	};
+	if digest(&serde_json::to_value(&entry)?) != decider.definition_digest {
+		return Err(unapproved());
+	}
+	Ok(())
 }
 
 /// The policy of a generated or RequiredHome Run: the Decider its chain agreed
@@ -129,13 +138,20 @@ impl super::DecisionOwners for ChainOwners<'_> {
 		&self,
 		record: &aidash_application::ports::decision::DispatchRecord,
 	) -> Result<()> {
+		// The reservation stays open until the Home confirms it, so a failed
+		// settlement is retried by the next `finish` of the same attempt.
 		let reservation = self
 			.open
 			.lock()
 			.expect("open reservations are never poisoned")
-			.remove(&record.attempt);
+			.get(&record.attempt)
+			.cloned();
 		if let Some(reservation) = reservation {
 			self.guard.settle_decision(&reservation).await?;
+			self.open
+				.lock()
+				.expect("open reservations are never poisoned")
+				.remove(&record.attempt);
 		}
 		Ok(())
 	}

@@ -284,6 +284,12 @@ fn state_budgets_stay_in_the_default_mode_unless_long_context_is_declared() {
 			long_context_state_bytes: None,
 			..budget.clone()
 		},
+		// A long-context bound below the default one would under-charge.
+		StateBudget {
+			long_context_request_bytes: Some(25_001),
+			long_context_state_bytes: Some(25_000),
+			..budget.clone()
+		},
 		StateBudget {
 			input_stages: vec![],
 			..budget.clone()

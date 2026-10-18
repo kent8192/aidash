@@ -419,6 +419,11 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		summarizer: &aidash_domain::context::summary::SummaryProvider,
 	) -> Result<()>;
+	/// Repeat the Catalog Approval check of the exact pinned Decider version
+	/// after a Summary Stage, before the staged decision it completes is
+	/// adopted (ADR 0056). Returns `Error::Context(DeciderUnapproved)` when
+	/// the approval was withdrawn.
+	async fn recheck_decider(&self, decider: &aidash_domain::decision::DeciderPin) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
 	/// While suspended for inference, briefly reacquire the authority boundary,
 	/// authorize inference again, and release it. Failure means the Run may no

@@ -35,7 +35,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 mod authority;
-pub(crate) use authority::{AdmittedAllowance, CatalogAuthority, ChainAllowance, ChainOwners};
+pub(crate) use authority::{
+	AdmittedAllowance, CatalogAuthority, ChainAllowance, ChainOwners, require_approved,
+};
 
 const ATTEMPTS: &str = "decision_attempts";
 const EVIDENCE: &str = "decision_evidence";
@@ -601,7 +603,12 @@ impl<'a> RunDecisionJournal<'a> {
 					"Decision Attempt already finished differently".into(),
 				));
 			}
-			return tx.commit().await;
+			tx.commit().await?;
+			// A settlement that failed after the status committed is retried.
+			if let Some(owners) = &self.owners {
+				owners.settle(record).await?;
+			}
+			return Ok(());
 		}
 		native::query(
 			&Query::update()

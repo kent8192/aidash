@@ -1449,6 +1449,20 @@ fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
 	assert!(built.state.to_string().contains(&"permitted".repeat(256)));
 	assert_eq!(built.candidates.len(), 4);
+	// One large old input leaves the state below the default state budget,
+	// but its question repeats it past the default request budget, so the
+	// next stage abridges it.
+	let large = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: BTreeMap::from([
+			(1, json!({"query":"x".repeat(17_000)})),
+			(2, json!({"query":"recent"})),
+		]),
+		..Default::default()
+	};
+	let built = build(&large).unwrap();
+	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
+	assert!(!built.state.to_string().contains(&"x".repeat(17_000)));
 	// Sixty inputs are abridged until the state fits the default mode.
 	let more = Disclosure {
 		goal: Some("goal".into()),

@@ -651,6 +651,11 @@ impl<'a> Executor<'a> {
 			if let Some(guard) = guard {
 				guard.inference().await?;
 				guard.recheck_summary(&summarizer).await?;
+				// The Decider's approval may have been withdrawn while the
+				// summary ran; a staged decision is adopted only under it.
+				if let Some(staged) = staged {
+					guard.recheck_decider(&staged.evidence.decider).await?;
+				}
 			}
 			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
 		}
@@ -1502,18 +1507,24 @@ impl<'a> Executor<'a> {
                 // without a Decider may let the Summary Stage reduce it alone.
                 let decider = if fitting.fits(&context) { None } else { self.environment.compaction_decider(run, token).await? };
                 let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
-                // Pruning may release authority for Jev I/O, and a local Run's
-                // sources may change during it too; a source revoked meanwhile
-                // must reach neither the summarizer nor the model.
-                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
-                match compaction {
-                    aidash_application::context::Compaction::Fits => {}
-                    // The decision saved the pruned context, which ends the step.
+                let plan = match compaction {
+                    aidash_application::context::Compaction::Fits => None,
+                    // The decision saved the pruned context and released the
+                    // lease, which ends the step; the next step rechecks the
+                    // summary sources under its own lease.
                     aidash_application::context::Compaction::Saved => {
                         run.context = context;
                         return Ok(());
                     }
-                    aidash_application::context::Compaction::NeedsSummary(mut plan) => {
+                    aidash_application::context::Compaction::NeedsSummary(plan) => Some(plan),
+                };
+                // Pruning may release authority for Jev I/O, and a local Run's
+                // sources may change during it too; a source revoked meanwhile
+                // must reach neither the summarizer nor the model.
+                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                match plan {
+                    None => {}
+                    Some(mut plan) => {
                         let staged = plan.staged.take();
                         let summarized = Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await;
                         // A pruning no summary completed changes nothing (ADR 0056).

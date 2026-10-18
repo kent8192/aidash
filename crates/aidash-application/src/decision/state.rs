@@ -49,16 +49,43 @@ pub fn build_compaction_state(
 	for limit in &budget.input_stages {
 		let built = build_stage(context, boundary, disclosure, restrictions, &units, *limit)?;
 		let bytes = serde_json::to_vec(&built.state)?.len();
-		if bytes <= budget.default_state_bytes {
+		// Each question repeats its tool input, so a stage fits only when the
+		// largest request it needs, the state with one question, fits too.
+		let request = single_question_request_bytes(&built)?;
+		if bytes <= budget.default_state_bytes && request <= budget.default_request_bytes {
 			return Ok(built);
 		}
-		fallback = Some((built, bytes));
+		fallback = Some((built, bytes, request));
 	}
 	// Only the most abridged state may use the long-context mode.
 	match fallback {
-		Some((built, bytes)) if budget.request_limit(bytes).is_some() => Ok(built),
+		Some((built, bytes, request))
+			if budget
+				.request_limit(bytes)
+				.is_some_and(|limit| request <= limit) =>
+		{
+			Ok(built)
+		}
 		_ => Err(Error::Context(Failure::DeciderUnavailable)),
 	}
+}
+
+/// Room in a request for the model name and the provider options around the
+/// state and its questions.
+const REQUEST_ENVELOPE_BYTES: usize = 256;
+
+/// The encoded size of the largest request a stage needs: its state with the
+/// one question whose encoding is largest. Larger batches split per question.
+fn single_question_request_bytes(built: &BuiltState) -> Result<usize> {
+	let mut largest = 0;
+	for (id, question) in &built.questions {
+		let request = json!({
+			"state": built.state,
+			"questions": {id: {"type": "noul", "instructions": question.description}},
+		});
+		largest = largest.max(serde_json::to_vec(&request)?.len());
+	}
+	Ok(largest + REQUEST_ENVELOPE_BYTES)
 }
 
 /// What the compaction Decider sees of a Run, as the Jev pruning did before

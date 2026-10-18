@@ -327,6 +327,9 @@ fn staged_journal<'a>(
 		decider: staged.evidence.decider.clone(),
 		max_calls_per_run: u64::MAX,
 	};
+	// Only a Binding that pins the very Decider which staged the decision
+	// rechecks it; a chain decision under a different Agent Decider keeps
+	// the chain's allowance.
 	let admitted = run
 		.context
 		.binding_snapshot
@@ -334,7 +337,7 @@ fn staged_journal<'a>(
 		.map(|snapshot| snapshot.bound_decider(aidash_domain::decision::Hook::Compaction))
 		.transpose()?
 		.flatten()
-		.is_some();
+		.is_some_and(|(bound, _)| bound.allowance().decider == staged.evidence.decider);
 	Ok(if admitted {
 		RunDecisionJournal::new(store, run.clone(), allowance, AdmittedAllowance)?
 	} else {
@@ -592,6 +595,9 @@ impl ExecutionAuthority for Authority<'_> {
 			.recheck_summary(self.federation, summarizer)
 			.await
 			.map_err(Into::into)
+	}
+	async fn recheck_decider(&self, decider: &aidash_domain::decision::DeciderPin) -> Result<()> {
+		crate::apps::execution::repositories::decisions::require_approved(self.guard, decider).await
 	}
 	async fn suspend(&self) -> Result<()> {
 		self.guard.suspend().await.map_err(Into::into)

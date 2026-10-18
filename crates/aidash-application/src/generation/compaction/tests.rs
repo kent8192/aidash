@@ -228,6 +228,13 @@ impl GenerationCompactionSession for Session {
 		self.ledger.attempts.push((request, attempt.clone()));
 		Ok(())
 	}
+	async fn reserved(&mut self, request: Uuid, attempt: Uuid) -> Result<bool> {
+		Ok(self
+			.ledger
+			.attempts
+			.iter()
+			.any(|(id, saved)| *id == request && saved.id == attempt))
+	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		point(&self.world, "commit".into()).await?;
 		{
@@ -474,4 +481,15 @@ async fn every_attempt_is_charged_once_for_every_ancestor(world: World) {
 	assert_ledger(&world, 2, 2);
 	let state = world.0.lock().unwrap();
 	assert_ne!(state.ledger.attempts[0].1.id, state.ledger.attempts[2].1.id);
+}
+#[rstest]
+#[tokio::test]
+async fn a_retried_attempt_reuses_its_committed_charge(world: World) {
+	// The charge committed, but recording the Decision Attempt failed, so the
+	// same attempt is charged again.
+	let first = charge_attempt(&world, 5).await.unwrap();
+	let retried = charge_attempt(&world, 5).await.unwrap();
+	assert_eq!(first, retried);
+	// One call per ancestor, though both sessions committed.
+	assert_ledger(&world, 1, 2);
 }
