@@ -181,7 +181,9 @@ pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<Poli
 	let settings = super::bank_settings::get(lease, &unit.bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &unit.bank.tenant, &settings.provider)
+			.await?;
 	if policy
 		.retention
 		.unit_expired(unit.learned_at, chrono::Utc::now())

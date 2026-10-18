@@ -19,7 +19,12 @@ pub struct NativeContext {
 pub enum NativeSource {
 	ConversationMemory {},
 	SemanticMemory {},
-	WorkspaceRetrieval {},
+	WorkspaceRetrieval {
+		/// What a local Run step does when this retrieval stays unavailable
+		/// after the bounded retry (ADR 0059). Required-Home Runs always pause.
+		#[serde(default, skip_serializing_if = "OnUnavailable::is_pause")]
+		on_unavailable: OnUnavailable,
+	},
 	PrivateReferences {
 		digest: String,
 	},
@@ -33,6 +38,22 @@ pub enum NativeSource {
 		roots: Vec<String>,
 	},
 }
+/// Whether a step may go without optional Workspace semantic context when its
+/// retrieval stays unavailable. `Pause` is the default: degrading is an
+/// explicit opt-in of the Agent's author.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnUnavailable {
+	#[default]
+	Pause,
+	Degrade,
+}
+impl OnUnavailable {
+	pub fn is_pause(&self) -> bool {
+		*self == Self::Pause
+	}
+}
+
 impl NativeContext {
 	pub fn validate(&self, kind: &str) -> Result<()> {
 		if self.schema_version != super::BINDING_SCHEMA
@@ -195,9 +216,37 @@ mod tests {
 		for config in [
 			json!({"schema_version":1,"source":{"adapter":"future_provider"}}),
 			json!({"schema_version":1,"source":{"adapter":"conversation_memory","allow_cross_conversation_memory":true}}),
+			json!({"schema_version":1,"source":{"adapter":"semantic_memory","on_unavailable":"degrade"}}),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"skip"}}),
 		] {
 			assert!(serde_json::from_value::<NativeContext>(config).is_err());
 		}
+	}
+	#[test]
+	fn only_workspace_retrieval_opts_into_degrading_and_pause_stays_implicit() {
+		let parse = |source| {
+			serde_json::from_value::<NativeContext>(json!({"schema_version":1,"source":source}))
+				.unwrap()
+		};
+		let default = parse(json!({"adapter":"workspace_retrieval"}));
+		default.validate("source").unwrap();
+		assert!(matches!(
+			default.source,
+			NativeSource::WorkspaceRetrieval {
+				on_unavailable: OnUnavailable::Pause
+			}
+		));
+		// The default is never written, so existing descriptors keep their digest.
+		assert_eq!(
+			serde_json::to_value(&default).unwrap(),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}})
+		);
+		let degrade = parse(json!({"adapter":"workspace_retrieval","on_unavailable":"degrade"}));
+		degrade.validate("source").unwrap();
+		assert_eq!(
+			serde_json::to_value(&degrade).unwrap(),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"degrade"}})
+		);
 	}
 	#[test]
 	fn private_sources_pin_digest_and_validate_roots_without_implying_authority() {

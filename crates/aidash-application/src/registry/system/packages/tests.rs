@@ -9,7 +9,7 @@ struct Provider {
 }
 impl CoreToolCatalog for Provider {
 	fn specifications(&self, _: &CoreCapabilities) -> BTreeMap<String, ToolSpec> {
-		HOST_GROUPS
+		SANDBOXED_GROUPS
 			.iter()
 			.flat_map(|(_, operations)| operations.iter())
 			.chain(
@@ -48,22 +48,17 @@ fn validation(runner: bool) -> DefinitionValidation {
 	DefinitionValidation::new(Arc::new(Provider { runner }))
 }
 #[test]
-fn six_host_and_research_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
+fn sandboxed_and_research_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
 	let validation = validation(true);
-	let groups = declarations(
-		&Principal::DeploymentAdministrator,
-		&validation,
-		"aidash://node",
-	)
-	.unwrap();
-	assert_eq!(groups.len(), HOST_GROUPS.len() + RESEARCH_GROUPS.len());
-	for group in groups.into_iter().take(HOST_GROUPS.len()) {
+	let groups = declarations(&validation, "aidash://node").unwrap();
+	assert_eq!(groups.len(), SANDBOXED_GROUPS.len() + RESEARCH_GROUPS.len());
+	for group in groups.into_iter().take(SANDBOXED_GROUPS.len()) {
 		assert_eq!(group.bundle.kind, "bundle");
 		let bundle: BundleConfig = serde_json::from_value(group.bundle.config.clone()).unwrap();
 		assert_eq!(bundle.members.len(), group.operations.len());
 		for entry in &group.operations {
 			let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
-			assert_eq!(descriptor.tier, ToolTier::Host);
+			assert_eq!(descriptor.tier, ToolTier::Sandboxed);
 			assert!(descriptor.transport.is_none());
 			if let Some(lifecycle) = descriptor.lifecycle {
 				for member in [lifecycle.poll, lifecycle.cancel] {
@@ -75,63 +70,27 @@ fn six_host_and_research_groups_have_only_provider_owned_declarations_and_comple
 	}
 }
 #[test]
-fn missing_runner_excludes_sandbox_defaults_without_fallback_and_other_owners_cannot_create_them() {
+fn a_deployment_without_a_runner_offers_no_runner_groups() {
+	// Arrange
 	let validation = validation(false);
-	let selected = HOST_GROUPS
-		.iter()
-		.map(|(name, _)| name.to_string())
-		.collect::<Vec<_>>();
-	let plan = configured_defaults(
-		&Principal::DeploymentAdministrator,
-		&validation,
-		&validation,
-		"aidash://node",
-		&selected,
-	)
-	.unwrap();
-	assert_eq!(plan.pending.len(), 4);
-	assert_eq!(
-		plan.unavailable.keys().cloned().collect::<Vec<_>>(),
-		vec!["python", "shell"]
-	);
-	assert!(
-		plan.unavailable
-			.values()
-			.all(|reason| reason.contains("PROVIDER_UNAVAILABLE"))
-	);
-	assert!(
-		declarations(
-			&Principal::Subject {
-				tenant: "deployment_administrator".into(),
-				subject: "deployment_administrator".into()
-			},
-			&validation,
-			"aidash://node"
-		)
-		.is_err()
-	);
-	assert!(
-		configured_defaults(
-			&Principal::DeploymentAdministrator,
-			&validation,
-			&validation,
-			"aidash://node",
-			&["unknown".into()]
-		)
-		.is_err()
-	);
+	// Act
+	let offered: Vec<_> = offered(&validation, &validation, "aidash://node")
+		.unwrap()
+		.into_iter()
+		.map(|group| group.name)
+		.collect();
+	// Assert
+	assert!(!offered.contains(&"shell".to_owned()));
+	assert!(!offered.contains(&"python".to_owned()));
+	assert!(offered.contains(&"outbound_get".to_owned()));
+	assert!(!offered.contains(&"task_assign".to_owned()));
 }
 
 #[test]
 fn research_groups_declare_interchangeable_provider_operations() {
 	use aidash_domain::tool::{Yield, providers::research_operation};
 	let validation = validation(true);
-	let groups = declarations(
-		&Principal::DeploymentAdministrator,
-		&validation,
-		"aidash://node",
-	)
-	.unwrap();
+	let groups = declarations(&validation, "aidash://node").unwrap();
 	let research = groups
 		.iter()
 		.filter(|group| RESEARCH_GROUPS.iter().any(|(name, _)| *name == group.name))

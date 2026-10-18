@@ -146,7 +146,14 @@ pub fn native_peer(
 ) -> PeerFuture {
 	async move {
 		let application = _application.await;
-		let (server, client) = transport.await;
+		let (server, client) = application
+			.runtime
+			.environment()
+			.bounded_setup(
+				format!("serve the peer on {}", application.runtime.schema),
+				transport,
+			)
+			.await;
 		PeerFixture {
 			runtime: application.runtime,
 			application: application.application,

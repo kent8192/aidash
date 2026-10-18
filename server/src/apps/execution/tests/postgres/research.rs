@@ -2,7 +2,6 @@
 //! attribution, Run-scoped snapshots and fragments, and citation lookup. The
 //! host research use case runs against PostgreSQL with the fixture provider.
 use super::*;
-use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_application::{
 	ports::{
 		execution::ExecutionStore,
@@ -45,23 +44,14 @@ async fn agent(store: &Store) -> Entry {
 
 async fn leased_run(store: &Store, agent: &Entry) -> Run {
 	let workspace = store
-		.create_workspace(&TEST_FIXTURE, "Research", "Read public sources")
+		.create_workspace(&ACME, "alice", "Research", "Read public sources")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	store
-		.accept_run(
-			&TEST_FIXTURE,
-			&task,
-			&store.node_id,
-			&agent.id,
-			&agent.version,
-		)
-		.await
-		.unwrap();
+	common::local_run(store, &ACME, &task, agent).await;
 	store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap()
 }
 
@@ -96,7 +86,7 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_search_accou
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let since = chrono::Utc::now() - chrono::Duration::hours(1);
 
 	assert_eq!(
@@ -218,7 +208,7 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 	let (store, url, schema) = _store_fixture.parts();
 	let agent = agent(&store).await;
 	let run = leased_run(&store, &agent).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,
@@ -289,7 +279,7 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 	let invented = EvidenceRef(Uuid::new_v4());
 	assert_eq!(
 		ExecutionStore::unknown_evidence(
-			&store.for_run(TEST_FIXTURE),
+			&store.for_run(ACME.clone()),
 			&run,
 			&[reference, invented]
 		)
@@ -299,7 +289,7 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 	);
 	let other = leased_run(&store, &agent).await;
 	assert_eq!(
-		ExecutionStore::unknown_evidence(&store.for_run(TEST_FIXTURE), &other, &[reference])
+		ExecutionStore::unknown_evidence(&store.for_run(ACME.clone()), &other, &[reference])
 			.await
 			.unwrap(),
 		[reference]
@@ -358,7 +348,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		socket.write_all(response.as_bytes()).await.unwrap();
 	});
 	let now = chrono::Utc::now();
-	let profile = aidash_domain::research::account::AccountProfile {
+	let profile = aidash_domain::research::account::AccountTerms {
 		account_id: "deployment_administrator".into(),
 		agreement_reference: "contract".into(),
 		verified_by: "deployment_administrator".into(),
@@ -369,10 +359,10 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		evaluation_permitted: true,
 		retention_days: 30,
 		deletion_after_termination_days: 30,
-		credential_env: "AIDASH_SECRET_BRAVE_SEARCH".into(),
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),
-		request_price_micro_usd: 5_000,
+		search_price_micro_usd: Some(5_000),
+		fetch_price_micro_usd: None,
 		monthly_base_fee_micro_usd: 0,
 		monthly_limit_micro_usd: 1_000_000,
 	};
@@ -382,7 +372,7 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 		reqwest::Url::parse(&endpoint).unwrap(),
 	)
 	.unwrap();
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,
@@ -434,7 +424,7 @@ async fn a_page_read_by_address_reserves_its_source_slot_under_the_run_lock(
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let limits = Limits {
 		sources: 1,
 		..Limits::default()
@@ -525,7 +515,7 @@ async fn a_dispatched_read_holds_a_snapshot_slot_until_it_settles(
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let read = |key: &str| Reservation {
 		key: key.into(),
 		operation: Operation::Fetch,
@@ -574,7 +564,7 @@ async fn originals_are_retained_within_the_run_limit_and_kept_apart_from_snapsho
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let original = aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec();
 	// Room for one original only (ADR 0053).
 	let limits = Limits {
@@ -677,7 +667,7 @@ async fn a_viewed_page_is_stored_as_a_page_image_fragment_within_the_view_limit(
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,

@@ -7,12 +7,9 @@ use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{Model, OrmExecutor, QueryRow};
+use reinhardt::db::orm::{Model, QueryRow};
 use reinhardt::model;
-use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait, IntoIden, OnConflict, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr,
-};
+use reinhardt::query::{Alias, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -100,42 +97,7 @@ impl Message {
 	}
 }
 
-impl Message {
-	pub(crate) async fn run_history<E: OrmExecutor>(
-		db: &mut E,
-		workspace: Uuid,
-		peer: &str,
-		task: Uuid,
-		run: Uuid,
-		offset: u64,
-	) -> Result<Vec<MessageContract>> {
-		let prefix = format!("{peer}:{task}:");
-		let suffix = SimpleExpr::FunctionCall(
-			"right".into_iden(),
-			vec![
-				Expr::col("idempotency_key").into(),
-				Expr::value(74_i32).cast_as("int4"),
-			],
-		);
-		let (sql, values) = Query::select().expr(Expr::asterisk()).from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
-			.and_where(Condition::any()
-				.add(Expr::col("idempotency_key").starts_with(format!("{prefix}human:{run}:")))
-				.add(Condition::all()
-					.add(Expr::col("idempotency_key").starts_with(format!("{prefix}subject-human:")))
-					.add(suffix.starts_with(format!(":{run}:")))))
-			.order_by(Alias::new("created_at"), Order::Asc).order_by(Alias::new("id"), Order::Asc)
-			// Four maximally escaped 64 KiB messages stay below the peer response cap.
-			.limit(4).offset(offset).build(PostgresQueryBuilder);
-		db.fetch_all(&sql, convert_values(values))
-			.await?
-			.into_iter()
-			.map(|row| {
-				serde_json::from_value(QueryRow::from_backend_row(row).data).map_err(Error::from)
-			})
-			.collect()
-	}
-}
+impl Message {}
 
 use reinhardt::query::IntoValue;
 

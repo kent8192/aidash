@@ -29,14 +29,16 @@ impl Definitions for Context<'_> {
 			.ok_or_else(|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()))
 	}
 	async fn definition(&self, run: &RunMetadata, id: &str, version: &str) -> Result<Entry> {
+		let tenant = self.0.store.run_tenant(run.id).await?;
 		self.0
 			.registry
-			.get_for_run(run, id, version)
+			.get_for_run(&tenant, run.clone(), id, version)
 			.await
 			.map_err(Into::into)
 	}
-	async fn documents(&self, agent: &Entry) -> Result<Value> {
-		crate::knowledge::load(&self.0.registry, agent)
+	async fn documents(&self, run: &RunMetadata, agent: &Entry) -> Result<Value> {
+		let tenant = self.0.store.run_tenant(run.id).await?;
+		crate::knowledge::load(&self.0.registry, &tenant, agent)
 			.await
 			.map_err(Into::into)
 	}

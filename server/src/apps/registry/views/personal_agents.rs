@@ -15,8 +15,9 @@ use reinhardt::post;
 )]
 pub async fn create(
 	#[inject] service: Depends<PersonalAgents>,
+	#[inject] actor: crate::authorization::identity::Actor,
 	request: Request,
 	Json(input): Json<PersonalAgent>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.create(request.headers, input).await)
+	crate::http::json(service.create(actor, request.headers, input).await)
 }

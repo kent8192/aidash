@@ -54,18 +54,11 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
-		let (status, body) = request(
-			&app,
-			deployment_administrator,
-			"POST",
-			"/api/registry",
-			entry,
-		)
-		.await;
+		let (status, body) = request(&app, &token, "POST", "/api/registry", entry).await;
 		assert_eq!(status, 200, "registry: {body}");
 		let (status, body) = request(
 			&app,
-			deployment_administrator,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -403,7 +396,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			catalog.clone()
@@ -450,7 +443,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":2})
@@ -462,7 +455,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			catalog
@@ -795,15 +788,24 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.0,
 		200
 	);
-	let mut entry =
-		serde_json::to_value(f.registry.get("research", "1.0.0").await.unwrap()).unwrap();
+	let mut entry = serde_json::to_value(
+		f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.0.0",
+			)
+			.await
+			.unwrap(),
+	)
+	.unwrap();
 	entry["id"] = json!("child");
 	entry
 		.as_object_mut()
 		.unwrap()
 		.remove("binding_normalization");
 	assert_eq!(
-		request(&app, &f.config.api_token, "POST", "/api/registry", entry)
+		request(&app, &token, "POST", "/api/registry", entry)
 			.await
 			.0,
 		200
@@ -811,7 +813,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"child","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -1698,15 +1700,13 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		panic!("unexpected failure: {error:?}")
 	};
 	assert_eq!(error.database_error().unwrap().code(), Some("23505"));
-	let binding = authorization
-		.catalog("acme")
-		.await
-		.unwrap()
-		.into_iter()
-		.find(|b| b.entry_id == "model")
-		.unwrap();
-	assert_eq!(binding.revision, 1);
-	assert!(binding.enabled);
+	let binding: (i64, bool) = sqlx::query_as(
+		"SELECT revision, enabled FROM authorization_catalog WHERE tenant = 'acme' AND entry_id = 'model'",
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(binding, (1, true));
 	let history_query = Query::select()
 		.columns(["revision", "enabled", "actor"].map(Alias::new))
 		.from(Alias::new("authorization_catalog_history"))

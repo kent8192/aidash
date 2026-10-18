@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// Creates the identity's Personal Tenant unless it ever had one. The link is
 /// written once, so a disabled Mapping, a changed policy or (later) a deleted
 /// Personal Tenant is never repaired by signing in.
-pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
+pub(crate) async fn provision(db: &Pool, node: &str, identity: Uuid) -> Result<()> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::TenantCreation);
 	db.atomic(&scope, async |tx| {
 		// Serialize first sign-ins without taking an identity row lock before
@@ -52,7 +52,7 @@ pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
 			return Err(Error::Forbidden);
 		}
 		let created =
-			tenants::create(tx, PERSONAL_LABEL, true, Creator::Identity(identity)).await?;
+			tenants::create(tx, node, PERSONAL_LABEL, true, Creator::Identity(identity)).await?;
 		let account = DashboardIdentity::objects()
 			.filter(DashboardIdentity::field_id().eq(identity))
 			.select_for_update()

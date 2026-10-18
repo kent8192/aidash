@@ -14,20 +14,20 @@ An opaque package key maps uniquely to repository Node, owner tenant, package id
 
 Policies are evaluated in the caller's tenant. The package resource kind is `package`, its ID is the opaque key, and trusted attributes include `repository_node`, `owner_tenant`, `package_id`, `version`, `kind`, `source_digest` and `publisher`. Installation resource kind is `installation`, with its opaque stable ID, `installing_tenant`, `package_key` and `installation_revision`. Exact installed Registry entries keep their ordinary kind and immutable ID. Ownership, audience membership and catalog approval never grant actions implicitly.
 
-| Operation                          | Actions                                                                                                            |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Summary search                     | `marketplace.browse`                                                                                               |
-| Complete source manifest           | `marketplace.read` plus disclosure of every dependency                                                             |
-| Install                            | `marketplace.read`, `marketplace.install`, `installation.create`, `installation.read`, dependency read permissions |
-| Pending/retained management        | `installation.read` and included dependency read permissions                                                       |
-| Stage configuration                | `installation.read`, `installation.configure`, dependency read permissions                                         |
-| Publish registered source          | ordinary approved `registry.read`, `registry.export`, `marketplace.publish`                                        |
-| Change exact-version audience      | owner-tenant `marketplace.share`                                                                                   |
-| Change onward distribution consent | owner-tenant `marketplace.redistribution.manage`                                                                   |
-| Approve/activate/revoke            | explicit Deployment Administrator catalog administration                                                           |
-| Execute                            | existing exact Agent-subject, catalog, delegation and actual action permissions                                    |
+| Operation                          | Actions                                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Summary search                     | `marketplace.browse`                                                                                                                  |
+| Complete source manifest           | `marketplace.read` plus disclosure of every dependency                                                                                |
+| Install                            | `marketplace.read`, `marketplace.install`, `registry.create`, `installation.create`, `installation.read`, dependency read permissions |
+| Pending/retained management        | `installation.read` and included dependency read permissions                                                                          |
+| Stage configuration                | `installation.read`, `installation.configure`, dependency read permissions                                                            |
+| Publish registered source          | ordinary approved `registry.read`, `registry.export`, `marketplace.publish`                                                           |
+| Change exact-version audience      | owner-tenant `marketplace.share`                                                                                                      |
+| Change onward distribution consent | owner-tenant `marketplace.redistribution.manage`                                                                                      |
+| Approve/activate/revoke            | `catalog.approve` on each approved definition, in the caller's own Tenant                                                             |
+| Execute                            | existing exact Agent-subject, catalog, delegation and actual action permissions                                                       |
 
-Default deny, explicit deny, role/group inheritance, ABAC and delegated ancestors apply to all subject kinds. A recipient needs both its own policy and a live audience/consent path. Installation does not create a privileged Agent subject. Administrators must explicitly configure the qualified installed Agent identity and its grants before execution.
+Default deny, explicit deny, role/group inheritance, ABAC and delegated ancestors apply to all subject kinds. A recipient needs both its own policy and a live audience/consent path. Installation does not create a privileged Agent subject. Approving an installed Agent revision creates its agent subject in `members`, like any Catalog Approval of an agent version (ADR 0062).
 
 ## Publish, share and acquire
 
@@ -56,7 +56,7 @@ Install using `POST /api/marketplace/packages/{key}/install` with source `digest
 
 `GET /api/marketplace/installations` and `/api/marketplace/installations/{id}?revision=N` are management views independent of ordinary Registry discovery. New installs are pending. `POST /api/marketplace/installations/{id}` accepts `expected_revision`, `config`, `bindings` and `idempotency_key`. Identical content returns the existing revision; changed configuration or dependency bindings create a new immutable pending Registry definition. Active content remains unchanged.
 
-Deployment Administrators inspect retained revisions with `GET /api/marketplace/administration?tenant=...`. Sources and administration accept `offset` (0–10,000) and `limit` (1–100, default 50), retaining their array bodies. A present `x-aidash-next-offset` header identifies the next page, including an empty source page after denied candidates. Source requests traverse at most 256 candidates; administration queries load only the requested tenant and revision page. Approve and activate a prepared revision atomically at `POST /api/marketplace/installations/{id}/activation`:
+Deployment Administrators inspect retained revisions with `GET /api/marketplace/administration?tenant=...`; they approve and activate nothing in a Tenant (ADR 0029). Sources and administration accept `offset` (0–10,000) and `limit` (1–100, default 50), retaining their array bodies. A present `x-aidash-next-offset` header identifies the next page, including an empty source page after denied candidates. Source requests traverse at most 256 candidates; administration queries load only the requested tenant and revision page. A Tenant subject with `catalog.approve` approves and activates a prepared revision atomically at `POST /api/marketplace/installations/{id}/activation`, in its own Tenant:
 
 ```json
 {
@@ -86,7 +86,7 @@ The lock deliberately serializes Marketplace mutations for one database. It keep
 
 Browser logout is ordered against pending requests, including SSE frame delivery. Session expiry is rechecked at response handoff. A durable Run reconstructs its credential/subject authority without the originating HTTP session; logout does not silently cancel previously admitted work, while credential, identity, mapping, policy and catalog revocation still apply.
 
-Browser Deployment Administrators retain identity, deployment-administrator-grant and session leases for administration reads and activation. Reads serialize into a bounded queue under those leases and recheck session expiry before commit; mutations also recheck expiry before commit; a queued request cannot outlive logout or deployment-administrator-grant revocation.
+Browser Deployment Administrators retain identity, deployment-administrator-grant and session leases for administration reads. Reads serialize into a bounded queue under those leases and recheck session expiry before commit; mutations also recheck expiry before commit; a queued request cannot outlive logout or deployment-administrator-grant revocation.
 
 ## Dashboard examples
 

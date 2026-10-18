@@ -212,6 +212,7 @@ impl SemanticSearchScope for Scope {
 		node: &str,
 		binding: &aidash_domain::semantic::remote::Binding,
 		operation: &Operation,
+		cycle: i32,
 		budget: usize,
 	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
 		if let Some(native) = binding.native() {
@@ -222,6 +223,7 @@ impl SemanticSearchScope for Scope {
 					node,
 					native,
 					operation,
+					cycle,
 					budget,
 				)
 				.await?,

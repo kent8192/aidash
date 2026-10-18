@@ -272,7 +272,12 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	);
 	let workspace = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "Atomic", "Commit together")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"Atomic",
+			"Commit together",
+		)
 		.await
 		.unwrap();
 	let id = Uuid::new_v4();

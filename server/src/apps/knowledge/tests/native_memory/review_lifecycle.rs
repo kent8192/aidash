@@ -552,18 +552,49 @@ async fn registry_rejects_a_memory_policy_above_the_semantic_compute_allowance(
 ) {
 	let database = database.await;
 	let (_, registry, _) = setup(&database, bounds).await;
-	let mut embedding = registry.get("e", "1.0.0").await.unwrap();
+	let mut embedding = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"e",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	embedding.id = "large-embedding".into();
 	embedding.config["dimensions"] = json!(3072);
-	registry.register(embedding).await.unwrap();
-	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			embedding,
+		)
+		.await
+		.unwrap();
+	let mut provider = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	provider.id = "oversized-memory".into();
 	provider.config["policy"]["embedding"] = json!(reference("large-embedding"));
 	provider.config["policy"]["bounds"]["max_units"] = json!(2048);
 	provider.config["policy"]["retention"]["max_unit_records"] = json!(2048);
-	assert!(matches!(registry.register(provider).await,
-        Err(aidash_server::Error::Invalid(message)) if message.contains("compute allowance")));
-	assert!(registry.get("oversized-memory", "1.0.0").await.is_err());
+	assert!(
+		matches!(registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), provider).await,
+        Err(aidash_server::Error::Invalid(message)) if message.contains("compute allowance"))
+	);
+	assert!(
+		registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"oversized-memory",
+				"1.0.0"
+			)
+			.await
+			.is_err()
+	);
 }
 
 #[fixture]

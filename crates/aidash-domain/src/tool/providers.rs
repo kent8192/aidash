@@ -16,9 +16,19 @@ use std::collections::BTreeSet;
 #[serde(rename_all = "snake_case")]
 pub enum ToolTier {
 	Builtin,
-	Host,
+	/// Acts outside Aidash from an Execution Pod; each Tenant approves it.
+	Sandboxed,
+	/// A Research provider the Deployment offers; each Tenant approves it.
+	Research,
 	Integration,
 	Fixture,
+}
+
+impl ToolTier {
+	/// Whether a built-in of this tier needs a Catalog Approval before use.
+	pub fn needs_approval(self) -> bool {
+		matches!(self, Self::Sandboxed | Self::Research)
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -70,11 +80,11 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 /// the research operation, so replacing one search provider with another needs
 /// no configuration change.
 pub const RESEARCH_PROVIDERS: &[(&str, &[&str], ToolTier)] = &[
-	("research.brave@1", &["search"], ToolTier::Host),
+	("research.brave@1", &["search"], ToolTier::Research),
 	(
 		"research.page@1",
 		&["fetch", "find", "view"],
-		ToolTier::Host,
+		ToolTier::Research,
 	),
 	(
 		"research.fixture@1",
@@ -182,9 +192,8 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "outbound_get"
 				| "apply_patch"
 				| "file_share"
-				| "task_assign"
 		) {
-			ToolTier::Host
+			ToolTier::Sandboxed
 		} else {
 			ToolTier::Builtin
 		},

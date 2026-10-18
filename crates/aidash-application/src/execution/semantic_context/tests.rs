@@ -26,6 +26,7 @@ struct State {
 	budget: Option<usize>,
 	fail: Option<&'static str>,
 	pending: Option<&'static str>,
+	outage: Option<aidash_domain::semantic::degraded::OutageCause>,
 }
 struct Repository(Arc<Mutex<State>>);
 struct Scope(Arc<Mutex<State>>);
@@ -137,6 +138,7 @@ fn repository() -> Repository {
 		budget: None,
 		fail: None,
 		pending: None,
+		outage: None,
 	})))
 }
 #[async_trait]
@@ -175,7 +177,7 @@ impl RunSemanticRepository for Repository {
 }
 #[async_trait]
 impl RunSemanticScope for Scope {
-	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<Option<SearchResult>> {
+	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<WorkspaceContext> {
 		let pending = {
 			let mut state = self.0.lock().unwrap();
 			state.record("retrieve")?;
@@ -186,7 +188,11 @@ impl RunSemanticScope for Scope {
 		if pending {
 			std::future::pending::<()>().await;
 		}
-		Ok(self.0.lock().unwrap().local.clone())
+		let state = self.0.lock().unwrap();
+		Ok(match state.outage {
+			Some(cause) => WorkspaceContext::Unavailable(cause),
+			None => WorkspaceContext::Retrieved(state.local.clone()),
+		})
 	}
 	async fn begin_dependencies(&mut self) -> Result<Box<dyn RunSemanticJournal + '_>> {
 		self.0.lock().unwrap().record("journal_begin")?;
@@ -225,7 +231,7 @@ async fn local_context_commits_every_dependency_before_releasing_source_authorit
 ) {
 	let expected =
 		serde_json::to_value(repository.0.lock().unwrap().local.as_ref().unwrap()).unwrap();
-	let value = retrieve(&repository, &task, &inputs, 123)
+	let value = retrieve(&repository, &task, &inputs, 123, false)
 		.await
 		.unwrap()
 		.unwrap();
@@ -269,7 +275,9 @@ async fn absence_skips_the_journal_but_an_empty_result_still_commits_it(
 			state.local.as_mut().unwrap().matches.clear();
 		}
 	}
-	let result = retrieve(&repository, &task, &inputs, 0).await.unwrap();
+	let result = retrieve(&repository, &task, &inputs, 0, false)
+		.await
+		.unwrap();
 	assert_eq!(result.is_none(), absent);
 	let state = repository.0.lock().unwrap();
 	assert!(state.records.is_empty());
@@ -307,7 +315,9 @@ async fn a_remote_context_refreshes_admission_even_for_an_empty_home_response(
 	}
 	let expected = repository.0.lock().unwrap().remote_result.clone();
 	assert_eq!(
-		retrieve(&repository, &task, &inputs, 17).await.unwrap(),
+		retrieve(&repository, &task, &inputs, 17, false)
+			.await
+			.unwrap(),
 		expected
 	);
 	let state = repository.0.lock().unwrap();
@@ -327,7 +337,7 @@ async fn an_empty_task_and_no_inputs_keep_the_original_single_newline_query(
 ) {
 	task.title.clear();
 	task.description.clear();
-	retrieve(&repository, &task, &[], 1).await.unwrap();
+	retrieve(&repository, &task, &[], 1, false).await.unwrap();
 	assert_eq!(repository.0.lock().unwrap().query.as_deref(), Some("\n"));
 }
 #[rstest]
@@ -346,7 +356,7 @@ async fn a_remote_boundary_fault_returns_no_context_and_never_falls_back_locally
 		state.remote = true;
 		state.fail = Some(boundary);
 	}
-	let Error::Port(error) = retrieve(&repository, &task, &inputs, 7)
+	let Error::Port(error) = retrieve(&repository, &task, &inputs, 7, false)
 		.await
 		.err()
 		.unwrap()
@@ -377,7 +387,7 @@ async fn failed_local_journaling_cannot_disclose_retrieved_text(
 	#[case] journal_exists: bool,
 ) {
 	repository.0.lock().unwrap().fail = Some(boundary);
-	let Error::Port(error) = retrieve(&repository, &task, &inputs, 7)
+	let Error::Port(error) = retrieve(&repository, &task, &inputs, 7, false)
 		.await
 		.err()
 		.unwrap()
@@ -417,7 +427,7 @@ async fn cancelled_context_acquisition_releases_the_retained_source_and_provisio
 	assert!(
 		tokio::time::timeout(
 			std::time::Duration::from_millis(10),
-			retrieve(&repository, &task, &inputs, 7)
+			retrieve(&repository, &task, &inputs, 7, false)
 		)
 		.await
 		.is_err()
@@ -432,4 +442,32 @@ async fn cancelled_context_acquisition_releases_the_retained_source_and_provisio
 		journal_exists
 	);
 	assert!(!state.calls.contains(&"journal_commit".into()));
+}
+#[rstest]
+#[case::degrades(true)]
+#[case::pauses(false)]
+#[tokio::test]
+async fn a_local_outage_degrades_without_a_journal_only_when_allowed(
+	repository: Repository,
+	task: Task,
+	inputs: Vec<(InputRead, String)>,
+	#[case] degrade: bool,
+) {
+	use aidash_domain::semantic::{Failure, degraded::OutageCause};
+	repository.0.lock().unwrap().outage = Some(OutageCause::EmbeddingProvider);
+	let result = retrieve(&repository, &task, &inputs, 7, degrade).await;
+	if degrade {
+		assert_eq!(
+			result.unwrap(),
+			Some(json!({"status":"unavailable","cause":"embedding_provider"}))
+		);
+	} else {
+		assert!(matches!(
+			result,
+			Err(Error::RemoteSemantic(Failure::Unavailable))
+		));
+	}
+	let state = repository.0.lock().unwrap();
+	assert!(state.records.is_empty());
+	assert_eq!(state.calls, vec!["local", "retrieve", "source_release"]);
 }

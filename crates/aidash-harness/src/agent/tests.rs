@@ -120,6 +120,8 @@ struct State {
 	source_failure: Mutex<Option<Error>>,
 	retrieval: Mutex<RetrievalScope>,
 	semantic_keys: Mutex<Vec<Option<String>>>,
+	/// `degrade_on_outage` of each semantic retrieval, in call order.
+	semantic_degrade: Mutex<Vec<bool>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	instructions: String,
 	/// The semantic read returns as much content as its budget allows.
@@ -816,8 +818,15 @@ impl ExecutionAuthority for Backend {
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
 	) -> Result<HumanMediaBatch> {
-		let _ = (messages, model);
-		unexpected("ExecutionAuthority.human_message_media")
+		let _ = model;
+		if !self.0.human_media_pending {
+			unexpected("ExecutionAuthority.human_message_media");
+		}
+		Ok(HumanMediaBatch {
+			parts: vec![],
+			through_seq: messages.first().map(|(seq, _, _)| *seq),
+			has_more: true,
+		})
 	}
 	async fn reserve_inference(
 		&self,
@@ -969,6 +978,7 @@ impl ExecutionEnvironment for Backend {
 		budget: usize,
 		entry: &Entry,
 		key: Option<&RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let _ = (run, task, inputs, budget, entry);
 		self.0
@@ -976,6 +986,11 @@ impl ExecutionEnvironment for Backend {
 			.lock()
 			.unwrap()
 			.push(key.map(RetrievalKey::digest));
+		self.0
+			.semantic_degrade
+			.lock()
+			.unwrap()
+			.push(degrade_on_outage);
 		if self.0.conversation_memory {
 			self.record("source.memory");
 			if self.0.fill_semantic_budget {
@@ -1034,22 +1049,6 @@ impl ExecutionEnvironment for Backend {
 			.expect("interruption sender lives with the backend");
 		self.0.interruption.send_replace(None);
 		Ok(interruption)
-	}
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		let _ = (run, model);
-		if !self.0.human_media_pending {
-			unexpected("ExecutionEnvironment.operator_human_message_media");
-		}
-		Ok(HumanMediaBatch {
-			parts: vec![],
-			through_seq: messages.first().map(|(seq, _, _)| *seq),
-			has_more: true,
-		})
 	}
 
 	fn node_id(&self) -> &str {
@@ -1359,6 +1358,7 @@ fn fixture() -> Fixture {
 			corpus_digest: Some("corpus-1".into()),
 		}),
 		semantic_keys: Mutex::new(vec![]),
+		semantic_degrade: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
 		fill_semantic_budget: false,
@@ -4215,9 +4215,9 @@ async fn deferred_media_intake_reports_no_tool_exposure(mut fixture: Fixture) {
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	run_message(&mut fixture);
 	deferred_agent(&mut fixture);
-	Arc::get_mut(&mut fixture.backend.0)
-		.unwrap()
-		.human_media_pending = true;
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	backend.human_media_pending = true;
+	backend.scoped = true;
 	// Act
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: no tools were sent, so none are measured as exposed.
@@ -4471,6 +4471,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 }
 
 mod batch;
+mod degraded;
 mod estimate;
 mod native;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.

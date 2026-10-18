@@ -19,15 +19,6 @@ pub trait MediaAttachments: Send {
 pub trait AuthorizedMediaScope: MediaAttachments {
 	async fn authorize_message(&mut self, workspace: Uuid, message: Uuid) -> Result<()>;
 }
-#[async_trait]
-pub trait OperatorMediaRepository: Send + Sync {
-	fn node_id(&self) -> &str;
-	async fn begin(&self) -> Result<Box<dyn MediaTransaction>>;
-}
-#[async_trait]
-pub trait MediaTransaction: MediaAttachments {
-	async fn commit(self: Box<Self>) -> Result<()>;
-}
 
 /// The native adapter retains its current area, authority and file snapshot through all reads.
 #[async_trait]
