@@ -262,15 +262,14 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	);
 }
 
+/// Binding a foreign agent needs its closure, which only the removed legacy
+/// peer reads imported (ADR 0043): an enabled peer does not make one available.
 #[rstest::rstest]
 #[tokio::test]
-async fn deployment_administrator_permission_inspection_resolves_foreign_agents_without_subject_imports(
+async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import(
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-home")]
 	home: endpoint::EndpointFuture,
-	#[from(endpoint::anonymous_client)]
-	#[with(home.clone())]
-	reader_client: endpoint::ClientFuture,
 	#[future]
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-child")]
@@ -299,48 +298,26 @@ async fn deployment_administrator_permission_inspection_resolves_foreign_agents_
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.node_id,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
 	assert_eq!(registered.0, 200, "{}", registered.1);
+	let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let mut parent = home
 		.runtime
 		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			"parent",
-			"1.0.0",
-		)
+		.get(&acme, "parent", "1.0.0")
 		.await
 		.unwrap();
 	parent.version = "1.0.1".into();
 	parent.binding_normalization = None;
 	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.node_id,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
-	home.runtime
-		.registry
-		.register(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			parent,
-		)
-		.await
-		.unwrap();
-	let subject = endpoint::subject(&home, "reader", reader_client.await).await;
-	let path = "/api/workbench/versions/parent/1.0.1/permissions";
-	let input = json!({"tenant":"endpoint","subject":"reader"});
-	let report = deployment_administrator(&home, path, input.clone()).await;
-	assert_eq!(report.0, 200, "{}", report.1);
+	assert!(matches!(
+		home.runtime.registry.register(&acme, parent).await,
+		Err(aidash_server::Error::Forbidden)
+	));
 	assert!(
-		report.1["rows"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.any(|row| row["reference"]["id"] == "foreign-tool")
-	);
-	assert!(report.1["rows"].as_array().unwrap().iter().all(|row| {
-		!row["reference"]["id"]
-			.as_str()
-			.unwrap()
-			.starts_with("public-child")
-	}));
-	assert_eq!(
-		decoded(subject.post(path, &input, "json").await.unwrap()).0,
-		403
+		home.runtime
+			.registry
+			.get(&acme, "parent", "1.0.1")
+			.await
+			.is_err()
 	);
 }
 
