@@ -435,7 +435,7 @@ async fn skill_record(c: &CoreFixture) -> String {
 			.and_where(Expr::col(Alias::new("kind")).eq("skills"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(c.f.store.pool.driver())
+	.fetch_all(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(!records.is_empty(), "direct Skills are pinned at admission");

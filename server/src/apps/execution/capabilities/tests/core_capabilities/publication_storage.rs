@@ -38,7 +38,7 @@ async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclai
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(c.f.store.pool.driver())
+	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let WorkerControl { stop, receiver: rx } = control_1;
@@ -98,7 +98,7 @@ async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclai
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(c.f.store.pool.driver())
+			.fetch_one(c.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -119,7 +119,7 @@ async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclai
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(c.f.store.pool.driver())
+	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -177,7 +177,7 @@ async fn seed_receipt(c: &CoreFixture, template: Uuid, id: Uuid, instance: &str,
 	.bind(instance)
 	.bind(template)
 	.bind(digest)
-	.execute(c.f.store.pool.driver())
+	.execute(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 }
@@ -285,7 +285,7 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 			.and_where(Expr::cust("result->'runner_acknowledged' = 'true'::jsonb"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(c.f.store.pool.driver())
+	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(retired, 20);

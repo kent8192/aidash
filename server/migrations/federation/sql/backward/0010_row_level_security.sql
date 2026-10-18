@@ -1,0 +1,12 @@
+DROP POLICY tenant_isolation ON public.authorization_remote_grants;
+ALTER TABLE public.authorization_remote_grants NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.authorization_remote_grants DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.authorization_remote_admissions;
+ALTER TABLE public.authorization_remote_admissions NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.authorization_remote_admissions DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.authorization_peer_mappings;
+ALTER TABLE public.authorization_peer_mappings NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.authorization_peer_mappings DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.authorization_peer_mapping_history;
+ALTER TABLE public.authorization_peer_mapping_history NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.authorization_peer_mapping_history DISABLE ROW LEVEL SECURITY;

@@ -2,7 +2,7 @@
 use super::native_database::{DatabaseFixture, database};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_server::database::classification::{Classification, TABLES};
-use aidash_server::database::{native, runtime};
+use aidash_server::database::{native, policy, runtime};
 use rstest::rstest;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,6 +13,9 @@ struct Observed {
 	row_security: bool,
 	forced: bool,
 	policies: i64,
+	/// The one policy's name, command, roles, USING and WITH CHECK, when the
+	/// table has exactly one permissive policy.
+	policy: Option<(String, String, Vec<String>, String, String)>,
 }
 
 async fn observe(pool: &sqlx::PgPool) -> BTreeMap<String, Observed> {
@@ -30,15 +33,35 @@ async fn observe(pool: &sqlx::PgPool) -> BTreeMap<String, Observed> {
 	.fetch_all(pool)
 	.await
 	.unwrap();
+	let policies: Vec<(String, String, String, Vec<String>, String, String)> = sqlx::query_as(
+		"SELECT tablename::text, policyname::text, cmd, roles::text[], \
+		 coalesce(qual, ''), coalesce(with_check, '') FROM pg_policies \
+		 WHERE schemaname = 'public' AND permissive = 'PERMISSIVE'",
+	)
+	.fetch_all(pool)
+	.await
+	.unwrap();
 	rows.into_iter()
-		.map(|(name, tenant_column, row_security, forced, policies)| {
+		.map(|(name, tenant_column, row_security, forced, count)| {
+			let mut own = policies.iter().filter(|policy| policy.0 == name);
+			let policy = match (own.next(), own.next()) {
+				(Some((_, policy, command, roles, using, check)), None) => Some((
+					policy.clone(),
+					command.clone(),
+					roles.clone(),
+					using.clone(),
+					check.clone(),
+				)),
+				_ => None,
+			};
 			(
 				name,
 				Observed {
 					tenant_column,
 					row_security,
 					forced,
-					policies,
+					policies: count,
+					policy,
 				},
 			)
 		})
@@ -85,6 +108,9 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 			.collect::<Vec<_>>()
 			.join("\n")
 	);
+	// Every enforced table carries the same single policy, rendered from one
+	// template (server/src/database/policy.rs).
+	let mut template = None;
 	for table in TABLES {
 		let actual = &observed[table.name];
 		let enforced = actual.row_security && actual.forced && actual.policies > 0;
@@ -92,6 +118,23 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 			Classification::TenantOwned => {
 				assert!(actual.tenant_column, "{} has no tenant column", table.name);
 				assert!(enforced, "{}: {actual:?}", table.name);
+				assert_eq!(actual.policies, 1, "{}: {actual:?}", table.name);
+				let (name, command, roles, using, check) = actual
+					.policy
+					.clone()
+					.unwrap_or_else(|| panic!("{}: {actual:?}", table.name));
+				assert_eq!(name, policy::POLICY, "{}", table.name);
+				assert_eq!(command, "ALL", "{}", table.name);
+				assert_eq!(roles, ["public"], "{}", table.name);
+				assert_eq!(using, check, "{}", table.name);
+				assert!(
+					using.contains("aidash_deployment_scope()")
+						&& using.contains("aidash_scope_tenant()"),
+					"{}: {using}",
+					table.name
+				);
+				let expected = template.get_or_insert_with(|| using.clone());
+				assert_eq!(&using, expected, "{} departs from the template", table.name);
 			}
 			Classification::Pending(issue) => {
 				assert!(
@@ -99,11 +142,10 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 					"{} is enforced; classify it Tenant-owned: {actual:?}",
 					table.name
 				);
-				// #264 enforces the tables that already carry a Tenant; #265
-				// copies the Tenant onto the rest. #243 keyed the Registry
-				// tables by Tenant ahead of #265, which still enforces them.
+				// #265 copies the Tenant onto the tables that reach it only
+				// through a parent. #243 keyed the Registry tables by Tenant
+				// ahead of #265, which still enforces them.
 				match issue {
-					264 => assert!(actual.tenant_column, "{} has no tenant column", table.name),
 					265 => assert_eq!(
 						actual.tenant_column,
 						REGISTRY_KEYED_BY_TENANT.contains(&table.name),

@@ -993,7 +993,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 		memory::operate(&store, &Actor::DeploymentAdministrator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
 	));
-	let mut reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
+	let mut reopened = Store::from_pool(store.pool.fixture_driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
 	// A restarted node keeps its Deployment's permitted Keyless origins.
@@ -2350,7 +2350,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		// staged, before inference, rather than failing the read insert. Only
 		// the table owner can add a trigger; the server role holds DML.
 		let owner: aidash_server::database::native::Pool =
-			crate::native_database::owner_pool(store.pool.driver())
+			crate::native_database::owner_pool(store.pool.fixture_driver())
 				.await
 				.into();
 		let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();
@@ -3299,23 +3299,27 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let mut db = database.lease.handle();
-	aidash_server::apps::identity::models::AuthorizationExecution::objects()
-		.create_with_conn(
-			&mut db,
-			&aidash_server::apps::identity::models::AuthorizationExecution::build()
-				.run_id(id)
-				.task_id(task.id)
-				.workspace_id(workspace)
-				.tenant("acme")
-				.credential_id(credential.credential.id)
-				.root_subject("alice")
-				.subject_chain(vec![
-					"alice".into(),
-					aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0"),
-				])
-				.finish(),
-		)
+	let execution = aidash_server::apps::identity::models::AuthorizationExecution::build()
+		.run_id(id)
+		.task_id(task.id)
+		.workspace_id(workspace)
+		.tenant("acme")
+		.credential_id(credential.credential.id)
+		.root_subject("alice")
+		.subject_chain(vec![
+			"alice".into(),
+			aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0"),
+		])
+		.finish();
+	// The authorization row holds a row-level policy; seed it in a scope.
+	store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			aidash_server::apps::identity::models::AuthorizationExecution::objects()
+				.create_with_conn(tx, &execution)
+				.await?;
+			Ok(())
+		})
 		.await
 		.unwrap();
 

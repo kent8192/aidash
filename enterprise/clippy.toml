@@ -37,4 +37,6 @@ disallowed-methods = [
   { path = "reinhardt_db::backends::connection::DatabaseConnection::connect_postgres_with_pool_size", reason = "connect with database::runtime::connect (#263)" },
   { path = "aidash_server::database::native::Pool::connection", reason = "use Pool::begin(scope) or Pool::in_scope(scope) (#263)" },
   { path = "aidash_server::database::native::Pool::driver", reason = "use Pool::begin(scope) or Pool::in_scope(scope) (#263)" },
+  { path = "aidash_server::database::native::Pool::fixture_driver", reason = "test fixtures only: its sessions hold a Deployment Scope (#264)" },
+  { path = "aidash_server::database::scope::test_fixture_driver", reason = "test fixtures only: its sessions hold a Deployment Scope (#264)" },
 ]
