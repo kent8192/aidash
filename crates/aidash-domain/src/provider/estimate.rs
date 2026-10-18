@@ -1,7 +1,10 @@
 //! Request Estimates (ADR 0017). The byte estimate is the upper bound. A
 //! calibrated estimate scales only its byte basis, by a ratio of reported
-//! prompt tokens to bytes that one Run step pins in its Estimate Snapshot.
+//! prompt tokens to bytes that one Run step pins in its Estimate Snapshot. A
+//! tokenized estimate counts the model-visible text with the Token Encoding
+//! the model definition names, and keeps the ratio only for byte quotas.
 use super::usage::{EstimateConfidence, RequestEstimate};
+pub use encoding::TokenEncoding;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,15 +22,21 @@ pub const FRAMING_RESERVE: usize = 1024;
 
 const BYTES_VERSION: u32 = 1;
 const CALIBRATED_VERSION: u32 = 1;
+const TOKENIZED_VERSION: u32 = 1;
+
+pub mod encoding;
 
 /// The estimator a model definition opts into. Omitted means `bytes`, so
 /// existing definition versions keep their fitting and compaction timing.
+/// `{"tokenized": "<encoding>"}` names a Token Encoding; an unlisted name is
+/// rejected when the definition is read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestEstimator {
 	#[default]
 	Bytes,
 	Calibrated,
+	Tokenized(TokenEncoding),
 }
 
 /// The byte estimate split by unit. Only `basis` is text the provider
@@ -41,6 +50,10 @@ pub struct ByteEstimate {
 	/// Output reservation (`max_output_tokens`).
 	pub output: usize,
 	pub framing: usize,
+	/// The same basis counted by a tokenized snapshot's Token Encoding, with
+	/// its message and tool framing and the cache-salt reserve. `None` for
+	/// every other snapshot, or when the encoding is unavailable.
+	pub tokenized: Option<usize>,
 }
 
 impl ByteEstimate {
@@ -110,6 +123,22 @@ pub enum Estimator {
 		margin_permille: u32,
 		samples: u32,
 	},
+	/// The basis counted with a Token Encoding, capped at bytes. Byte quotas
+	/// still convert at the key's calibrated ratio, or one token per byte
+	/// when the key had none.
+	Tokenized {
+		version: u32,
+		/// `None` when the pinned name is no longer listed.
+		#[serde(deserialize_with = "encoding::lenient")]
+		#[schemars(with = "Option<TokenEncoding>")]
+		encoding: Option<TokenEncoding>,
+		encoding_version: u32,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		ratio_ppm: Option<u32>,
+		margin_permille: u32,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		samples: Option<u32>,
+	},
 }
 
 /// The estimator, version, ratio and margin one Run step uses for all its
@@ -151,36 +180,87 @@ impl EstimateSnapshot {
 		}
 	}
 
-	/// The snapshot a new step pins: calibrated only when the model opts in,
-	/// the Run was never demoted and the key has enough samples.
+	/// A tokenized snapshot. Its byte quotas use `calibration` when the key
+	/// has one.
+	pub fn tokenized(step: i32, encoding: TokenEncoding, calibration: Option<Calibration>) -> Self {
+		Self {
+			step,
+			estimator: Estimator::Tokenized {
+				version: TOKENIZED_VERSION,
+				encoding: Some(encoding),
+				encoding_version: encoding.version(),
+				ratio_ppm: calibration.map(|calibration| calibration.ratio_ppm),
+				margin_permille: CALIBRATION_MARGIN_PERMILLE,
+				samples: calibration.map(|calibration| calibration.samples),
+			},
+		}
+	}
+
+	/// The snapshot a new step pins. A demoted Run is conservative. Otherwise
+	/// a calibrated model needs enough samples, and a tokenized model needs
+	/// its encoding in this binary; it calibrates only its byte quotas.
 	pub fn choose(
 		step: i32,
 		estimator: RequestEstimator,
 		demoted: bool,
 		samples: &[CalibrationSample],
 	) -> Self {
-		match (estimator, demoted, calibrate(samples)) {
-			(RequestEstimator::Calibrated, false, Some(calibration)) => {
-				Self::calibrated(step, calibration.ratio_ppm, calibration.samples)
+		if demoted {
+			return Self::conservative(step);
+		}
+		match estimator {
+			RequestEstimator::Calibrated => match calibrate(samples) {
+				Some(calibration) => {
+					Self::calibrated(step, calibration.ratio_ppm, calibration.samples)
+				}
+				None => Self::conservative(step),
+			},
+			RequestEstimator::Tokenized(encoding) if encoding.available() => {
+				Self::tokenized(step, encoding, calibrate(samples))
 			}
-			_ => Self::conservative(step),
+			RequestEstimator::Tokenized(_) | RequestEstimator::Bytes => Self::conservative(step),
 		}
 	}
 
-	pub fn is_calibrated(&self) -> bool {
-		matches!(self.estimator, Estimator::Calibrated { .. })
+	/// Whether this is the byte estimate, which a Context Overflow or an
+	/// underestimate cannot demote any further.
+	pub fn is_conservative(&self) -> bool {
+		matches!(self.estimator, Estimator::Bytes { .. })
+	}
+
+	/// The Token Encoding this snapshot counts with: the pinned one, at its
+	/// pinned version, when this binary has it. A tokenized snapshot without
+	/// one cannot be used (ADR 0017).
+	pub fn encoding(&self) -> Option<TokenEncoding> {
+		match self.estimator {
+			Estimator::Tokenized {
+				encoding: Some(encoding),
+				encoding_version,
+				..
+			} if encoding_version == encoding.version() && encoding.available() => Some(encoding),
+			_ => None,
+		}
+	}
+
+	/// Whether this binary can estimate with the snapshot. Only a tokenized
+	/// snapshot whose encoding is missing cannot; its step runs on bytes.
+	pub fn usable(&self) -> bool {
+		!matches!(self.estimator, Estimator::Tokenized { .. }) || self.encoding().is_some()
 	}
 
 	pub fn id(&self) -> &'static str {
 		match self.estimator {
 			Estimator::Bytes { .. } => "bytes",
 			Estimator::Calibrated { .. } => "calibrated",
+			Estimator::Tokenized { .. } => "tokenized",
 		}
 	}
 
 	pub fn version(&self) -> u32 {
 		match self.estimator {
-			Estimator::Bytes { version } | Estimator::Calibrated { version, .. } => version,
+			Estimator::Bytes { version }
+			| Estimator::Calibrated { version, .. }
+			| Estimator::Tokenized { version, .. } => version,
 		}
 	}
 
@@ -188,29 +268,58 @@ impl EstimateSnapshot {
 		match self.estimator {
 			Estimator::Bytes { .. } => EstimateConfidence::Conservative,
 			Estimator::Calibrated { .. } => EstimateConfidence::Calibrated,
+			Estimator::Tokenized { .. } => EstimateConfidence::Tokenized,
 		}
 	}
 
-	/// The pinned 99th-percentile ratio, without margin; `None` for bytes.
+	/// The pinned 99th-percentile ratio, without margin; `None` for bytes and
+	/// for a tokenized snapshot of a key without calibration.
 	pub fn ratio_ppm(&self) -> Option<u32> {
 		match self.estimator {
 			Estimator::Bytes { .. } => None,
 			Estimator::Calibrated { ratio_ppm, .. } => Some(ratio_ppm),
+			Estimator::Tokenized { ratio_ppm, .. } => ratio_ppm,
+		}
+	}
+
+	fn margin_permille(&self) -> Option<u32> {
+		match self.estimator {
+			Estimator::Bytes { .. } => None,
+			Estimator::Calibrated {
+				margin_permille, ..
+			} => Some(margin_permille),
+			Estimator::Tokenized {
+				ratio_ppm,
+				margin_permille,
+				..
+			} => ratio_ppm.map(|_| margin_permille),
+		}
+	}
+
+	/// The snapshot that sizes byte quotas and context growth: a tokenized
+	/// snapshot's calibrated ratio, or bytes. Counting every probe would
+	/// tokenize the whole context per tool event, and quotas are only an
+	/// advance allocation; the complete request is counted (ADR 0017).
+	pub fn quota(&self) -> Self {
+		match self.estimator {
+			Estimator::Tokenized {
+				ratio_ppm: Some(ratio_ppm),
+				samples,
+				..
+			} => Self::calibrated(self.step, ratio_ppm, samples.unwrap_or_default()),
+			Estimator::Tokenized { .. } => Self::conservative(self.step),
+			Estimator::Bytes { .. } | Estimator::Calibrated { .. } => *self,
 		}
 	}
 
 	/// Tokens per byte of basis, margin included, never above one.
 	fn scale_ppm(&self) -> u64 {
-		match self.estimator {
-			Estimator::Bytes { .. } => PPM,
-			Estimator::Calibrated {
-				ratio_ppm,
-				margin_permille,
-				..
-			} => u64::from(ratio_ppm)
+		match (self.ratio_ppm(), self.margin_permille()) {
+			(Some(ratio_ppm), Some(margin_permille)) => u64::from(ratio_ppm)
 				.saturating_mul(1000 + u64::from(margin_permille))
 				.div_ceil(1000)
 				.clamp(1, PPM),
+			_ => PPM,
 		}
 	}
 
@@ -231,7 +340,11 @@ impl EstimateSnapshot {
 
 	/// The Request Estimate in tokens, capped at the byte estimate.
 	pub fn tokens(&self, bytes: &ByteEstimate) -> usize {
-		self.tokens_for_bytes(bytes.basis)
+		let basis = match (self.estimator, bytes.tokenized) {
+			(Estimator::Tokenized { .. }, Some(tokenized)) => tokenized,
+			_ => self.tokens_for_bytes(bytes.basis),
+		};
+		basis
 			.saturating_add(bytes.media)
 			.saturating_add(bytes.output)
 			.saturating_add(bytes.framing)
@@ -280,17 +393,32 @@ impl EstimateState {
 		self.snapshot.unwrap_or_default()
 	}
 
-	/// Demote a calibrated snapshot after a Context Overflow: the step and every
-	/// later step of the Run use bytes. Returns whether anything changed.
+	/// Demote a calibrated or tokenized snapshot after a Context Overflow: the
+	/// step and every later step of the Run use bytes. Returns whether
+	/// anything changed.
 	pub fn demote(&mut self) -> bool {
 		match self.snapshot {
-			Some(snapshot) if snapshot.is_calibrated() => {
+			Some(snapshot) if !snapshot.is_conservative() => {
 				self.snapshot = Some(EstimateSnapshot::conservative(snapshot.step));
 				self.demoted = true;
 				true
 			}
 			_ => false,
 		}
+	}
+
+	/// Demote the Run from its next step when the provider reported more input
+	/// tokens than a calibrated or tokenized estimate predicted. The step's
+	/// own snapshot stays, since its request was already sent. This is how a
+	/// wrong or outdated Token Encoding is noticed. Returns whether the Run
+	/// was demoted now.
+	pub fn underestimated(&mut self, estimate: &RequestEstimate, reported_input: u64) -> bool {
+		let input = estimate.tokens.saturating_sub(estimate.output_reservation);
+		if self.demoted || self.current().is_conservative() || reported_input <= input {
+			return false;
+		}
+		self.demoted = true;
+		true
 	}
 }
 
@@ -302,6 +430,9 @@ pub struct EstimateView {
 	pub step: i32,
 	pub estimator: &'static str,
 	pub version: u32,
+	/// The Token Encoding a tokenized snapshot pinned.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub encoding: Option<TokenEncoding>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub ratio_ppm: Option<u32>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -313,18 +444,17 @@ pub struct EstimateView {
 impl EstimateState {
 	pub fn view(&self) -> Option<EstimateView> {
 		let snapshot = self.snapshot?;
-		let margin_permille = match snapshot.estimator {
-			Estimator::Bytes { .. } => None,
-			Estimator::Calibrated {
-				margin_permille, ..
-			} => Some(margin_permille),
+		let encoding = match snapshot.estimator {
+			Estimator::Tokenized { encoding, .. } => encoding,
+			Estimator::Bytes { .. } | Estimator::Calibrated { .. } => None,
 		};
 		Some(EstimateView {
 			step: snapshot.step,
 			estimator: snapshot.id(),
 			version: snapshot.version(),
+			encoding,
 			ratio_ppm: snapshot.ratio_ppm(),
-			margin_permille,
+			margin_permille: snapshot.margin_permille(),
 			demoted: self.demoted,
 		})
 	}
