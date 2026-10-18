@@ -1,0 +1,25 @@
+[package]
+name = "aidash-enterprise-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+default-run = "aidash"
+
+[lib]
+name = "aidash_enterprise_server"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aidash"
+path = "src/bin/aidash.rs"
+
+[[bin]]
+name = "manage"
+path = "src/bin/manage.rs"
+
+[dependencies]
+aidash-domain.workspace = true
+aidash-server.workspace = true

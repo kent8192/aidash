@@ -8,7 +8,8 @@ fn col(name: &str) -> SimpleExpr {
 	Expr::col(Alias::new(name)).into()
 }
 
-fn call(function: &str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
+/// A SQL function call. `IntoIden` needs a static name, as every caller passes.
+fn call(function: &'static str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
 	SimpleExpr::FunctionCall(function.into_iden(), arguments)
 }
 

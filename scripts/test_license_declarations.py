@@ -102,6 +102,24 @@ REJECTED = {
         {"Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n[workspace.package]\nlicense = "MIT"\n'},
         "Cargo.toml: [workspace.package] declares license",
     ),
+    # Until the cutover (#255), an Enterprise declaration would start the
+    # Change Date clock early.
+    "an Enterprise package license": (
+        {"enterprise/server/Cargo.toml": '[package]\nname = "aidash-enterprise-server"\nlicense = "BUSL-1.1"\n'},
+        "enterprise/server/Cargo.toml: [package] declares license",
+    ),
+    "an Enterprise workspace license": (
+        {"enterprise/Cargo.toml": '[workspace]\nmembers = ["server"]\n[workspace.package]\nlicense = "BUSL-1.1"\n'},
+        "enterprise/Cargo.toml: [workspace.package] declares license",
+    ),
+    "an Enterprise license file": (
+        {"enterprise/LICENSE": "Business Source License 1.1\n"},
+        "enterprise/LICENSE: license files belong only in the root LICENSE or a pinned third-party notice",
+    ),
+    "an Enterprise SPDX identifier": (
+        {"enterprise/server/src/lib.rs": f"// {SPDX}: BUSL-1.1\n"},
+        "enterprise/server/src/lib.rs: contains an SPDX license identifier",
+    ),
     "a changed allowlisted expression": (
         {"crates/aidash-capability/Cargo.toml":
             '[package]\nname = "aidash-capability"\nlicense = "Apache-2.0 OR MIT"\n'},
