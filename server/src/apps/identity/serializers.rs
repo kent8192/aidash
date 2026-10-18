@@ -8,6 +8,7 @@ pub mod identity;
 
 pub mod oidc;
 
+pub mod plan_connections;
 pub mod provider_authorizations;
 
 pub mod peer_admission;
@@ -42,5 +43,11 @@ pub(crate) mod desktop;
 pub mod provider_credentials;
 
 pub mod keyless_endpoints;
+
+pub mod tenancy_settings;
+
+pub mod tenants;
+
+pub mod invitations;
 
 pub(crate) mod tenant_administration;

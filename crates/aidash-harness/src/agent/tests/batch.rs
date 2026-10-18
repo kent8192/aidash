@@ -841,6 +841,7 @@ impl ExecutionEnvironment for Bench {
 			tool_parallelism: self.0.parallelism,
 			projection_version: Default::default(),
 			prompt_cache: Default::default(),
+			completion: None,
 		})
 	}
 	fn tool_slots(&self) -> Option<&ToolSlots> {

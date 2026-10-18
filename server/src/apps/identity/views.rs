@@ -15,6 +15,7 @@ pub mod dependencies;
 
 pub mod sessions;
 
+pub mod plan_connections;
 pub mod provider_authorizations;
 
 pub mod management;
@@ -35,3 +36,7 @@ pub mod desktop;
 pub mod provider_credentials;
 
 pub mod tenant_administration;
+
+pub mod tenants;
+
+pub mod invitations;

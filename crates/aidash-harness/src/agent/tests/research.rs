@@ -469,3 +469,52 @@ async fn a_research_result_compaction_cut_to_a_string_is_redacted_from_its_journ
 	// A cut result whose original was no research result is kept.
 	assert!(request.contains("a workspace note"), "{request}");
 }
+
+#[rstest]
+#[tokio::test]
+async fn an_elided_research_result_loses_the_arguments_its_original_named(fixture: Fixture) {
+	// Arrange: compaction elided two results whole, keeping their calls; the
+	// journal holds the originals.
+	let mut fixture = thinking(fixture);
+	revoke(&mut fixture);
+	let originals = [
+		(
+			"call-search",
+			json!({"query": "a revoked query"}),
+			research_result("a revoked passage"),
+		),
+		(
+			"call-note",
+			json!({"note": "a kept note"}),
+			json!("a workspace note"),
+		),
+	];
+	for (id, arguments, original) in originals {
+		fixture.run.context.push(ContextEvent::tool(
+			call(id, "renamed", arguments.clone()),
+			ContextEvent::elided_result(id),
+		));
+		let seq = fixture.run.context.history.last().unwrap().seq;
+		fixture.backend.0.journal.lock().unwrap().push((
+			fixture.run.id,
+			aidash_domain::context::HistoryEntry {
+				seq,
+				event: ContextEvent::tool(call(id, "renamed", arguments), original),
+			},
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+
+	// Act
+	let _ = advance_sources(&mut fixture).await;
+
+	// Assert: the research call no longer names its query; the other keeps
+	// its arguments.
+	let request = first_request(&fixture);
+	assert!(!request.contains("a revoked query"), "{request}");
+	assert!(
+		request.contains("Research evidence was revoked"),
+		"{request}"
+	);
+	assert!(request.contains("a kept note"), "{request}");
+}

@@ -26,6 +26,7 @@ struct Scope {
 	configured: bool,
 	active: bool,
 	google: bool,
+	personal_tenants: bool,
 	tenant_bindings: Option<std::collections::BTreeMap<String, String>>,
 	gcip_providers: std::collections::BTreeMap<String, Vec<String>>,
 	result: ProviderResult,
@@ -58,6 +59,7 @@ fn scope() -> Scope {
 		configured: true,
 		active: true,
 		google: false,
+		personal_tenants: false,
 		tenant_bindings: None,
 		gcip_providers: Default::default(),
 		result: ProviderResult::Enabled,
@@ -102,6 +104,7 @@ impl Accounts for Scope {
 			google: self.google,
 			tenant_bindings: self.tenant_bindings.clone(),
 			gcip_providers: self.gcip_providers.clone(),
+			personal_tenants: self.personal_tenants,
 		})
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -365,8 +368,11 @@ impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
 #[case::enabled(false)]
 #[case::disabled(true)]
 #[tokio::test]
-async fn google_login_provisions_only_enabled_accounts(mut scope: Scope, #[case] disabled: bool) {
-	scope.google = true;
+async fn login_provisions_personal_tenants_only_for_enabled_accounts(
+	mut scope: Scope,
+	#[case] disabled: bool,
+) {
+	scope.personal_tenants = true;
 	let id = {
 		let mut state = scope.state.lock().unwrap();
 		if disabled {
@@ -381,14 +387,59 @@ async fn google_login_provisions_only_enabled_accounts(mut scope: Scope, #[case]
 		.await;
 	if disabled {
 		assert!(matches!(result, Err(Error::Forbidden)));
-		assert_eq!(scope.state.lock().unwrap().trace, ["register"]);
+		assert_eq!(
+			scope.state.lock().unwrap().trace,
+			["lookup:subject", "register"]
+		);
 	} else {
 		assert_eq!(result.unwrap().id, id);
 		assert_eq!(
 			scope.state.lock().unwrap().trace,
-			["register".to_owned(), format!("personal:{id}")]
+			[
+				"lookup:subject".to_owned(),
+				"register".to_owned(),
+				format!("personal:{id}"),
+				"record".to_owned()
+			]
 		);
 	}
+}
+
+#[rstest]
+#[case::rule_off(false, None)]
+#[case::bound_pool(true, Some("pool-a"))]
+#[tokio::test]
+async fn login_skips_personal_tenants_when_the_rules_do_not_cover_the_identity(
+	mut scope: Scope,
+	#[case] personal_tenants: bool,
+	#[case] pool: Option<&str>,
+) {
+	scope.personal_tenants = personal_tenants;
+	if let Some(pool) = pool {
+		scope.tenant_bindings = Some([(pool.to_owned(), "acme".to_owned())].into());
+		scope.gcip_providers = [(pool.to_owned(), vec!["google.com".to_owned()])].into();
+		scope.state.lock().unwrap().account.gcip_tenant = Some(pool.to_owned());
+	}
+	let scope = Arc::new(scope);
+	let mut login = ExistingLogin(scope.state.clone());
+	let sign_in = SignIn {
+		gcip_tenant: pool.map(str::to_owned),
+		gcip_provider: pool.map(|_| "google.com".to_owned()),
+		..sign_in()
+	};
+	authority(scope.clone())
+		.admit_login(&mut login, &sign_in)
+		.await
+		.unwrap();
+	assert!(
+		!scope
+			.state
+			.lock()
+			.unwrap()
+			.trace
+			.iter()
+			.any(|step| step.starts_with("personal:"))
+	);
 }
 
 #[rstest]
@@ -647,6 +698,7 @@ fn mapping_requires_the_exact_bound_tenant(
 		google: false,
 		tenant_bindings: Some([("pool-a".into(), "acme".into())].into()),
 		gcip_providers: Default::default(),
+		personal_tenants: true,
 	};
 	assert_eq!(
 		policy.require_mapping("issuer", Some(pool), tenant).is_ok(),

@@ -11,6 +11,10 @@ pub struct MessageReadCoverage {
 	pub ranges: Vec<[usize; 2]>,
 }
 
+/// The contract marker of a revoked research result placeholder, which no
+/// other tool result carries (ADR 0046).
+pub const REVOKED_RESULT_CONTRACT: &str = "aidash.research.revoked/1";
+
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -87,6 +91,13 @@ pub struct Context {
 	/// Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs.
 	#[serde(default, skip_serializing_if = "ExposureState::is_empty")]
 	pub exposure: ExposureState,
+	/// Completion Gate progress of a Run whose Agent names a Completion
+	/// Policy; empty and absent otherwise. Never part of a model request.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::completion::CompletionProgress::is_empty"
+	)]
+	pub completion: crate::completion::CompletionProgress,
 }
 
 /// Stored contexts written before the Context Journal carry bare history
@@ -124,6 +135,8 @@ struct StoredContext {
 	message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
 	#[serde(default)]
 	exposure: ExposureState,
+	#[serde(default)]
+	completion: crate::completion::CompletionProgress,
 }
 
 #[derive(Deserialize)]
@@ -213,9 +226,15 @@ impl<'de> Deserialize<'de> for Context {
 			message_read_coverage: stored.message_read_coverage,
 			message_inference_coverage: stored.message_inference_coverage,
 			exposure: stored.exposure,
+			completion: stored.completion,
 		})
 	}
 }
+
+/// What an earlier repair request's diagnostics become once a later repair
+/// supersedes it.
+const SUPERSEDED_DIAGNOSTICS: &str =
+	"[superseded by a later Check run; the full diagnostics remain in the execution journal]";
 
 impl Context {
 	/// Append an event to the projection with the next Context Journal sequence.
@@ -224,6 +243,33 @@ impl Context {
 		self.history.push(HistoryEntry {
 			seq: self.journal.head,
 			event,
+		});
+	}
+
+	/// Append a Completion Gate repair request. Each repair reruns its Check,
+	/// so earlier requests' diagnostics are obsolete: the projection keeps only
+	/// that they happened (the journal keeps the originals), and repeated
+	/// repairs cannot fill a window that neither Jev nor the Summary Stage
+	/// compacts.
+	pub fn push_repair(
+		&mut self,
+		checks: Vec<crate::completion::RepairNote>,
+		instruction: String,
+		through_seq: i64,
+	) {
+		for entry in &mut self.history {
+			if let ContextEvent::CompletionRepairRequired { checks, .. } = &mut entry.event {
+				for note in checks {
+					if note.diagnostics.len() > SUPERSEDED_DIAGNOSTICS.len() {
+						note.diagnostics = SUPERSEDED_DIAGNOSTICS.into();
+					}
+				}
+			}
+		}
+		self.push(ContextEvent::CompletionRepairRequired {
+			checks,
+			instruction,
+			through_seq,
 		});
 	}
 
@@ -293,6 +339,10 @@ pub struct InspectionContext<'a> {
 	/// The Run's pinned Estimate Snapshot, without its sample count.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub estimate: Option<crate::provider::estimate::EstimateView>,
+	/// Completion Gate state with its Verification Evidence, so a person
+	/// answering a Completion Review sees each Check's exit code and output.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub completion: Option<&'a crate::completion::CompletionProgress>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -310,6 +360,7 @@ impl Context {
 			message_inference_coverage: &self.message_inference_coverage,
 			exposure: &self.exposure,
 			estimate: self.estimate.view(),
+			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
 		}
 	}
 }
@@ -333,7 +384,7 @@ pub fn estimated_tokens(value: &str) -> usize {
 }
 
 /// Estimate how much one durable event adds to a complete provider request,
-/// under the Run's current Estimate Snapshot. Fixed instructions, tools, and pinned context cancel out, so this probe
+/// in the byte-quota unit of the Run's current Estimate Snapshot. Fixed instructions, tools, and pinned context cancel out, so this probe
 /// measures the same encoded context growth without storing that payload.
 /// Legacy and Ordered encode `history` as the same JSON array inside one
 /// escaped text value, so the Legacy probe measures Ordered growth exactly.
@@ -362,8 +413,9 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			cache_scope: None,
 			cache_breakpoints: false,
 			disable_provider_transforms: false,
-			// Growth is in the unit of the Run's current Request Estimates.
-			estimate: context.estimate.current(),
+			// Growth is in the unit of the Run's current byte quotas, so a
+			// tokenized Run does not count its whole context per event.
+			estimate: context.estimate.current().quota(),
 		}
 		.estimated_total_tokens()
 	};
@@ -759,6 +811,14 @@ pub enum ContextEvent {
 		instruction: String,
 		through_seq: i64,
 	},
+	/// The Completion Gate refused a final answer because a Check did not pass
+	/// on the current files. Each one spends the Repair Allowance of the input
+	/// at `through_seq`.
+	CompletionRepairRequired {
+		checks: Vec<crate::completion::RepairNote>,
+		instruction: String,
+		through_seq: i64,
+	},
 }
 
 impl ContextEvent {
@@ -772,19 +832,36 @@ impl ContextEvent {
 		json!({"elided": true, "invocation": call_id})
 	}
 
+	/// Whether this result has the shape of an [`Self::elided_result`]. Any
+	/// tool may return it too, so only the journaled original tells what the
+	/// call returned.
+	pub fn is_elided_result(result: &Value) -> bool {
+		result["elided"] == json!(true) && result["invocation"].is_string()
+	}
+
 	/// A research tool result whose evidence was revoked. Later model requests
 	/// carry this instead; the Context Journal keeps the original (ADR 0046).
 	pub fn revoked_result(call_id: &str) -> Value {
 		json!({
+			"contract": REVOKED_RESULT_CONTRACT,
 			"revoked": true,
 			"invocation": call_id,
 			"explanation": "This Run's Research evidence was revoked. Its content can no longer be read or cited.",
 		})
 	}
 
-	/// Whether this result is already a [`Self::revoked_result`].
+	/// Whether this result is already a [`Self::revoked_result`]. Only its
+	/// contract marker counts: any tool may return the other fields.
 	pub fn is_revoked_result(result: &Value) -> bool {
-		result["revoked"] == json!(true) && result["invocation"].is_string()
+		result["contract"] == REVOKED_RESULT_CONTRACT
+			&& result["revoked"] == json!(true)
+			&& result["invocation"].is_string()
+	}
+
+	/// What replaces a revoked research call's arguments, which name the
+	/// query or address that was disclosed.
+	pub fn revoked_arguments() -> Value {
+		json!({"revoked": true})
 	}
 }
 

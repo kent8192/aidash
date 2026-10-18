@@ -5,8 +5,12 @@ use crate::{
 		Loaded, OperationReconciliationRepository, OperationReconciliationScope,
 	},
 };
-use aidash_domain::capabilities::operations::{
-	FileScope, MountedFile, reconciliation::Snapshot, request_validation_failure,
+use aidash_domain::{
+	capabilities::operations::{
+		FileScope, MountedFile, VERIFICATION, capability_of, lost_area_state,
+		reconciliation::Snapshot, request_validation_failure,
+	},
+	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
@@ -49,10 +53,12 @@ async fn reconcile(
 	let cancelling = operation.cancelling(limits, &run);
 	if !cancelling {
 		let config = scope.configuration().await?;
-		if !config.permits(&operation.kind) {
+		// A Check runs under the authority of the bound shell operation.
+		let capability = capability_of(&operation.kind);
+		if !config.permits(capability) {
 			return Err(Error::Forbidden);
 		}
-		scope.require_builtin(&operation.kind).await?;
+		scope.require_builtin(capability).await?;
 	}
 	if !cancelling && operation.kind == "python_install" {
 		scope
@@ -80,7 +86,10 @@ async fn reconcile(
 	if identity_changed {
 		operation.state = "uncertain".into();
 		operation.result = json!({"error":"runner journal identity changed"});
-		scope.set_area("uncertain").await?;
+		// The new runner journal holds no writer of this operation.
+		scope
+			.set_area(lost_area_state(&operation.kind, false))
+			.await?;
 		return scope.persist(&operation).await;
 	}
 	if operation.state == "prepared" {
@@ -112,7 +121,7 @@ async fn reconcile(
 		}
 		let files = files.into_iter().map(|file| json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})).collect::<Vec<_>>();
 		let mut input = json!({"operation_id":operation.id,"area_id":area.id,"epoch":operation.epoch,"digest":operation.digest,
-				"kind":if operation.kind=="code_interpreter"{"python"}else{"shell"},"code":operation.input["command"],"seconds":operation.input["seconds"],"files":files});
+				"kind":match operation.kind.as_str(){"code_interpreter"=>"python",VERIFICATION=>"verify",_=>"shell"},"code":operation.input["command"],"seconds":operation.input["seconds"],"files":files});
 		if operation.kind == "code_interpreter" {
 			input["session_id"] = operation.input["session_id"].clone();
 		}
@@ -134,7 +143,9 @@ async fn reconcile(
 		Some("absent") => {
 			operation.state = "uncertain".into();
 			operation.result = json!({"error":"runner lost a previously accepted operation"});
-			scope.set_area("uncertain").await?;
+			scope
+				.set_area(lost_area_state(&operation.kind, false))
+				.await?;
 		}
 		Some("completed" | "cancelled" | "failed")
 			if observed["termination_confirmed"] == true
@@ -145,6 +156,42 @@ async fn reconcile(
 				operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false});
 				scope.set_area("active").await?;
 				return scope.persist(&operation).await;
+			}
+			if operation.kind == VERIFICATION {
+				// A Check never changes the Working Area: nothing is published and
+				// the revision stays. Only the tail of its output is kept.
+				let stdout = STANDARD
+					.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?)
+					.map_err(|_| Error::Invalid("invalid runner output encoding".into()))?;
+				let text = String::from_utf8_lossy(&stdout);
+				scope.set_area("active").await?;
+				operation.revision = area.revision;
+				operation.state = observed["status"].as_str().unwrap().into();
+				operation.result = json!({"preview":bounded_tail(&text, MAX_DIAGNOSTIC_BYTES),"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
+				// Whether the Check's deadline stopped the command decides a
+				// timeout; the runtime below is only a bound for charging.
+				if let Some(expired) = observed["deadline_expired"].as_bool() {
+					operation.result["deadline_expired"] = json!(expired);
+				}
+				// The runner's own measure of the command, unlike the time until
+				// the Completion Gate harvests this result: it ends when the
+				// runner saw the command stop, before it collected the output.
+				// Milliseconds keep a sub-second Check's runtime, so the gate can
+				// both charge it and tell a quick failure from a timeout.
+				if let (Some(started), Some(finished)) = (
+					observed["started_at"].as_f64(),
+					observed["terminated_at"]
+						.as_f64()
+						.or_else(|| observed["finished_at"].as_f64()),
+				) && finished >= started
+				{
+					operation.result["runtime_millis"] =
+						json!(((finished - started) * 1000.0).ceil() as u64);
+				}
+				scope.persist(&operation).await?;
+				return scope
+					.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
+					.await;
 			}
 			let previous = serde_json::from_value::<Vec<MountedFile>>(area.manifest.clone())?;
 			let mut entries = previous
@@ -247,11 +294,25 @@ async fn reconcile(
 			}
 		}
 		Some("uncertain") => {
-			operation.state = "uncertain".into();
+			// The runner refuses a successor while this writer is not confirmed
+			// stopped, so a Check must not reopen the Area to one.
+			let held = observed["termination_confirmed"] != true;
+			// A Check exported nothing, so once its writer is proven stopped the
+			// Area is usable again. Cancelling keeps it polled: the runner then
+			// retries the stop proof instead of fencing the Area for good.
+			operation.state = if held && operation.kind == VERIFICATION {
+				"cancelling"
+			} else {
+				"uncertain"
+			}
+			.into();
 			operation.result = json!({"error":observed["error"],"termination_confirmed":observed["termination_confirmed"]});
-			scope.set_area("uncertain").await?;
+			scope
+				.set_area(lost_area_state(&operation.kind, held))
+				.await?;
 		}
-		Some("accepted" | "starting" | "running" | "finishing") => {
+		// `cancelling` is the runner retrying a held writer's stop proof.
+		Some("accepted" | "starting" | "running" | "finishing" | "cancelling") => {
 			if operation.state != "cancelling" {
 				operation.state =
 					if matches!(observed["status"].as_str(), Some("accepted" | "starting")) {

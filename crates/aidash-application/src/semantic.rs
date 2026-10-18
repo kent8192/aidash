@@ -34,7 +34,7 @@ pub async fn process(
 	let Some((workspace, authority)) = repository.initial(id).await? else {
 		return Ok(false);
 	};
-	let mut scope = match repository.restore(&authority).await {
+	let mut scope = match repository.restore(workspace, &authority).await {
 		Ok(scope) => scope,
 		Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
 			repository.revoke(workspace, id, &authority).await?;
@@ -105,7 +105,12 @@ async fn index(
 	let old = scope.point(entry.point_id).await?;
 	if indexing::has_current_point(&entry, &old, &digest)
 		&& vector
-			.present(&spec.vector, &plan.collection, &[entry.point_id])
+			.present(
+				&spec.vector,
+				&plan.collection,
+				&plan.tenant,
+				&[entry.point_id],
+			)
 			.await
 			.unwrap_or(false)
 	{

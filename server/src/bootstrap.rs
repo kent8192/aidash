@@ -10,7 +10,6 @@ use crate::{
 };
 use reinhardt::InjectionContext;
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
-use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::server::ShutdownCoordinator;
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -18,6 +17,8 @@ use tokio::{
 	task::JoinHandle,
 };
 
+/// Which build a binary belongs to and the Offerings it runs.
+pub mod build;
 /// Assemble management adapters before any runtime settings are resolved.
 pub mod management;
 
@@ -83,10 +84,18 @@ pub async fn initialize(
 		.await?
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
-		.with_keyless_origins(settings.keyless_endpoints.origins()?);
+		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		// An invalid Deployment retention period refuses to start (ADR 0045).
+		.with_research_retention(settings.research_retention.rules()?);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
+	configure_plan_connections(
+		&mut store,
+		&settings.provider_credentials,
+		&settings.plan_connections,
+	)?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
-		.with_provider_credentials(store.provider_credentials.is_some());
+		.with_provider_credentials(store.provider_credentials.is_some())
+		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some());
 	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
 		.timeout(Duration::from_secs(120))
@@ -110,9 +119,6 @@ pub async fn initialize(
 	// Persist removed GCIP Bindings even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
 	dashboard_authority(&federation).reconcile_policy().await?;
-	let lease = DatabaseConnectionLease::register(connection)?;
-	context.set_singleton(lease.handle());
-	context.set_singleton(lease);
 	context.set_singleton(settings.clone());
 	context.set_singleton(federation.clone());
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
@@ -250,9 +256,7 @@ impl RuntimeTasks {
 			}));
 		}
 		let retention = federation.store.clone();
-		// An invalid Deployment retention period refuses to start (ADR 0045).
-		let research_retention =
-			crate::apps::execution::repositories::research::retention::configured_rules()?;
+		let research_retention = federation.store.research_retention;
 		tasks.spawn_service(runtime_task(async move {
 			// Inference progress expires minutes after its outcome, so attempts
 			// orphaned on unscheduled Runs are closed first; hourly workbench
@@ -503,7 +507,7 @@ pub(crate) fn event_inbox(
 	store: &Store,
 ) -> Result<crate::apps::execution::repositories::events::NativeInbox> {
 	Ok(crate::apps::execution::repositories::events::NativeInbox {
-		database: store.orm_connection()?,
+		pool: store.pool.clone(),
 	})
 }
 
@@ -540,18 +544,30 @@ impl aidash_application::ports::Credentials for PeerCredentials {
 
 /// Assemble definition admission for both management and worker paths.
 pub fn registry_validation() -> aidash_application::registry::DefinitionValidation {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
+	let settings = crate::config::settings::get_settings()
+		.ok()
+		.and_then(|s| s.resolve().ok())
+		.map(|s| s.into_parts().0);
 	aidash_application::registry::DefinitionValidation::new(Arc::new(NativeCoreToolCatalog))
-		.with_provider_credentials(
-			crate::config::settings::get_settings()
-				.ok()
-				.and_then(|s| s.resolve().ok())
-				.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
-		)
+	.with_provider_credentials(
+		settings
+			.as_ref()
+			.is_some_and(|s| s.provider_credentials.store.is_some()),
+	)
+	// Startup refuses `enabled` without a PostgreSQL Store; checking both
+	// keeps a management command from admitting what the server would not.
+	.with_plan_connections(settings.as_ref().is_some_and(|s| {
+		s.plan_connections.enabled
+			&& matches!(s.provider_credentials.store, Some(StoreConfig::Postgres { .. }))
+	}))
 }
 pub fn registry_validation_for(
 	store: &Store,
 ) -> aidash_application::registry::DefinitionValidation {
-	registry_validation().with_provider_credentials(store.provider_credentials.is_some())
+	registry_validation()
+		.with_provider_credentials(store.provider_credentials.is_some())
+		.with_plan_connections(store.plan_connections_enabled && store.plan_connections.is_some())
 }
 struct NativeCoreToolCatalog;
 impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCatalog {
@@ -854,10 +870,12 @@ pub(crate) fn generation_provisioning_repository(
 }
 
 pub(crate) fn generation_dispatch_repository(
-	store: &crate::store::Store,
+	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::generation::dispatch::GenerationDispatchRepository {
 	crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 		store: store.clone(),
+		scope,
 	}
 }
 pub(crate) fn generation_dispatch_settlement(
@@ -869,10 +887,12 @@ pub(crate) fn generation_dispatch_settlement(
 }
 
 pub(crate) fn generation_settlement_repository(
-	store: &crate::store::Store,
+	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::generation::settlement::GenerationSettlementRepository {
 	crate::apps::execution::generation::repositories::settlement::NativeSettlementRepository {
 		store: store.clone(),
+		scope,
 	}
 }
 pub(crate) fn generation_usage_authority_scope(
@@ -884,9 +904,11 @@ pub(crate) fn generation_usage_authority_scope(
 }
 pub(crate) fn generation_reservation_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> impl aidash_application::ports::generation::reservation::GenerationReservationRepository {
 	crate::apps::execution::generation::repositories::reservation::NativeReservation {
 		store: store.clone(),
+		scope,
 	}
 }
 
@@ -897,9 +919,11 @@ pub(crate) fn generation_inference_authority_scope(
 }
 pub(crate) fn generation_inference_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::inference::NativeInferenceRepository {
 	crate::apps::execution::generation::repositories::inference::NativeInferenceRepository {
-		database: store.database(),
+		pool: store.pool.clone(),
+		scope,
 		node_id: store.node_id.clone(),
 	}
 }
@@ -914,9 +938,11 @@ pub(crate) fn generation_embedding_authority_scope(
 
 pub(crate) fn generation_embedding_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::embedding::NativeEmbeddingRepository {
 	crate::apps::execution::generation::repositories::embedding::NativeEmbeddingRepository {
-		database: store.database(),
+		pool: store.pool.clone(),
+		scope,
 		node_id: store.node_id.clone(),
 	}
 }
@@ -930,16 +956,20 @@ pub(crate) fn generation_compaction_authority_scope(
 }
 pub(crate) fn generation_compaction_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
 	crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
 		store: store.clone(),
+		scope,
 	}
 }
 pub(crate) fn generation_summary_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
 	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
 		store: store.clone(),
+		scope,
 	}
 }
 /// Approved compactors call Jev as Decision Attempts of one Run, with the Run's
@@ -1105,9 +1135,11 @@ pub(crate) fn semantic_entries_scope<'a, 'scope>(
 
 pub(crate) fn semantic_configuration_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 	crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 		store: store.clone(),
+		scope,
 	}
 }
 
@@ -1248,8 +1280,9 @@ pub(crate) fn scoped_media(
 }
 pub(crate) fn operator_media_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::workspaces::repositories::media::OperatorMedia<'_> {
-	crate::apps::workspaces::repositories::media::OperatorMedia { store }
+	crate::apps::workspaces::repositories::media::OperatorMedia { store, scope }
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
@@ -1517,8 +1550,9 @@ pub(crate) async fn transaction_recovery_coordinators(
 
 pub(crate) fn operation_withdrawal_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::execution::repositories::withdrawal::Repository<'_> {
-	crate::apps::execution::repositories::withdrawal::Repository { store }
+	crate::apps::execution::repositories::withdrawal::Repository { store, scope }
 }
 
 pub(crate) fn remote_command_scope<'a>(
@@ -1763,8 +1797,9 @@ pub(crate) fn transfer_scope<'a>(
 
 pub(crate) fn semantic_journal_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::remote_journal::Repository<'_> {
-	crate::apps::knowledge::repositories::remote_journal::Repository { store }
+	crate::apps::knowledge::repositories::remote_journal::Repository { store, scope }
 }
 pub(crate) fn semantic_journal_scope<'a>(
 	store: &'a Store,
@@ -1809,8 +1844,9 @@ pub(crate) fn semantic_status_scope<'a>(
 }
 pub(crate) fn semantic_status_repository(
 	store: &Store,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::knowledge::repositories::remote_status::Repository<'_> {
-	crate::apps::knowledge::repositories::remote_status::Repository { store }
+	crate::apps::knowledge::repositories::remote_status::Repository { store, scope }
 }
 
 pub(crate) fn peer_mapping_repository(
@@ -1905,12 +1941,14 @@ pub(crate) fn source_semantic_provenance_scope(
 /// Home semantic disclosure shares the production journal, dispatch, settlement and provider ports.
 pub(crate) fn source_semantic_search_repository(
 	runtime: &Federation,
+	scope: aidash_application::tenancy::TenancyScope,
 ) -> crate::apps::identity::repositories::remote_grants::search::Repository<'_> {
 	crate::apps::identity::repositories::remote_grants::search::Repository {
 		runtime,
-		journal: semantic_journal_repository(&runtime.store),
+		journal: semantic_journal_repository(&runtime.store, scope.clone()),
 		dispatch: crate::apps::execution::generation::repositories::dispatch::NativeDispatch {
 			store: runtime.store.clone(),
+			scope,
 		},
 		settlement: crate::apps::execution::generation::repositories::dispatch::NativeSettlement {
 			runtime: runtime.clone(),
@@ -2210,9 +2248,9 @@ pub(crate) fn dashboard_logout(
 }
 
 pub(crate) fn dashboard_login(
-	connection: reinhardt::db::orm::DatabaseConnection,
+	pool: crate::database::native::Pool,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(connection)
+	crate::apps::identity::repositories::dashboard::Login(pool)
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(
@@ -2332,6 +2370,53 @@ pub async fn configure_provider_credentials(
 		},
 	));
 	store.provider_key_material_reader = reader;
+	Ok(())
+}
+
+/// Plan Tokens live only in a PostgreSQL Provider Credential Store (ADR 0008):
+/// Cloud and Dedicated wait for OpenAI's approval of a hosted flow (#248), so a
+/// server whose Store is in Secret Manager, or that has none, refuses to start
+/// with Plan Connections on. The service exists whenever the Store could hold
+/// Plan Tokens, so owners can still read and disconnect their connections
+/// after `enabled` is turned off (ADR 0007).
+pub fn configure_plan_connections(
+	store: &mut Store,
+	credentials: &crate::apps::identity::serializers::provider_credentials::Settings,
+	settings: &crate::apps::identity::serializers::plan_connections::PlanConnectionSettings,
+) -> Result<()> {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
+	let postgres = matches!(credentials.store, Some(StoreConfig::Postgres { .. }));
+	if settings.enabled && !postgres {
+		return Err(Error::Invalid(
+			"Plan Connections need a PostgreSQL Provider Credential Store; \
+			 turn off [plan_connections] enabled"
+				.into(),
+		));
+	}
+	store.plan_connections_enabled = settings.enabled;
+	let (Some(credentials), Some(reader), true) = (
+		store.provider_credentials.as_ref(),
+		store.provider_key_material_reader.clone(),
+		postgres,
+	) else {
+		return Ok(());
+	};
+	store.plan_connections = Some(Arc::new(aidash_application::plan_connections::Service {
+		repository: Arc::new(
+			crate::apps::identity::repositories::plan_connections::NativeRepository {
+				pool: store.control_pool.clone(),
+				node: store.node_id.clone(),
+			},
+		),
+		store: credentials.store.clone(),
+		reader,
+		authorization: Arc::new(aidash_integrations::chatgpt::ChatgptAuthorization::new(
+			aidash_integrations::semantic::client()?,
+		)),
+	}));
+	if settings.enabled {
+		tracing::info!("Plan Connections enabled");
+	}
 	Ok(())
 }
 

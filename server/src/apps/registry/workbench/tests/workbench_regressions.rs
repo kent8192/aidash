@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::authorization::identity::Actor;
 use aidash_server::registry::Registry;
 use reinhardt::http::{Handler, Middleware, ViewResult};
@@ -160,6 +162,7 @@ fn workbench(
 		] {
 			assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
 		}
+		common::tenant_root(&f, "acme").await;
 		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
 		let (status, credential) = request(
 			&app,
@@ -717,6 +720,7 @@ async fn hidden_incident_backlog(
 		)
 		.await;
 	if other_tenant {
+		common::tenant_root(&wb.f, "other").await;
 		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
 	}
 	let mut hidden = Vec::new();
@@ -990,12 +994,12 @@ async fn trust_run_backlog(
 	wb.register().await;
 	let visible =
 		wb.f.store
-			.create_workspace("Visible history", "Fixture")
+			.create_workspace(&TEST_FIXTURE, "Visible history", "Fixture")
 			.await
 			.unwrap();
 	let hidden =
 		wb.f.store
-			.create_workspace("Hidden history", "Fixture")
+			.create_workspace(&TEST_FIXTURE, "Hidden history", "Fixture")
 			.await
 			.unwrap();
 	for workspace in [&visible, &hidden] {
@@ -1029,6 +1033,7 @@ async fn trust_run_backlog(
 		let task =
 			wb.f.store
 				.create_task(
+					&TEST_FIXTURE,
 					workspace,
 					&aidash_server::domain::NewTask {
 						title: "History".into(),

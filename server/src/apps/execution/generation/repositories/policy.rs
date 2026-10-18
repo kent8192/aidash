@@ -5,6 +5,7 @@ use crate::{
 	store::Store,
 };
 use aidash_application::ports::generation::policy::{GenerationPolicies, PolicySession};
+use aidash_application::tenancy::TenancyScope;
 use aidash_domain::{
 	generation::policy::{Policy, Spec},
 	identity::Principal,
@@ -76,7 +77,7 @@ impl GenerationPolicies for NativePolicies {
 					.order_by_expr(SimpleExpr::from(Expr::col(Alias::new("id"))), Order::Asc)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_all(&self.store.pool)
+			.scalar_all(self.store.pool.in_scope(&TenancyScope::tenant(tenant)?))
 			.await?
 		};
 
@@ -84,18 +85,24 @@ impl GenerationPolicies for NativePolicies {
 	}
 	async fn begin(
 		&self,
-		_: &str,
+		scope: &TenancyScope,
 		exclusive: bool,
 	) -> aidash_application::Result<Box<dyn PolicySession>> {
 		let mode = match &self.actor {
-			Actor::DeploymentAdministrator => Mode::DeploymentAdministrator(
-				crate::database::native::begin(&self.store.pool).await?,
-			),
-			Actor::Subject(identity) => Mode::Subject(Box::new(if exclusive {
-				Access::begin_exclusive(&self.store, identity).await
-			} else {
-				Access::begin(&self.store, identity).await
-			}?)),
+			// A Deployment Administrator manages policies in the named Tenant's scope.
+			Actor::DeploymentAdministrator => {
+				Mode::DeploymentAdministrator(self.store.pool.begin(scope).await?)
+			}
+			Actor::Subject(identity) => {
+				if identity.tenancy()? != *scope {
+					return Err(aidash_application::Error::Forbidden);
+				}
+				Mode::Subject(Box::new(if exclusive {
+					Access::begin_exclusive(&self.store, identity).await
+				} else {
+					Access::begin(&self.store, identity).await
+				}?))
+			}
 		};
 		Ok(Box::new(Session {
 			configured: self.store.provider_credentials.is_some(),

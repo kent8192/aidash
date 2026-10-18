@@ -60,7 +60,11 @@ import type { State } from "../types";
 import { useI18n } from "../ui";
 import { AccountAvatar, AccountPanel, type Account } from "./account-menu";
 import { shellCopy } from "./copy";
-import { DecisionQueue, type PendingDecision } from "./decision-queue";
+import {
+  DecisionQueue,
+  type ApprovalInbox,
+  type PendingDecision,
+} from "./decision-queue";
 import { WorkspaceList } from "./workspace-list";
 
 export type Go = (
@@ -186,6 +190,9 @@ export function AppShell({
   deploymentAdministrator,
   streamStatus,
   decisions,
+  inbox,
+  queueOpen,
+  setQueueOpen,
   selectDecision,
   go,
   newRequest,
@@ -201,6 +208,9 @@ export function AppShell({
   deploymentAdministrator: boolean;
   streamStatus: "live" | "reconnecting";
   decisions: PendingDecision[];
+  inbox: ApprovalInbox;
+  queueOpen: boolean;
+  setQueueOpen: (open: boolean) => void;
   selectDecision: (decision: PendingDecision) => void;
   go: Go;
   newRequest: () => void;
@@ -282,6 +292,10 @@ export function AppShell({
     chooseContext: (value) => {
       closeMenus();
       account.chooseContext(value);
+    },
+    tenantCreated: (created) => {
+      closeMenus();
+      account.tenantCreated(created);
     },
   };
   const listProps = {
@@ -538,6 +552,9 @@ export function AppShell({
             <DecisionQueue
               data={data}
               decisions={decisions}
+              inbox={inbox}
+              open={queueOpen}
+              onOpenChange={setQueueOpen}
               select={(decision) => {
                 closeMenus();
                 selectDecision(decision);

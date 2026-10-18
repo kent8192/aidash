@@ -1,4 +1,5 @@
 use crate::endpoint::{EndpointFixture, assert_json, assert_json_rejection, endpoint, workspace};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::knowledge::models::{
 	SemanticCollection, SemanticEntry, SemanticHistory, SemanticIndexe, SemanticPoint,
 };
@@ -440,7 +441,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let owner: native::Pool = crate::native_database::owner_pool(store.pool.driver())
 		.await
 		.into();
-	let mut tx = native::begin(&owner).await.unwrap();
+	let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, column, parent, parent_column, kind, value) in [
 		(
 			"fixture_point_hold",
@@ -552,7 +553,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	);
 
 	// Advance only the persisted retry deadline, then acknowledge absent identities.
-	let mut released = native::begin(&store.pool).await.unwrap();
+	let mut released = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for table in ["fixture_point_hold", "fixture_collection_hold"] {
 		native::query(
 			&Query::delete()
@@ -671,8 +672,16 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	let entries = format!("/api/workspaces/{workspace}/semantic/entries");
 	let index = format!("/api/workspaces/{workspace}/semantic/index");
 	let participant = Some(Uuid::new_v4());
-	let digest = || aidash_server::semantic::services::corpus_digest(store, workspace, participant);
-	let unbound = || aidash_server::semantic::services::corpus_digest(store, workspace, None);
+	let digest = || {
+		aidash_server::semantic::services::corpus_digest(
+			store,
+			&TEST_FIXTURE,
+			workspace,
+			participant,
+		)
+	};
+	let unbound =
+		|| aidash_server::semantic::services::corpus_digest(store, &TEST_FIXTURE, workspace, None);
 	let empty = digest().await.unwrap();
 	// Act
 	assert_json(app.deployment_administrator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
@@ -702,7 +711,7 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&store.pool)
+	.execute(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let shared_bank = digest().await.unwrap();
@@ -713,7 +722,7 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 			.and_where(Expr::col("id").eq(Expr::value(bank)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&store.pool)
+	.execute(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	let mutated_bank = digest().await.unwrap();

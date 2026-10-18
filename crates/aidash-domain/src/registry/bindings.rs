@@ -203,6 +203,10 @@ pub struct AgentBindings {
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prompt_cache: Option<crate::projection::PromptCache>,
+	/// Completion Policy every Run of this Agent version pins (#112). Omitted
+	/// means no verification and is not serialized, like `prompt_cache`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub completion: Option<crate::completion::CompletionPolicy>,
 }
 impl AgentBindings {
 	/// The resolved Exposure policy; absent means `legacy@1`.
@@ -269,6 +273,9 @@ impl AgentBindings {
 			));
 		}
 		if let Some(policy) = &self.context_policy {
+			policy.validate()?;
+		}
+		if let Some(policy) = &self.completion {
 			policy.validate()?;
 		}
 		Ok(())

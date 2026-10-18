@@ -20,16 +20,17 @@ use uuid::Uuid;
 impl ExecutionRepository for Repository {
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: crate::database::native::begin(&self.store.pool).await?,
+			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))
 	}
 	async fn read_session(&self, id: Uuid) -> Result<TestSession> {
-		let lease = self.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| AgentTestSession::read(tx, id, false).await)
+		self.store
+			.pool
+			.atomic(&self.actor.tenancy()?, async |tx| {
+				AgentTestSession::read(tx, id, false).await
+			})
 			.await
 			.map_err(Into::into)
 	}
@@ -40,18 +41,18 @@ impl ExecutionRepository for Repository {
 		calls: Value,
 		usage: Value,
 	) -> Result<()> {
-		let lease = self.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| AgentTestSession::progress(tx, id, conversation, calls, usage).await)
+		self.store
+			.pool
+			.atomic(&self.actor.tenancy()?, async |tx| {
+				AgentTestSession::progress(tx, id, conversation, calls, usage).await
+			})
 			.await
 			.map_err(Into::into)
 	}
 	async fn finish(&self, id: Uuid, outcome: &TestOutcome) -> Result<()> {
-		let lease = self.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
+		self.store
+			.pool
+			.atomic(&self.actor.tenancy()?, async |tx| {
 				AgentTestSession::finish(
 					tx,
 					id,

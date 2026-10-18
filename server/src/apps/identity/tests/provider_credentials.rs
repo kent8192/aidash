@@ -1,8 +1,10 @@
 //! Production-router and PostgreSQL proof of Provider Credential isolation and secrecy.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_application::{
 	Result,
 	provider_authorization::Target,
@@ -75,7 +77,7 @@ impl Store for FakeStore {
 		versions.push(name.clone());
 		Ok(name)
 	}
-	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+	async fn versions(&self, _tenant: &str, resource: &str) -> Result<Vec<String>> {
 		Ok(self
 			.secrets
 			.lock()
@@ -84,13 +86,13 @@ impl Store for FakeStore {
 			.cloned()
 			.unwrap_or_default())
 	}
-	async fn disable(&self, _: &str) -> Result<()> {
+	async fn disable(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn destroy(&self, _: &str) -> Result<()> {
+	async fn destroy(&self, _tenant: &str, _: &str) -> Result<()> {
 		Ok(())
 	}
-	async fn delete(&self, resource: &str) -> Result<()> {
+	async fn delete(&self, _tenant: &str, resource: &str) -> Result<()> {
 		self.secrets.lock().unwrap().remove(resource);
 		Ok(())
 	}
@@ -114,6 +116,7 @@ impl KeyValidator for Validator {
 }
 
 async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
+	endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
 	assert_json(f.deployment_administrator.post(&format!("/api/authorization/{tenant}"), &json!({
 		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(&f.runtime.config.node_id,"environment-agent","1.0.0"):{"kind":"agent"}},
 		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}
@@ -178,6 +181,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 			"resources":{"kinds":["provider_credential"],"ids":&ids[200..]}
 		}]
 	});
+	endpoint_fixtures::tenant_root(&f.runtime, "alpha").await;
 	assert_json(
 		f.deployment_administrator
 			.post(
@@ -328,6 +332,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert_eq!(disabled.status_code(), 404);
 	for tenant in ["alpha", "beta"] {
 		let bundle = json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
+		endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
 		assert_json(
 			f.deployment_administrator
 				.post(
@@ -781,7 +786,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let workspace = f
 		.runtime
 		.store
-		.create_workspace("BYOK retrieval", "Test admission")
+		.create_workspace(&TEST_FIXTURE, "BYOK retrieval", "Test admission")
 		.await
 		.unwrap();
 	let mut tx = f.database.connection.begin().await.unwrap();
@@ -811,6 +816,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.runtime
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&aidash_domain::NewTask {
 				title: "Embedding admission".into(),
@@ -833,11 +839,23 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		"{rejected}"
 	);
 	assert_eq!(
-		f.runtime.store.task(task.id).await.unwrap().status,
+		f.runtime
+			.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status,
 		aidash_domain::TaskStatus::Open
 	);
 	// The failed admission must roll back its Run as well as every credential pin.
-	assert!(f.runtime.store.runs().await.unwrap().is_empty());
+	assert!(
+		f.runtime
+			.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	let credential = service
 		.create(
 			"beta",
@@ -854,7 +872,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.await
 		.unwrap();
 	assert_json(actor.post(&claim_path, &claim, "json").await.unwrap(), 200);
-	let run = f.runtime.store.runs().await.unwrap().remove(0);
+	let run = f.runtime.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let pins = Pin::objects()
 		.filter(Pin::field_run_id().eq(run.id))
@@ -1553,10 +1571,10 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 			.is_err()
 	);
 	service.delete("alpha", row.id, 4, "actor").await.unwrap();
-	store.disable(&old).await.unwrap();
-	store.destroy(&old).await.unwrap();
-	store.delete(&resource).await.unwrap();
-	assert!(store.versions(&resource).await.unwrap().is_empty());
+	store.disable("alpha", &old).await.unwrap();
+	store.destroy("alpha", &old).await.unwrap();
+	store.delete("alpha", &resource).await.unwrap();
+	assert!(store.versions("alpha", &resource).await.unwrap().is_empty());
 	use aidash_server::apps::identity::models::credential_store::{Resource, Version};
 	use reinhardt::db::orm::Model;
 	let mut tx = f.database.connection.begin().await.unwrap();
@@ -1777,8 +1795,8 @@ async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_
 			.unwrap()
 			.contains("versions use an unconfigured Master Key")
 	);
-	retired_removed.disable(&first).await.unwrap();
-	retired_removed.destroy(&first).await.unwrap();
+	retired_removed.disable("alpha", &first).await.unwrap();
+	retired_removed.destroy("alpha", &first).await.unwrap();
 	assert_eq!(
 		retired_removed
 			.read("alpha", &resource, &second)
@@ -1787,7 +1805,7 @@ async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_
 			.expose_secret(),
 		"second-provider-key"
 	);
-	retired_removed.delete(&resource).await.unwrap();
+	retired_removed.delete("alpha", &resource).await.unwrap();
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let rows = RegisteredKey::objects()
 		.all()
@@ -1836,14 +1854,14 @@ async fn postgres_store_allocates_monotonic_versions_even_after_destroy(
 			format!("{resource}/versions/2")
 		]
 	);
-	store.destroy(&values[1]).await.unwrap();
+	store.destroy("alpha", &values[1]).await.unwrap();
 	assert_eq!(
-		store.versions(&resource).await.unwrap(),
+		store.versions("alpha", &resource).await.unwrap(),
 		vec![values[0].clone()]
 	);
 	use aidash_application::provider_access::KeyMaterialReader;
 	assert!(store.read("alpha", &resource, &values[1]).await.is_err());
-	store.destroy(&values[1]).await.unwrap();
+	store.destroy("alpha", &values[1]).await.unwrap();
 	assert_eq!(
 		store
 			.add_version("alpha", &resource, &"third-key".into())
@@ -2348,7 +2366,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	recovery_settings(&f, dir.path(), &current);
 	let before = recovery_snapshot(&f).await;
 	let affected_count = expected_revocations.len();
-	let counts = json!({"affected_tenants":affected_count,"affected_provider_credentials":affected_count,"version_rows":affected_count + usize::from(partial),"key_registry_rows":1});
+	let counts = json!({"affected_tenants":affected_count,"affected_provider_credentials":affected_count,"affected_plan_connections":0,"version_rows":affected_count + usize::from(partial),"key_registry_rows":1});
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let mut private_values = Vec::new();
 	for row in Version::objects()
@@ -2528,7 +2546,7 @@ async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool
 	assert!(output.status.success());
 	assert_eq!(
 		serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-		json!({"affected_tenants":0,"affected_provider_credentials":0,"version_rows":0,"key_registry_rows":0})
+		json!({"affected_tenants":0,"affected_provider_credentials":0,"affected_plan_connections":0,"version_rows":0,"key_registry_rows":0})
 	);
 }
 
@@ -2772,6 +2790,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	use reinhardt::{db::orm::Model, query::TableConstraint};
 	let mut f = endpoint.await;
 	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
+	endpoint_fixtures::tenant_root(&f.runtime, "alpha").await;
 	assert_json(
 		f.deployment_administrator
 			.post(
@@ -3002,6 +3021,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 	}
 	let f = endpoint.await;
 	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-create","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create"],"resources":{"kinds":["provider_credential"]}}]});
+	endpoint_fixtures::tenant_root(&f.runtime, "alpha").await;
 	assert_json(
 		f.deployment_administrator
 			.post(

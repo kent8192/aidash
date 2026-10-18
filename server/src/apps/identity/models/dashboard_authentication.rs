@@ -5,12 +5,14 @@ use super::{
 	DashboardIdentity, DashboardLoginTransaction, DashboardLogoutToken,
 	DashboardRegistrationRequest, DashboardSession,
 };
+use crate::database::native::Pool;
 use crate::{Error, Result};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Condition, Expr, ExprTrait, IntoIden, JoinType, LockType, OnConflict,
 	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr, TableRef,
@@ -19,12 +21,8 @@ use std::result::Result as StdResult;
 use uuid::Uuid;
 
 impl DashboardLoginTransaction {
-	pub(crate) async fn consume_bound(
-		db: DatabaseConnection,
-		state: Vec<u8>,
-		browser: Vec<u8>,
-	) -> Result<Self> {
-		db.atomic(async |tx| {
+	pub(crate) async fn consume_bound(db: &Pool, state: Vec<u8>, browser: Vec<u8>) -> Result<Self> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let row = Self::objects()
 				.filter(Self::field_state_hash().eq(super::byte_key::ByteKey(state)))
 				.select_for_update()
@@ -48,8 +46,8 @@ impl DashboardLoginTransaction {
 		.await
 	}
 
-	pub(crate) async fn reserve(&self, db: DatabaseConnection) -> Result<()> {
-		db.atomic(async |tx| {
+	pub(crate) async fn reserve(&self, db: &Pool) -> Result<()> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			// Keep capacity admission short; discovery happens after commit.
 			let (sql, values) = Query::select()
 				.expr(SimpleExpr::FunctionCall(
@@ -85,8 +83,8 @@ impl DashboardLoginTransaction {
 		Ok(())
 	}
 
-	pub(crate) async fn consume(db: DatabaseConnection, state: Vec<u8>) -> Result<Self> {
-		db.atomic(async |tx| {
+	pub(crate) async fn consume(db: &Pool, state: Vec<u8>) -> Result<Self> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let row = Self::objects()
 				.filter(Self::field_state_hash().eq(super::byte_key::ByteKey(state)))
 				.select_for_update()
@@ -106,18 +104,12 @@ impl DashboardLoginTransaction {
 }
 
 impl DashboardIdentity {
-	/// A direct Google identity (not federated through a GCIP Tenant) owns a
-	/// personal Tenant and may request additional shared Tenant membership.
-	pub(crate) fn direct_google(&self) -> bool {
-		self.issuer == crate::config::GOOGLE_OIDC_ISSUER && self.gcip_tenant.is_empty()
-	}
-
 	pub(crate) async fn register(
-		db: DatabaseConnection,
+		db: &Pool,
 		issuer: &str,
 		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Self> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			let subject = &sign_in.subject;
 			let gcip_tenant = sign_in.gcip_tenant.as_deref().unwrap_or("");
@@ -193,12 +185,12 @@ impl DashboardIdentity {
 	}
 
 	pub(crate) async fn record_valid(
-		db: DatabaseConnection,
+		db: &Pool,
 		id: Uuid,
 		checked_at: DateTime<Utc>,
 		valid_since: Option<DateTime<Utc>>,
 	) -> Result<()> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let mut row = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.select_for_update()
@@ -237,11 +229,11 @@ impl DashboardIdentity {
 	}
 
 	pub(crate) async fn disable_if_current(
-		db: DatabaseConnection,
+		db: &Pool,
 		id: Uuid,
 		checked_at: Option<DateTime<Utc>>,
 	) -> Result<bool> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let row = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.select_for_update()
@@ -271,8 +263,10 @@ impl DashboardIdentity {
 		.await
 	}
 
-	pub(crate) async fn active(db: DatabaseConnection, idle_seconds: i64) -> Result<Vec<Self>> {
-		db.atomic(async |tx| {
+	/// Identities with a live session or a Run still in progress in any Tenant.
+	pub(crate) async fn active(db: &Pool, idle_seconds: i64) -> Result<Vec<Self>> {
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityStatus);
+		db.atomic(&scope, async |tx| {
 			let now = database_time(tx).await?;
 			DashboardSession::objects()
 				.filter(DashboardSession::field_expires_at().lte(now))
@@ -366,7 +360,7 @@ impl DashboardSession {
 	}
 
 	pub(crate) async fn start(
-		db: DatabaseConnection,
+		db: &Pool,
 		identity: Uuid,
 		hashes: (Vec<u8>, Vec<u8>),
 		provider_sid: Option<String>,
@@ -374,7 +368,7 @@ impl DashboardSession {
 		lifetime: i64,
 		previous: Option<Vec<u8>>,
 	) -> Result<()> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let identity_row = DashboardIdentity::objects()
 				.filter(DashboardIdentity::field_id().eq(identity))
 				.select_for_update()
@@ -419,12 +413,8 @@ impl DashboardSession {
 		.await
 	}
 
-	pub(crate) async fn revoke(
-		db: DatabaseConnection,
-		id: Uuid,
-		all_for_identity: bool,
-	) -> Result<()> {
-		db.atomic(async |tx| {
+	pub(crate) async fn revoke(db: &Pool, id: Uuid, all_for_identity: bool) -> Result<()> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			if all_for_identity {
 				let (sql, values) = Query::select()
 					.column(Alias::new("id"))
@@ -490,8 +480,8 @@ impl DashboardSession {
 		Ok(())
 	}
 
-	pub(crate) async fn record_activity(db: DatabaseConnection, id: Uuid) -> Result<()> {
-		db.atomic(async |tx| {
+	pub(crate) async fn record_activity(db: &Pool, id: Uuid) -> Result<()> {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			Self::objects()
 				.filter(Self::field_id().eq(id))
@@ -505,14 +495,14 @@ impl DashboardSession {
 
 impl DashboardLogoutToken {
 	pub(crate) async fn revoke_sessions(
-		db: DatabaseConnection,
+		db: &Pool,
 		issuer: &str,
 		subject: Option<&str>,
 		sid: Option<&str>,
 		jti: Vec<u8>,
 		expires_at: DateTime<Utc>,
 	) -> Result<()> {
-		db.atomic(async |tx| {
+		db.atomic(&TenancyScope::NoTenant, async |tx| {
 			let now = database_time(tx).await?;
 			Self::objects()
 				.filter(Self::field_expires_at().lt(now - Duration::seconds(30)))

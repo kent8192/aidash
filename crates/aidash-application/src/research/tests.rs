@@ -45,6 +45,16 @@ struct Memory {
 	purge_at_fragment: AtomicBool,
 	/// A revocation that commits just after the next snapshot read.
 	revoke_after_snapshot_read: AtomicBool,
+	/// A retention purge that commits just after the next snapshot read.
+	purge_after_snapshot_read: AtomicBool,
+	/// A revocation that commits just before the next settle.
+	revoke_at_settle: AtomicBool,
+	/// Revoke the Run's evidence after the nth snapshot read (0: never).
+	revoke_after_snapshot_reads: AtomicUsize,
+	snapshot_reads: AtomicUsize,
+	/// A result the original call records just before the next settlement,
+	/// as one still running when a replay reads its attempt would.
+	late_settlement: Mutex<Option<Value>>,
 }
 
 impl Memory {
@@ -227,8 +237,19 @@ impl EvidenceStore for Memory {
 		key: &str,
 		outcome: AttemptOutcome,
 		result: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
+		if self.revoke_at_settle.swap(false, Ordering::SeqCst) {
+			self.revoke(run);
+		}
 		let mut attempts = self.attempts.lock().unwrap();
+		if let Some(late) = self.late_settlement.lock().unwrap().take()
+			&& let Some(entry) = attempts.get_mut(&(run, key.into()))
+		{
+			entry.1 = AttemptState::Settled {
+				outcome: AttemptOutcome::Completed,
+				result: late,
+			};
+		}
 		match attempts.get_mut(&(run, key.into())) {
 			Some(entry) if entry.1 == AttemptState::Dispatched => {
 				let result = if self.is_revoked(run) {
@@ -236,8 +257,11 @@ impl EvidenceStore for Memory {
 				} else {
 					result.clone()
 				};
-				entry.1 = AttemptState::Settled { outcome, result };
-				Ok(())
+				entry.1 = AttemptState::Settled {
+					outcome,
+					result: result.clone(),
+				};
+				Ok(result)
 			}
 			_ => Err(crate::Error::Conflict("attempt is not dispatched".into())),
 		}
@@ -366,6 +390,13 @@ impl EvidenceStore for Memory {
 			.swap(false, Ordering::SeqCst)
 		{
 			self.revoke(run);
+		}
+		let reads = self.snapshot_reads.fetch_add(1, Ordering::SeqCst) + 1;
+		if self.revoke_after_snapshot_reads.load(Ordering::SeqCst) == reads {
+			self.revoke(run);
+		}
+		if self.purge_after_snapshot_read.swap(false, Ordering::SeqCst) {
+			self.purge_snapshot(id);
 		}
 		Ok(snapshot)
 	}
@@ -1088,6 +1119,79 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 }
 
 #[tokio::test]
+async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_they_stood_when_asked()
+ {
+	// Arrange
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let now = Utc::now();
+	let mut provider = Search::new("brave", "api.search.brave.com");
+	provider.account = Some(AccountProfile {
+		account_id: "research-account".into(),
+		agreement_reference: "contract".into(),
+		verified_by: "deployment_administrator".into(),
+		verified_at: now - Duration::days(1),
+		review_after: now + Duration::days(1),
+		storage_permitted: true,
+		query_training_prohibited: true,
+		evaluation_permitted: true,
+		retention_days: 30,
+		deletion_after_termination_days: 30,
+		credential_env: "AIDASH_SECRET_SEARCH".into(),
+		price_effective_at: now - Duration::days(1),
+		price_review_after: now + Duration::days(1),
+		request_price_micro_usd: 5_000,
+		monthly_base_fee_micro_usd: 0,
+		monthly_limit_micro_usd: 50_000,
+	});
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+
+	// Act
+	let searched = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"rust","language":"en","count":3}),
+		)
+		.await
+		.unwrap();
+	let read = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(searched["status"], "approval_required", "{searched}");
+	assert_eq!(read["status"], "approval_required", "{read}");
+	let requests = gate.requests.lock().unwrap().clone();
+	let search = &requests[0];
+	assert_eq!(
+		search.attribution,
+		Some(aidash_domain::research::account::CostAttribution {
+			account_id: "research-account".into(),
+			price_micro_usd: 5_000,
+		})
+	);
+	let query = search.query.as_ref().unwrap();
+	assert_eq!(query["query"], "rust");
+	assert_eq!(query["language"], "en");
+	assert_eq!(query["count"], 3);
+	// A page read has neither a Research account nor a query.
+	assert_eq!(requests[1].attribution, None);
+	assert_eq!(requests[1].query, None);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is_never_repeated() {
 	let (store, gate) = (Memory::default(), Gate::permitting());
 	let research = Research {
@@ -1135,6 +1239,46 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 		.unwrap();
 	assert_eq!(unknown["status"], "uncertain");
 	assert_eq!(unknown["error"]["code"], "outcome_unknown");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	// The replay settles the stranded attempt as unknown, so it is no longer
+	// reported as in flight, and a later replay returns the same result.
+	assert_eq!(
+		store.attempt(run, "k2").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Unknown,
+			result: unknown.clone(),
+		})
+	);
+	let again = research
+		.search(&call(run, "k2", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(again, unknown);
+	// When the original call settles between the replay's read and its own
+	// settlement, the replay answers with what the original recorded.
+	store
+		.reserve(
+			run,
+			&Reservation {
+				key: "k4".into(),
+				operation: Operation::Search,
+				provider: "research.brave@1".into(),
+				destination: "api.search.brave.com".into(),
+				attribution: None,
+				limits: Limits::default(),
+				budget: None,
+				source_url: None,
+			},
+		)
+		.await
+		.unwrap();
+	let original = json!({"status":"ok","operation":"search"});
+	*store.late_settlement.lock().unwrap() = Some(original.clone());
+	let replayed = research
+		.search(&call(run, "k4", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(replayed, original);
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
 	let mut failing = Search::new("brave", "api.search.brave.com");
@@ -1481,6 +1625,8 @@ impl DisclosureGate for RacedApproval<'_> {
 						content: "other".into(),
 					},
 					context_revision: 0,
+					attribution: None,
+					query: None,
 				},
 			)
 			.await?;
@@ -1806,6 +1952,30 @@ async fn an_attempt_in_flight_at_revocation_records_nothing_and_stays_charged() 
 	assert_eq!(store.usage(run).await.unwrap().fetch_attempts, 1);
 }
 
+/// A result assembled before a revocation committed is not what the caller
+/// gets: settling records the tombstone, and the caller returns that one, so
+/// the invocation never persists the revoked content.
+#[tokio::test]
+async fn a_result_settled_after_revocation_returns_the_tombstone() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	store.revoke_at_settle.store(true, Ordering::SeqCst);
+	let result = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&Search::new("brave", "api.search.brave.com"),
+			&json!({"query": "rust"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result, revocation::tombstone(Operation::Search));
+}
+
 #[tokio::test]
 async fn a_purged_snapshot_is_distinguishable_and_its_source_can_be_read_again() {
 	let (store, gate) = (Memory::default(), Gate::permitting());
@@ -1987,6 +2157,44 @@ async fn a_revocation_during_the_evidence_read_withholds_the_evidence() {
 	);
 }
 
+/// Reads the Run until it loses access after its second `readable` check.
+struct LosesAccessAfterSecondCheck {
+	run: Uuid,
+	checks: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl crate::ports::research::RunReader for LosesAccessAfterSecondCheck {
+	async fn readable(&self, run: Uuid) -> Result<bool> {
+		let check = self
+			.checks
+			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(run == self.run && check < 2)
+	}
+}
+
+#[tokio::test]
+async fn a_reader_losing_access_during_the_last_reads_gets_nothing() {
+	// Arrange: the reader loses access while the context and the revocation
+	// are read, after authority was decided again.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	let reader = LosesAccessAfterSecondCheck {
+		run,
+		checks: Default::default(),
+	};
+
+	// Act
+	let error = reading::read(&reader, &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert: authority is decided after every read.
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+	assert_eq!(reader.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
 #[tokio::test]
 async fn evidence_revoked_during_the_read_is_withheld() {
 	// Arrange: the revocation commits after the fragment and snapshot reads.
@@ -2004,6 +2212,47 @@ async fn evidence_revoked_during_the_read_is_withheld() {
 
 	// Assert
 	assert_eq!(error.to_string(), reading::unavailable().to_string());
+}
+
+#[tokio::test]
+async fn evidence_revoked_during_the_last_snapshot_read_is_withheld() {
+	// Arrange: the revocation commits while the context is read, after
+	// authority was decided again.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	let reads = store.snapshot_reads.load(Ordering::SeqCst);
+	store
+		.revoke_after_snapshot_reads
+		.store(reads + 2, Ordering::SeqCst);
+
+	// Act
+	let error = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap_err();
+
+	// Assert
+	assert_eq!(error.to_string(), reading::unavailable().to_string());
+}
+
+#[tokio::test]
+async fn a_snapshot_purged_during_the_read_gives_no_context() {
+	// Arrange: the retention purge commits after the first snapshot read.
+	let store = Memory::default();
+	let run = Uuid::new_v4();
+	let reference = cited(&store, run).await;
+	store
+		.purge_after_snapshot_read
+		.store(true, Ordering::SeqCst);
+
+	// Act
+	let evidence = reading::read(&Readers(vec![run]), &store, run, &reference.to_string())
+		.await
+		.unwrap();
+
+	// Assert: the fragment stays readable, its purged context does not.
+	assert_eq!(evidence.fragment.reference, reference);
+	assert!(evidence.context.is_none());
 }
 
 #[tokio::test]
@@ -2200,7 +2449,7 @@ async fn pages_without_text_are_reported_with_whether_they_can_be_viewed() {
 	assert_eq!(read["data"]["pages_without_text"]["pages"], json!([2]));
 	assert_eq!(
 		read["data"]["pages_without_text"]["page_images"],
-		"available"
+		"no_view_operation"
 	);
 	assert_eq!(store.originals.lock().unwrap().len(), 1);
 }
@@ -2261,14 +2510,17 @@ async fn originals_beyond_the_run_limit_are_not_retained() {
 		let read = research
 			.fetch(
 				&call(run, key, "research.page@1"),
-				&scanned(&[("Text on page one.", 1)], vec![2], 1024),
+				&scanned(&[("Text on page one.", 1)], vec![2, 3], 1024),
 				&json!({"url": address}),
 			)
 			.await
 			.unwrap();
 		states.push(read["data"]["pages_without_text"]["page_images"].clone());
 	}
-	assert_eq!(states, [json!("available"), json!("original_not_retained")]);
+	assert_eq!(
+		states,
+		[json!("no_view_operation"), json!("original_not_retained")]
+	);
 	assert_eq!(store.originals.lock().unwrap().len(), 1);
 }
 
@@ -2434,4 +2686,25 @@ async fn only_retained_pages_without_text_can_be_viewed_within_the_limit() {
 		code(research.view(&viewer, &pixel(), &view(2)).await.unwrap()),
 		Some("evidence_revoked".into())
 	);
+}
+
+#[test]
+fn an_approval_covers_only_the_charge_its_approver_was_shown() {
+	let disclosure = |price_micro_usd| WebDisclosure {
+		operation: Operation::Search,
+		provider: "research.brave@1".into(),
+		outbound: crate::ports::research::Outbound {
+			destination: "api.search.brave.com".into(),
+			content: "rust release".into(),
+		},
+		context_revision: 0,
+		attribution: Some(aidash_domain::research::account::CostAttribution {
+			account_id: "deployment".into(),
+			price_micro_usd,
+		}),
+		query: None,
+	};
+	let run = Uuid::new_v4();
+	assert_eq!(disclosure(5_000).digest(run), disclosure(5_000).digest(run));
+	assert_ne!(disclosure(5_000).digest(run), disclosure(9_000).digest(run));
 }

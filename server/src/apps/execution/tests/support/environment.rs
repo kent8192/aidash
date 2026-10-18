@@ -5,10 +5,15 @@ use futures_util::{
 	future::{BoxFuture, Shared},
 };
 use postgres::{PostgresFuture, postgres_container};
+use reinhardt::query::QueryStatementBuilder as _;
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::test::fixtures::nats_container as native_nats_container;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
 pub type EnvironmentFuture = Shared<BoxFuture<'static, Arc<TestEnvironment>>>;
+use sqlx::Connection;
 use std::{
+	fmt::Display,
+	future::Future,
 	sync::{Arc, LazyLock, Weak},
 	time::Duration,
 };
@@ -16,6 +21,17 @@ use tokio::sync::Mutex;
 
 static TEST_ENVIRONMENT: LazyLock<Mutex<Weak<TestEnvironment>>> =
 	LazyLock::new(|| Mutex::new(Weak::new()));
+
+/// One test step's bound. Healthy steps take seconds even under coverage
+/// instrumentation, so a minute tells a hang from a slow runner long before
+/// the CI job limit cancels the shard without output (#284, #308).
+#[allow(dead_code)] // Only suites whose tests have hung bound their steps.
+const STEP_BOUND: Duration = Duration::from_secs(60);
+
+/// A whole test's bound, for rstest's `#[timeout]`. It also covers fixture
+/// resolution and teardown, which named steps cannot wrap.
+#[allow(dead_code)] // Only suites whose tests have hung use the backstop.
+pub const TEST_BOUND: Duration = Duration::from_secs(600);
 
 /// Disposable service endpoints arranged by Testcontainers for integration tests.
 ///
@@ -52,6 +68,75 @@ impl TestEnvironment {
 		})
 		.await;
 		ready.expect("restarted PostgreSQL must accept connections");
+	}
+
+	/// Await one named test step. A step that outlives [`STEP_BOUND`] fails
+	/// with the PostgreSQL sessions and locks that can explain the wait.
+	#[allow(dead_code)] // Only suites whose tests have hung bound their steps.
+	pub async fn bounded<T>(&self, stage: impl Display, step: impl Future<Output = T>) -> T {
+		match tokio::time::timeout(STEP_BOUND, step).await {
+			Ok(output) => output,
+			Err(_) => panic!(
+				"{stage} did not finish within {STEP_BOUND:?}\n{}",
+				self.activity().await
+			),
+		}
+	}
+
+	/// Describe the busy sessions and the waiting or advisory locks of the whole
+	/// postmaster. DROP DATABASE and similar barriers make one database wait for
+	/// another's sessions, so the snapshot is not limited to the test's database.
+	#[allow(dead_code)] // Reached only through `bounded`.
+	async fn activity(&self) -> String {
+		let sessions = Query::select()
+			.expr(Expr::cust(
+				"format('pid=%s database=%s application=%s state=%s wait=%s/%s \
+				 blocked_by=%s transaction_age=%s query=%s', pid, datname, \
+				 application_name, state, wait_event_type, wait_event, \
+				 pg_blocking_pids(pid), now() - xact_start, left(query, 300))",
+			))
+			.from(Alias::new("pg_stat_activity"))
+			// Background workers idle on an Activity wait. Idle clients matter
+			// only while they still hold a session lock that blocks another.
+			.and_where(Expr::cust(
+				"pid <> pg_backend_pid() AND ((state IS DISTINCT FROM 'idle' \
+				 AND wait_event_type IS DISTINCT FROM 'Activity') OR pid IN \
+				 (SELECT unnest(pg_blocking_pids(pid)) FROM pg_stat_activity))",
+			))
+			.limit_literal(100)
+			.to_string(PostgresQueryBuilder);
+		let locks = Query::select()
+			.expr(Expr::cust(
+				"format('pid=%s %s %s granted=%s database=%s relation=%s key=%s/%s/%s', \
+				 pid, locktype, mode, granted, database, relation, classid, objid, objsubid)",
+			))
+			.from(Alias::new("pg_locks"))
+			.and_where(Expr::cust("NOT granted OR locktype = 'advisory'"))
+			.limit_literal(100)
+			.to_string(PostgresQueryBuilder);
+		// A fresh superuser session sees every role's queries and does not wait
+		// on a pool that the hung step may have exhausted.
+		let snapshot = tokio::time::timeout(Duration::from_secs(10), async {
+			let mut connection = sqlx::PgConnection::connect(&self.database_url).await?;
+			let sessions: Vec<String> = sqlx::query_scalar(&sessions)
+				.fetch_all(&mut connection)
+				.await?;
+			let locks: Vec<String> = sqlx::query_scalar(&locks)
+				.fetch_all(&mut connection)
+				.await?;
+			connection.close().await?;
+			Ok::<_, sqlx::Error>(format!(
+				"PostgreSQL sessions:\n{}\nPostgreSQL waiting and advisory locks:\n{}",
+				sessions.join("\n"),
+				locks.join("\n")
+			))
+		})
+		.await;
+		match snapshot {
+			Ok(Ok(snapshot)) => snapshot,
+			Ok(Err(error)) => format!("PostgreSQL activity is unavailable: {error}"),
+			Err(_) => "PostgreSQL activity is unavailable: the snapshot timed out".into(),
+		}
 	}
 }
 

@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{
 	domain::{ArtifactInput, NewTask, Run, qualified_agent},
 	federation::{Federation, Home},
@@ -170,7 +172,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert!(
 		(Harness {
 			federation: f.clone()
@@ -179,15 +181,22 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 		.await
 		.unwrap()
 	);
-	let task = f.store.task(run.task_id).await.unwrap();
+	let task = f.store.task(&TEST_FIXTURE, run.task_id).await.unwrap();
 	let owner = task.owner.clone().unwrap();
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	f.store
-		.reserve_remote_run_message(task.id, run.id, "aidash://executor", &key, "correction")
+		.reserve_remote_run_message(
+			&TEST_FIXTURE,
+			task.id,
+			run.id,
+			"aidash://executor",
+			&key,
+			"correction",
+		)
 		.await
 		.unwrap();
 	f.store
-		.commit_remote_run_message(task.id, run.id, &key, "correction")
+		.commit_remote_run_message(&TEST_FIXTURE, task.id, run.id, &key, "correction")
 		.await
 		.unwrap();
 	// Model the executor binding the durable input sequence after local admission.
@@ -217,6 +226,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	// the successful commit. It must not delete the non-expiring fence.
 	f.store
 		.release_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			run.id,
 			"aidash://executor",
@@ -237,6 +247,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	assert!(
 		f.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				task.revision,
 				&owner,
@@ -249,6 +260,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	let cancelled = f
 		.store
 		.transition_remote_run_message_terminal(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
@@ -281,12 +293,17 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 	let (f, url, schema) = runtime_owner.parts();
 	let workspace = f
 		.store
-		.create_workspace("Remote output fence", "No executor run exists at home")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Remote output fence",
+			"No executor run exists at home",
+		)
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Remote task".into(),
@@ -304,6 +321,7 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 	let input_key = format!("human:{remote_run}:{}", Uuid::new_v4());
 	f.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			remote_run,
 			"aidash://executor",
@@ -313,13 +331,20 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 		.await
 		.unwrap();
 	f.store
-		.commit_remote_run_message(task.id, remote_run, &input_key, "remote correction")
+		.commit_remote_run_message(
+			&TEST_FIXTURE,
+			task.id,
+			remote_run,
+			&input_key,
+			"remote correction",
+		)
 		.await
 		.unwrap();
 	let peer_output_key = format!("aidash://executor:{}:{remote_run}:0:output", task.id);
 	assert!(
 		f.store
 			.message(
+				&TEST_FIXTURE,
 				workspace.id,
 				"agent@aidash://executor",
 				"stale peer output",
@@ -351,13 +376,14 @@ async fn remote_history_references_can_span_multiple_inference_pages(
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let mut history = Vec::new();
 	for index in 0..20 {
 		let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 		let message = f
 			.store
 			.message_record(
+				&TEST_FIXTURE,
 				run.workspace_id,
 				"human@remote",
 				&format!("history {index}: {}", "x".repeat(4096)),
@@ -368,15 +394,22 @@ async fn remote_history_references_can_span_multiple_inference_pages(
 		history.push((key, message));
 	}
 	f.store
-		.import_remote_run_messages(run.id, &history, 512)
+		.import_remote_run_messages(&TEST_FIXTURE, run.id, &history, 512)
 		.await
 		.expect("pageable references are not subject to one aggregate page cap");
-	let inputs = f.store.run_inputs(run.id).await.unwrap();
+	let inputs = f.store.run_inputs(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(inputs.len(), history.len());
 	assert!(inputs.iter().all(|input| input.reference_only));
 	let new_key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	f.store
-		.accept_run_message(run.id, "human", "latest correction", &new_key, 512)
+		.accept_run_message(
+			&TEST_FIXTURE,
+			run.id,
+			"human",
+			"latest correction",
+			&new_key,
+			512,
+		)
 		.await
 		.expect("historical reference pages do not consume new-message capacity");
 	cleanup(f, &url, &schema).await;
@@ -411,12 +444,17 @@ async fn remote_admission_recovers_home_history_before_new_input(
 
 	let workspace = home
 		.store
-		.create_workspace("Legacy run history", "Preserve correction order")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Legacy run history",
+			"Preserve correction order",
+		)
 		.await
 		.unwrap();
 	let task = home
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Apply corrections".into(),
@@ -474,12 +512,13 @@ async fn remote_admission_recovers_home_history_before_new_input(
 	.unwrap();
 	let task = home
 		.store
-		.claim(task.id, task.revision, &owner, &agent)
+		.claim(&TEST_FIXTURE, task.id, task.revision, &owner, &agent)
 		.await
 		.unwrap();
 	let task = home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
@@ -489,7 +528,13 @@ async fn remote_admission_recovers_home_history_before_new_input(
 		.unwrap();
 	let run = executor
 		.store
-		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&home.config.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	delivered_history(
@@ -510,7 +555,11 @@ async fn remote_admission_recovers_home_history_before_new_input(
 		)
 		.await
 		.unwrap();
-	let inputs = executor.store.run_inputs(run.id).await.unwrap();
+	let inputs = executor
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap();
 	let old_seq = inputs
 		.iter()
 		.find(|input| input.content == "older correction from home history")
@@ -556,12 +605,13 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 
 	let workspace = home
 		.store
-		.create_workspace("Remote corrections", "Complete work")
+		.create_workspace(&TEST_FIXTURE, "Remote corrections", "Complete work")
 		.await
 		.unwrap();
 	let task = home
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Answer".into(),
@@ -619,12 +669,13 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let owner = qualified_agent(&executor.config.node_id, &agent.id, &agent.version);
 	let task = home
 		.store
-		.claim(task.id, task.revision, &owner, &agent)
+		.claim(&TEST_FIXTURE, task.id, task.revision, &owner, &agent)
 		.await
 		.unwrap();
 	let task = home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
@@ -634,7 +685,13 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.unwrap();
 	let run = executor
 		.store
-		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&home.config.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let first_key = Uuid::new_v4();
@@ -713,7 +770,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		"the simulated commit reply should be lost: {body}"
 	);
 	mode.commit_response_lost.store(false, Ordering::SeqCst);
-	let pending_input = executor.store.run_inputs(run.id).await.unwrap().remove(0);
+	let pending_input = executor
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap()
+		.remove(0);
 	assert!(
 		pending_input.message_id.is_some(),
 		"historical home delivery remains bound to the admitted input"
@@ -748,7 +810,11 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		status, 200,
 		"exact retry recovers the admitted input: {body}"
 	);
-	let inputs = executor.store.run_inputs(run.id).await.unwrap();
+	let inputs = executor
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap();
 	assert_eq!(inputs.len(), 1);
 	assert!(inputs[0].message_id.is_some());
 	let first_input_key = format!("human:{}:{first_key}", run.id);
@@ -762,7 +828,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	assert!(
 		home.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -797,6 +863,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let lease_key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	home.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			run.id,
 			&executor.config.node_id,
@@ -871,6 +938,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	executor
 		.store
 		.accept_run_message(
+			&TEST_FIXTURE,
 			run.id,
 			"human",
 			"lease renewal",
@@ -925,6 +993,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.reserve_remote_run_message(
+				&TEST_FIXTURE,
 				task.id,
 				Uuid::new_v4(),
 				&executor.config.node_id,
@@ -973,6 +1042,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let terminal_history_content = "terminal historical correction";
 	home.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			terminal_history_run.id,
 			&executor.config.node_id,
@@ -1040,7 +1110,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!home
 			.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -1049,23 +1119,24 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	executor
 		.store
-		.release_lease(run.id, response_worker)
+		.release_lease(&TEST_FIXTURE, run.id, response_worker)
 		.await
 		.unwrap();
 	assert!(
 		!home
 			.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
 			.iter()
 			.any(|message| message.content == "unreserved injection")
 	);
-	let current_task = home.store.task(task.id).await.unwrap();
+	let current_task = home.store.task(&TEST_FIXTURE, task.id).await.unwrap();
 	let error = home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			current_task.revision,
 			&owner,
@@ -1090,7 +1161,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	));
 	assert!(
 		home.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -1110,7 +1181,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.unwrap();
 	let included_input_seq = executor
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
@@ -1127,7 +1198,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.unwrap();
 	assert!(
 		home.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -1155,7 +1226,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	executor
 		.store
-		.release_lease(run.id, response_worker)
+		.release_lease(&TEST_FIXTURE, run.id, response_worker)
 		.await
 		.unwrap();
 	let legacy_key = Uuid::new_v4();
@@ -1164,7 +1235,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1176,7 +1247,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	let legacy_message = home
 		.store
-		.snapshot(workspace.id)
+		.snapshot(&TEST_FIXTURE, workspace.id)
 		.await
 		.unwrap()
 		.messages
@@ -1187,12 +1258,18 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let input_limit = executor.run_message_limit(&run).await.unwrap();
 	executor
 		.store
-		.import_remote_run_message(run.id, &legacy_input_key, &legacy_message, input_limit)
+		.import_remote_run_message(
+			&TEST_FIXTURE,
+			run.id,
+			&legacy_input_key,
+			&legacy_message,
+			input_limit,
+		)
 		.await
 		.unwrap();
 	executor
 		.store
-		.import_remote_run_messages(run.id, &[], input_limit)
+		.import_remote_run_messages(&TEST_FIXTURE, run.id, &[], input_limit)
 		.await
 		.unwrap();
 	let large_key = Uuid::new_v4();
@@ -1202,7 +1279,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1218,7 +1295,11 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.await;
 	}
 	executor.reconcile_run_messages(&run).await.unwrap();
-	let inputs = executor.store.run_inputs(run.id).await.unwrap();
+	let inputs = executor
+		.store
+		.run_inputs(&TEST_FIXTURE, run.id)
+		.await
+		.unwrap();
 	for index in 0..5 {
 		assert!(
 			inputs
@@ -1248,7 +1329,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1258,6 +1339,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	// Re-delivery of an already committed message cannot alter its contents.
 	home.store
 		.message(
+			&TEST_FIXTURE,
 			workspace.id,
 			&format!("human@{}", executor.config.node_id),
 			"recovered home history",
@@ -1268,6 +1350,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.message(
+				&TEST_FIXTURE,
 				workspace.id,
 				&format!("human@{}", executor.config.node_id),
 				"changed history",
@@ -1293,7 +1376,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1312,7 +1395,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!home
 			.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -1320,10 +1403,11 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 			.any(|message| message.content == "queued delivery")
 	);
 	mode.delivery_outage.store(false, Ordering::SeqCst);
-	let current_task = home.store.task(task.id).await.unwrap();
+	let current_task = home.store.task(&TEST_FIXTURE, task.id).await.unwrap();
 	assert!(
 		home.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				current_task.revision,
 				&owner,
@@ -1334,10 +1418,10 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		"admitted input must fence cancellation even during delivery outage"
 	);
 	// Model the successful inference acknowledgment that precedes task exit.
-	let mut observed = executor.store.run(run.id).await.unwrap();
+	let mut observed = executor.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	observed.observed_input_seq = executor
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
@@ -1369,6 +1453,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.transition(
+				&TEST_FIXTURE,
 				task.id,
 				current_task.revision,
 				&owner,
@@ -1400,20 +1485,20 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.await
 	}
 	.unwrap();
-	let completion_run = executor.store.run(run.id).await.unwrap();
+	let completion_run = executor.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	executor
 		.deliver_run_messages(&completion_run)
 		.await
 		.unwrap();
 	let through_seq = executor
 		.store
-		.run_inputs(run.id)
+		.run_inputs(&TEST_FIXTURE, run.id)
 		.await
 		.unwrap()
 		.last()
 		.map(|input| input.seq)
 		.unwrap_or(0);
-	let mut completion_run = executor.store.run(run.id).await.unwrap();
+	let mut completion_run = executor.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	completion_run.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(
 		json!({"included_input_seq":through_seq}),
 	)));
@@ -1425,6 +1510,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.complete(
+				&TEST_FIXTURE,
 				task.id,
 				&owner,
 				&format!("{}:legacy-complete", run.id),
@@ -1471,7 +1557,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1489,7 +1575,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1514,7 +1600,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1554,6 +1640,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.message(
+				&TEST_FIXTURE,
 				workspace.id,
 				&format!("human@{}", executor.config.node_id),
 				"legacy message after finalization",
@@ -1580,7 +1667,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!executor
 			.store
-			.run_inputs(run.id)
+			.run_inputs(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.iter()
@@ -1598,7 +1685,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		!home
 			.store
-			.snapshot(workspace.id)
+			.snapshot(&TEST_FIXTURE, workspace.id)
 			.await
 			.unwrap()
 			.messages
@@ -1632,6 +1719,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let expiry_task = home
 		.store
 		.create_task(
+			&TEST_FIXTURE,
 			workspace.id,
 			&NewTask {
 				title: "Expired reservation".into(),
@@ -1649,6 +1737,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let expired_key = format!("human:{expired_run}:{}", Uuid::new_v4());
 	home.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			expiry_task.id,
 			expired_run,
 			&executor.config.node_id,
@@ -1679,6 +1768,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.commit_remote_run_message(
+				&TEST_FIXTURE,
 				expiry_task.id,
 				expired_run,
 				&expired_key,
@@ -1691,6 +1781,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let cancelled = home
 		.store
 		.transition(
+			&TEST_FIXTURE,
 			expiry_task.id,
 			expiry_task.revision,
 			"human",
@@ -1704,6 +1795,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	home.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			terminal_history_run.id,
 			&executor.config.node_id,
@@ -1731,6 +1823,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	assert!(
 		home.store
 			.reserve_remote_run_message(
+				&TEST_FIXTURE,
 				task.id,
 				terminal_history_run.id,
 				&executor.config.node_id,
@@ -1803,6 +1896,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.unwrap();
 	home.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			invalid_terminal_run.id,
 			&executor.config.node_id,
@@ -1863,6 +1957,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	.unwrap();
 	home.store
 		.reserve_remote_run_message(
+			&TEST_FIXTURE,
 			task.id,
 			terminal_history_run.id,
 			&executor.config.node_id,

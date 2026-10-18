@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use http::Method;
@@ -80,7 +82,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	)
 	.await;
 	assert_eq!(status, 200, "claim: {body}");
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let response = json!({"text":"","tool_calls":[
 		{"id":"read-missing","name":"skill_read","arguments":{"skill":{"id":"guide","version":"1.0.0"},"path":"references/missing.md"}},
 		{"id":"read-guide","name":"skill_read","arguments":{"skill":{"id":"guide","version":"1.0.0"},"path":"references/guide.md"}}
@@ -122,7 +124,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		.await
 		.unwrap()
 	);
-	let run = f.store.run(run.id).await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		json!(run.context)["history"][0]["event"]["result"]["error"],
 		"Skill file not found: references/missing.md"
@@ -135,7 +137,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		.await
 		.unwrap()
 	);
-	let run = f.store.run(run.id).await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		json!(run.context)["history"][1]["event"]["result"]["text"],
 		"Approved guide"
@@ -171,7 +173,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	};
 	assert!(harness.worker_once().await.unwrap());
 	assert!(harness.worker_once().await.unwrap());
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	let agent = qualified_agent(&f.config.node_id, "research", "1.0.0");
@@ -189,7 +191,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 		200
 	);
 	assert!(harness.worker_once().await.unwrap());
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		paused.control.as_str(),
 		"PAUSED",
@@ -233,7 +235,12 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	);
 	assert!(harness.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().control.as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"PAUSED"
 	);
 	assert_eq!(
@@ -271,7 +278,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	};
 	for _ in 0..12 {
 		restarted.worker_once().await.unwrap();
-		let current = f.store.run(run.id).await.unwrap();
+		let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		if let aidash_domain::RunState::Waiting(wait) = &current.state
 			&& let aidash_domain::WaitingState::ExternalApproval {
 				request_id, call, ..
@@ -280,7 +287,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			assert_eq!(call.name, "plugin_0");
 			assert_eq!(call.id, "call-1");
 			f.store
-				.answer(*request_id, json!({"approved":true}))
+				.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
 				.await
 				.unwrap();
 		}
@@ -289,17 +296,27 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 		}
 	}
 	assert_eq!(
-		f.store.run(run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(
-		f.store.task(task_id).await.unwrap().status.as_str(),
+		f.store
+			.task(&TEST_FIXTURE, task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
 	assert_eq!(
 		f.store
-			.snapshot(run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.workspace_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -337,6 +354,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	);
 	let mut other = policy.clone();
 	other["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	assert_eq!(
 		request(
 			&app,
@@ -407,8 +425,16 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.0,
 		403
 	);
-	assert_eq!(f.store.task(task_id).await.unwrap().status.as_str(), "OPEN");
-	assert!(f.store.runs().await.unwrap().is_empty());
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"OPEN"
+	);
+	assert!(f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
 	assert_eq!(
 		request(
 			&app,
@@ -457,7 +483,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.0,
 		200
 	);
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	{
 		let query_bind_1 = run.id;
 		let query_bind_2 = json!({"private":"unreadable-run-journal"});
@@ -501,6 +527,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	}
 	f.store
 		.human_request(
+			&TEST_FIXTURE,
 			&run,
 			"QUESTION",
 			"unreadable-run-journal",
@@ -563,6 +590,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	.unwrap();
 	f.store
 		.message(
+			&TEST_FIXTURE,
 			run.workspace_id,
 			"alice",
 			"permitted message after rejected events",
@@ -658,11 +686,20 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		"control responses must not expose a denied run journal"
 	);
 	assert_eq!(
-		f.store.inspect_run(run.id).await.unwrap().control.as_str(),
+		f.store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"ACTIVE"
 	);
 	f.store
-		.control(run.id, aidash_server::domain::RunControlAction::Pause)
+		.control(
+			&TEST_FIXTURE,
+			run.id,
+			aidash_server::domain::RunControlAction::Pause,
+		)
 		.await
 		.unwrap();
 	let (_, second) = request(
@@ -688,7 +725,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	);
 	let observer = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -799,7 +836,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		federation: f.clone(),
 	};
 	harness.worker_once().await.unwrap();
-	let parent_run = f.store.runs().await.unwrap().remove(0);
+	let parent_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let (_, task) = request(
 		&app,
 		&token,
@@ -840,7 +877,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	harness.worker_once().await.unwrap();
 	let child_run = f
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -913,7 +950,12 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	.await
 	.unwrap();
 	assert_eq!(
-		f.store.run(child_run.id).await.unwrap().control.as_str(),
+		f.store
+			.run(&TEST_FIXTURE, child_run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"PAUSED",
 		"parent deny must intersect the child grant after restart"
 	);
@@ -1028,11 +1070,21 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	);
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.run(child_run.id).await.unwrap().phase().as_str(),
+		f.store
+			.run(&TEST_FIXTURE, child_run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"CANCELLED"
 	);
 	assert_eq!(
-		f.store.task(child_task).await.unwrap().status.as_str(),
+		f.store
+			.task(&TEST_FIXTURE, child_task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"CANCELLED"
 	);
 	cleanup(f, &url, &schema).await;
@@ -1072,7 +1124,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		federation: worker_federation.clone(),
 	};
 	harness.worker_once().await.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let response = json!({"text":"","tool_calls":[{"id":"effect","name":"plugin_0","arguments":{}}],"input_tokens":0,"output_tokens":0});
 	{
 		let query_bind_1 = run.id;
@@ -1104,7 +1156,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	// Generic HTTP has no admitted replay guarantee and requires an exact
 	// human decision before the serialization boundary is exercised.
 	harness.worker_once().await.unwrap();
-	let waiting = f.store.run(run.id).await.unwrap();
+	let waiting = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let aidash_domain::RunState::Waiting(state) = &waiting.state else {
 		panic!("expected external tool approval, got {:?}", waiting.state);
 	};
@@ -1117,12 +1169,12 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	assert_eq!(call.name, "plugin_0");
 	assert_eq!(call.id, "effect");
 	f.store
-		.answer(*request_id, json!({"approved":true}))
+		.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
 		.await
 		.unwrap();
 	harness.worker_once().await.unwrap();
 	assert!(matches!(
-		f.store.run(run.id).await.unwrap().state,
+		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().state,
 		aidash_domain::RunState::ToolCall(_)
 	));
 	let audit_query =
@@ -1247,7 +1299,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	.worker_once()
 	.await
 	.unwrap();
-	let paused = f.store.run(run.id).await.unwrap();
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		paused.control.as_str(),
 		"PAUSED",
@@ -1297,8 +1349,16 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 		.0,
 		403
 	);
-	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "OPEN");
-	assert!(f.store.runs().await.unwrap().is_empty());
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"OPEN"
+	);
+	assert!(f.store.runs(&TEST_FIXTURE).await.unwrap().is_empty());
 	let count: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
@@ -1347,7 +1407,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 		.0,
 		200
 	);
-	let visible = f.store.runs().await.unwrap().remove(0);
+	let visible = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let denied: Vec<Uuid> = (0..501).map(|_| Uuid::new_v4()).collect();
 	{
 		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
@@ -1410,6 +1470,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 	let last = f
 		.store
 		.emit(
+			&TEST_FIXTURE,
 			Some(visible.workspace_id),
 			"run.tool_recorded",
 			json!({"run_id":denied[0]}),
@@ -1464,7 +1525,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 		federation: f.clone(),
 	};
 	harness.worker_once().await.unwrap();
-	let run = f.store.runs().await.unwrap().remove(0);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "bad-id".into(),
@@ -1501,11 +1562,19 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	}
 	.unwrap();
 	harness.worker_once().await.unwrap();
-	let run = f.store.run(run.id).await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
 	assert!(json!(run.context)["history"][0]["event"]["result"]["error"].is_string());
-	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "RUNNING");
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"RUNNING"
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1524,7 +1593,7 @@ async fn decision_cursor_follows_transaction_commit_order(
 		pool: f.store.pool.clone(),
 	};
 	let evaluation:Evaluation=serde_json::from_value(json!({"subject":"alice","action":"workspace.read","resource":{"tenant":"acme","kind":"workspace","id":"cursor-test","attributes":{}},"environment":{}})).unwrap();
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	Authorization::evaluate_in_transaction(&mut tx, "acme", &evaluation)
 		.await
 		.unwrap();

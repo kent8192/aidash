@@ -1,6 +1,7 @@
 //! Run control and human answers through the registered HTTP routes.
 use crate::endpoint::{assert_json, assert_json_rejection, subject};
 use crate::execution_fixtures::{ExecutionFixture, execution};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::execution::models::HumanRequest;
 use aidash_server::apps::identity::models::AuthorizationExecution;
 use aidash_server::{domain::Run, harness::Harness};
@@ -26,7 +27,7 @@ async fn claim(execution: &ExecutionFixture) -> Run {
 		.app
 		.runtime
 		.store
-		.runs()
+		.runs(&TEST_FIXTURE)
 		.await
 		.unwrap()
 		.into_iter()
@@ -53,7 +54,12 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 		422,
 	);
 	assert_eq!(
-		app.runtime.store.run(run.id).await.unwrap().revision,
+		app.runtime
+			.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.revision,
 		run.revision
 	);
 	let paused = assert_json(
@@ -125,7 +131,7 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 	let events = app
 		.runtime
 		.store
-		.events(0, Some(run.workspace_id), 500)
+		.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
 		.await
 		.unwrap();
 	let actions: Vec<_> = events
@@ -141,7 +147,7 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 	assert_eq!(
 		app.runtime
 			.store
-			.run(run.id)
+			.run(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.phase()
@@ -149,7 +155,12 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 		"CANCELLED"
 	);
 	assert_eq!(
-		app.runtime.store.task(run.task_id).await.unwrap().status,
+		app.runtime
+			.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status,
 		aidash_server::domain::TaskStatus::Cancelled
 	);
 }
@@ -172,20 +183,38 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 	let request = app
 		.runtime
 		.store
-		.human_request(&run, "QUESTION", "Which destination?", "endpoint-question")
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Which destination?",
+			"endpoint-question",
+		)
 		.await
 		.unwrap();
 	let replay = app
 		.runtime
 		.store
-		.human_request(&run, "QUESTION", "Which destination?", "endpoint-question")
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Which destination?",
+			"endpoint-question",
+		)
 		.await
 		.unwrap();
 	assert_eq!(replay.id, request.id);
 	assert!(
 		app.runtime
 			.store
-			.human_request(&run, "QUESTION", "Changed question", "endpoint-question")
+			.human_request(
+				&TEST_FIXTURE,
+				&run,
+				"QUESTION",
+				"Changed question",
+				"endpoint-question"
+			)
 			.await
 			.is_err()
 	);
@@ -228,7 +257,7 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 	let events = app
 		.runtime
 		.store
-		.events(0, Some(run.workspace_id), 500)
+		.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -250,7 +279,13 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 	let pending = app
 		.runtime
 		.store
-		.human_request(&run, "QUESTION", "Still allowed?", "denied-question")
+		.human_request(
+			&TEST_FIXTURE,
+			&run,
+			"QUESTION",
+			"Still allowed?",
+			"denied-question",
+		)
 		.await
 		.unwrap();
 	let mut policy = execution.policy.clone();

@@ -63,6 +63,8 @@ pub async fn result(
 		error: aidash_domain::capabilities::errors::CapabilityError::stored(
 			&operation.result["error"],
 		),
+		runtime_millis: operation.result["runtime_millis"].as_u64(),
+		deadline_expired: operation.result["deadline_expired"].as_bool(),
 	})
 }
 #[cfg(test)]

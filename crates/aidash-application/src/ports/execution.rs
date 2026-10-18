@@ -40,6 +40,9 @@ pub struct ExecutionAgent {
 	/// Pinned through the Run's Binding snapshot; `off` when the definition
 	/// names none (ADR 0019).
 	pub prompt_cache: aidash_domain::projection::PromptCache,
+	/// Pinned through the Run's Binding snapshot; `None` requires no
+	/// verification before the Run completes (#112).
+	pub completion: Option<aidash_domain::completion::CompletionPolicy>,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -165,6 +168,9 @@ pub trait ExecutionStore: Send + Sync {
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
+	/// The commit fence before Task completion. Unless a newer input is
+	/// accepted, it also persists the Run's Completion Gate progress, so a Task
+	/// completed before the Run's own save keeps its Completion Basis.
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool>;
 	async fn human_request(
 		&self,
@@ -289,6 +295,14 @@ pub trait ExecutionHome: Send + Sync {
 	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		let _ = id;
+		Err(crate::Error::Invalid(
+			"Home human-request route is unavailable".into(),
+		))
+	}
+	/// Answer a request on the Run's own behalf, such as one a newer input
+	/// superseded. A request a person already answered is a conflict.
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		let _ = (id, response);
 		Err(crate::Error::Invalid(
 			"Home human-request route is unavailable".into(),
 		))
@@ -437,6 +451,11 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
+	/// Runs Completion Gate Checks. `None` makes every applicable Check
+	/// unavailable, so a Run with a Completion Policy pauses for a person.
+	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
+		None
+	}
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
@@ -470,6 +489,14 @@ pub trait ExecutionEnvironment: Send + Sync {
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 	) -> Result<Option<Value>>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
+	/// The pages people asked this Run to read, recorded beside the inputs
+	/// that carried them (ADR 0052). Empty when the Run has none.
+	async fn url_intents(
+		&self,
+		_run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		Ok(vec![])
+	}
 	async fn run_request_headroom(&self, run: &Run) -> Result<usize>;
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()>;
 	async fn reconcile_run_messages(&self, run: &Run) -> Result<()>;
@@ -500,6 +527,8 @@ pub trait ExecutionEnvironment: Send + Sync {
 pub mod media;
 
 pub mod cancellation;
+
+pub mod completion;
 
 pub mod admission;
 

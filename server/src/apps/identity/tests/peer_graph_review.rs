@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{domain::Task, federation::Federation};
 use common::{bootstrap, cleanup, request};
 use reinhardt::query::{Alias, ColumnRef, Expr, PostgresQueryBuilder, Query};
@@ -342,7 +344,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -355,6 +357,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	let other_scope = admitted_run(&f, &task, credential, "acme", SOURCE, Uuid::new_v4()).await;
 	let mut other_policy = common::policy(&f.config.node_id);
 	other_policy["tenant"] = json!("other");
+	common::tenant_root(&f, "other").await;
 	let (status, value) = request(
 		&app,
 		&f.config.api_token,

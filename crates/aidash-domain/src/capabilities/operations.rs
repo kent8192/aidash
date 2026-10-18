@@ -117,6 +117,25 @@ pub fn request_validation_failure(
 		None
 	}
 }
+/// Operation kind of a Completion Gate Check (#112). It runs under the bound
+/// shell capability, and its files are never exported into the Working Area.
+pub const VERIFICATION: &str = "verification";
+/// The bound operation whose authority an operation kind runs under.
+pub fn capability_of(kind: &str) -> &str {
+	if kind == VERIFICATION { "shell" } else { kind }
+}
+/// The Area state once an operation's outcome is lost. A Check never exports
+/// `/work`, so losing it leaves the Area's files as they were and usable,
+/// unless the runner still holds its writer without confirming it stopped
+/// (`writer_held`): the runner then admits no other operation in the Area, so
+/// the Area stays fenced until that writer is reconciled.
+pub fn lost_area_state(kind: &str, writer_held: bool) -> &'static str {
+	if kind == VERIFICATION && !writer_held {
+		"active"
+	} else {
+		"uncertain"
+	}
+}
 pub fn available(state: &str) -> Result<()> {
 	if state != "active" {
 		return Err(Error::Conflict(

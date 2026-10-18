@@ -1,7 +1,16 @@
+use aidash_domain::identity::tenancy::CreationRefusal;
 use http::{HeaderValue, header::RETRY_AFTER};
 use reinhardt::core::exception::{DatabaseErrorKind, Error as FrameworkError};
 use reinhardt::{Response as HttpResponse, StatusCode};
 use serde_json::json;
+
+fn tenant_creation_message(refusal: &CreationRefusal) -> &'static str {
+	match refusal {
+		CreationRefusal::NotAllowed => "tenant creation is not allowed",
+		CreationRefusal::HourlyLimit { .. } => "tenant_creation_rate_limited",
+		CreationRefusal::TotalLimit => "tenant_limit_reached",
+	}
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -21,6 +30,9 @@ pub enum Error {
 	Forbidden,
 	#[error("back-channel logout is busy; retry shortly")]
 	RateLimited,
+	/// The Tenancy Rules refuse this Tenant creation now.
+	#[error("{}", tenant_creation_message(.0))]
+	TenantCreation(aidash_domain::identity::tenancy::CreationRefusal),
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	#[error("verified model media route unavailable for {0}")]
@@ -73,6 +85,15 @@ impl Error {
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
+			Self::TenantCreation(refusal) => (
+				match refusal {
+					CreationRefusal::HourlyLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
+					CreationRefusal::NotAllowed | CreationRefusal::TotalLimit => {
+						StatusCode::FORBIDDEN
+					}
+				},
+				self.to_string(),
+			),
 			Self::IdentityStatusUnavailable | Self::MediaRouteUnavailable(_) => {
 				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
 			}
@@ -173,7 +194,16 @@ impl Error {
 				HeaderValue::from_static("1"),
 			);
 		}
-		if status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::TOO_MANY_REQUESTS {
+		if let Self::TenantCreation(CreationRefusal::HourlyLimit {
+			retry_after_seconds,
+		}) = &self
+		{
+			response
+				.headers
+				.insert(RETRY_AFTER, HeaderValue::from(*retry_after_seconds));
+		} else if status == StatusCode::SERVICE_UNAVAILABLE
+			|| status == StatusCode::TOO_MANY_REQUESTS
+		{
 			response
 				.headers
 				.insert(RETRY_AFTER, HeaderValue::from_static("1"));

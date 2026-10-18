@@ -172,6 +172,43 @@ fn protected_documents_are_refused(#[case] bytes: &[u8], #[case] failure: Failur
 	assert_eq!(extract(bytes), Err(failure));
 }
 
+/// A decoy security dictionary that permits extraction, placed before the
+/// document's real one, does not unlock text the real one forbids.
+#[rstest]
+fn a_decoy_security_dictionary_does_not_permit_extraction() {
+	let header = NO_EXTRACTION
+		.iter()
+		.position(|&byte| byte == b'\n')
+		.unwrap()
+		+ 1;
+	let mut bytes = NO_EXTRACTION[..header].to_vec();
+	bytes.extend_from_slice(
+		b"9999 0 obj\n<< /Filter /Standard /V 2 /R 3 /O (decoy) /U (decoy) /P -4 >>\nendobj\n",
+	);
+	bytes.extend_from_slice(&NO_EXTRACTION[header..]);
+	assert_eq!(extract(&bytes), Err(Failure::ExtractionNotPermitted));
+}
+
+/// Only a trailer names an encryption dictionary: the same bytes in page
+/// text leave an unencrypted document readable.
+#[rstest]
+fn encrypt_in_page_text_does_not_make_a_document_encrypted() {
+	let text = extract(&pdf(&[text_page(&["Trailers name /Encrypt << >> here."])])).unwrap();
+	assert_eq!(text.lines[0].text, "Trailers name /Encrypt << >> here.");
+}
+
+/// Encrypted fixtures name their security dictionary from a trailer; plain
+/// documents name none, even when their text spells `/Encrypt`.
+#[rstest]
+#[case::plain(pdf(&[text_page(&["Plain text."])]), false)]
+#[case::encrypt_in_text(pdf(&[text_page(&["See /Encrypt << >> here."])]), false)]
+#[case::extraction_permitted(EXTRACTION_PERMITTED.to_vec(), true)]
+#[case::no_extraction(NO_EXTRACTION.to_vec(), true)]
+fn only_trailers_name_encryption(#[case] bytes: Vec<u8>, #[case] named: bool) {
+	let pdf = Pdf::new(bytes).unwrap();
+	assert_eq!(names_encryption(&pdf), named);
+}
+
 #[rstest]
 fn an_encrypted_document_that_permits_extraction_is_read() {
 	let text = extract(EXTRACTION_PERMITTED).unwrap();
@@ -209,5 +246,57 @@ fn a_rendered_page_round_trips_through_the_child_reply() {
 	let encoded = serde_json::to_vec(&Reply::Page(image.clone())).unwrap();
 	assert!(
 		matches!(serde_json::from_slice(&encoded).unwrap(), Reply::Page(decoded) if decoded == image)
+	);
+}
+
+/// A reply within the snapshot bounds fits the child's output cap even when
+/// JSON escaping doubles its text.
+#[rstest]
+fn the_reply_cap_holds_an_escaped_text_at_the_snapshot_bounds() {
+	let text = "\\\"".repeat(13);
+	let lines = (0..MAX_LINES)
+		.map(|n| Line {
+			text: text.clone(),
+			page: Some(u32::try_from(n % MAX_PAGES).unwrap() + 1),
+		})
+		.collect::<Vec<_>>();
+	assert!(lines.iter().map(|line| line.text.len()).sum::<usize>() <= MAX_SNAPSHOT_BYTES);
+	let reply = Reply::Text(PdfText {
+		title: Some("\"".repeat(MAX_TITLE_BYTES)),
+		page_count: u32::try_from(MAX_PAGES).unwrap(),
+		lines,
+		pages_without_text: (1..=u32::try_from(MAX_PAGES).unwrap()).collect(),
+		completeness: Completeness::TextLimit,
+	});
+	let serialized = serde_json::to_vec(&reply).unwrap();
+	assert!(serialized.len() > 2 * MAX_SNAPSHOT_BYTES + 64 * 1024);
+	assert!(serialized.len() <= MAX_REPLY_BYTES);
+}
+
+/// Info-dictionary titles without a byte order mark are PDFDocEncoding, which
+/// differs from Latin-1 in its typographic punctuation.
+#[rstest]
+#[case::em_dash_and_quotes(b"\x8dReport\x8e \x84 2026".to_vec(), "\u{201C}Report\u{201D} \u{2014} 2026")]
+#[case::bullet_and_euro(b"\x80 Costs in \xa0".to_vec(), "\u{2022} Costs in \u{20AC}")]
+#[case::latin_1_letters(b"Caf\xe9".to_vec(), "Caf\u{e9}")]
+#[case::utf_16(vec![0xfe, 0xff, 0x20, 0x14], "\u{2014}")]
+#[case::utf_8(b"\xef\xbb\xbf\xe2\x80\x94".to_vec(), "\u{2014}")]
+fn titles_decode_as_pdf_text_strings(#[case] raw: Vec<u8>, #[case] expected: &str) {
+	assert_eq!(decode_text_string(&raw), expected);
+}
+
+/// Only text a snapshot keeps makes a page text-bearing: control characters
+/// count for nothing, as they become spaces.
+#[rstest]
+fn a_page_of_control_characters_carries_no_text() {
+	assert_eq!(page_text(vec!["\u{1}\u{2}\u{7}".repeat(8)]), None);
+	assert_eq!(
+		page_text(vec![format!("Quarterly\u{1}report {}", "\u{2}".repeat(20))]),
+		None,
+		"fifteen characters of text"
+	);
+	assert_eq!(
+		page_text(vec!["Quarterly\u{1}results".into(), " ".into()]),
+		Some(vec!["Quarterly results".to_owned()])
 	);
 }

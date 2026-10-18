@@ -5,6 +5,7 @@ use crate::{
 	authorization::{access::Access, identity::Actor},
 	federation::Federation,
 };
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	authorization::Snapshot,
 	ports::generation::lifecycle::{
@@ -51,15 +52,21 @@ impl GenerationControls for NativeControls {
 	}
 	async fn begin(
 		&self,
-		_tenant: &str,
+		scope: &TenancyScope,
 	) -> aidash_application::Result<Box<dyn GenerationControlScope>> {
 		let mode = match &self.actor {
-			Actor::DeploymentAdministrator => Mode::DeploymentAdministrator(
-				crate::database::native::begin(&self.runtime.store.pool).await?,
-			),
-			Actor::Subject(identity) => Mode::Subject(Box::new(
-				Access::begin_exclusive(&self.runtime.store, identity).await?,
-			)),
+			// A Deployment Administrator controls a job in the named Tenant's scope.
+			Actor::DeploymentAdministrator => {
+				Mode::DeploymentAdministrator(self.runtime.store.pool.begin(scope).await?)
+			}
+			Actor::Subject(identity) => {
+				if identity.tenancy()? != *scope {
+					return Err(aidash_application::Error::Forbidden);
+				}
+				Mode::Subject(Box::new(
+					Access::begin_exclusive(&self.runtime.store, identity).await?,
+				))
+			}
 		};
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),

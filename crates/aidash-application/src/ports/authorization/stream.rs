@@ -1,4 +1,5 @@
 //! Idle stream snapshots grant no right to emit; each frame retains a live lease.
+use super::visibility::RunVerdicts;
 use crate::Result;
 use aidash_domain::Event;
 use async_trait::async_trait;
@@ -44,5 +45,6 @@ pub trait StreamSession: Send {
 		visible: &[Uuid],
 		page_size: usize,
 	) -> Result<Vec<Event>>;
-	async fn event_visible(&mut self, event: &Event) -> Result<bool>;
+	/// Event disclosure within one scan; `runs` holds the scan's Run verdicts.
+	async fn event_visible(&mut self, event: &Event, runs: &mut RunVerdicts) -> Result<bool>;
 }

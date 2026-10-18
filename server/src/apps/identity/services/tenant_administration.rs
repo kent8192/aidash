@@ -73,8 +73,16 @@ impl TenantAdministrations {
 		tenant: String,
 	) -> Result<TenantAdministration> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		administrator.overview(lease.handle()).await
+		let mut overview = administrator.overview(&self.runtime.store.pool).await?;
+		// With Invitations turned off for the Deployment nobody may issue one,
+		// whatever the policy allows, so the page offers no issue form;
+		// existing links stay listed and revocable.
+		if !self.runtime.config.tenancy.invitations {
+			overview.actions.retain(|action| {
+				action != aidash_domain::identity::tenant_administration::INVITATION_CREATE
+			});
+		}
+		Ok(overview)
 	}
 
 	pub(crate) async fn registrations(
@@ -82,10 +90,12 @@ impl TenantAdministrations {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
+		offset: u64,
 	) -> Result<Vec<TenantRegistration>> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = administrator.registrations(lease.handle()).await;
+		let result = administrator
+			.registrations(&self.runtime.store.pool, offset)
+			.await;
 		self.finish(&administrator, result).await
 	}
 
@@ -100,20 +110,39 @@ impl TenantAdministrations {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let policy = Some(administrator.policy().clone());
-		let lease = self.runtime.store.orm_connection()?;
-		let result = DashboardRegistrationRequest::approve(
-			lease.handle(),
-			id,
-			Approval {
-				tenant,
-				subject: input.subject,
-			},
-			input.groups,
-			&AdministrationActor::TenantAdministrator(administrator.clone()),
-			digest(&random_secret()),
-			policy,
-		)
-		.await;
+		let actor = AdministrationActor::TenantAdministrator(administrator.clone());
+		let approve = || {
+			DashboardRegistrationRequest::approve(
+				&self.runtime.store.pool,
+				id,
+				Approval {
+					tenant: tenant.clone(),
+					subject: input.subject.clone(),
+					groups: None,
+				},
+				input.groups.clone(),
+				&actor,
+				digest(&random_secret()),
+				policy.clone(),
+			)
+		};
+		let mut result = approve().await;
+		// A previous owner's connection must be gone before the subject is
+		// mapped again; approval refuses while one remains (ADR 0007). It is
+		// retired only for an approval refused for that alone, so an invalid
+		// or stale decision changes nothing, and the approval is then retried.
+		if result.as_ref().is_err_and(
+			crate::apps::identity::repositories::plan_connections::refused_shared_holder,
+		) {
+			super::plan_connections::retire_unmapped(
+				&self.runtime,
+				&tenant,
+				&input.subject,
+				&actor.decision_actor(),
+			)
+			.await?;
+			result = approve().await;
+		}
 		self.finish(&administrator, result).await
 	}
 
@@ -130,9 +159,8 @@ impl TenantAdministrations {
 			.config
 			.dashboard_session()
 			.map(|config| config.session_idle_seconds);
-		let lease = self.runtime.store.orm_connection()?;
 		let result = DashboardRegistrationRequest::reject(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			&AdministrationActor::TenantAdministrator(administrator.clone()),
 			idle_seconds,
@@ -149,8 +177,9 @@ impl TenantAdministrations {
 		offset: u64,
 	) -> Result<Vec<TenantMapping>> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
-		let result = administrator.mappings(lease.handle(), offset).await;
+		let result = administrator
+			.mappings(&self.runtime.store.pool, offset)
+			.await;
 		self.finish(&administrator, result).await
 	}
 
@@ -164,17 +193,22 @@ impl TenantAdministrations {
 	) -> Result<http::StatusCode> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
+		let actor = AdministrationActor::TenantAdministrator(administrator.clone());
 		let result = DashboardMapping::disable(
-			lease.handle(),
+			&self.runtime.store.pool,
 			id,
 			input.expected_revision,
-			&AdministrationActor::TenantAdministrator(administrator.clone()),
+			&actor,
 		)
 		.await;
-		self.finish(&administrator, result)
-			.await
-			.map(|()| http::StatusCode::NO_CONTENT)
+		self.finish(&administrator, result).await?;
+		super::plan_connections::retire_disabled_mapping(
+			&self.runtime,
+			id,
+			&actor.decision_actor(),
+		)
+		.await;
+		Ok(http::StatusCode::NO_CONTENT)
 	}
 
 	pub(crate) async fn update_memberships(
@@ -187,9 +221,13 @@ impl TenantAdministrations {
 	) -> Result<Membership> {
 		validate(&input)?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
-		let lease = self.runtime.store.orm_connection()?;
 		let result = administrator
-			.update_memberships(lease.handle(), subject, input)
+			.update_memberships(
+				&self.runtime.store.pool,
+				&AdministrationActor::TenantAdministrator(administrator.clone()),
+				subject,
+				input,
+			)
 			.await;
 		self.finish(&administrator, result).await
 	}

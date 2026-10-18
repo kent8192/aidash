@@ -9,6 +9,7 @@ use reinhardt::query::{
 };
 
 pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<bool> {
+	let scope = crate::database::scope::recorded(&job.tenant)?;
 	let Some(run): Option<Run> = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -21,7 +22,7 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_optional(&store.pool)
+	.fetch_optional(store.pool.in_scope(&scope))
 	.await?
 	else {
 		return Ok(true);
@@ -39,7 +40,7 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&scope))
 	.await?;
 	if state != "complete" {
 		return Ok(!matches!(state.as_str(), "pending" | "running"));
@@ -105,7 +106,7 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&store.pool)
+		.fetch_optional(store.pool.in_scope(&scope))
 		.await?
 		.is_some()
 		{
@@ -136,7 +137,7 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_optional(&store.pool)
+	.fetch_optional(store.pool.in_scope(&scope))
 	.await?
 	.is_none())
 }

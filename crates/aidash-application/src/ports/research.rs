@@ -37,7 +37,7 @@ pub trait SearchProvider: Send + Sync {
 	/// The exact outbound content; a query the provider cannot send unchanged
 	/// is rejected here, before any approval is requested.
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure>;
-	/// The Search account holder's current account terms, or `None` for a
+	/// The Research account holder's current account terms, or `None` for a
 	/// provider that sends nothing outside the Node.
 	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure>;
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure>;
@@ -127,14 +127,16 @@ pub trait EvidenceStore: Send + Sync {
 	async fn account_spend(&self, account: &str, since: DateTime<Utc>) -> Result<u64>;
 	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved>;
 	/// Settles a dispatched attempt exactly once; settling a missing or
-	/// already settled attempt is a `Conflict`.
+	/// already settled attempt is a `Conflict`. Returns the result it
+	/// recorded, which is the revoked tombstone, not `result`, when the Run's
+	/// evidence was revoked meanwhile; the caller returns that one.
 	async fn settle(
 		&self,
 		run: Uuid,
 		key: &str,
 		outcome: AttemptOutcome,
 		result: &Value,
-	) -> Result<()>;
+	) -> Result<Value>;
 	/// Source records in candidate order.
 	async fn record_sources(
 		&self,
@@ -210,6 +212,14 @@ pub struct WebDisclosure {
 	pub outbound: Outbound,
 	/// The Run's observed input sequence; new user input needs a new approval.
 	pub context_revision: i64,
+	/// The Research account holder's account and price for this request, as
+	/// they stand when approval is requested. Part of the digest, so an
+	/// approval covers only the charge its approver was shown.
+	pub attribution: Option<CostAttribution>,
+	/// The host-validated search query in provider-independent form, so an
+	/// approver reads it without parsing a provider's request body. Not part
+	/// of the digest: the exact outbound content already binds it.
+	pub query: Option<Value>,
 }
 
 impl WebDisclosure {
@@ -223,6 +233,7 @@ impl WebDisclosure {
 			self.outbound.destination,
 			self.outbound.content,
 			self.context_revision,
+			self.attribution,
 		]))
 	}
 }
@@ -242,6 +253,9 @@ pub enum DisclosureState {
 		expires_at: Option<DateTime<Utc>>,
 	},
 	Denied,
+	/// The Run's evidence was revoked before the disclosure was admitted, so
+	/// no approval is created to carry its content (ADR 0046).
+	Revoked,
 }
 
 /// The Node's Web disclosure approval, built on its capability approvals.
@@ -319,8 +333,8 @@ pub struct RetainedSnapshot {
 #[async_trait]
 pub trait SnapshotRetention: Send + Sync {
 	/// Up to `limit` unpurged snapshots after `after` in identifier order whose
-	/// Run ended before `ended_before` or that were retrieved before
-	/// `retrieved_before`. Others cannot have lost their basis yet.
+	/// Run ended at or before `ended_before` or that were retrieved at or
+	/// before `retrieved_before`. Others cannot have lost their basis yet.
 	async fn candidates(
 		&self,
 		after: Option<Uuid>,

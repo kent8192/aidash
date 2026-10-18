@@ -9,6 +9,7 @@ use crate::apps::knowledge::repositories::{
 };
 use crate::{Error, Result, database::native, store::Store};
 use aidash_application::ports::{VectorIndex, memory::MemoryRecovery};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::memory::{Bank, Policy, Unit};
 use aidash_domain::registry::EntityRef;
 use chrono::{DateTime, Duration, Utc};
@@ -21,6 +22,8 @@ use std::{
 	sync::Arc,
 };
 use uuid::Uuid;
+
+const RECOVERY: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::MemoryRecovery);
 
 const MAX_ARCHIVES: usize = 128;
 
@@ -75,7 +78,7 @@ fn bypass(store: &Store) -> Store {
 pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let recovery = external(store, &directory)?;
 	let internal = bypass(store);
-	let mut lease = Lease::without_subject(&internal).await?;
+	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
 		for table in ["memory_banks","memory_participants"] {
 			if native::query(&Query::select().column(Alias::new("id")).from(Alias::new(table))
@@ -149,7 +152,7 @@ async fn configuration(
 pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathBuf> {
 	let recovery = active_external(store, directory)?;
 	recovery.require_serving()?;
-	let mut lease = Lease::without_subject(store).await?;
+	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, bank.workspace, false).await?;
 		let (settings, policy) = configuration(&mut lease, &bank).await?;
@@ -277,7 +280,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 	// writers then observe this closed gate and roll back without lock inversion.
 	let ledger = recovery.gate(true, ledger.epoch)?;
 	let internal = bypass(store);
-	let mut lease = Lease::without_subject(&internal).await?;
+	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, archive.bank.workspace, true).await?;
 		let (settings, policy) = configuration(&mut lease, &archive.bank).await?;
@@ -362,7 +365,7 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 }
 
 async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<()> {
-	let mut lookup = Lease::without_subject(store).await?;
+	let mut lookup = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 	let origin = unit_origins::load(&mut lookup, unit.id)
 		.await?
 		.ok_or(Error::Forbidden)?;
@@ -378,7 +381,7 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&RECOVERY))
 		.await?;
 		if record.home_node != unit.bank.home || record.workspace_id != unit.bank.workspace {
 			return Err(Error::Forbidden);
@@ -401,7 +404,12 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 		}
 		access.finish(Ok(())).await?;
 	}
-	let mut writer = Lease::restore(store, serde_json::to_value(origin.authority)?).await?;
+	let mut writer = Lease::restore(
+		store,
+		serde_json::to_value(origin.authority)?,
+		unit.bank.workspace,
+	)
+	.await?;
 	let result = async {
 		units::authorize(&mut writer, &unit.bank, "memory.read").await?;
 		units::current(
@@ -432,7 +440,7 @@ async fn finish(
 	// Invalid support is cleared before each next pass. A dependent visited
 	// earlier must be reconsidered after its source was withheld later.
 	for pass in 0..=policy.bounds.max_graph_visits {
-		let mut lease = Lease::without_subject(store).await?;
+		let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 		let contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 		lease.finish(Ok(())).await?;
 		let mut ledger = recovery.load()?;
@@ -469,7 +477,7 @@ async fn finish(
 			clear(&mut unit);
 			recovery.advance_restore(epoch, &unit)?;
 			ledger.observe(&unit)?;
-			let mut lease = Lease::without_subject(store).await?;
+			let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 			repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 			let bank_id = repository::bank_id(&mut lease, bank, false)
 				.await?
@@ -492,7 +500,7 @@ async fn finish(
 			));
 		}
 	}
-	let mut lease = Lease::without_subject(store).await?;
+	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 	repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 	let mut contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 	let bank_id = repository::bank_id(&mut lease, bank, false)
@@ -647,7 +655,7 @@ async fn finish(
 	for unit in &contents {
 		aidash_application::semantic::process(&indexing, &transport, unit.id).await?;
 	}
-	let mut lease = Lease::without_subject(store).await?;
+	let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 	let contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 	lease.finish(Ok(())).await?;
 	report.withheld = contents.iter().filter(|unit| !unit.visible()).count();
@@ -663,7 +671,7 @@ async fn finish(
 				.and_where(Expr::col("id").eq(Expr::value(unit.id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&RECOVERY))
 		.await?;
 		let metadata: serde_json::Value = row.try_get("metadata")?;
 		if row.try_get::<String>("state")? != "READY"
@@ -671,7 +679,7 @@ async fn finish(
 		{
 			return Err(Error::SemanticUnavailable);
 		}
-		let mut tx = store.pool.begin().await?;
+		let mut tx = store.pool.begin(&RECOVERY).await?;
 		let index =
 			crate::semantic::models::SemanticIndexe::locked(&mut *tx, bank.workspace, false)
 				.await?
@@ -685,6 +693,7 @@ async fn finish(
 			.present(
 				&config.vector,
 				&index.collection,
+				&index.tenant,
 				&[row.try_get("point_id")?],
 			)
 			.await?
@@ -702,7 +711,7 @@ pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 	let ledger = recovery.load()?;
 	let archives = directory.join("archives");
 	if archives.exists() {
-		let mut lease = Lease::without_subject(store).await?;
+		let mut lease = Lease::deployment(store, DeploymentScopeReason::MemoryRecovery).await?;
 		let result = prune(
 			&mut lease,
 			&archives,
@@ -783,12 +792,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 			// Recovery never changes the schema; `migrate` runs first as its owner.
 			crate::bootstrap::require_migrated(&settings).await?;
 			let config = crate::config::Config::from_settings(&settings)?;
-			let database =
-				reinhardt::db::backends::DatabaseConnection::connect_postgres_with_pool_size(
-					&config.database_url,
-					Some(8),
-				)
-				.await?;
+			let database = crate::database::runtime::connect(&config.database_url, 8).await?;
 			let directory = matches
 				.get_one::<PathBuf>("directory")
 				.ok_or(Error::Forbidden)?;

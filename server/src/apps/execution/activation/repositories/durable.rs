@@ -1,6 +1,7 @@
 //! Native obligation mutations retain triggers, publication epochs and lease fences.
 use super::Result;
 use crate::{Error, apps::execution::activation::models::RunActivations, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{Run, activation::Obligation};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
@@ -125,10 +126,12 @@ pub(super) async fn quarantine(
 		)
 		.on_conflict(OnConflict::column(a("digest")).do_nothing().to_owned())
 		.build(PostgresQueryBuilder);
-	store
-		.database()
-		.execute(&sql, convert_values(values))
-		.await?;
+	{
+		let mut tx = claim(store).await?;
+		let result = tx.execute(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		result
+	};
 	metrics::counter!("aidash_activation_quarantined_total", "reason" => reason).increment(1);
 	Ok(())
 }
@@ -154,11 +157,13 @@ pub(super) async fn reconcile(store: &Store) -> Result<u64> {
 		.columns([a("run_id"), a("run_revision"), a("reason")])
 		.from_subquery(select)
 		.build(PostgresQueryBuilder);
-	Ok(store
-		.database()
-		.execute(&sql, convert_values(values))
-		.await?
-		.rows_affected)
+	Ok({
+		let mut tx = claim(store).await?;
+		let result = tx.execute(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		result
+	}
+	.rows_affected)
 }
 
 pub(super) async fn publish_batch(store: &Store, token: Uuid) -> Result<Vec<Obligation>> {
@@ -233,10 +238,12 @@ pub(super) async fn publish_batch(store: &Store, token: Uuid) -> Result<Vec<Obli
 		)
 		.and_where(Expr::col("generation").in_subquery(due(Some("claimed"))))
 		.build(PostgresQueryBuilder);
-	store
-		.database()
-		.execute(&sql, convert_values(values))
-		.await?;
+	{
+		let mut tx = claim(store).await?;
+		let result = tx.execute(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		result
+	};
 	let (sql, values) = Query::update()
 		.table(a("run_activations"))
 		.value(a("state"), "pending")
@@ -257,13 +264,15 @@ pub(super) async fn publish_batch(store: &Store, token: Uuid) -> Result<Vec<Obli
 		.and_where(Expr::col("generation").in_subquery(due(None)))
 		.returning_all()
 		.build(PostgresQueryBuilder);
-	store
-		.database()
-		.fetch_all(&sql, convert_values(values))
-		.await?
-		.into_iter()
-		.map(|row| obligation(QueryRow::from_backend_row(row).data))
-		.collect()
+	{
+		let mut tx = claim(store).await?;
+		let result = tx.fetch_all(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		result
+	}
+	.into_iter()
+	.map(|row| obligation(QueryRow::from_backend_row(row).data))
+	.collect()
 }
 
 pub(super) async fn published(store: &Store, row: &Obligation, token: Uuid) -> Result<()> {
@@ -280,15 +289,28 @@ pub(super) async fn published(store: &Store, row: &Obligation, token: Uuid) -> R
 		.and_where(Expr::col("publication_epoch").eq(Expr::value(row.publication_epoch)))
 		.and_where(Expr::col("publish_token").eq(Expr::value(token)))
 		.build(PostgresQueryBuilder);
-	store
-		.database()
-		.execute(&sql, convert_values(values))
-		.await?;
+	{
+		let mut tx = claim(store).await?;
+		let result = tx.execute(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		result
+	};
 	Ok(())
 }
 
+/// Activation bookkeeping reaches the Runs of every Tenant.
+async fn claim(store: &Store) -> Result<Box<dyn TransactionExecutor>> {
+	store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			DeploymentScopeReason::ActivationClaim,
+		))
+		.await?
+		.into_executor()
+}
+
 pub(super) async fn recover(store: &Store, seconds: i32) -> Result<Option<(Run, Uuid)>> {
-	let mut tx = store.database().begin().await?;
+	let mut tx = claim(store).await?;
 	let token = Uuid::new_v4();
 	let mut cursor = store.recovery_cursors.execution.lock().await;
 	let Some(run) = Store::lease_run_in(
@@ -335,10 +357,12 @@ pub(super) async fn observe(store: &Store) -> Result<()> {
 		.and_where(Expr::col("state").ne(Expr::value("settled")))
 		.and_where(Expr::col("due_at").lte(Expr::current_timestamp()))
 		.build(PostgresQueryBuilder);
-	let row = store
-		.database()
-		.fetch_one(&sql, convert_values(values))
-		.await?;
+	let row = {
+		let mut tx = claim(store).await?;
+		let result = tx.fetch_one(&sql, convert_values(values)).await?;
+		tx.commit().await?;
+		result
+	};
 	let pending: i64 = row.get("pending").map_err(FrameworkError::from)?;
 	let age: f64 = row.get("age").map_err(FrameworkError::from)?;
 	metrics::gauge!("aidash_activation_due_obligations").set(pending as f64);

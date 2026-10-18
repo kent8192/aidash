@@ -1,5 +1,6 @@
 //! Real PostgreSQL regressions for independent recall state and bounded maintenance.
 use super::*;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 use chrono::{Duration, SubsecRound, Utc};
 
@@ -57,12 +58,12 @@ async fn id(store: &Store, bank: &Bank) -> Uuid {
 			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap()
 }
 async fn clock(store: &Store, bank: &Bank, as_of: chrono::DateTime<Utc>, cursor: Option<Uuid>) {
-	let mut tx = native::begin(&store.pool).await.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_bank_decay"))
@@ -146,7 +147,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 		assert_eq!(result, vec![admitted[0].clone()]);
 		// Model a later dormancy sweep between the first response and a retry.
 		// A receipt replay must neither reactivate again nor extend the anchor.
-		let mut tx = native::begin(&store.pool).await.unwrap();
+		let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_unit_retention"))
@@ -198,7 +199,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 				.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(
@@ -218,7 +219,7 @@ async fn retention_controls_replay_without_renewing_reactivation_and_reject_reus
 				.and_where(Expr::col("operation_id").eq(Expr::value(request.operation_id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&store.pool)
+		.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 		.unwrap();
 		assert_eq!(receipt, vec![admitted[0].evidence()]);
@@ -343,7 +344,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 			let before: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
 				native::query_as(&retention())
 					.columns(&["reactivated_at", "pinned", "dormant_policy"])
-					.fetch_one(&store.pool)
+					.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 					.await
 					.unwrap();
 			let replay =
@@ -363,7 +364,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 			let after: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
 				native::query_as(&retention())
 					.columns(&["reactivated_at", "pinned", "dormant_policy"])
-					.fetch_one(&store.pool)
+					.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 					.await
 					.unwrap();
 			assert_eq!(after, before, "a changed replay must not affect retention");
@@ -374,7 +375,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 					.and_where(Expr::col("operation_id").eq(Expr::value(request.operation_id)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_one(&store.pool)
+			.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap();
 			assert_eq!(receipt, vec![admitted[0].evidence()]);
@@ -385,7 +386,7 @@ async fn completed_control_replays_report_changed_visibility_as_conflicts(
 					.and_where(Expr::col("operation_id").eq(Expr::value(fresh.operation_id)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_optional(&store.pool)
+			.scalar_optional(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 			.unwrap();
 			assert!(missing.is_none());
@@ -589,7 +590,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 			.and_where(Expr::col("bank_id").eq(Expr::value(id(&store, &bank).await)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(
@@ -637,7 +638,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 		vec![ids[0]]
 	);
 	// A flag from another immutable policy version is ignored, never deleted.
-	let mut tx = native::begin(&restarted.pool).await.unwrap();
+	let mut tx = restarted.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let other = EntityRef {
 		id: "p".into(),
 		version: "2.0.0".into(),
@@ -664,7 +665,7 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 			.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&restarted.pool)
+	.scalar_one(restarted.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
 	assert_eq!(flag, serde_json::to_value(other).unwrap());

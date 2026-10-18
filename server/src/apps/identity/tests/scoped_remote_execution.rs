@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::ServerRouter as Router;
@@ -167,7 +169,11 @@ impl Pair {
 		)
 	}
 	async fn run(&self) -> aidash_server::domain::Run {
-		self.b.store.run(self.admission).await.unwrap()
+		self.b
+			.store
+			.run(&TEST_FIXTURE, self.admission)
+			.await
+			.unwrap()
 	}
 	async fn step(&self) {
 		let worker = Harness {
@@ -470,7 +476,12 @@ mod scoped_pair_composition {
 		let servers = vec![_aserver, _bserver];
 		let mut providers = vec![model_server];
 		let semantic = if semantic {
-			let workspace = a.store.task(task).await.unwrap().workspace_id;
+			let workspace = a
+				.store
+				.task(&TEST_FIXTURE, task)
+				.await
+				.unwrap()
+				.workspace_id;
 			let (fixture, server) = configure_semantic(
 				&a,
 				&aa,
@@ -489,7 +500,12 @@ mod scoped_pair_composition {
 		};
 		let native = if native {
 			assert!(semantic.is_some());
-			let workspace = a.store.task(task).await.unwrap().workspace_id;
+			let workspace = a
+				.store
+				.task(&TEST_FIXTURE, task)
+				.await
+				.unwrap()
+				.workspace_id;
 			let data = native_remote_fixture(
 				&a,
 				&b,
@@ -874,9 +890,7 @@ async fn native_remote_fixture(
 		// Model loss of the disposable index after valid bank admission. Canonical
 		// grant dependencies must remain readable across projection reconstruction,
 		// independently of the HTTP index's maximum 1,024 projected sources.
-		let mut tx = aidash_server::database::native::begin(&a.store.pool)
-			.await
-			.unwrap();
+		let mut tx = a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		aidash_server::database::native::query(
 			&Query::delete()
 				.from_table(Alias::new("semantic_points"))
@@ -1226,7 +1240,12 @@ async fn write_home_entry(
 	expected_revision: i64,
 	text: &str,
 ) {
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
@@ -1258,6 +1277,55 @@ async fn write_home_entry(
 		assert!(tokio::time::Instant::now() < deadline, "indexing stalled");
 		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 	}
+}
+/// Make the receiver's scheduled semantic retry and the Home operation it
+/// waits on due now, leaving their counters as the production path saved them.
+async fn advance_semantic_retry(p: &Pair) {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value_expr(
+				Alias::new("pending"),
+				Expr::cust(
+					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
+				),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![Expr::value(p.admission).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.driver())
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(grant_id=? AND state='WAITING')".to_owned(),
+				vec![Expr::value(p.grant).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+}
+/// The `semantic_memory` an Ordered model request carried in its volatile part.
+async fn ordered_semantic_memory(p: &Pair, request: usize) -> Value {
+	let requests = p.requests.lock().await;
+	let parts = requests[request - 1]["messages"][1]["content"]
+		.as_array()
+		.expect("an Ordered request")
+		.clone();
+	let volatile: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+	volatile["semantic_memory"].clone()
+}
+/// Home embedding calls so far, failed ones included.
+async fn home_embeddings(p: &Pair) -> usize {
+	p.semantic.as_ref().unwrap().requests.lock().await.len()
 }
 async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 	serde_json::to_string(&p.requests.lock().await[request - 1])
@@ -1344,7 +1412,12 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 ) {
 	// Arrange
 	let p = scoped_pair;
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let describe = |protocol: &'static str| {
 		let p = &p;
 		async move {
@@ -1365,7 +1438,7 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 		}
 	};
 	let expected = || async {
-		aidash_server::semantic::services::corpus_digest(&p.a.store, workspace, None)
+		aidash_server::semantic::services::corpus_digest(&p.a.store, &TEST_FIXTURE, workspace, None)
 			.await
 			.unwrap()
 	};
@@ -1510,6 +1583,104 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 	p.close().await;
 }
 
+/// Issue #236: a remote Ordered Run keeps reusing its Home retrieval through an
+/// outage of the Home embedding provider while its Retrieval Key holds. A Run
+/// message sent during the outage changes the key's query inputs; only the
+/// step that then needs a new retrieval follows the outage policy. Once the
+/// provider recovers, the retry retrieves again and the next step reuses it.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(4, Ordering::Release);
+	let failing = &p.semantic.as_ref().unwrap().failing;
+
+	// Arrange: the first step retrieves while the Home provider is healthy.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let retrieved = ordered_semantic_memory(&p, 1).await;
+	assert!(!retrieved.is_null(), "step 1 carries semantic context");
+
+	// Act: the Home provider goes down; the next steps keep the same key.
+	failing.store(true, Ordering::Release);
+	let outage = home_embeddings(&p).await;
+	for step in 2..=3 {
+		step_to_model_request(&p, step).await;
+		// Assert: the reuse reaches inference with the same bytes, untouched.
+		assert_eq!(
+			ordered_semantic_memory(&p, step).await,
+			retrieved,
+			"step {step}"
+		);
+		let run = p.run().await;
+		assert_eq!(run.control.as_str(), "ACTIVE", "step {step}: {run:?}");
+		assert!(run.recovery.retry.is_none(), "step {step}: {run:?}");
+		assert!(
+			serde_json::to_value(run.recovery.semantic_reason)
+				.unwrap()
+				.is_null(),
+			"step {step}: {run:?}"
+		);
+	}
+	assert_eq!(remote_retrievals(&p).await, 1, "an unchanged key is reused");
+	assert_eq!(home_embeddings(&p).await, outage, "a reuse embeds nothing");
+
+	// Act: a Run message changes the query inputs of the Retrieval Key.
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant),
+		json!({"id":Uuid::new_v4(),"content":"Also cover the ochre falcon's range."}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..10 {
+		if p.run().await.recovery.retry.is_some() {
+			break;
+		}
+		p.step().await;
+	}
+
+	// Assert: the step that needs a new retrieval follows the outage policy.
+	let run = p.run().await;
+	let retry = run
+		.recovery
+		.retry
+		.as_ref()
+		.unwrap_or_else(|| panic!("a scheduled retry: {run:?}"));
+	assert_eq!(retry.count, 1, "{run:?}");
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable"
+	);
+	assert_eq!(run.control.as_str(), "ACTIVE");
+	assert_eq!(p.requests.lock().await.len(), 3, "no inference");
+	assert!(
+		home_embeddings(&p).await > outage,
+		"the Home tried to embed"
+	);
+
+	// Act: the provider recovers and the retry is due.
+	failing.store(false, Ordering::Release);
+	advance_semantic_retry(&p).await;
+	step_to_model_request(&p, 4).await;
+	// Assert: the retry retrieves again, and the next step reuses it.
+	assert_eq!(remote_retrievals(&p).await, 2, "the retry retrieves again");
+	assert!(p.run().await.recovery.retry.is_none());
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, 2, "step 5 reuses step 4");
+	assert_eq!(
+		ordered_semantic_memory(&p, 5).await,
+		ordered_semantic_memory(&p, 4).await
+	);
+	p.close().await;
+}
+
 /// Revoking the grant or editing a source the Run consumed stops a reuse step
 /// before inference, through the existing pause and invalidation paths.
 #[rstest::rstest]
@@ -1620,7 +1791,12 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		"{:?}",
 		p.run().await
 	);
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let path = format!("/api/runs/{}", p.admission);
 	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{body}");
@@ -1798,7 +1974,12 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let ids: Vec<Uuid> = {
 		let query_bind_1 = workspace;
 		let query_bind_2 = qualified_agent(&p.b.config.node_id, "research", "1.0.0");
@@ -1899,7 +2080,12 @@ async fn consumed_home_semantic_revision_blocks_next_remote_inference(
 	p.step().await;
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let source = p.semantic.as_ref().unwrap().entry;
 	let (status, body) = request(
 		&p.aa,
@@ -2011,7 +2197,12 @@ async fn source_deleted_during_remote_model_request_rejects_the_response(
 	)
 	.await
 	.unwrap();
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let source = p.semantic.as_ref().unwrap().entry;
 	let (status, body) = request(
 		&p.aa,
@@ -2069,31 +2260,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 			assert!(due > chrono::Utc::now());
 			// Advance only persisted fixture deadlines, after checking that the
 			// production path saved a delay and retained its failure counter.
-			{ let query_bind_1 = p.admission; sqlx::query(&Query::update()
-					.table(Alias::new("runs")).value_expr(Alias::new("pending"), Expr::cust(
-							"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
-						))
-					.and_where(SimpleExpr::CustomWithExpr("(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
-					.to_string(PostgresQueryBuilder))
-			.execute(p.b.store.pool.driver())
-			.await }
-			.unwrap();
-			{
-				let query_bind_1 = p.grant;
-				sqlx::query(
-					&Query::update()
-						.table(Alias::new("semantic_remote_operations"))
-						.value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(grant_id=? AND state='WAITING')".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(p.a.store.pool.driver())
-				.await
-			}
-			.unwrap();
+			advance_semantic_retry(&p).await;
 		}
 	}
 	let count = || {
@@ -2146,7 +2313,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 	p.close().await;
 }
 
-/// Issue #154, current contract for a required-Home Run: unlike a local Run,
+/// Issue #154, contract for a required-Home Run: like a local Run (#233),
 /// an unavailable Home embedding provider or vector backend is a typed, transient
 /// `unavailable` semantic failure. The step retries with a persisted delay and
 /// never reaches inference. `semantic_retry_exhaustion_pauses_and_manual_resume_
@@ -2176,7 +2343,7 @@ async fn required_home_semantic_outage_is_a_typed_transient_failure_for_every_ca
 			tokio::task::yield_now().await;
 		}
 	} else {
-		let mut connection = p.a.store.pool.begin().await.unwrap();
+		let mut connection = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		aidash_server::database::native::query(
 			&Query::delete()
 				.from_table(Alias::new("semantic_vectors"))
@@ -2233,9 +2400,13 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 	let run = p.run().await;
 	assert_eq!(run.phase().as_str(), "COMPLETED", "{:?}", run.error);
 	assert_eq!(run.agent_version, "1.0.0");
-	let task = p.a.store.task(p.task).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	assert_eq!(task.status.as_str(), "COMPLETED");
-	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
 	assert_eq!(snapshot.artifacts.len(), 1);
 	assert_eq!(snapshot.artifacts[0].content, "Scoped remote result");
 	assert_eq!(
@@ -2248,7 +2419,7 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 	);
 	let events =
 		p.a.store
-			.events(0, Some(task.workspace_id), 1000)
+			.events(&TEST_FIXTURE, 0, Some(task.workspace_id), 1000)
 			.await
 			.unwrap();
 	let completed = events
@@ -2310,14 +2481,14 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 		);
 	}
 	for _ in 0..4 {
-		if p.a.store.task(p.task).await.unwrap().status
+		if p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status
 			== aidash_server::domain::TaskStatus::Running
 		{
 			break;
 		}
 		p.step().await;
 	}
-	let task = p.a.store.task(p.task).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	assert_eq!(task.status.as_str(), "RUNNING");
 	let run = p.run().await;
 	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("runs"))
@@ -2341,7 +2512,12 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 	assert_eq!(status, 403, "{body}");
 	assert!(coordinator::status(&p.a, manifest.id).await.is_err());
 	assert_eq!(
-		p.a.store.task(task.id).await.unwrap().status.as_str(),
+		p.a.store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"RUNNING"
 	);
 	assert_eq!(p.run().await.phase().as_str(), "TOOL_CALL");
@@ -2402,13 +2578,20 @@ async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operati
 	}
 	assert!(
 		!p.a.store
-			.runs()
+			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.iter()
 			.any(|run| run.task_id == child.id)
 	);
-	assert!(p.a.store.task(child.id).await.unwrap().owner.is_none());
+	assert!(
+		p.a.store
+			.task(&TEST_FIXTURE, child.id)
+			.await
+			.unwrap()
+			.owner
+			.is_none()
+	);
 	p.close().await;
 }
 
@@ -2597,11 +2780,11 @@ async fn a_changed_execution_boundary_stops_before_inference(
 		run.error
 	);
 	assert!(p.requests.lock().await.is_empty());
-	let task = p.a.store.task(p.task).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	assert_eq!(task.status.as_str(), "RUNNING");
 	assert!(
 		p.a.store
-			.snapshot(task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -2632,11 +2815,18 @@ async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
 		request(&p.aa, &p.token, "POST", &path, changed).await.0,
 		409
 	);
-	assert_eq!(p.b.store.run_inputs(p.admission).await.unwrap().len(), 1);
-	let task = p.a.store.task(p.task).await.unwrap();
+	assert_eq!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	assert_eq!(
 		p.a.store
-			.snapshot(task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
 			.await
 			.unwrap()
 			.messages
@@ -2742,8 +2932,12 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 			.unwrap()
 	);
 	assert_eq!(p.run().await.control.as_str(), "PAUSED");
-	let task = p.a.store.task(p.task).await.unwrap();
-	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
 	assert!(snapshot.artifacts.is_empty());
 	assert!(snapshot.messages.is_empty());
 	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
@@ -2771,7 +2965,12 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 	p.step().await;
 	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
 	assert_eq!(
-		p.a.store.task(p.task).await.unwrap().status.as_str(),
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"CANCELLED"
 	);
 	assert_eq!(
@@ -2808,7 +3007,14 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	assert!(p.requests.lock().await.is_empty());
 	assert!(
 		p.a.store
-			.snapshot(p.a.store.task(p.task).await.unwrap().workspace_id)
+			.snapshot(
+				&TEST_FIXTURE,
+				p.a.store
+					.task(&TEST_FIXTURE, p.task)
+					.await
+					.unwrap()
+					.workspace_id
+			)
 			.await
 			.unwrap()
 			.artifacts
@@ -2860,7 +3066,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 		p.step().await;
 	}
 	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
-	let runs = p.b.store.runs().await.unwrap();
+	let runs = p.b.store.runs(&TEST_FIXTURE).await.unwrap();
 	assert_eq!(
 		runs.iter()
 			.filter(|run| run.home_node == p.a.config.node_id && run.task_id == p.task)
@@ -2886,7 +3092,14 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	assert_eq!(count, 1);
 	let snapshot =
 		p.a.store
-			.snapshot(p.a.store.task(p.task).await.unwrap().workspace_id)
+			.snapshot(
+				&TEST_FIXTURE,
+				p.a.store
+					.task(&TEST_FIXTURE, p.task)
+					.await
+					.unwrap()
+					.workspace_id,
+			)
 			.await
 			.unwrap();
 	assert_eq!(snapshot.artifacts.len(), 1);
@@ -2942,7 +3155,14 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	);
 	let snapshot =
 		p.a.store
-			.snapshot(p.a.store.task(p.task).await.unwrap().workspace_id)
+			.snapshot(
+				&TEST_FIXTURE,
+				p.a.store
+					.task(&TEST_FIXTURE, p.task)
+					.await
+					.unwrap()
+					.workspace_id,
+			)
 			.await
 			.unwrap();
 	assert_eq!(snapshot.artifacts.len(), 1);
@@ -2971,7 +3191,12 @@ async fn prepare_generated_pair(
 	task: Uuid,
 	(approval, semantic, native): (bool, bool, bool),
 ) -> (Uuid, Value, Value) {
-	let workspace = a.store.task(task).await.unwrap().workspace_id;
+	let workspace = a
+		.store
+		.task(&TEST_FIXTURE, task)
+		.await
+		.unwrap()
+		.workspace_id;
 	let (_, mut parent_template) = request(
 		aa,
 		&a.config.api_token,
@@ -3079,7 +3304,7 @@ async fn prepare_generated_pair(
 		.await
 	}
 	.unwrap();
-	let parent_run = a.store.run(parent_run).await.unwrap();
+	let parent_run = a.store.run(&TEST_FIXTURE, parent_run).await.unwrap();
 	// Seed the trusted origin to isolate the two-owner allowance assertions.
 	// The cluster driver creates this child through the actual task_create tool.
 	let chain = vec![
@@ -3801,7 +4026,12 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
-	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
 	let cursor: i64 = sqlx::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("COALESCE(MAX(sequence),0)"))
@@ -3811,7 +4041,7 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 	.fetch_one(p.a.store.pool.driver())
 	.await
 	.unwrap();
-	let mut tx = p.a.store.pool.begin().await.unwrap();
+	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	p.a.store
 		.event(
 			&mut tx,
@@ -3873,7 +4103,7 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 
 	// A full visible page may span hidden candidate pages. Its cursor must
 	// retain visible events beyond the response limit for the next request.
-	let mut tx = p.a.store.pool.begin().await.unwrap();
+	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for index in 0..600 {
 		p.a.store
 			.event(&mut tx, None, "test.visible", json!({"index": index}))
@@ -3935,7 +4165,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		}
 	}
 	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
-	let task = p.a.store.task(p.task).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
 	let (status, viewer) = request(
 		&p.ba,
 		&p.receiver_token,
@@ -4054,7 +4284,11 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	assert!(control.get("context").is_none());
 	assert!(control.get("pending").is_none());
 	assert!(control.get("error").is_none());
-	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
 	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
@@ -4346,8 +4580,12 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 		}
 	}
 	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
-	let task = p.a.store.task(p.task).await.unwrap();
-	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
 	let artifact = snapshot.artifacts.first().unwrap();
 	// Reproduce a persisted observation cycle: A's grant reads an A Artifact
 	// produced by that grant's B Run. Such provenance must neither recurse over
@@ -4853,8 +5091,12 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 		.to_string(PostgresQueryBuilder)).fetch_one(p.a.store.pool.driver()).await.unwrap();
 	assert!(still_enabled, "this cut must precede lifecycle retirement");
 	p.step().await;
-	let task = p.a.store.task(p.task).await.unwrap();
-	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.await
+			.unwrap();
 	assert!(
 		!snapshot
 			.messages
@@ -5231,7 +5473,6 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 /// process from a live worker whose Run stopped progressing.
 struct ScopedWorkerCommand {
 	command: std::process::Command,
-	probe: std::net::SocketAddr,
 	log: std::path::PathBuf,
 	_settings_directory: tempfile::TempDir,
 	_binary: Arc<ScopedWorkerBinary>,
@@ -5278,11 +5519,6 @@ fn scoped_worker_command(
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
-		// Readiness uses the production probe listener on its own port.
-		let probe = std::net::TcpListener::bind("127.0.0.1:0")
-			.unwrap()
-			.local_addr()
-			.unwrap();
 		let log = directory.path().join("worker.log");
 		let output = std::fs::File::create(&log).unwrap();
 		let mut command = std::process::Command::new(&scoped_worker_binary.path);
@@ -5298,7 +5534,6 @@ fn scoped_worker_command(
 			))
 			.env("AIDASH_ACTIVATION_NAMESPACE", &p.bschema)
 			.env("AIDASH_ENV", "test")
-			.env("AIDASH_PROBE_LISTEN", probe.to_string())
 			// Activation claims and deferred step recovery are logged by the
 			// harness and application crates.
 			.env(
@@ -5310,7 +5545,6 @@ fn scoped_worker_command(
 			.stderr(output);
 		ScopedWorkerCommand {
 			command,
-			probe,
 			log,
 			_settings_directory: directory,
 			_binary: scoped_worker_binary,
@@ -5321,6 +5555,7 @@ fn scoped_worker_command(
 struct ScopedWorkerProcess {
 	child: std::process::Child,
 	spawned: std::time::Instant,
+	probe: std::net::SocketAddr,
 	command: ScopedWorkerCommand,
 }
 impl ScopedWorkerProcess {
@@ -5340,10 +5575,23 @@ impl ScopedWorkerProcess {
 
 	// Process primitive used by the initial fixture and by the explicit restart Act.
 	fn spawn(mut command: ScopedWorkerCommand) -> Self {
-		let child = command.command.spawn().unwrap();
+		// Readiness uses the production probe listener, which cannot inherit a
+		// descriptor. Reserve its port just before each spawn: a port reserved
+		// when the restart command is built stays released for the whole
+		// initial Run, and another process can take it.
+		let probe = std::net::TcpListener::bind("127.0.0.1:0")
+			.unwrap()
+			.local_addr()
+			.unwrap();
+		let child = command
+			.command
+			.env("AIDASH_PROBE_LISTEN", probe.to_string())
+			.spawn()
+			.unwrap();
 		Self {
 			child,
 			spawned: std::time::Instant::now(),
+			probe,
 			command,
 		}
 	}
@@ -5384,7 +5632,7 @@ impl ScopedWorkerProcess {
 			);
 			if !probed {
 				probed = http_client
-					.get(format!("http://{}/ready", self.command.probe))
+					.get(format!("http://{}/ready", self.probe))
 					.timeout(std::time::Duration::from_millis(500))
 					.send()
 					.await
@@ -6348,7 +6596,11 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 	assert_eq!(saved.run_id, p.admission);
 	assert_eq!(
 		saved.workspace_id,
-		p.a.store.task(p.task).await.unwrap().workspace_id
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id
 	);
 	assert_eq!(
 		home.human_request("QUESTION", "Proceed with the saved task?", &key)
@@ -6363,7 +6615,7 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 			.is_err()
 	);
 	assert!(
-		p.a.store.run(p.admission).await.is_err(),
+		p.a.store.run(&TEST_FIXTURE, p.admission).await.is_err(),
 		"Home must not create a shadow execution Run"
 	);
 	// The model guard lives in providers; both peer transports must stop before rebinding.

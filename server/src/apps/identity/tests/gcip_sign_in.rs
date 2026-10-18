@@ -1,4 +1,5 @@
 //! Signed token and fake tenant Admin API acceptance through the production router.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_integrations::gcip::{AccessToken, AccountLookup, Services, SigningKeys, TokenVerifier};
@@ -109,6 +110,10 @@ async fn gcip_runtime(
 ) -> GcipFixture {
 	let mut runtime = runtime.await;
 	configure(&mut runtime.federation, &admin.url);
+	// A Tenant Binding addresses requests to its Tenant, which must exist.
+	for tenant in ["acme", "other"] {
+		common::tenant_root(&runtime.federation, tenant).await;
+	}
 	GcipFixture {
 		runtime,
 		status,
@@ -763,6 +768,19 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 	);
 	let view: Value = get_identity().send().await.unwrap().json().await.unwrap();
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	// A Deployment Administrator's rejection still records the Tenant the
+	// Binding addressed the request to.
+	let rejected_for: Option<String> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("dashboard_administration_history"))
+			.and_where(Expr::cust("action = 'registration.reject'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(rejected_for.as_deref(), Some("acme"));
 	let force_stale = Query::update()
 		.table(Alias::new("dashboard_identities"))
 		.value_expr(
@@ -953,6 +971,71 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenant(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	let submit = async |app: &common::TestApplication, cookie: &str, csrf: &str| -> Value {
+		let response = browser()
+			.post(app.url("/auth/registration"))
+			.header("cookie", cookie)
+			.header("origin", "http://127.0.0.1:8080")
+			.header("x-aidash-csrf", csrf)
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 200);
+		response.json().await.unwrap()
+	};
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let first = submit(&app, &cookie, &csrf).await;
+	assert_eq!(first["tenant"], "acme");
+	// The pool moves to another Tenant while the request is pending.
+	common::tenant_root(&f, "third").await;
+	f.config
+		.gcip
+		.as_mut()
+		.unwrap()
+		.tenant_bindings
+		.insert("pool-a".into(), "third".into());
+	f.store = f
+		.store
+		.clone()
+		.with_dashboard_policy(f.config.dashboard_policy());
+	let moved = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&moved, "third", "pool-a", "Person").await;
+	let second = submit(&moved, &cookie, &csrf).await;
+	assert_ne!(second["id"], first["id"]);
+	assert_eq!(second["tenant"], "third");
+	assert_eq!(second["status"], "pending");
+	// It ended when it was replaced, not at the deadline it never reached,
+	// which display retention would otherwise treat as its end.
+	let (ended, ended_early): (String, bool) = sqlx::query_as(
+		&Query::select()
+			.column(Alias::new("status"))
+			.expr(Expr::cust("expires_at <= clock_timestamp()"))
+			.from(Alias::new("dashboard_registration_requests"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(
+				uuid::Uuid::parse_str(first["id"].as_str().unwrap()).unwrap(),
+			)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(ended, "expired");
+	assert!(ended_early);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 	#[future(awt)]
 	#[from(gcip_runtime)]
@@ -1019,6 +1102,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
 	.unwrap();
+	common::tenant_root_in(f.store.pool.driver(), "acme").await;
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -1231,6 +1315,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 			json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[]}),
 		)
 		.unwrap();
+		common::tenant_root_in(f.store.pool.driver(), tenant).await;
 		aidash_server::authorization::Authorization {
 			pool: f.store.pool.clone(),
 		}
@@ -1265,7 +1350,11 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 	let code = approved.status();
 	let mapping: Value = approved.json().await.unwrap();
 	assert_eq!(code, 200, "{mapping}");
-	let selector = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let selector = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	assert_eq!(
 		browser()
 			.get(app.url("/api/session"))
@@ -1666,15 +1755,23 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 		.lock(reinhardt::query::LockType::Update)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();
+	let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
 	let pass = tokio::spawn({
 		let f = f.clone();
 		async move { sweep(&f).await }
 	});
+	// The sweep runs in Deployment Scope, which renames its application_name,
+	// so find it by the lock it waits for.
 	let waiters = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(Alias::new("pg_stat_activity"))
-		.and_where(Expr::col(Alias::new("application_name")).eq(Expr::value(&schema)))
-		.and_where(Expr::col(Alias::new("wait_event_type")).eq(Expr::value("Lock")))
+		.and_where(Expr::cust_with_values(
+			"? = ANY(pg_blocking_pids(pid))",
+			[holder],
+		))
 		.and_where(Expr::col(Alias::new("query")).like("%dashboard_identities%"))
 		.to_string(PostgresQueryBuilder);
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -1725,6 +1822,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
 	.unwrap();
+	common::tenant_root_in(f.store.pool.driver(), "acme").await;
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -1756,7 +1854,11 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		.unwrap();
 	assert_eq!(approved.status(), 200);
 	let mapping: Value = approved.json().await.unwrap();
-	let selector = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let selector = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	let identity = registration["identity_id"].as_str().unwrap();
 	let path = format!("/api/dashboard/identities/{identity}");
 	assert_eq!(
@@ -2064,7 +2166,11 @@ async fn mapped_browser(
 		.unwrap();
 	assert_eq!(approved.status(), 200);
 	let mapping: Value = approved.json().await.unwrap();
-	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let context = format!(
+		"mapping:{}:{}",
+		mapping["tenant"].as_str().unwrap(),
+		mapping["id"].as_str().unwrap()
+	);
 	(
 		Browser {
 			cookie,
@@ -2099,13 +2205,16 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
-			"resources": {"kinds": ["registration", "mapping", "subject"]},
+			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
 			"condition": null
 		}]
 	})
 }
 
 async fn replace_policy(f: &Federation, tenant: &str, revision: i64, policy: Value) {
+	if revision == 0 {
+		common::tenant_root(f, tenant).await;
+	}
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -2328,7 +2437,11 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 	let carol = Browser {
 		cookie,
 		csrf,
-		context: format!("mapping:{}", carol_mapping["id"].as_str().unwrap()),
+		context: format!(
+			"mapping:{}:{}",
+			carol_mapping["tenant"].as_str().unwrap(),
+			carol_mapping["id"].as_str().unwrap()
+		),
 	};
 	assert_eq!(
 		carol
@@ -2350,7 +2463,7 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 		.unwrap();
 	assert_eq!(
 		overview,
-		json!({"tenant":"acme","actions":[],"assignable_groups":[],"policy_revision":null})
+		json!({"tenant":"acme","label":"acme","actions":[],"assignable_groups":[],"policy_revision":null})
 	);
 	assert_eq!(
 		carol
@@ -2465,6 +2578,13 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 			),
 			(
 				"registration.approve".into(),
+				"tenant_administrator".into(),
+				Some(admin_identity),
+				Some(admin_mapping)
+			),
+			// Clearing carol's groups changed the policy, so it is audited too.
+			(
+				"subject.group.update".into(),
 				"tenant_administrator".into(),
 				Some(admin_identity),
 				Some(admin_mapping)

@@ -29,6 +29,8 @@ import {
   SheetTitle,
 } from "./components/ui/sheet";
 import type { Mesh, State } from "./types";
+import type { ApprovalCard } from "./generated/models";
+import { approvalNotice } from "./research";
 import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
@@ -84,6 +86,8 @@ const iconTone = {
 function frame(
   data: State | undefined,
   remote: Mesh | undefined,
+  approvals: ApprovalCard[] | undefined,
+  ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
   const scopes = data.workspaces.map((workspace) =>
@@ -159,6 +163,27 @@ function frame(
         workspace: request.workspace_id,
       },
     });
+  // Capability approvals addressed to this person. Their scope appears only
+  // once the inbox has loaded, so approvals already waiting stay quiet.
+  if (approvals) {
+    const scope = JSON.stringify([data.node.id, "approvals"]);
+    scopes.push(scope);
+    for (const approval of approvals)
+      entries.push({
+        key: JSON.stringify([data.node.id, "approval", approval.id]),
+        scope,
+        signature: `${approval.revision}:${approval.state}`,
+        kind: approval.state === "pending" ? "approval" : null,
+        detail: approvalNotice(approval, ja).slice(0, 180),
+        workspaceTitle: approval.agent_id ?? "",
+        target: {
+          kind: "approval",
+          id: approval.id,
+          node: data.node.id,
+          workspace: "",
+        },
+      });
+  }
   return { scopes, entries };
 }
 const NotificationContext = createContext<{
@@ -198,6 +223,7 @@ export function NotificationBell({ className }: { className?: string }) {
 export function NotificationProvider({
   data,
   remote,
+  approvals,
   locale,
   theme,
   onSelect,
@@ -205,6 +231,8 @@ export function NotificationProvider({
 }: {
   data: State | undefined;
   remote: Mesh | undefined;
+  /** Pending capability approvals addressed to the signed-in person. */
+  approvals?: ApprovalCard[];
   locale: Locale;
   theme: "light" | "dark";
   onSelect: (target: NoticeTarget) => void;
@@ -240,7 +268,7 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, remote));
+    store.observe(frame(data, remote, approvals, locale === "ja-JP"));
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -313,7 +341,17 @@ export function NotificationProvider({
         },
       );
     }, delay);
-  }, [data, remote, store, toastId, show, visit, centerOpen]);
+  }, [
+    data,
+    remote,
+    approvals,
+    locale,
+    store,
+    toastId,
+    show,
+    visit,
+    centerOpen,
+  ]);
   useEffect(
     () => () => {
       clearTimeout(timer.current);

@@ -46,14 +46,29 @@ impl PreparedSearch {
 			.present(
 				&spec.vector,
 				&index.collection,
+				&index.tenant,
 				&allowed.keys().copied().collect::<Vec<_>>(),
 			)
 			.await
-			.map_err(|_| Error::SemanticUnavailable)?
+			.map_err(vector_outage)?
 		{
-			return Err(Error::SemanticUnavailable);
+			// Indexed points the entries still require are missing from the
+			// vector backend: an outage of that backend, retried by a Run.
+			return Err(Error::RemoteSemantic(Failure::Unavailable));
 		}
 		Ok(())
+	}
+}
+/// An unreachable or failing vector backend is a transient outage that a Run
+/// retries (#233); a rejected query or invariant violation is not. A `Port`
+/// error is untyped, so only the adapter can tell a transient database failure
+/// from a permanent one and must type the former `Unavailable` itself.
+fn vector_outage(error: Error) -> Error {
+	match error {
+		Error::RemoteSemantic(Failure::Unavailable) | Error::External(_) => {
+			Error::RemoteSemantic(Failure::Unavailable)
+		}
+		_ => Error::SemanticUnavailable,
 	}
 }
 pub async fn prepare(
@@ -182,7 +197,7 @@ pub async fn finish(
 			if strict && matches!(error, Error::RemoteSemantic(_)) {
 				error
 			} else {
-				Error::SemanticUnavailable
+				vector_outage(error)
 			}
 		})?;
 	if strict && !allowed.is_empty() && points.is_empty() {

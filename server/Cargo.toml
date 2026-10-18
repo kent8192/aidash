@@ -30,7 +30,8 @@ aes-gcm = "=0.10.3"
 hkdf = "=0.12.4"
 zeroize = "1.9"
 secrecy = { version = "0.10", features = ["serde"] }
-aidash-domain.workspace = true
+# The server counts tokenized Request Estimates (ADR 0017).
+aidash-domain = { workspace = true, features = ["token-encodings"] }
 aidash-application.workspace = true
 aidash-harness.workspace = true
 aidash-runtime.workspace = true
@@ -158,12 +159,20 @@ name = "research_pdf"
 path = "src/apps/execution/tests/research_pdf.rs"
 
 [[test]]
+name = "decision_journal"
+path = "src/apps/execution/tests/decision_journal.rs"
+
+[[test]]
 name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
 [[test]]
 name = "provider_authorizations"
 path = "src/apps/identity/tests/provider_authorizations.rs"
+
+[[test]]
+name = "plan_connections"
+path = "src/apps/identity/tests/plan_connections.rs"
 
 [[test]]
 name = "endpoints"

@@ -138,10 +138,19 @@ struct State {
 	research_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
-	/// Serve a model version that opts into the calibrated estimator.
-	calibrated_model: bool,
+	completion: Option<aidash_domain::completion::CompletionPolicy>,
+	/// Completion Gate Checks; `None` means the node cannot run them.
+	checks: Option<completion::FakeChecks>,
+	/// The Completion Basis each commit fence persisted.
+	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
+	/// The `request_estimator` the served model version declares.
+	request_estimator: Option<Value>,
+	/// Input tokens the provider reports; 200 when unset.
+	reported_input_tokens: Option<u64>,
 	/// Calibration samples the store returns, newest first.
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
+	/// URL intents recorded beside the Run's Task and inputs.
+	url_intents: Vec<aidash_domain::research::intent::UrlIntent>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -205,8 +214,13 @@ impl Backend {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
 		}
-		if self.0.calibrated_model && id != "summarizer" {
-			config["request_estimator"] = json!("calibrated");
+		if let Some(estimator) = self
+			.0
+			.request_estimator
+			.as_ref()
+			.filter(|_| id != "summarizer")
+		{
+			config["request_estimator"] = estimator.clone();
 		}
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
 	}
@@ -360,9 +374,15 @@ impl ExecutionStore for Backend {
 		Ok(self.0.inputs.lock().unwrap().clone())
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
-		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("completion.fence");
+		if self.0.permit_completion {
+			self.0
+				.fenced
+				.lock()
+				.unwrap()
+				.push(run.context.completion.basis);
+		}
 		Ok(self.0.permit_completion)
 	}
 	async fn human_request(
@@ -603,11 +623,45 @@ impl ExecutionCatalog for Backend {
 
 #[async_trait]
 impl ExecutionHome for Backend {
+	async fn human_request(
+		&self,
+		run: &Run,
+		kind: &str,
+		prompt: &str,
+		key: &str,
+	) -> Result<HumanRequest> {
+		let _ = key;
+		self.record("home.human_request");
+		let request = HumanRequest {
+			id: Uuid::new_v4(),
+			workspace_id: run.workspace_id,
+			run_id: run.id,
+			kind: kind.into(),
+			prompt: prompt.into(),
+			response: None,
+			created_at: run.updated_at,
+			answered_by: None,
+		};
+		*self.0.human.lock().unwrap() = Some(request.clone());
+		Ok(request)
+	}
 	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
 		self.record("home.human_read");
 		let request = self.0.human.lock().unwrap().clone().expect("Home request");
 		assert_eq!(request.id, id);
 		Ok(request)
+	}
+	async fn close_human_request(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+		self.record("home.human_close");
+		let mut human = self.0.human.lock().unwrap();
+		let request = human.as_mut().expect("Home request");
+		assert_eq!(request.id, id);
+		if request.response.is_some() {
+			return Err(Error::Conflict("human request already answered".into()));
+		}
+		request.response = Some(response);
+		request.answered_by = Some("system".into());
+		Ok(request.clone())
 	}
 	async fn task(&self) -> Result<Task> {
 		self.record("home.task");
@@ -836,6 +890,13 @@ impl ExecutionEnvironment for Backend {
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
+	fn completion_checks(
+		&self,
+	) -> Option<&dyn aidash_application::ports::execution::completion::CompletionChecks> {
+		self.0.checks.as_ref().map(|checks| {
+			checks as &dyn aidash_application::ports::execution::completion::CompletionChecks
+		})
+	}
 	async fn documents(&self, entry: &Entry) -> Result<Value> {
 		let _ = entry;
 		Ok(json!([]))
@@ -932,6 +993,12 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		Ok(16000)
 	}
+	async fn url_intents(
+		&self,
+		_run: &Run,
+	) -> Result<Vec<aidash_domain::research::intent::UrlIntent>> {
+		Ok(self.0.url_intents.clone())
+	}
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
 		let _ = run;
 		self.record("inputs.deliver");
@@ -1017,6 +1084,7 @@ impl ExecutionEnvironment for Backend {
 			tool_parallelism: 1,
 			projection_version: self.0.projection,
 			prompt_cache: self.0.prompt_cache,
+			completion: self.0.completion.clone(),
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -1148,7 +1216,7 @@ impl ModelProvider for Backend {
 			output_tokens: if self.0.omit_output_usage { 0 } else { 10 },
 			usage_complete: !self.0.omit_output_usage,
 			reported: ReportedUsage {
-				input_tokens: Some(200),
+				input_tokens: Some(self.0.reported_input_tokens.unwrap_or(200)),
 				output_tokens: (!self.0.omit_output_usage).then_some(10),
 				cache_read_tokens: Some(150),
 				..Default::default()
@@ -1302,8 +1370,13 @@ fn fixture() -> Fixture {
 		research_revoked_after: None,
 		research_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
-		calibrated_model: false,
+		completion: None,
+		checks: None,
+		fenced: Mutex::new(vec![]),
+		request_estimator: None,
+		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
+		url_intents: vec![],
 	}));
 	Fixture { backend, run }
 }
@@ -3407,6 +3480,119 @@ async fn legacy_thinking_request_matches_byte_baseline(
 	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
 }
 
+/// The step state a Legacy request carries.
+fn step_state(request: &ModelRequest) -> Value {
+	serde_json::to_value(request).unwrap()["context"]["current"].clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_are_rendered_from_their_records_only_into_steps_that_carry_them(
+	mut fixture: Fixture,
+) {
+	// Arrange: the Task asks for one page and a run message for another;
+	// their text says nothing about pages.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents = vec![
+		aidash_domain::research::intent::UrlIntent {
+			input_key: None,
+			pages: vec!["https://example.com/notes".into()],
+		},
+		aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		},
+	];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(
+		state["url_intents"],
+		json!({
+			"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+			"pages": ["https://example.com/notes", "https://example.org/rollback"],
+		})
+	);
+	assert_eq!(
+		state["run_messages"][0]["read_pages"],
+		json!(["https://example.org/rollback"])
+	);
+	assert_eq!(
+		state["run_messages"][0]["content"], "Also include the rollback steps.",
+		"the person's text is never rewritten"
+	);
+	assert_eq!(
+		state["task"]["description"],
+		fixture.backend.0.task.lock().unwrap().description
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_of_summarized_run_messages_are_carried_forward(mut fixture: Fixture) {
+	// Arrange: the run message that asked for a page was folded into the
+	// run-message summary, so it is on no page of this step.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	fixture.run.context.run_message_summary = "Include the rollback steps.".into();
+	fixture.run.context.run_message_summary_seq = 2;
+	fixture.run.observed_input_seq = 2;
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents =
+		vec![aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		}];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert!(state.get("run_messages").is_none(), "{state}");
+	assert_eq!(
+		state["url_intents"]["pages"],
+		json!(["https://example.org/rollback"])
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn url_intents_of_run_messages_taken_in_by_media_intake_are_carried_forward(
+	mut fixture: Fixture,
+) {
+	// Arrange: a media-intake turn, which offers no tools, already took in
+	// the run message that asked for a page; the summary does not cover it.
+	fixture.run.state = RunState::Thinking(ThinkingState {
+		media_intake_through_seq: Some(2),
+		..ThinkingState::default()
+	});
+	run_message(&mut fixture);
+	fixture.run.observed_input_seq = 2;
+	Arc::get_mut(&mut fixture.backend.0).unwrap().url_intents =
+		vec![aidash_domain::research::intent::UrlIntent {
+			input_key: Some("input-2".into()),
+			pages: vec!["https://example.org/rollback".into()],
+		}];
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: the page is still requested in the next actionable step.
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert!(state.get("run_messages").is_none(), "{state}");
+	assert_eq!(
+		state["url_intents"]["pages"],
+		json!(["https://example.org/rollback"])
+	);
+}
+
 /// A tool whose results the test scripts in call order; counts real invocations.
 struct Scripted {
 	specification: ToolSpec,
@@ -4689,6 +4875,41 @@ async fn oversized_fixed_content_truncates_the_snapshot_to_fit(
 	assert!(requests[0].ensure_fits(128_000).is_ok());
 }
 
+/// URL intents render beside the bounded snapshot, so the snapshot leaves
+/// room for them rather than fitting alone and overflowing the request.
+#[rstest]
+#[tokio::test]
+async fn url_intents_are_reserved_before_the_snapshot_is_bounded(mut canonical: Fixture) {
+	let pages: Vec<String> = (0..5)
+		.map(|n| format!("https://example.com/{n}/{}", "p".repeat(4000)))
+		.collect();
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	// Leaves room for five long pages beside a snapshot bounded with them in
+	// view, but not beside one bounded as if they were absent.
+	state.instructions = "x".repeat(91_000);
+	state.url_intents = vec![aidash_domain::research::intent::UrlIntent {
+		input_key: None,
+		pages: pages.clone(),
+	}];
+	canonical.backend.0.task.lock().unwrap().description = "d".repeat(400_000);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[0].ensure_fits(128_000).is_ok());
+	assert!(
+		requests[0]
+			.input_body()
+			.to_string()
+			.contains("snapshot_truncated")
+	);
+	assert_eq!(
+		step_state(&requests[0])["url_intents"]["pages"],
+		json!(pages)
+	);
+}
+
 /// A semantic read that fills its whole budget must still fit beside fixed
 /// content that leaves less headroom than the Run-fixed semantic budget.
 #[rstest]
@@ -4856,3 +5077,5 @@ async fn catch_up_steps_carry_no_breakpoints() {
 }
 
 mod research;
+
+mod completion;

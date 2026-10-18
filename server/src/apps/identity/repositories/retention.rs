@@ -1,7 +1,7 @@
 //! A Tenant's own Retention Rules and their history (ADR 0045). A subject
 //! acts through its Tenant policy in the authorization transaction; a
 //! Deployment Administrator needs none.
-use crate::apps::identity::models::{TenantRetentionRule, TenantRetentionRuleHistory};
+use crate::apps::identity::models::{Tenant, TenantRetentionRule, TenantRetentionRuleHistory};
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::store::Store;
 use aidash_application::{
@@ -146,7 +146,14 @@ impl RetentionScope for Scope {
 		decider: &Decider,
 	) -> Result<()> {
 		let now = Utc::now();
+		// A subject acts through its Tenant's policy, so its Tenant exists. A
+		// Deployment Administrator may name any Tenant: rules stored for a
+		// name with no root record would bind a Tenant created under it later.
+		let administrator = matches!(self.tx, Transaction::Administrator(_));
 		let tx = self.executor();
+		if administrator && !native(Tenant::exists(tx, tenant).await)? {
+			return Err(crate::Error::NotFound("tenant".into()).into());
+		}
 		let (sql, values) = Query::delete()
 			.from_table(Alias::new(TenantRetentionRule::table_name()))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
@@ -266,12 +273,17 @@ impl RetentionRepository for TenantRetention<'_> {
 				Decider::DeploymentAdministrator {
 					identity: self.administrator,
 				},
+				// A Deployment Administrator changes any Tenant's rules, as its
+				// other work without a Workspace does.
 				Transaction::Administrator(native(
-					self.store
-						.database()
-						.begin()
-						.await
-						.map_err(crate::Error::from),
+					async {
+						self.store
+							.pool
+							.begin(&self.actor.tenancy()?)
+							.await?
+							.into_executor()
+					}
+					.await,
 				)?),
 			),
 		};

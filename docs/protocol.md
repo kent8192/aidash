@@ -108,16 +108,39 @@ which holds no Run, Tenant or attempt identifier, and are written in the same
 transaction that completes the Usage Record. Deployment Administrators read per-key aggregates
 with `manage diagnostics calibration`.
 
-Each Run step pins an Estimate Snapshot (estimator, version, ratio and margin)
-in the Run's context before the step relies on it. A resumed step reuses it,
-so it makes the same fitting and compaction decisions even after calibration
-data changed. Run inspection shows the pinned snapshot without its sample
+A model definition that sets `request_estimator: {"tokenized": "<encoding>"}`
+counts the byte basis with that Token Encoding instead of scaling it. The list
+is closed and defined in code: `o200k_base` (OpenAI GPT-4o through GPT-5,
+counted with the gpt-oss tokenizer) and `gemma4` (Gemini 3.1 and later, which
+Google's SDK counts with Gemma 4). Registration rejects any other name and
+never compares the name with the model slug; the web form offers the encoding
+as an optional choice and never preselects one. Every string inside a message
+is counted as the text the model receives, with its JSON escaping decoded
+once, and each message adds 8 tokens. Each tool definition is counted as its
+JSON and adds 32 tokens, because providers render schemas in their own format.
+Response formats count as JSON, and the cache-salt reserve is added unchanged.
+The media allowance, output reservation and framing follow, and the result
+never exceeds the byte estimate. Text longer than 16 KiB is counted in pieces
+split where whitespace starts, which bounds counting time and keeps a piece's
+count reusable. Only the server binary embeds the tokenizer files; a binary
+without them, or a Run step pinned to an encoding version it lacks, estimates
+in bytes. A tokenized model still collects calibration samples, and its byte
+quotas convert through the key's calibrated ratio when one exists.
+
+Each Run step pins an Estimate Snapshot (estimator, version, Token Encoding,
+ratio and margin) in the Run's context before the step relies on it. A resumed
+step reuses it, so it makes the same fitting and compaction decisions even after
+calibration data changed. A calibrated or tokenized snapshot becomes the byte
+estimate for the rest of the Run after a Context Overflow, from the same step,
+or when the provider reports more input tokens than the snapshot estimated,
+from the next step. Run inspection shows the pinned snapshot without its sample
 count. Snapshot quotas are byte budgets that convert through the snapshot's
 ratio, while the Ordered Stable Prefix quota and the semantic budget always use
 the byte estimate, so calibration never changes the Stable Prefix or the
 Retrieval Key. Summary Stage requests, Jev, Registry workbench requests, the
 run-message limit and the media headroom keep the byte estimate.
-Every Usage Record keeps its Request Estimate with the byte basis, the output
+Every Usage Record keeps its Request Estimate with its confidence
+(`conservative`, `calibrated` or `tokenized`), the byte basis, the output
 reservation and the snapshot ratio, so the estimation error of an attempt is
 `estimated_tokens - output_reservation - input_tokens`.
 
@@ -156,7 +179,7 @@ The default retention threshold is 0.5: keep the complete pair when the result p
 
 The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens, below the 32,000-token context OpenRouter lists for Jev. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
 
-Requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.13`; aliases are refused. Each request is a Decision Attempt with its own identifier: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.13-20260917`). The reported `usage.cost` is logged with the Decision Attempt and is not a Usage Record. The upstream MIT notice is included in [LICENSE](../LICENSE).
+Requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.13`; aliases are refused. Each request is a Decision Attempt with its own identifier: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.13-20260917`). The reported `usage.cost` is logged with the Decision Attempt and is not a Usage Record. The upstream license notice is listed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ### Context recovery
 

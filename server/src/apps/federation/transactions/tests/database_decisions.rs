@@ -27,6 +27,7 @@ async fn racing_decisions_are_immutable_and_audited_once(
 	coordinator: AtomicCoordinator,
 ) {
 	let database = database.await;
+	let pool = database.pool().await;
 	let mut connection = database.lease.handle();
 	let original = AtomicCoordinator::objects()
 		.create_with_conn(&mut connection, &coordinator)
@@ -34,13 +35,13 @@ async fn racing_decisions_are_immutable_and_audited_once(
 		.unwrap();
 	let (commit, abort) = tokio::join!(
 		coordinator_records::transition(
-			connection,
+			&pool,
 			original.id,
 			CoordinatorTransition::Decide(AtomicCoordinatorDecision::Commit),
 			""
 		),
 		coordinator_records::transition(
-			connection,
+			&pool,
 			original.id,
 			CoordinatorTransition::Decide(AtomicCoordinatorDecision::Abort),
 			"cancel"
@@ -59,7 +60,7 @@ async fn racing_decisions_are_immutable_and_audited_once(
 	};
 	assert!(
 		!coordinator_records::transition(
-			connection,
+			&pool,
 			original.id,
 			CoordinatorTransition::Decide(opposite),
 			"retry"
@@ -95,21 +96,18 @@ async fn visibility_and_completion_are_monotonic(
 	#[case] decision: AtomicCoordinatorDecision,
 ) {
 	let database = database.await;
+	let pool = database.pool().await;
 	let mut connection = database.lease.handle();
 	let original = AtomicCoordinator::objects()
 		.create_with_conn(&mut connection, &coordinator)
 		.await
 		.unwrap();
-	let premature = coordinator_records::transition(
-		connection,
-		original.id,
-		CoordinatorTransition::Complete,
-		"",
-	)
-	.await;
+	let premature =
+		coordinator_records::transition(&pool, original.id, CoordinatorTransition::Complete, "")
+			.await;
 	assert!(matches!(premature, Err(Error::Conflict(_))));
 	coordinator_records::transition(
-		connection,
+		&pool,
 		original.id,
 		CoordinatorTransition::Decide(decision.clone()),
 		"",
@@ -118,7 +116,7 @@ async fn visibility_and_completion_are_monotonic(
 	.unwrap();
 	if decision == AtomicCoordinatorDecision::Commit {
 		let premature = coordinator_records::transition(
-			connection,
+			&pool,
 			original.id,
 			CoordinatorTransition::Complete,
 			"",
@@ -127,7 +125,7 @@ async fn visibility_and_completion_are_monotonic(
 		assert!(matches!(premature, Err(Error::Conflict(_))));
 		assert!(
 			coordinator_records::transition(
-				connection,
+				&pool,
 				original.id,
 				CoordinatorTransition::Publish,
 				"applied"
@@ -137,7 +135,7 @@ async fn visibility_and_completion_are_monotonic(
 		);
 		assert!(
 			!coordinator_records::transition(
-				connection,
+				&pool,
 				original.id,
 				CoordinatorTransition::Publish,
 				"retry"
@@ -146,18 +144,14 @@ async fn visibility_and_completion_are_monotonic(
 			.unwrap()
 		);
 	} else {
-		let publish = coordinator_records::transition(
-			connection,
-			original.id,
-			CoordinatorTransition::Publish,
-			"",
-		)
-		.await;
+		let publish =
+			coordinator_records::transition(&pool, original.id, CoordinatorTransition::Publish, "")
+				.await;
 		assert!(matches!(publish, Err(Error::Conflict(_))));
 	}
 	assert!(
 		coordinator_records::transition(
-			connection,
+			&pool,
 			original.id,
 			CoordinatorTransition::Complete,
 			"finalized"
@@ -167,7 +161,7 @@ async fn visibility_and_completion_are_monotonic(
 	);
 	assert!(
 		!coordinator_records::transition(
-			connection,
+			&pool,
 			original.id,
 			CoordinatorTransition::Complete,
 			"retry"
@@ -197,6 +191,7 @@ async fn audit_detail_preserves_quotes_and_placeholder_text(
 	coordinator: AtomicCoordinator,
 ) {
 	let database = database.await;
+	let pool = database.pool().await;
 	let mut connection = database.lease.handle();
 	let original = AtomicCoordinator::objects()
 		.create_with_conn(&mut connection, &coordinator)
@@ -204,7 +199,7 @@ async fn audit_detail_preserves_quotes_and_placeholder_text(
 		.unwrap();
 	let detail = "provider said '$1 $2 $3 $4' literally";
 	coordinator_records::transition(
-		connection,
+		&pool,
 		original.id,
 		CoordinatorTransition::Decide(AtomicCoordinatorDecision::Abort),
 		detail,

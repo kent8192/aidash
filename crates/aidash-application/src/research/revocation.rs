@@ -95,12 +95,16 @@ impl Journal for RunJournal<'_> {
 	}
 }
 
+/// A result compaction cut to a string or elided whole, keeping its call's
+/// arguments: only the journaled original tells whether it was research.
 fn cut(event: &ContextEvent) -> bool {
-	matches!(event, ContextEvent::Tool { result, .. } if crate::context::truncated_result(result))
+	matches!(event, ContextEvent::Tool { result, .. }
+		if crate::context::truncated_result(result) || ContextEvent::is_elided_result(result))
 }
 
 /// Whether a projection not yet revoked may hold research content: a research
-/// result, a result compaction cut to a string, or an Execution Summary.
+/// result, a result compaction cut to a string or elided, or an Execution
+/// Summary.
 pub fn may_carry_research(context: &Context) -> bool {
 	context.execution_summary.is_some()
 		|| context

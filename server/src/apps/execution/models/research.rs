@@ -61,7 +61,7 @@ pub struct ResearchAttempt {
 	pub provider: String,
 	#[field(field_type = "text")]
 	pub destination: String,
-	/// The Search account holder's account charged for this attempt.
+	/// The Research account holder's account charged for this attempt.
 	#[field(field_type = "text", null = true)]
 	pub account_id: Option<String>,
 	#[field(null = true)]
@@ -317,6 +317,56 @@ impl ResearchAttempt {
 		.await
 	}
 
+	/// One Run's charges and the attempts whose outcome is not settled:
+	/// `(recorded prices of charged attempts, unknown, still dispatched)`.
+	pub(crate) async fn run_charges(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+	) -> Result<(u64, u32, u32)> {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Func::coalesce(vec![
+					Func::sum(Expr::col(Alias::new("price_micro_usd")).into()),
+					Expr::value(0_i64).into(),
+				]),
+				Alias::new("charged"),
+			)
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("outcome").ne(Expr::value(AttemptOutcome::Failed.as_str())))
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one(&sql, convert_values(values)).await?;
+		let data = QueryRow::from_backend_row(row).data;
+		// SUM(bigint) is numeric, which a Run's lifetime total may make wider
+		// than i64: a total beyond u64 saturates, and an unreadable one is an
+		// error, never a zero charge.
+		let total = &data["charged"];
+		let charged = total
+			.as_u64()
+			.or_else(|| {
+				total
+					.as_str()
+					.and_then(|text| text.parse::<u128>().ok())
+					.map(|sum| u64::try_from(sum).unwrap_or(u64::MAX))
+			})
+			.or_else(|| {
+				total
+					.as_f64()
+					.filter(|sum| *sum >= 0.0)
+					.map(|sum| sum as u64)
+			})
+			.ok_or_else(|| Error::External(format!("unreadable research charge total {total}")))?;
+		let unknown = count(
+			tx,
+			Self::table_name(),
+			run,
+			&[("outcome", AttemptOutcome::Unknown.as_str())],
+		)
+		.await?;
+		let dispatched = count(tx, Self::table_name(), run, &[("outcome", DISPATCHED)]).await?;
+		Ok((charged, unknown, dispatched))
+	}
+
 	/// Charged attempts of one account since `since`, including attempts whose
 	/// outcome is not yet known.
 	pub(crate) async fn spend(
@@ -531,10 +581,14 @@ impl ResearchSnapshot {
 			.text_bytes(i64::try_from(bytes).unwrap_or(i64::MAX))
 			.purged_at(None)
 			.purge_reason(None)
+			// The domain bounds the count to the stored range; a larger one is
+			// refused rather than recorded smaller than its pages.
 			.page_count(
 				snapshot
 					.page_count
-					.map(|count| i32::try_from(count).unwrap_or(i32::MAX)),
+					.map(i32::try_from)
+					.transpose()
+					.map_err(|_| Error::Invalid("snapshot page count out of range".into()))?,
 			)
 			.pages_without_text(Json(serde_json::to_value(&snapshot.pages_without_text)?))
 			.original_digest(
@@ -839,7 +893,7 @@ impl ResearchSnapshot {
 		let mut update = Query::update();
 		update
 			.table(Alias::new(Self::table_name()))
-			.value_expr(Alias::new("lines"), Expr::cust("'[]'::jsonb"))
+			.value(Alias::new("lines"), Value::Array(Vec::new()))
 			.value(Alias::new("text_bytes"), 0_i64)
 			.value(Alias::new("original_retained"), false)
 			.value(Alias::new("purged_at"), at)
@@ -854,7 +908,10 @@ impl ResearchOriginal {
 		let (sql, values) = Query::select()
 			.expr_as(
 				Func::coalesce(vec![
-					Func::sum(Expr::cust("octet_length(bytes)").into()),
+					Func::sum(SimpleExpr::FunctionCall(
+						"octet_length".into_iden(),
+						vec![Expr::col(Alias::new("bytes")).into()],
+					)),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("held"),
@@ -1016,17 +1073,27 @@ pub(crate) async fn revoke_invocations(
 	let mut removed = 0;
 	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
 		let tombstone = revoked_result(operation);
+		let result = || Expr::col(Alias::new("result"));
 		let mut update = Query::update();
+		// The input names the query or address that was disclosed.
 		update
 			.table(Alias::new("invocations"))
 			.value(Alias::new("result"), tombstone.clone())
-			.and_where(Expr::cust("(result->>'version') = '1'"))
-			.and_where(Expr::cust("jsonb_typeof(result->'limits') = 'object'"))
-			.and_where(Expr::cust_with_values(
-				"(result->>'operation') = ?",
-				[operation.as_str()],
-			))
-			.and_where(Expr::col("result").ne(Expr::value(tombstone)));
+			.value(Alias::new("input"), revoked_arguments())
+			// Exactly the domain recognizer's test: the contract marker and
+			// the operation. A pending approval or a failure has no `limits`,
+			// and its input still names what was disclosed.
+			.and_where(
+				json_text(result(), "contract")
+					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+			)
+			.and_where(json_text(result(), "operation").eq(Expr::value(operation.as_str())))
+			// A result settled as a tombstone after the revocation still has
+			// its input to redact.
+			.and_where(
+				result().ne(jsonb(&tombstone.to_string())).or(Expr::col(Alias::new("input"))
+					.ne(jsonb(&revoked_arguments().to_string()))),
+			);
 		match run {
 			Some(run) => update.and_where(Expr::col("run_id").eq(Expr::value(run))),
 			None => update.and_where(
@@ -1044,7 +1111,173 @@ pub(crate) async fn revoke_invocations(
 			.await?
 			.rows_affected;
 	}
+	// A call still in flight, or interrupted after its attempt was reserved,
+	// has no result to recognize, but its research attempt names it and its
+	// input what was disclosed.
+	let revoked = revoked_arguments().to_string();
+	let attempted = Query::select()
+		.column(Alias::new("invocation_key"))
+		.from(Alias::new(ResearchAttempt::table_name()))
+		.and_where(
+			Expr::col((
+				Alias::new(ResearchAttempt::table_name()),
+				Alias::new("run_id"),
+			))
+			.equals((Alias::new("invocations"), Alias::new("run_id"))),
+		)
+		.to_owned();
+	let mut update = Query::update();
+	update
+		.table(Alias::new("invocations"))
+		.value(Alias::new("input"), revoked_arguments())
+		.and_where(Expr::col(Alias::new("result")).is_null())
+		.and_where(Expr::col(Alias::new("input")).ne(jsonb(&revoked)))
+		.and_where(Expr::col(Alias::new("idempotency_key")).in_subquery(attempted));
+	match run {
+		Some(run) => update.and_where(Expr::col("run_id").eq(Expr::value(run))),
+		None => update.and_where(
+			Expr::col("run_id").in_subquery(
+				Query::select()
+					.column(Alias::new("run_id"))
+					.from(Alias::new(ResearchRevocation::table_name()))
+					.to_owned(),
+			),
+		),
+	};
+	let (sql, values) = update.build(PostgresQueryBuilder);
+	removed += tx
+		.execute(&sql, convert_values(values))
+		.await?
+		.rows_affected;
+	revoke_tool_events(tx, run).await?;
 	Ok(u32::try_from(removed).unwrap_or(u32::MAX))
+}
+
+fn revoked_arguments() -> Value {
+	aidash_domain::context::ContextEvent::revoked_arguments()
+}
+
+/// Redact research invocations in the workspace event log, which
+/// `/api/events` serves: a `tool.completed` event holds the result and a
+/// `tool.started` event the input naming what was disclosed. Those of `run`,
+/// or with none those of every revoked Run, so an event appended just after
+/// a revocation is caught by the next sweep. Idempotent.
+async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>) -> Result<()> {
+	let of_run = || -> SimpleExpr {
+		let run_id = json_text(Expr::col(Alias::new("data")), "run_id");
+		match run {
+			Some(run) => run_id.eq(Expr::value(run.to_string())),
+			None => Expr::from(run_id)
+				.in_subquery(
+					Query::select()
+						.expr(Expr::col(Alias::new("run_id")).cast_as_text())
+						.from(Alias::new(ResearchRevocation::table_name()))
+						.to_owned(),
+				)
+				.into(),
+		}
+	};
+	let data = || Expr::col(Alias::new("data"));
+	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		let tombstone = revoked_result(operation).to_string();
+		let result = || json_field(data(), "result");
+		let (sql, values) = Query::update()
+			.table(Alias::new("events"))
+			.value_expr(Alias::new("data"), with_key(data(), "result", &tombstone))
+			.and_where(Expr::col("kind").eq("tool.completed"))
+			.and_where(
+				json_text(Expr::from(result()), "contract")
+					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+			)
+			.and_where(
+				json_text(Expr::from(result()), "operation").eq(Expr::value(operation.as_str())),
+			)
+			.and_where(result().ne(jsonb(&tombstone)))
+			.and_where(of_run())
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+	}
+	// The input of an invocation whose result was redacted, or of an attempt
+	// still in flight, which a research attempt records.
+	let revoked = revoked_arguments().to_string();
+	let events_run = || {
+		json_text(
+			Expr::col((Alias::new("events"), Alias::new("data"))),
+			"run_id",
+		)
+	};
+	let key = || Expr::from(json_text(data(), "idempotency_key"));
+	let redacted = Query::select()
+		.column(Alias::new("idempotency_key"))
+		.from(Alias::new("invocations"))
+		.and_where(
+			Expr::col(Alias::new("run_id"))
+				.cast_as_text()
+				.eq(events_run()),
+		)
+		.and_where(Expr::col(Alias::new("input")).eq(jsonb(&revoked)))
+		.to_owned();
+	let attempted = Query::select()
+		.column(Alias::new("invocation_key"))
+		.from(Alias::new(ResearchAttempt::table_name()))
+		.and_where(
+			Expr::col(Alias::new("run_id"))
+				.cast_as_text()
+				.eq(events_run()),
+		)
+		.to_owned();
+	let (sql, values) = Query::update()
+		.table(Alias::new("events"))
+		.value_expr(Alias::new("data"), with_key(data(), "input", &revoked))
+		.and_where(Expr::col("kind").eq("tool.started"))
+		.and_where(json_field(data(), "input").ne(jsonb(&revoked)))
+		.and_where(
+			SimpleExpr::from(key().in_subquery(redacted))
+				.or(SimpleExpr::from(key().in_subquery(attempted))),
+		)
+		.and_where(of_run())
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
+
+/// `json -> key`.
+pub(crate) fn json_field(json: Expr, key: &str) -> SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::JsonGetByIndex,
+		),
+		Expr::value(key),
+	)
+}
+
+/// `json ->> key`.
+pub(crate) fn json_text(json: Expr, key: &str) -> SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::JsonGetAsText,
+		),
+		Expr::value(key),
+	)
+}
+
+/// A JSON text bound as a `jsonb` value.
+fn jsonb(text: &str) -> SimpleExpr {
+	Expr::value(text.to_owned()).cast_as("jsonb")
+}
+
+/// `json || jsonb_build_object(key, value)`: the object with its top-level
+/// `key` set to `value`, as `jsonb_set(json, '{key}', value)` sets it.
+fn with_key(json: Expr, key: &str, value: &str) -> SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::Concatenate,
+		),
+		SimpleExpr::FunctionCall(
+			"jsonb_build_object".into_iden(),
+			vec![Expr::value(key).into(), jsonb(value)],
+		),
+	)
 }
 
 impl ResearchRevocation {

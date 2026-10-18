@@ -4,12 +4,9 @@
 use super::{native, run_lock};
 use crate::apps::execution::models::research::{
 	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchPageImage, ResearchRevocation,
-	ResearchSnapshot, ResearchSource, lock, revoke_invocations,
+	ResearchSnapshot, ResearchSource, json_field, json_text, lock, revoke_invocations,
 };
-use crate::authorization::{
-	access::NativeAccess,
-	identity::{Actor, SubjectIdentity},
-};
+use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
 use crate::store::Store;
 use aidash_application::{
@@ -23,10 +20,11 @@ use aidash_domain::{
 	retention::Decider,
 };
 use async_trait::async_trait;
+use chrono::SubsecRound;
 use reinhardt::db::{backends::TransactionExecutor, orm::QueryRow, orm::execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, TableRef,
+	Alias, Expr, ExprTrait, Func, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder,
+	Query, QueryStatementBuilder, TableRef,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -34,16 +32,52 @@ use uuid::Uuid;
 /// The resource identifier of a Tenant's revocation records.
 const RECORDS: &str = "revocations";
 
-/// One Run's Context Journal through the store.
+/// One Run's Context Journal, read through the revocation's own transaction.
+/// That transaction already holds a connection and the Run's row, so a read
+/// from the pool would need a second connection, which a small or busy pool
+/// may never free while the revocation waits.
 struct StoredJournal<'a> {
-	store: &'a Store,
+	tx: tokio::sync::Mutex<&'a mut dyn TransactionExecutor>,
 	run: Uuid,
 }
 
 #[async_trait]
 impl Journal for StoredJournal<'_> {
 	async fn entries(&self, from: u64, through: u64) -> Result<Vec<HistoryEntry>> {
-		native(self.store.context_journal(self.run, from, through).await)
+		let bound = |value: u64| {
+			i64::try_from(value)
+				.map_err(|_| Error::Invalid("context journal value is out of range".into()))
+		};
+		let (sql, values) = Query::select()
+			.columns(["seq", "event"].map(Alias::new))
+			.from(Alias::new(
+				crate::apps::execution::repositories::context_journal::EVENTS,
+			))
+			.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+			.and_where(Expr::col("seq").gte(Expr::value(bound(from)?)))
+			.and_where(Expr::col("seq").lte(Expr::value(bound(through)?)))
+			.order_by(Alias::new("seq"), Order::Asc)
+			.build(PostgresQueryBuilder);
+		let rows = native(
+			self.tx
+				.lock()
+				.await
+				.fetch_all(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from),
+		)?;
+		rows.into_iter()
+			.map(|row| {
+				let data = QueryRow::from_backend_row(row).data;
+				let seq = data["seq"]
+					.as_u64()
+					.ok_or_else(|| Error::Invalid("context journal sequence is negative".into()))?;
+				Ok(HistoryEntry {
+					seq,
+					event: serde_json::from_value(data["event"].clone())?,
+				})
+			})
+			.collect()
 	}
 }
 
@@ -53,13 +87,10 @@ impl Journal for StoredJournal<'_> {
 /// keeps its revision, which the worker's own keys derive from; the worker
 /// applies the revocation before its next model request, and the retention
 /// sweep catches a projection it saved meanwhile. A row a worker's step holds
-/// locked is skipped rather than waited on, for the same reasons.
+/// locked is skipped rather than waited on, for the same reasons; the caller
+/// retries it once its own transaction has committed.
 /// `updated_at`, which dates the end of a terminal Run, is kept.
-pub(crate) async fn scrub_projection(
-	tx: &mut dyn TransactionExecutor,
-	store: &Store,
-	run: Uuid,
-) -> Result<bool> {
+pub(crate) async fn scrub_projection(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<bool> {
 	let (sql, values) = Query::select()
 		.column(Alias::new("context"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
@@ -77,16 +108,26 @@ pub(crate) async fn scrub_projection(
 	};
 	let mut context: Context =
 		serde_json::from_value(QueryRow::from_backend_row(row).data["context"].clone())?;
-	revoke_projection(&mut context, &StoredJournal { store, run }).await?;
+	let journal = StoredJournal {
+		tx: tokio::sync::Mutex::new(&mut *tx),
+		run,
+	};
+	revoke_projection(&mut context, &journal).await?;
 	let (sql, values) = Query::update()
 		.table(Alias::new("runs"))
 		.value(Alias::new("context"), serde_json::to_value(&context)?)
+		// A worker's live lease means its step saves next and moves the
+		// revision itself.
 		.value_expr(
 			Alias::new("revision"),
-			Expr::cust(
-				"CASE WHEN lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP \
-				 THEN revision + 1 ELSE revision END",
-			),
+			Expr::case()
+				.when(
+					Expr::col("lease_until")
+						.is_null()
+						.or(Expr::col("lease_until").lte(Expr::current_timestamp())),
+					Expr::col("revision").add(1),
+				)
+				.else_result(Expr::col("revision")),
 		)
 		.and_where(Expr::col("id").eq(Expr::value(run)))
 		.build(PostgresQueryBuilder);
@@ -98,14 +139,41 @@ pub(crate) async fn scrub_projection(
 	Ok(true)
 }
 
+/// Rounds of a scrub retried while a worker's step holds the Run's row, and the
+/// pause between them. A Run still locked after them is left to the worker's
+/// next step and to the next sweep.
+const LOCKED_SCRUB_ROUNDS: u32 = 20;
+const LOCKED_SCRUB_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Scrub a revoked Run's projection in transactions of its own, retrying while
+/// a worker's step holds its row: that step is about to commit a projection
+/// read before the revocation, which the round after it scrubs. Returns
+/// whether a round reached the row.
+async fn scrub_retrying(store: &Store, run: Uuid) -> Result<bool> {
+	for round in 0..LOCKED_SCRUB_ROUNDS {
+		if round > 0 {
+			tokio::time::sleep(LOCKED_SCRUB_PAUSE).await;
+		}
+		let mut tx = native(super::retention_transaction(store).await)?;
+		let done = scrub_projection(tx.as_mut(), run).await?;
+		native(tx.commit().await.map_err(crate::Error::from))?;
+		if done {
+			return Ok(true);
+		}
+	}
+	Ok(false)
+}
+
 /// Revoked Runs examined per round trip of the sweep.
 const SCRUB_BATCH: u64 = 64;
 
 /// Scrub the stored projections of revoked Runs that still lack the
 /// revocation, such as one a worker saved while it was being revoked. Every
-/// such Run is examined in one pass, in pages ordered by id.
+/// such Run is examined in one pass, in pages ordered by id; one a worker's
+/// step holds locked is retried at the end of the pass.
 pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 	let mut scrubbed = 0;
+	let mut skipped = Vec::new();
 	let mut after: Option<Uuid> = None;
 	loop {
 		let mut query = Query::select();
@@ -118,9 +186,16 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 				Expr::col((Alias::new("v"), Alias::new("run_id")))
 					.equals((Alias::new("r"), Alias::new("id"))),
 			)
-			.and_where(Expr::cust(
-				"COALESCE(r.context->>'research_revoked', 'false') <> 'true'",
-			))
+			.and_where(
+				Func::coalesce(vec![
+					json_text(
+						Expr::col((Alias::new("r"), Alias::new("context"))),
+						"research_revoked",
+					),
+					Expr::value("false").into(),
+				])
+				.ne(Expr::value("true")),
+			)
 			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
 			.limit(SCRUB_BATCH);
 		if let Some(after) = after {
@@ -129,7 +204,7 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		let (sql, values) = query.build(PostgresQueryBuilder);
 		let runs = native(
 			async {
-				let mut tx = store.database().begin().await?;
+				let mut tx = super::retention_transaction(store).await?;
 				let rows = tx.fetch_all(&sql, convert_values(values)).await?;
 				tx.commit().await?;
 				Ok(rows)
@@ -148,14 +223,21 @@ pub(crate) async fn scrub_revoked_projections(store: &Store) -> Result<u32> {
 		};
 		after = Some(last);
 		for run in &runs {
-			let mut tx = native(store.database().begin().await.map_err(crate::Error::from))?;
-			let done = scrub_projection(tx.as_mut(), store, *run).await?;
+			let mut tx = native(super::retention_transaction(store).await)?;
+			let done = scrub_projection(tx.as_mut(), *run).await?;
 			native(tx.commit().await.map_err(crate::Error::from))?;
-			scrubbed += u32::from(done);
+			if done {
+				scrubbed += 1;
+			} else {
+				skipped.push(*run);
+			}
 		}
 		if (runs.len() as u64) < SCRUB_BATCH {
 			break;
 		}
+	}
+	for run in skipped {
+		scrubbed += u32::from(scrub_retrying(store, run).await?);
 	}
 	Ok(scrubbed)
 }
@@ -169,10 +251,7 @@ pub(crate) struct Revocations<'a> {
 }
 
 enum Transaction {
-	Subject {
-		access: Box<NativeAccess>,
-		identity: SubjectIdentity,
-	},
+	Subject { access: Box<NativeAccess> },
 	Administrator(Box<dyn TransactionExecutor>),
 }
 
@@ -180,6 +259,9 @@ struct Scope<'a> {
 	federation: &'a Federation,
 	decider: Decider,
 	tx: Transaction,
+	/// The revoked Run whose projection a worker's step held locked, scrubbed
+	/// again once the revocation commits.
+	locked: Option<Uuid>,
 }
 
 impl Revocations<'_> {
@@ -192,20 +274,24 @@ impl Revocations<'_> {
 				},
 				Transaction::Subject {
 					access: Box::new(NativeAccess::begin(&self.federation.store, identity).await?),
-					identity: identity.clone(),
 				},
 			),
 			Actor::DeploymentAdministrator => (
 				Decider::DeploymentAdministrator {
 					identity: self.administrator,
 				},
+				// A Deployment Administrator revokes any Tenant's Run, as its
+				// other work without a Workspace does.
 				Transaction::Administrator(native(
-					self.federation
-						.store
-						.database()
-						.begin()
-						.await
-						.map_err(Into::into),
+					async {
+						self.federation
+							.store
+							.pool
+							.begin(&self.actor.tenancy()?)
+							.await?
+							.into_executor()
+					}
+					.await,
 				)?),
 			),
 		};
@@ -213,6 +299,7 @@ impl Revocations<'_> {
 			federation: self.federation,
 			decider,
 			tx,
+			locked: None,
 		})
 	}
 }
@@ -257,21 +344,44 @@ impl Scope<'_> {
 		native(access.require(&resource, action).await)
 	}
 
-	/// Close the Run's Web disclosure approvals still waiting for a decision,
-	/// so a Run waiting on one continues, and without research.
+	/// Remove the exact content from every Web disclosure approval of the Run,
+	/// whatever its state, since the approval list shows it to the requester
+	/// and approver; then close those still waiting for a decision, so a Run
+	/// waiting on one continues, and without research, and those approved but
+	/// not yet consumed, so no repeated call sends what they approved. A
+	/// consumption racing this one updates the same row under its revision,
+	/// so exactly one of the two takes effect.
 	async fn close_disclosures(&mut self, run: Uuid) -> Result<u32> {
+		let data = || Expr::col(Alias::new("data"));
+		let of_run = || json_text(data(), "run_id").eq(Expr::value(run.to_string()));
 		let (sql, values) = Query::update()
 			.table(Alias::new("core_records"))
-			.value(Alias::new("state"), "closed")
-			.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+			// `data - 'content'`: the object without its content key.
+			.value_expr(
+				Alias::new("data"),
+				data().sub(Expr::value("content").cast_as("text")),
+			)
 			.and_where(Expr::col("kind").eq(Expr::value(
 				aidash_application::capabilities::approvals::DISCLOSURE,
 			)))
-			.and_where(Expr::col("state").eq(Expr::value("pending")))
-			.and_where(Expr::cust_with_values(
-				"(data->>'run_id') = ?",
-				[run.to_string()],
-			))
+			.and_where(json_field(data(), "content").is_not_null())
+			.and_where(of_run())
+			.build(PostgresQueryBuilder);
+		native(
+			self.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from),
+		)?;
+		let (sql, values) = Query::update()
+			.table(Alias::new("core_records"))
+			.value(Alias::new("state"), "closed")
+			.value_expr(Alias::new("revision"), Expr::col("revision").add(1))
+			.and_where(Expr::col("kind").eq(Expr::value(
+				aidash_application::capabilities::approvals::DISCLOSURE,
+			)))
+			.and_where(Expr::col("state").is_in(["pending", "approved"]))
+			.and_where(of_run())
 			.build(PostgresQueryBuilder);
 		let closed = native(
 			self.executor()
@@ -304,13 +414,16 @@ impl RevocationScope for Scope<'_> {
 		.is_some())
 	}
 	async fn require(&mut self, run: Uuid, action: &str) -> Result<()> {
-		let Transaction::Subject { identity, .. } = &self.tx else {
+		let Transaction::Subject { access, .. } = &mut self.tx else {
 			return Ok(());
 		};
-		// The subject must see the Run exactly as `GET /api/runs/{id}` decides;
-		// an invisible and a missing Run are the same refusal.
-		match aidash_application::authorization::run_details::visible(
-			&crate::bootstrap::run_details_repository(self.federation, identity),
+		// The subject must see the Run exactly as `GET /api/runs/{id}` decides,
+		// in this transaction, so the dependency locks that decision takes
+		// also cover the revocation; an invisible and a missing Run are the
+		// same refusal.
+		match crate::apps::identity::repositories::execution::details::visible_within(
+			self.federation,
+			access,
 			run,
 		)
 		.await
@@ -347,7 +460,9 @@ impl RevocationScope for Scope<'_> {
 	}
 	async fn revoke(&mut self, revocation: &EvidenceRevocation) -> Result<EvidenceRevocation> {
 		let run = revocation.run_id;
-		let at = revocation.revoked_at;
+		// PostgreSQL keeps microseconds, so the first answer carries the time
+		// a repeated revocation reads back.
+		let at = revocation.revoked_at.trunc_subsecs(6);
 		let tx = self.executor();
 		// Research writes of the Run take the same lock, so an attempt in
 		// flight records no evidence once this commits.
@@ -362,8 +477,9 @@ impl RevocationScope for Scope<'_> {
 		let sources = native(ResearchSource::revoke(tx, run).await)?;
 		let attempts = native(ResearchAttempt::revoke(tx, run).await)?;
 		let invocations = native(revoke_invocations(tx, Some(run)).await)?;
-		let store = self.federation.store.clone();
-		scrub_projection(self.executor(), &store, run).await?;
+		if !scrub_projection(self.executor(), run).await? {
+			self.locked = Some(run);
+		}
 		self.close_disclosures(run).await?;
 		let recorded = EvidenceRevocation {
 			removed: Removed {
@@ -374,6 +490,7 @@ impl RevocationScope for Scope<'_> {
 				invocations,
 				snapshot_digests,
 			},
+			revoked_at: at,
 			..revocation.clone()
 		};
 		native(ResearchRevocation::record(self.executor(), &recorded).await)?;
@@ -383,7 +500,16 @@ impl RevocationScope for Scope<'_> {
 		self: Box<Self>,
 		result: Result<EvidenceRevocation>,
 	) -> Result<EvidenceRevocation> {
-		self.complete(result).await
+		let (store, locked) = (self.federation.store.clone(), self.locked);
+		let recorded = self.complete(result).await?;
+		// The revocation has committed; a failed retry leaves the projection
+		// to the worker's next step and the sweep rather than failing it.
+		if let Some(run) = locked
+			&& let Err(error) = scrub_retrying(&store, run).await
+		{
+			tracing::warn!(run_id = %run, %error, "revoked projection was not scrubbed after commit");
+		}
+		Ok(recorded)
 	}
 }
 

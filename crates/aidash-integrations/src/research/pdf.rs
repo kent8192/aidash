@@ -10,7 +10,7 @@ use aidash_domain::research::{
 	Failure,
 	document::{
 		Completeness, Line, MAX_LINE_BYTES, MAX_LINES, MAX_PAGE_IMAGE_BYTES, MAX_PAGE_IMAGE_EDGE,
-		MAX_SNAPSHOT_BYTES, RenderedPage,
+		MAX_PAGES_WITHOUT_TEXT, MAX_SNAPSHOT_BYTES, RenderedPage,
 	},
 };
 use async_trait::async_trait;
@@ -24,6 +24,7 @@ use hayro::{
 	hayro_syntax::{
 		LoadPdfError, Pdf,
 		object::{Dict, Name, Object},
+		reader::{Reader, ReaderExt},
 	},
 	kurbo::{Affine, BezPath, Point, Rect},
 };
@@ -38,10 +39,23 @@ use std::{
 pub const MAX_PDF_BYTES: usize = 16 * 1024 * 1024;
 /// Pages read from one PDF; later pages make the snapshot incomplete.
 pub const MAX_PAGES: usize = 500;
+// Every page read may carry no text, and a snapshot lists each such page.
+const _: () = assert!(MAX_PAGES <= MAX_PAGES_WITHOUT_TEXT);
 /// A page with fewer non-whitespace characters of text carries no text.
 pub const MIN_PAGE_CHARACTERS: usize = 16;
 /// The hidden command of the `aidash` binary that runs one PDF job.
 pub const CHILD_COMMAND: &str = "__research-pdf";
+/// The longest reply of an extraction within the snapshot bounds: every
+/// text byte JSON-escaped (at most six bytes, as `\u001f`), the object around
+/// each line, every page listed without text, a title and the envelope.
+const MAX_REPLY_BYTES: usize = 6 * (MAX_SNAPSHOT_BYTES + MAX_TITLE_BYTES)
+	+ MAX_LINES * LINE_ENVELOPE_BYTES
+	+ MAX_PAGES * 12
+	+ 4 * 1024;
+/// The longest title a snapshot keeps, in bytes.
+const MAX_TITLE_BYTES: usize = 512;
+/// `{"text":"","page":4294967295},` around one line's text.
+const LINE_ENVELOPE_BYTES: usize = 32;
 
 /// The text of one PDF, as snapshot lines with their 1-based pages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,7 +100,7 @@ impl ChildEngine {
 				memory_bytes: 1024 * 1024 * 1024,
 				deadline: Duration::from_secs(20),
 				// Room for the text reply or a base64 page image.
-				max_output: (2 * MAX_SNAPSHOT_BYTES).max(2 * MAX_PAGE_IMAGE_BYTES) + 64 * 1024,
+				max_output: MAX_REPLY_BYTES.max(2 * MAX_PAGE_IMAGE_BYTES + 64 * 1024),
 			},
 		}
 	}
@@ -234,26 +248,11 @@ pub fn extract(pdf: &[u8]) -> Result<PdfText, Failure> {
 		);
 		let mut device = TextDevice::default();
 		interpret_page(page, &mut context, &mut device);
-		let page_lines = device.finish();
-		let characters = page_lines
-			.iter()
-			.map(|line| line.chars().filter(|c| !c.is_whitespace()).count())
-			.sum::<usize>();
-		if characters < MIN_PAGE_CHARACTERS {
+		let Some(page_lines) = page_text(device.finish()) else {
 			pages_without_text.push(number);
 			continue;
-		}
-		for raw in page_lines {
-			let line = raw
-				.chars()
-				.map(|c| if c.is_control() { ' ' } else { c })
-				.collect::<String>()
-				.split_whitespace()
-				.collect::<Vec<_>>()
-				.join(" ");
-			if line.is_empty() {
-				continue;
-			}
+		};
+		for line in page_lines {
 			let (line, cut) = aidash_domain::research::bounded(&line, MAX_LINE_BYTES);
 			if lines.len() == MAX_LINES || bytes + line.len() > MAX_SNAPSHOT_BYTES {
 				completeness = Completeness::TextLimit;
@@ -328,6 +327,29 @@ pub fn render(pdf: &[u8], page: u32) -> Result<RenderedPage, Failure> {
 	Err(Failure::RenderFailed)
 }
 
+/// A page's lines as a snapshot keeps them, or `None` when that text has
+/// fewer than [`MIN_PAGE_CHARACTERS`] non-whitespace characters. Control
+/// characters become spaces first, so they never make a page text-bearing.
+fn page_text(raw: Vec<String>) -> Option<Vec<String>> {
+	let lines = raw
+		.into_iter()
+		.map(|line| {
+			line.chars()
+				.map(|c| if c.is_control() { ' ' } else { c })
+				.collect::<String>()
+				.split_whitespace()
+				.collect::<Vec<_>>()
+				.join(" ")
+		})
+		.filter(|line| !line.is_empty())
+		.collect::<Vec<_>>();
+	let characters = lines
+		.iter()
+		.map(|line| line.chars().filter(|c| !c.is_whitespace()).count())
+		.sum::<usize>();
+	(characters >= MIN_PAGE_CHARACTERS).then_some(lines)
+}
+
 /// Open a PDF that needs no password and permits extracting its text.
 fn open(pdf: &[u8]) -> Result<Pdf, Failure> {
 	let pdf = Pdf::new(pdf.to_vec()).map_err(|error| match error {
@@ -342,18 +364,67 @@ fn open(pdf: &[u8]) -> Result<Pdf, Failure> {
 
 /// Whether the standard security handler, if any, permits copying or
 /// otherwise extracting text (bit 5 of `P`). Encryption dictionaries are
-/// never encrypted themselves, so the dictionary is found among the objects.
+/// never encrypted themselves, so they are found among the objects, including
+/// the trailer dictionaries of cross-reference streams.
+///
+/// hayro does not expose which trailer names the effective dictionary, so
+/// every standard security dictionary in the file must permit extraction: a
+/// decoy that permits it cannot outvote the real one, and a forbidding decoy
+/// only refuses its own document. A file whose trailer names an encryption
+/// dictionary none of which is found, such as one written directly into a
+/// classic trailer, is refused rather than read.
 fn extraction_permitted(pdf: &Pdf) -> bool {
 	const EXTRACT: i64 = 1 << 4;
-	pdf.objects()
-		.into_iter()
-		.filter_map(|object| match object {
+	let mut found = false;
+	for object in pdf.objects() {
+		let dict = match object {
 			Object::Dict(dict) => Some(dict),
+			Object::Stream(stream) => stream.dict().get::<Dict<'_>>(b"Encrypt"),
 			_ => None,
+		};
+		let Some(dict) = dict.filter(is_standard_security) else {
+			continue;
+		};
+		found = true;
+		if dict
+			.get::<i64>(b"P")
+			.is_some_and(|permissions| permissions & EXTRACT == 0)
+		{
+			return false;
+		}
+	}
+	found || !names_encryption(pdf)
+}
+
+/// Whether a trailer names an encryption dictionary: a classic `trailer`
+/// dictionary, or the dictionary of a cross-reference stream, with an
+/// `Encrypt` entry. The bytes `/Encrypt` anywhere else, such as in a content
+/// stream or metadata, name nothing.
+fn names_encryption(pdf: &Pdf) -> bool {
+	const TRAILER: &[u8] = b"trailer";
+	let data = pdf.data().as_ref();
+	let classic = data
+		.windows(TRAILER.len())
+		.enumerate()
+		.filter(|(_, window)| *window == TRAILER)
+		.any(|(at, _)| {
+			let mut reader = Reader::new(data);
+			reader.jump(at + TRAILER.len());
+			reader.skip_white_spaces_and_comments();
+			reader
+				.read_without_context::<Dict<'_>>()
+				.is_some_and(|trailer| trailer.contains_key(b"Encrypt"))
+		});
+	classic
+		|| pdf.objects().into_iter().any(|object| match object {
+			Object::Stream(stream) => {
+				let dict = stream.dict();
+				dict.get::<Name<'_>>(b"Type")
+					.is_some_and(|kind| kind.as_ref() == b"XRef")
+					&& dict.contains_key(b"Encrypt")
+			}
+			_ => false,
 		})
-		.find(is_standard_security)
-		.and_then(|dict| dict.get::<i64>(b"P"))
-		.is_none_or(|permissions| permissions & EXTRACT != 0)
 }
 
 fn is_standard_security(dict: &Dict<'_>) -> bool {
@@ -363,19 +434,80 @@ fn is_standard_security(dict: &Dict<'_>) -> bool {
 		&& dict.contains_key(b"U")
 }
 
-/// The document title from its information dictionary: UTF-16BE with a byte
-/// order mark, or otherwise PDFDocEncoding, read as Latin-1.
+/// The document title from its information dictionary: UTF-16BE or (PDF 2.0)
+/// UTF-8 with a byte order mark, or otherwise PDFDocEncoding.
 fn title(pdf: &Pdf) -> Option<String> {
-	let raw = pdf.metadata().title.as_ref()?;
-	let decoded = match raw.strip_prefix(&[0xfe, 0xff]) {
-		Some(utf16) => String::from_utf16_lossy(
+	normalized_title(&decode_text_string(pdf.metadata().title.as_ref()?))
+}
+
+/// A PDF text string (ISO 32000-2, 7.9.2.2) as Unicode.
+fn decode_text_string(raw: &[u8]) -> String {
+	if let Some(utf16) = raw.strip_prefix(&[0xfe, 0xff]) {
+		return String::from_utf16_lossy(
 			&utf16
 				.chunks_exact(2)
 				.map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
 				.collect::<Vec<_>>(),
-		),
-		None => raw.iter().map(|byte| char::from(*byte)).collect(),
-	};
+		);
+	}
+	if let Some(utf8) = raw.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+		return String::from_utf8_lossy(utf8).into_owned();
+	}
+	raw.iter().filter_map(|byte| pdf_doc_char(*byte)).collect()
+}
+
+/// One PDFDocEncoding byte (ISO 32000-2, Annex D.2), or none for the bytes it
+/// leaves undefined. It matches Latin-1 except where listed here.
+fn pdf_doc_char(byte: u8) -> Option<char> {
+	Some(match byte {
+		0x18 => '\u{02D8}',
+		0x19 => '\u{02C7}',
+		0x1A => '\u{02C6}',
+		0x1B => '\u{02D9}',
+		0x1C => '\u{02DD}',
+		0x1D => '\u{02DB}',
+		0x1E => '\u{02DA}',
+		0x1F => '\u{02DC}',
+		0x80 => '\u{2022}',
+		0x81 => '\u{2020}',
+		0x82 => '\u{2021}',
+		0x83 => '\u{2026}',
+		0x84 => '\u{2014}',
+		0x85 => '\u{2013}',
+		0x86 => '\u{0192}',
+		0x87 => '\u{2044}',
+		0x88 => '\u{2039}',
+		0x89 => '\u{203A}',
+		0x8A => '\u{2212}',
+		0x8B => '\u{2030}',
+		0x8C => '\u{201E}',
+		0x8D => '\u{201C}',
+		0x8E => '\u{201D}',
+		0x8F => '\u{2018}',
+		0x90 => '\u{2019}',
+		0x91 => '\u{201A}',
+		0x92 => '\u{2122}',
+		0x93 => '\u{FB01}',
+		0x94 => '\u{FB02}',
+		0x95 => '\u{0141}',
+		0x96 => '\u{0152}',
+		0x97 => '\u{0160}',
+		0x98 => '\u{0178}',
+		0x99 => '\u{017D}',
+		0x9A => '\u{0131}',
+		0x9B => '\u{0142}',
+		0x9C => '\u{0153}',
+		0x9D => '\u{0161}',
+		0x9E => '\u{017E}',
+		0xA0 => '\u{20AC}',
+		0x7F | 0x9F | 0xAD => return None,
+		other => char::from(other),
+	})
+}
+
+/// A title with control characters removed and whitespace collapsed, within
+/// the snapshot's title bound.
+fn normalized_title(decoded: &str) -> Option<String> {
 	let title = decoded
 		.chars()
 		.filter(|c| !c.is_control())
@@ -383,7 +515,11 @@ fn title(pdf: &Pdf) -> Option<String> {
 		.split_whitespace()
 		.collect::<Vec<_>>()
 		.join(" ");
-	(!title.is_empty()).then(|| aidash_domain::research::bounded(&title, 512).0.to_owned())
+	(!title.is_empty()).then(|| {
+		aidash_domain::research::bounded(&title, MAX_TITLE_BYTES)
+			.0
+			.to_owned()
+	})
 }
 
 /// Collects the Unicode text of glyphs into visual lines, in content-stream

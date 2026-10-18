@@ -640,6 +640,17 @@ def render():
                 media="application/x-www-form-urlencoded",
             )
             continue
+        if path in ("/auth/invitations/inspect", "/auth/invitations/redeem"):
+            # Opening and redeeming a link need a browser session; the JSON
+            # body is parsed first, so these scenarios send a valid one.
+            link = json.dumps({"tenant": "{{tenant}}", "secret": "bruno-unknown-secret"})
+            add(endpoint, "No opaque session cannot open an Invitation", 401,
+                body=link, immutable=True)
+            add(endpoint, "Forged opaque session cannot open an Invitation", 401,
+                headers={"Cookie": "aidash-session=forged"}, body=link, immutable=True)
+            add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                body="{", immutable=True)
+            continue
         if path.startswith("/auth/"):
             for label, headers in [
                 ("No opaque session", {}),
@@ -714,7 +725,48 @@ def render():
                     headers=PEER,
                 )
             continue
+        if path == "/api/tenants" and method == "POST":
+            # The creation API authenticates itself, after parsing the body.
+            label = json.dumps({"label": "Bruno contract"})
+            add(endpoint, "Anonymous request cannot create a Tenant", 401,
+                body=label, immutable=True)
+            add(endpoint, "Subject Credential never creates a Tenant", 403,
+                headers=SUBJECT, body=label, immutable=True)
+            add(endpoint, "Blank Tenant label is rejected", 400,
+                headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"label": "   "}), immutable=True)
+            add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
+        if route["source"] == "server/src/apps/identity/views/tenants.rs":
+            if method == "GET":
+                add(endpoint, "Subject Credential cannot list Tenants", 403, headers=SUBJECT)
+                add(endpoint, "Deployment Administrator lists every Tenant root record", 200, headers=DEPLOYMENT_ADMINISTRATOR,
+                    checks='expect(res.getBody()).to.be.an("array");expect(res.getBody().map(tenant => tenant.name)).to.include(bru.getEnvVar("tenant"));')
+            else:
+                body = json.dumps({"label": "Renamed"})
+                add(endpoint, "Deployment Administrator bearer never relabels a Tenant", 403,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body=body, immutable=True)
+                add(endpoint, "Subject Credential bearer never relabels a Tenant", 403,
+                    headers=SUBJECT, body=body, immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/invitations.rs":
+            # Only a browser Mapping or a Deployment Administrator administers Invitations.
+            body = "{}" if route["json"] else None
+            add(endpoint, "Subject Credential bearer never administers Invitations", 403,
+                headers=SUBJECT, body=body, immutable=method != "GET")
+            add(endpoint, "Unknown Tenant has no Invitations", 404,
+                path=path.replace("{tenant}", "bruno-missing-tenant"), headers=DEPLOYMENT_ADMINISTRATOR,
+                body=body, immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+            if route["uuid_parameters"]:
+                add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
+                    path=path.replace("{id}", "not-a-uuid"), headers=DEPLOYMENT_ADMINISTRATOR, immutable=True)
+            continue
         if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
             uri = path.replace("{provider}", "openrouter")
             body = (
@@ -771,6 +823,37 @@ def render():
             add(endpoint, "Pasted Key Material is not an accepted field", 422,
                 path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"key_material": "sk-or-v1-pasted"}),
                 immutable=True)
+            continue
+        if route["source"] == "server/src/apps/identity/views/plan_connections.rs":
+            # A Plan Connection is one subject's own grant: only that subject's
+            # dashboard or desktop session reaches it, never a bearer, and
+            # Plan Tokens are never an accepted field.
+            uri = path.replace("{provider}", "chatgpt")
+            body = (
+                json.dumps({"callback_url": "http://127.0.0.1:1457/auth/callback?state=s&code=c"})
+                if path.endswith("/complete")
+                else json.dumps({"expected_revision": 1})
+                if method == "DELETE"
+                else "{}"
+                if route["json"]
+                else None
+            )
+            add(endpoint, "Forged bearer cannot reach a Plan Connection", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Deployment Administrator bearer owns no Plan Connection", DEPLOYMENT_ADMINISTRATOR),
+                ("Subject Credential bearer never reaches a Plan Connection", SUBJECT),
+            ]:
+                add(endpoint, label, 403, path=uri, headers=headers, body=body,
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
+                add(endpoint, "Plan Tokens are not an accepted field", 422,
+                    path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=json.dumps({"access_token": "pasted"}),
+                    immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
             # Only a browser Mapping context can be a Tenant Administrator.
@@ -913,6 +996,7 @@ def render():
             "remote_execution_list",
             "federated_graph_peers",
             "run_working_area",
+            "research-providers",
             "core_outbound_history",
             "core_operation_history",
             "generation-usage",

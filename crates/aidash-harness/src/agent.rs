@@ -997,6 +997,7 @@ impl<'a> Executor<'a> {
 				}
 				home.claim(&task, &entry).await?;
 				home.transition(aidash_domain::TaskStatus::Running).await?;
+				self.record_start_content(run, &agent).await?;
 				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
 			}
@@ -1047,18 +1048,30 @@ impl<'a> Executor<'a> {
 				// Pin this step's Estimate Snapshot before any fitting relies on it
 				// (ADR 0017). Only an opted-in, undemoted model needs calibration,
 				// and only its snapshot is saved: a resumed step reuses it even if
-				// the calibration data changed meanwhile. Every other step is
+				// the calibration data changed meanwhile. A tokenized model also
+				// calibrates, for its byte quotas. Every other step is
 				// conservative, so its Run keeps the context bytes it had.
 				let estimate = match run.context.estimate.pinned(run.step) {
-					Some(snapshot) => snapshot,
-					None if model_cfg.request_estimator() == RequestEstimator::Calibrated
+					Some(snapshot) if snapshot.usable() => snapshot,
+					// The step pinned a Token Encoding this worker lacks: it
+					// resumes on bytes, and the next step pins afresh.
+					Some(_) => {
+						let snapshot = EstimateSnapshot::conservative(run.step);
+						run.context.estimate.snapshot = Some(snapshot);
+						snapshot
+					}
+					None if model_cfg.request_estimator() != RequestEstimator::Bytes
 						&& !run.context.estimate.demoted =>
 					{
 						let samples = store
 							.calibration_samples(&model_cfg.model_id, agent.projection_version.number())
 							.await?;
-						let snapshot =
-							EstimateSnapshot::choose(run.step, RequestEstimator::Calibrated, false, &samples);
+						let snapshot = EstimateSnapshot::choose(
+							run.step,
+							model_cfg.request_estimator(),
+							false,
+							&samples,
+						);
 						run.context.estimate.snapshot = Some(snapshot);
 						store.pin_estimate(run, token).await?;
 						snapshot
@@ -1177,6 +1190,47 @@ impl<'a> Executor<'a> {
 						);
 					}
 				}
+				// URL intents live beside their inputs, never in their text
+				// (ADR 0052): each run message names its own pages, and the
+				// instruction below is rendered only into steps that carry any.
+				let url_intents = self.environment.url_intents(run).await?;
+				let task_pages: Vec<String> = url_intents
+					.iter()
+					.filter(|intent| intent.input_key.is_none())
+					.flat_map(|intent| intent.pages.iter().cloned())
+					.collect();
+				// A run message folded into the run-message summary, or taken in
+				// by an earlier media-intake turn that offered no tools, is on no
+				// page again, so the pages it asked for are carried forward like
+				// the Task's own, up to a Run-level bound.
+				let carried: Vec<&[String]> = inputs
+					.iter()
+					.filter(|input| input.seq <= intake_seq)
+					.flat_map(|input| {
+						let key = input.idempotency_key.as_str();
+						url_intents
+							.iter()
+							.filter(move |intent| intent.input_key.as_deref() == Some(key))
+					})
+					.map(|intent| intent.pages.as_slice())
+					.collect();
+				let mut current: Vec<&[String]> = Vec::new();
+				for (position, (index, _)) in page.entries.iter().enumerate() {
+					let key = inputs[*index].idempotency_key.as_str();
+					let Some(intent) = url_intents
+						.iter()
+						.find(|intent| intent.input_key.as_deref() == Some(key))
+					else {
+						continue;
+					};
+					run_messages[position]["read_pages"] = json!(intent.pages);
+					current.push(&intent.pages);
+				}
+				let requested_pages = aidash_domain::research::intent::requested_pages(
+					&task_pages,
+					&carried,
+					&current,
+				);
 				let output = if run_message_catchup {
 					output_limit.min(RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT)
 				} else {
@@ -1328,7 +1382,19 @@ impl<'a> Executor<'a> {
 				// through its Estimate Snapshot.
 				let available =
 					estimate.bytes_for_tokens(budget.remaining(&Context::default(), &fixed_context));
-				let message_size = context::estimated_tokens(&json!(run_messages).to_string());
+				// Catch-up only summarizes; it never acts on a request. The URL
+				// intents render beside the snapshot, so they are reserved before
+				// it is bounded, like the run messages.
+				let intent_payload = (!requested_pages.is_empty() && !run_message_catchup).then(|| {
+					json!({
+						"instruction": aidash_domain::research::intent::URL_INTENT_INSTRUCTION,
+						"pages": requested_pages,
+					})
+				});
+				let message_size = context::estimated_tokens(&json!(run_messages).to_string())
+					+ intent_payload
+						.as_ref()
+						.map_or(0, |payload| context::estimated_tokens(&payload.to_string()));
 				let volatile_budget = available.saturating_sub(message_size) / 4;
 				let snapshot_fit = if ordered {
 					// Stable fields use a Run-stable quota so every step renders the
@@ -1358,6 +1424,9 @@ impl<'a> Executor<'a> {
 				// workspace preview. Admission has already capped its aggregate size.
 				if !run_messages.is_empty() {
 					pinned["run_messages"] = json!(run_messages);
+				}
+				if let Some(payload) = intent_payload {
+					pinned["url_intents"] = payload;
 				}
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);
@@ -1480,7 +1549,8 @@ impl<'a> Executor<'a> {
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
-				let request_tokens = request.estimated_total_tokens();
+				let request_estimate = request.request_estimate();
+				let request_tokens = request_estimate.tokens as usize;
 				let request_bytes = request.byte_estimate().total();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
@@ -1507,7 +1577,7 @@ impl<'a> Executor<'a> {
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
 							upstream_model: model_cfg.model_id.clone(),
-							estimate: request.request_estimate(),
+							estimate: request_estimate.clone(),
 							// Media tokens are an allowance, not text, so they never calibrate.
 							calibration_sample: request.content_parts.is_empty(),
 							cache_identity: request.cache_identity(),
@@ -1719,6 +1789,15 @@ impl<'a> Executor<'a> {
 				context.recovery.inference_accepted();
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
+				}
+				// More input than a calibrated or tokenized estimate predicted is
+				// an estimator defect, such as a wrong Token Encoding: the Run
+				// estimates in bytes from its next step (ADR 0017).
+				if let Some(reported) = result.reported.input_tokens
+					&& context.estimate.underestimated(&request_estimate, reported)
+				{
+					metrics::counter!("aidash_estimate_underestimated_total", "estimator" => estimate.id())
+						.increment(1);
 				}
 				// Unreported counts are known only through the Usage Record. The
 				// durable context keeps the shape older workers' strict decoders
@@ -2106,6 +2185,14 @@ impl<'a> Executor<'a> {
 								}
 							}
 						}
+						// The Completion Gate: current Verification Evidence for the
+						// exact mounted content, or no applicable Check (#112).
+						if let completion::Gate::Saved = self
+							.completion_gate(run, token, &agent, home.as_ref(), guard)
+							.await?
+						{
+							return Ok(());
+						}
 						let artifact = ArtifactInput {
 							kind: "text".into(),
 							name: result_artifact_name(&home.task().await?.title),
@@ -2118,6 +2205,7 @@ impl<'a> Executor<'a> {
 							guard.action("task.complete", "task", run.task_id).await?;
 						}
 						if !store.begin_final_completion(run, token).await? {
+							run.context.completion.basis = None;
 							run.state = RunState::Thinking(ThinkingState::default());
 
 							store.save_run(run, token, "run.message_received").await?;
@@ -2141,6 +2229,7 @@ impl<'a> Executor<'a> {
 								&& home.child_summary(run.task_id).await?.has_pending
 							{
 								run.step += 1;
+								run.context.completion.basis = None;
 
 								run.state = RunState::Waiting(Box::new(WaitingState::Children {
 									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
@@ -2520,7 +2609,16 @@ impl<'a> Executor<'a> {
 			.await?,
 			RunState::Waiting(waiting) => {
 				let mut waiting = *waiting;
-				if let Some(id) = waiting.request_id() {
+				// A newer input ends a Completion Review without an answer: the
+				// candidate under review is stale.
+				let superseded = match waiting.request_id() {
+					Some(id) if completion::review_superseded(store, run, id).await? => {
+						completion::supersede_review(run, home.as_ref(), id).await?;
+						true
+					}
+					_ => false,
+				};
+				if let Some(id) = waiting.request_id().filter(|_| !superseded) {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
@@ -2571,6 +2669,7 @@ impl<'a> Executor<'a> {
 						}
 						_ => {}
 					}
+					completion::answer_review(run, id, Some(&response));
 					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
 						run.context.push(ContextEvent::Human {
 							request: h.prompt,
@@ -3069,6 +3168,7 @@ fn summary_dependencies(
 	dependencies
 }
 
+mod completion;
 mod progress;
 #[cfg(test)]
 mod tests;

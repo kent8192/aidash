@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use http::Method;
 use reinhardt::ServerRouter as Router;
@@ -100,17 +102,17 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace("Research", "Compare frameworks")
+		.create_workspace(&TEST_FIXTURE, "Research", "Compare frameworks")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(w.id, &new_task(), "human", Some("create"))
+		.create_task(&TEST_FIXTURE, w.id, &new_task(), "human", Some("create"))
 		.await
 		.unwrap();
 	assert_eq!(
 		task.id,
 		store
-			.create_task(w.id, &new_task(), "human", Some("create"))
+			.create_task(&TEST_FIXTURE, w.id, &new_task(), "human", Some("create"))
 			.await
 			.unwrap()
 			.id
@@ -119,30 +121,36 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	different.title = "Different".into();
 	assert!(
 		store
-			.create_task(w.id, &different, "human", Some("create"))
+			.create_task(&TEST_FIXTURE, w.id, &different, "human", Some("create"))
 			.await
 			.is_err()
 	);
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
 	let (a, b) = tokio::join!(
-		store.claim(task.id, 0, &owner, &agent),
-		store.claim(task.id, 0, &owner, &agent)
+		store.claim(&TEST_FIXTURE, task.id, 0, &owner, &agent),
+		store.claim(&TEST_FIXTURE, task.id, 0, &owner, &agent)
 	);
 	assert_ne!(a.is_ok(), b.is_ok());
-	let claimed = store.task(task.id).await.unwrap();
+	let claimed = store.task(&TEST_FIXTURE, task.id).await.unwrap();
 	assert_eq!(claimed.revision, 1);
 	let mut dependent = new_task();
 	dependent.dependencies = vec![task.id];
 	// A prerequisite and its dependent are siblings, not a parent/child cycle.
 	dependent.parent_id = None;
 	let child = store
-		.create_task(w.id, &dependent, "human", None)
+		.create_task(&TEST_FIXTURE, w.id, &dependent, "human", None)
 		.await
 		.unwrap();
-	assert!(store.claim(child.id, 0, &owner, &agent).await.is_err());
+	assert!(
+		store
+			.claim(&TEST_FIXTURE, child.id, 0, &owner, &agent)
+			.await
+			.is_err()
+	);
 	assert!(
 		store
 			.complete(
+				&TEST_FIXTURE,
 				task.id,
 				&owner,
 				"complete",
@@ -157,6 +165,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	);
 	let running = store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			claimed.revision,
 			&owner,
@@ -171,32 +180,51 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 		content: json!("result"),
 	};
 	let completed = store
-		.complete(task.id, &owner, "complete", &artifact)
+		.complete(&TEST_FIXTURE, task.id, &owner, "complete", &artifact)
 		.await
 		.unwrap();
 	let replay = store
-		.complete(task.id, &owner, "complete", &artifact)
+		.complete(&TEST_FIXTURE, task.id, &owner, "complete", &artifact)
 		.await
 		.unwrap();
 	assert_eq!(completed.revision, replay.revision);
-	assert_eq!(store.snapshot(w.id).await.unwrap().artifacts.len(), 1);
+	assert_eq!(
+		store
+			.snapshot(&TEST_FIXTURE, w.id)
+			.await
+			.unwrap()
+			.artifacts
+			.len(),
+		1
+	);
 	let mut bad = artifact.clone();
 	bad.content = json!("different");
 	assert!(
 		store
-			.complete(task.id, &owner, "complete", &bad)
+			.complete(&TEST_FIXTURE, task.id, &owner, "complete", &bad)
 			.await
 			.is_err()
 	);
-	assert!(store.claim(child.id, 0, &owner, &agent).await.is_ok());
-	let w2 = store.create_workspace("Other", "Other goal").await.unwrap();
 	assert!(
 		store
-			.create_task(w2.id, &dependent, "human", None)
+			.claim(&TEST_FIXTURE, child.id, 0, &owner, &agent)
+			.await
+			.is_ok()
+	);
+	let w2 = store
+		.create_workspace(&TEST_FIXTURE, "Other", "Other goal")
+		.await
+		.unwrap();
+	assert!(
+		store
+			.create_task(&TEST_FIXTURE, w2.id, &dependent, "human", None)
 			.await
 			.is_err()
 	);
-	let events = store.events(0, Some(w.id), 1000).await.unwrap();
+	let events = store
+		.events(&TEST_FIXTURE, 0, Some(w.id), 1000)
+		.await
+		.unwrap();
 	assert_eq!(
 		events.iter().filter(|e| e.kind == "task.completed").count(),
 		1
@@ -219,22 +247,25 @@ async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
 	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
 	let workspace = store
-		.create_workspace("Research", "Compare frameworks")
+		.create_workspace(&TEST_FIXTURE, "Research", "Compare frameworks")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
 	// Act: claiming would create the Run.
-	let rejected = store.claim(task.id, 0, &owner, &agent).await;
+	let rejected = store.claim(&TEST_FIXTURE, task.id, 0, &owner, &agent).await;
 	// Assert: no Run and no claim without a key.
 	assert!(
 		matches!(rejected, Err(aidash_server::Error::Invalid(_))),
 		"{rejected:?}"
 	);
-	assert_eq!(store.task(task.id).await.unwrap().revision, 0);
+	assert_eq!(
+		store.task(&TEST_FIXTURE, task.id).await.unwrap().revision,
+		0
+	);
 	let salted = store.clone().with_cache_salt(Some(
 		aidash_integrations::inference::CacheSaltKeys::new(
 			&[aidash_integrations::inference::CacheSaltKey {
@@ -247,17 +278,22 @@ async fn salted_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	));
 	// A key alone is not enough: this tenantless legacy workspace has no
 	// Tenant to salt with, so the Run could never reach inference.
-	let tenantless = salted.claim(task.id, 0, &owner, &agent).await;
+	let tenantless = salted
+		.claim(&TEST_FIXTURE, task.id, 0, &owner, &agent)
+		.await;
 	assert!(
 		matches!(tenantless, Err(aidash_server::Error::Invalid(_))),
 		"{tenantless:?}"
 	);
-	assert_eq!(store.task(task.id).await.unwrap().revision, 0);
+	assert_eq!(
+		store.task(&TEST_FIXTURE, task.id).await.unwrap().revision,
+		0
+	);
 	// Legacy Agents in the same workspace are unaffected.
 	let legacy = registry.register(entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
 	let legacy_owner = qualified_agent(&store.node_id, &legacy.id, &legacy.version);
 	let claimed = salted
-		.claim(task.id, 0, &legacy_owner, &legacy)
+		.claim(&TEST_FIXTURE, task.id, 0, &legacy_owner, &legacy)
 		.await
 		.unwrap();
 	assert_eq!(claimed.revision, 1);
@@ -275,15 +311,21 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace("Journal", "Recover safely")
+		.create_workspace(&TEST_FIXTURE, "Journal", "Recover safely")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(w.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, w.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let run = store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let token = Uuid::new_v4();
@@ -300,7 +342,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	);
 	let revision = leased.revision;
 	aidash_application::ports::execution::ExecutionStore::observe_sources(
-		&store,
+		&store.for_run(TEST_FIXTURE),
 		&mut leased,
 		token,
 	)
@@ -309,7 +351,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	assert_eq!(leased.revision, revision + 1);
 	assert_eq!(
 		store
-			.run(run.id)
+			.run(&TEST_FIXTURE, run.id)
 			.await
 			.unwrap()
 			.context
@@ -322,6 +364,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	let first = store
 		.invocation_start(
+			&TEST_FIXTURE,
 			&leased,
 			token,
 			"effect",
@@ -365,7 +408,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	);
 	assert!(
 		aidash_application::ports::execution::ExecutionStore::observe_sources(
-			&store,
+			&store.for_run(TEST_FIXTURE),
 			&mut leased,
 			token
 		)
@@ -374,12 +417,13 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	);
 	assert!(
 		store
-			.invocation_finish(&leased, token, "effect", &json!("stale"))
+			.invocation_finish(&TEST_FIXTURE, &leased, token, "effect", &json!("stale"))
 			.await
 			.is_err()
 	);
 	let uncertain = store
 		.invocation_start(
+			&TEST_FIXTURE,
 			&recovered,
 			new_token,
 			"effect",
@@ -392,6 +436,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	assert_eq!(uncertain.status, "UNCERTAIN");
 	let request = store
 		.human_request(
+			&TEST_FIXTURE,
 			&recovered,
 			"CONFIRMATION",
 			"Verify the external result",
@@ -400,15 +445,22 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 		.await
 		.unwrap();
 	store
-		.answer(request.id, json!({"result":"verified"}))
+		.answer(&TEST_FIXTURE, request.id, json!({"result":"verified"}))
 		.await
 		.unwrap();
 	store
-		.invocation_finish(&recovered, new_token, "effect", &json!("verified"))
+		.invocation_finish(
+			&TEST_FIXTURE,
+			&recovered,
+			new_token,
+			"effect",
+			&json!("verified"),
+		)
 		.await
 		.unwrap();
 	let replay = store
 		.invocation_start(
+			&TEST_FIXTURE,
 			&recovered,
 			new_token,
 			"effect",
@@ -423,6 +475,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	assert!(
 		store
 			.invocation_start(
+				&TEST_FIXTURE,
 				&recovered,
 				new_token,
 				"effect",
@@ -521,21 +574,27 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
-		.create_workspace("Controls", "Keep human decisions durable")
+		.create_workspace(&TEST_FIXTURE, "Controls", "Keep human decisions durable")
 		.await
 		.unwrap();
 	let dependency = store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let mut input = new_task();
 	input.dependencies = vec![dependency.id];
 	let task = store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let run = store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let federation = _api_runtime.await.federation;
@@ -553,7 +612,11 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.await
 		.unwrap();
 	let explicitly_paused = store
-		.control(run.id, aidash_server::domain::RunControlAction::Pause)
+		.control(
+			&TEST_FIXTURE,
+			run.id,
+			aidash_server::domain::RunControlAction::Pause,
+		)
 		.await
 		.unwrap();
 	assert_eq!(explicitly_paused.control.as_str(), "PAUSED");
@@ -561,7 +624,11 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 	assert!(!harness.worker_once().await.unwrap());
 	assert_eq!(
 		store
-			.control(run.id, aidash_server::domain::RunControlAction::Resume)
+			.control(
+				&TEST_FIXTURE,
+				run.id,
+				aidash_server::domain::RunControlAction::Resume
+			)
 			.await
 			.unwrap()
 			.control
@@ -575,12 +642,12 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		"INFORMATION_REQUEST",
 	] {
 		let request = store
-			.human_request(&run, kind, "Proceed?", kind)
+			.human_request(&TEST_FIXTURE, &run, kind, "Proceed?", kind)
 			.await
 			.unwrap();
 		assert_eq!(
 			store
-				.human_request(&run, kind, "Proceed?", kind)
+				.human_request(&TEST_FIXTURE, &run, kind, "Proceed?", kind)
 				.await
 				.unwrap()
 				.id,
@@ -588,24 +655,38 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		);
 		assert!(
 			store
-				.human_request(&run, kind, "Changed?", kind)
+				.human_request(&TEST_FIXTURE, &run, kind, "Changed?", kind)
 				.await
 				.is_err()
 		);
-		assert!(store.answer(request.id, json!(null)).await.is_err());
+		assert!(
+			store
+				.answer(&TEST_FIXTURE, request.id, json!(null))
+				.await
+				.is_err()
+		);
 		assert_eq!(
 			store
-				.answer(request.id, json!(false))
+				.answer(&TEST_FIXTURE, request.id, json!(false))
 				.await
 				.unwrap()
 				.response,
 			Some(json!(false))
 		);
 		assert_eq!(
-			store.answer(request.id, json!(false)).await.unwrap().id,
+			store
+				.answer(&TEST_FIXTURE, request.id, json!(false))
+				.await
+				.unwrap()
+				.id,
 			request.id
 		);
-		assert!(store.answer(request.id, json!(true)).await.is_err());
+		assert!(
+			store
+				.answer(&TEST_FIXTURE, request.id, json!(true))
+				.await
+				.is_err()
+		);
 	}
 	let router = _application.application.clone();
 	let response = http_client
@@ -620,28 +701,51 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.await
 		.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
-	let snapshot = store.snapshot(workspace.id).await.unwrap();
+	let snapshot = store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
 	assert_eq!(snapshot.messages[0].sender, "human");
 	store
-		.control(run.id, aidash_server::domain::RunControlAction::Cancel)
+		.control(
+			&TEST_FIXTURE,
+			run.id,
+			aidash_server::domain::RunControlAction::Cancel,
+		)
 		.await
 		.unwrap();
 	assert!(harness.worker_once().await.unwrap());
 	assert_eq!(
-		store.run(run.id).await.unwrap().phase().as_str(),
+		store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"CANCELLED"
 	);
 	assert_eq!(
-		store.task(task.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"CANCELLED"
 	);
 	assert_eq!(
-		store.task(dependency.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, dependency.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"OPEN"
 	);
 	assert!(
 		store
-			.control(run.id, aidash_server::domain::RunControlAction::Resume)
+			.control(
+				&TEST_FIXTURE,
+				run.id,
+				aidash_server::domain::RunControlAction::Resume
+			)
 			.await
 			.is_err()
 	);
@@ -677,7 +781,7 @@ fn federation(
 				api_token: "test-access-token".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
-				default_host_packages: vec![],
+				tenancy: Default::default(),
 				oidc: None,
 				gcip: None,
 			},
@@ -696,16 +800,17 @@ async fn running_task(store: &Store, agent: &Entry, workspace: Uuid, parent: Opt
 	let mut input = new_task();
 	input.parent_id = parent;
 	let task = store
-		.create_task(workspace, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace, &input, "human", None)
 		.await
 		.unwrap();
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
 	let task = store
-		.claim(task.id, task.revision, &owner, agent)
+		.claim(&TEST_FIXTURE, task.id, task.revision, &owner, agent)
 		.await
 		.unwrap();
 	store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
@@ -765,7 +870,11 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Partial results", "Resolve terminal children")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Partial results",
+			"Resolve terminal children",
+		)
 		.await
 		.unwrap();
 	let parent = running_task(&store, &agent, workspace.id, None).await;
@@ -778,6 +887,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		let child = running_task(&store, &agent, workspace.id, Some(parent.id)).await;
 		let child = store
 			.transition(
+				&TEST_FIXTURE,
 				child.id,
 				child.revision,
 				child.owner.as_deref().unwrap(),
@@ -825,7 +935,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -834,13 +944,18 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	for child in children {
 		assert!(
 			store
-				.abandon_task(child.id, child.revision + 1, "No longer needed")
+				.abandon_task(
+					&TEST_FIXTURE,
+					child.id,
+					child.revision + 1,
+					"No longer needed"
+				)
 				.await
 				.is_err()
 		);
 		assert!(
 			store
-				.abandon_task(child.id, child.revision, " ")
+				.abandon_task(&TEST_FIXTURE, child.id, child.revision, " ")
 				.await
 				.is_err()
 		);
@@ -861,30 +976,57 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 			.unwrap();
 		assert_eq!(response.status(), StatusCode::OK);
 		assert_eq!(
-			store.task(child.id).await.unwrap().status.as_str(),
+			store
+				.task(&TEST_FIXTURE, child.id)
+				.await
+				.unwrap()
+				.status
+				.as_str(),
 			"ABANDONED"
 		);
 	}
 	store
-		.answer(request_id, json!("Continue with the remaining results"))
+		.answer(
+			&TEST_FIXTURE,
+			request_id,
+			json!("Continue with the remaining results"),
+		)
 		.await
 		.unwrap();
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		store.run(run.id).await.unwrap().phase().as_str(),
+		store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"THINKING"
 	);
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		store.task(parent.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, parent.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(
-		store.snapshot(workspace.id).await.unwrap().artifacts.len(),
+		store
+			.snapshot(&TEST_FIXTURE, workspace.id)
+			.await
+			.unwrap()
+			.artifacts
+			.len(),
 		1
 	);
-	let events = store.events(0, Some(workspace.id), 1000).await.unwrap();
+	let events = store
+		.events(&TEST_FIXTURE, 0, Some(workspace.id), 1000)
+		.await
+		.unwrap();
 	assert_eq!(
 		events
 			.iter()
@@ -924,7 +1066,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.unwrap();
 	let agent = f.registry.register(entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
-		.create_workspace("Retries", "Independent budgets")
+		.create_workspace(&TEST_FIXTURE, "Retries", "Independent budgets")
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
@@ -995,7 +1137,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -1006,11 +1148,16 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	assert!(approve_fixture_call(&store).await);
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
-	let run = store.run(run.id).await.unwrap();
+	let run = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
 	assert_eq!(
-		store.task(task.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"RUNNING"
 	);
 	drop(server);
@@ -1018,7 +1165,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 }
 
 async fn approve_fixture_call(store: &Store) -> bool {
-	let run = store.runs().await.unwrap().remove(0);
+	let run = store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let RunState::Waiting(waiting) = &run.state else {
 		return false;
 	};
@@ -1026,7 +1173,7 @@ async fn approve_fixture_call(store: &Store) -> bool {
 		return false;
 	};
 	let human = aidash_application::ports::execution::ExecutionStore::human_request_by_id(
-		store,
+		&store.for_run(TEST_FIXTURE),
 		*request_id,
 	)
 	.await
@@ -1038,7 +1185,7 @@ async fn approve_fixture_call(store: &Store) -> bool {
 			.starts_with("Approve this exact external tool action once?")
 	);
 	store
-		.answer(*request_id, json!({"approved":true}))
+		.answer(&TEST_FIXTURE, *request_id, json!({"approved":true}))
 		.await
 		.unwrap();
 	true
@@ -1088,7 +1235,7 @@ async fn write_approval(
 		.unwrap();
 	let agent = f.registry.register(entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
-		.create_workspace("Approval", "Check external effects")
+		.create_workspace(&TEST_FIXTURE, "Approval", "Check external effects")
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
@@ -1145,7 +1292,7 @@ async fn write_approval(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -1285,12 +1432,15 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	if !_expired {
 		store
-			.answer(first, json!({"approved":false}))
+			.answer(&TEST_FIXTURE, first, json!({"approved":false}))
 			.await
 			.unwrap();
 	}
 	if late_answer {
-		let result = store.answer(first, json!({"approved":true})).await.unwrap();
+		let result = store
+			.answer(&TEST_FIXTURE, first, json!({"approved":true}))
+			.await
+			.unwrap();
 		assert_eq!(
 			result.response,
 			Some(json!({"approved":false,"expired":true})),
@@ -1299,7 +1449,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	}
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
-	run = store.run(run.id).await.unwrap();
+	run = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	if _expired {
@@ -1315,24 +1465,26 @@ async fn managed_external_write_requires_exact_one_call_approval(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(store.pool.driver())
+			.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 			.await
 		}
 		.unwrap();
 		assert_eq!(row.response, Some(json!({"approved":false,"expired":true})));
 		assert_eq!(row.answered_by.as_deref(), Some("system"));
 		assert!(matches!(
-			store.answer(first, json!({"approved":true})).await,
+			store
+				.answer(&TEST_FIXTURE, first, json!({"approved":true}))
+				.await,
 			Err(aidash_server::Error::Conflict(_))
 		));
 	}
 	harness.worker_once().await.unwrap();
-	run = store.run(run.id).await.unwrap();
+	run = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "WAITING");
 	let second = request_id(&run);
 	assert_ne!(first, second);
 	store
-		.answer(second, json!({"approved":true}))
+		.answer(&TEST_FIXTURE, second, json!({"approved":true}))
 		.await
 		.unwrap();
 	harness.worker_once().await.unwrap();
@@ -1382,7 +1534,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.unwrap();
 	let agent = federation.registry.register(entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":federation.config.node_id,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
-		.create_workspace("Web research", "Use available evidence")
+		.create_workspace(&TEST_FIXTURE, "Web research", "Use available evidence")
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
@@ -1396,12 +1548,13 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		if !progress {
 			break;
 		}
-		if store.task(task.id).await.unwrap().status == aidash_server::domain::TaskStatus::Completed
+		if store.task(&TEST_FIXTURE, task.id).await.unwrap().status
+			== aidash_server::domain::TaskStatus::Completed
 		{
 			break;
 		}
 	}
-	let run = store.runs().await.unwrap().remove(0);
+	let run = store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(
 		run.phase().as_str(),
 		"COMPLETED",
@@ -1411,7 +1564,12 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		json!(run.context.history)
 	);
 	assert_eq!(
-		store.task(task.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"COMPLETED"
 	);
 	assert_eq!(
@@ -1428,12 +1586,17 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		"each permitted source is fetched once"
 	);
 	assert_eq!(
-		store.snapshot(workspace.id).await.unwrap().artifacts[0].content,
+		store
+			.snapshot(&TEST_FIXTURE, workspace.id)
+			.await
+			.unwrap()
+			.artifacts[0]
+			.content,
 		json!("Used alternate evidence")
 	);
 	assert!(
 		!store
-			.events(0, Some(workspace.id), 100)
+			.events(&TEST_FIXTURE, 0, Some(workspace.id), 100)
 			.await
 			.unwrap()
 			.iter()
@@ -1508,7 +1671,13 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 	let endpoint = server.url.clone();
 	add_test_peer(&store, "aidash://home", &endpoint).await;
 	let run = store
-		.accept_run(&task, "aidash://home", &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			"aidash://home",
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	{
@@ -1551,7 +1720,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 	.worker_once()
 	.await
 	.unwrap();
-	let pending = store.run(run.id).await.unwrap();
+	let pending = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(pending.phase().as_str(), "WAITING");
 	assert_eq!(json!(pending.state)["data"]["target"], "FAILED");
 	aidash_server::harness::Harness {
@@ -1561,7 +1730,12 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 	.await
 	.unwrap();
 	assert_eq!(
-		store.inspect_run(run.id).await.unwrap().phase().as_str(),
+		store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"WAITING"
 	);
 	assert_eq!(home_task.lock().unwrap().status.as_str(), "RUNNING");
@@ -1592,7 +1766,12 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 		.await
 		.unwrap();
 	assert_eq!(
-		store.inspect_run(run.id).await.unwrap().phase().as_str(),
+		store
+			.inspect_run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"FAILED"
 	);
 	assert_eq!(home_task.lock().unwrap().status.as_str(), "FAILED");
@@ -1617,11 +1796,11 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Revocation", "Reject stale peer writes")
+		.create_workspace(&TEST_FIXTURE, "Revocation", "Reject stale peer writes")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let peer = "aidash://peer";
@@ -1670,11 +1849,12 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 	.unwrap();
 	let owner = qualified_agent(peer, &agent.id, &agent.version);
 	let task = store
-		.claim(task.id, task.revision, &owner, &agent)
+		.claim(&TEST_FIXTURE, task.id, task.revision, &owner, &agent)
 		.await
 		.unwrap();
 	store
 		.transition(
+			&TEST_FIXTURE,
 			task.id,
 			task.revision,
 			&owner,
@@ -1689,7 +1869,7 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 	};
 	let key = format!("{peer}:{}:completion", task.id);
 	store
-		.complete(task.id, &owner, &key, &artifact)
+		.complete(&TEST_FIXTURE, task.id, &owner, &key, &artifact)
 		.await
 		.unwrap();
 	let router = _application.application.clone();
@@ -1731,14 +1911,19 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 		);
 	}
 	assert_eq!(
-		store.snapshot(workspace.id).await.unwrap().artifacts.len(),
+		store
+			.snapshot(&TEST_FIXTURE, workspace.id)
+			.await
+			.unwrap()
+			.artifacts
+			.len(),
 		1
 	);
 	let mut malformed = new_task();
 	malformed.requirements = json!({"capabilty":"web.search"});
 	assert!(
 		store
-			.create_task(workspace.id, &malformed, "human", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &malformed, "human", None)
 			.await
 			.is_err()
 	);
@@ -1761,7 +1946,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	other.binding_normalization = None;
 	f.registry.register(other.clone()).await.unwrap();
 	let workspace = store
-		.create_workspace("Claims", "Do not strand work")
+		.create_workspace(&TEST_FIXTURE, "Claims", "Do not strand work")
 		.await
 		.unwrap();
 	let prerequisite = running_task(&store, &agent, workspace.id, None).await;
@@ -1787,21 +1972,44 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	let mut input = new_task();
 	input.dependencies = vec![prerequisite.id];
 	let task = store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	let run = store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&store.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
 	harness.worker_once().await.unwrap();
-	assert_eq!(store.run(run.id).await.unwrap().phase().as_str(), "WAITING");
-	assert_eq!(store.task(task.id).await.unwrap().status.as_str(), "OPEN");
+	assert_eq!(
+		store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"WAITING"
+	);
+	assert_eq!(
+		store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"OPEN"
+	);
 	store
 		.complete(
+			&TEST_FIXTURE,
 			prerequisite.id,
 			prerequisite.owner.as_deref().unwrap(),
 			"prerequisite",
@@ -1835,10 +2043,12 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	);
 	let owner = qualified_agent(&store.node_id, &other.id, &other.version);
 	assert!(matches!(
-		store.claim(task.id, task.revision, &owner, &other).await,
+		store
+			.claim(&TEST_FIXTURE, task.id, task.revision, &owner, &other)
+			.await,
 		Err(aidash_server::Error::Conflict(_))
 	));
-	let unchanged = store.task(task.id).await.unwrap();
+	let unchanged = store.task(&TEST_FIXTURE, task.id).await.unwrap();
 	assert_eq!(unchanged.revision, task.revision);
 	assert!(unchanged.owner.is_none());
 	{
@@ -1865,7 +2075,12 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		store.task(task.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, task.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"RUNNING"
 	);
 	cleanup(store, &url, &schema).await;
@@ -1883,7 +2098,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Children", "Atomic completion")
+		.create_workspace(&TEST_FIXTURE, "Children", "Atomic completion")
 		.await
 		.unwrap();
 	let parent = running_task(&store, &agent, workspace.id, None).await;
@@ -1895,8 +2110,9 @@ async fn child_creation_and_parent_completion_are_serialized(
 		content: json!("done"),
 	};
 	let (child, completed) = tokio::join!(
-		store.create_task(workspace.id, &input, "human", Some("child")),
+		store.create_task(&TEST_FIXTURE, workspace.id, &input, "human", Some("child")),
 		store.complete(
+			&TEST_FIXTURE,
 			parent.id,
 			parent.owner.as_deref().unwrap(),
 			"parent",
@@ -1906,11 +2122,17 @@ async fn child_creation_and_parent_completion_are_serialized(
 	assert_ne!(child.is_ok(), completed.is_ok());
 	if let Ok(child) = child {
 		assert_eq!(
-			store.task(parent.id).await.unwrap().status.as_str(),
+			store
+				.task(&TEST_FIXTURE, parent.id)
+				.await
+				.unwrap()
+				.status
+				.as_str(),
 			"RUNNING"
 		);
 		let cancelled = store
 			.transition(
+				&TEST_FIXTURE,
 				child.id,
 				child.revision,
 				"human",
@@ -1919,11 +2141,17 @@ async fn child_creation_and_parent_completion_are_serialized(
 			.await
 			.unwrap();
 		store
-			.abandon_task(child.id, cancelled.revision, "No longer required")
+			.abandon_task(
+				&TEST_FIXTURE,
+				child.id,
+				cancelled.revision,
+				"No longer required",
+			)
 			.await
 			.unwrap();
 		store
 			.complete(
+				&TEST_FIXTURE,
 				parent.id,
 				parent.owner.as_deref().unwrap(),
 				"parent",
@@ -1933,7 +2161,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 			.unwrap();
 		assert_eq!(
 			store
-				.create_task(workspace.id, &input, "human", Some("child"))
+				.create_task(&TEST_FIXTURE, workspace.id, &input, "human", Some("child"))
 				.await
 				.unwrap()
 				.id,
@@ -1942,7 +2170,13 @@ async fn child_creation_and_parent_completion_are_serialized(
 	}
 	assert!(
 		store
-			.create_task(workspace.id, &input, "human", Some("new-child"))
+			.create_task(
+				&TEST_FIXTURE,
+				workspace.id,
+				&input,
+				"human",
+				Some("new-child")
+			)
 			.await
 			.is_err()
 	);
@@ -1973,7 +2207,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	agent.config["bindings"] = json!([{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"bundled-skill","version":"1.0.0"},"narrow":{}}]);
 	f.registry.register(agent.clone()).await.unwrap();
 	let workspace = store
-		.create_workspace("Skill read", "Read a bundled guide")
+		.create_workspace(&TEST_FIXTURE, "Skill read", "Read a bundled guide")
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
@@ -2020,7 +2254,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	.worker_once()
 	.await
 	.unwrap();
-	let run = store.runs().await.unwrap().remove(0);
+	let run = store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let aidash_server::context::ContextEvent::Tool { result, .. } = &run.context.history[0].event
 	else {
 		panic!("expected tool result")
@@ -2047,7 +2281,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
-		.create_workspace("Recovery", "Repair model errors")
+		.create_workspace(&TEST_FIXTURE, "Recovery", "Repair model errors")
 		.await
 		.unwrap();
 	let parent = running_task(&store, &agent, workspace.id, None).await;
@@ -2104,7 +2338,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -2118,16 +2352,17 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
 	let child = store
-		.create_task(workspace.id, &input, "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
-	let waiting = store.run(run.id).await.unwrap();
+	let waiting = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(waiting.phase().as_str(), "WAITING");
 	assert_eq!(waiting.step, run.step + 1);
 	let child = store
 		.transition(
+			&TEST_FIXTURE,
 			child.id,
 			child.revision,
 			"human",
@@ -2136,7 +2371,12 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		.await
 		.unwrap();
 	store
-		.abandon_task(child.id, child.revision, "No longer required")
+		.abandon_task(
+			&TEST_FIXTURE,
+			child.id,
+			child.revision,
+			"No longer required",
+		)
 		.await
 		.unwrap();
 	let response = aidash_server::provider::ModelResponse {
@@ -2174,7 +2414,12 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	.unwrap();
 	harness.worker_once().await.unwrap();
 	assert_eq!(
-		store.task(parent.id).await.unwrap().status.as_str(),
+		store
+			.task(&TEST_FIXTURE, parent.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"COMPLETED"
 	);
 	cleanup(store, &url, &schema).await;
@@ -2217,13 +2462,13 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 		.unwrap();
 	assert!(!disabled.enabled);
 	let workspace = store
-		.create_workspace("Retry", "Healthy peers progress")
+		.create_workspace(&TEST_FIXTURE, "Retry", "Healthy peers progress")
 		.await
 		.unwrap();
 	let mut healthy = None;
 	for index in 0..101 {
 		let task = store
-			.create_task(workspace.id, &new_task(), "human", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 			.await
 			.unwrap();
 		let node = if index == 100 {
@@ -2372,7 +2617,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 		.body(json!({"title":"Atomic","goal":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())
 		.send().await.unwrap();
 	assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-	assert!(store.workspaces().await.unwrap().is_empty());
+	assert!(store.workspaces(&TEST_FIXTURE).await.unwrap().is_empty());
 	cleanup(store, &url, &schema).await;
 }
 
@@ -2394,10 +2639,18 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 		.await
 		.unwrap();
 	let poison = store
-		.emit(None, "large", json!({"text":"x".repeat(2_000_000)}))
+		.emit(
+			&TEST_FIXTURE,
+			None,
+			"large",
+			json!({"text":"x".repeat(2_000_000)}),
+		)
 		.await
 		.unwrap();
-	let healthy = store.emit(None, "small", json!({"ok":true})).await.unwrap();
+	let healthy = store
+		.emit(&TEST_FIXTURE, None, "small", json!({"ok":true}))
+		.await
+		.unwrap();
 	assert_eq!(bus.publish_once(&f).await.unwrap(), 2);
 	let row: (bool, Option<String>) = {
 		let query_bind_1 = poison.id;
@@ -2431,7 +2684,10 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 				envelope["dataref"],
 				format!("/api/events?after={}", poison.sequence - 1)
 			);
-			let replay = store.events(poison.sequence - 1, None, 500).await.unwrap();
+			let replay = store
+				.events(&TEST_FIXTURE, poison.sequence - 1, None, 500)
+				.await
+				.unwrap();
 			assert_eq!(
 				replay.iter().find(|e| e.id == poison.id).unwrap().data,
 				poison.data
@@ -2535,7 +2791,11 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 	agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"unsafe-http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	f.registry.register(agent.clone()).await.unwrap();
 	let workspace = store
-		.create_workspace("Reconcile", "Never expose an incomplete request")
+		.create_workspace(
+			&TEST_FIXTURE,
+			"Reconcile",
+			"Never expose an incomplete request",
+		)
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
@@ -2550,7 +2810,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 	{
 		let query_bind_1 = task.id;
 		let query_bind_2 = {
-			let run = store.runs().await.unwrap().remove(0);
+			let run = store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 			let mut pending = common::tool_pending(json!({"response":response,"cursor":0}));
 			// The crash follows approval and dispatch of this exact unsafe call.
 			pending["data"]["workbench_approval_result"] = json!({
@@ -2587,7 +2847,15 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 	let run = store.lease_run(worker, 30).await.unwrap().unwrap();
 	let key = format!("{}:0:0", run.id);
 	store
-		.invocation_start(&run, worker, &key, "plugin_0", &json!({}), false)
+		.invocation_start(
+			&TEST_FIXTURE,
+			&run,
+			worker,
+			&key,
+			"plugin_0",
+			&json!({}),
+			false,
+		)
 		.await
 		.unwrap();
 	{
@@ -2613,15 +2881,15 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		.worker_once()
 		.await
 		.unwrap();
-	let current = store.run(run.id).await.unwrap();
+	let current = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	let request = request_id(&current);
 	assert_eq!(json!(current.state)["data"]["key"], key);
 	assert!(matches!(
-		store.answer(request, json!("done")).await,
+		store.answer(&TEST_FIXTURE, request, json!("done")).await,
 		Err(aidash_server::Error::Invalid(_))
 	));
 	store
-		.answer(request, json!({"result":"verified"}))
+		.answer(&TEST_FIXTURE, request, json!({"result":"verified"}))
 		.await
 		.unwrap();
 	cleanup(store, &url, &schema).await;
@@ -2660,7 +2928,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		.await
 		.unwrap();
 	let workspace = store
-		.create_workspace("Agent tool", "Await delegated results")
+		.create_workspace(&TEST_FIXTURE, "Agent tool", "Await delegated results")
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
@@ -2678,7 +2946,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.in_scope(&TEST_FIXTURE))
 		.await
 	}
 	.unwrap();
@@ -2703,6 +2971,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		home: aidash_server::federation::Home::new(f, run.clone()),
 		store: store.clone(),
 		run,
+		scope: TEST_FIXTURE,
 	};
 	for (index, parent) in [None, Some(serde_json::Value::Null)]
 		.into_iter()
@@ -2735,7 +3004,7 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 	let worker = aidash_server::harness::Harness { federation: f };
 	for terminal in ["FAILED", "CANCELLED", "ABANDONED"] {
 		let workspace = store
-			.create_workspace("Dependency", terminal)
+			.create_workspace(&TEST_FIXTURE, "Dependency", terminal)
 			.await
 			.unwrap();
 		let dependency = running_task(&store, &agent, workspace.id, None).await;
@@ -2784,11 +3053,17 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 		let mut input = new_task();
 		input.dependencies = vec![dependency.id];
 		let task = store
-			.create_task(workspace.id, &input, "human", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &input, "human", None)
 			.await
 			.unwrap();
 		let run = store
-			.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+			.accept_run(
+				&TEST_FIXTURE,
+				&task,
+				&store.node_id,
+				&agent.id,
+				&agent.version,
+			)
 			.await
 			.unwrap();
 		// Terminal failure delivery is scheduled with a database wake time;
@@ -2796,7 +3071,13 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 		tokio::time::timeout(std::time::Duration::from_secs(5), async {
 			loop {
 				worker.worker_once().await.unwrap();
-				if store.run(run.id).await.unwrap().phase().as_str() == "FAILED" {
+				if store
+					.run(&TEST_FIXTURE, run.id)
+					.await
+					.unwrap()
+					.phase()
+					.as_str() == "FAILED"
+				{
 					break;
 				}
 				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2804,10 +3085,18 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 		})
 		.await
 		.expect("terminal dependency must settle rather than wait indefinitely");
-		let run = store.run(run.id).await.unwrap();
+		let run = store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(run.phase().as_str(), "FAILED");
 		assert!(run.error.unwrap().contains(terminal));
-		assert_eq!(store.task(task.id).await.unwrap().status.as_str(), "FAILED");
+		assert_eq!(
+			store
+				.task(&TEST_FIXTURE, task.id)
+				.await
+				.unwrap()
+				.status
+				.as_str(),
+			"FAILED"
+		);
 		assert!(!worker.worker_once().await.unwrap());
 	}
 	cleanup(store, &url, &schema).await;
@@ -2835,12 +3124,13 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	let f = _home_runtime.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = home
-		.create_workspace("Large snapshot", "Preserve every item")
+		.create_workspace(&TEST_FIXTURE, "Large snapshot", "Preserve every item")
 		.await
 		.unwrap();
 	let task = running_task(&home, &agent, workspace.id, None).await;
 	for index in 0..3 {
 		home.publish_artifact(
+			&TEST_FIXTURE,
 			task.id,
 			task.owner.as_deref().unwrap(),
 			&format!("large-{index}"),
@@ -2854,14 +3144,14 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 		.unwrap();
 	}
 	for _ in 0..35 {
-		home.create_task(workspace.id, &new_task(), "human", None)
+		home.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 			.await
 			.unwrap();
 	}
-	let full = home.snapshot(workspace.id).await.unwrap();
+	let full = home.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
 	assert!(serde_json::to_vec(&full).unwrap().len() > 4_194_304);
 	let page = home
-		.snapshot_page(workspace.id, "artifacts", None)
+		.snapshot_page(&TEST_FIXTURE, workspace.id, "artifacts", None)
 		.await
 		.unwrap();
 	assert!(serde_json::to_vec(&page).unwrap().len() < 3_145_728);
@@ -2917,7 +3207,13 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	.unwrap();
 
 	let run = worker_store
-		.accept_run(&task, &home.node_id, &agent.id, &agent.version)
+		.accept_run(
+			&TEST_FIXTURE,
+			&task,
+			&home.node_id,
+			&agent.id,
+			&agent.version,
+		)
 		.await
 		.unwrap();
 	let remote = aidash_server::federation::Home::new(_worker_runtime.await.federation, run)
@@ -3097,11 +3393,11 @@ fn home_scene(#[from(federation)] runtime: common::RuntimeFuture) -> HomeSceneFu
 
 		let agent = seed(&f.registry).await;
 		let workspace = store
-			.create_workspace("Remote failure", "Retry terminal delivery")
+			.create_workspace(&TEST_FIXTURE, "Remote failure", "Retry terminal delivery")
 			.await
 			.unwrap();
 		let mut task = store
-			.create_task(workspace.id, &new_task(), "human", None)
+			.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 			.await
 			.unwrap();
 		task.status = TaskStatus::Running;
@@ -3184,7 +3480,7 @@ fn authenticated_runtime(
 			api_token: "test-access-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
-			default_host_packages: vec![],
+			tenancy: Default::default(),
 			oidc: None,
 			gcip: None,
 		};
@@ -3229,11 +3525,11 @@ async fn deployment_administrator_remote_humans_live_on_home_and_survive_receive
 	.await;
 	add_test_peer(&worker_store, &home_store.node_id, &home_f.config.endpoint).await;
 	let workspace = home_store
-		.create_workspace("Remote decisions", "Keep decisions at Home")
+		.create_workspace(&TEST_FIXTURE, "Remote decisions", "Keep decisions at Home")
 		.await
 		.unwrap();
 	let task = home_store
-		.create_task(workspace.id, &new_task(), "human", None)
+		.create_task(&TEST_FIXTURE, workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let insert = Query::insert()
@@ -3252,11 +3548,17 @@ async fn deployment_administrator_remote_humans_live_on_home_and_survive_receive
 		.unwrap();
 	let owner = qualified_agent(&worker_store.node_id, &agent.id, &agent.version);
 	let task = home_store
-		.claim(task.id, task.revision, &owner, &agent)
+		.claim(&TEST_FIXTURE, task.id, task.revision, &owner, &agent)
 		.await
 		.unwrap();
 	let task = home_store
-		.transition(task.id, task.revision, &owner, TaskStatus::Running)
+		.transition(
+			&TEST_FIXTURE,
+			task.id,
+			task.revision,
+			&owner,
+			TaskStatus::Running,
+		)
 		.await
 		.unwrap();
 	let offer = json!({"task":task,"agent":{"id":agent.id,"version":agent.version}});
@@ -3284,12 +3586,12 @@ async fn deployment_administrator_remote_humans_live_on_home_and_survive_receive
 		.await
 		.unwrap();
 	assert!(
-		home_store.run(run.id).await.is_err(),
+		home_store.run(&TEST_FIXTURE, run.id).await.is_err(),
 		"Home must not acquire a shadow execution Run"
 	);
 	assert!(
 		aidash_application::ports::execution::ExecutionStore::human_request_by_id(
-			&home_store,
+			&home_store.for_run(TEST_FIXTURE),
 			question.id
 		)
 		.await
@@ -3297,7 +3599,7 @@ async fn deployment_administrator_remote_humans_live_on_home_and_survive_receive
 	);
 	let recovered = aidash_server::federation::Home::new(
 		worker_f.clone(),
-		worker_store.run(run.id).await.unwrap(),
+		worker_store.run(&TEST_FIXTURE, run.id).await.unwrap(),
 	);
 	assert_eq!(
 		recovered
@@ -3362,9 +3664,15 @@ async fn deployment_administrator_remote_humans_live_on_home_and_survive_receive
 			.await
 			.is_err()
 	);
-	let task = home_store.task(task.id).await.unwrap();
+	let task = home_store.task(&TEST_FIXTURE, task.id).await.unwrap();
 	home_store
-		.transition(task.id, task.revision, &owner, TaskStatus::Cancelled)
+		.transition(
+			&TEST_FIXTURE,
+			task.id,
+			task.revision,
+			&owner,
+			TaskStatus::Cancelled,
+		)
 		.await
 		.unwrap();
 	assert!(

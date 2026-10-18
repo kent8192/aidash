@@ -42,6 +42,24 @@ workers. Apps are ordinary Rust modules. The harness depends on application/doma
 contracts; application/domain do not depend on the harness. Domain/application/harness
 production dependency closures exclude runtime, integrations, the server, Reinhardt,
 Axum, SQLx, SeaORM, and reqwest; CI checks these boundaries against locked Cargo metadata.
+
+### Community and Enterprise builds
+
+The packages above form the **Community build**, which runs only the
+`self-hosted` Offering. `enterprise/` is a separate Cargo workspace with its own
+`Cargo.lock`. It composes `aidash-server` into the **Enterprise build**, which
+runs only the `cloud` and `dedicated` Offerings. Each Deployment selects its
+Offering in `[deployment] offering` of its settings, and `self-hosted` is the
+default. A build refuses to start with an Offering it does not run.
+
+```sh
+cargo test --locked --manifest-path enterprise/Cargo.toml
+cargo run --locked --manifest-path enterprise/Cargo.toml --bin aidash -- serve
+```
+
+The Enterprise server needs `offering = "cloud"` in `server/settings/local.toml`.
+See [Community and Enterprise builds](docs/operations/community-and-enterprise-builds.md)
+for the layout, the alignment and export checks, and the images.
 The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
@@ -114,6 +132,17 @@ Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
 and an HTTPS endpoint for a deployed node.
 
+The backend starts with a PostgreSQL [Provider Credential Store](docs/provider-credentials.md),
+so a Tenant can connect OpenRouter under **Provider connections**. Compose
+generates the Store's Master Key and fingerprint key once, in the
+`provider-credentials` volume. `docker compose --profile dev down -v` deletes
+them together with the database that holds the encrypted credentials.
+
+The Compose backend also turns on Personal Tenants (`[tenancy] personal_tenants = true`,
+mounted as its `local.toml`), so your first Google sign-in gets a Personal
+Tenant without approval. Other deployments keep the Self-hosted default, `false`
+(see [Tenancy Rules](docs/authorization.md#tenancy-rules-tenant-creation-and-invitations)).
+
 For an existing local Keycloak realm, add this Compose override to `.env`,
 replacing an older `.ignore/local-oidc/compose.yaml` entry if present:
 
@@ -129,7 +158,7 @@ described in [Dashboard OIDC setup](#dashboard-oidc-setup). The relay uses the
 official Node.js image independently of the frontend build, including on the
 first start or with a custom `COMPOSE_PROJECT_NAME`.
 
-The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. Google sign-in automatically creates personal Tenant authority; shared Tenant membership requires approval and Deployment Administrator access requires a separate explicit grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Deployment Administrators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and Deployment Administrator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
+The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. Where the Tenancy Rules turn Personal Tenants on, Google sign-in creates personal Tenant authority; otherwise a new identity files a registration request. Shared Tenant membership requires approval and Deployment Administrator access requires a separate explicit grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Deployment Administrators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and Deployment Administrator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
 ### Aidash Cloud GCIP sign-in
 
@@ -190,7 +219,7 @@ Existing Keycloak deployments remain compatible when explicitly configured with 
 
 Changing issuers requires a coordinated stop/start, including when switching back. Stop every Aidash server and worker that shares the database, update all replicas to the same issuer configuration, and then restart them before allowing sign-in. Do not use a rolling restart: a process still using the old issuer can permanently disable identities and revoke sessions created under the new issuer. See the [issuer-switch procedure](docs/authorization.md#switching-issuers) before migrating.
 
-A verified Google sign-in automatically provisions one personal Tenant and user subject for that external identity. Personal use requires no registration request: the dashboard selects the personal Mapping when no valid authority is saved for the tab. The allocation is tied to the verified provider identity, not its email or display name, and later sign-ins reuse it. Existing shared Tenant Mappings and explicitly granted Deployment Administrator access remain separate choices.
+When `[tenancy] personal_tenants` is `true`, a verified Google sign-in provisions one personal Tenant and user subject for that external identity. With the Self-hosted default, `false`, a new identity instead files a registration request for a Deployment Administrator to approve. With a personal Tenant, personal use requires no registration request: the dashboard selects the personal Mapping when no valid authority is saved for the tab. The allocation is tied to the verified provider identity, not its email or display name, and later sign-ins reuse it. Existing shared Tenant Mappings and explicitly granted Deployment Administrator access remain separate choices.
 
 Google users with a personal Tenant can join a shared Tenant by choosing **Request access to shared tenant** in **Account settings**. A Deployment Administrator approves the authenticated request against an existing enabled user subject in **Access policies**; a pending request does not interrupt personal use. Shared approval never grants Deployment Administrator access. For the first Deployment Administrator grant, list verified identity IDs with `GET /api/dashboard/identities` using the existing Deployment Administrator Bearer token, then grant the selected identity Deployment Administrator access with `POST /api/dashboard/identities/{id}/deployment-administrator-grant` and body `{"enabled":true,"expected_revision":0}`. Legacy Keycloak and GCIP sign-ins retain their existing enrollment and approval flows. For legacy Keycloak deployments, Aidash checks its enabled status at most 15 minutes after the last successful check; a definite disablement revokes browser sessions and pauses work. Once Keycloak access is restored, a Deployment Administrator must explicitly call `POST /api/dashboard/identities/{id}/restore`; previously revoked sessions require a new sign-in. Current-browser and all-device Aidash logout are separate dashboard actions. API Bearer recovery remains available during IdP outages.
 
@@ -243,6 +272,8 @@ Configure a peer on **both** nodes in Settings. Each peer record contains the ot
 Every Agent retains `workspace_read` and `human_request`. The other Built-in tools are included by default and can be removed through `remove_default`. Cluster coordinators must retain `task_create`, `task_delegate` and `agent_discover`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. Unresolved children require an explicit, audited abandonment before the parent can finish.
 
 Independent reads in one model response can run concurrently when both the Agent's `tool_parallelism` and the process's `AIDASH_TOOL_PARALLELISM` exceed one. See [parallel read batches](docs/features/parallel-read-batches.md).
+
+An Agent can require Checks, such as a fixed test command, to pass on the exact files a Run produced before the Run may complete; the model's own success claims never count. See [Completion Gate](docs/features/completion-gate.md).
 
 Tools are immutable Registry descriptors with provider-owned behavior and a JSON Schema for arguments. For an HTTP integration, register this configuration on its exact Node:
 
@@ -379,7 +410,7 @@ Run `scripts/test-rust.sh --partition identity` for one partition, or `python3 s
 
 Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 281 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
 
-Third-party attribution for the adapted context compaction code is in [LICENSE](LICENSE).
+Third-party attribution for adapted code is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 HTTP request logging, admission limits, SSE capacity, and the optional Prometheus
 listener are documented in [HTTP protection and observability](docs/operations/http-observability.md).
@@ -387,3 +418,7 @@ listener are documented in [HTTP protection and observability](docs/operations/h
 ## Desktop client
 
 The [Tauri 2 desktop client](desktop/README.md) bundles the shared dashboard and connects to an existing local or remote Aidash server. It supports external-browser Google sign-in and persistent OS-protected credentials.
+
+## License
+
+The licensing of Aidash is being prepared in [#124](https://github.com/kent8192/aidash/issues/124). Until it takes effect, the [interim notice](LICENSE) reserves all rights in original Aidash material, except `aidash-capability` (Apache-2.0). Third-party material keeps its own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). External code contributions are not accepted until then, and issues are welcome.

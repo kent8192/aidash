@@ -41,7 +41,7 @@ use chrono::Duration;
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
-use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
@@ -204,8 +204,13 @@ impl Delegation {
 			.await?)
 	}
 
-	pub(crate) async fn claim_retries(db: DatabaseConnection) -> Result<Vec<DelegationContract>> {
-		db.atomic(async |tx| {
+	pub(crate) async fn claim_retries(
+		db: &crate::database::native::Pool,
+	) -> Result<Vec<DelegationContract>> {
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::DelegationRetry,
+		);
+		db.atomic(&scope, async |tx| {
 			let (sql, values) = Query::select()
 				.expr_as(Expr::current_timestamp(), Alias::new("now"))
 				.build(PostgresQueryBuilder);

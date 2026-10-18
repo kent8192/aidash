@@ -2,7 +2,6 @@
 pub(crate) mod access;
 pub(crate) mod bindings;
 pub(crate) mod candidates;
-pub(crate) mod discard;
 pub(crate) mod indexing;
 pub(crate) mod memory_decay;
 pub(crate) mod memory_graph;

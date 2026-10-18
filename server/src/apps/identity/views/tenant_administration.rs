@@ -37,8 +37,13 @@ pub async fn registrations(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
+	Query(page): Query<AdminMappingPage>,
 ) -> ViewResult<Response> {
-	response(service.registrations(actor, origin, tenant).await)
+	response(
+		service
+			.registrations(actor, origin, tenant, page.offset)
+			.await,
+	)
 }
 
 #[post(

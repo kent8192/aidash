@@ -8,7 +8,7 @@ Adopted: **option 1 (degrade with an explicit marker), narrowed**: only optional
 
 ## 1. What happens today
 
-Established by running the new tests against `develop/0.1.0`, not by reading code alone. "Step" is one `worker_once` of the Harness.
+Established by running the new tests against `develop/0.1.0`, not by reading code alone. "Step" is one `worker_once` of the Harness. The local column records the behavior before [#233](https://github.com/kent8192/aidash/issues/233); see section 7 for the current behavior.
 
 | Cause during a step                                    | Local Run (`auto_context` on)                                                                                                                                                                                                                                                                                  | Required-Home remote Run                                                                                                                                                                                                           |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,7 +19,7 @@ Established by running the new tests against `develop/0.1.0`, not by reading cod
 
 Evidence:
 
-- Local: `local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavailable` (four cases) in `server/src/apps/knowledge/tests/semantic.rs`.
+- Local: `local_auto_context_step_fails_the_run_when_semantic_retrieval_is_unavailable` (four cases) in `server/src/apps/knowledge/tests/semantic.rs`, renamed and flipped by #233 (section 7).
 - Required-Home: `semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_history` (existing, 503) and `required_home_semantic_outage_is_a_typed_transient_failure_for_every_cause` (new, refused connection and missing points) in `server/src/apps/identity/tests/scoped_remote_execution.rs`.
 
 ### Why the two paths differ
@@ -128,3 +128,11 @@ Filed after the decision: item 1 → [#233](https://github.com/kent8192/aidash/i
 - Option 1, narrowed as in section 4, is adopted.
 - `degrade` stays opt-in per source: `on_unavailable: pause | degrade`, default `pause`.
 - The local path retries like required-Home before degrading: five retries, six failed attempts in total.
+
+## 7. Local Run behavior since #233
+
+- A local semantic outage is typed `RemoteSemantic(Unavailable)` where it occurs, and `classify_failure` maps it to the transient `unavailable` semantic failure. The outages are an embedding transport failure (including a response body that breaks off), timeout or HTTP 408/429/5xx; vector points missing from the backend; and a transient database failure of the PostgreSQL vector backend. This holds for semantic search and for native-memory recall. A local Run retries after 2, 4, 8, 16 and 32 s, then pauses with `retries_exhausted`. Its Task is not failed. Manual resume continues a semantic search Run. A native-memory recall whose memory model operation has spent its own retry ledger pauses again on resume, until #291 gives a resumed Run a fresh ledger.
+- A replay while a native memory model attempt is still inside its call deadline is `pending`. The Run retries it after 1 s and then every 30 s, because each replay repeats the whole semantic-context step, including its charged workspace embedding. A Home serving a remote Run leaves its operation `WAITING` the same way, for 1 s and then 30 s, because each fresh claim repeats its charged workspace embedding. Neither spends an outage retry, however long the call deadline is. A memory engine job waits for the attempt the same way, without using up one of its attempts.
+- `SemanticUnavailable` is not transient. It also reports invariant, allowance and index-state violations and permanent vector backend failures, which retrying cannot fix.
+- `embedding::invoke` no longer collapses an upstream key rejection (HTTP 401–403, `configuration`) or a contract violation (`provider_contract`) into `SemanticUnavailable`. Both pause the Run at once with their typed reason and are not retried.
+- Evidence: `local_auto_context_semantic_outage_is_a_typed_transient_failure_for_every_cause` (four causes), `local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_provider_recovers` and `local_semantic_key_rejection_and_contract_violation_pause_without_retry` in `server/src/apps/knowledge/tests/semantic.rs`.

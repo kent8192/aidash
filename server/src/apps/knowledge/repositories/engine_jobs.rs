@@ -2,6 +2,7 @@
 //! Inputs contain exact evidence identities, never a second copy of memory bodies.
 use super::{access::Lease, native_memory as repository, units};
 use crate::{Error, Result, database::native, store::Store};
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{Duration, Utc};
 use reinhardt::query::{
@@ -13,6 +14,11 @@ use uuid::Uuid;
 mod completion;
 mod consolidation;
 mod discovery;
+
+const MAINTENANCE: TenancyScope =
+	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
+#[cfg(test)]
+mod tests;
 pub(crate) use completion::completion_ready;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -298,13 +304,13 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 			.and_where(Expr::col("id").eq(Expr::value(run_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.in_scope(&store.run_tenancy(run_id).await?))
 	.await?;
 	let access =
 		crate::authorization::execution::access_for_run(store, &run.metadata(), true).await;
 	let mut lease = match access {
 		Ok(Some(access)) => Lease::Scoped(Box::new(access)),
-		Ok(None) => Lease::without_subject(store).await?,
+		Ok(None) => Lease::within(store, &store.workspace_tenancy(run.workspace_id).await?).await?,
 		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(None),
 		Err(e) => return Err(e),
 	};
@@ -356,7 +362,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			.limit(32)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(store.pool.in_scope(&MAINTENANCE))
 	.await?;
 	let mut count = 0;
 	for row in rows {
@@ -368,7 +374,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 }
 
 async fn process(store: &Store, id: Uuid) -> Result<bool> {
-	let mut claim_tx = native::begin(&store.pool).await?;
+	let mut claim_tx = store.pool.begin(&MAINTENANCE).await?;
 	let Some(row) = native::query(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -462,31 +468,17 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 		row.try_get("authority")?,
 	)
 	.await;
-	let backpressure = matches!(&outcome, Err(Error::Conflict(message)) if message == super::candidates::QUEUE_FULL);
-	let (state, error) = match &outcome {
-		Ok(()) => ("complete", None),
-		Err(Error::Conflict(_)) if backpressure => ("pending", Some("candidate_queue_full")),
-		Err(Error::Forbidden | Error::Conflict(_)) => {
-			("blocked", Some("authority_or_source_changed"))
-		}
-		Err(Error::Invalid(_)) => ("failed", Some("invalid_or_exhausted_work")),
-		Err(_) => (
-			if attempts + 1 >= limit {
-				"failed"
-			} else {
-				"pending"
-			},
-			Some("engine_unavailable"),
-		),
-	};
-	let mut tx = native::begin(&store.pool).await?;
+	let (state, error, consumed) = settled(&outcome, attempts + 1 >= limit);
+	let mut tx = store.pool.begin(&MAINTENANCE).await?;
 	native::query(
 		&Query::update()
 			.table(Alias::new("memory_engine_jobs"))
 			.value(Alias::new("state"), state)
 			.value(Alias::new("last_error"), error)
-			// Waiting for human review does not consume a model failure attempt.
-			.value(Alias::new("attempts"), (attempts + usize::from(!backpressure)) as i32)
+			.value(
+				Alias::new("attempts"),
+				(attempts + usize::from(consumed)) as i32,
+			)
 			.value(
 				Alias::new("next_attempt"),
 				Utc::now() + Duration::seconds(30),
@@ -503,6 +495,36 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	Ok(outcome.is_ok())
 }
 
+/// The job state and error an execution outcome leaves, and whether it used up
+/// one of the job's model attempts. `last` is true on the job's final attempt.
+fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static str>, bool) {
+	match outcome {
+		Ok(()) => ("complete", None, true),
+		// Waiting for human review does not consume a model failure attempt.
+		Err(Error::Conflict(message)) if message == super::candidates::QUEUE_FULL => {
+			("pending", Some("candidate_queue_full"), false)
+		}
+		// An earlier model attempt is still inside its call deadline. Waiting
+		// for it makes no provider call, so it does not consume one either.
+		Err(Error::RemoteSemantic(crate::semantic::remote::Failure::Pending)) => {
+			("pending", Some("model_call_pending"), false)
+		}
+		Err(Error::Forbidden | Error::Conflict(_)) => {
+			("blocked", Some("authority_or_source_changed"), true)
+		}
+		// A model call whose retry ledger is spent cannot succeed on a later claim.
+		Err(
+			Error::Invalid(_)
+			| Error::RemoteSemantic(crate::semantic::remote::Failure::RetriesExhausted),
+		) => ("failed", Some("invalid_or_exhausted_work"), true),
+		Err(_) => (
+			if last { "failed" } else { "pending" },
+			Some("engine_unavailable"),
+			true,
+		),
+	}
+}
+
 async fn execute(
 	store: &Store,
 	bank: &Bank,
@@ -512,7 +534,7 @@ async fn execute(
 	input: &Input,
 	authority: serde_json::Value,
 ) -> Result<()> {
-	let mut lease = Lease::restore(store, authority).await?;
+	let mut lease = Lease::restore(store, authority, bank.workspace).await?;
 	let result = async {
 		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 		// Hold the exact claim through admission, so an expired worker cannot publish.

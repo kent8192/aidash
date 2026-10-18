@@ -131,6 +131,7 @@ impl VectorIndex for NoEffects {
 		&self,
 		_: &aidash_domain::semantic::VectorConfig,
 		_: &str,
+		_: &str,
 		_: &[uuid::Uuid],
 	) -> Result<bool> {
 		panic!("unexpected present effect in disclosure scenario")
@@ -469,22 +470,26 @@ impl JournalScope for JournalLease {
 	async fn fail_operation(
 		&mut self,
 		_: &JournalRecord,
-		_: i32,
-		_: Option<i64>,
+		failures: i32,
+		delay: Option<i64>,
 		state: &str,
 		error: &str,
 	) -> Result<()> {
 		if error == "context_budget" {
 			assert_eq!(state, "PAUSED");
 		} else {
-			assert_eq!(error, "unavailable");
+			assert!(["unavailable", "pending"].contains(&error), "{error}");
 			assert_eq!(state, "WAITING");
 		}
-		self.working.state = state.into();
+		let r = &mut self.working;
+		r.state = state.into();
+		r.failures = failures;
+		r.error = Some(error.into());
+		r.next_attempt = delay.map(|secs| Utc.timestamp_opt(secs, 0).unwrap());
 		Ok(())
 	}
 	async fn fail_attempt(&mut self, _: &Attempt, error: &str) -> Result<()> {
-		assert!(["context_budget", "unavailable"].contains(&error));
+		assert!(["context_budget", "unavailable", "pending"].contains(&error));
 		Ok(())
 	}
 	async fn resume_records(&mut self, _: Uuid, _: Uuid) -> Result<Vec<JournalRecord>> {
@@ -723,6 +728,9 @@ impl SemanticSearchScope for Scope {
 		_: &Operation,
 		budget: usize,
 	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
+		if self.native.as_ref().unwrap().fault == "pending" {
+			return Err(Error::RemoteSemantic(Failure::Pending));
+		}
 		let context = self.native.as_ref().unwrap().context.clone();
 		assert!(
 			serde_json::to_vec(&context)?.len() <= budget,
@@ -896,6 +904,51 @@ async fn native_finalization_failures_rollback_dependencies_and_receipt(
 	let record = repo.journal.record.lock().unwrap();
 	assert!(record.receipt.is_none());
 	assert_eq!(record.state, "WAITING");
+}
+
+/// A native memory model attempt still inside its call deadline leaves the
+/// operation waiting as `Pending`. It neither pauses the operation nor spends
+/// one of its outage retries, however long the call deadline is (#233). Each
+/// fresh claim repeats the charged workspace embedding, so a repeated wait
+/// backs off to `PENDING_REPLAY_SECONDS`.
+#[rstest]
+#[case(None, 1)]
+#[case(Some("pending"), aidash_domain::semantic::PENDING_REPLAY_SECONDS)]
+#[tokio::test]
+async fn a_live_native_memory_attempt_waits_without_spending_an_outage_retry(
+	#[case] previous: Option<&str>,
+	#[case] seconds: i64,
+) {
+	// Arrange
+	let mut native = NativeFixture::new();
+	native.fault = "pending";
+	let mut op = operation();
+	op.max_tokens = 16_384;
+	let mut repo = Repository::new();
+	repo.native = Some(native.clone());
+	repo.journal.native = Some(native.clone());
+	{
+		let mut record = repo.journal.record.lock().unwrap();
+		record.digest = op.digest().unwrap();
+		record.binding = json!({"operation":op,"semantic":native.binding});
+		record.error = previous.map(str::to_owned);
+	}
+	// Act
+	let result = search(&repo, "aidash://receiver", op).await;
+	// Assert
+	assert!(
+		matches!(result, Err(Error::RemoteSemantic(Failure::Pending))),
+		"{result:?}"
+	);
+	let record = repo.journal.record.lock().unwrap();
+	assert_eq!(record.state, "WAITING");
+	assert_eq!(record.failures, 0, "a live attempt spends no outage retry");
+	assert_eq!(record.error.as_deref(), Some("pending"));
+	assert_eq!(
+		record.next_attempt,
+		Some(Utc.timestamp_opt(seconds, 0).unwrap()),
+		"the operation is claimable again after {seconds} s"
+	);
 }
 
 #[rstest]

@@ -61,8 +61,8 @@ impl SnapshotRetention for Snapshots {
 			.filter(|snapshot| {
 				snapshot
 					.run_ended_at
-					.is_some_and(|ended| ended < ended_before)
-					|| snapshot.fetched_at < retrieved_before
+					.is_some_and(|ended| ended <= ended_before)
+					|| snapshot.fetched_at <= retrieved_before
 			})
 			.take(limit as usize)
 			.cloned()
@@ -200,4 +200,18 @@ async fn nothing_is_purged_while_every_basis_holds() {
 		.unwrap();
 	assert_eq!(purged, 0);
 	assert!(snapshots.purged.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn contents_exactly_at_a_cutoff_are_purged() {
+	// Fetched exactly one maximum age ago, and of a Run that ended exactly
+	// one post-run period ago: neither basis holds any longer.
+	let snapshots = Snapshots::new(vec![
+		snapshot(1, 0, None, None),
+		snapshot(2, 23, Some(23), None),
+	]);
+	let purged = sweep(&snapshots, &rules(1, 24), hours(24), BATCH)
+		.await
+		.unwrap();
+	assert_eq!(purged, 2);
 }

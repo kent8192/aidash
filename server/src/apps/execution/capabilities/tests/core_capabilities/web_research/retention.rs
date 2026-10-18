@@ -1,6 +1,31 @@
 //! Retention and Evidence Revocation of Research evidence through the real
 //! Harness and HTTP API (ADR 0045, ADR 0046).
 use super::*;
+use reinhardt::query::{Alias, Expr, ExprTrait, IntoIden, SimpleExpr};
+
+/// A column of the table being read.
+fn col(name: &str) -> SimpleExpr {
+	Expr::col(Alias::new(name)).into()
+}
+
+/// A SQL function call. `IntoIden` needs a static name, as every caller passes.
+fn call(function: &'static str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
+	SimpleExpr::FunctionCall(function.into_iden(), arguments)
+}
+
+/// The values as one JSON array.
+fn array(values: Vec<SimpleExpr>) -> SimpleExpr {
+	call("jsonb_build_array", values)
+}
+
+fn to_jsonb(value: SimpleExpr) -> SimpleExpr {
+	call("to_jsonb", vec![value])
+}
+
+/// Whether the column holds a SHA-256 digest.
+fn digest(name: &str) -> SimpleExpr {
+	Expr::col(Alias::new(name)).like("sha256:%")
+}
 
 impl Research {
 	/// Bob, a member of the Tenant whose policy refuses him `research.revoke`
@@ -39,11 +64,74 @@ impl Research {
 			.unwrap_or_else(|| panic!("{messages:?}"));
 		(run, evidence_ref(answer).unwrap())
 	}
+	/// A research call in flight: its attempt is reserved and its stored
+	/// invocation has no result yet.
+	async fn in_flight(&self, run: Uuid, key: &str, input: Value) {
+		use reinhardt::query::{PostgresQueryBuilder, Query};
+		let invocation = Query::insert()
+			.into_table(Alias::new("invocations"))
+			.columns(
+				[
+					"idempotency_key",
+					"run_id",
+					"tool",
+					"input",
+					"status",
+					"replay_safe",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(key))
+					.expr(Expr::value(run))
+					.expr(Expr::value("research_search"))
+					.expr(Expr::value(input))
+					.expr(Expr::value("STARTED"))
+					.expr(Expr::value(false))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		let attempt = Query::insert()
+			.into_table(Alias::new("research_attempts"))
+			.columns(
+				[
+					"id",
+					"run_id",
+					"invocation_key",
+					"operation",
+					"provider",
+					"destination",
+					"outcome",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::new_v4()))
+					.expr(Expr::value(run))
+					.expr(Expr::value(key))
+					.expr(Expr::value("search"))
+					.expr(Expr::value("research.search@1"))
+					.expr(Expr::value("research-fixture.invalid"))
+					.expr(Expr::value("dispatched"))
+					.expr(call("now", Vec::new()))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		for sql in [invocation, attempt] {
+			sqlx::query(&sql)
+				.execute(self.c.f.store.pool.driver())
+				.await
+				.unwrap();
+		}
+	}
 	/// One column of every row of `table` for the Run, as JSON.
-	pub(super) async fn column(&self, table: &str, expression: &str, run: Uuid) -> Vec<Value> {
-		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	pub(super) async fn column(&self, table: &str, expression: SimpleExpr, run: Uuid) -> Vec<Value> {
+		use reinhardt::query::{PostgresQueryBuilder, Query};
 		let sql = Query::select()
-			.expr(Expr::cust(expression))
+			.expr(expression)
 			.from(Alias::new(table))
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder);
@@ -129,25 +217,41 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	assert_eq!(body, json!({"error":"evidence unavailable"}));
 	// Stored copies are tombstones; identities, retrieval times and digests stay.
 	assert_eq!(
-		r.column("research_snapshots", "jsonb_build_array(lines, text_bytes, title, purge_reason, text_digest LIKE 'sha256:%', fetched_at IS NOT NULL)", run.id).await,
+		r.column(
+			"research_snapshots",
+			array(vec![
+				col("lines"),
+				col("text_bytes"),
+				col("title"),
+				col("purge_reason"),
+				digest("text_digest"),
+				Expr::col(Alias::new("fetched_at")).is_not_null(),
+			]),
+			run.id
+		)
+		.await,
 		[json!([[], 0, null, "revocation", true, true])]
 	);
 	assert_eq!(
-		r.column("research_fragments", "to_jsonb(text)", run.id)
+		r.column("research_fragments", to_jsonb(col("text")), run.id)
 			.await,
 		[json!("")]
 	);
 	assert_eq!(
-		r.column("research_sources", "jsonb_build_array(title, url)", run.id)
-			.await,
+		r.column(
+			"research_sources",
+			array(vec![col("title"), col("url")]),
+			run.id
+		)
+		.await,
 		[json!(["", PAGE])]
 	);
 	for result in r
-		.column("research_attempts", "result", run.id)
+		.column("research_attempts", col("result"), run.id)
 		.await
 		.into_iter()
 		.chain(
-			r.column("invocations", "result", run.id)
+			r.column("invocations", col("result"), run.id)
 				.await
 				.into_iter()
 				.filter(|result| result["operation"] == "fetch"),
@@ -157,7 +261,7 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	}
 	// The stored projection carries the placeholder; the journal keeps the
 	// original until the Run is deleted.
-	let stored = r.c.f.store.run(run.id).await.unwrap();
+	let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(stored.context.research_revoked);
 	assert!(stored.context.events().any(|event| matches!(
 		event,
@@ -214,7 +318,29 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 	assert_eq!(status, 200, "{record}");
 	assert_eq!(record["revoked_by"], "deployment-administrator");
 
-	// Assert: the approval is closed, so the Run continues; its next search
+	// Assert: the waiting call's stored invocation, an approval_required
+	// result without `limits`, no longer names the query.
+	let stored = r
+		.column(
+			"invocations",
+			array(vec![col("result"), col("input")]),
+			run.id,
+		)
+		.await
+		.into_iter()
+		.filter(|row| row[0]["contract"] == aidash_domain::research::RESULT_CONTRACT)
+		.collect::<Vec<_>>();
+	assert!(!stored.is_empty(), "the waiting call was stored");
+	for row in stored {
+		assert_eq!(row[0]["error"]["code"], "evidence_revoked", "{row}");
+		assert_eq!(
+			row[1],
+			aidash_domain::context::ContextEvent::revoked_arguments(),
+			"{row}"
+		);
+	}
+
+	// The approval is closed, so the Run continues; its next search
 	// returns evidence_revoked and nothing is sent.
 	let (_, approvals) = request(
 		&r.c.app,
@@ -239,7 +365,7 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 		.worker_once()
 		.await
 		.unwrap();
-		let stored = r.c.f.store.run(run.id).await.unwrap();
+		let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		let revoked = serde_json::to_value(stored.context.events().collect::<Vec<_>>())
 			.unwrap()
 			.as_array()
@@ -262,6 +388,129 @@ async fn revocation_closes_a_pending_disclosure_and_the_run_continues_without_re
 		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 	}
 	assert_eq!(r.attempts(run.id).await, 0, "nothing was sent");
+	r.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn revocation_closes_an_approved_disclosure_and_redacts_a_call_in_flight(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the Run's Web disclosure is approved, but no step has consumed
+	// the approval yet; another research call is in flight.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let approval = r.until_waiting(run.id).await;
+	let card = |approvals: &Value| {
+		approvals["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["id"] == json!(approval))
+			.cloned()
+			.unwrap_or_else(|| panic!("{approvals}"))
+	};
+	let (status, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{approvals}");
+	let (status, decided) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card(&approvals)["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{decided}");
+	assert_eq!(decided["state"], "approved");
+	r.in_flight(run.id, "in-flight", json!({"query":"a query in flight"}))
+		.await;
+
+	// Act
+	let (status, record) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		&format!("/api/runs/{}/research-revocation", run.id),
+		json!({"reason":"The agreement with the source ended."}),
+	)
+	.await;
+	assert_eq!(status, 200, "{record}");
+
+	// Assert: the approval can no longer be consumed, and the call in flight
+	// no longer names its query, though it still has no result.
+	let (_, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(card(&approvals)["state"], "closed");
+	let in_flight = r
+		.column(
+			"invocations",
+			call(
+				"jsonb_build_object",
+				vec![
+					Expr::value("key").into(),
+					col("idempotency_key"),
+					Expr::value("input").into(),
+					col("input"),
+					Expr::value("result").into(),
+					col("result"),
+				],
+			),
+			run.id,
+		)
+		.await
+		.into_iter()
+		.find(|row| row["key"] == "in-flight")
+		.unwrap();
+	assert_eq!(
+		in_flight["input"],
+		aidash_domain::context::ContextEvent::revoked_arguments()
+	);
+	assert_eq!(in_flight["result"], Value::Null);
+	// The resumed Run's repeated call sends nothing.
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+	loop {
+		Harness {
+			federation: r.c.f.clone(),
+		}
+		.worker_once()
+		.await
+		.unwrap();
+		let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		let revoked = serde_json::to_value(stored.context.events().collect::<Vec<_>>())
+			.unwrap()
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|event| {
+				event["result"]["error"]["code"] == "evidence_revoked"
+					|| event["result"]["revoked"] == true
+			});
+		if revoked {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"no evidence_revoked result: phase={} error={:?}",
+			stored.phase(),
+			stored.error
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+	}
+	assert_eq!(r.attempts(run.id).await, 1, "only the call in flight");
 	r.close().await;
 }
 
@@ -306,7 +555,11 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(lines, purge_reason, text_digest LIKE 'sha256:%')",
+			array(vec![
+				col("lines"),
+				col("purge_reason"),
+				digest("text_digest")
+			]),
 			run.id
 		)
 		.await,
@@ -345,6 +598,17 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	.await;
 	assert_eq!(status, 200, "{rules}");
 	assert_eq!(rules["effective"], defaults);
+	// Rules are never stored for a Tenant that does not exist, which a Tenant
+	// created later under that name would inherit.
+	let (status, body) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"PUT",
+		"/api/tenants/no-such-tenant/retention",
+		shorter.clone(),
+	)
+	.await;
+	assert_eq!(status, 404, "{body}");
 	let history = "/api/tenants/acme/retention-history";
 	let (status, changes) = request(&r.c.app, &r.c.token, "GET", history, json!(null)).await;
 	assert_eq!(status, 200, "{changes}");
@@ -379,7 +643,12 @@ async fn a_retained_original_goes_with_its_snapshot_contents(
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(page_count, pages_without_text, original_retained, original_bytes)",
+			array(vec![
+				col("page_count"),
+				col("pages_without_text"),
+				col("original_retained"),
+				col("original_bytes"),
+			]),
 			run.id
 		)
 		.await,
@@ -388,7 +657,7 @@ async fn a_retained_original_goes_with_its_snapshot_contents(
 	assert_eq!(
 		r.column(
 			"research_originals",
-			"to_jsonb(octet_length(bytes))",
+			to_jsonb(call("octet_length", vec![col("bytes")])),
 			run.id
 		)
 		.await,
@@ -416,14 +685,18 @@ async fn a_retained_original_goes_with_its_snapshot_contents(
 
 	// Assert: the original went with the contents; its digest stays.
 	assert!(
-		r.column("research_originals", "to_jsonb(snapshot_id)", run.id)
+		r.column("research_originals", to_jsonb(col("snapshot_id")), run.id)
 			.await
 			.is_empty()
 	);
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(original_retained, original_digest LIKE 'sha256:%', purge_reason)",
+			array(vec![
+				col("original_retained"),
+				digest("original_digest"),
+				col("purge_reason"),
+			]),
 			run.id
 		)
 		.await,
@@ -445,7 +718,7 @@ async fn an_evidence_revocation_removes_retained_originals(
 	assert_eq!(
 		r.column(
 			"research_originals",
-			"to_jsonb(octet_length(bytes))",
+			to_jsonb(call("octet_length", vec![col("bytes")])),
 			run.id
 		)
 		.await,
@@ -465,14 +738,18 @@ async fn an_evidence_revocation_removes_retained_originals(
 	// Assert
 	assert_eq!(status, 200, "{record}");
 	assert!(
-		r.column("research_originals", "to_jsonb(snapshot_id)", run.id)
+		r.column("research_originals", to_jsonb(col("snapshot_id")), run.id)
 			.await
 			.is_empty()
 	);
 	assert_eq!(
 		r.column(
 			"research_snapshots",
-			"jsonb_build_array(original_retained, original_digest LIKE 'sha256:%', purge_reason)",
+			array(vec![
+				col("original_retained"),
+				digest("original_digest"),
+				col("purge_reason"),
+			]),
 			run.id
 		)
 		.await,

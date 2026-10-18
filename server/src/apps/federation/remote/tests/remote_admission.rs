@@ -1,5 +1,7 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::{domain::qualified_agent, store::Store};
 use common::*;
 use serde_json::{Value, json};
@@ -135,7 +137,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		first, second,
 		"duplicate delivery must return the same local binding"
 	);
-	let source_task = a.store.task(task).await.unwrap();
+	let source_task = a.store.task(&TEST_FIXTURE, task).await.unwrap();
 	assert_eq!(
 		peer(
 			&ba,
@@ -488,8 +490,13 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 			admit,
 			json!({"grant_id":race_grant})
 		),
-		b.store
-			.accept_run(&candidate, &a.config.node_id, "research", "1.0.0")
+		b.store.accept_run(
+			&TEST_FIXTURE,
+			&candidate,
+			&a.config.node_id,
+			"research",
+			"1.0.0"
+		)
 	);
 	let runs: i64 = {
 		let query_bind_1 = &a.config.node_id;

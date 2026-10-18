@@ -1,4 +1,5 @@
 //! Receiver-side execution inspection remains read-only under live policy changes.
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../../execution/tests/support/endpoint.rs"]
 mod endpoint;
 #[path = "../../../execution/tests/support/execution.rs"]

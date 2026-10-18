@@ -1,6 +1,7 @@
 //! Policy ports preserve the caller's transaction and policy/audit lock lifetime.
 use super::models::{AuthorizationBundle, AuthorizationDecision};
 use crate::database::native::Pool;
+use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
 	authorization::Snapshot,
@@ -99,9 +100,12 @@ impl AuthorizationTransaction for PolicyTransaction {
 
 #[async_trait]
 impl AuthorizationStore for PolicyRepository {
-	async fn begin(&self) -> Result<Box<dyn AuthorizationTransaction>> {
-		let connection = self.pool.connection();
-		let transaction = connection.begin().await.map_err(crate::Error::from)?;
+	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn AuthorizationTransaction>> {
+		let transaction = self
+			.pool
+			.begin(scope)
+			.await
+			.and_then(crate::database::native::Transaction::into_executor)?;
 		Ok(Box::new(PolicyTransaction(transaction)))
 	}
 }
@@ -138,11 +142,16 @@ pub(crate) mod dashboard;
 
 pub(crate) mod personal_tenant;
 
+pub(crate) mod tenants;
+
+pub(crate) mod invitations;
+
 pub(crate) mod home_execution;
 
 pub(crate) mod desktop;
 pub(crate) mod retention;
 
+pub mod plan_connections;
 pub mod provider_credentials;
 
 pub mod credential_store;
