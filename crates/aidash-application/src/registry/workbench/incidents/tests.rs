@@ -181,7 +181,7 @@ impl IncidentScope for Scope<'_> {
 		self.call("inspection");
 		Ok(())
 	}
-	async fn effective(&mut self, _: &EntityRef) -> Result<Entry> {
+	async fn effective(&mut self, _: &str, _: &EntityRef) -> Result<Entry> {
 		self.call("effective");
 		Ok(serde_json::from_value(
 			json!({"id":"agent","version":"1","kind":self.repository.kind,"name":{},"description":{},"config":{}}),

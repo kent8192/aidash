@@ -3,6 +3,7 @@
 pub mod capabilities;
 
 pub mod cache_salt;
+pub mod research_providers;
 pub mod research_retention;
 
 pub mod openrouter;

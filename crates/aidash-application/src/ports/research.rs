@@ -4,7 +4,7 @@
 use crate::Result;
 use aidash_domain::research::{
 	Failure, Operation,
-	account::{AccountProfile, CostAttribution},
+	account::{AccountTerms, CostAttribution},
 	citations::EvidenceRef,
 	document::{ExtractedPage, Passage, RenderedPage},
 	evidence::{
@@ -38,8 +38,8 @@ pub trait SearchProvider: Send + Sync {
 	/// is rejected here, before any approval is requested.
 	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure>;
 	/// The Research account holder's current account terms, or `None` for a
-	/// provider that sends nothing outside the Node.
-	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure>;
+	/// provider that charges nothing.
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure>;
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure>;
 }
 
@@ -49,6 +49,11 @@ pub trait SearchProvider: Send + Sync {
 pub trait PageProvider: Send + Sync {
 	/// Literal address checks performed before any disclosure or attempt.
 	fn admit(&self, url: &Url) -> std::result::Result<(), Failure>;
+	/// The Research account holder's current account terms, or `None` for a
+	/// provider that charges nothing, such as Aidash's own page reader.
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
+		Ok(None)
+	}
 	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure>;
 }
 

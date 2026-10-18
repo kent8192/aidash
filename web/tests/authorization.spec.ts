@@ -6,7 +6,7 @@ import {
 } from "./auth-fixture";
 import { randomUUID } from "node:crypto";
 
-test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog and credential revocation", async ({
+test("authorization dashboard manages revisions, RBAC/ABAC decisions and credential revocation", async ({
   page,
   request,
   browser,
@@ -27,23 +27,6 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     expect(response.status(), await response.text()).toBe(200);
     return response.json();
   };
-  const model = `model-${tenant}`;
-  await api("/api/registry", {
-    id: model,
-    version: "1.0.0",
-    kind: "model",
-    name: { en: "Policy fixture model", ja: "権限確認モデル" },
-    description: { en: "Local authorization fixture" },
-    config: {
-      provider: "openrouter",
-      model_id: "fixture",
-      endpoint: "http://127.0.0.1:1/v1",
-      context_window: 128000,
-      max_output_tokens: 4096,
-      modalities: ["text"],
-      cost: {},
-    },
-  });
   const policy = {
     tenant,
     subjects: {
@@ -246,42 +229,6 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
       })
     ).status(),
   ).toBe(401);
-
-  const state = await api("/api/state");
-  const entry = state.registry.find(
-    (value: { id: string }) => value.id === model,
-  );
-  expect(entry).toBeTruthy();
-  await page
-    .getByLabel("コンポーネントのバージョン", { exact: true })
-    .selectOption(JSON.stringify([entry.id, entry.version]));
-  const catalogPanel = page.locator(".panel").filter({
-    has: page.getByRole("heading", {
-      name: "承認済みコンポーネント",
-      exact: true,
-    }),
-  });
-  // The fixture model names no Provider Credential: a Keyless endpoint
-  // carries no data retention guarantee, before and after approval.
-  await expect(catalogPanel.locator(".keyless-notice")).toContainText(
-    "ゼロデータ保持は保証されません",
-  );
-  await expect(catalogPanel.locator(".keyless-notice")).toContainText(
-    "http://127.0.0.1:1",
-  );
-  await catalogPanel.getByRole("button", { name: "承認", exact: true }).click();
-  await expect(catalogPanel.locator(".auth-row")).toContainText("承認済み");
-  await expect(catalogPanel.locator(".auth-row .keyless-origin")).toHaveText(
-    "データ保持の保証なし · http://127.0.0.1:1",
-  );
-  await catalogPanel
-    .getByRole("button", { name: "承認を無効化", exact: true })
-    .click();
-  await expect(catalogPanel.locator(".auth-row .badge")).toHaveText("無効");
-  expect((await api(`${base}/catalog`))[0]).toMatchObject({
-    enabled: false,
-    revision: 2,
-  });
 
   for (let i = 0; i < 26; i++)
     await api(`${base}/evaluate`, {

@@ -59,6 +59,8 @@ pub trait GenerationControlScope: GenerationLifecycleScope {
 	// the same owned subject scope; it must not create another transaction.
 	async fn visible(&mut self, job: &Request) -> Result<bool>;
 	async fn decide(&mut self, job: &Request, action: &str) -> Result<bool>;
+	/// Decide `catalog.approve` on the version the request would publish.
+	async fn decide_catalog(&mut self, job: &Request) -> Result<bool>;
 	async fn finish(self: Box<Self>, result: Result<Request>) -> Result<Request>;
 }
 #[async_trait]

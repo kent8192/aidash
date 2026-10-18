@@ -2,10 +2,7 @@
 use crate::{Result as NativeResult, apps::identity::services::access::Access, store::Store};
 use aidash_application::{
 	Result,
-	ports::execution::media::{
-		AuthorizedMediaScope, MediaAttachment, MediaAttachments, MediaTransaction,
-		OperatorMediaRepository,
-	},
+	ports::execution::media::{AuthorizedMediaScope, MediaAttachment, MediaAttachments},
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -33,14 +30,6 @@ pub(crate) struct Attachments<'a> {
 }
 pub(crate) struct ScopedMedia<'a> {
 	pub(crate) access: &'a mut Access,
-}
-pub(crate) struct OperatorMedia<'a> {
-	pub(crate) store: &'a Store,
-	/// The Tenant of the Run whose human messages are read.
-	pub(crate) scope: aidash_application::tenancy::TenancyScope,
-}
-struct Transaction {
-	tx: crate::database::native::Transaction,
 }
 #[async_trait]
 impl MediaAttachments for Attachments<'_> {
@@ -109,35 +98,6 @@ impl AuthorizedMediaScope for ScopedMedia<'_> {
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
-	}
-}
-#[async_trait]
-impl OperatorMediaRepository for OperatorMedia<'_> {
-	fn node_id(&self) -> &str {
-		&self.store.node_id
-	}
-	async fn begin(&self) -> Result<Box<dyn MediaTransaction>> {
-		let tx = self.store.pool.begin(&self.scope).await?;
-		Ok(Box::new(Transaction { tx }))
-	}
-}
-#[async_trait]
-impl MediaAttachments for Transaction {
-	async fn attachments(
-		&mut self,
-		workspace: Uuid,
-		message: Uuid,
-	) -> Result<Vec<MediaAttachment>> {
-		Attachments { tx: &mut self.tx }
-			.attachments(workspace, message)
-			.await
-	}
-}
-#[async_trait]
-impl MediaTransaction for Transaction {
-	async fn commit(self: Box<Self>) -> Result<()> {
-		let transaction = *self;
-		transaction.tx.commit().await.map_err(Into::into)
 	}
 }
 

@@ -726,8 +726,16 @@ impl SemanticSearchScope for Scope {
 		_: &str,
 		_: &Binding,
 		_: &Operation,
+		cycle: i32,
 		budget: usize,
 	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
+		self.native
+			.as_ref()
+			.unwrap()
+			.cycles
+			.lock()
+			.unwrap()
+			.push(cycle);
 		if self.native.as_ref().unwrap().fault == "pending" {
 			return Err(Error::RemoteSemantic(Failure::Pending));
 		}
@@ -747,6 +755,7 @@ struct NativeFixture {
 	context: aidash_domain::semantic::remote::NativeContext,
 	ordinary: aidash_domain::semantic::results::Match,
 	recorded: Arc<Mutex<Vec<aidash_domain::semantic::remote::NativeContext>>>,
+	cycles: Arc<Mutex<Vec<i32>>>,
 }
 impl NativeFixture {
 	fn new() -> Self {
@@ -817,6 +826,7 @@ impl NativeFixture {
 				score: 0.75,
 			},
 			recorded: Default::default(),
+			cycles: Default::default(),
 		}
 	}
 }
@@ -911,6 +921,31 @@ async fn native_finalization_failures_rollback_dependencies_and_receipt(
 /// one of its outage retries, however long the call deadline is (#233). Each
 /// fresh claim repeats the charged workspace embedding, so a repeated wait
 /// backs off to `PENDING_REPLAY_SECONDS`.
+/// A resume keeps the remote operation ID but opens a new journal cycle; the
+/// Home's native memory ledger counts its retries in that cycle (#291).
+#[rstest]
+#[tokio::test]
+async fn native_memory_runs_in_the_claimed_journal_cycle() {
+	// Arrange
+	let mut native = NativeFixture::new();
+	native.fault = "pending";
+	let mut op = operation();
+	op.max_tokens = 16_384;
+	let mut repo = Repository::new();
+	repo.native = Some(native.clone());
+	repo.journal.native = Some(native.clone());
+	{
+		let mut record = repo.journal.record.lock().unwrap();
+		record.digest = op.digest().unwrap();
+		record.binding = json!({"operation":op,"semantic":native.binding});
+		record.cycle = 2;
+	}
+	// Act
+	let _ = search(&repo, "aidash://receiver", op).await;
+	// Assert
+	assert_eq!(*native.cycles.lock().unwrap(), vec![2]);
+}
+
 #[rstest]
 #[case(None, 1)]
 #[case(Some("pending"), aidash_domain::semantic::PENDING_REPLAY_SECONDS)]

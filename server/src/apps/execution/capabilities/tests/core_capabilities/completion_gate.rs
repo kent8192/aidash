@@ -80,24 +80,25 @@ async fn gate_fixture(
 ) -> Gate {
 	let mut c = core.await;
 	// The fixture's research Agent plus a Completion Policy the model never sees.
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	agent.version = VERSION.into();
 	agent.binding_normalization = None;
 	agent.config["instructions"] = json!("Answer the task. Completion Checks verify it.");
 	agent.config["completion"] = json!({"version":"checks/1","checks":[{"name":"tests",
 		"capability":"shell","command":"cargo test --offline","when":"always"}]});
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		json!(agent),
-	)
-	.await;
+	let (status, result) = request(&c.app, &c.token, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{result}");
 	let (status, result) = request(
 		&c.app,
-		&c.f.config.api_token,
+		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
@@ -107,15 +108,7 @@ async fn gate_fixture(
 	c.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
 		json!({"kind":"agent"});
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	Gate {
 		c,
 		requests,

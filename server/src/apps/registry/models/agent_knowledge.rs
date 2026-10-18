@@ -8,6 +8,8 @@ use serde_json::Value;
 #[model(app_label = "registry", table_name = "agent_knowledge")]
 #[derive(Serialize, Deserialize)]
 pub struct AgentKnowledge {
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(primary_key = true, field_type = "text", db_column = "agent_id")]
 	pub agent_key: String,

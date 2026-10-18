@@ -2,6 +2,8 @@
 #[path = "support/native_database.rs"]
 mod native_database;
 use native_database::{DatabaseFixture, database};
+#[path = "support/tenant_roots.rs"]
+mod tenant_roots;
 
 #[path = "database_readiness.rs"]
 mod readiness;
@@ -34,6 +36,7 @@ use uuid::Uuid;
 #[fixture]
 fn definition() -> Definition {
 	Definition::build()
+        .tenant("acme")
         .id("policy-test")
         .version("1.0.0")
         .kind(DefinitionKind::Skill)

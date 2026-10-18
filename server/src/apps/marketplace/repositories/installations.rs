@@ -319,16 +319,17 @@ async fn persist_revision(
 	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("registry"))
-			.columns(["id", "version", "kind", "metadata"].map(Alias::new))
+			.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
 			.from_subquery({
 				let mut values = Query::select();
-				for i in 1..=4 {
+				for i in 1..=5 {
 					values.expr(Expr::cust(format!("${i}")));
 				}
 				values.to_owned()
 			})
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&install.tenant)
 	.bind(&entry.id)
 	.bind(&entry.version)
 	.bind(&entry.kind)
@@ -340,6 +341,7 @@ async fn persist_revision(
 			.into_table(Alias::new("marketplace_revisions"))
 			.columns(
 				[
+					"tenant",
 					"key",
 					"document",
 					"installation",
@@ -351,7 +353,7 @@ async fn persist_revision(
 			)
 			.from_subquery({
 				let mut values = Query::select();
-				for i in 1..=6 {
+				for i in 1..=7 {
 					values.expr(Expr::cust(format!("${i}")));
 				}
 
@@ -359,6 +361,7 @@ async fn persist_revision(
 			})
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&install.tenant)
 	.bind(key(&(&install.id, revision_number)))
 	.bind(json!(revision))
 	.bind(&install.id)
@@ -381,7 +384,7 @@ async fn documents(
 				.column(Alias::new("documents"))
 				.from(Alias::new("agent_knowledge"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(agent_id=? AND agent_version=?)".to_owned(),
+					"(tenant=current_setting('aidash.tenant', true) AND agent_id=? AND agent_version=?)".to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),
@@ -406,9 +409,12 @@ async fn insert_documents(
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("agent_knowledge"))
-				.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
+				.columns(["tenant", "agent_id", "agent_version", "documents"].map(Alias::new))
 				.from_subquery(
 					Query::select()
+						.expr(Expr::cust(
+							"NULLIF(current_setting('aidash.tenant', true), '')",
+						))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],

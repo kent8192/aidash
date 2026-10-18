@@ -343,18 +343,21 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 ) {
 	let fixture = semantic_fixture_1;
 	if reason == "catalog" {
-		assert_eq!(
-			request(
-				&fixture.app,
-				&fixture.f.config.api_token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":1,"enabled":false})
-			)
-			.await
-			.0,
-			200
-		);
+		aidash_server::authorization::Authorization {
+			pool: fixture.f.store.pool.clone(),
+		}
+		.set_catalog(
+			"acme",
+			&aidash_server::registry::EntityRef {
+				id: "embedding".into(),
+				version: "1.0.0".into(),
+			},
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
 	} else if reason == "policy" {
 		let authorization = aidash_server::authorization::Authorization {
 			pool: fixture.f.store.pool.clone(),
@@ -1523,7 +1526,7 @@ async fn model_memory_mutations_preserve_existing_human_verification(
 		home: aidash_server::federation::Home::new(fixture.f.clone(), run.clone()),
 		store: fixture.f.store.clone(),
 		run,
-		scope: TEST_FIXTURE,
+		scope: aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 	};
 	let tools = aidash_server::tool::builtins();
 	let tool = &tools["memory_mutate"];
@@ -2086,7 +2089,7 @@ mod semantic_fixture_composition {
 		let workspace = f.store.task(&TEST_FIXTURE, original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"GET",
 			"/api/registry/research/1.0.0",
 			Value::Null,
@@ -2096,12 +2099,12 @@ mod semantic_fixture_composition {
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
 		{
-			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
+			let (status, response) = request(&app, &token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
 				request(
 					&app,
-					&f.config.api_token,
+					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
 					json!({"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -2135,12 +2138,12 @@ mod semantic_fixture_composition {
 				json!({"scope":"workspace","memory":{"id":"memory","version":"1.0.0"},"max_tokens":4096}),
 			),
 		] {
-			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
+			let (status, response) = request(&app, &token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
 				request(
 					&app,
-					&f.config.api_token,
+					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
 					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})

@@ -21,11 +21,12 @@ async fn public_health_and_openapi_use_the_registered_routes(#[future] endpoint:
 async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint: EndpointFixture) {
 	// Arrange
 	let app = endpoint.await;
-	let selected = workspace(&app.deployment_administrator, "Selected").await;
+	let (member, _) = crate::endpoint::tenant_member(&app).await;
+	let selected = workspace(&member, "Selected").await;
 	let id = selected["id"].as_str().unwrap();
-	workspace(&app.deployment_administrator, "Excluded").await;
+	workspace(&member, "Excluded").await;
 	assert_json(
-		app.deployment_administrator
+		member
 			.patch(
 				&format!("/api/workspaces/{id}"),
 				&json!({"revision":0,"state":{"step":1}}),
@@ -37,15 +38,14 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 	);
 	// Act
 	let first = assert_json(
-		app.deployment_administrator
+		member
 			.get(&format!("/api/events?workspace_id={id}&after=0"))
 			.await
 			.unwrap(),
 		200,
 	);
 	let cursor = first[0]["sequence"].as_i64().unwrap();
-	let next = app
-		.deployment_administrator
+	let next = member
 		.get(&format!("/api/events?workspace_id={id}&after={cursor}"))
 		.await
 		.unwrap();
@@ -72,9 +72,10 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let selected = workspace(&app.deployment_administrator, "Stream selection").await;
+	let (member, _) = crate::endpoint::tenant_member(&app).await;
+	let selected = workspace(&member, "Stream selection").await;
 	let id = selected["id"].as_str().unwrap();
-	workspace(&app.deployment_administrator, "Excluded from stream").await;
+	workspace(&member, "Excluded from stream").await;
 	let client = http_client.clone();
 	let url = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
 	// Act
@@ -97,7 +98,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 		.find_map(|line| line.strip_prefix("id: "))
 		.unwrap();
 	assert_json(
-		app.deployment_administrator
+		member
 			.patch(
 				&format!("/api/workspaces/{id}"),
 				&json!({

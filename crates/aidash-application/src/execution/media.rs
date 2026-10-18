@@ -4,31 +4,16 @@ use crate::{
 	generation::inference::Reservation,
 	ports::execution::{
 		HumanMediaBatch,
-		media::{AuthorizedMediaScope, MediaAttachments, OperatorMediaRepository},
+		media::{AuthorizedMediaScope, MediaAttachments},
 	},
 };
 use aidash_domain::{
-	RunMetadata,
 	model::ModelConfig,
 	provider::{ContentPart, ModelRequest},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-pub async fn deployment_administrator(
-	repository: &dyn OperatorMediaRepository,
-	run: &RunMetadata,
-	messages: &[(i64, Uuid, usize)],
-	model: &ModelConfig,
-) -> Result<HumanMediaBatch> {
-	if run.home_node != repository.node_id() {
-		return Err(Error::Forbidden);
-	}
-	let mut transaction = repository.begin().await?;
-	let batch = load(transaction.as_mut(), run.workspace_id, messages, model).await?;
-	transaction.commit().await?;
-	Ok(batch)
-}
 pub async fn authorized<S: AuthorizedMediaScope + ?Sized>(
 	scope: &mut S,
 	workspace: Uuid,

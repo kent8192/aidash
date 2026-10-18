@@ -346,7 +346,9 @@ pub(crate) async fn research_providers(
 			.join(
 				reinhardt::query::JoinType::InnerJoin,
 				reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
-				Expr::cust("r.id = c.entry_id AND r.version = c.entry_version"),
+				Expr::cust(
+					"r.tenant = c.tenant AND r.id = c.entry_id AND r.version = c.entry_version",
+				),
 			)
 			.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
 			.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(Expr::value(true)))

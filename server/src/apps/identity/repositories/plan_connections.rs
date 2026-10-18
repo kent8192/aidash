@@ -9,7 +9,7 @@ use aidash_application::{
 	Error, Result,
 	plan_connections::{Owner, Repository, Scope},
 };
-use aidash_domain::plan_connections::PlanConnection;
+use aidash_domain::plan_connections::{MappedIdentity, Pin, PlanConnection};
 use aidash_domain::provider_credentials::Provider;
 use async_trait::async_trait;
 use reinhardt::db::{
@@ -70,13 +70,14 @@ pub(crate) async fn lock_owner(
 	Ok(())
 }
 
-/// External Identities that are not disabled and hold an enabled Mapping to
-/// `subject`. A Plan Connection serves calls only while this is exactly one.
+/// External Identities that hold an enabled Mapping to `subject`, each marked
+/// when disabled. A Plan Connection serves calls only while the identity that
+/// connected it is the only one not disabled.
 pub(crate) async fn mapped_identities(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	subject: &str,
-) -> crate::Result<usize> {
+) -> crate::Result<Vec<MappedIdentity>> {
 	let mut identities: Vec<Uuid> = DashboardMapping::objects()
 		.filter(DashboardMapping::field_tenant().eq(tenant))
 		.filter(DashboardMapping::field_subject().eq(subject))
@@ -89,18 +90,20 @@ pub(crate) async fn mapped_identities(
 		.collect();
 	identities.sort_unstable();
 	identities.dedup();
-	let mut active = 0;
-	for identity in identities {
-		let enabled = DashboardIdentity::objects()
-			.filter(DashboardIdentity::field_id().eq(identity))
+	let mut mapped = Vec::with_capacity(identities.len());
+	for id in identities {
+		// A Mapping always names an existing identity; a missing one counts as
+		// disabled, so it never serves or connects anything.
+		let disabled = DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_id().eq(id))
 			.all_with_executor(tx)
 			.await
 			.map_err(reinhardt::core::exception::Error::from)?
 			.pop()
-			.is_some_and(|row| row.disabled_at.is_none());
-		active += usize::from(enabled);
+			.is_none_or(|row| row.disabled_at.is_some());
+		mapped.push(MappedIdentity { id, disabled });
 	}
-	Ok(active)
+	Ok(mapped)
 }
 
 /// The Plan Connection `subject` holds for `provider`, read in the caller's
@@ -255,7 +258,7 @@ impl Scope for NativeScope {
 		)
 		.await?)
 	}
-	async fn mapped_identities(&mut self) -> Result<usize> {
+	async fn mapped_identities(&mut self) -> Result<Vec<MappedIdentity>> {
 		Ok(mapped_identities(self.tx.as_mut(), &self.owner.tenant, &self.owner.subject).await?)
 	}
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()> {
@@ -334,7 +337,7 @@ pub async fn admit(
 		let row = held(tx, tenant, subject, provider)
 			.await?
 			.ok_or(crate::Error::Plan(Failure::NotConnected))?;
-		if mapped_identities(tx, tenant, subject).await? != 1 {
+		if !row.serves(&mapped_identities(tx, tenant, subject).await?) {
 			return Err(crate::Error::Plan(Failure::NotConnected));
 		}
 		row.require_usable(chrono::Utc::now())
@@ -349,6 +352,7 @@ pub async fn admit(
 					"subject",
 					"provider",
 					"plan_connection_id",
+					"identity_id",
 				]
 				.map(Alias::new),
 			)
@@ -359,6 +363,7 @@ pub async fn admit(
 				IntoValue::into_value(subject.as_str()),
 				IntoValue::into_value(provider.id()),
 				IntoValue::into_value(row.id),
+				IntoValue::into_value(row.identity_id),
 			])
 			.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned())
 			.build(PostgresQueryBuilder);
@@ -367,14 +372,15 @@ pub async fn admit(
 	Ok(())
 }
 
-/// The Plan Connection admission pinned for `run` and `provider`.
+/// The Plan Connection admission pinned for `run` and `provider`, as the
+/// identity it served then.
 pub async fn pinned(
 	pool: &crate::database::native::Pool,
 	tenant: &str,
 	run: Uuid,
 	provider: Provider,
-) -> crate::Result<Uuid> {
-	use super::super::models::plan_connections::RunPlanConnection as Pin;
+) -> crate::Result<Pin> {
+	use super::super::models::plan_connections::RunPlanConnection as RunPin;
 	// A caller without the Run's Tenant finds the pin by the Run alone.
 	let scope = if tenant.is_empty() {
 		TenancyScope::Deployment(DeploymentScopeReason::RunTenant)
@@ -382,8 +388,8 @@ pub async fn pinned(
 		TenancyScope::tenant(tenant)?
 	};
 	let mut tx = pool.begin(&scope).await?.into_executor()?;
-	let pin = Pin::objects()
-		.filter(Pin::field_id().eq(format!("{run}:{}", provider.id())))
+	let pin = RunPin::objects()
+		.filter(RunPin::field_id().eq(format!("{run}:{}", provider.id())))
 		.all_with_executor(tx.as_mut())
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
@@ -395,5 +401,8 @@ pub async fn pinned(
 	if !tenant.is_empty() && pin.tenant != tenant {
 		return Err(crate::Error::Forbidden);
 	}
-	Ok(pin.plan_connection_id)
+	Ok(Pin {
+		connection: pin.plan_connection_id,
+		identity: pin.identity_id,
+	})
 }

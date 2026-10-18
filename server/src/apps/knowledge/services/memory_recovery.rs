@@ -144,7 +144,7 @@ async fn configuration(
 	let settings = bank_settings::get(lease, bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = native_memory::policy(lease, &settings.provider).await?;
+	let policy = native_memory::policy(lease, &bank.tenant, &settings.provider).await?;
 	Ok((settings, policy))
 }
 
@@ -222,7 +222,9 @@ async fn prune(
 			} else {
 				let settings = match bank_settings::get(lease, &archive.bank).await? {
 					Some(settings) => {
-						let policy = native_memory::policy(lease, &settings.provider).await?;
+						let policy =
+							native_memory::policy(lease, &archive.bank.tenant, &settings.provider)
+								.await?;
 						Some((settings, policy.retention.backup_days))
 					}
 					None => None,
@@ -400,7 +402,13 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 			(&policy.reranker, "reranker"),
 			(&policy.tokenizer, "tokenizer"),
 		] {
-			native_memory::definition(&mut Lease::Inherited(&mut access), reference, kind).await?;
+			native_memory::definition(
+				&mut Lease::Inherited(&mut access),
+				&unit.bank.tenant,
+				reference,
+				kind,
+			)
+			.await?;
 		}
 		access.finish(Ok(())).await?;
 	}

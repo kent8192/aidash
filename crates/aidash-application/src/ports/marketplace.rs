@@ -44,6 +44,8 @@ pub trait DistributionScope: DefinitionScope {
 		installation: &Installation,
 		revision: Option<i64>,
 	) -> aidash_domain::policy::Resource;
+	/// The `registry` resource `{kind}/{id}` that `registry.create` is decided on.
+	fn registry_resource(&self, kind: &str, id: &str) -> aidash_domain::policy::Resource;
 	async fn require(
 		&mut self,
 		resource: &aidash_domain::policy::Resource,
@@ -170,6 +172,10 @@ pub trait MarketplaceRead: InstallationRead {
 #[async_trait]
 pub trait DeploymentAdministratorScope: StagingScope {
 	fn principal(&self) -> &aidash_domain::identity::Principal;
+	/// The Tenant whose subject already holds `catalog.approve` for every
+	/// version this scope's activation approves. A Deployment Administrator
+	/// activates nothing in a Tenant (ADR 0029).
+	fn approving_tenant(&self) -> Option<&str>;
 	async fn load_tenant(&mut self, tenant: &str) -> Result<()>;
 	async fn distribution_lock(&mut self, exclusive: bool) -> Result<()>;
 	async fn enable_writer(&mut self) -> Result<()>;

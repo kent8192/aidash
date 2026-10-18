@@ -1,5 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import {
+  routeRegistryVersions,
+  routeTenantActions,
+  tenantSubject,
+} from "./registry-fixture";
 
 async function setup(page: Page) {
   const errors: string[] = [];
@@ -15,14 +20,14 @@ async function setup(page: Page) {
     } else if (path === "/api/session") {
       await route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node_id: "aidash://test",
         },
       });
     } else if (path === "/api/state") {
       await route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",
@@ -91,6 +96,8 @@ async function setup(page: Page) {
       await route.fulfill({ json: [] });
     }
   });
+  await routeTenantActions(page, ["registry.create"]);
+  await routeRegistryVersions(page, () => []);
   return errors;
 }
 

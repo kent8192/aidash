@@ -36,6 +36,36 @@ fn decoded(response: TestResponse) -> (u16, Value) {
 	(response.status_code(), response.json_value().unwrap())
 }
 async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
+	if path == "/api/registry" {
+		let entry = app
+			.runtime
+			.registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				serde_json::from_value(input).unwrap(),
+			)
+			.await
+			.unwrap();
+		return (200, serde_json::to_value(entry).unwrap());
+	}
+	if let Some(tenant) = path
+		.strip_prefix("/api/authorization/")
+		.and_then(|rest| rest.strip_suffix("/catalog"))
+	{
+		let binding = aidash_server::authorization::Authorization {
+			pool: app.runtime.store.pool.clone(),
+		}
+		.set_catalog(
+			tenant,
+			&serde_json::from_value(input["entry"].clone()).unwrap(),
+			input["expected_revision"].as_i64().unwrap(),
+			input["enabled"].as_bool().unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+		return (200, serde_json::to_value(binding).unwrap());
+	}
 	decoded(
 		app.deployment_administrator
 			.post(path, &input, "json")
@@ -122,7 +152,11 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	for definition in definitions {
 		let entry = f
 			.registry
-			.get(definition["entry"]["id"].as_str().unwrap(), "1.0.0")
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				definition["entry"]["id"].as_str().unwrap(),
+				"1.0.0",
+			)
 			.await
 			.unwrap();
 		assert_eq!(
@@ -228,156 +262,10 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 
 #[rstest::rstest]
 #[tokio::test]
-async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_definitions(
-	#[from(endpoint::endpoint)] endpoint: endpoint::EndpointFuture,
-	#[from(closure_peer_client)]
-	#[with(endpoint.clone())]
-	peer_client: futures_util::future::BoxFuture<'static, reinhardt::test::APIClient>,
-) {
-	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
-		return;
-	}
-	let app = endpoint.await;
-	endpoint::register_fixture_agent(&app, "public-child").await;
-	let record = Peer::build()
-		.node_id("aidash://source")
-		.endpoint("http://127.0.0.1:1")
-		.credential_env(PEER_ENV)
-		.protocol_version("0.2")
-		.enabled(true)
-		.finish();
-	Peer::objects()
-		.create_with_conn(&mut app.database.lease.handle(), &record)
-		.await
-		.unwrap();
-	let client = peer_client.await;
-	let path = "/federation/v0.1/discover/public-child/1.0.0/bindings";
-	assert_eq!(app.anonymous.get(path).await.unwrap().status_code(), 400);
-	assert_eq!(
-		app.deployment_administrator
-			.get(path)
-			.await
-			.unwrap()
-			.status_code(),
-		400
-	);
-	let (status, body) = decoded(client.get(path).await.unwrap());
-	assert_eq!(status, 200, "{body}");
-	let pinned: aidash_domain::registry::bindings::ForeignAgentSnapshot =
-		serde_json::from_value(body).unwrap();
-	pinned.validate().unwrap();
-	assert_eq!(pinned.agent.registry_node, app.runtime.config.node_id);
-	assert!(
-		pinned
-			.bindings
-			.iter()
-			.any(|binding| binding.alias.as_deref() == Some("task_delegate")
-				&& binding.excluded_reason.is_some())
-	);
-	let workspace = endpoint::workspace(&app.deployment_administrator, "pinned public child").await;
-	let (status, task) = deployment_administrator(
-		&app,
-		&format!(
-			"/api/workspaces/{}/tasks",
-			workspace["id"].as_str().unwrap()
-		),
-		json!({"title":"pinned offer","description":"Execute the pinned public child","requirements":{},"dependencies":[],"parent_id":null}),
-	)
-	.await;
-	assert_eq!(status, 200, "{task}");
-	let offer = json!({"task":task,"agent":pinned.agent.local(),"binding_snapshot":pinned});
-	let mut changed = pinned.clone();
-	let root = changed
-		.definitions
-		.iter_mut()
-		.find(|definition| definition.identity == changed.agent)
-		.unwrap();
-	root.definition
-		.name
-		.insert("en".into(), "different public definition".into());
-	*root = aidash_domain::registry::bindings::ResolvedDefinition::new(
-		root.identity.clone(),
-		root.definition.clone(),
-	)
-	.unwrap();
-	changed.validate().unwrap();
-	let mut mismatch = offer.clone();
-	mismatch["binding_snapshot"] = serde_json::to_value(changed).unwrap();
-	assert_eq!(
-		decoded(
-			client
-				.post("/federation/v0.1/offers", &mismatch, "json")
-				.await
-				.unwrap()
-		)
-		.0,
-		409
-	);
-	assert_eq!(
-		Run::objects()
-			.count_with_conn(&mut app.database.lease.handle())
-			.await
-			.unwrap(),
-		0
-	);
-	let first = decoded(
-		client
-			.post("/federation/v0.1/offers", &offer, "json")
-			.await
-			.unwrap(),
-	);
-	assert_eq!(first.0, 200, "{}", first.1);
-	let admitted: aidash_domain::Run = serde_json::from_value(first.1.clone()).unwrap();
-	assert_eq!(
-		admitted.context.binding_snapshot.as_deref(),
-		Some(&pinned.snapshot())
-	);
-	assert_eq!(
-		decoded(
-			client
-				.post("/federation/v0.1/offers", &offer, "json")
-				.await
-				.unwrap()
-		),
-		first
-	);
-	assert_eq!(
-		decoded(
-			client
-				.post("/federation/v0.1/offers", &mismatch, "json")
-				.await
-				.unwrap()
-		)
-		.0,
-		409
-	);
-	assert_eq!(
-		Run::objects()
-			.count_with_conn(&mut app.database.lease.handle())
-			.await
-			.unwrap(),
-		1
-	);
-	Peer::objects()
-		.filter(Peer::field_node_id().eq("aidash://source"))
-		.update_fields_with_conn(
-			&mut app.database.lease.handle(),
-			[(Peer::field_enabled(), false)],
-		)
-		.await
-		.unwrap();
-	assert_eq!(client.get(path).await.unwrap().status_code(), 401);
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn deployment_administrator_permission_inspection_resolves_foreign_agents_without_subject_imports(
+async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import(
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-home")]
 	home: endpoint::EndpointFuture,
-	#[from(endpoint::anonymous_client)]
-	#[with(home.clone())]
-	reader_client: endpoint::ClientFuture,
 	#[future]
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-child")]
@@ -406,32 +294,26 @@ async fn deployment_administrator_permission_inspection_resolves_foreign_agents_
 	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.node_id,"agent":{"id":"public-child","version":"1.0.0"}}}});
 	let registered = deployment_administrator(&home, "/api/registry", tool).await;
 	assert_eq!(registered.0, 200, "{}", registered.1);
-	let mut parent = home.runtime.registry.get("parent", "1.0.0").await.unwrap();
+	let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut parent = home
+		.runtime
+		.registry
+		.get(&acme, "parent", "1.0.0")
+		.await
+		.unwrap();
 	parent.version = "1.0.1".into();
 	parent.binding_normalization = None;
 	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.node_id,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
-	home.runtime.registry.register(parent).await.unwrap();
-	let subject = endpoint::subject(&home, "reader", reader_client.await).await;
-	let path = "/api/workbench/versions/parent/1.0.1/permissions";
-	let input = json!({"tenant":"endpoint","subject":"reader"});
-	let report = deployment_administrator(&home, path, input.clone()).await;
-	assert_eq!(report.0, 200, "{}", report.1);
+	assert!(matches!(
+		home.runtime.registry.register(&acme, parent).await,
+		Err(aidash_server::Error::Forbidden)
+	));
 	assert!(
-		report.1["rows"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.any(|row| row["reference"]["id"] == "foreign-tool")
-	);
-	assert!(report.1["rows"].as_array().unwrap().iter().all(|row| {
-		!row["reference"]["id"]
-			.as_str()
-			.unwrap()
-			.starts_with("public-child")
-	}));
-	assert_eq!(
-		decoded(subject.post(path, &input, "json").await.unwrap()).0,
-		403
+		home.runtime
+			.registry
+			.get(&acme, "parent", "1.0.1")
+			.await
+			.is_err()
 	);
 }
 

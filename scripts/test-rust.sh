@@ -9,8 +9,6 @@ export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
 # test binary; dynamically mapped service endpoints come from TestEnvironment.
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
 export AIDASH_SECRET_GRAPH_THIRD=local-third-graph-peer-token-9876543210
-# The deterministic research fixture provider never leaves the Node.
-export AIDASH_RESEARCH_FIXTURE=enabled
 # Distinct per-peer identities for the three- and sixteen-Node fixtures.
 for transaction_peer in $(seq 1 15); do
   transaction_key=$(printf 'AIDASH_SECRET_TRANSACTION_%02d' "$transaction_peer")
