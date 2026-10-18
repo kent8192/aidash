@@ -12,6 +12,8 @@ struct Publication {
 	fail: Option<&'static str>,
 	pause: Option<&'static str>,
 	effects: Vec<String>,
+	approver: Option<&'static str>,
+	may_approve: bool,
 }
 #[fixture]
 fn publication() -> Publication {
@@ -27,6 +29,8 @@ fn publication() -> Publication {
 		fail: None,
 		pause: None,
 		effects: vec![],
+		approver: Some("owner"),
+		may_approve: true,
 	}
 }
 impl Publication {
@@ -96,10 +100,11 @@ impl GenerationPublication for Publication {
 		Ok(())
 	}
 	async fn approver(&mut self, _job: &Request) -> Result<Option<String>> {
-		Ok(Some("owner".into()))
+		Ok(self.approver.map(Into::into))
 	}
-	async fn may_approve(&mut self, _subject: &str, _entry: &Entry) -> Result<bool> {
-		Ok(true)
+	async fn may_approve(&mut self, subject: &str, _entry: &Entry) -> Result<bool> {
+		assert_eq!(Some(subject), self.approver);
+		Ok(self.may_approve)
 	}
 }
 #[rstest]
@@ -274,6 +279,26 @@ async fn a_publication_failure_stops_before_the_next_atomic_step(
 			.is_err()
 	);
 	assert_eq!(publication.calls, expected);
+}
+#[rstest]
+#[case::no_approver(None, true)]
+#[case::approver_lost_catalog_approve(Some("owner"), false)]
+#[tokio::test]
+async fn a_publication_without_a_current_catalog_approver_is_refused(
+	mut publication: Publication,
+	specification: Spec,
+	job: Request,
+	#[case] approver: Option<&'static str>,
+	#[case] may_approve: bool,
+) {
+	publication.approver = approver;
+	publication.may_approve = may_approve;
+	assert!(matches!(
+		publish(&mut publication, &job, &specification).await,
+		Err(Error::Forbidden)
+	));
+	assert!(!publication.calls.contains(&"approve"));
+	assert!(!publication.calls.contains(&"history"));
 }
 #[rstest]
 #[tokio::test]

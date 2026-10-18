@@ -20,7 +20,7 @@ const SCOPE_TENANT: &str = "current_setting('aidash.tenant', true)";
 /// The same Tenant for an insert, absent (and refused) outside a Tenant scope.
 const INSERT_TENANT: &str = "NULLIF(current_setting('aidash.tenant', true), '')";
 
-async fn scope_tenant(tx: &mut dyn TransactionExecutor) -> Result<String> {
+pub(crate) async fn scope_tenant(tx: &mut dyn TransactionExecutor) -> Result<String> {
 	let row = tx
 		.fetch_one(&format!("SELECT {SCOPE_TENANT} AS tenant"), vec![])
 		.await?;

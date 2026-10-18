@@ -43,11 +43,13 @@ pub async fn publish(
 	if !job.home_node.is_empty() {
 		return Ok(());
 	}
+	// An unapproved generated version could never run, so a lost
+	// `catalog.approve` refuses the activation instead of publishing it.
 	let Some(approver) = scope.approver(job).await? else {
-		return Ok(());
+		return Err(Error::Forbidden);
 	};
 	if !scope.may_approve(&approver, &entry).await? {
-		return Ok(());
+		return Err(Error::Forbidden);
 	}
 	scope.approve(job, &entry).await?;
 	scope.catalog_history(job, &entry, &approver).await

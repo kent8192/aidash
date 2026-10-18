@@ -9771,15 +9771,14 @@
       ]
     },
     {
-      "name": "0912 workbench-inspect-version - Application read preserves the typed response contract",
+      "name": "0912 workbench-inspect-version - Missing scoped authority cannot disclose application data",
       "file": "contracts/0912-workbench-inspect-version.bru",
       "endpoint": "GET /api/workbench/versions/{id}/{version}",
-      "scenario": "Application read preserves the typed response contract",
-      "status": 404,
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
       "required_checks": [
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Application read preserves the typed response contract contract"
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
       ]
     },
     {
@@ -9841,15 +9840,14 @@
       ]
     },
     {
-      "name": "0918 workbench-export-report - Application read preserves the typed response contract",
+      "name": "0918 workbench-export-report - Missing scoped authority cannot disclose application data",
       "file": "contracts/0918-workbench-export-report.bru",
       "endpoint": "GET /api/workbench/versions/{id}/{version}/report",
-      "scenario": "Application read preserves the typed response contract",
-      "status": 404,
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
       "required_checks": [
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Application read preserves the typed response contract contract"
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
       ]
     },
     {

@@ -294,3 +294,43 @@ async fn a_dependency_withdrawn_in_the_same_request_is_unapproved() {
 	);
 	assert!(fixture.writes.is_empty());
 }
+
+#[rstest]
+#[tokio::test]
+async fn an_agents_context_summarizer_is_a_dependency() {
+	// Arrange
+	let mut summarizing = agent("model", &[]);
+	summarizing.config["context_policy"] = json!({"version":"context-recovery/1",
+		"summary":{"model":{"id":"summarizer","version":"1.0.0"}}});
+	let mut fixture = Fixture::new(vec![summarizing, model()]);
+	fixture.approved.insert(("model".into(), "1.0.0".into()));
+	// Act
+	let result = approve(&mut fixture, &[approval("agent", true)]).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == "CATALOG_DEPENDENCY_UNAPPROVED: summarizer@1.0.0"),
+		"{result:?}"
+	);
+	assert!(fixture.writes.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_agent_whose_subject_has_another_kind_is_refused() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![agent("model", &[]), model()]);
+	fixture.approved.insert(("model".into(), "1.0.0".into()));
+	fixture.policy.subjects.insert(
+		subject(),
+		serde_json::from_value(json!({"kind":"user"})).unwrap(),
+	);
+	// Act
+	let result = approve(&mut fixture, &[approval("agent", true)]).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Conflict(message)) if message == "AGENT_SUBJECT_KIND"),
+		"{result:?}"
+	);
+	assert_eq!(fixture.policy.subjects[&subject()].kind, SubjectKind::User);
+	assert_eq!(fixture.saved, 0);
+}

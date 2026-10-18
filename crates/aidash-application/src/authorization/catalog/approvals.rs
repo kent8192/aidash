@@ -5,7 +5,8 @@
 use crate::{Error, Result, ports::catalog::CatalogApprovalScope};
 use aidash_domain::{
 	identity::{catalog::Binding, tenant_administration as rules},
-	registry::{EntityRef, Entry},
+	policy::SubjectKind,
+	registry::{EntityRef, Entry, bindings::AgentBindings},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,12 +29,23 @@ pub struct Approval {
 
 /// The exact versions a definition names directly, which must be approved (or
 /// be built-ins that need no approval) before it is: the edges Marketplace
-/// distribution follows.
+/// distribution follows, plus an agent's context summarizer, which Run
+/// admission also resolves.
 pub fn dependencies(entry: &Entry, node: &str) -> Result<Vec<EntityRef>> {
-	Ok(crate::marketplace::definitions::refs(entry, node)?
+	let mut dependencies: Vec<_> = crate::marketplace::definitions::refs(entry, node)?
 		.into_iter()
 		.map(|(reference, _)| reference)
-		.collect())
+		.collect();
+	if entry.kind == "agent" {
+		let config: AgentBindings = serde_json::from_value(entry.config.clone())
+			.map_err(|error| Error::Invalid(format!("invalid Agent bindings: {error}")))?;
+		dependencies.extend(
+			config
+				.context_summary()
+				.map(|summary| summary.model.clone()),
+		);
+	}
+	Ok(dependencies)
 }
 
 /// Decide every approval in one transaction. The caller commits it.
@@ -106,7 +118,10 @@ pub async fn approve(
 			continue;
 		}
 		let subject = aidash_domain::qualified_agent(scope.node(), &entry.id, &entry.version);
-		if scope.policy().subjects.contains_key(&subject) {
+		if let Some(existing) = scope.policy().subjects.get(&subject) {
+			if existing.kind != SubjectKind::Agent {
+				return Err(Error::Conflict("AGENT_SUBJECT_KIND".into()));
+			}
 			if approval.groups.is_some() {
 				return Err(Error::Conflict("AGENT_SUBJECT_EXISTS".into()));
 			}

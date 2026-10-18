@@ -293,6 +293,21 @@ async fn tenant_publication_pending_installation_and_revisions(
 	assert!(!catalog.1.to_string().contains(&entry.id));
 	let active = activate(&app, &f, "a", &installed.1, 1, 0, 0, true).await;
 	assert_eq!(active.0, 200, "{active:?}");
+	// The approval history names the subject that activated the revision.
+	let approver: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("actor"))
+			.from(Alias::new("authorization_catalog_history"))
+			.and_where(Expr::cust(format!(
+				"tenant='a' AND entry_id='{}' AND enabled",
+				entry.id
+			)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(approver, "viewer");
 	for enabled in [false, true] {
 		assert!(
 			Authorization {

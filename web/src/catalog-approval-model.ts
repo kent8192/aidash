@@ -29,14 +29,17 @@ export function dependencies(entry: {
   const config = (entry.config ?? {}) as Record<string, unknown>;
   const list = (value: unknown): unknown[] =>
     Array.isArray(value) ? value : [];
+  const field = (value: unknown, name: string): unknown =>
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)[name]
+      : undefined;
   const named =
     entry.kind === "agent"
       ? [
           config.model,
           config.cluster,
-          ...list(config.bindings).map(
-            (binding) => (binding as Record<string, unknown> | null)?.target,
-          ),
+          field(field(config.context_policy, "summary"), "model"),
+          ...list(config.bindings).map((binding) => field(binding, "target")),
         ]
       : entry.kind === "bundle"
         ? list(config.members)

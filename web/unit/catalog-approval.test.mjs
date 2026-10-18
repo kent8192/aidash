@@ -51,10 +51,14 @@ test("dependencies follow the definitions each kind names", () => {
       config: {
         model: ref("model"),
         cluster: ref("team"),
+        context_policy: {
+          version: "context-recovery/1",
+          summary: { model: ref("summarizer") },
+        },
         bindings: [{ kind: "tool", target: ref("search") }, null],
       },
     }),
-    [ref("model"), ref("team"), ref("search")],
+    [ref("model"), ref("team"), ref("summarizer"), ref("search")],
   );
   assert.deepEqual(
     dependencies({
