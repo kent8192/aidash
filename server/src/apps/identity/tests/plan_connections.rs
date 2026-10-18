@@ -1025,7 +1025,12 @@ async fn admit_alice(
 		root_subject: "alice".into(),
 		subject_chain: vec!["alice".into()],
 	};
-	let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+	let mut tx = f
+		.store
+		.control_pool
+		.begin(&TenancyScope::tenant("alpha").unwrap())
+		.await
+		.unwrap();
 	let result = admit(tx.as_mut(), &f.store, &grant, snapshot, false).await;
 	if result.is_ok() {
 		tx.commit().await.unwrap();
