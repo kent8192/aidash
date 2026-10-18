@@ -40,13 +40,13 @@ impl RegistryManagement {
 		let entry = catalog::get(&f.store, &identity, &EntityRef { id, version }).await?;
 		crate::marketplace::registry_response(&f.store, &identity, vec![entry], true).await
 	}
-	/// Every version in the subject's Tenant with its approval state and
-	/// history, under `registry.read` (100 per page).
+	/// The versions in the subject's Tenant it may read, each with its approval
+	/// state and history; a page covers 100 stored versions.
 	pub(crate) async fn registry_versions(
 		&self,
 		actor: Actor,
 		page: crate::apps::registry::serializers::contracts::VersionPage,
-	) -> Result<Vec<crate::apps::registry::serializers::contracts::RegistryVersion>> {
+	) -> Result<crate::apps::registry::serializers::contracts::RegistryVersions> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);

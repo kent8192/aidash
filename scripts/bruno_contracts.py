@@ -99,15 +99,14 @@ TENANT_ROUTES = {
     "POST /api/human-requests/{id}/answer": {"body": {"answer": "Must not persist"}},
 }
 # Tenant reads by subjects. Journey 05 gives the contract subject `registry.read`
-# on the Registry itself, which lists its versions and approvals, but on no
-# definition; the journey's denied subject holds no action at all.
+# on the Registry itself, which lets it list versions and approvals, but on no
+# definition, so every list is empty; the journey's denied subject holds no
+# action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
     "GET /api/registry/versions": [
-        ("Tenant subject lists every version with its approval state", 200, SUBJECT, None,
-         'const builtin=res.getBody().find(version=>version.entry.id==="aidash.workspace_read"&&version.entry.version==="1.0.0");'
-         'expect(builtin.needs_approval).to.equal(false);expect(builtin.approval).to.equal(null);'
-         'expect(builtin.history).to.eql([]);expect(builtin.subject).to.equal(null);'),
+        ("Tenant subject lists only the versions it may read", 200, SUBJECT, None,
+         "expect(res.getBody().versions).to.eql([]);"),
         ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT, None, ""),
     ],
     "GET /api/authorization/{tenant}/catalog": [

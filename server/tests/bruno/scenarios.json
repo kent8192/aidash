@@ -7492,15 +7492,15 @@
       ]
     },
     {
-      "name": "0718 registry-versions - Tenant subject lists every version with its approval state",
+      "name": "0718 registry-versions - Tenant subject lists only the versions it may read",
       "file": "contracts/0718-registry-versions.bru",
       "endpoint": "GET /api/registry/versions",
-      "scenario": "Tenant subject lists every version with its approval state",
+      "scenario": "Tenant subject lists only the versions it may read",
       "status": 200,
       "required_checks": [
         "Exact HTTP 200",
         "Documented response fields and types",
-        "Tenant subject lists every version with its approval state contract"
+        "Tenant subject lists only the versions it may read contract"
       ]
     },
     {

@@ -32,22 +32,23 @@ import {
 } from "./catalog-approval-model";
 import { useTenantActions } from "./tenant-administration";
 
-const PAGE = 100;
-
-/** Every version in the signed-in subject's Tenant, approved or not. A
- *  Deployment Administrator reads no Tenant's Registry (ADR 0029). */
+/** Every version in the signed-in subject's Tenant that it may read, approved
+ *  or not. A Deployment Administrator reads no Tenant's Registry (ADR 0029). */
 export function useRegistryVersions(access: State["access"]) {
   const subject = access.kind === "subject" ? access : null;
   return useQuery({
     queryKey: ["registry-versions", subject?.tenant, subject?.subject],
     queryFn: async () => {
       const all: RegistryVersion[] = [];
-      for (let offset = 0; ; offset += PAGE) {
+      let offset: number | null = 0;
+      while (offset != null) {
         const page = await registryVersions({ offset });
-        if (!Array.isArray(page)) throw new Error("Unexpected Registry page");
-        all.push(...page);
-        if (page.length < PAGE) return all;
+        if (!Array.isArray(page.versions))
+          throw new Error("Unexpected Registry page");
+        all.push(...page.versions);
+        offset = page.next_offset;
       }
+      return all;
     },
     enabled: subject !== null,
   });

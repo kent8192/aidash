@@ -197,7 +197,7 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 	);
 	assert_eq!(response.status_code(), 200, "{}", response.text());
 	let versions = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
-	let unapproved = versions
+	let unapproved = versions["versions"]
 		.as_array()
 		.unwrap()
 		.iter()
@@ -252,7 +252,7 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 	assert_ne!(approval_status, 200);
 	assert_eq!(cross, 403);
 	assert!(
-		listed
+		listed["versions"]
 			.as_array()
 			.unwrap()
 			.iter()
@@ -385,7 +385,7 @@ async fn a_sandboxed_built_in_is_usable_only_after_the_tenant_approves_it(
 	tenant(&fixture, "acme").await;
 	let owner = credential(&fixture, "acme", "owner").await;
 	let versions = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
-	let bundle = versions
+	let bundle = versions["versions"]
 		.as_array()
 		.unwrap()
 		.iter()
@@ -504,4 +504,77 @@ async fn agent_groups_need_group_authority_and_approval_never_restores_a_disable
 	let after = &policy(&fixture, "acme").await["bundle"]["subjects"][&subject];
 	assert_eq!(after["groups"], json!([MEMBERS]));
 	assert_eq!(after["enabled"], false);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_versions_list_decides_each_version_and_shows_agent_subjects_to_approvers(
+	#[future] endpoint: EndpointFixture,
+) {
+	// Arrange: the reader may read the Registry except one model.
+	let fixture = endpoint.await;
+	tenant(&fixture, "acme").await;
+	let owner = credential(&fixture, "acme", "owner").await;
+	for entry in [
+		model("open"),
+		model("secret"),
+		agent("helper", "1.0.0", "open"),
+	] {
+		assert_eq!(register(&owner, &entry).await.0, 200);
+	}
+	assert_eq!(
+		approve(
+			&owner,
+			"acme",
+			json!([
+				approval("helper", "1.0.0", true),
+				approval("open", "1.0.0", true)
+			])
+		)
+		.await
+		.0,
+		200
+	);
+	let mut document = policy(&fixture, "acme").await;
+	let revision = document["revision"].as_i64().unwrap();
+	document["bundle"]["policies"]
+		.as_array_mut()
+		.unwrap()
+		.push(json!({
+			"id":"hide-secret","effect":"deny","subjects":{"ids":["reader"]},
+			"actions":["registry.read"],"resources":{"kinds":["model"],"ids":["secret"]}
+		}));
+	assert_json(
+		fixture
+			.deployment_administrator
+			.post(
+				"/api/authorization/acme",
+				&json!({"expected_revision":revision,"bundle":document["bundle"]}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let reader = credential(&fixture, "acme", "reader").await;
+	// Act
+	let read = assert_json(reader.get("/api/registry/versions").await.unwrap(), 200);
+	let administered = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
+	// Assert
+	let find = |page: &Value, id: &str| {
+		page["versions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|version| version["entry"]["id"] == id)
+			.cloned()
+	};
+	assert!(find(&read, "open").is_some(), "{read}");
+	assert!(find(&read, "secret").is_none(), "{read}");
+	assert_eq!(find(&read, "helper").unwrap()["subject"], Value::Null);
+	assert!(find(&administered, "secret").is_some());
+	assert_eq!(
+		find(&administered, "helper").unwrap()["subject"]["groups"],
+		json!([MEMBERS])
+	);
 }

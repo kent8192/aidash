@@ -155,6 +155,37 @@ for (const actions of [[], ["registry.create"]]) {
   });
 }
 
+test("the Registry list follows next_offset through every page", async ({
+  page,
+}) => {
+  await dashboard(page, tenantSubject, () => []);
+  const offsets: string[] = [];
+  await page.route(
+    (url) => url.pathname === "/api/registry/versions",
+    (route) => {
+      const offset =
+        new URL(route.request().url()).searchParams.get("offset") ?? "0";
+      offsets.push(offset);
+      return route.fulfill({
+        json:
+          offset === "0"
+            ? {
+                versions: [registryVersion(entry("first", "agent"))],
+                next_offset: 100,
+              }
+            : {
+                versions: [registryVersion(entry("second", "agent"))],
+                next_offset: null,
+              },
+      });
+    },
+  );
+  await page.goto("/settings?view=agents");
+  await expect(row(page, "first")).toBeVisible();
+  await expect(row(page, "second")).toBeVisible();
+  expect([...new Set(offsets)].sort()).toEqual(["0", "100"]);
+});
+
 test("every version shows its approval state and newest-first history", async ({
   page,
 }) => {

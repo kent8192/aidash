@@ -564,7 +564,10 @@ export async function setup(
       });
     if (path === "/api/registry/versions")
       return route.fulfill({
-        json: data.registry.map((entry) => registryVersion(entry)),
+        json: {
+          versions: data.registry.map((entry) => registryVersion(entry)),
+          next_offset: null,
+        },
       });
     if (path.endsWith("/memory/participants"))
       return route.fulfill({

@@ -121,7 +121,10 @@ async function setup(page: Page, locale = "en-US") {
         : path === "/api/state"
           ? data
           : path === "/api/registry/versions"
-            ? data.registry.map((entry) => registryVersion(entry))
+            ? {
+                versions: data.registry.map((entry) => registryVersion(entry)),
+                next_offset: null,
+              }
             : path === "/api/mesh"
               ? { nodes: [], errors: [] }
               : path === "/api/discover"

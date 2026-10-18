@@ -3,7 +3,7 @@
 use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationCatalogHistory};
 use crate::apps::registry::models::Definition;
 use crate::apps::registry::serializers::contracts::{
-	AgentSubject, ApprovalRecord, Entry, RegistryVersion, VersionApproval,
+	AgentSubject, ApprovalRecord, Entry, RegistryVersion, RegistryVersions, VersionApproval,
 };
 use crate::authorization::access::Access;
 use crate::{Error, Result};
@@ -12,11 +12,7 @@ use reinhardt::db::orm::Model;
 
 const PAGE: usize = 100;
 
-pub(crate) async fn page(
-	access: &mut Access,
-	node: &str,
-	offset: u64,
-) -> Result<Vec<RegistryVersion>> {
+pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result<RegistryVersions> {
 	let resource = access.resource(
 		"registry",
 		aidash_domain::identity::tenant_administration::COLLECTION,
@@ -32,9 +28,14 @@ pub(crate) async fn page(
 		.all_with_executor(&mut **access.tx)
 		.await
 		.map_err(FrameworkError::from)?;
+	let next_offset = (rows.len() == PAGE).then_some(offset + PAGE as u64);
 	let mut versions = Vec::with_capacity(rows.len());
 	for row in rows {
 		let entry: Entry = serde_json::from_value(row.metadata.0)?;
+		let resource = crate::authorization::catalog::resource(access, &entry);
+		if !access.decide(&resource, "registry.read").await? {
+			continue;
+		}
 		let approval = AuthorizationCatalog::objects()
 			.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
 			.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
@@ -63,7 +64,8 @@ pub(crate) async fn page(
 				created_at: row.created_at,
 			})
 			.collect();
-		let subject = (entry.kind == "agent")
+		let approver = entry.kind == "agent" && access.decide(&resource, "catalog.approve").await?;
+		let subject = approver
 			.then(|| aidash_domain::qualified_agent(node, &entry.id, &entry.version))
 			.and_then(|id| {
 				access
@@ -85,5 +87,8 @@ pub(crate) async fn page(
 			subject,
 		});
 	}
-	Ok(versions)
+	Ok(RegistryVersions {
+		versions,
+		next_offset,
+	})
 }

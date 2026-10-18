@@ -17,7 +17,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.query::<_, Search>(document, views::management::registry_list)?;
-	contracts.response::<_, Vec<crate::apps::registry::serializers::contracts::RegistryVersion>>(
+	contracts.response::<_, crate::apps::registry::serializers::contracts::RegistryVersions>(
 		document,
 		views::management::registry_versions,
 		200,

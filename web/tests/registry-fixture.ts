@@ -54,6 +54,7 @@ export async function routeRegistryVersions(
 ) {
   await page.route(
     (url) => url.pathname === "/api/registry/versions",
-    (route) => route.fulfill({ json: versions() }),
+    (route) =>
+      route.fulfill({ json: { versions: versions(), next_offset: null } }),
   );
 }

@@ -17761,63 +17761,62 @@
     "query_parameters": ["offset"],
     "response": {
       "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/RegistryVersion"
-        }
+        "$ref": "#/components/schemas/RegistryVersions"
       },
       "definitions": {
-        "RegistryVersion": {
+        "AgentNormalization": {
           "type": "object",
-          "description": "One version in the Tenant's Registry with its approval state and history.\nDiscovery and execution see only approved versions; this view sees all.",
-          "required": [
-            "entry",
-            "needs_approval",
-            "approval",
-            "history",
-            "subject"
-          ],
+          "description": "Read-only registration metadata is compiled by the Node before publication.",
+          "required": ["schema_version", "registry_node", "bindings"],
           "properties": {
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/VersionApproval"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "entry": {
-              "$ref": "#/components/schemas/Entry"
-            },
-            "history": {
+            "bindings": {
               "type": "array",
               "items": {
-                "$ref": "#/components/schemas/ApprovalRecord"
+                "$ref": "#/components/schemas/NormalizedBinding"
               }
             },
-            "needs_approval": {
-              "type": "boolean",
-              "description": "Whether the Tenant must approve it before use: every Tenant definition,\nand the Sandboxed, research and Decider built-ins."
+            "registry_node": {
+              "type": "string"
             },
-            "subject": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/AgentSubject"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The agent subject an approval created, for an agent version (ADR 0062)."
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "AgentSubject": {
+          "type": "object",
+          "required": ["id", "groups", "enabled"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "id": {
+              "type": "string"
             }
           }
         },
-        "VersionApproval": {
+        "ApprovalRecord": {
           "type": "object",
-          "required": ["enabled", "revision"],
+          "required": ["revision", "enabled", "actor", "created_at"],
           "properties": {
+            "actor": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
             "enabled": {
               "type": "boolean"
             },
@@ -17826,6 +17825,78 @@
               "format": "int64"
             }
           }
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["kind", "target", "narrow"],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "exposure": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BindingExposure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only valid for Tools, bundles and Skills under the `deferred@1` policy."
+            },
+            "kind": {
+              "$ref": "#/components/schemas/BindingKind"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "An empty member list binds the entire bundle. IDs are unique within a bundle."
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "target": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "BindingExposure": {
+          "type": "string",
+          "description": "Per-Binding exposure under `deferred@1`. Absent means Deferred.",
+          "enum": ["eager", "deferred"]
+        },
+        "BindingKind": {
+          "type": "string",
+          "enum": ["tool", "bundle", "skill", "memory", "source", "decider"]
+        },
+        "BindingOrigin": {
+          "type": "string",
+          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
+          "enum": [
+            "required",
+            "default",
+            "explicit",
+            "skill_support",
+            "companion"
+          ]
+        },
+        "Concurrency": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Every call runs alone, in the model's order.",
+              "enum": ["sequential"]
+            },
+            {
+              "type": "string",
+              "description": "Read-only calls whose provider derives Resource Claims and an output bound.",
+              "enum": ["shared_read"]
+            }
+          ],
+          "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
         "Entry": {
           "type": "object",
@@ -17923,87 +17994,28 @@
           },
           "additionalProperties": false
         },
-        "AgentNormalization": {
+        "MarketplaceProjection": {
           "type": "object",
-          "description": "Read-only registration metadata is compiled by the Node before publication.",
-          "required": ["schema_version", "registry_node", "bindings"],
+          "required": ["contract", "tenant", "installation", "revision"],
           "properties": {
-            "bindings": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/NormalizedBinding"
-              }
-            },
-            "registry_node": {
-              "type": "string"
-            },
-            "schema_version": {
+            "contract": {
               "type": "integer",
               "format": "uint8",
               "maximum": 255,
               "minimum": 0
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
             }
           },
           "additionalProperties": false
-        },
-        "NormalizedBinding": {
-          "type": "object",
-          "required": ["binding", "origin"],
-          "properties": {
-            "binding": {
-              "$ref": "#/components/schemas/Binding3"
-            },
-            "origin": {
-              "$ref": "#/components/schemas/BindingOrigin"
-            }
-          },
-          "additionalProperties": false
-        },
-        "Binding3": {
-          "type": "object",
-          "required": ["kind", "target", "narrow"],
-          "properties": {
-            "alias": {
-              "type": ["string", "null"]
-            },
-            "exposure": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/BindingExposure"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only valid for Tools, bundles and Skills under the `deferred@1` policy."
-            },
-            "kind": {
-              "$ref": "#/components/schemas/BindingKind"
-            },
-            "members": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "An empty member list binds the entire bundle. IDs are unique within a bundle."
-            },
-            "narrow": {
-              "$ref": "#/components/schemas/Narrowing"
-            },
-            "target": {
-              "$ref": "#/components/schemas/QualifiedRef"
-            }
-          },
-          "additionalProperties": false
-        },
-        "BindingExposure": {
-          "type": "string",
-          "description": "Per-Binding exposure under `deferred@1`. Absent means Deferred.",
-          "enum": ["eager", "deferred"]
-        },
-        "BindingKind": {
-          "type": "string",
-          "enum": ["tool", "bundle", "skill", "memory", "source", "decider"]
         },
         "Narrowing": {
           "type": "object",
@@ -18057,20 +18069,100 @@
           },
           "additionalProperties": false
         },
-        "Concurrency": {
-          "oneOf": [
-            {
-              "type": "string",
-              "description": "Every call runs alone, in the model's order.",
-              "enum": ["sequential"]
+        "NormalizedBinding": {
+          "type": "object",
+          "required": ["binding", "origin"],
+          "properties": {
+            "binding": {
+              "$ref": "#/components/schemas/Binding3"
             },
-            {
-              "type": "string",
-              "description": "Read-only calls whose provider derives Resource Claims and an output bound.",
-              "enum": ["shared_read"]
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
             }
+          },
+          "additionalProperties": false
+        },
+        "QualifiedRef": {
+          "type": "object",
+          "required": ["registry_node", "id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "RegistryVersion": {
+          "type": "object",
+          "description": "One version in the Tenant's Registry with its approval state and history.\nDiscovery and execution see only approved versions; this view sees every\nversion the caller may read.",
+          "required": [
+            "entry",
+            "needs_approval",
+            "approval",
+            "history",
+            "subject"
           ],
-          "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
+          "properties": {
+            "approval": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/VersionApproval"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "entry": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "history": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalRecord"
+              }
+            },
+            "needs_approval": {
+              "type": "boolean",
+              "description": "Whether the Tenant must approve it before use: every Tenant definition,\nand the Sandboxed, research and Decider built-ins."
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentSubject"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent subject an approval created, for an agent version (ADR 0062),\nshown to subjects who may approve the version."
+            }
+          }
+        },
+        "RegistryVersions": {
+          "type": "object",
+          "description": "One page of the versions the caller may read, in id and version order.",
+          "required": ["versions", "next_offset"],
+          "properties": {
+            "next_offset": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "The offset of the next page, absent after the last one.",
+              "minimum": 0
+            },
+            "versions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RegistryVersion"
+              }
+            }
+          }
         },
         "Restrictions": {
           "type": "object",
@@ -18094,92 +18186,16 @@
           },
           "additionalProperties": false
         },
-        "QualifiedRef": {
+        "VersionApproval": {
           "type": "object",
-          "required": ["registry_node", "id", "version"],
+          "required": ["enabled", "revision"],
           "properties": {
-            "id": {
-              "type": "string"
-            },
-            "registry_node": {
-              "type": "string"
-            },
-            "version": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        "BindingOrigin": {
-          "type": "string",
-          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
-          "enum": [
-            "required",
-            "default",
-            "explicit",
-            "skill_support",
-            "companion"
-          ]
-        },
-        "MarketplaceProjection": {
-          "type": "object",
-          "required": ["contract", "tenant", "installation", "revision"],
-          "properties": {
-            "contract": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "tenant": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
-        "ApprovalRecord": {
-          "type": "object",
-          "required": ["revision", "enabled", "actor", "created_at"],
-          "properties": {
-            "actor": {
-              "type": "string"
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time"
-            },
             "enabled": {
               "type": "boolean"
             },
             "revision": {
               "type": "integer",
               "format": "int64"
-            }
-          }
-        },
-        "AgentSubject": {
-          "type": "object",
-          "required": ["id", "groups", "enabled"],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "groups": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "uniqueItems": true
-            },
-            "id": {
-              "type": "string"
             }
           }
         }
