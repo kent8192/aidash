@@ -923,13 +923,12 @@ async fn a_logout_committing_during_redemption_leaves_the_link_unspent(
 	// until it commits, and the sign-in check before the redemption
 	// transaction still sees the session as live.
 	let mut logout = d.federation.store.pool.driver().begin().await.unwrap();
-	sqlx::query(
-		"UPDATE dashboard_sessions SET revoked_at = clock_timestamp() WHERE identity_id = $1",
-	)
-	.bind(bob.identity)
-	.execute(&mut *logout)
-	.await
-	.unwrap();
+	let revoke = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value_expr(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
+		.and_where(Expr::col(Alias::new("identity_id")).eq(Expr::value(bob.identity)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&revoke).execute(&mut *logout).await.unwrap();
 
 	let redeem = d.as_person(
 		&bob,
