@@ -402,10 +402,11 @@ pub fn native_application(
 	async move {
 		// The runtime stages bound themselves; this covers the context, router,
 		// listener and clients that every application test resolves (#320).
+		// Seeding inside the context has its own setup bound.
 		let runtime = _runtime.await;
 		let (transport, clients) = runtime
 			.environment()
-			.bounded_setup(
+			.bounded_setup_around(
 				format!("serve the application on {}", runtime.schema),
 				async { (_transport.await, _clients.await) },
 			)

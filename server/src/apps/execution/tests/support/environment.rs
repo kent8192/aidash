@@ -94,6 +94,18 @@ impl TestEnvironment {
 		self.within(SETUP_BOUND, stage, step).await
 	}
 
+	/// Await setup work that contains [`Self::bounded_setup`] stages of its
+	/// own. Its bound is twice [`SETUP_BOUND`], so a nested stage that hangs
+	/// still reports its own name first.
+	#[allow(dead_code)] // The commands suite includes this module without the shared fixtures.
+	pub async fn bounded_setup_around<T>(
+		&self,
+		stage: impl Display,
+		step: impl Future<Output = T>,
+	) -> T {
+		self.within(SETUP_BOUND * 2, stage, step).await
+	}
+
 	async fn within<T>(
 		&self,
 		bound: Duration,
@@ -205,21 +217,26 @@ pub fn isolated_test_environment(
 pub fn test_environment(isolated_test_environment: EnvironmentFuture) -> EnvironmentFuture {
 	let environment = Box::pin(isolated_test_environment);
 	async move {
-		let mut cached = TEST_ENVIRONMENT.lock().await;
-		if let Some(environment) = cached.upgrade() {
-			return environment;
-		}
+		// The bound also covers waiting for another test's creation, so a
+		// waiter fails within it instead of starting a second full attempt.
+		let shared = async {
+			let mut cached = TEST_ENVIRONMENT.lock().await;
+			if let Some(environment) = cached.upgrade() {
+				return environment;
+			}
+			let environment = environment.await;
+			*cached = Arc::downgrade(&environment);
+			environment
+		};
 		// No PostgreSQL session exists to describe yet; the stage name is the report.
-		let environment = tokio::time::timeout(ENVIRONMENT_BOUND, environment)
+		tokio::time::timeout(ENVIRONMENT_BOUND, shared)
 			.await
 			.unwrap_or_else(|_| {
 				panic!(
 					"start the shared PostgreSQL and NATS containers did not finish within \
 					 {ENVIRONMENT_BOUND:?}"
 				)
-			});
-		*cached = Arc::downgrade(&environment);
-		environment
+			})
 	}
 	.boxed()
 	.shared()
