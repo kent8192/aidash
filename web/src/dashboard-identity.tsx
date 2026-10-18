@@ -8,7 +8,7 @@ import { Panel, useI18n } from "./ui";
 import { Alert, GroupChoice, Hint, Pager } from "./components/patterns";
 import { TenantInvitations, TenantLabelForm } from "./tenancy";
 import {
-  REGISTRY_ACTIONS,
+  MEMBER_LEVEL_ACTIONS,
   useTenantAdministration,
 } from "./tenant-administration";
 
@@ -532,7 +532,9 @@ export function TenantIdentityAdministration({
   };
   if (
     overview.isError ||
-    overview.data?.actions.every((action) => REGISTRY_ACTIONS.includes(action))
+    overview.data?.actions.every((action) =>
+      MEMBER_LEVEL_ACTIONS.includes(action),
+    )
   )
     return <>{fallback}</>;
   if (!overview.data) return null;

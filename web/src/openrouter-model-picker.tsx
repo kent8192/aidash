@@ -5,6 +5,7 @@ import { Alert, Disclosure, Hint, pairClass } from "./components/patterns";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
+import type { CatalogModel } from "./generated/models";
 import { Field, useI18n } from "./ui";
 
 /** The server's closed list of Token Encodings. */
@@ -27,7 +28,8 @@ export function OpenRouterModelPicker({
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
-  const selected = catalog.data?.find((m) => m.id === selectedId);
+  const models = catalog.data?.models ?? [];
+  const selected = models.find((m) => m.id === selectedId);
   const effortLevels = (selected?.reasoning?.supported_efforts ?? []).filter(
     (effort) =>
       ["max", "xhigh", "high", "medium", "low", "minimal", "none"].includes(
@@ -35,13 +37,10 @@ export function OpenRouterModelPicker({
       ) && !(selected?.reasoning?.mandatory && effort === "none"),
   );
   const query = selected ? "" : search.trim().toLowerCase();
-  const matches = (catalog.data ?? []).filter(
+  const matches = models.filter(
     (m) => !query || `${m.name} ${m.id}`.toLowerCase().includes(query),
   );
-  const suggestName = (
-    model: NonNullable<typeof catalog.data>[number],
-    effort = "",
-  ) => {
+  const suggestName = (model: CatalogModel, effort = "") => {
     const level =
       effort ||
       model.reasoning?.default_effort ||
@@ -51,7 +50,7 @@ export function OpenRouterModelPicker({
       `${id}-${level}`.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"),
     );
   };
-  const choose = (model: NonNullable<typeof catalog.data>[number]) => {
+  const choose = (model: CatalogModel) => {
     setSelectedId(model.id);
     setSearch(`${model.name} · ${model.id}`);
     setOpen(false);
@@ -157,6 +156,14 @@ export function OpenRouterModelPicker({
         <Alert retry={() => void catalog.refetch()}>
           {t("modelLoadError")}
         </Alert>
+      )}
+      {catalog.data?.stale && (
+        <Hint role="status">
+          {t("modelCatalogStale")}{" "}
+          <time className="font-mono" dateTime={catalog.data.fetched_at}>
+            {new Date(catalog.data.fetched_at).toLocaleString(locale)}
+          </time>
+        </Hint>
       )}
       <Hint>{t("modelCatalogHelp")}</Hint>
       <Hint>{t("modelZdr")}</Hint>
