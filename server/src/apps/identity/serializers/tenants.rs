@@ -34,6 +34,9 @@ pub(crate) struct TenantRecord {
 	pub(crate) created_by_kind: String,
 	/// The Tenant's current deletion; absent while the Tenant is in use.
 	pub(crate) deletion: Option<TenantDeletionView>,
+	/// Whether a Deployment Administrator may restore the Tenant now, decided
+	/// by the database clock rather than the reader's.
+	pub(crate) restorable: bool,
 }
 
 #[derive(Deserialize, JsonSchema, Validate)]

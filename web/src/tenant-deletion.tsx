@@ -37,6 +37,8 @@ type TenantRecord = {
   created_at: string;
   created_by_kind: string;
   deletion: TenantDeletion | null;
+  /** Decided by the server's clock, not this device's. */
+  restorable: boolean;
 };
 
 const messages = {
@@ -392,8 +394,6 @@ export function DeploymentTenants() {
     queryKey: ["deployment-tenants", offset],
     queryFn: () => apiFetch<TenantRecord[]>(`/api/tenants?offset=${offset}`),
   });
-  const restorable = (deletion: TenantDeletion) =>
-    !deletion.purged_at && new Date(deletion.purge_after) > new Date();
   return (
     <section className="grid gap-2">
       <h3 className="text-[11px] font-medium text-faint">
@@ -421,13 +421,17 @@ export function DeploymentTenants() {
                     ? english
                       ? "Purged"
                       : "消去済み"
-                    : english
-                      ? `Deleted; purged after ${deadline(tenant.deletion.purge_after, locale)}`
-                      : `削除済み。${deadline(tenant.deletion.purge_after, locale)} 以降に消去`}
+                    : tenant.restorable
+                      ? english
+                        ? `Deleted; restorable until ${deadline(tenant.deletion.purge_after, locale)}`
+                        : `削除済み。${deadline(tenant.deletion.purge_after, locale)} まで復元できます`
+                      : english
+                        ? `Deleted; the restore deadline ${deadline(tenant.deletion.purge_after, locale)} has passed`
+                        : `削除済み。復元期限（${deadline(tenant.deletion.purge_after, locale)}）を過ぎました`}
                 </span>
               )}
             </span>
-            {tenant.deletion && restorable(tenant.deletion) && (
+            {tenant.restorable && (
               <Button
                 size="sm"
                 variant="outline"

@@ -100,6 +100,7 @@ export function AuthorizationPage({
   invitations: boolean;
 }) {
   const { t } = useI18n();
+  const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   return (
     <div className="authorization-page grid min-w-0 gap-6">
@@ -138,6 +139,15 @@ export function AuthorizationPage({
           key={tenant}
           tenant={tenant}
           invitations={invitations}
+          onDeleted={() => {
+            // The deleted Tenant's policy now answers 410; stop polling it and
+            // show the list with its deletion.
+            setTenant("");
+            client.removeQueries({ queryKey: ["authorization", tenant] });
+            void client.invalidateQueries({
+              queryKey: ["deployment-tenants"],
+            });
+          }}
         />
       )}
     </div>
@@ -147,9 +157,12 @@ export function AuthorizationPage({
 function TenantAuthorization({
   tenant,
   invitations,
+  onDeleted,
 }: {
   tenant: string;
   invitations: boolean;
+  /** The Deployment Administrator deleted this Tenant. */
+  onDeleted: () => void;
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
@@ -278,6 +291,7 @@ function TenantAuthorization({
             key={tenant}
             tenant={tenant}
             deleter="deployment_administrator"
+            onDeleted={onDeleted}
           />
         </div>
       )}

@@ -96,15 +96,27 @@ pub(crate) async fn creations(
 			.filter(Tenant::field_personal().eq(false))
 	};
 	// A Tenant still in its grace period counts; a purged one frees its slot.
+	let tenants = Alias::new(Tenant::table_name());
+	let deletions = Alias::new("d");
+	let purged = Query::select()
+		.expr(Expr::value(1_i64))
+		.from_as(
+			Alias::new(crate::apps::identity::models::TenantDeletion::table_name()),
+			deletions.clone(),
+		)
+		.and_where(
+			Expr::col((deletions.clone(), Alias::new("tenant")))
+				.equals((tenants.clone(), Alias::new("name"))),
+		)
+		.and_where(Expr::col((deletions, Alias::new("purged_at"))).is_not_null())
+		.to_owned();
 	let (sql, values) = Query::select()
 		.expr_as(Expr::cust("count(*)"), Alias::new("total"))
-		.from(Alias::new(Tenant::table_name()))
+		.from(tenants)
 		.and_where(Expr::col("created_by_kind").eq(Expr::value("identity")))
 		.and_where(Expr::col("created_by_identity").eq(Expr::value(identity)))
 		.and_where(Expr::col("personal").eq(Expr::value(false)))
-		.and_where(Expr::cust(
-			"NOT EXISTS (SELECT 1 FROM tenant_deletions d WHERE d.tenant = tenants.name AND d.purged_at IS NOT NULL)",
-		))
+		.and_where(Expr::exists(purged).not())
 		.build(PostgresQueryBuilder);
 	let total: i64 = TransactionExecutor::fetch_one(tx, &sql, convert_values(values))
 		.await?

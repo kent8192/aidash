@@ -456,3 +456,123 @@ test("deleting the Tenant needs its name typed, and leaving asks to confirm", as
   ).toBeVisible();
   expect(leaves).toEqual(["POST"]);
 });
+
+test("a Deployment Administrator restores what the server marks restorable and leaves a Tenant it deleted", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: {
+        id: "fixture-browser-session",
+        deployment_administrator: true,
+        mappings: [],
+        invitations: false,
+      },
+    }),
+  );
+  const administrator = { kind: "deployment_administrator" };
+  const deletion = (tenant: string) => ({
+    tenant,
+    deleted_at: "2026-10-17T00:00:00Z",
+    deleted_by_kind: "deployment_administrator",
+    purge_after: "2026-11-16T00:00:00Z",
+    purged_at: null,
+  });
+  const record = (name: string, restorable: boolean) => ({
+    name,
+    label: null,
+    personal: false,
+    created_at: "2026-10-01T00:00:00Z",
+    created_by_kind: "deployment_administrator",
+    deletion: deletion(name),
+    restorable,
+  });
+  let policyReads = 0;
+  await page.route("**/api/**", async (route) => {
+    const call = route.request();
+    const path = new URL(call.url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({
+        json: { access: administrator, node_id: "aidash://test" },
+      });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access: administrator,
+          node: {
+            id: "aidash://test",
+            endpoint: "http://localhost",
+            protocol_version: "0.1",
+            capabilities: [],
+            clusters: [],
+          },
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+          peers: [],
+        },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants")
+      // The server's clock decides; whatever this device's clock says.
+      return route.fulfill({
+        json: [record("open-otter", true), record("late-lark", false)],
+      });
+    if (path === "/api/authorization/beta") {
+      policyReads += 1;
+      return route.fulfill({
+        json: {
+          revision: 1,
+          bundle: {
+            tenant: "beta",
+            groups: {},
+            roles: {},
+            subjects: {},
+            policies: [],
+          },
+        },
+      });
+    }
+    if (path === "/api/tenants/beta/deletion")
+      return route.fulfill({ json: deletion("beta") });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+
+  const listed = (name: string) => page.locator("li").filter({ hasText: name });
+  await expect(listed("open-otter")).toContainText("Deleted; restorable until");
+  await expect(
+    listed("open-otter").getByRole("button", { name: "Restore" }),
+  ).toHaveCount(1);
+  await expect(listed("late-lark")).toContainText("the restore deadline");
+  await expect(
+    listed("late-lark").getByRole("button", { name: "Restore" }),
+  ).toHaveCount(0);
+
+  // Deleting the open Tenant closes its view, so its policy is not polled.
+  const open = page
+    .locator("form")
+    .filter({ has: page.locator('input[name="tenant"]') });
+  await open.locator('input[name="tenant"]').fill("beta");
+  await open.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByLabel("Type the Tenant name beta to confirm").fill("beta");
+  await page.getByRole("button", { name: "Delete Tenant" }).click();
+  await expect(page.getByRole("button", { name: "Delete Tenant" })).toHaveCount(
+    0,
+  );
+  const reads = policyReads;
+  await page.waitForTimeout(6_000);
+  expect(policyReads).toBe(reads);
+});

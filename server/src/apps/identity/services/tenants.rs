@@ -48,7 +48,20 @@ impl From<Created> for CreatedTenant {
 	}
 }
 
-fn record(tenant: Tenant, deletion: Option<TenantDeletion>) -> TenantRecord {
+fn record(
+	tenant: Tenant,
+	deletion: Option<TenantDeletion>,
+	now: chrono::DateTime<chrono::Utc>,
+) -> TenantRecord {
+	let restorable = deletion.as_ref().is_some_and(|deletion| {
+		deletion.rule().is_ok_and(|rule| {
+			aidash_domain::identity::tenancy::deletion::restorable(
+				&rule,
+				aidash_domain::identity::tenancy::deletion::Actor::DeploymentAdministrator,
+				now,
+			)
+		})
+	});
 	TenantRecord {
 		name: tenant.name,
 		label: tenant.label,
@@ -56,6 +69,7 @@ fn record(tenant: Tenant, deletion: Option<TenantDeletion>) -> TenantRecord {
 		created_at: tenant.created_at,
 		created_by_kind: tenant.created_by_kind,
 		deletion: deletion.map(Into::into),
+		restorable,
 	}
 }
 
@@ -162,7 +176,7 @@ impl Tenants {
 			return Err(Error::Forbidden);
 		}
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
-		let (tenants, mut deletions) = self
+		let (tenants, mut deletions, now) = self
 			.runtime
 			.store
 			.pool
@@ -173,14 +187,14 @@ impl Tenants {
 					tenants.iter().map(|tenant| tenant.name.clone()).collect(),
 				)
 				.await?;
-				Ok((tenants, deletions))
+				Ok((tenants, deletions, database_time(tx).await?))
 			})
 			.await?;
 		Ok(tenants
 			.into_iter()
 			.map(|tenant| {
 				let deletion = deletions.remove(&tenant.name);
-				record(tenant, deletion)
+				record(tenant, deletion, now)
 			})
 			.collect())
 	}
