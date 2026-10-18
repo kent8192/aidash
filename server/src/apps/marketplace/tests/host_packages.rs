@@ -184,7 +184,8 @@ async fn research_provider_packages_install_and_activate_like_host_packages(
 			"bundle - -",
 			"tool research.fixture@1 fetch",
 			"tool research.fixture@1 find",
-			"tool research.fixture@1 search"
+			"tool research.fixture@1 search",
+			"tool research.fixture@1 view"
 		]
 	);
 	let selection = json!({"tenant":"owner",
@@ -199,7 +200,7 @@ async fn research_provider_packages_install_and_activate_like_host_packages(
 	)
 	.await;
 	assert_eq!(status, 200, "{activated}");
-	assert_eq!(authorization.catalog("owner").await.unwrap().len(), 4);
+	assert_eq!(authorization.catalog("owner").await.unwrap().len(), 5);
 	drop(app);
 	common::cleanup(f, &url, &database).await;
 }
