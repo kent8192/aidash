@@ -1,6 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
-import { routeTenantActions, tenantSubject } from "./registry-fixture";
+import {
+  routeRegistryVersions,
+  routeTenantActions,
+  tenantSubject,
+} from "./registry-fixture";
 
 const workspace = "019c0000-0000-7000-8000-000000000001";
 const participant = "019c0000-0000-7000-8000-000000000002";
@@ -489,6 +493,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
   }) => {
     await fixture(page, locale, false, false, 4096, tenantSubject);
     await routeTenantActions(page, ["registry.create"]);
+    await routeRegistryVersions(page, () => []);
     const ja = locale === "ja-JP";
     await page.goto("/registry");
     await page
