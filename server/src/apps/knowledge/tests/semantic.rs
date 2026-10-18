@@ -113,7 +113,11 @@ mod controlled_context_composition {
 				.to_owned();
 			let mut model = f
 				.registry
-				.get(&acme, agent.config["model"]["id"].as_str().unwrap(), &version)
+				.get(
+					&acme,
+					agent.config["model"]["id"].as_str().unwrap(),
+					&version,
+				)
 				.await
 				.unwrap();
 			model.id = "ordered-model".into();
