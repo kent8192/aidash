@@ -39,15 +39,8 @@ const DashboardIdentityAdministration = lazy(() =>
     default: m.DashboardIdentityAdministration,
   })),
 );
-const TenantIdentityAdministration = lazy(() =>
-  import("./dashboard-identity").then((m) => ({
-    default: m.TenantIdentityAdministration,
-  })),
-);
-const LeaveTenantButton = lazy(() =>
-  import("./tenant-deletion").then((m) => ({
-    default: m.LeaveTenantButton,
-  })),
+const TenantAccess = lazy(() =>
+  import("./tenant-access").then((m) => ({ default: m.TenantAccess })),
 );
 
 export function ToolSection({
@@ -110,6 +103,7 @@ export function TrustTools({
   deploymentAdministrator,
   invitations,
   tenant,
+  subject,
   initiallyOpen,
 }: {
   deploymentAdministrator: boolean;
@@ -117,6 +111,8 @@ export function TrustTools({
   invitations: boolean;
   /** The selected Mapping's Tenant, whose Tenant Administrators manage it here. */
   tenant: string | null;
+  /** The subject the selected Mapping acts as. */
+  subject: string | null;
   initiallyOpen: boolean;
 }) {
   const { locale, t } = useI18n();
@@ -140,15 +136,11 @@ export function TrustTools({
         </Suspense>
       ) : tenant ? (
         <Suspense fallback={loading}>
-          <TenantIdentityAdministration
+          <TenantAccess
             key={tenant}
             tenant={tenant}
-            fallback={
-              <>
-                {administratorsOnly}
-                <LeaveTenantButton tenant={tenant} />
-              </>
-            }
+            subject={subject}
+            fallback={administratorsOnly}
           />
         </Suspense>
       ) : (

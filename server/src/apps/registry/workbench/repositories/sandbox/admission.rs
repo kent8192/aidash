@@ -18,7 +18,9 @@ impl AdmissionRepository for Repository {
 		Ok(Box::new(Scope {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
+			tenant_actions: self.tenant_actions.clone(),
 			node_id: self.node_id.clone(),
+			ceilings: self.store.test_limit_ceilings,
 		}))
 	}
 }

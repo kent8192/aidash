@@ -308,7 +308,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::policies::credentials, &["String"])?;
-	contracts.query::<_, PageQuery>(document, views::policies::credentials)?;
+	contracts
+		.query::<_, super::policies::CredentialPage>(document, views::policies::credentials)?;
 	contracts.response::<_, super::policies::CredentialRevocation>(
 		document,
 		views::policies::revoke_credential,

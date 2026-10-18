@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use rstest::rstest;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State {
@@ -87,7 +88,6 @@ impl Repository {
 	fn admission(&self) -> Admission<'_> {
 		Admission {
 			repository: self,
-			credentials: self,
 			models: self,
 		}
 	}
@@ -146,6 +146,7 @@ fn limits() -> TestLimits {
 		max_concurrent: 2,
 		payload_days: 3,
 		incident_evidence_days: 7,
+		revision: 0,
 	}
 }
 fn session() -> TestSession {
@@ -181,7 +182,6 @@ fn rule() -> RealToolRule {
 		read_only_verified: true,
 		tool: reference("tool_2"),
 		endpoint: "https://test.example/rpc".into(),
-		credential_env: Some("TEST_TOOL".into()),
 		allowed_actions: vec!["read".into()],
 		allowed_resources: vec!["fixture".into()],
 	}
@@ -193,6 +193,9 @@ impl SandboxRepository for Repository {
 			tenant: "tenant".into(),
 			subject: "owner".into(),
 		}
+	}
+	fn ceilings(&self) -> aidash_domain::registry::workbench::sandbox::TestLimitCeilings {
+		aidash_domain::registry::workbench::sandbox::TestLimitCeilings::MAXIMA
 	}
 	fn validate_limit_fields(&self, _: &TestLimits) -> Result<()> {
 		self.state.lock().unwrap().order.push("field_validation");
@@ -290,7 +293,13 @@ impl SandboxScope for Scope<'_> {
 		}
 		Ok(value)
 	}
-	async fn save_limits(&mut self, _: &TestLimits) -> Result<()> {
+	async fn authorize_tenant(&mut self, _: &str, _: &str, _: &str) -> Result<()> {
+		panic!("admission authorizes the draft")
+	}
+	async fn stored_limits(&mut self, _: &str) -> Result<TestLimits> {
+		panic!("admission reads the limits that apply")
+	}
+	async fn save_limits(&mut self, _: &TestLimits) -> Result<TestLimits> {
 		panic!("admission must not change limits")
 	}
 	async fn session(&mut self, id: Uuid, lock: bool) -> Result<TestSession> {
@@ -463,14 +472,6 @@ impl AdmissionScope for Scope<'_> {
 		Ok(row)
 	}
 }
-impl Credentials for Repository {
-	fn resolve(&self, name: &str) -> Result<String> {
-		// Model configurations name no environment key (ADR 0006).
-		assert_eq!(name, "TEST_TOOL");
-		self.state.lock().unwrap().order.push("tool_fingerprint");
-		Ok("fixture".into())
-	}
-}
 struct NeverInfer;
 #[async_trait]
 impl ModelProvider for NeverInfer {
@@ -564,7 +565,7 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 	assert!(!context.as_object().unwrap().contains_key("conversation"));
 }
 #[tokio::test]
-async fn real_profile_is_pinned_with_fingerprints_and_exact_scenario() {
+async fn real_profile_is_pinned_with_the_exact_scenario() {
 	let repository = Repository::new();
 	let mut input = input();
 	input.mode = "real".into();
@@ -575,10 +576,6 @@ async fn real_profile_is_pinned_with_fingerprints_and_exact_scenario() {
 	let profile = admitted.job.profile.as_ref().unwrap();
 	assert_eq!((profile.id.as_str(), profile.revision), ("profile", 4));
 	assert_eq!(profile.rules[0].tool, reference("tool_2"));
-	assert_eq!(
-		profile.credential_fingerprints["TEST_TOOL"],
-		dispatch::credential_fingerprint(&repository, "TEST_TOOL").unwrap()
-	);
 	assert_eq!(admitted.session.scenario["profile_revision"], 4);
 	assert_eq!(admitted.session.scenario["mode"], "real");
 	assert!(

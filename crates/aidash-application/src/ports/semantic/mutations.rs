@@ -19,6 +19,11 @@ pub trait SemanticConfigurationRepository: Send + Sync {
 #[async_trait]
 pub trait SemanticConfigurationSession: Send {
 	async fn lock_workspace(&mut self, workspace: Uuid) -> Result<()>;
+	/// Decides in this transaction whether the caller may configure the
+	/// Workspace's index (`semantic.index.manage`, #360).
+	async fn authorize(&mut self, _workspace: Uuid) -> Result<()> {
+		Ok(())
+	}
 	async fn tenant(&mut self, workspace: Uuid) -> Result<String>;
 	async fn index(&mut self, workspace: Uuid) -> Result<Option<Index>>;
 	async fn counts(&mut self, workspace: Uuid) -> Result<(i64, usize)>;

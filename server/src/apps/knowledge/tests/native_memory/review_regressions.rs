@@ -47,6 +47,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		later_workspace.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
@@ -368,6 +369,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	spec.max_sources = 64;
 	aidash_server::semantic::service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,

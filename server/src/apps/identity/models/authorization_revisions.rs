@@ -19,6 +19,9 @@ pub struct AuthorizationRevision {
 	pub actor: String,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// The Mapping a Tenant Administrator replaced the policy through.
+	#[field(null = true)]
+	pub actor_mapping_id: Option<uuid::Uuid>,
 }
 
 use crate::Result;
@@ -43,7 +46,8 @@ impl AuthorizationRevision {
 			.map(|row| {
 				json!({
 					"tenant": row.tenant, "revision": row.revision, "document": row.document.0,
-					"actor": row.actor, "created_at": row.created_at,
+					"actor": row.actor, "actor_mapping_id": row.actor_mapping_id,
+					"created_at": row.created_at,
 				})
 			})
 			.collect())

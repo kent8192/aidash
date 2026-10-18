@@ -451,6 +451,7 @@ impl TenantAdministrator {
 			snapshot.revision,
 			serde_json::to_value(&snapshot.bundle)?,
 			&self.revision_actor(),
+			Some(self.mapping_id),
 		)
 		.await
 	}
@@ -495,6 +496,13 @@ impl TenantAdministrator {
 				{
 					actions.push(action.to_owned());
 				}
+			}
+			let own = self.identity.subject.clone();
+			if self
+				.allowed(tx, &snapshot, rules::CREDENTIAL_CREATE, &own, json!({}))
+				.await?
+			{
+				actions.push(rules::CREDENTIAL_CREATE.to_owned());
 			}
 			let label = super::Tenant::objects()
 				.filter(super::Tenant::field_name().eq(tenant))
@@ -733,3 +741,7 @@ impl TenantAdministrator {
 		.await
 	}
 }
+
+mod credentials;
+mod peer_mappings;
+mod policy;

@@ -877,12 +877,16 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		.await;
 	assert_eq!(status, 200, "{overview}");
 	let actions = overview["actions"].as_array().unwrap();
-	assert_eq!(actions.len(), 14, "{overview}");
+	// Every Tenant Administrator and Registry action, `tenant.update`,
+	// `tenant.delete` and `credential.create` for its own subject.
+	assert_eq!(actions.len(), 25, "{overview}");
 	for action in [
 		"tenant.delete",
 		"registry.create",
 		"catalog.approve",
 		"marketplace.install",
+		"policy.update",
+		"credential.create",
 	] {
 		assert!(actions.contains(&json!(action)), "{action}: {overview}");
 	}
@@ -1297,3 +1301,5 @@ async fn display_retention_follows_the_request_that_ended_last(
 
 #[path = "tenancy/deletion.rs"]
 mod deletion;
+#[path = "tenant_authority.rs"]
+mod tenant_authority;

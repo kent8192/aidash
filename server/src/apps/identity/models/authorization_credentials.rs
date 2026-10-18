@@ -24,6 +24,10 @@ pub struct AuthorizationCredential {
 	pub revoked_at: Option<DateTime<Utc>>,
 	#[field(field_type = "text")]
 	pub issued_by: String,
+	/// The Mapping a member issued this credential through for its own
+	/// subject; the credential ends with it (ADR 0063).
+	#[field(null = true)]
+	pub mapping_id: Option<uuid::Uuid>,
 }
 
 use crate::apps::identity::serializers::identity::Credential;
@@ -31,7 +35,7 @@ use crate::database::native::Pool;
 use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::orm::{Model, OrmExecutor};
+use reinhardt::db::orm::{AtomicTransaction, Model, OrmExecutor};
 
 impl AuthorizationCredential {
 	pub(crate) fn contract(self) -> Credential {
@@ -43,17 +47,25 @@ impl AuthorizationCredential {
 			expires_at: self.expires_at,
 			revoked_at: self.revoked_at,
 			issued_by: self.issued_by,
+			mapping_id: self.mapping_id,
 		}
 	}
 
+	/// One page of the Tenant's exportable credentials, or only those issued
+	/// through `issued_through`.
 	pub(crate) async fn visible_page<E: OrmExecutor>(
 		db: &mut E,
 		tenant: &str,
+		issued_through: Option<Uuid>,
 		offset: u64,
 	) -> Result<Vec<Credential>> {
-		Ok(Self::objects()
+		let mut credentials = Self::objects()
 			.filter(Self::field_tenant().eq(tenant))
-			.filter(Self::field_issued_by().ne("dashboard-oidc"))
+			.filter(Self::field_issued_by().ne("dashboard-oidc"));
+		if let Some(mapping) = issued_through {
+			credentials = credentials.filter(Self::field_mapping_id().eq(Some(mapping)));
+		}
+		Ok(credentials
 			.order_by(&["-created_at", "id"])
 			.limit(200)
 			.offset(offset as usize)
@@ -85,26 +97,50 @@ impl AuthorizationCredential {
 
 	pub(crate) async fn revoke(db: &Pool, tenant: &str, id: Uuid) -> Result<Credential> {
 		db.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-			super::authority::authority_control(tx).await?;
-			let row = Self::objects()
-				.filter(Self::field_id().eq(id))
-				.filter(Self::field_tenant().eq(tenant))
-				.filter(Self::field_issued_by().ne("dashboard-oidc"))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?;
-			let mut row = row
-				.into_iter()
-				.next()
-				.ok_or_else(|| Error::NotFound("credential".into()))?;
-			if row.revoked_at.is_none() {
-				row.revoked_at = Some(Utc::now());
-				Self::objects().update_with_conn(tx, &row).await?;
-			}
-			Ok(row.contract())
+			Self::revoke_in(tx, tenant, id).await
 		})
 		.await
+	}
+
+	/// An exportable credential of `tenant`, never a Mapping's own.
+	pub(crate) async fn exportable(
+		tx: &mut AtomicTransaction,
+		tenant: &str,
+		id: Uuid,
+	) -> Result<Option<Self>> {
+		Ok(Self::objects()
+			.filter(Self::field_id().eq(id))
+			.filter(Self::field_tenant().eq(tenant))
+			.filter(Self::field_issued_by().ne("dashboard-oidc"))
+			.all_with_db(tx)
+			.await?
+			.pop())
+	}
+
+	/// Idempotently revokes an exportable credential in the caller's transaction.
+	pub(crate) async fn revoke_in(
+		tx: &mut AtomicTransaction,
+		tenant: &str,
+		id: Uuid,
+	) -> Result<Credential> {
+		super::authority::authority_control(tx).await?;
+		let row = Self::objects()
+			.filter(Self::field_id().eq(id))
+			.filter(Self::field_tenant().eq(tenant))
+			.filter(Self::field_issued_by().ne("dashboard-oidc"))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?;
+		let mut row = row
+			.into_iter()
+			.next()
+			.ok_or_else(|| Error::NotFound("credential".into()))?;
+		if row.revoked_at.is_none() {
+			row.revoked_at = Some(Utc::now());
+			Self::objects().update_with_conn(tx, &row).await?;
+		}
+		Ok(row.contract())
 	}
 }
 

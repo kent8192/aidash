@@ -82,14 +82,14 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	let mut disabled = before.configuration().unwrap();
 	disabled.enabled = false;
 	assert!(
-		matches!(service::configure(&store, workspace, aidash_server::semantic::ConfigureIndex {
+		matches!(service::configure(&store, &aidash_server::authorization::identity::Actor::DeploymentAdministrator, workspace, aidash_server::semantic::ConfigureIndex {
 		expected_revision: before.revision, spec: disabled }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("remain enabled"))
 	);
 	let mut spec = before.configuration().unwrap();
 	spec.embedding.model = "incompatible-model".into();
 	assert!(
-		matches!(service::configure(&store, workspace, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
+		matches!(service::configure(&store, &aidash_server::authorization::identity::Actor::DeploymentAdministrator, workspace, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("pinned memory bank"))
 	);
 	let unchanged = service::get_index(&store, &Actor::DeploymentAdministrator, workspace)
@@ -102,6 +102,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	spec.max_results = 2;
 	let compatible = service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: before.revision,

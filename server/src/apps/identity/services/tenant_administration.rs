@@ -66,6 +66,20 @@ impl TenantAdministrations {
 		result
 	}
 
+	/// Runs one operation as the External Identity acting through its Mapping
+	/// of `tenant`, and audits a denial.
+	pub(crate) async fn run<T>(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: &str,
+		operation: impl AsyncFnOnce(&Arc<TenantAdministrator>) -> Result<T>,
+	) -> Result<T> {
+		let administrator = self.administrator(actor, origin, tenant).await?;
+		let result = operation(&administrator).await;
+		self.finish(&administrator, result).await
+	}
+
 	pub(crate) async fn overview(
 		&self,
 		actor: Actor,

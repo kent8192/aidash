@@ -542,6 +542,14 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("30".to_string()))
 					.with_generated(None)
 					.with_domain_option(None),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_unique(false)
+					.with_primary_key(false)
+					.with_auto_increment(false)
+					.with_default(Some("0".to_string()))
+					.with_generated(None)
+					.with_domain_option(None),
 				ColumnDefinition::new("tenant", FieldType::Text)
 					.with_not_null(true)
 					.with_unique(false)

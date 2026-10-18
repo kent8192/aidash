@@ -2205,7 +2205,10 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
 			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
-			"resources": {"kinds": ["registration", "mapping", "subject", "invitation"]},
+			"resources": {"kinds": [
+				"registration", "mapping", "subject", "invitation", "policy", "decision",
+				"credential", "peer_mapping", "test_limits", "test_profile"
+			]},
 			"condition": null
 		}, {
 			// The last-administrator guard also needs someone who can delete the Tenant.

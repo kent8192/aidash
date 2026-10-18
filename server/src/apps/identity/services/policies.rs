@@ -1,5 +1,7 @@
-use crate::apps::identity::models::AuthorizationCatalog;
+use crate::apps::identity::models::{AdministrationActor, AuthorizationCatalog};
+use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::catalog_approvals::TenantCatalog;
+use crate::apps::identity::services::tenant_administration::TenantAdministrations;
 use crate::apps::identity::{
 	Authorization, Snapshot,
 	catalog::Binding,
@@ -27,11 +29,13 @@ fn control_service(f: Federation) -> Authorization {
 }
 
 use crate::apps::identity::serializers::policies::{
-	AuthorizationPage, AuthorizationUpdate, CatalogInput, CredentialInput, CredentialRevocation,
-	PolicyReplacement,
+	AuthorizationPage, AuthorizationUpdate, CatalogInput, CredentialInput, CredentialPage,
+	CredentialRevocation, PolicyReplacement,
 };
 
-/// Mounted inside the management router, behind the existing Deployment Administrator token.
+/// A Tenant's policy, credentials and Catalog Approvals. A Deployment
+/// Administrator manages any Tenant's; a Tenant's own subjects act through a
+/// Mapping under its policy actions (#356, #357, #358).
 /// Evaluation bodies are simulations of authority, never execution credentials.
 #[derive(Clone)]
 pub struct PolicyAdministration {
@@ -52,6 +56,12 @@ fn tenant_subject(actor: Actor, tenant: &str) -> Result<SubjectIdentity> {
 }
 
 impl PolicyAdministration {
+	fn administrations(&self) -> TenantAdministrations {
+		TenantAdministrations {
+			runtime: self.runtime.clone(),
+		}
+	}
+
 	/// The Tenant's Catalog Approvals, under `registry.read`. A Deployment
 	/// Administrator reads none (ADR 0029).
 	pub(crate) async fn catalog(&self, actor: Actor, tenant: String) -> Result<Vec<Binding>> {
@@ -121,37 +131,73 @@ impl PolicyAdministration {
 	}
 	pub(crate) async fn issue_credential(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		tenant: String,
 		input: CredentialInput,
 	) -> Result<IssuedCredential> {
 		let f = self.runtime.clone();
-		service(f)
-			.issue_credential(
-				&tenant,
-				&input.subject,
-				input.expires_in_seconds,
-				"deployment_administrator",
-			)
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return service(f)
+				.issue_credential(
+					&tenant,
+					&input.subject,
+					input.expires_in_seconds,
+					"deployment_administrator",
+				)
+				.await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.issue_credential(&f.store.pool, &input.subject, input.expires_in_seconds)
+					.await
+			})
 			.await
 	}
-	pub async fn credentials(
+	pub(crate) async fn credentials(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		tenant: String,
-		page: crate::apps::workspaces::serializers::tasks::PageQuery,
+		page: CredentialPage,
 	) -> Result<Vec<Credential>> {
 		let f = self.runtime.clone();
-		control_service(f)
-			.credentials_page(&tenant, page.offset)
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return control_service(f)
+				.credentials_page(&tenant, page.offset)
+				.await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.credentials(&f.store.pool, page.offset, page.mine)
+					.await
+			})
 			.await
 	}
 	pub(crate) async fn revoke_credential(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		(tenant, id): (String, Uuid),
 	) -> Result<(reinhardt::StatusCode, CredentialRevocation)> {
 		let f = self.runtime.clone();
-		let credential = control_service(f.clone())
-			.revoke_credential(&tenant, id)
-			.await?;
+		let credential = if matches!(actor, Actor::DeploymentAdministrator) {
+			control_service(f.clone())
+				.revoke_credential(&tenant, id)
+				.await?
+		} else {
+			self.administrations()
+				.run(actor, origin, &tenant, async |administrator| {
+					// Revocation keeps its own pool, as a Deployment
+					// Administrator's does, so a busy API pool cannot delay it.
+					administrator
+						.revoke_credential(&f.store.control_pool, id)
+						.await
+				})
+				.await?
+		};
 		let pending_transactions =
 			crate::transactions::authority::pending(&f, &tenant, Some(id)).await?;
 		let status = if pending_transactions.is_empty() {
@@ -167,12 +213,26 @@ impl PolicyAdministration {
 			},
 		))
 	}
-	pub async fn snapshot(&self, tenant: String) -> Result<Snapshot> {
+	pub(crate) async fn snapshot(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<Snapshot> {
 		let f = self.runtime.clone();
-		control_service(f).snapshot(&tenant).await
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return control_service(f).snapshot(&tenant).await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator.policy_snapshot(&f.store.pool).await
+			})
+			.await
 	}
 	pub(crate) async fn replace(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		tenant: String,
 		input: AuthorizationUpdate,
 	) -> Result<(reinhardt::StatusCode, PolicyReplacement)> {
@@ -193,16 +253,36 @@ impl PolicyAdministration {
 		if deleted {
 			return Err(crate::Error::TenantDeleted);
 		}
-		// A Tenant without a root record is refused with 404: only the Tenant
-		// creation API makes Tenants (ADR 0050).
-		let snapshot = control_service(f.clone())
-			.replace(
-				&tenant,
-				input.expected_revision,
-				input.bundle,
-				"deployment_administrator",
-			)
-			.await?;
+		let snapshot = if matches!(actor, Actor::DeploymentAdministrator) {
+			// A browser session records which Deployment Administrator replaced it.
+			let revision_actor = match &origin {
+				Some(origin) => format!("deployment_administrator:oidc:{}", origin.identity_id),
+				None => "deployment_administrator".to_owned(),
+			};
+			// A Tenant without a root record is refused with 404: only the Tenant
+			// creation API makes Tenants (ADR 0050).
+			control_service(f.clone())
+				.replace(
+					&tenant,
+					input.expected_revision,
+					input.bundle,
+					&revision_actor,
+				)
+				.await?
+		} else {
+			self.administrations()
+				.run(actor, origin, &tenant, async |administrator| {
+					administrator
+						.replace_policy(
+							&f.store.control_pool,
+							&AdministrationActor::TenantAdministrator(administrator.clone()),
+							input.expected_revision,
+							&input.bundle,
+						)
+						.await
+				})
+				.await?
+		};
 		let pending_transactions =
 			crate::transactions::authority::pending(&f, &tenant, None).await?;
 		let status = if pending_transactions.is_empty() {
@@ -225,24 +305,59 @@ impl PolicyAdministration {
 		let f = self.runtime.clone();
 		control_service(f).evaluate(&tenant, &input).await
 	}
-	pub async fn simulate(&self, tenant: String, input: Evaluation) -> Result<Decision> {
+	pub(crate) async fn simulate(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		input: Evaluation,
+	) -> Result<Decision> {
 		let f = self.runtime.clone();
-		control_service(f).simulate(&tenant, &input).await
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return control_service(f).simulate(&tenant, &input).await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator.simulate(&f.store.pool, &input).await
+			})
+			.await
 	}
 	pub(crate) async fn revisions(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		tenant: String,
 		page: AuthorizationPage,
 	) -> Result<Vec<Value>> {
 		let f = self.runtime.clone();
-		service(f).revisions(&tenant, page.after, page.limit).await
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return service(f).revisions(&tenant, page.after, page.limit).await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.policy_revisions(&f.store.pool, page.after, page.limit)
+					.await
+			})
+			.await
 	}
 	pub(crate) async fn decisions(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		tenant: String,
 		page: AuthorizationPage,
 	) -> Result<Vec<Value>> {
 		let f = self.runtime.clone();
-		service(f).decisions(&tenant, page.after, page.limit).await
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return service(f).decisions(&tenant, page.after, page.limit).await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.decisions(&f.store.pool, page.after, page.limit)
+					.await
+			})
+			.await
 	}
 }

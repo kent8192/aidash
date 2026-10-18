@@ -422,7 +422,7 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 	#[future(awt)] workbench: Workbench,
 ) {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect", wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect", wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 	let first = wb
 		.finished(
 			json!({"expected_revision":1,"message":"First","mode":"real","profile_id":"sandbox"}),
@@ -820,7 +820,7 @@ fn model_waiting_for_real_tool(
 		*wb.responses.lock().await = VecDeque::from([
 			json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 		]);
-		assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+		assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 		let token = if shared {
 			wb.call(
 				"POST",
@@ -924,7 +924,7 @@ async fn real_test_profiles_require_a_distinct_canonical_destination(
 	#[case] expected: u16,
 ) {
 	let wb = production_endpoint_workbench;
-	let (status, body) = request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, body) = request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, expected, "profile: {body}");
 	wb.cleanup().await;
 }
@@ -1860,4 +1860,52 @@ async fn provider(
 		state: workbench_state,
 		server,
 	}
+}
+
+#[rstest::rstest]
+#[case::permitted_origin("{endpoint}/test-effect", 200)]
+#[case::private_address("https://10.0.0.7/test-effect", 400)]
+#[case::loopback_without_permission("http://127.0.0.2:9/test-effect", 400)]
+#[tokio::test]
+async fn a_tenant_writes_its_test_profiles_for_endpoints_the_deployment_lets_it_reach(
+	#[future(awt)] workbench: Workbench,
+	#[case] endpoint: &str,
+	#[case] expected: u16,
+) {
+	let wb = workbench;
+	let endpoint = endpoint.replace("{endpoint}", &wb.endpoint);
+	let body = json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":endpoint,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]});
+	let (status, profile) = request(
+		&wb.app,
+		&wb.token,
+		"PUT",
+		"/api/workbench/test-profiles/acme/sandbox",
+		body.clone(),
+	)
+	.await;
+	assert_eq!(status, expected, "{profile}");
+	let (status, profiles) = request(
+		&wb.app,
+		&wb.token,
+		"GET",
+		"/api/workbench/test-profiles/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{profiles}");
+	assert_eq!(
+		profiles.as_array().unwrap().len(),
+		usize::from(expected == 200),
+		"the writer reads the profile with its rules: {profiles}"
+	);
+	let (status, _) = request(
+		&wb.app,
+		&wb.token,
+		"PUT",
+		"/api/workbench/test-profiles/other/sandbox",
+		body,
+	)
+	.await;
+	assert_eq!(status, 403, "another Tenant's profile");
+	wb.cleanup().await;
 }
