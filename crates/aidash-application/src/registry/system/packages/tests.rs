@@ -71,15 +71,12 @@ fn sandboxed_and_research_groups_have_only_provider_owned_declarations_and_compl
 }
 #[test]
 fn a_deployment_without_a_runner_offers_no_runner_groups() {
-	// Arrange
 	let validation = validation(false);
-	// Act
 	let offered: Vec<_> = offered(&validation, &validation, "aidash://node")
 		.unwrap()
 		.into_iter()
 		.map(|group| group.name)
 		.collect();
-	// Assert
 	assert!(!offered.contains(&"shell".to_owned()));
 	assert!(!offered.contains(&"python".to_owned()));
 	assert!(offered.contains(&"outbound_get".to_owned()));
