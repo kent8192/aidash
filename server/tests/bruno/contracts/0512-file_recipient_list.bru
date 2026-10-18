@@ -1,21 +1,21 @@
 meta {
-  name: 0512 file_recipient_list - Subject without file transfer permission cannot list recipients
+  name: 0512 file_recipient_list - Malformed bearer syntax is rejected
   type: http
   seq: 512
 }
 
 get {
-  url: {{base_url}}/api/file-recipients?node_id={{node_id}}
+  url: {{base_url}}/api/file-recipients
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Basic invalid
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "FORBIDDEN", "message": "forbidden", "retryable": false}}); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
 }
