@@ -2557,7 +2557,11 @@ async fn read_scan(research: &Research<'_>, run: Uuid, original_bytes: usize) ->
 	let read = research
 		.fetch(
 			&call(run, "read", "research.page@1"),
-			&scanned(&[("Page one has text.", 1)], vec![2], original_bytes),
+			&scanned(
+				&[("Page one has text.", 1), ("So does page three.", 3)],
+				vec![2],
+				original_bytes,
+			),
 			&json!({"url":"https://example.com/report.pdf"}),
 		)
 		.await
@@ -2662,7 +2666,7 @@ async fn only_retained_pages_without_text_can_be_viewed_within_the_limit() {
 	let unretained = research
 		.fetch(
 			&call(run, "read-2", "research.page@1"),
-			&scanned(&[("Text.", 1)], vec![2], 1024),
+			&scanned(&[("Text.", 1), ("More text.", 3)], vec![2], 1024),
 			&json!({"url":"https://example.com/other.pdf"}),
 		)
 		.await
