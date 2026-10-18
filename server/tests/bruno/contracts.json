@@ -15480,7 +15480,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -15490,9 +15495,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -18237,7 +18249,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -18247,9 +18264,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -25381,7 +25405,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -25391,9 +25420,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -27729,7 +27765,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -27739,9 +27780,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }
@@ -29745,7 +29793,12 @@
         "Restrictions": {
           "type": "object",
           "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
-          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "required": [
+            "keep_threshold",
+            "preserve_recent",
+            "forbid_apply",
+            "max_calls_per_run"
+          ],
           "properties": {
             "forbid_apply": {
               "type": "boolean",
@@ -29755,9 +29808,16 @@
               "type": "string",
               "default": "3fe0000000000000"
             },
+            "max_calls_per_run": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "A lower per-Run call limit than the Decider version declares.",
+              "minimum": 0
+            },
             "preserve_recent": {
               "type": "integer",
               "format": "uint",
+              "description": "Events, or on the Native Projection Version Model Turns, never classified.",
               "default": 6,
               "minimum": 0
             }

@@ -96,7 +96,8 @@ pub async fn compact_decided(
 		.await;
 	match result {
 		Ok(CompactionResult::AlreadyFits) => Ok(Compaction::Fits),
-		Ok(CompactionResult::Applied(_)) => {
+		Ok(CompactionResult::Applied(summary)) => {
+			record_tokens("prune", summary.fit.before, summary.fit.proposed);
 			record_stage("prune", "applied");
 			Ok(Compaction::Saved)
 		}
@@ -105,6 +106,11 @@ pub async fn compact_decided(
 			summary_plan(context.clone(), fitting).map(Compaction::NeedsSummary)
 		}
 		Ok(CompactionResult::Insufficient(staged)) => {
+			record_tokens(
+				"prune",
+				staged.evidence.fit.before,
+				staged.evidence.fit.proposed,
+			);
 			record_stage("prune", "insufficient");
 			match summary_plan(staged.pruned.clone(), fitting) {
 				Ok(mut plan) => {
