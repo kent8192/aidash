@@ -162,6 +162,13 @@ export function ResearchPanel({
             ` · ${ja ? "推定調査費用" : "estimated research cost"} ${dollars(usage.data.estimated_micro_usd)} ${ja ? "（見積もり。請求額ではなく、Research account holder が支払います）" : "(an estimate, not an invoice; the Research account holder pays)"}`}
         </Hint>
       )}
+      {usage.data?.revoked_at && (
+        <Notice role="status">
+          {ja
+            ? "この Run の Research evidence は取り消されたため、調査は終了しています。"
+            : "This Run's research evidence was revoked, so its research is closed."}
+        </Notice>
+      )}
       {(usage.data?.uncertain_attempts ?? 0) > 0 && (
         <Notice tone="warning">
           {ja

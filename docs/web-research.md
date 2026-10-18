@@ -300,6 +300,30 @@ blocked disclosure stays listed as such and is never sent, and the Run's
 active grants are listed with their scope for their requester and approver to
 revoke.
 
+A Run's details show whether its research evidence was revoked, and when, to
+everyone who may read the Run; `GET /api/runs/{id}/research` carries
+`revoked_at`, `can_revoke` and `can_read_revocation` so the dashboard offers
+only what the reader may do. A subject permitted `research.revoke` revokes a
+Run that has done research from its details: the dialog says the revocation is
+irreversible and what it closes, and requires a reason that is kept as audit
+history. Who revoked a Run's evidence and why is shown only to the audience of
+the Tenant's records, through `GET /api/runs/{id}/research-revocation`.
+
+Trust → "Research evidence retention and revocation" (`/trust?view=evidence`)
+shows a Tenant's snapshot periods to every subject of the Tenant, beside the
+Deployment's ceiling. `GET /api/tenants/{tenant}/retention` says whether the
+caller may change them (`can_update`), read their history
+(`can_read_history`) and read the Tenant's revocation records
+(`can_read_revocations`). A change is reviewed before it is saved, with a
+warning when it shortens a period, because it applies to content already kept
+at the next hourly sweep; saving makes both periods the Tenant's own, and
+clearing returns to the Deployment's. History and records load 50 at a time.
+Deployment Administrators choose the Tenant and revoke by Run ID, without
+opening the Run; the request names that Tenant (`tenant` in the body), so a
+Run of another Tenant answers 404 and is not revoked. A Deployment
+Administrator's identity in history and records is shown only to Deployment
+Administrators.
+
 ## Providers
 
 Whoever runs the Deployment declares its Research providers in the
