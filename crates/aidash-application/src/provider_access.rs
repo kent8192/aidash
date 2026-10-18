@@ -137,6 +137,12 @@ impl KeylessAccess {
 		*origins = std::mem::take(&mut *origins).with(added);
 		Ok(())
 	}
+	/// How `endpoint` may connect under the Deployment's permitted origins.
+	pub fn destination(&self, endpoint: &str) -> Result<Destination> {
+		let origins = self.origins.read().expect("Keyless origins lock");
+		Ok(aidash_domain::keyless::destination(endpoint, &origins)?)
+	}
+
 	/// The permitted origins, so that a test can configure a child process alike.
 	#[cfg(any(test, feature = "test-support"))]
 	pub fn permitted_origins(&self) -> Vec<String> {
@@ -160,10 +166,7 @@ impl ProviderAccess for KeylessAccess {
 				));
 			}
 		}
-		let destination = {
-			let origins = self.origins.read().expect("Keyless origins lock");
-			aidash_domain::keyless::destination(endpoint, &origins)?
-		};
+		let destination = self.destination(endpoint)?;
 		if destination == Destination::Forbidden {
 			tracing::warn!(
 				"Keyless endpoint refused: a non-public address outside the permitted private origins"

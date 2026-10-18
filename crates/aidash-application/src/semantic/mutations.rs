@@ -17,6 +17,7 @@ pub async fn configure(
 	mutations::validate_revision(revision, "invalid index revision")?;
 	let mut scope = repository.begin().await?;
 	scope.lock_workspace(workspace).await?;
+	scope.authorize(workspace).await?;
 	let tenant = scope.tenant(workspace).await?;
 	let old = scope.index(workspace).await?;
 	let value = serde_json::to_value(&spec)?;

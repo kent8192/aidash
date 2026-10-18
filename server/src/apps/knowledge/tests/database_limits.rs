@@ -30,6 +30,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 		.unwrap();
 	service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 0,
@@ -155,6 +156,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 		.unwrap();
 	service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 0,
@@ -191,6 +193,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	spec.max_input_bytes = 128;
 	let reduced = service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 1,
@@ -215,6 +218,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	spec.max_input_bytes = 240;
 	let equal = service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 1,
@@ -247,6 +251,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		.unwrap();
 	service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		ConfigureIndex {
 			expected_revision: 0,
@@ -265,6 +270,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		),
 		service::configure(
 			&store,
+			&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 			workspace.id,
 			ConfigureIndex {
 				expected_revision: 1,

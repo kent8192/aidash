@@ -177,6 +177,9 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("incident_evidence_days", FieldType::Integer)
 					.with_not_null(true)
 					.with_default(Some("90".to_owned())),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some("0".to_owned())),
 			],
 			constraints: vec![],
 			without_rowid: None,

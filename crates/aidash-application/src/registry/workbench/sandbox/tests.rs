@@ -1,6 +1,7 @@
 use super::*;
 use crate::ports::registry::workbench::sandbox::SandboxScope;
-use aidash_domain::registry::workbench::Draft;
+use aidash_domain::identity::Principal;
+use aidash_domain::registry::workbench::{Draft, sandbox::TestLimitCeilings};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use rstest::rstest;
@@ -21,6 +22,7 @@ struct Repository {
 	field_valid: bool,
 	status: &'static str,
 	pause: bool,
+	ceilings: TestLimitCeilings,
 }
 impl Repository {
 	fn new() -> Self {
@@ -34,6 +36,7 @@ impl Repository {
 			field_valid: true,
 			status: "running",
 			pause: false,
+			ceilings: TestLimitCeilings::MAXIMA,
 		}
 	}
 }
@@ -58,6 +61,7 @@ fn limits() -> TestLimits {
 		max_concurrent: 2,
 		payload_days: 3,
 		incident_evidence_days: 5,
+		revision: 4,
 	}
 }
 fn session(status: &str) -> TestSession {
@@ -82,6 +86,9 @@ fn session(status: &str) -> TestSession {
 impl SandboxRepository for Repository {
 	fn principal(&self) -> Principal {
 		self.principal.clone()
+	}
+	fn ceilings(&self) -> TestLimitCeilings {
+		self.ceilings
 	}
 	fn validate_limit_fields(&self, _: &TestLimits) -> Result<()> {
 		self.state.lock().unwrap().calls.push("field_validation");
@@ -148,7 +155,30 @@ impl SandboxScope for Scope<'_> {
 			Err(Error::Forbidden)
 		}
 	}
+	async fn authorize_tenant(&mut self, tenant: &str, action: &str, id: &str) -> Result<()> {
+		assert_eq!(
+			(tenant, action, id),
+			("tenant", TEST_LIMITS_UPDATE, COLLECTION)
+		);
+		self.repository
+			.state
+			.lock()
+			.unwrap()
+			.calls
+			.push("tenant_authority");
+		if self.repository.principal == Principal::DeploymentAdministrator
+			|| self.repository.allowed
+		{
+			Ok(())
+		} else {
+			Err(Error::Forbidden)
+		}
+	}
 	async fn limits(&mut self, tenant: &str) -> Result<TestLimits> {
+		let stored = self.stored_limits(tenant).await?;
+		Ok(self.repository.ceilings.effective(stored))
+	}
+	async fn stored_limits(&mut self, tenant: &str) -> Result<TestLimits> {
 		assert_eq!(tenant, "tenant");
 		self.repository
 			.state
@@ -158,15 +188,19 @@ impl SandboxScope for Scope<'_> {
 			.push("limits_locked");
 		Ok(limits())
 	}
-	async fn save_limits(&mut self, input: &TestLimits) -> Result<()> {
+	async fn save_limits(&mut self, input: &TestLimits) -> Result<TestLimits> {
 		self.repository
 			.state
 			.lock()
 			.unwrap()
 			.calls
 			.push("save_limits");
-		self.limits = Some(input.clone());
-		Ok(())
+		let saved = TestLimits {
+			revision: input.revision + 1,
+			..input.clone()
+		};
+		self.limits = Some(saved.clone());
+		Ok(saved)
 	}
 	async fn session(&mut self, id: Uuid, lock: bool) -> Result<TestSession> {
 		assert_eq!(id, Uuid::from_u128(9));
@@ -221,48 +255,96 @@ async fn tenant_limits_require_current_draft_test_authority(#[case] allowed: boo
 		assert!(!s.calls.contains(&"limits_locked"));
 	}
 }
-#[rstest]
-#[case("subject")]
-#[case("tenant")]
-#[case("fields")]
-#[case("budget")]
 #[tokio::test]
-async fn invalid_or_unauthorized_limit_changes_precede_any_transaction(#[case] boundary: &str) {
-	let mut r = Repository::new();
-	r.principal = Principal::DeploymentAdministrator;
+async fn a_tenant_mismatch_precedes_any_transaction() {
+	let r = Repository::new();
 	let mut input = limits();
-	match boundary {
-		"subject" => {
-			r.principal = Principal::Subject {
-				tenant: "tenant".into(),
-				subject: "reader".into(),
-			}
-		}
-		"tenant" => input.tenant = "other".into(),
-		"fields" => r.field_valid = false,
-		_ => input.max_total_tokens = 64,
-	}
+	input.tenant = "other".into();
 	assert!(set_limits(&r, "tenant".into(), input).await.is_err());
 	let s = r.state.lock().unwrap();
-	assert!(!s.calls.contains(&"begin"));
-	assert!(s.limits.is_none());
-	if matches!(boundary, "subject" | "tenant") {
-		assert!(!s.calls.contains(&"field_validation"));
-	}
+	assert!(s.calls.is_empty());
 }
 #[rstest]
+#[case::unauthorized("subject", vec!["begin", "tenant_authority"])]
+#[case::fields("fields", vec!["begin", "tenant_authority", "field_validation"])]
+#[case::budget("budget", vec!["begin", "tenant_authority", "field_validation"])]
+#[case::ceiling("ceiling", vec!["begin", "tenant_authority", "field_validation"])]
 #[tokio::test]
-async fn deployment_administrator_limit_changes_commit_the_exact_validated_configuration() {
+async fn limit_changes_are_authorized_then_validated_within_the_ceilings(
+	#[case] boundary: &str,
+	#[case] calls: Vec<&str>,
+) {
 	let mut r = Repository::new();
-	r.principal = Principal::DeploymentAdministrator;
-	let result = set_limits(&r, "tenant".into(), limits()).await.unwrap();
+	let mut input = limits();
+	match boundary {
+		"subject" => r.allowed = false,
+		"fields" => r.field_valid = false,
+		"budget" => input.max_total_tokens = 64,
+		_ => r.ceilings.max_concurrent = 1,
+	}
+	let result = set_limits(&r, "tenant".into(), input).await;
 	assert_eq!(
-		serde_json::to_value(result).unwrap(),
-		serde_json::to_value(limits()).unwrap()
+		matches!(result, Err(Error::Forbidden)),
+		boundary == "subject"
 	);
+	assert!(result.is_err());
+	let s = r.state.lock().unwrap();
+	assert_eq!(s.calls, calls);
+	assert!(!s.committed && s.limits.is_none());
+}
+#[rstest]
+#[case::member(Principal::Subject { tenant: "tenant".into(), subject: "admin".into() })]
+#[case::deployment_administrator(Principal::DeploymentAdministrator)]
+#[tokio::test]
+async fn authorized_limit_changes_commit_the_next_revision(#[case] principal: Principal) {
+	let mut r = Repository::new();
+	r.principal = principal;
+	let result = set_limits(&r, "tenant".into(), limits()).await.unwrap();
+	assert_eq!(result.limits.revision, limits().revision + 1);
+	assert_eq!(result.ceilings, TestLimitCeilings::MAXIMA);
 	let s = r.state.lock().unwrap();
 	assert!(!s.active && s.committed);
-	assert_eq!(s.calls, vec!["field_validation", "begin", "save_limits"]);
+	assert_eq!(
+		s.calls,
+		vec![
+			"begin",
+			"tenant_authority",
+			"field_validation",
+			"save_limits"
+		]
+	);
+}
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn reading_a_tenants_limits_needs_the_update_action(#[case] allowed: bool) {
+	let mut r = Repository::new();
+	r.allowed = allowed;
+	r.ceilings.max_concurrent = 1;
+	let result = tenant_limits(&r, "tenant".into()).await;
+	let s = r.state.lock().unwrap();
+	if allowed {
+		let result = result.unwrap();
+		assert_eq!(result.limits.max_concurrent, 2, "as the Tenant set it");
+		assert_eq!(result.ceilings.max_concurrent, 1);
+		assert_eq!(s.calls, vec!["begin", "tenant_authority", "limits_locked"]);
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)));
+		assert!(!s.committed);
+	}
+}
+#[tokio::test]
+async fn tests_run_within_a_lowered_ceiling() {
+	let mut r = Repository::new();
+	r.ceilings.max_concurrent = 1;
+	assert_eq!(
+		get_limits(&r, Uuid::from_u128(1))
+			.await
+			.unwrap()
+			.max_concurrent,
+		1
+	);
 }
 #[rstest]
 #[case(true)]

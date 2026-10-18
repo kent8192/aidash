@@ -9,7 +9,7 @@ use aidash_domain::{
 	identity::Principal,
 	registry::workbench::{
 		Draft,
-		sandbox::{TestLimits, TestSession},
+		sandbox::{TestLimitCeilings, TestLimits, TestSession},
 	},
 };
 use async_trait::async_trait;
@@ -24,11 +24,15 @@ struct Scope {
 	node_id: String,
 	tx: crate::database::native::Transaction,
 	actor: Actor,
+	ceilings: TestLimitCeilings,
 }
 #[async_trait]
 impl SandboxRepository for Repository {
 	fn principal(&self) -> Principal {
 		super::authority::principal(&self.actor)
+	}
+	fn ceilings(&self) -> TestLimitCeilings {
+		self.store.test_limit_ceilings
 	}
 	fn validate_limit_fields(&self, limits: &TestLimits) -> Result<()> {
 		let native: crate::apps::registry::workbench::serializers::test::TestLimits =
@@ -40,6 +44,7 @@ impl SandboxRepository for Repository {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
+			ceilings: self.store.test_limit_ceilings,
 		}))
 	}
 	async fn purge(&self) -> Result<u64> {
@@ -63,13 +68,30 @@ impl SandboxScope for Scope {
 		)
 		.await
 	}
+	async fn authorize_tenant(&mut self, tenant: &str, action: &str, id: &str) -> Result<()> {
+		let pool = self.tx.pool().clone();
+		super::authority::require_tenant_action(
+			&mut self.tx,
+			&pool,
+			&self.actor,
+			tenant,
+			action,
+			id,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn limits(&mut self, tenant: &str) -> Result<TestLimits> {
+		let stored = self.stored_limits(tenant).await?;
+		Ok(self.ceilings.effective(stored))
+	}
+	async fn stored_limits(&mut self, tenant: &str) -> Result<TestLimits> {
 		Ok(AgentTestLimit::locked(&mut self.tx, tenant).await?.into())
 	}
-	async fn save_limits(&mut self, limits: &TestLimits) -> Result<()> {
-		AgentTestLimit::save(&mut self.tx, &limits.clone().into())
-			.await
-			.map_err(Into::into)
+	async fn save_limits(&mut self, limits: &TestLimits) -> Result<TestLimits> {
+		Ok(AgentTestLimit::save(&mut self.tx, &limits.clone().into())
+			.await?
+			.into())
 	}
 	async fn session(&mut self, id: Uuid, lock: bool) -> Result<TestSession> {
 		AgentTestSession::read(&mut self.tx, id, lock)

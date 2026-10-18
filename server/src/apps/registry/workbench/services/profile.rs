@@ -37,7 +37,7 @@ impl TestProfiles {
 	) -> Result<TestProfile> {
 		aidash_application::registry::workbench::profile::put(
 			&crate::bootstrap::workbench_profile_repository(&self.runtime, actor),
-			&crate::bootstrap::workbench_profile_configuration(),
+			&crate::bootstrap::workbench_profile_configuration(&self.runtime),
 			tenant,
 			id,
 			input,

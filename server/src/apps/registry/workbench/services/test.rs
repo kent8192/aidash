@@ -13,6 +13,7 @@ pub async fn purge_expired(pool: &crate::database::native::Pool) -> Result<u64> 
 }
 
 pub use crate::apps::registry::workbench::serializers::test::{TestInput, TestLimits, TestSession};
+use aidash_domain::registry::workbench::sandbox::TenantTestLimits;
 
 #[derive(Clone)]
 pub struct BehavioralTests {
@@ -40,15 +41,29 @@ impl BehavioralTests {
 		actor: Actor,
 		tenant: String,
 		input: TestLimits,
-	) -> Result<TestLimits> {
+	) -> Result<TenantTestLimits> {
 		Ok(
 			aidash_application::registry::workbench::sandbox::set_limits(
 				&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
 				tenant,
 				input.into(),
 			)
-			.await?
-			.into(),
+			.await?,
+		)
+	}
+	/// A Tenant's limits and the Deployment's ceilings (#361).
+	pub(crate) async fn tenant_limits(
+		&self,
+		actor: Actor,
+		tenant: String,
+	) -> Result<TenantTestLimits> {
+		aidash_domain::policy::identifier(&tenant)?;
+		Ok(
+			aidash_application::registry::workbench::sandbox::tenant_limits(
+				&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+				tenant,
+			)
+			.await?,
 		)
 	}
 	pub(crate) async fn sessions(&self, actor: Actor, id: Uuid) -> Result<Vec<TestSession>> {
@@ -76,12 +91,11 @@ impl BehavioralTests {
 		let runtime = &self.runtime;
 		let permit = runtime.sandbox.permit()?;
 		let repository = crate::bootstrap::workbench_sandbox_repository(runtime, actor.clone());
-		let credentials = crate::bootstrap::workbench_sandbox_credentials();
 		let models = crate::bootstrap::workbench_sandbox_models(runtime);
+		let execution = crate::bootstrap::workbench_sandbox_execution(runtime, actor)?;
 		let admitted = aidash_application::registry::workbench::sandbox::admission::admit(
 			&aidash_application::registry::workbench::sandbox::admission::Admission {
 				repository: &repository,
-				credentials: credentials.as_ref(),
 				models: &models,
 			},
 			id,
@@ -89,7 +103,6 @@ impl BehavioralTests {
 		)
 		.await?;
 		let session_id = admitted.session.id;
-		let execution = crate::bootstrap::workbench_sandbox_execution(runtime, actor);
 		let repository = execution.repository.clone();
 		let message = admitted.job.input.message.clone();
 		if let Err(error) = permit.spawn(

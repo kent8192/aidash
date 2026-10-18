@@ -7,12 +7,14 @@ use crate::{
 pub(crate) use crate::apps::knowledge::repositories::access::Lease;
 pub(crate) use crate::apps::knowledge::repositories::storage::{history, index, schedule_point};
 
-pub async fn configure(store: &Store, workspace: Uuid, input: ConfigureIndex) -> Result<Index> {
+pub async fn configure(
+	store: &Store,
+	actor: &Actor,
+	workspace: Uuid,
+	input: ConfigureIndex,
+) -> Result<Index> {
 	aidash_application::semantic::mutations::configure(
-		&crate::bootstrap::semantic_configuration_repository(
-			store,
-			store.workspace_tenancy(workspace).await?,
-		),
+		&crate::bootstrap::semantic_configuration_repository(store, actor, workspace),
 		workspace,
 		input.expected_revision,
 		input.spec.into(),

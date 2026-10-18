@@ -25,10 +25,14 @@ pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
 	pub(crate) actor: Actor,
 }
-pub(crate) struct Configuration;
+/// Test endpoints share the Deployment's permitted private origins with
+/// Keyless endpoints until #376 decides whether tools keep a list of their own.
+pub(crate) struct Configuration {
+	pub(crate) keyless: aidash_application::provider_access::KeylessAccess,
+}
 impl ProfileConfiguration for Configuration {
-	fn require_secret(&self, name: &str) -> Result<()> {
-		crate::config::secret(name).map(|_| ()).map_err(Into::into)
+	fn destination(&self, endpoint: &str) -> Result<aidash_domain::keyless::Destination> {
+		self.keyless.destination(endpoint)
 	}
 }
 struct Scope {
@@ -77,14 +81,21 @@ impl ProfileRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 	async fn save(&self, tenant: &str, id: &str, input: &ProfileInput) -> Result<TestProfile> {
-		self.runtime
-			.store
-			.pool
-			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-				AgentTestProfile::save(tx, tenant, id, input).await
-			})
-			.await
-			.map_err(Into::into)
+		let pool = &self.runtime.store.pool;
+		pool.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+			super::authority::require_tenant_action(
+				&mut *tx,
+				pool,
+				&self.actor,
+				tenant,
+				aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+				id,
+			)
+			.await?;
+			AgentTestProfile::save(tx, tenant, id, input).await
+		})
+		.await
+		.map_err(Into::into)
 	}
 }
 #[async_trait]

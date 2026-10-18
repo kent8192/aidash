@@ -1,13 +1,10 @@
 //! Durable pending evidence precedes network I/O, followed by fresh authority held through dispatch.
 use crate::{
 	Error, Result,
-	ports::{
-		Credentials,
-		registry::workbench::{
-			profile::ProfileConfiguration,
-			sandbox::dispatch::{
-				PreparedRealRequest, RealDispatchRepository, RealDispatchScope, RealToolTransport,
-			},
+	ports::registry::workbench::{
+		profile::ProfileConfiguration,
+		sandbox::dispatch::{
+			PreparedRealRequest, RealDispatchRepository, RealDispatchScope, RealToolTransport,
 		},
 	},
 };
@@ -19,16 +16,11 @@ use aidash_domain::{
 	},
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 pub struct Dispatch<'a> {
 	pub repository: &'a dyn RealDispatchRepository,
-	pub credentials: &'a dyn Credentials,
 	pub configuration: &'a dyn ProfileConfiguration,
 	pub transport: &'a dyn RealToolTransport,
-}
-pub fn credential_fingerprint(credentials: &dyn Credentials, name: &str) -> Result<Vec<u8>> {
-	Ok(Sha256::digest(credentials.resolve(name)?.as_bytes()).to_vec())
 }
 async fn prepare(
 	scope: &mut dyn RealDispatchScope,
@@ -60,11 +52,6 @@ async fn prepare(
 		return Err(Error::Conflict(
 			"test profile changed or was disabled".into(),
 		));
-	}
-	for (name, fingerprint) in &pin.credential_fingerprints {
-		if credential_fingerprint(dispatch.credentials, name)? != *fingerprint {
-			return Err(Error::Conflict("test credential changed".into()));
-		}
 	}
 	let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
 		serde_json::from_value(session.scenario["binding_snapshot"].clone())?;

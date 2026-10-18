@@ -18,6 +18,7 @@ impl RealDispatchRepository for Repository {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
+			ceilings: self.store.test_limit_ceilings,
 		}))
 	}
 }

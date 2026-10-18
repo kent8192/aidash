@@ -265,6 +265,7 @@ pub(super) async fn setup_endpoint_policy(
 		.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,

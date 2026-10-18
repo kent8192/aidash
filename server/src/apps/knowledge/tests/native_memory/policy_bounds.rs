@@ -993,6 +993,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	spec.max_sources = 1;
 	aidash_server::semantic::service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,

@@ -34,6 +34,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(test::get_limits)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(test::tenant_limits)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(test::set_limits)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(test::sessions)

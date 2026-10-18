@@ -1,7 +1,7 @@
 //! The existing policy, credential and sharing reads stay on one borrowed native transaction.
 use crate::{
 	apps::{
-		identity::models::AuthorizationBundle,
+		identity::models::{AuthorizationBundle, AuthorizationDecision},
 		registry::{repositories::NativeScope, workbench::models::AgentDraftShare},
 	},
 	authorization::{Authorization, identity::Actor},
@@ -76,4 +76,49 @@ impl DraftAuthority for Scope<'_> {
 			.await?
 			.bundle)
 	}
+}
+
+/// Requires a Tenant action of a Subject of `tenant` on resource `id` in `tx`,
+/// where its effect is written. A Deployment Administrator passes. A denial is
+/// audited in a transaction of its own, because `tx` rolls back.
+pub(crate) async fn require_tenant_action(
+	tx: &mut dyn TransactionExecutor,
+	pool: &crate::database::native::Pool,
+	actor: &Actor,
+	tenant: &str,
+	action: &str,
+	id: &str,
+) -> crate::Result<()> {
+	let Actor::Subject(identity) = actor else {
+		return Ok(());
+	};
+	if identity.tenant != tenant {
+		return Err(crate::Error::Forbidden);
+	}
+	let snapshot = identity
+		.lock_native(&mut *tx, false, pool.dashboard_policy().as_ref())
+		.await?;
+	let evaluation = Evaluation {
+		subject: identity.subject.clone(),
+		action: action.into(),
+		resource: aidash_domain::policy::Resource {
+			tenant: tenant.into(),
+			kind: aidash_domain::identity::tenant_administration::resource_kind(action).into(),
+			id: id.into(),
+			attributes: serde_json::json!({}),
+		},
+		environment: serde_json::json!({"transport": "api"}),
+	};
+	let mut decision = snapshot.bundle.evaluate(&evaluation);
+	decision.revision = snapshot.revision;
+	if decision.allowed {
+		AuthorizationDecision::append(&mut *tx, tenant, &evaluation, &decision).await?;
+		return Ok(());
+	}
+	let mut audit = pool
+		.begin(&aidash_application::tenancy::TenancyScope::tenant(tenant)?)
+		.await?;
+	AuthorizationDecision::append(&mut audit, tenant, &evaluation, &decision).await?;
+	audit.commit().await?;
+	Err(crate::Error::Forbidden)
 }

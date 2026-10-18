@@ -2597,6 +2597,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let configuration = serde_json::from_value(index.spec.clone()).unwrap();
 	aidash_server::semantic::service::configure(
 		&f.store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,
