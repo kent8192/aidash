@@ -92,7 +92,8 @@ pub enum Failure {
 	ViewLimit,
 	/// The page could not be rendered within the image bounds.
 	RenderFailed,
-	/// The Run's model does not read images, so it cannot view a page.
+	/// The Run's model does not read images or has no current route for a
+	/// PNG, so it cannot view a page.
 	ImageInputRequired,
 	/// A page redirected to another host than the approved destination.
 	CrossHostRedirect,
@@ -181,7 +182,9 @@ impl Failure {
 			}
 			Self::ViewLimit => "The Run reached its page view limit.",
 			Self::RenderFailed => "The page could not be rendered as an image.",
-			Self::ImageInputRequired => "Viewing a page needs a model that reads images.",
+			Self::ImageInputRequired => {
+				"Viewing a page needs a model that currently accepts PNG images."
+			}
 			Self::CrossHostRedirect => {
 				"The page redirected to another host; request that address in a new call."
 			}

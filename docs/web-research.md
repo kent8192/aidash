@@ -61,8 +61,10 @@ not exposed to remote Runs).
   image is an Evidence fragment with an `evidence_ref`, the `page` and the
   image's media type, size and digest; the image itself reaches the model as
   selected model media on its next request, like a file read as model input.
-  Only a model whose definition lists the `image` modality may view a page;
-  any other gets `image_input_required`. Nothing leaves the Node.
+  Only a model whose definition lists the `image` modality and that holds a
+  current media route for `image/png` may view a page; any other gets
+  `image_input_required`, and the view is neither recorded nor counted.
+  Nothing leaves the Node.
 
 Results share one envelope: `{version, operation, status, limits, data}` with
 `status` `ok`, `partial`, `empty`, `error`, `uncertain` or `approval_required`.

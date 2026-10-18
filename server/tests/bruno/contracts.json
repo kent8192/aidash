@@ -29368,12 +29368,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images the Run has viewed.",
               "minimum": 0
             },
             "search_attempts": {
@@ -29434,12 +29441,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images one Run may view.",
               "minimum": 0
             },
             "search_attempts": {
@@ -29554,12 +29568,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images one Run may view.",
               "minimum": 0
             },
             "search_attempts": {

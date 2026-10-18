@@ -315,12 +315,14 @@ impl Tool for ResearchTool {
 			}
 			Operation::Find => research.find(&call, &input).await,
 			Operation::View => {
-				// A viewed page reaches the model as an image (ADR 0053).
+				// A viewed page reaches the model as a PNG image (ADR 0053); a
+				// model without a current route for it would never see the
+				// page the view records and counts.
 				if !run
 					.context
 					.binding_snapshot
 					.as_ref()
-					.is_some_and(|snapshot| snapshot.model_reads_images())
+					.is_some_and(|snapshot| snapshot.model_reads_page_images())
 				{
 					return Ok(failure(Operation::View, Failure::ImageInputRequired));
 				}

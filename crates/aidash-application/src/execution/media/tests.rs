@@ -977,8 +977,12 @@ async fn page_images_need_no_file_authority_and_must_keep_their_digest(mut file_
 		selected(&mut file_scope, &[page("ev_page", "sha256:00".into())]).await,
 		Err(Error::Conflict(ref message)) if message == "PAGE_IMAGE_CHANGED"
 	));
+	// A revoked page cannot stop the Run: the model is told it is gone.
+	let revoked = selected(&mut file_scope, &[page("ev_missing", digest)])
+		.await
+		.unwrap();
 	assert!(matches!(
-		selected(&mut file_scope, &[page("ev_missing", digest)]).await,
-		Err(Error::NotFound(_))
+		revoked.as_slice(),
+		[ContentPart::Text(note)] if note == "Page image unavailable: ev_missing was revoked."
 	));
 }

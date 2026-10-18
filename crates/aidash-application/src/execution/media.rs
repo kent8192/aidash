@@ -171,10 +171,17 @@ pub async fn selected(
 				)
 			}
 			ModelMedia::PageImage(selection) => {
-				let (media_type, bytes) = scope
-					.page_image(&selection.evidence_ref)
-					.await?
-					.ok_or_else(|| Error::NotFound("page image unavailable".into()))?;
+				// A revoked page leaves the Run's durable selection behind;
+				// failing on it would stop the Run on every retry, so the
+				// model is told the page is gone instead.
+				let Some((media_type, bytes)) = scope.page_image(&selection.evidence_ref).await?
+				else {
+					parts.push(ContentPart::Text(format!(
+						"Page image unavailable: {} was revoked.",
+						selection.evidence_ref
+					)));
+					continue;
+				};
 				if format!("sha256:{:x}", Sha256::digest(&bytes)) != selection.expected_digest {
 					return Err(Error::Conflict("PAGE_IMAGE_CHANGED".into()));
 				}

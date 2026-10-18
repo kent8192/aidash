@@ -157,7 +157,9 @@ export function ResearchPanel({
           {of(used?.fetch_attempts, limits.fetch_attempts)} ·{" "}
           {ja ? "Source record" : "sources"} {of(used?.sources, limits.sources)}{" "}
           · {ja ? "スナップショット" : "snapshots"}{" "}
-          {of(used?.snapshots, limits.snapshots)}
+          {of(used?.snapshots, limits.snapshots)} ·{" "}
+          {ja ? "ページ画像の閲覧" : "page views"}{" "}
+          {of(used?.page_views, limits.page_views)}
           {usage.data &&
             ` · ${ja ? "推定調査費用" : "estimated research cost"} ${dollars(usage.data.estimated_micro_usd)} ${ja ? "（見積もり。請求額ではなく、Research account holder が支払います）" : "(an estimate, not an invoice; the Research account holder pays)"}`}
         </Hint>

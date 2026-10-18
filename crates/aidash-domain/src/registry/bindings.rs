@@ -737,9 +737,10 @@ pub struct BindingSnapshot {
 }
 
 impl BindingSnapshot {
-	/// Whether the Agent's pinned model declares image input, so that a page
-	/// image can be delivered to it (ADR 0053).
-	pub fn model_reads_images(&self) -> bool {
+	/// Whether the Agent's pinned model can be given a page image now (ADR
+	/// 0053): it declares image input and holds a current media route for the
+	/// PNG a viewed page is delivered as.
+	pub fn model_reads_page_images(&self) -> bool {
 		let Some(model) = self
 			.definitions
 			.iter()
@@ -758,8 +759,14 @@ impl BindingSnapshot {
 					&& definition.identity.id == id
 					&& definition.identity.version == version
 			})
-			.and_then(|model| model.definition.config["modalities"].as_array())
-			.is_some_and(|modalities| modalities.iter().any(|modality| modality == "image"))
+			.and_then(|model| {
+				serde_json::from_value::<crate::model::ModelConfig>(model.definition.config.clone())
+					.ok()
+			})
+			.is_some_and(|model| {
+				model.modalities.iter().any(|modality| modality == "image")
+					&& model.has_current_media_route_for_type("image/png")
+			})
 	}
 }
 
