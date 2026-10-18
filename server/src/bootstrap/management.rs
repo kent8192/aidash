@@ -1,4 +1,5 @@
 //! Shared Reinhardt command driver for management and deployment entry points.
+use super::build::{self, Build};
 use crate::config::settings::{ProjectSettings, get_scoped_settings, get_settings};
 #[cfg(feature = "commands-shell")]
 use crate::config::shell::get_shell_config;
@@ -13,28 +14,57 @@ use reinhardt::conf::settings::scoped::ScopedSettings;
 use std::path::PathBuf;
 use std::process;
 
+/// Every settings load passes through the build's Offering check, so a command
+/// refuses another build's Offering before it prepares any service.
 struct ProjectProvider;
 
 impl CapabilityProvider for ProjectProvider {
 	type Settings = ProjectSettings;
 
 	fn scoped_settings(&self) -> Result<ScopedSettings, BuildError> {
-		get_scoped_settings()
+		let settings = get_scoped_settings()?;
+		build::current().check(&settings)?;
+		Ok(settings)
 	}
 
 	fn full_settings(&self) -> Result<PendingSettings<ProjectSettings>, BuildError> {
+		build::current().check(&get_scoped_settings()?)?;
 		get_settings()
 	}
 }
 
-pub async fn run(compatibility: bool) {
+/// The whole entry point of an `aidash` or `manage` binary of `build`.
+/// `compatibility` makes a run without arguments serve, as `aidash` does.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn main(build: &'static Build, compatibility: bool) {
+	// A bounded PDF child of Page reading runs one job and exits (#312). It
+	// starts no runtime, so its address space limit is left for parsing.
+	if let Some(status) =
+		aidash_integrations::research::pdf::child_main(&std::env::args().collect::<Vec<_>>())
+	{
+		process::exit(status);
+	}
+	build::install(build);
+	tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.expect("the Tokio runtime starts")
+		.block_on(async {
+			reinhardt::commands::shell_runtime_hook();
+			run(compatibility).await;
+		});
+}
+
+async fn run(compatibility: bool) {
+	let build = build::current();
 	let cargo_context = CargoCheckContext::from_launcher(
-		PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-		Some(env!("CARGO_PKG_NAME").to_owned()),
+		PathBuf::from(build.manifest_dir).join("Cargo.toml"),
+		Some(build.package.to_owned()),
 		Some("manage".to_owned()),
 	);
+	let provider = ProjectProvider;
 
-	if let Some(result) = crate::bootstrap::migrations::manage(&ProjectProvider).await {
+	if let Some(result) = crate::bootstrap::migrations::manage(&provider).await {
 		if let Err(error) = result {
 			eprintln!("Error: {error}");
 			process::exit(command_error_exit_code(&error));
@@ -51,7 +81,7 @@ pub async fn run(compatibility: bool) {
 		let context = reinhardt::commands::CapabilityContext::prepare(
 			"serve",
 			&command.requirements(&matches),
-			&ProjectProvider,
+			&provider,
 		)
 		.await;
 		let result = match context {
@@ -75,7 +105,7 @@ pub async fn run(compatibility: bool) {
 	#[cfg(feature = "commands-shell")]
 	let result = execute_from_command_line_with_capabilities_and_shell(
 		crate::bootstrap::management_commands(),
-		ProjectProvider,
+		provider,
 		Some(cargo_context),
 		get_shell_config(),
 	)
@@ -83,7 +113,7 @@ pub async fn run(compatibility: bool) {
 	#[cfg(not(feature = "commands-shell"))]
 	let result = execute_from_command_line_with_capabilities(
 		crate::bootstrap::management_commands(),
-		ProjectProvider,
+		provider,
 		Some(cargo_context),
 	)
 	.await;

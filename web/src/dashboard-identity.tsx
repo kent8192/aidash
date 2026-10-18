@@ -68,11 +68,15 @@ export function DashboardIdentityAdministration() {
   const groupsOf = (request: Registration) =>
     groups[request.id] ?? (request.proposed_groups ?? []).join(", ");
   const [mappingOffset, setMappingOffset] = useState(0);
+  const [registrationOffset, setRegistrationOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const registrations = useQuery({
-    queryKey: ["dashboard-registrations"],
-    queryFn: () => apiFetch<Registration[]>("/api/dashboard/registrations"),
+    queryKey: ["dashboard-registrations", registrationOffset],
+    queryFn: () =>
+      apiFetch<Registration[]>(
+        `/api/dashboard/registrations?offset=${registrationOffset}`,
+      ),
   });
   const identities = useQuery({
     queryKey: ["dashboard-identities"],
@@ -249,6 +253,21 @@ export function DashboardIdentityAdministration() {
             </li>
           ))}
       </ul>
+      <Pager
+        className="justify-start"
+        page={registrationOffset / PAGE_SIZE + 1}
+        previous={{
+          disabled: registrationOffset === 0 || registrations.isFetching,
+          go: () =>
+            setRegistrationOffset(Math.max(0, registrationOffset - PAGE_SIZE)),
+        }}
+        next={{
+          disabled:
+            (registrations.data?.length ?? 0) < PAGE_SIZE ||
+            registrations.isFetching,
+          go: () => setRegistrationOffset(registrationOffset + PAGE_SIZE),
+        }}
+      />
       <h3 className={group}>{english ? "Mappings" : "紐づけ"}</h3>
       <ul className="divide-y divide-border border-y border-border">
         {(mappings.data ?? []).map((mapping) => (

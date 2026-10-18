@@ -1,5 +1,5 @@
 //! Register the application's lifecycle with Reinhardt's native runserver.
-use super::settings::{ProjectSettings, get_settings};
+use super::settings::{ProjectSettings, get_scoped_settings, get_settings};
 use crate::{
 	Result,
 	apps::execution::services::lifecycle::{ProbeServer, ProcessLifecycle},
@@ -31,6 +31,11 @@ impl Drop for RunningApplication {
 }
 
 pub fn load_settings() -> Result<ProjectSettings> {
+	// Commands that load settings themselves, not through the command
+	// provider, still refuse another build's Offering before anything else.
+	get_scoped_settings()
+		.and_then(|settings| crate::bootstrap::build::current().check(&settings))
+		.map_err(|error| crate::Error::Invalid(error.to_string()))?;
 	let settings = get_settings()
 		.and_then(|pending| pending.resolve())
 		.map_err(|error| crate::Error::Invalid(error.to_string()))?

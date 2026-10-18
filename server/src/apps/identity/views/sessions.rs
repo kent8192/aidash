@@ -89,8 +89,9 @@ pub async fn registration_create(
 )]
 pub async fn admin_registrations(
 	#[inject] service: Depends<DashboardSessions>,
+	Query(page): Query<AdminMappingPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.admin_registrations().await)
+	crate::http::json(service.admin_registrations(page).await)
 }
 
 #[get(
