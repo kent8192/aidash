@@ -1,13 +1,13 @@
 // reinhardt-migration-source: 1
 // Reinhardt makemigrations model state for the Decision Attempt question
 // commitment and resume cycle. Physical PostgreSQL DDL and checks are applied by
-// 0034_decision_evidence_v3.
+// 0035_decision_evidence_v3.
 
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0035_decision_evidence_v3_state", "execution")
-		.add_dependency("execution", "0034_decision_evidence_v3")
+	Migration::new("0036_decision_evidence_v3_state", "execution")
+		.add_dependency("execution", "0035_decision_evidence_v3")
 		.add_operation(Operation::AddColumn {
 			table: "decision_attempts".to_string(),
 			column: ColumnDefinition::new("cycle", FieldType::Integer)

@@ -7,7 +7,8 @@ belong to the licensing work in [#124](https://github.com/kent8192/aidash/issues
 
 Each file list says how a file was found. **Lineage** means that the file's
 lines descend from a file recorded as adapted. **Content** means that the file
-was found by comparing it with the upstream source.
+was found by comparing it with the upstream source. **Copy** means that the
+file is an upstream file itself, unchanged apart from compression.
 
 ## fast-jev-compaction
 
@@ -84,3 +85,32 @@ pinned revision matches `third_party/hindsight/LICENSE` byte for byte.
 The content search looked for "Hindsight" across the tree and found no further
 adapted material. The other matches name the `hindsight_rust` engine or label
 it in the UI.
+
+## gpt-oss
+
+- Source: <https://huggingface.co/openai/gpt-oss-120b>
+- Revision: `b5c939de8f754692c1647ca79fbf85e8c1e70f8a`
+- License: Apache-2.0, in [third_party/gpt-oss/LICENSE](third_party/gpt-oss/LICENSE)
+
+Files that contain upstream material:
+
+- `crates/aidash-domain/assets/token-encodings/o200k_base.json.zst`: the upstream `tokenizer.json`, compressed with zstd, which counts the `o200k_base` Token Encoding (copy)
+
+The server embeds the file and checks it against the SHA-256 of the upstream
+`tokenizer.json` at the pinned revision before it counts anything. The notice
+is the upstream `LICENSE` at the same revision.
+
+## Gemma 4
+
+- Source: <https://huggingface.co/google/gemma-4-E4B-it>
+- Revision: `ee0ef6023621cff504d758262d4e04895a5af4a2`
+- License: Apache-2.0, in [third_party/gemma-4/LICENSE](third_party/gemma-4/LICENSE)
+
+Files that contain upstream material:
+
+- `crates/aidash-domain/assets/token-encodings/gemma4.json.zst`: the upstream `tokenizer.json`, compressed with zstd, which counts the `gemma4` Token Encoding (copy)
+
+The server embeds the file and checks it against the SHA-256 of the upstream
+`tokenizer.json` at the pinned revision before it counts anything. The model
+card names its terms and links to them rather than shipping a notice file, so
+the notice is the text published at <https://www.apache.org/licenses/LICENSE-2.0.txt>.

@@ -360,9 +360,12 @@ export function EntityForm({
                     modalities: JSON.parse(s("modalities")),
                     media_routes: JSON.parse(s("media_routes") || "[]"),
                     cost: JSON.parse(s("cost")),
-                    // New versions size requests from observed usage; versions
-                    // that omit it keep the byte estimate (ADR 0017).
-                    request_estimator: "calibrated",
+                    // New versions count requests with the Token Encoding
+                    // chosen for them, or size them from observed usage;
+                    // versions that omit it keep the byte estimate (ADR 0017).
+                    request_estimator: s("token_encoding")
+                      ? { tokenized: s("token_encoding") }
+                      : "calibrated",
                   }
                 : kind === "embedding"
                   ? {

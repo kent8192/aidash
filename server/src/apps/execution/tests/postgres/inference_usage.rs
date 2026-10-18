@@ -3,7 +3,7 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::projection::ProjectionVersion;
 use aidash_domain::provider::estimate::{
-	ByteEstimate, CALIBRATION_WINDOW, EstimateSnapshot, FRAMING_RESERVE,
+	ByteEstimate, CALIBRATION_WINDOW, EstimateSnapshot, FRAMING_RESERVE, TokenEncoding,
 };
 use aidash_domain::provider::usage::{ProviderCost, ReportedUsage, UsageDispatch, UsageOutcome};
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
@@ -57,6 +57,7 @@ const BYTES: ByteEstimate = ByteEstimate {
 	media: 0,
 	output: 10,
 	framing: FRAMING_RESERVE,
+	tokenized: None,
 };
 
 fn dispatch(token: Uuid) -> UsageDispatch {
@@ -415,6 +416,60 @@ async fn usage_records_keep_the_cache_identity_of_salted_attempts(
 	assert_eq!(
 		cache_identity(&store, native.attempt).await.as_deref(),
 		Some("prefix-digest")
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+/// A tokenized estimate is stored under its own confidence, which the
+/// database check admits since execution/0034 (#276).
+#[rstest::rstest]
+#[tokio::test]
+async fn usage_records_admit_tokenized_estimates(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, url, schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let tokenized = UsageDispatch {
+		estimate: EstimateSnapshot::tokenized(4, TokenEncoding::O200kBase, None).request_estimate(
+			&ByteEstimate {
+				tokenized: Some(50),
+				..BYTES
+			},
+		),
+		..dispatch(token)
+	};
+
+	// Act
+	store
+		.record_usage_dispatch(&TEST_FIXTURE, &run, token, &tokenized)
+		.await
+		.unwrap();
+
+	// Assert
+	let sql = Query::select()
+		.columns([
+			Alias::new("estimator"),
+			Alias::new("estimate_confidence"),
+			Alias::new("estimated_tokens"),
+		])
+		.from(Alias::new("inference_usage"))
+		.and_where(Expr::col(Alias::new("attempt_id")).eq(Expr::value(tokenized.attempt)))
+		.to_string(PostgresQueryBuilder);
+	let row = sqlx::query_as::<_, (String, String, i64)>(&sql)
+		.fetch_one(store.pool.driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		row,
+		(
+			"tokenized".into(),
+			"tokenized".into(),
+			50 + 10 + FRAMING_RESERVE as i64
+		)
 	);
 	cleanup(store, &url, &schema).await;
 }
