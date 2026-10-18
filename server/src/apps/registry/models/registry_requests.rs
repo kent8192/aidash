@@ -8,6 +8,10 @@ use serde_json::Value;
 #[model(app_label = "registry", table_name = "registry_requests")]
 #[derive(Serialize, Deserialize)]
 pub struct RegistryRequest {
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
+	#[field(primary_key = true, field_type = "text")]
+	pub principal: String,
 	#[field(primary_key = true)]
 	pub key: uuid::Uuid,
 	#[field]

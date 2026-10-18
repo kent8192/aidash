@@ -10,55 +10,32 @@ Bundle member IDs must be unique within each bundle, including across versions a
 
 New Tool registrations require qualified Provider descriptors. Old transport-tagged definitions and old Agent configurations are unsupported for new execution; they remain historical records and are not converted. HTTP/MCP/Agent integration configuration is nested under the descriptor's `transport` field.
 
-Node startup seeds 22 builtin declarations at exact immutable versions (`aidash.<operation>@1.0.0`): the 17 legacy required/default operations plus `capability_search`, `capability_describe`, `capability_load`, `capability_unload` and `skill_asset_read`. All 22 are seeded whatever Exposure policies Agents use; an Agent's [Exposure policy](#deferred-capability-exposure) decides which of them it binds implicitly. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
+Every Tenant's Registry holds the built-in declarations at exact immutable versions (`aidash.<operation>@1.0.0`): the 17 legacy required/default operations, `capability_search`, `capability_describe`, `capability_load`, `capability_unload`, `skill_asset_read` and `task_assign`. Tenant creation writes them, and startup writes any that a Tenant lacks (ADR 0033). All are seeded whatever Exposure policies Agents use; an Agent's [Exposure policy](#deferred-capability-exposure) decides which of them it binds implicitly. Seeding verifies existing bytes and fails on a reserved-name conflict. These built-ins need no Catalog Approval and add no resource grants. Built-ins cannot be published, installed or mutated through Marketplace.
 
-## Pending Host packages
+## Sandboxed and research built-ins
 
-Tenants receive no host packages when they are created. A Deployment Administrator stages them through `POST /api/marketplace/host-packages`.
+The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and the research providers are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one whose `[research_providers]` settings do not declare a research provider offers no group for it. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
 
-An authenticated Deployment Administrator can request the exact generated groups with `POST /api/marketplace/host-packages`:
+| Group              | Bundle                           | Operations                                                           |
+| ------------------ | -------------------------------- | -------------------------------------------------------------------- |
+| `shell`            | `aidash.bundle.shell`            | `shell`, `shell_poll`, `shell_cancel`                                |
+| `python`           | `aidash.bundle.python`           | `code_interpreter`, `python_install`, `python_poll`, `python_cancel` |
+| `outbound_get`     | `aidash.bundle.outbound_get`     | `outbound_get`                                                       |
+| `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                                        |
+| `file_share`       | `aidash.bundle.file_share`       | `file_share`                                                         |
+| `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                                         |
+| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`                                   |
+| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`                      |
 
-```json
-{
-  "tenant": "example",
-  "groups": [
-    "shell",
-    "python",
-    "outbound_get",
-    "apply_patch",
-    "file_share",
-    "task_assign"
-  ],
-  "idempotency_key": "00000000-0000-4000-8000-000000000001"
-}
-```
+Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch` and `research_find` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
 
-The response contains `installations` with exact immutable entry IDs, revision digests, dependency bindings and pending pointers, plus an `unavailable` map. Shell and Python include their poll/cancel operations. All persisted members share the Deployment Administrator transaction. An unavailable runner creates no sandbox revision and selects no fallback. Reusing the key preserves the receipt; retrying provisioning after a runner becomes available requires a new key. Existing installations and grants are not rewritten or activated.
+A Tenant subject with `catalog.approve` approves a group by approving its bundle and every member in one `POST /api/authorization/{tenant}/catalog/approvals` request; a bundle's approval is refused while a member is unapproved. `task_assign` only starts a generation inside Aidash, so it is an ordinary built-in.
 
-## Research provider packages
+## Marketplace installations
 
-Web research providers are packages of the same Deployment Administrator workflow. Their
-groups are `research_brave` (`research.brave@1`: `search`), `research_page`
-(`research.page@1`: `fetch`, `find`) and `research_fixture`
-(`research.fixture@1`: `search`, `fetch`, `find`). Request them by name in
-`POST /api/marketplace/host-packages`, then
-review and approve them like Host groups. Entries are named
-`aidash.research.<provider>.<operation>@1.0.0` and use the default Model
-aliases `research_search`, `research_fetch` and `research_find` with the same
-schema for every provider, so a tenant can replace `research_brave` and
-`research_page` with another provider package without changing its Agents. A
-group whose provider the Deployment's `[research_providers]` settings do not
-declare is reported in `unavailable`. Descriptors with a `research.` provider cannot be registered by
-tenants; they come only from these packages. See [Web research](../web-research.md)
-for the contract, evidence store, citation checks and disclosure approval.
+A Tenant installs a Marketplace package as its own copy (`marketplace.install` and `registry.create`) and then approves and activates the installed revision. `POST /api/marketplace/installations/{id}/activation` and `POST /api/marketplace/approval-sets` are Tenant routes: they need `catalog.approve` on every definition they approve, in the caller's own Tenant. An approval set names the tenant and an exact array of installations (`installation`, `revision`, `digest`, `expected_activation_revision`) and approvals (`reference`, `expected_catalog_revision`). Dependencies outside the selection must already be active and approved. The operation never adds unreviewed approvals.
 
-## Review and activation
-
-In Marketplace administration, select a tenant and prepare the desired Host groups. Inspect each pending definition and its dependency bindings, select every member to be approved and use **Approve and activate selected set**. The displayed selection retains the reviewed digest and approval revisions. If it becomes stale, reload the approval selection and review it again. Preparing or reloading a set grants no approval.
-
-`POST /api/marketplace/approval-sets` requires the existing Deployment Administrator catalog-administration authority. Its input names the tenant and an exact array of installations (`installation`, `revision`, `digest`, `expected_activation_revision`) and approvals (`reference`, `expected_catalog_revision`). Include every pending member whose approval is being requested. Dependencies outside the selection must already be active and approved. The operation never adds unreviewed approvals.
-
-Every digest, revision, provider, dependency kind and lifecycle member is checked before approval writes. Conflicting or stale selections fail the entire transaction. Successful activation updates all selected catalog approvals and pointers together. The same request cannot reactivate a set using stale pointer revisions. Individual approval/activation remains available through the existing API.
+Every digest, revision, provider, dependency kind and lifecycle member is checked before approval writes. Conflicting or stale selections fail the entire transaction. Successful activation updates all selected catalog approvals and pointers together. The same request cannot reactivate a set using stale pointer revisions.
 
 ## Binding-only registration and execution
 
@@ -396,30 +373,16 @@ Current task/Human authority and a live grant are required; expiry, revocation,
 foreign IDs and changed replay input fail. Unsafe-effect reconciliation uses
 this same durable continuation and requires an explicit reconciled result.
 
-## Public foreign Agent Tools
+## Foreign Agents
 
-A Deployment Administrator's `integration.agent@1` descriptor may target an enabled protocol
-`0.2` peer. Registration and admission authenticate
-`GET /federation/v0.1/discover/{id}/{version}/bindings` and retain the receiver's
-complete immutable Agent, model, cluster, bundle and Tool definitions. The parent
-keeps its declared Tool alias; the child's Tools are not added to the parent's
-model request. Live peer and receiver authority is checked again before model
-assembly and each Tool effect. Missing peers, unavailable Providers and changed
-closures fail without replacing any qualified reference.
+A Tenant reaches another Node's Agent only through scoped federation, with its
+retained subject and mapping grants. The public foreign Agent Tool, which read
+a peer's Deployment-wide Registry through the legacy discovery routes, is
+removed with them (ADR 0043).
 
-This public protocol exports one receiver's Deployment Administrator-owned closure. Tenant
-installations, generated Agents, Memory/Source/Skill context and nested foreign
-references cannot be exported through it. Tenant admission never borrows an
-Node's Peer Credential; scoped federation continues to require its retained
-subject and mapping grants. Explicit unsupported dependencies are rejected.
-
-Agent Tool delegation stores `delegations.binding_snapshot` in the same
-transaction as its target reservation. Retries send that original closure.
-A receiver accepts a new Run only when its current admission snapshot matches
-exactly; an idempotent replay must match the original Run snapshot. Updating a
-catalog or retrying delivery cannot silently add a dependency or substitute a
-same-named local Agent. The nullable forward migration preserves historical
-unscoped reservations without importing legacy capability fields.
+Agent Tool delegation from a Run uses scoped remote execution only. The
+unscoped offer path that carried `delegations.binding_snapshot` is removed
+(ADR 0043); the column keeps historical reservations readable.
 
 ## Workbench test connections
 

@@ -32,7 +32,9 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 				.join(
 					JoinType::InnerJoin,
 					TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
-					Expr::cust("r.id=c.entry_id AND r.version=c.entry_version"),
+					Expr::cust(
+						"r.tenant=c.tenant AND r.id=c.entry_id AND r.version=c.entry_version",
+					),
 				)
 				.and_where(
 					Expr::col((Alias::new("c"), Alias::new("tenant")))

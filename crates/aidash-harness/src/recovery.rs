@@ -1,6 +1,6 @@
 //! Durable worker recovery. Retrying an outbox never repeats a failed tool.
 use aidash_application::{Result, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
-use aidash_domain::semantic::{Failure as SemanticFailure, PENDING_REPLAY_SECONDS};
+use aidash_domain::semantic::{Failure as SemanticFailure, OUTAGE_RETRIES, PENDING_REPLAY_SECONDS};
 use aidash_domain::{FailureTarget, RetryState, RunControl, RunState, WaitingState};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -23,7 +23,7 @@ pub async fn recover(
 		.map_or(0, |retry| retry.count)
 		+ 1;
 	if let ExecutionFailure::Semantic(reason) = failure {
-		if reason == SemanticFailure::Stale && attempts <= 5 {
+		if reason == SemanticFailure::Stale && attempts <= OUTAGE_RETRIES {
 			// The Home refused a reused retrieval whose corpus changed (ADR
 			// 0020). Drop the cached Source observation so the retry retrieves
 			// once more, under a READY operation of its own step.
@@ -35,7 +35,9 @@ pub async fn recover(
 			});
 			current.error = Some(reason.to_string());
 			store.save(&current, token, "run.semantic_retrying").await?;
-		} else if reason == SemanticFailure::Pending || (reason.transient() && attempts <= 5) {
+		} else if reason == SemanticFailure::Pending
+			|| (reason.transient() && attempts <= OUTAGE_RETRIES)
+		{
 			let delay = if reason == SemanticFailure::Pending {
 				// Each replay repeats the whole semantic-context step, including
 				// its charged workspace embedding, so only the first check of a

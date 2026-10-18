@@ -248,18 +248,13 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	let hidden = json!({"id":"hidden","version":"1.0.0","kind":"agent","name":{"en":"Hidden B Agent"},
 		"description":{"en":"private"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},
 		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"private","schema_version":1,"bindings":[],"remove_default":[]}});
-	assert_eq!(
-		request(
-			&b.app,
-			&b.f.config.api_token,
-			"POST",
-			"/api/registry",
-			hidden
+	b.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(hidden).unwrap(),
 		)
 		.await
-		.0,
-		200
-	);
+		.unwrap();
 
 	let peers = request(
 		&a.app,
@@ -355,17 +350,21 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	}
 	assert!(bob_nodes.iter().any(|node| node["kind"] == "workspace"));
 	assert!(!bob_nodes.iter().any(|node| node["kind"] == "agent"));
-	let (status, withdrawn) = request(
-		&b.app,
-		&b.f.config.api_token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false,
-		}),
+	aidash_server::authorization::Authorization {
+		pool: b.f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200, "{withdrawn}");
+	.await
+	.unwrap();
 	assert_eq!(
 		expand(
 			&a,

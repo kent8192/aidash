@@ -169,6 +169,8 @@ fn the_creator_administers_and_members_use() {
 		"workspace.create",
 		"run.read",
 		"registry.create",
+		"marketplace.install",
+		"installation.create",
 		"tool.invoke",
 	] {
 		assert!(allows(&bundle, "alice", action), "{action}");
@@ -177,7 +179,6 @@ fn the_creator_administers_and_members_use() {
 		[
 			TENANT_UPDATE,
 			"catalog.approve",
-			"marketplace.install",
 			"provider_credential.create",
 			"research.disclose",
 			"retention.update",

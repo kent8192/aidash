@@ -250,17 +250,6 @@ impl RuntimeTasks {
 				),
 			));
 		}
-		if event_streams.is_some() {
-			let deliveries = federation.clone();
-			tasks.spawn_service(runtime_task(async move {
-				loop {
-					if let Err(error) = deliveries.retry_deliveries().await {
-						tracing::warn!(%error, "delegation retry failed");
-					}
-					tokio::time::sleep(Duration::from_millis(250)).await;
-				}
-			}));
-		}
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
 		tasks.spawn_service(runtime_task(async move {
@@ -525,7 +514,6 @@ pub(crate) fn tool_transport(client: reqwest::Client) -> aidash_integrations::to
 /// Discovery and worker retries share the native repository and rotating keys.
 pub(crate) fn federation(f: &Federation) -> aidash_application::federation::Federation {
 	aidash_application::federation::Federation::new(
-		f.config.node_id.clone(),
 		Arc::new(crate::apps::federation::remote::repositories::Repository {
 			federation: f.clone(),
 		}),
@@ -585,7 +573,7 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 		if descriptor.provider.starts_with("research.") {
 			return crate::apps::execution::services::research::providers().available(descriptor);
 		}
-		if descriptor.tier != ToolTier::Host || descriptor.operation == "task_assign" {
+		if descriptor.tier != ToolTier::Sandboxed {
 			return Ok(());
 		}
 		let runtime = crate::capabilities::Runtime::from_env()?;
@@ -626,15 +614,6 @@ pub(crate) fn conversation_scope<'a>(
 ) -> crate::apps::workspaces::repositories::conversations::NativeConversation<'a> {
 	crate::apps::workspaces::repositories::conversations::NativeConversation::new(
 		federation, access,
-	)
-}
-
-/// Operator conversations use the same Store and transaction implementation.
-pub(crate) fn operator_conversations(
-	federation: &Federation,
-) -> crate::apps::workspaces::repositories::conversations::NativeOperatorConversations {
-	crate::apps::workspaces::repositories::conversations::NativeOperatorConversations(
-		federation.clone(),
 	)
 }
 
@@ -689,6 +668,22 @@ pub(crate) fn marketplace_deployment_administrator_scope<'a>(
 	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
 		staging: marketplace_staging_scope(store, tx, "deployment-administrator-adoption"),
 		principal,
+		approving: None,
+	}
+}
+
+/// A Tenant subject's Marketplace activation, after its `catalog.approve`
+/// decisions on the same transaction.
+pub(crate) fn marketplace_tenant_activation_scope<'a>(
+	store: &'a Store,
+	tx: &'a mut crate::database::native::Transaction,
+	principal: aidash_domain::identity::Principal,
+	tenant: String,
+) -> crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator<'a> {
+	crate::apps::marketplace::repositories::operations::NativeDeploymentAdministrator {
+		staging: marketplace_staging_scope(store, tx, "tenant-activation"),
+		principal,
+		approving: Some(tenant),
 	}
 }
 
@@ -717,15 +712,6 @@ pub(crate) fn catalog_administrator_scope<'a>(
 ) -> crate::apps::identity::repositories::catalog_mutation::NativeAdministrator<'a> {
 	crate::apps::identity::repositories::catalog_mutation::NativeAdministrator {
 		mutation: catalog_mutation_scope(tx),
-		principal,
-	}
-}
-pub(crate) fn catalog_administration_read(
-	pool: &crate::database::native::Pool,
-	principal: aidash_domain::identity::Principal,
-) -> crate::apps::identity::repositories::catalog_mutation::NativeAdministrationRead<'_> {
-	crate::apps::identity::repositories::catalog_mutation::NativeAdministrationRead {
-		pool,
 		principal,
 	}
 }
@@ -1283,12 +1269,6 @@ pub(crate) fn scoped_media(
 	access: &mut crate::authorization::access::Access,
 ) -> crate::apps::workspaces::repositories::media::ScopedMedia<'_> {
 	crate::apps::workspaces::repositories::media::ScopedMedia { access }
-}
-pub(crate) fn operator_media_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::workspaces::repositories::media::OperatorMedia<'_> {
-	crate::apps::workspaces::repositories::media::OperatorMedia { store, scope }
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
@@ -2255,8 +2235,9 @@ pub(crate) fn dashboard_logout(
 
 pub(crate) fn dashboard_login(
 	pool: crate::database::native::Pool,
+	node: &str,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(pool)
+	crate::apps::identity::repositories::dashboard::Login(pool, node.into())
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(

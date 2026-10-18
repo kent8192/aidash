@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
+import {
+  registryVersion,
+  routeRegistryVersions,
+  tenantSubject,
+} from "./registry-fixture";
 
 const ids = Array.from(
   { length: 8 },
@@ -59,15 +64,18 @@ for (const locale of ["en-US", "ja-JP"]) {
   test(`registry labels use names while submitting IDs in ${locale}`, async ({
     page,
   }) => {
-    const { errors } = await setup(page);
+    const { errors } = await setup(page, { subject: true });
     await page.addInitScript(
       (locale) => localStorage.setItem("aidash-locale", locale),
       locale,
     );
+    await routeRegistryVersions(page, () =>
+      registry.map((entry) => registryVersion(entry)),
+    );
     await page.route("**/api/state", (route) =>
       route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node: {
             id: "aidash://home",
             endpoint: "http://localhost",
@@ -196,7 +204,7 @@ for (const locale of ["en-US", "ja-JP"]) {
 test("embedding registration defaults to full-dimensional Gemini through OpenRouter", async ({
   page,
 }) => {
-  const { errors } = await setup(page);
+  const { errors } = await setup(page, { subject: true });
   let submitted: Record<string, unknown> | undefined;
   await page.route("**/api/registry", async (route) => {
     submitted = route.request().postDataJSON();

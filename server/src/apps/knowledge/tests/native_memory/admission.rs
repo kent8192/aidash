@@ -147,15 +147,41 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 			.unwrap(),
 		);
 	}
-	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	let mut provider = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	provider.id = "small-graph".into();
 	provider.config["policy"]["bounds"]["max_graph_visits"] = json!(1);
-	registry.register(provider).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			provider,
+		)
+		.await
+		.unwrap();
 	let result = if participant {
-		let mut agent = registry.get("a", "1.0.0").await.unwrap();
+		let mut agent = registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"a",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
 		agent.version = "1.1.0".into();
 		replace_memory_binding(&mut agent, reference("small-graph"));
-		registry.register(agent).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				agent,
+			)
+			.await
+			.unwrap();
 		memory::upgrade_participant(
 			&store,
 			&Actor::DeploymentAdministrator,

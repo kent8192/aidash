@@ -101,6 +101,21 @@ impl GenerationControlScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
+	async fn decide_catalog(&mut self, job: &Request) -> aidash_application::Result<bool> {
+		let Mode::Subject(access) = &mut self.mode else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let entry: crate::registry::Entry = serde_json::from_value(job.definition.clone())?;
+		let resource = access.resource(
+			"registry",
+			format!("{}/{}@{}", entry.kind, entry.id, entry.version),
+			aidash_application::authorization::catalog::attributes(&entry),
+		);
+		access
+			.decide(&resource, "catalog.approve")
+			.await
+			.map_err(Into::into)
+	}
 	async fn finish(
 		self: Box<Self>,
 		result: aidash_application::Result<Request>,

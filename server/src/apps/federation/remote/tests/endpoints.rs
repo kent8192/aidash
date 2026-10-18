@@ -1,34 +1,26 @@
-use crate::endpoint::{assert_json, endpoint, subject};
+use crate::endpoint::{assert_json, endpoint};
 use rstest::rstest;
 use serde_json::json;
 use uuid::Uuid;
 
 #[rstest]
 #[tokio::test]
-async fn remote_control_checks_deployment_administrator_and_peer_before_external_io(
+async fn deployment_administrators_delegate_no_tasks_of_their_own(
 	endpoint: crate::endpoint::EndpointFuture,
-	#[from(crate::endpoint::anonymous_client)]
-	#[with(endpoint.clone())]
-	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let alice = subject(&app, "alice", _credential_client_0.await).await;
-	let command = json!({"node_id":"aidash://missing-peer","control":{"run_id":Uuid::new_v4(),"action":"pause"}});
+	let path = format!("/api/tasks/{}/delegate", Uuid::new_v4());
+	let input =
+		json!({"node_id":"aidash://missing-peer","agent":{"id":"research","version":"1.0.0"}});
 	// Act
-	let anonymous = app
-		.anonymous
-		.post("/api/remote", &command, "json")
-		.await
-		.unwrap();
-	let denied = alice.post("/api/remote", &command, "json").await.unwrap();
-	let missing_peer = app
+	let anonymous = app.anonymous.post(&path, &input, "json").await.unwrap();
+	let deployment_administrator = app
 		.deployment_administrator
-		.post("/api/remote", &command, "json")
+		.post(&path, &input, "json")
 		.await
 		.unwrap();
-	// Assert
+	// Assert: tasks belong to Tenants, so the Deployment Administrator is refused before any lookup (ADR 0043).
 	assert_json(anonymous, 401);
-	assert_json(denied, 403);
-	assert_json(missing_peer, 401);
+	assert_json(deployment_administrator, 403);
 }

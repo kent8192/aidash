@@ -144,8 +144,8 @@ impl ProfileRepository for Repository {
 			profile("partial", true, json!([rule(), foreign])),
 		])
 	}
-	async fn definition(&self, entry: &EntityRef) -> Result<Entry> {
-		assert_eq!(*entry, reference("tool"));
+	async fn definition(&self, tenant: &str, entry: &EntityRef) -> Result<Entry> {
+		assert_eq!((tenant, entry), ("tenant", &reference("tool")));
 		self.state.lock().unwrap().calls.push("definition");
 		Ok(tool())
 	}

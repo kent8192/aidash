@@ -8,6 +8,7 @@ use aidash_domain::{
 	registry::AgentConfig,
 	semantic::{
 		Failure, Source, VectorFilter,
+		degraded::OutageCause,
 		indexing::{IndexingSpec, content_digest},
 		mutations::{Entry, Index},
 		results::{Match, SearchResult},
@@ -33,8 +34,18 @@ impl PreparedSearch {
             .collect::<Vec<_>>()))
 	}
 	pub async fn check_points(&self, vector: &dyn VectorIndex) -> Result<()> {
+		if !self.points_present(vector).await? {
+			// Indexed points the entries still require are missing from the
+			// vector backend: an outage of that backend, retried by a Run.
+			return Err(Error::RemoteSemantic(Failure::Unavailable));
+		}
+		Ok(())
+	}
+	/// Whether the vector backend holds every point the allowed entries need.
+	/// A backend that cannot answer is `Unavailable`.
+	async fn points_present(&self, vector: &dyn VectorIndex) -> Result<bool> {
 		if self.allowed.is_empty() {
-			return Ok(());
+			return Ok(true);
 		}
 		let Self {
 			allowed,
@@ -42,7 +53,7 @@ impl PreparedSearch {
 			index,
 			..
 		} = self;
-		if !vector
+		vector
 			.present(
 				&spec.vector,
 				&index.collection,
@@ -50,13 +61,7 @@ impl PreparedSearch {
 				&allowed.keys().copied().collect::<Vec<_>>(),
 			)
 			.await
-			.map_err(vector_outage)?
-		{
-			// Indexed points the entries still require are missing from the
-			// vector backend: an outage of that backend, retried by a Run.
-			return Err(Error::RemoteSemantic(Failure::Unavailable));
-		}
-		Ok(())
+			.map_err(vector_outage)
 	}
 }
 /// An unreachable or failing vector backend is a transient outage that a Run
@@ -264,15 +269,62 @@ pub async fn search(
 	run: Option<Uuid>,
 	controls: Option<&AgentConfig>,
 ) -> Result<SearchResult> {
+	search_or_outage(scope, vector, workspace, input, run, controls)
+		.await?
+		.map_err(|_| Error::RemoteSemantic(Failure::Unavailable))
+}
+
+/// Search, returning an outage that waiting can fix as its cause instead of an
+/// error (ADR 0059). Missing vector points stay an `Unavailable` error: the
+/// index needs repair, so they never degrade.
+async fn search_or_outage(
+	scope: &mut dyn SemanticRetrievalSession,
+	vector: &dyn VectorIndex,
+	workspace: Uuid,
+	input: &Search,
+	run: Option<Uuid>,
+	controls: Option<&AgentConfig>,
+) -> Result<std::result::Result<SearchResult, OutageCause>> {
+	let outage = |error: &Error| matches!(error, Error::RemoteSemantic(Failure::Unavailable));
 	let prepared = prepare(scope, workspace, input, controls).await?;
 	if prepared.allowed.is_empty() {
-		return Ok(prepared.result);
+		return Ok(Ok(prepared.result));
 	}
-	prepared.check_points(vector).await?;
-	let embedding = scope
+	match prepared.points_present(vector).await {
+		Ok(true) => {}
+		Ok(false) => return Err(Error::RemoteSemantic(Failure::Unavailable)),
+		Err(error) if outage(&error) => return Ok(Err(OutageCause::VectorBackend)),
+		Err(error) => return Err(error),
+	}
+	let embedding = match scope
 		.embed(workspace, &prepared.spec.embedding, &input.query, run)
-		.await?;
-	finish(vector, scope, prepared, &embedding, false).await
+		.await
+	{
+		Err(error) if outage(&error) => return Ok(Err(OutageCause::EmbeddingProvider)),
+		embedding => embedding?,
+	};
+	match finish(vector, scope, prepared, &embedding, false).await {
+		Err(error) if outage(&error) => Ok(Err(OutageCause::VectorBackend)),
+		result => result.map(Ok),
+	}
+}
+
+/// The workspace slot of an Agent's semantic context.
+#[derive(Debug)]
+pub enum WorkspaceContext {
+	Retrieved(Option<SearchResult>),
+	/// Retrieval failed with an outage that waiting can fix. The caller pauses
+	/// unless the slot may degrade (ADR 0059).
+	Unavailable(OutageCause),
+}
+impl WorkspaceContext {
+	/// The result, or the `Unavailable` error a Run retries and then pauses on.
+	pub fn required(self) -> Result<Option<SearchResult>> {
+		match self {
+			Self::Retrieved(result) => Ok(result),
+			Self::Unavailable(_) => Err(Error::RemoteSemantic(Failure::Unavailable)),
+		}
+	}
 }
 
 pub async fn context(
@@ -283,18 +335,31 @@ pub async fn context(
 	budget: usize,
 	agent: &AgentConfig,
 ) -> Result<Option<SearchResult>> {
+	workspace_context(scope, vector, run, query, budget, agent)
+		.await?
+		.required()
+}
+
+pub async fn workspace_context(
+	scope: &mut dyn SemanticRetrievalSession,
+	vector: &dyn VectorIndex,
+	run: &aidash_domain::Run,
+	query: &str,
+	budget: usize,
+	agent: &AgentConfig,
+) -> Result<WorkspaceContext> {
 	// A native provider opts into its own Bank retrieval. Ordinary workspace
 	// indexing remains available only through an explicit workspace Source.
 	if (!agent.semantic_memory || agent.memory.is_some()) && !agent.workspace_context {
-		return Ok(None);
+		return Ok(WorkspaceContext::Retrieved(None));
 	}
 	let configured = scope.configured(run.workspace_id).await?;
 	let Some(configured) = configured else {
-		return Ok(None);
+		return Ok(WorkspaceContext::Retrieved(None));
 	};
 	let spec = configured.configuration()?;
 	if !spec.enabled || !spec.auto_context {
-		return Ok(None);
+		return Ok(WorkspaceContext::Retrieved(None));
 	}
 	let minimum = SearchResult {
 		workspace_id: run.workspace_id,
@@ -306,7 +371,7 @@ pub async fn context(
 		truncated: false,
 	};
 	if budget.min(spec.max_result_tokens) < result_tokens(&minimum)? {
-		return Ok(None);
+		return Ok(WorkspaceContext::Retrieved(None));
 	}
 	let mut query = query.to_owned();
 	if query.len() > spec.max_input_bytes {
@@ -316,7 +381,7 @@ pub async fn context(
 		}
 		query.truncate(end);
 	}
-	search(
+	let result = search_or_outage(
 		scope,
 		vector,
 		run.workspace_id,
@@ -334,8 +399,11 @@ pub async fn context(
 		Some(run.id),
 		Some(agent),
 	)
-	.await
-	.map(Some)
+	.await?;
+	Ok(match result {
+		Ok(result) => WorkspaceContext::Retrieved(Some(result)),
+		Err(cause) => WorkspaceContext::Unavailable(cause),
+	})
 }
 
 #[cfg(test)]

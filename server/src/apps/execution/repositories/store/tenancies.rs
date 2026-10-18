@@ -19,8 +19,6 @@ pub(crate) struct Tenancies {
 	runs: Ids<TenantName>,
 	workspaces: Ids<TenantName>,
 	grants: Ids<TenantName>,
-	/// A task's Workspace, which never changes either.
-	task_workspaces: Ids<Uuid>,
 }
 
 impl Tenancies {
@@ -41,12 +39,6 @@ impl Tenancies {
 	}
 	pub(crate) fn remember_grant(&self, id: Uuid, tenant: TenantName) {
 		self.grants.insert(id, tenant);
-	}
-	pub(crate) fn task_workspace(&self, id: Uuid) -> Option<Uuid> {
-		self.task_workspaces.get(id)
-	}
-	pub(crate) fn remember_task_workspace(&self, id: Uuid, workspace: Uuid) {
-		self.task_workspaces.insert(id, workspace);
 	}
 }
 

@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { Alert } from "../components/patterns";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Circle, Pause, Play } from "lucide-react";
-import { runControl, remoteAction } from "../generated/aidash";
+import { runControl } from "../generated/aidash";
 import type { Task, Workspace, State, Discovery } from "../types";
 import type { Selection } from "./details";
 import { Badge, useI18n, useAgentLabel } from "../ui";
@@ -19,11 +19,13 @@ import {
   type LocatedRun,
 } from "./workspace-model";
 
-/** Pause or resume every live run of this channel, local or on a peer. */
+/** Pause or resume every live run of this channel on this node; each node controls its own runs. */
 export function useRunControl(runs: LocatedRun[], localNode: string) {
   const { locale } = useI18n();
   const words = workspaceCopy[locale];
-  const active = runs.filter((item) => !terminalRun(item.run));
+  const active = runs.filter(
+    (item) => item.node === localNode && !terminalRun(item.run),
+  );
   const paused =
     active.length > 0 && active.every((item) => item.run.control === "PAUSED");
   const [busy, setBusy] = useState(false);
@@ -36,7 +38,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
     setBusy(true);
     setError("");
     let failed = false;
-    for (const { run, node } of active) {
+    for (const { run } of active) {
       if (
         (!paused && run.control === "PAUSED") ||
         (paused && !resumableRun(run))
@@ -44,12 +46,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
         continue;
       try {
         const action = paused ? "resume" : "pause";
-        if (node === localNode) await runControl(run.id, { action });
-        else
-          await remoteAction({
-            node_id: node,
-            control: { run_id: run.id, action },
-          });
+        await runControl(run.id, { action });
       } catch {
         failed = true;
       }
