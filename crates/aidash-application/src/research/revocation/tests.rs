@@ -154,8 +154,12 @@ async fn a_permitted_subject_revokes_and_workers_are_woken() {
 #[tokio::test]
 async fn revocation_is_irreversible_and_keeps_its_first_record() {
 	let runs = Runs::new(subject(), true);
-	let first = revoke(&runs, runs.run, "first", None, Utc::now()).await.unwrap();
-	let second = revoke(&runs, runs.run, "second", None, Utc::now()).await.unwrap();
+	let first = revoke(&runs, runs.run, "first", None, Utc::now())
+		.await
+		.unwrap();
+	let second = revoke(&runs, runs.run, "second", None, Utc::now())
+		.await
+		.unwrap();
 	assert_eq!(second, first);
 	assert_eq!(second.reason, "first");
 }

@@ -38,11 +38,7 @@ pub async fn revocation(
 	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
 	Path(id): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		service
-			.research_revocation_record(actor, browser, id)
-			.await,
-	)
+	crate::http::json(service.research_revocation_record(actor, browser, id).await)
 }
 
 /// The Tenant's Evidence Revocation records, newest first.

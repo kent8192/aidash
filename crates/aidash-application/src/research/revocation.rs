@@ -138,7 +138,10 @@ pub async fn standing(repository: &dyn RevocationRepository, run: Uuid) -> Resul
 /// One Run's revocation record, for the audience of its Tenant's records. A
 /// Run whose evidence was not revoked, or whose Tenant is not the subject's,
 /// has none.
-pub async fn record(repository: &dyn RevocationRepository, run: Uuid) -> Result<EvidenceRevocation> {
+pub async fn record(
+	repository: &dyn RevocationRepository,
+	run: Uuid,
+) -> Result<EvidenceRevocation> {
 	let mut scope = repository.begin_records().await?;
 	let result = async {
 		let own = match scope.decider() {

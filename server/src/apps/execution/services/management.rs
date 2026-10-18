@@ -442,12 +442,11 @@ impl HarnessManagement {
 			actor,
 			administrator,
 		};
-		let can_read_revocations =
-			aidash_application::research::revocation::may_read_records(
-				&revocations,
-				&retention.tenant,
-			)
-			.await?;
+		let can_read_revocations = aidash_application::research::revocation::may_read_records(
+			&revocations,
+			&retention.tenant,
+		)
+		.await?;
 		Ok(TenantRetentionView {
 			retention,
 			can_update,
@@ -882,8 +881,7 @@ impl HarnessManagement {
 			actor: &actor,
 			administrator: None,
 		};
-		let standing =
-			aidash_application::research::revocation::standing(&revocations, id).await?;
+		let standing = aidash_application::research::revocation::standing(&revocations, id).await?;
 		// The research reads are separate transactions: authority revoked
 		// meanwhile withholds them, as for a cited fragment.
 		readable().await?;
