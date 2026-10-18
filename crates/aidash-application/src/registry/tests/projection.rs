@@ -259,6 +259,28 @@ fn model_definitions_admit_explicit_cache_mode_only_for_allowlisted_slugs(
 	}
 }
 
+/// A Token Encoding is named from the closed list and never checked against
+/// the slug, which Keyless endpoints choose freely (ADR 0017).
+#[rstest]
+#[case::bytes(json!("bytes"), true)]
+#[case::calibrated(json!("calibrated"), true)]
+#[case::o200k_base(json!({"tokenized": "o200k_base"}), true)]
+#[case::encoding_unrelated_to_the_slug(json!({"tokenized": "gemma4"}), true)]
+#[case::unlisted_encoding(json!({"tokenized": "cl100k_base"}), false)]
+#[case::no_encoding(json!("tokenized"), false)]
+#[case::exact(json!("exact"), false)]
+fn model_definitions_name_only_listed_token_encodings(
+	validation: DefinitionValidation,
+	#[case] estimator: Value,
+	#[case] accepted: bool,
+) {
+	let mut config = cache_model("openai/gpt-fixture", None);
+	config["request_estimator"] = estimator;
+	let model = definition("model", "model", config);
+	let result = validation.validate_in(&model, false);
+	assert_eq!(result.is_ok(), accepted, "{result:?}");
+}
+
 #[rstest]
 fn definitions_without_cache_fields_keep_their_bytes() {
 	let model: ModelConfig = serde_json::from_str(LEGACY_MODEL).unwrap();

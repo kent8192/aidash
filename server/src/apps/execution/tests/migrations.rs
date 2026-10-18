@@ -39,6 +39,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0028_tool_transport_secrets"),
 	("registry", "0029_completion_policy"),
 	("registry", "0030_plan_connection_models"),
+	("registry", "0031_model_request_estimator"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -313,14 +314,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0035_policy_probe")
+		.get_migration("execution", "0036_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0034_run_semantic_retry_cycle".to_owned()
+			"0035_run_semantic_retry_cycle".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());

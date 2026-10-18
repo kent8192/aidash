@@ -401,7 +401,7 @@ impl ModelRequest {
 	}
 
 	/// The Request Estimate under this request's Estimate Snapshot. It is
-	/// never above the byte estimate and never a provider tokenizer count.
+	/// never above the byte estimate and never the provider's own count.
 	/// Completion tokens and framing are reserved in the same unit at every gate.
 	pub fn estimated_total_tokens(&self) -> usize {
 		self.estimate.tokens(&self.byte_estimate())
@@ -433,11 +433,19 @@ impl ModelRequest {
 		} else {
 			0
 		};
+		// A tokenized snapshot counts the same body, so the count covers
+		// exactly the text the byte basis measures (ADR 0017).
+		let tokenized = self
+			.estimate
+			.encoding()
+			.and_then(|encoding| encoding.count_body(&body))
+			.map(|tokens| tokens.saturating_add(salt));
 		estimate::ByteEstimate {
 			basis: body.to_string().len().saturating_add(salt),
 			media: Self::media_tokens(parts),
 			output: self.max_output_tokens as usize,
 			framing: estimate::FRAMING_RESERVE,
+			tokenized,
 		}
 	}
 
