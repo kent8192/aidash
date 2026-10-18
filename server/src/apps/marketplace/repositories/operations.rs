@@ -138,7 +138,7 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 			reference,
 			expected_revision,
 			enabled,
-			"deployment_administrator",
+			&aidash_application::marketplace::operations::actor(&self.principal),
 		)
 		.await
 		.map(|_| ())
