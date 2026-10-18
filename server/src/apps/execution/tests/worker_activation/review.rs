@@ -182,7 +182,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		"PAUSED".into(),
 	]);
 	sqlx::query(&insert.to_string(PostgresQueryBuilder))
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert!(
@@ -200,7 +200,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 				.from(a("run_activations"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		panic!("publication did not reach the broker: {obligations:?}");
@@ -214,7 +214,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 			.lock_behavior(reinhardt::query::LockBehavior::Nowait)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.control_pool.driver())
+	.fetch_one(f.store.control_pool.fixture_driver())
 	.await;
 	release.notify_one();
 	stop.send_replace(true);
@@ -325,7 +325,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 				.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(task.id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -352,7 +352,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(
@@ -369,7 +369,7 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(dependency)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(
@@ -438,7 +438,7 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 			.and_where(Expr::col(a("id")).eq(Expr::value(invalid)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let healthy = admit(&f, &token, fresh_task(&f, &token).await).await;
@@ -532,7 +532,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	};
@@ -556,7 +556,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 				.and_where(Expr::col(a("id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	} else {
@@ -574,7 +574,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 				.and_where(Expr::col(a("id")).eq(Expr::value(area)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		// Reserve zero for the predecessor before inserting it below.
@@ -586,7 +586,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		if blocker == "ordering" {
@@ -598,7 +598,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 					.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			sqlx::query(
@@ -613,7 +613,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 					])
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			predecessor = Some(previous);
@@ -650,13 +650,13 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 		.to_string(PostgresQueryBuilder);
 	let epoch: i64 = sqlx::query_scalar(&epoch_query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	tokio::time::sleep(Duration::from_secs(1)).await;
 	assert_eq!(
 		sqlx::query_scalar::<_, i64>(&epoch_query)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap(),
 		epoch,
@@ -684,7 +684,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 				.and_where(Expr::col(a("id")).eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		complete(&f, run).await;
@@ -712,7 +712,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(due.timestamp_micros(), deadline.timestamp_micros());
@@ -776,7 +776,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.and_where(Expr::col(a("id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert!(
@@ -875,7 +875,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(invocations, 0);

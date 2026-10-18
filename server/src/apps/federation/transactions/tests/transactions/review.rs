@@ -176,7 +176,7 @@ async fn audit_count(f: &aidash_server::federation::Federation) -> i64 {
 			.from(Alias::new("authorization_decisions"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -281,7 +281,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let old_pool = f.store.control_pool.clone();
@@ -381,7 +381,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.control_pool.driver())
+		.execute(f.store.control_pool.fixture_driver())
 		.await
 	}
 	.unwrap();

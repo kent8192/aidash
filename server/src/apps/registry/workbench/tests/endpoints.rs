@@ -53,11 +53,15 @@ async fn draft_create_save_and_stale_write_preserve_owner_and_revision(
 		loaded["entry"]["config"]["instructions"],
 		"Updated instructions"
 	);
-	let persisted = AgentDraft::objects()
-		.filter(AgentDraft::field_id().eq(id))
-		.get_with_db(&mut app.database.lease.handle())
-		.await
-		.unwrap();
+	let persisted = app
+		.database
+		.fixture(async |tx| {
+			Ok(AgentDraft::objects()
+				.filter(AgentDraft::field_id().eq(id))
+				.get_with_db(tx)
+				.await?)
+		})
+		.await;
 	assert_eq!(persisted.revision, 2);
 }
 
@@ -106,11 +110,15 @@ async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
 			.unwrap(),
 		400,
 	);
-	let saved = AgentTestLimit::objects()
-		.filter(AgentTestLimit::field_tenant().eq("endpoint"))
-		.get_with_db(&mut app.database.lease.handle())
-		.await
-		.unwrap();
+	let saved = app
+		.database
+		.fixture(async |tx| {
+			Ok(AgentTestLimit::objects()
+				.filter(AgentTestLimit::field_tenant().eq("endpoint"))
+				.get_with_db(tx)
+				.await?)
+		})
+		.await;
 	assert_eq!(saved.max_input_bytes, 4096);
 	assert_eq!(saved.max_steps, 4);
 	assert_eq!(saved.max_concurrent, 1);

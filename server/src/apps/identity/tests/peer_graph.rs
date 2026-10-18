@@ -98,7 +98,7 @@ async fn add_peer(f: &aidash_server::federation::Federation, node: &str) {
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -277,7 +277,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -303,7 +303,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -326,7 +326,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let (status, after_other_tenant) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
@@ -361,7 +361,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		]);
 	}
 	sqlx::query(&tasks.to_string(PostgresQueryBuilder))
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let mut runs = Query::insert();
@@ -391,7 +391,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		]);
 	}
 	sqlx::query(&runs.to_string(PostgresQueryBuilder))
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let mut options = json!({"kinds":["task","run","agent"],"relations":["executes"],"limit":80});
@@ -723,7 +723,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(f.store.control_pool.driver())
+	.execute(f.store.control_pool.fixture_driver())
 	.await
 	.unwrap();
 	{
@@ -740,7 +740,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.control_pool.driver())
+		.execute(f.store.control_pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -768,7 +768,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.control_pool.driver())
+		.execute(f.store.control_pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -870,11 +870,11 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			]);
 		}
 		sqlx::query(&workspaces.to_string(PostgresQueryBuilder))
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		sqlx::query(&authorities.to_string(PostgresQueryBuilder))
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -896,7 +896,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -922,7 +922,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -950,7 +950,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		]);
 	}
 	sqlx::query(&events.to_string(PostgresQueryBuilder))
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let viewer = json!({"kind":"subject","tenant":"source-tenant","subject":"sparse-subject"});

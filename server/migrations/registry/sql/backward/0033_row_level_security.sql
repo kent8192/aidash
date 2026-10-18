@@ -1,0 +1,15 @@
+DROP POLICY tenant_isolation ON public.agent_test_sessions;
+ALTER TABLE public.agent_test_sessions NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_test_sessions DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.agent_test_profiles;
+ALTER TABLE public.agent_test_profiles NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_test_profiles DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.agent_test_limits;
+ALTER TABLE public.agent_test_limits NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_test_limits DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.agent_incidents;
+ALTER TABLE public.agent_incidents NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_incidents DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.agent_drafts;
+ALTER TABLE public.agent_drafts NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_drafts DISABLE ROW LEVEL SECURITY;

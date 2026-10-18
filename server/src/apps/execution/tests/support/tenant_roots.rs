@@ -47,13 +47,13 @@ pub async fn tenant_scope(
 	store: &aidash_server::store::Store,
 	name: &str,
 ) -> aidash_application::tenancy::TenancyScope {
-	tenant_root_in(store.pool.driver(), name).await;
+	tenant_root_in(store.pool.fixture_driver(), name).await;
 	let tenant = aidash_domain::tenancy::TenantName::new(name).unwrap();
 	let scope = aidash_application::tenancy::TenancyScope::Tenant(tenant.clone());
 	let written: bool =
 		sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_bundles WHERE tenant = $1)")
 			.bind(name)
-			.fetch_one(store.pool.driver())
+			.fetch_one(store.pool.fixture_driver())
 			.await
 			.unwrap();
 	if written {
@@ -147,7 +147,7 @@ pub async fn remote_run(
 		.bind(agent_id)
 		.bind(agent_version)
 		.bind(serde_json::json!(aidash_server::context::Context::default()))
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 		.expect("the admitted remote Run is written");
 	store

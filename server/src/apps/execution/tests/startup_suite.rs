@@ -14,6 +14,8 @@ mod manage;
 mod native_database;
 #[path = "offering.rs"]
 mod offering;
+#[path = "row_level_security.rs"]
+mod row_level_security;
 #[path = "tenancy.rs"]
 mod tenancy;
 #[path = "support/tenant_roots.rs"]
