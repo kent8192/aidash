@@ -41,10 +41,13 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0030_plan_connection_models"),
 	("registry", "0031_model_request_estimator"),
 	("registry", "0032_degraded_context"),
-	("registry", "0033_decider_kind"),
-	("registry", "0034_decider_kind_state"),
+	("registry", "0033_row_level_security"),
+	("registry", "0034_research_view"),
+	("registry", "0035_decider_kind"),
+	("registry", "0036_decider_kind_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
+	("marketplace", "0010_row_level_security"),
 ];
 
 async fn history_size() -> usize {
@@ -81,7 +84,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0032_memory_attempt_retry_cycle");
+	assert_eq!(knowledge[0].name, "0033_row_level_security");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -93,7 +96,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		35
+		38
 	);
 	let tables = migrations
 		.iter()
@@ -150,6 +153,20 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 					assert_eq!(
 						sql.trim(),
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
+					);
+				} else if sql.starts_with("ALTER TABLE")
+					&& migration.name.ends_with("_row_level_security")
+				{
+					// Reinhardt has no row-level security operations (#6770). The
+					// database::policy unit tests compare these assets with the
+					// rendered template.
+					assert!(
+						sql.contains(&format!(
+							"CREATE POLICY {} ON",
+							aidash_server::database::policy::POLICY
+						)),
+						"{}: {sql}",
+						migration.name
 					);
 				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
@@ -317,14 +334,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0038_policy_probe")
+		.get_migration("execution", "0043_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0037_decision_evidence_v3_state".to_owned()
+			"0042_decision_evidence_v3_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -594,7 +611,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		35
+		38
 	);
 }
 
@@ -1152,14 +1169,14 @@ async fn subsequent_native_migrations_can_rollback_to_the_complete_baseline(
 		fixture
 			.directory
 			.path()
-			.join("migrations/marketplace/0010_reversible_probe.rs"),
+			.join("migrations/marketplace/0011_reversible_probe.rs"),
 		r#"
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 use reinhardt::db::migrations::FieldType;
 pub(super) fn migration() -> Migration {
-    Migration::new("0010_reversible_probe", "marketplace")
-        .add_dependency("marketplace", "0009_remove_compatibility_gate_state")
+    Migration::new("0011_reversible_probe", "marketplace")
+        .add_dependency("marketplace", "0010_row_level_security")
         .add_operation(Operation::CreateTable {
             name: "rollback_probe".to_string(),
             columns: vec![ColumnDefinition::new("id", FieldType::Integer).with_primary_key(true)],
@@ -1172,13 +1189,9 @@ pub(super) fn migration() -> Migration {
 	fixture.migrate().await;
 	let extended = recorded_keys(&fixture.connection).await;
 	assert_eq!(extended.len(), before.len() + 1);
-	assert!(extended.contains(&("marketplace".into(), "0010_reversible_probe".into())));
+	assert!(extended.contains(&("marketplace".into(), "0011_reversible_probe".into())));
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
-	command.args([
-		"migrate",
-		"marketplace",
-		"0009_remove_compatibility_gate_state",
-	]);
+	command.args(["migrate", "marketplace", "0010_row_level_security"]);
 	// Act
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
 		.await

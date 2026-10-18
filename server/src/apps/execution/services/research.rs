@@ -11,19 +11,19 @@ use crate::{
 use aidash_application::{
 	capabilities::approvals::DisclosureRequest,
 	ports::research::{
-		DisclosureGate, DisclosureState, PageProvider, SearchProvider, WebDisclosure,
+		DisclosureGate, DisclosureState, PageProvider, PageRenderer, SearchProvider, WebDisclosure,
 	},
 	research::{Call, Research},
 };
 use aidash_domain::{
-	research::{Operation, evidence::Limits},
+	research::{Failure, Operation, account::AccountTerms, evidence::Limits, failure},
 	tool::{
 		ToolContract,
 		providers::{ToolDescriptor, research_contract, research_operation},
 	},
 };
 use aidash_integrations::research::{
-	brave::BraveSearch, fixture::FixtureResearch, page::PageReader,
+	brave::BraveSearch, fixture::FixtureResearch, page::PageReader, pdf::ChildEngine,
 };
 use async_trait::async_trait;
 use reinhardt::conf::settings::profile::Profile;
@@ -36,7 +36,12 @@ use uuid::Uuid;
 pub struct Providers {
 	brave: std::result::Result<Arc<BraveSearch>, String>,
 	pages: Option<Arc<PageReader>>,
+	/// Renders pages of PDFs that page reading retained, in a bounded child.
+	renderer: Option<Arc<ChildEngine>>,
 	fixture: Option<Arc<FixtureResearch>>,
+	/// The Research account terms this Deployment declares, whether or not
+	/// their provider can be dispatched; the account-terms sweep applies them.
+	accounts: Vec<AccountTerms>,
 	pub limits: Limits,
 }
 
@@ -46,7 +51,9 @@ impl Default for Providers {
 		Self {
 			brave: Err("is not configured".into()),
 			pages: None,
+			renderer: None,
 			fixture: None,
+			accounts: Vec::new(),
 			limits: Limits::default(),
 		}
 	}
@@ -57,6 +64,11 @@ impl Providers {
 	/// is not set leaves Brave not set up rather than refusing to start.
 	pub fn from_settings(settings: &ResearchProviderSettings) -> Self {
 		Self {
+			accounts: settings
+				.brave
+				.iter()
+				.map(|brave| brave.account.clone())
+				.collect(),
 			brave: settings
 				.brave
 				.as_ref()
@@ -65,11 +77,22 @@ impl Providers {
 			pages: settings
 				.page_reading
 				.then(|| Arc::new(PageReader::default())),
+			// A binary that cannot name itself fails each render instead.
+			renderer: settings.page_reading.then(|| {
+				Arc::new(ChildEngine::new(
+					std::env::current_exe().unwrap_or_else(|_| "aidash".into()),
+				))
+			}),
 			fixture: settings
 				.fixture
 				.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
 		}
+	}
+
+	/// The Research account terms this Deployment declares (ADR 0058).
+	pub fn account_terms(&self) -> &[AccountTerms] {
+		&self.accounts
 	}
 
 	/// Whether `descriptor` names a research provider this Node can dispatch.
@@ -161,6 +184,24 @@ impl Providers {
 				.fixture
 				.clone()
 				.map(|fixture| fixture as Arc<dyn PageProvider>)
+				.ok_or_else(|| unavailable(provider)),
+			_ => Err(unavailable(provider)),
+		}
+	}
+}
+
+impl Providers {
+	fn renderer(&self, provider: &str) -> Result<Arc<dyn PageRenderer>> {
+		match provider {
+			"research.page@1" => self
+				.renderer
+				.clone()
+				.map(|renderer| renderer as Arc<dyn PageRenderer>)
+				.ok_or_else(|| unavailable(provider)),
+			"research.fixture@1" => self
+				.fixture
+				.clone()
+				.map(|fixture| fixture as Arc<dyn PageRenderer>)
 				.ok_or_else(|| unavailable(provider)),
 			_ => Err(unavailable(provider)),
 		}
@@ -323,6 +364,22 @@ impl Tool for ResearchTool {
 					.await
 			}
 			Operation::Find => research.find(&call, &input).await,
+			Operation::View => {
+				// A viewed page reaches the model as a PNG image (ADR 0053); a
+				// model without a current route for it would never see the
+				// page the view records and counts.
+				if !run
+					.context
+					.binding_snapshot
+					.as_ref()
+					.is_some_and(|snapshot| snapshot.model_reads_page_images())
+				{
+					return Ok(failure(Operation::View, Failure::ImageInputRequired));
+				}
+				research
+					.view(&call, providers.renderer(&self.provider)?.as_ref(), &input)
+					.await
+			}
 		};
 		result.map_err(Into::into)
 	}
@@ -333,4 +390,15 @@ impl Tool for ResearchTool {
 pub async fn sweep_retention(store: &crate::store::Store) -> crate::Result<u64> {
 	use crate::apps::execution::repositories::research::retention;
 	Ok(retention::sweep(store, &store.research_retention).await?)
+}
+
+/// One pass of the Provider results sweep in Deployment Scope under `terms`,
+/// as the hourly retention loop runs it under the account terms this
+/// Deployment declares (ADR 0058). Returns how many attempts were purged.
+pub async fn sweep_account_terms(
+	store: &crate::store::Store,
+	terms: &[AccountTerms],
+) -> crate::Result<u64> {
+	use crate::apps::execution::repositories::research::account_terms;
+	Ok(account_terms::sweep(store, terms).await?)
 }

@@ -24,10 +24,10 @@ The Sandboxed tools (shell, code, package installs, outbound requests, patches a
 | `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                                        |
 | `file_share`       | `aidash.bundle.file_share`       | `file_share`                                                         |
 | `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                                         |
-| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`                                   |
-| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`                      |
+| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`                           |
+| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view`              |
 
-Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch` and `research_find` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
+Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
 
 A Tenant subject with `catalog.approve` approves a group by approving its bundle and every member in one `POST /api/authorization/{tenant}/catalog/approvals` request; a bundle's approval is refused while a member is unapproved. `task_assign` only starts a generation inside Aidash, so it is an ordinary built-in.
 
@@ -386,12 +386,53 @@ unscoped offer path that carried `delegations.binding_snapshot` is removed
 
 ## Workbench test connections
 
-External HTTP/MCP test connections require a Deployment Administrator-owned profile whose
-`read_only_verified` field is true. Set it only after independently checking the
-exact connection's supported operations and read-only contract. A publisher's
-`transport.replay` claim does not establish this guarantee. Unattested external
-calls require fixtures. Binding digests, the admitted draft, test profile and
-current permissions are rechecked at every test step.
+External HTTP test connections require a Test Profile of the Tenant whose
+`read_only_verified` field is true. A subject of the Tenant writes it with
+`PUT /api/workbench/test-profiles/{tenant}/{id}` under
+`workbench.test_profile.update`; a Deployment Administrator may write any
+Tenant's. `read_only_verified` is the writer's own claim: set it only after
+independently checking the exact connection's supported operations and
+read-only contract. A publisher's `transport.replay` claim does not establish
+this guarantee. Unattested external calls require fixtures. Binding digests,
+the admitted draft, test profile and current permissions are rechecked at
+every test step.
+
+A profile rule names no credential. Rules no longer accept `credential_env`,
+because a Deployment secret never reaches an endpoint a Tenant chooses
+(ADR 0051); Tenant Secrets for test endpoints come with #296. A test endpoint
+is the Tenant's choice, so it reaches public addresses only: an address
+literal outside them is refused when the profile is written, and every
+connection resolves the host and pins public addresses. An origin listed in
+`[keyless_endpoints] permitted_private_origins` is the exception, and may also
+use plain HTTP; otherwise test endpoints require HTTPS. Loopback endpoints
+are no longer accepted without that listing.
+
+## Workbench Test Limits
+
+Each Tenant sets its own Test Limits under `workbench.test_limits.update`:
+`GET /api/workbench/test-limits/{tenant}` returns `limits`, as the Tenant set
+them, and the Deployment's `ceilings`. `PUT` on the same path sends the limits
+back with the `revision` they were read at; another write in between answers
+409, and the response carries the new revision. A value above a ceiling is
+refused. Whoever runs the Deployment sets the ceilings in
+`[workbench_test_limits]`:
+
+| Setting                  | Default | Bounds                               |
+| ------------------------ | ------- | ------------------------------------ |
+| `max_input_bytes`        | 1000000 | Test input bytes                     |
+| `max_output_tokens`      | 8192    | Output tokens per model call         |
+| `max_total_tokens`       | 1000000 | Tokens across the test               |
+| `max_steps`              | 64      | Model steps                          |
+| `max_duration_secs`      | 900     | Seconds per test                     |
+| `max_concurrent`         | 32      | Tests running at once for one Tenant |
+| `payload_days`           | 365     | Days a test payload is kept          |
+| `incident_evidence_days` | 3650    | Days incident evidence is kept       |
+
+The defaults are the largest values a Tenant may set at all, so a Deployment
+that sets nothing leaves its Tenants the full range. Lowering a ceiling also
+lowers values a Tenant already set, from the next test on; the stored values
+stay as they were. When billing Tiers arrive (#242), the stricter of the Tier
+and the ceiling applies.
 
 ## Drained fleet rollout and rollback
 

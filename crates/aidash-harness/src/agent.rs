@@ -3,7 +3,7 @@ use aidash_application::{Error, Result, execution::*, ports::execution::*};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
-	media::Selection,
+	media::ModelMedia,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
 	provider::estimate::{EstimateSnapshot, RequestEstimator},
@@ -203,7 +203,9 @@ impl<'a> Executor<'a> {
 						Err(error) => return Err(error),
 					},
 				};
-				store
+				// The stored result replaces a research result whose account
+				// terms ended meanwhile (ADR 0058).
+				let output = store
 					.invocation_finish(admitted, token, key, &output)
 					.await?;
 				Ok((offset, output))
@@ -778,6 +780,27 @@ impl<'a> Executor<'a> {
 		)
 		.await
 	}
+	/// Provider results the Research account terms no longer keep never reach
+	/// a model provider again (ADR 0058). Each research result built from one
+	/// becomes the expired placeholder, keeping its call's arguments, and an
+	/// Execution Summary that absorbed one is discarded and its range
+	/// restored from the Context Journal, without pausing. A revoked Run's
+	/// results are placeholders already.
+	async fn apply_research_expiry(&self, run: &mut Run) -> Result<()> {
+		use aidash_application::research::{account_terms, revocation};
+		if run.context.research_revoked || !revocation::may_carry_research(&run.context) {
+			return Ok(());
+		}
+		let store = self.environment.store();
+		let expired = store.expired_research(run).await?;
+		account_terms::expire_projection(
+			&mut run.context,
+			&expired,
+			&revocation::RunJournal { store, run: run.id },
+		)
+		.await?;
+		Ok(())
+	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
 	async fn ordered_skill_context(
@@ -1047,6 +1070,7 @@ impl<'a> Executor<'a> {
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
 				self.apply_research_revocation(run).await?;
+				self.apply_research_expiry(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
@@ -2578,12 +2602,9 @@ impl<'a> Executor<'a> {
 						Err(e) => return Err(e),
 					}
 				};
-				if contract.behavior.model_media_result(&call.arguments, &output)
+				if let Some(selection) =
+					contract.behavior.model_media_selection(&call.arguments, &output)
 				{
-					let selection: Selection =
-						serde_json::from_value(
-							json!({"file_id":call.arguments["file_id"],"expected_digest":call.arguments["expected_digest"]}),
-						)?;
 					let mut selected = run.state.tool()?.selected_media.clone();
 					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {
@@ -2654,9 +2675,13 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-				if invocation.status != "COMPLETED" {
-					store.invocation_finish(run, token, &key, &output).await?;
-				}
+				// The stored result replaces a research result whose account
+				// terms ended meanwhile (ADR 0058).
+				let output = if invocation.status != "COMPLETED" {
+					store.invocation_finish(run, token, &key, &output).await?
+				} else {
+					output
+				};
 				// Load/Unload results are staged with the same save that records
 				// them and take effect with the next inference.
 				if contract.behavior.exposure_update
@@ -2986,7 +3011,7 @@ async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
 	_run: &Run,
 	guard: Option<&dyn ExecutionAuthority>,
-	selections: &[Selection],
+	selections: &[ModelMedia],
 	messages: &[(i64, Uuid, usize)],
 	headroom: usize,
 	model: &ModelConfig,

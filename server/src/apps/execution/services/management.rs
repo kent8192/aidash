@@ -32,7 +32,7 @@ use crate::apps::workspaces::serializers::management::MessageInput;
 
 use crate::apps::execution::repositories::research::Revocations;
 use crate::apps::execution::serializers::research::{
-	HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
+	HistoryPage, RetentionInput, RevocationInput, RevocationRecord, TenantRetentionView,
 };
 use crate::apps::identity::repositories::retention::TenantRetention;
 use crate::apps::identity::services::http_auth::scoped;
@@ -262,8 +262,14 @@ impl HarnessManagement {
 		.await?;
 		Ok(Response::ok().with_json(&state)?)
 	}
-	pub(crate) async fn openrouter_models(&self) -> Result<Vec<crate::openrouter::CatalogModel>> {
-		Ok(self.catalog.models().await?)
+	/// The OpenRouter catalog for model definitions, which any member may
+	/// read, from one process-wide copy (#362).
+	pub(crate) async fn openrouter_models(
+		&self,
+	) -> Result<aidash_domain::catalog::CatalogSnapshot> {
+		static CATALOG: aidash_application::catalog::CatalogCache =
+			aidash_application::catalog::CatalogCache::new();
+		Ok(CATALOG.get(self.catalog.as_ref(), chrono::Utc::now).await?)
 	}
 	pub(crate) async fn task_claim(
 		&self,
@@ -338,14 +344,38 @@ impl HarnessManagement {
 			actor: &actor,
 			administrator: administrator(&actor, browser),
 		};
+		if let Some(tenant) = &input.tenant {
+			aidash_domain::policy::identifier(tenant)?;
+		}
 		Ok(aidash_application::research::revocation::revoke(
 			&revocations,
 			run,
 			&input.reason,
+			input.tenant.as_deref(),
 			chrono::Utc::now(),
 		)
 		.await?
 		.into())
+	}
+	/// The revocation record of one Run, for the audience of its Tenant's
+	/// records.
+	pub(crate) async fn research_revocation_record(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		run: Uuid,
+	) -> Result<RevocationRecord> {
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor: &actor,
+			administrator: administrator(&actor, browser),
+		};
+		Ok(
+			aidash_application::research::revocation::record(&revocations, run)
+				.await?
+				.into(),
+		)
 	}
 	/// One Tenant's Evidence Revocation records, newest first.
 	pub(crate) async fn research_revocations(
@@ -379,10 +409,51 @@ impl HarnessManagement {
 		actor: Actor,
 		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		tenant: String,
-	) -> Result<aidash_application::retention::TenantRetention> {
+	) -> Result<TenantRetentionView> {
 		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor, browser)?;
-		Ok(aidash_application::retention::rules(&repository, &tenant).await?)
+		let administrator = administrator(&actor, browser);
+		let repository = self.retention_repository(&actor, administrator)?;
+		let retention = aidash_application::retention::rules(&repository, &tenant).await?;
+		self.retention_view(&actor, administrator, retention).await
+	}
+	/// What the caller may do about one Tenant's periods and its revocation
+	/// records, beside the periods themselves.
+	async fn retention_view(
+		&self,
+		actor: &Actor,
+		administrator: Option<Uuid>,
+		retention: aidash_application::retention::TenantRetention,
+	) -> Result<TenantRetentionView> {
+		let repository = self.retention_repository(actor, administrator)?;
+		let can_update =
+			aidash_application::retention::may_update(&repository, &retention.tenant).await?;
+		let can_read_revocations = self
+			.may_read_revocations(actor, administrator, &retention.tenant)
+			.await?;
+		Ok(TenantRetentionView {
+			retention,
+			can_update,
+			// The same permission changes the periods and reads their history.
+			can_read_history: can_update,
+			can_read_revocations,
+		})
+	}
+	async fn may_read_revocations(
+		&self,
+		actor: &Actor,
+		administrator: Option<Uuid>,
+		tenant: &str,
+	) -> Result<bool> {
+		let f = self.runtime.clone();
+		let revocations = Revocations {
+			federation: &f,
+			actor,
+			administrator,
+		};
+		Ok(
+			aidash_application::research::revocation::may_read_records(&revocations, tenant)
+				.await?,
+		)
 	}
 	/// Store or clear one Tenant's own, shorter periods.
 	pub(crate) async fn retention_update(
@@ -391,10 +462,25 @@ impl HarnessManagement {
 		browser: Option<crate::dashboard_auth::BrowserOrigin>,
 		tenant: String,
 		input: RetentionInput,
-	) -> Result<aidash_application::retention::TenantRetention> {
+	) -> Result<TenantRetentionView> {
 		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor, browser)?;
-		Ok(aidash_application::retention::update(&repository, &tenant, input.rules).await?)
+		let administrator = administrator(&actor, browser);
+		let repository = self.retention_repository(&actor, administrator)?;
+		// Nothing fallible may follow the commit, or a committed change would
+		// answer as an error and a retry would record it twice. The flags
+		// are therefore read first; the update itself proves the caller may
+		// update the periods and read their history.
+		let can_read_revocations = self
+			.may_read_revocations(&actor, administrator, &tenant)
+			.await?;
+		let retention =
+			aidash_application::retention::update(&repository, &tenant, input.rules).await?;
+		Ok(TenantRetentionView {
+			retention,
+			can_update: true,
+			can_read_history: true,
+			can_read_revocations,
+		})
 	}
 	/// The history of one Tenant's periods, newest first.
 	pub(crate) async fn retention_history(
@@ -405,7 +491,7 @@ impl HarnessManagement {
 		page: HistoryPage,
 	) -> Result<Vec<aidash_domain::retention::RetentionChange>> {
 		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor, browser)?;
+		let repository = self.retention_repository(&actor, administrator(&actor, browser))?;
 		Ok(
 			aidash_application::retention::history(&repository, &tenant, page.offset, page.limit)
 				.await?,
@@ -414,12 +500,12 @@ impl HarnessManagement {
 	fn retention_repository<'a>(
 		&'a self,
 		actor: &'a Actor,
-		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		administrator: Option<Uuid>,
 	) -> Result<TenantRetention<'a>> {
 		Ok(TenantRetention {
 			store: &self.runtime.store,
 			actor,
-			administrator: administrator(actor, browser),
+			administrator,
 			deployment: self.runtime.store.research_retention,
 		})
 	}
@@ -771,10 +857,21 @@ impl HarnessManagement {
 			crate::research::providers().limits,
 		)
 		.await?;
+		let revocations = Revocations {
+			federation: &f,
+			actor: &actor,
+			administrator: None,
+		};
+		let standing = aidash_application::research::revocation::standing(&revocations, id).await?;
 		// The research reads are separate transactions: authority revoked
 		// meanwhile withholds them, as for a cited fragment.
 		readable().await?;
-		Ok(research)
+		Ok(crate::apps::execution::serializers::runs::RunResearch {
+			revoked_at: standing.revoked_at,
+			can_revoke: standing.may_revoke,
+			can_read_revocation: standing.may_read_record,
+			..research
+		})
 	}
 	/// The Research providers of this Deployment for a Tenant's subject.
 	pub(crate) async fn research_providers(

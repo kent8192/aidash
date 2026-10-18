@@ -59,6 +59,7 @@ use crate::apps::identity::serializers::settings::DashboardSettings;
 use crate::apps::identity::serializers::tenancy_settings::TenancySettings;
 use crate::apps::operations::serializers::deployment::DeploymentSettings;
 use crate::apps::operations::serializers::settings::KubernetesSettings;
+use crate::apps::registry::workbench::serializers::test_limit_ceilings::WorkbenchTestLimitSettings;
 use reinhardt::conf::settings::PendingSettings;
 use reinhardt::conf::settings::builder::{BuildError, SettingsBuilder};
 use reinhardt::conf::settings::profile::Profile;
@@ -68,7 +69,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | deployment: DeploymentSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | workbench_test_limits: WorkbenchTestLimitSettings | deployment: DeploymentSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -177,6 +178,7 @@ fn file_settings_builder(
                 .with_value("plan_connections", serde_json::json!({}))
                 .with_value("research_providers", serde_json::json!({}))
                 .with_value("research_retention", serde_json::json!({}))
+                .with_value("workbench_test_limits", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({}))
                 .with_value("deployment", serde_json::json!({})),
         )

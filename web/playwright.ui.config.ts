@@ -16,6 +16,7 @@ export default defineConfig({
     "inference-progress.spec.ts",
     "core-capabilities.spec.ts",
     "web-research.spec.ts",
+    "research-evidence-governance.spec.ts",
     "mesh-graph.spec.ts",
     "federated-graph.spec.ts",
     "agent-graph.spec.ts",

@@ -136,7 +136,7 @@ async fn policy(fixture: &EndpointFixture, tenant: &str) -> Value {
 async fn count(fixture: &EndpointFixture, sql: &str, tenant: &str) -> i64 {
 	sqlx::query_scalar::<_, i64>(sql)
 		.bind(tenant)
-		.fetch_one(fixture.runtime.store.pool.driver())
+		.fetch_one(fixture.runtime.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }

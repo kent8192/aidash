@@ -1,4 +1,5 @@
 //! Mapping statements retain policy-before-credential locks, revision fences and control-pool revocation.
+use crate::apps::identity::models::TenantAdministrator;
 use crate::apps::identity::serializers::peer::PeerMapping;
 use crate::{
 	Result as NativeResult,
@@ -16,14 +17,20 @@ use reinhardt::query::{
 	Alias, Expr, LockType, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	SimpleExpr,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub runtime: &'a Federation,
+	/// The Tenant Administrator writing through its Mapping; none for a
+	/// Deployment Administrator.
+	pub administrator: Option<Arc<TenantAdministrator>>,
 }
 pub(crate) struct WriteScope {
 	tx: crate::database::native::Transaction,
 	_visibility: Option<crate::transactions::gate::ReadLease>,
+	administrator: Option<Arc<TenantAdministrator>>,
+	actor: String,
 }
 pub(crate) struct AccessScope {
 	pub access: Box<Access>,
@@ -34,13 +41,6 @@ impl MappingRepository for Repository<'_> {
 	type Access = AccessScope;
 	fn node_id(&self) -> &str {
 		&self.runtime.config.node_id
-	}
-	async fn enabled_peer(&self, node: &str) -> Result<()> {
-		self.runtime
-			.peer(node)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
 	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<WriteScope> {
 		let result: NativeResult<WriteScope> = async {
@@ -60,6 +60,13 @@ impl MappingRepository for Repository<'_> {
 			Ok(WriteScope {
 				tx,
 				_visibility: visibility,
+				actor: self
+					.administrator
+					.as_ref()
+					.map_or("deployment_administrator".to_owned(), |administrator| {
+						format!("oidc:{}", administrator.identity_id)
+					}),
+				administrator: self.administrator.clone(),
 			})
 		}
 		.await;
@@ -190,6 +197,73 @@ impl MappingWrite for WriteScope {
 		.await;
 		result.map_err(Into::into)
 	}
+	/// A Tenant Administrator sets a Peer Mapping under `peer_mapping.update`,
+	/// and enables one only to a credential it could issue itself now.
+	async fn authorize(
+		&mut self,
+		tenant: &str,
+		input: &PeerMappingInput,
+		subject: &str,
+	) -> Result<()> {
+		let Some(administrator) = self.administrator.clone() else {
+			return Ok(());
+		};
+		let result: NativeResult<()> = async {
+			let snapshot = administrator.lock(&mut self.tx, false).await?;
+			administrator
+				.require(
+					&mut self.tx,
+					&snapshot,
+					aidash_domain::identity::tenant_administration::PEER_MAPPING_UPDATE,
+					&format!(
+						"{}/{}/{}",
+						input.source_node, input.source_tenant, input.source_subject
+					),
+					json!({"source_node": input.source_node, "subject": subject, "tenant": tenant}),
+				)
+				.await?;
+			if input.enabled {
+				administrator
+					.require_issuable(&mut self.tx, &snapshot, subject)
+					.await?;
+			}
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	/// A mapped peer acts with an exportable credential only: never a
+	/// Mapping's own, and never one a member issued for itself, which would
+	/// let someone outside the Deployment act as that person.
+	async fn enabled_peer(&mut self, node: &str) -> Result<()> {
+		crate::apps::federation::peer::models::Peer::enabled_in(&mut self.tx, node)
+			.await?
+			.map(|_| ())
+			.ok_or(aidash_application::Error::Unauthorized)
+	}
+	async fn exportable(&mut self, tenant: &str, id: Uuid) -> Result<()> {
+		let exportable: Option<i32> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("1"))
+				.from(Alias::new("authorization_credentials"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(tenant = ? AND id = ? AND issued_by <> 'dashboard-oidc' AND mapping_id IS NULL)"
+						.to_owned(),
+					vec![
+						Expr::value(tenant.to_owned()).into(),
+						Expr::value(id).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.tx)
+		.await
+		.map_err(aidash_application::Error::from)?;
+		if exportable.is_none() {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(())
+	}
 	async fn lock_credential(&mut self, tenant: &str, id: Uuid, subject: &str) -> Result<()> {
 		let identity = SubjectIdentity {
 			http_session: None,
@@ -252,7 +326,10 @@ impl MappingWrite for WriteScope {
 									vec![Expr::value(query_bind_6.to_owned()).into()],
 								))
 								.expr(Expr::cust("1"))
-								.expr(Expr::cust("'deployment_administrator'"))
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(self.actor.clone()).into()],
+								))
 								.to_owned(),
 						)
 						.on_conflict(
@@ -281,7 +358,7 @@ impl MappingWrite for WriteScope {
 		result.map(|row| row.map(Into::into)).map_err(Into::into)
 	}
 	async fn update(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>> {
-		let result:NativeResult<Option<PeerMapping>>=async {Ok({ let query_bind_1 = &input.source_node; let query_bind_2 = &input.source_tenant; let query_bind_3 = &input.source_subject; let query_bind_4 = tenant; let query_bind_5 = input.credential_id; let query_bind_6 = input.enabled; let query_bind_7 = input.expected_revision; crate::database::native::query_as(&Query::update().table(Alias::new("authorization_peer_mappings")).value_expr(Alias::new("credential_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("enabled"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("actor"), Expr::cust("'deployment_administrator'")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(source_node = ? AND source_tenant = ? AND source_subject = ? AND tenant = ? AND revision = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut *self.tx).await? })}.await;
+		let result:NativeResult<Option<PeerMapping>>=async {Ok({ let query_bind_1 = &input.source_node; let query_bind_2 = &input.source_tenant; let query_bind_3 = &input.source_subject; let query_bind_4 = tenant; let query_bind_5 = input.credential_id; let query_bind_6 = input.enabled; let query_bind_7 = input.expected_revision; crate::database::native::query_as(&Query::update().table(Alias::new("authorization_peer_mappings")).value_expr(Alias::new("credential_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("enabled"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("actor"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(self.actor.clone()).into()])).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(source_node = ? AND source_tenant = ? AND source_subject = ? AND tenant = ? AND revision = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut *self.tx).await? })}.await;
 		result.map(|row| row.map(Into::into)).map_err(Into::into)
 	}
 	async fn history(&mut self, mapping: &Mapping) -> Result<()> {
@@ -337,7 +414,10 @@ impl MappingWrite for WriteScope {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_7.to_owned()).into()],
 								))
-								.expr(Expr::cust("'deployment_administrator'"))
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(self.actor.clone()).into()],
+								))
 								.to_owned(),
 						)
 						.to_string(PostgresQueryBuilder),

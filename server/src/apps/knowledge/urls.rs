@@ -31,7 +31,7 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::provenance::run_receipt)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(entries::configure)
-			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(entries::index)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(entries::put)
@@ -47,6 +47,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(entries::history)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(entries::cleanup)
-			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 	})
 }

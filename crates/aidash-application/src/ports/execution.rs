@@ -2,7 +2,6 @@
 //! lease/revision fences, transaction-scoped authority, audit, and outbox writes.
 use crate::{Result, ports::ModelProvider};
 use aidash_domain::{
-	media::Selection,
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
@@ -144,6 +143,14 @@ pub trait ExecutionStore: Send + Sync {
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
 		Ok(false)
 	}
+	/// The Run's Provider results purged under the Research account terms
+	/// (ADR 0058). A store without research evidence has none.
+	async fn expired_research(
+		&self,
+		_run: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		Ok(Default::default())
+	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -203,13 +210,16 @@ pub trait ExecutionStore: Send + Sync {
 		token: Uuid,
 		calls: &[BatchInvocation<'_>],
 	) -> Result<Vec<InvocationOutcome>>;
+	/// Records `output` and returns the result as stored, which the caller
+	/// carries on: an expired research result's tombstone when its account
+	/// terms ended meanwhile (ADR 0058).
 	async fn invocation_finish(
 		&self,
 		run: &Run,
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()>;
+	) -> Result<Value>;
 	async fn reconciliation_request(
 		&self,
 		run: &mut Run,
@@ -391,7 +401,10 @@ pub trait ExecutionAuthority: Send + Sync {
 		contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()>;
 	async fn human_read(&self, id: Uuid) -> Result<()>;
-	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>>;
+	async fn model_media(
+		&self,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>>;
 	async fn human_message_media(
 		&self,
 		messages: &[(i64, Uuid, usize)],

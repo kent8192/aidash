@@ -25,17 +25,36 @@ fn set(values: &[&str]) -> BTreeSet<String> {
 #[rstest]
 fn approval_cannot_hand_out_an_existing_subject(bundle: PolicyBundle) {
 	assert!(matches!(
-		approval_target(&bundle, "root", false, &set(&[])),
+		approval_target(&bundle, "root", false, &set(&[]), false),
 		Err(Error::Conflict(_))
 	));
 	assert_eq!(
-		approval_target(&bundle, "root", true, &set(&[])).unwrap(),
+		approval_target(&bundle, "root", true, &set(&[]), false).unwrap(),
 		ApprovalTarget::Reapproval
 	);
 	assert!(matches!(
-		approval_target(&bundle, "root", true, &set(&["members"])),
+		approval_target(&bundle, "root", true, &set(&["members"]), false),
 		Err(Error::Invalid(_))
 	));
+}
+
+#[rstest]
+fn a_member_who_left_rejoins_with_only_the_invitations_groups(mut bundle: PolicyBundle) {
+	assert_eq!(
+		approval_target(&bundle, "root", true, &set(&[]), true).unwrap(),
+		ApprovalTarget::Rejoin
+	);
+	assert!(matches!(
+		approval_target(&bundle, "root", true, &set(&["administrators"]), true),
+		Err(Error::Invalid(_))
+	));
+	rejoin(&mut bundle, "root", &set(&[])).unwrap();
+	assert_eq!(bundle.subjects["root"].groups, set(&["administrators"]));
+	rejoin(&mut bundle, "root", &set(&["members"])).unwrap();
+	assert_eq!(
+		bundle.subjects["root"].groups,
+		set(&["administrators", "members"])
+	);
 }
 
 #[rstest]

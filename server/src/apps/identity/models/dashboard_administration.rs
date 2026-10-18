@@ -382,11 +382,15 @@ impl DashboardRegistrationRequest {
 							Expr::col(Alias::new("tenant"))
 								.eq(reinhardt::query::Expr::value(input.tenant.clone())),
 						)
-						.lock(if input.groups.is_some() {
-							LockType::Update
-						} else {
-							LockType::Share
-						})
+						// An invited person who was mapped before may rejoin,
+						// which rewrites the policy too.
+						.lock(
+							if input.groups.is_some() || preliminary.invitation_id.is_some() {
+								LockType::Update
+							} else {
+								LockType::Share
+							},
+						)
 						.build(PostgresQueryBuilder);
 					let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
 						.await?
@@ -400,6 +404,12 @@ impl DashboardRegistrationRequest {
 					}
 				}
 			};
+			// Nobody joins a deleted Tenant, a Deployment Administrator included.
+			if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &input.tenant)
+				.await?
+			{
+				return Err(Error::TenantDeleted);
+			}
 			let identity = DashboardIdentity::objects()
 				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
 				.select_for_update()
@@ -461,6 +471,7 @@ impl DashboardRegistrationRequest {
 					snapshot.revision,
 					serde_json::to_value(&snapshot.bundle)?,
 					"deployment_administrator",
+					None,
 				)
 				.await?;
 			}
@@ -470,6 +481,12 @@ impl DashboardRegistrationRequest {
 				&identity.gcip_tenant,
 				&input.tenant,
 			)?;
+			let previously_mapped = DashboardMapping::objects()
+				.filter(DashboardMapping::field_identity_id().eq(identity.id))
+				.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+				.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+				.exists_with_db(tx)
+				.await?;
 			if let Some(administrator) = administrator {
 				if !snapshot.bundle.subjects.contains_key(&input.subject)
 					&& DashboardMapping::objects()
@@ -480,26 +497,60 @@ impl DashboardRegistrationRequest {
 				{
 					return Err(Error::Conflict("subject was previously assigned".into()));
 				}
-				let previously_mapped = DashboardMapping::objects()
-					.filter(DashboardMapping::field_identity_id().eq(identity.id))
-					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
-					.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
-					.exists_with_db(tx)
-					.await?;
-				if tenant_administration::approval_target(
+				match tenant_administration::approval_target(
 					&snapshot.bundle,
 					&input.subject,
 					previously_mapped,
 					&groups,
-				)? == tenant_administration::ApprovalTarget::NewSubject
-				{
-					tenant_administration::add_user_subject(
-						&mut snapshot.bundle,
-						&input.subject,
-						&groups,
-					)?;
-					snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
+					registration.invitation_id.is_some(),
+				)? {
+					tenant_administration::ApprovalTarget::NewSubject => {
+						tenant_administration::add_user_subject(
+							&mut snapshot.bundle,
+							&input.subject,
+							&groups,
+						)?;
+						snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
+					}
+					tenant_administration::ApprovalTarget::Rejoin => {
+						tenant_administration::rejoin(
+							&mut snapshot.bundle,
+							&input.subject,
+							&groups,
+						)?;
+						snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
+					}
+					tenant_administration::ApprovalTarget::Reapproval => {}
 				}
+			} else if let Some(invitation) = registration.invitation_id
+				&& previously_mapped
+				&& snapshot.bundle.subjects.contains_key(&input.subject)
+			{
+				// An invited person who left rejoins with the groups the
+				// approval names, or else the Invitation proposed, as with a
+				// Tenant Administrator; the old Assignable Groups do not return.
+				let rejoining = match &input.groups {
+					Some(groups) => groups.clone(),
+					None => TenantInvitation::objects()
+						.filter(TenantInvitation::field_id().eq(invitation))
+						.all_with_db(tx)
+						.await?
+						.pop()
+						.map(|invitation| {
+							crate::apps::identity::repositories::invitations::proposed(&invitation)
+						})
+						.unwrap_or_default(),
+				};
+				tenant_administration::rejoin(&mut snapshot.bundle, &input.subject, &rejoining)?;
+				snapshot.revision = AuthorizationBundle::replace(
+					tx,
+					&input.tenant,
+					snapshot.revision,
+					serde_json::to_value(&snapshot.bundle)?,
+					"deployment_administrator",
+					None,
+				)
+				.await?;
 			}
 			dashboard_rules::require_user_mapping(&snapshot, &input.subject)?;
 			crate::apps::identity::repositories::plan_connections::refuse_shared_holder(
@@ -519,6 +570,7 @@ impl DashboardRegistrationRequest {
 				.expires_at(now + Duration::days(3650))
 				.revoked_at(None)
 				.issued_by("dashboard-oidc".to_owned())
+				.mapping_id(None)
 				.finish();
 			AuthorizationCredential::objects()
 				.create_with_conn(tx, &credential)
@@ -1092,56 +1144,80 @@ impl DashboardMapping {
 				.await?
 				.pop()
 				.ok_or_else(|| Error::Conflict("mapping revision changed".into()))?;
-			// Execution leases always lock the credential before the mapping.
-			let mut credential = AuthorizationCredential::objects()
-				.filter(AuthorizationCredential::field_id().eq(mapping.credential_id()))
-				.select_for_update()
-				.all_with_executor(tx)
+			mapping
+				.disable_in(tx, tenant_administration::MAPPING_DISABLE, actor)
 				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or_else(|| Error::NotFound("credential".into()))?;
-			let assignments: Vec<FieldAssignment> = vec![
-				(Self::field_enabled(), false).into(),
-				(
-					Self::field_revision(),
-					dashboard_rules::next_revision(revision)?,
-				)
-					.into(),
-			];
-			let changed = Self::objects()
-				.filter(Self::field_id().eq(id))
-				.filter(Self::field_enabled().eq(true))
-				.filter(Self::field_revision().eq(revision))
-				.filter(Self::field_credential_id().eq(credential.id))
-				.update_fields_with_conn(tx, assignments)
-				.await?;
-			if changed != 1 {
-				return Err(Error::Conflict("mapping revision changed".into()));
-			}
-			if credential.revoked_at.is_none() {
-				credential.revoked_at = Some(database_time(tx).await?);
-				AuthorizationCredential::objects()
-					.update_with_conn(tx, &credential)
-					.await?;
-			}
-			actor
-				.record(
-					tx,
-					AdministrationEvent {
-						action: tenant_administration::MAPPING_DISABLE,
-						identity: Some(mapping.identity_id()),
-						registration: None,
-						mapping: Some(id),
-						tenant: Some(&mapping.tenant),
-						subject: Some(&mapping.subject),
-						invitation: None,
-					},
-				)
-				.await?;
-			Ok(())
 		})
 		.await
+	}
+
+	/// Disables this enabled Mapping, revokes its credential and records
+	/// `action`, in the caller's transaction, which has checked the authority.
+	pub(crate) async fn disable_in(
+		self,
+		tx: &mut AtomicTransaction,
+		action: &str,
+		actor: &AdministrationActor,
+	) -> Result<()> {
+		let (id, revision) = (self.id, self.revision);
+		// Execution leases always lock the credential before the mapping.
+		let credential = AuthorizationCredential::objects()
+			.filter(AuthorizationCredential::field_id().eq(self.credential_id()))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or_else(|| Error::NotFound("credential".into()))?;
+		// The credentials a member issued for itself end with this Mapping
+		// (ADR 0063); they are locked before the Mapping, like its own.
+		let issued = AuthorizationCredential::objects()
+			.filter(AuthorizationCredential::field_mapping_id().eq(Some(id)))
+			.filter(AuthorizationCredential::field_revoked_at().is_null())
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?;
+		let assignments: Vec<FieldAssignment> = vec![
+			(Self::field_enabled(), false).into(),
+			(
+				Self::field_revision(),
+				dashboard_rules::next_revision(revision)?,
+			)
+				.into(),
+		];
+		let changed = Self::objects()
+			.filter(Self::field_id().eq(id))
+			.filter(Self::field_enabled().eq(true))
+			.filter(Self::field_revision().eq(revision))
+			.filter(Self::field_credential_id().eq(credential.id))
+			.update_fields_with_conn(tx, assignments)
+			.await?;
+		if changed != 1 {
+			return Err(Error::Conflict("mapping revision changed".into()));
+		}
+		let revoked_at = database_time(tx).await?;
+		let own = credential.revoked_at.is_none().then_some(credential);
+		for mut credential in own.into_iter().chain(issued) {
+			credential.revoked_at = Some(revoked_at);
+			AuthorizationCredential::objects()
+				.update_with_conn(tx, &credential)
+				.await?;
+		}
+		actor
+			.record(
+				tx,
+				AdministrationEvent {
+					action,
+					identity: Some(self.identity_id()),
+					registration: None,
+					mapping: Some(id),
+					tenant: Some(&self.tenant),
+					subject: Some(&self.subject),
+					invitation: None,
+				},
+			)
+			.await
 	}
 }
 

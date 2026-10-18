@@ -115,6 +115,8 @@ async fn research_fixture(
 			.await
 			.unwrap();
 	let members: Vec<Value> = bundle.config["members"].as_array().unwrap().clone();
+	// search, fetch, find and view.
+	assert_eq!(members.len(), 4, "{members:?}");
 	let approvals: Vec<Value> = std::iter::once(json!({"id":bundle.id,"version":bundle.version}))
 		.chain(
 			members
@@ -267,7 +269,7 @@ impl Research {
 					.limit(5)
 					.to_string(PostgresQueryBuilder);
 				let denied: Vec<String> = sqlx::query_scalar(&sql)
-					.fetch_all(self.c.f.store.pool.driver())
+					.fetch_all(self.c.f.store.pool.fixture_driver())
 					.await
 					.unwrap_or_default();
 				panic!("run failed: error={:?} denied={denied:?}", run.error);
@@ -293,7 +295,7 @@ impl Research {
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query_scalar(&sql)
-			.fetch_one(self.c.f.store.pool.driver())
+			.fetch_one(self.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap()
 	}
@@ -737,7 +739,7 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(grant_id)))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&sql)
-			.execute(r.c.f.store.pool.driver())
+			.execute(r.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -794,7 +796,7 @@ async fn a_disclosure_whose_run_ended_is_closed_in_every_view(
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&sql)
-			.execute(r.c.f.store.pool.driver())
+			.execute(r.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -940,7 +942,7 @@ impl Research {
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query_scalar(&sql)
-			.fetch_all(self.c.f.store.pool.driver())
+			.fetch_all(self.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap()
 	}
@@ -1120,3 +1122,5 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 
 #[path = "web_research/retention.rs"]
 mod retention;
+#[path = "web_research/view.rs"]
+mod view;

@@ -91,6 +91,7 @@ import {
   SESSION_CHANGED,
   type CreatedTenant,
 } from "./tenancy";
+import { DeletedTenants, type DeletedTenant } from "./tenant-deletion";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
 // Move any discovery email handoff out of sessionStorage immediately.
@@ -157,6 +158,10 @@ type BrowserSession = {
     personal?: boolean;
     credential_active?: boolean;
   }[];
+  /** Deleted Tenants this identity is mapped into; not in `mappings`. */
+  deleted_tenants?: DeletedTenant[];
+  /** Whether this identity's Personal Tenant is deleted and it may start a new one. */
+  personal_tenant_deleted?: boolean;
 };
 type Registration = { status: string; expires_at: string } | null;
 function sessionContext(session: BrowserSession, selected: string | null) {
@@ -303,6 +308,10 @@ function Dashboard({
     session.data?.access.kind === "deployment_administrator";
   const subjectTenant =
     session.data?.access.kind === "subject" ? session.data.access.tenant : null;
+  const subjectName =
+    session.data?.access.kind === "subject"
+      ? session.data.access.subject
+      : null;
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -698,6 +707,12 @@ function Dashboard({
                 )}
               </div>
             )}
+            <DeletedTenants
+              tenants={browserSession.deleted_tenants ?? []}
+              personalTenantDeleted={
+                browserSession.personal_tenant_deleted ?? false
+              }
+            />
             {(browserSession.tenant_creation ||
               browserSession.deployment_administrator) && (
               <CreateTenantForm
@@ -867,6 +882,9 @@ function Dashboard({
             deploymentAdministratorAllowed:
               browserSession?.deployment_administrator ?? false,
             personalAccount: browserSession?.personal_account ?? false,
+            deletedTenants: browserSession?.deleted_tenants ?? [],
+            personalTenantDeleted:
+              browserSession?.personal_tenant_deleted ?? false,
             tenantCreation:
               (browserSession?.tenant_creation ?? false) ||
               (context === "deployment_administrator" &&
@@ -1020,7 +1038,9 @@ function Dashboard({
                         deploymentAdministrator={deploymentAdministrator}
                         invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}
+                        subject={subjectName}
                         initiallyOpen={route.integration === "authorization"}
+                        evidenceOpen={route.integration === "evidence"}
                       />
                     )
                   }
@@ -1051,7 +1071,9 @@ function Dashboard({
                 deploymentAdministrator={deploymentAdministrator}
                 invitations={browserSession?.invitations ?? false}
                 tenant={subjectTenant}
+                subject={subjectName}
                 initiallyOpen={route.integration === "authorization"}
+                evidenceOpen={route.integration === "evidence"}
               />
             </div>
           )}

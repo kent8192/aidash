@@ -1,4 +1,6 @@
-//! Confined real-tool profiles contain credential references, never credential values.
+//! Confined real-tool profiles a Tenant writes for its own test endpoints.
+//! They carry no credential: a Deployment secret never reaches a Tenant's
+//! endpoint, and Tenant Secrets for test endpoints come with #296.
 use crate::registry::EntityRef;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -7,14 +9,13 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RealToolRule {
-	/// Deployment Administrator attestation for the confined test endpoint; never a publisher replay claim.
+	/// The profile writer's own claim that the test endpoint is read-only;
+	/// never a publisher replay claim.
 	#[serde(default)]
 	pub read_only_verified: bool,
 	pub tool: EntityRef,
 	/// A test endpoint, distinct from the immutable production Tool endpoint.
 	pub endpoint: String,
-	/// Environment variable name only. The secret value is never returned.
-	pub credential_env: Option<String>,
 	pub allowed_actions: Vec<String>,
 	pub allowed_resources: Vec<String>,
 }

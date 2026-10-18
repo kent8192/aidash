@@ -361,6 +361,16 @@ impl TenantAdministrator {
 			.await
 	}
 
+	/// [`Self::lock`] for restoring this administrator's deleted Tenant.
+	pub(crate) async fn lock_deleted(&self, tx: &mut dyn TransactionExecutor) -> Result<Snapshot> {
+		self.identity.lock_deleted(tx, Some(&self.policy)).await
+	}
+
+	/// The GCIP Tenant bound to this Tenant, if it has a Tenant Binding.
+	pub(crate) fn bound_pool(&self) -> Option<&str> {
+		self.pool.as_deref()
+	}
+
 	fn evaluation(&self, action: &str, id: &str, attributes: Value) -> Evaluation {
 		Evaluation {
 			subject: self.identity.subject.clone(),
@@ -441,6 +451,7 @@ impl TenantAdministrator {
 			snapshot.revision,
 			serde_json::to_value(&snapshot.bundle)?,
 			&self.revision_actor(),
+			Some(self.mapping_id),
 		)
 		.await
 	}
@@ -475,17 +486,23 @@ impl TenantAdministrator {
 				}
 			}
 			let tenant = self.tenant().to_owned();
+			for action in [
+				aidash_domain::identity::tenancy::TENANT_UPDATE,
+				aidash_domain::identity::tenancy::TENANT_DELETE,
+			] {
+				if self
+					.allowed(tx, &snapshot, action, &tenant, json!({}))
+					.await?
+				{
+					actions.push(action.to_owned());
+				}
+			}
+			let own = self.identity.subject.clone();
 			if self
-				.allowed(
-					tx,
-					&snapshot,
-					aidash_domain::identity::tenancy::TENANT_UPDATE,
-					&tenant,
-					json!({}),
-				)
+				.allowed(tx, &snapshot, rules::CREDENTIAL_CREATE, &own, json!({}))
 				.await?
 			{
-				actions.push(aidash_domain::identity::tenancy::TENANT_UPDATE.to_owned());
+				actions.push(rules::CREDENTIAL_CREATE.to_owned());
 			}
 			let label = super::Tenant::objects()
 				.filter(super::Tenant::field_name().eq(tenant))
@@ -724,3 +741,7 @@ impl TenantAdministrator {
 		.await
 	}
 }
+
+mod credentials;
+mod peer_mappings;
+mod policy;

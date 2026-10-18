@@ -112,6 +112,7 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 			self.access.snapshot.revision,
 			serde_json::to_value(&self.access.snapshot.bundle)?,
 			&subject,
+			None,
 		)
 		.await?;
 		self.access.snapshot.revision = revision;

@@ -3,7 +3,7 @@ use super::{deferred, dispatch};
 use crate::{
 	Error, Result,
 	ports::{
-		Credentials, ModelProvider, NoProgress,
+		ModelProvider, NoProgress,
 		registry::workbench::{
 			profile::ProfileConfiguration,
 			sandbox::{dispatch::RealToolTransport, execution::ExecutionRepository},
@@ -27,7 +27,6 @@ pub type SessionId = uuid::Uuid;
 use uuid::Uuid;
 pub struct Execution {
 	pub repository: Arc<dyn ExecutionRepository>,
-	pub credentials: Arc<dyn Credentials>,
 	pub configuration: Arc<dyn ProfileConfiguration>,
 	pub transport: Arc<dyn RealToolTransport>,
 }
@@ -216,7 +215,6 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				match dispatch::invoke(
 					&dispatch::Dispatch {
 						repository: execution.repository.as_ref(),
-						credentials: execution.credentials.as_ref(),
 						configuration: execution.configuration.as_ref(),
 						transport: execution.transport.as_ref(),
 					},

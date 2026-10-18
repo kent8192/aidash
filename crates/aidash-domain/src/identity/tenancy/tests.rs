@@ -96,6 +96,7 @@ fn the_defaults_are_the_self_hosted_column() {
 			creation_per_hour: 5,
 			creation_total: 20,
 			invitations: true,
+			deletion_grace_days: 30,
 		}
 	);
 }
@@ -148,7 +149,7 @@ fn the_creator_administers_and_members_use() {
 	let mut bundle = initial_policy("brave-otter-k3m9q2xa", true).unwrap();
 	for action in ACTIONS
 		.iter()
-		.chain([TENANT_UPDATE, "catalog.approve"].iter())
+		.chain([TENANT_UPDATE, TENANT_DELETE, "catalog.approve"].iter())
 	{
 		assert!(allows(&bundle, OWNER, action), "{action}");
 	}
@@ -172,12 +173,15 @@ fn the_creator_administers_and_members_use() {
 		"marketplace.install",
 		"installation.create",
 		"tool.invoke",
+		"credential.create",
+		"semantic.index.manage",
 	] {
 		assert!(allows(&bundle, "alice", action), "{action}");
 	}
 	for action in ACTIONS.iter().chain(
 		[
 			TENANT_UPDATE,
+			TENANT_DELETE,
 			"catalog.approve",
 			"provider_credential.create",
 			"research.disclose",
@@ -218,6 +222,31 @@ fn an_administrator_counts_and_a_member_does_not() {
 	assert!(!has_unconditional_administrator(&bundle, ["alice"]));
 	assert!(!has_unconditional_administrator(&bundle, ["missing"]));
 	assert!(!has_unconditional_administrator(&bundle, []));
+}
+
+#[test]
+fn an_administrator_who_cannot_delete_the_tenant_does_not_count() {
+	let mut bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	bundle.policies.push(Policy {
+		id: "alice-administers".into(),
+		effect: Effect::Allow,
+		subjects: SubjectSelector {
+			ids: ["alice".into()].into(),
+			..Default::default()
+		},
+		actions: ADMINISTRATION_ACTIONS
+			.iter()
+			.filter(|action| **action != TENANT_DELETE)
+			.map(|action| (*action).to_owned())
+			.collect(),
+		resources: ResourceSelector {
+			kinds: ["*".into()].into(),
+			ids: BTreeSet::new(),
+		},
+		condition: None,
+	});
+	bundle.validate().unwrap();
+	assert!(!has_unconditional_administrator(&bundle, ["alice"]));
 }
 
 #[test]
@@ -268,6 +297,28 @@ fn any_deny_on_an_administration_action_counts_against() {
 				"right":{"source":"literal","value":"sunday"}}))
 			.unwrap(),
 		),
+	});
+	bundle.validate().unwrap();
+	assert!(!has_unconditional_administrator(&bundle, [OWNER]));
+}
+
+#[test]
+fn an_administrator_who_cannot_repair_the_policy_does_not_count() {
+	let mut bundle = initial_policy("t", true).unwrap();
+	assert!(ADMINISTRATION_ACTIONS.contains(&"policy.update"));
+	bundle.policies.push(Policy {
+		id: "no-policy-writes".into(),
+		effect: Effect::Deny,
+		subjects: SubjectSelector {
+			ids: [OWNER.into()].into(),
+			..Default::default()
+		},
+		actions: ["policy.update".to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: ["policy".into()].into(),
+			ids: BTreeSet::new(),
+		},
+		condition: None,
 	});
 	bundle.validate().unwrap();
 	assert!(!has_unconditional_administrator(&bundle, [OWNER]));
