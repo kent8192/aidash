@@ -73,15 +73,20 @@ pub(crate) async fn set(
 	// toward record capacity; every non-deleted row counts toward live capacity.
 	// Mutation receipts and model operations remain durable after body retention.
 	// Rejection rolls back both settings and any participant update in this lease.
-	let policy = crate::semantic::native_memory::policy(lease, provider).await?;
+	let policy = crate::semantic::native_memory::policy(lease, &bank.tenant, provider).await?;
 	let index =
 		crate::semantic::models::SemanticIndexe::locked(&mut **lease.tx(), bank.workspace, false)
 			.await?
 			.ok_or_else(|| {
 				Error::Conflict("memory banks require an enabled Workspace index".into())
 			})?;
-	let embedding =
-		crate::semantic::native_memory::definition(lease, &policy.embedding, "embedding").await?;
+	let embedding = crate::semantic::native_memory::definition(
+		lease,
+		&bank.tenant,
+		&policy.embedding,
+		"embedding",
+	)
+	.await?;
 	let embedding: aidash_domain::semantic::EmbeddingConfig =
 		serde_json::from_value(embedding.config)?;
 	let configuration = index.configuration()?;
@@ -183,7 +188,8 @@ pub(crate) async fn set(
 		unit_ids.push(row.try_get::<uuid::Uuid>("id")?);
 	}
 	if let Some(current) = current.as_ref() {
-		let previous = crate::semantic::native_memory::policy(lease, &current.provider).await?;
+		let previous =
+			crate::semantic::native_memory::policy(lease, &bank.tenant, &current.provider).await?;
 		if policy.bounds.max_graph_visits < previous.bounds.max_graph_visits {
 			let rows = native::query(
 				&Query::select()

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[model(app_label = "registry", table_name = "registry_agent_resource_refs")]
 #[derive(Serialize, Deserialize)]
 pub struct RegistryAgentResourceRef {
+	#[field(primary_key = true, field_type = "text")]
+	pub tenant: String,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(primary_key = true, field_type = "text", db_column = "agent_id")]
 	pub agent_key: String,

@@ -3,7 +3,7 @@ use crate::endpoint::{
 	ClientFuture, EndpointFixture, EndpointFuture, anonymous_client, assert_json, endpoint,
 };
 use crate::provider_fixtures::{CompletionFixture, final_server};
-use aidash_server::domain::qualified_agent;
+use aidash_server::{authorization::Authorization, domain::qualified_agent, registry::EntityRef};
 use reinhardt::test::APIClient;
 use rstest::fixture;
 use serde_json::{Value, json};
@@ -52,6 +52,10 @@ pub fn execution(
 				.unwrap(),
 			200,
 		);
+		let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let authorization = Authorization {
+			pool: app.runtime.store.pool.clone(),
+		};
 		let endpoint = &provider.server.url;
 		// The provider fixture is a Keyless endpoint on loopback (ADR 0036).
 		app.runtime
@@ -77,24 +81,24 @@ pub fn execution(
 			),
 		] {
 			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
-			assert_json(
-				app.deployment_administrator
-					.post("/api/registry", &entry, "json")
-					.await
-					.unwrap(),
-				200,
-			);
-			assert_json(
-				app.deployment_administrator
-					.post(
-						"/api/authorization/acme/catalog",
-						&json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
-						"json",
-					)
-					.await
-					.unwrap(),
-				200,
-			);
+			app.runtime
+				.registry
+				.register(&tenant, serde_json::from_value(entry).unwrap())
+				.await
+				.unwrap();
+			authorization
+				.set_catalog(
+					"acme",
+					&EntityRef {
+						id: id.into(),
+						version: "1.0.0".into(),
+					},
+					0,
+					true,
+					"deployment_administrator",
+				)
+				.await
+				.unwrap();
 		}
 		let credential = assert_json(
 			app.deployment_administrator

@@ -214,7 +214,10 @@ the database/container setup instead of using the flag as a general fallback.
 ## Migration history rules
 
 - Do not rewrite or delete an applied migration. Add a new migration that
-  changes the schema from the current state.
+  changes the schema from the current state. While Aidash has no deployment,
+  a schema change may instead edit the baseline table definitions in the
+  existing migration files, with the matching state snapshot, and development
+  databases are recreated (#243, #265). Revisit this once a deployment exists.
 - Keep migration dependencies and app labels intact when resolving conflicts;
   use `makemigrations --merge` only after reviewing both branch histories.
 - Treat destructive operations (dropping a column/table, narrowing a field,

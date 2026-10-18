@@ -133,12 +133,12 @@ impl Models {
 			(&policy.reranker, "reranker"),
 			(&policy.tokenizer, "tokenizer"),
 		] {
-			let entry = definition(lease, reference, kind).await?;
+			let entry = definition(lease, &bank.tenant, reference, kind).await?;
 			if kind == "reranker"
 				&& let RerankerConfig::Model { model } =
 					serde_json::from_value(entry.config.clone())?
 			{
-				roles.push(definition(lease, &model, "model").await?);
+				roles.push(definition(lease, &bank.tenant, &model, "model").await?);
 			}
 			roles.push(entry);
 		}
@@ -162,8 +162,15 @@ impl Models {
 			&& let Some(access) = lease.access()
 		{
 			let mut dependencies = roles.clone();
-			dependencies
-				.push(definition(&mut Lease::Inherited(access), &provider, "memory").await?);
+			dependencies.push(
+				definition(
+					&mut Lease::Inherited(access),
+					&bank.tenant,
+					&provider,
+					"memory",
+				)
+				.await?,
+			);
 			access.track_registry(&dependencies).await?;
 		}
 		// A human may request learning from a generated Run. Admission still uses
@@ -196,6 +203,7 @@ impl Models {
 					dependencies.push(
 						definition(
 							&mut Lease::Inherited(access),
+							&bank.tenant,
 							&EntityRef {
 								id: role.id.clone(),
 								version: role.version.clone(),
@@ -205,8 +213,15 @@ impl Models {
 						.await?,
 					);
 				}
-				dependencies
-					.push(definition(&mut Lease::Inherited(access), &provider, "memory").await?);
+				dependencies.push(
+					definition(
+						&mut Lease::Inherited(access),
+						&bank.tenant,
+						&provider,
+						"memory",
+					)
+					.await?,
+				);
 				access.track_registry(&dependencies).await?;
 			}
 			let mut child =

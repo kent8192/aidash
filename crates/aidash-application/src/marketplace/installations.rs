@@ -126,6 +126,15 @@ pub async fn install(
 	scope
 		.require(&scope.package_resource(&source), "marketplace.install")
 		.await?;
+	scope
+		.require(
+			&scope.registry_resource(
+				&source.kind,
+				aidash_domain::identity::tenant_administration::COLLECTION,
+			),
+			"registry.create",
+		)
+		.await?;
 	let install = prospective(scope.tenant(), package);
 	for action in ["installation.create", "installation.read"] {
 		scope

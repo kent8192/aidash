@@ -48,7 +48,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 	let entries = entries(&validation, NODE).unwrap();
 	assert_eq!(
 		entries.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + 1
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + 2
 	);
 	let specifications = validation.node_specifications();
 	for entry in &entries {

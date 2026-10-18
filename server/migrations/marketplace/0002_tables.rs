@@ -82,6 +82,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "marketplace_revisions".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
 				ColumnDefinition::new("installation", FieldType::Text).with_not_null(true),

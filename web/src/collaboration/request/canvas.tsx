@@ -335,7 +335,6 @@ export function RequestCanvas({
           <ChannelRequests
             className="relative z-20 w-72"
             requests={loose}
-            localNode={data.node.id}
             open={open}
           />
         )}
@@ -400,7 +399,6 @@ export function RequestCanvas({
                             <div className="relative z-20 min-w-0 before:absolute before:-top-2 before:left-6 before:h-2 before:border-l before:border-dashed before:border-warning">
                               <ChannelRequests
                                 requests={pending}
-                                localNode={data.node.id}
                                 open={open}
                                 requester={name}
                               />

@@ -125,7 +125,15 @@ impl aidash_application::ports::registry::DefinitionLookup for FixtureDefinition
 		id: &str,
 		version: &str,
 	) -> aidash_application::Result<aidash_domain::registry::Entry> {
-		self.0.registry.get(id, version).await.map_err(Into::into)
+		self.0
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				id,
+				version,
+			)
+			.await
+			.map_err(Into::into)
 	}
 }
 

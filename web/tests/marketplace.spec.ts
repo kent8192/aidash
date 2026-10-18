@@ -1,241 +1,236 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { routeTenantActions } from "./registry-fixture";
 
-for (const locale of ["en-US", "ja-JP"] as const) {
-  test(`Deployment Administrator reviews an exact pending Host approval set (${locale})`, async ({
-    page,
-  }) => {
-    await installBearerDashboard(page, "fixture");
-    await page.addInitScript(
-      (value) => localStorage.setItem("aidash-locale", value),
-      locale,
-    );
-    const ja = locale === "ja-JP";
-    let catalogRevision = 7;
-    let activationRevision = 3;
-    const row = (id: string) => ({
-      installation: {
-        id,
-        tenant: "a",
-        package_key: `package-${id}`,
-        latest_revision: 2,
-        active_revision: null,
-        activation_revision: activationRevision,
-      },
-      revision: 2,
-      digest: `digest-${id}`,
-      entry: {
-        id: `mkt-${id}`,
-        version: "1.0.0",
-        kind: id === "bundle" ? "bundle" : "tool",
-        name: { en: id },
-        description: { en: "Node operation" },
-        config:
-          id === "bundle"
-            ? {
-                members: [
-                  {
-                    registry_node: "aidash://node",
-                    id: "mkt-task",
-                    version: "1.0.0",
-                  },
-                ],
-              }
-            : {
-                registry_node: "aidash://node",
-                provider: "core.tasks@1",
-                operation: "task_assign",
-                default_alias: "task_assign",
-                tier: "host",
-                narrow: {},
-              },
-        schema: {},
-        tags: [],
-        skills: [],
-        languages: [],
-        capabilities: [],
-      },
-      config: {},
-      dependencies: [],
-      bindings: [],
-      approved: false,
-      actions: [],
-    });
-    const selections: unknown[] = [];
-    let denied = false;
-    let prepared: Record<string, unknown> | undefined;
-    await page.route("**/api/**", async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === "/api/events/stream") return route.abort();
-      if (path === "/api/session")
-        return route.fulfill({
-          json: {
-            access: { kind: "deployment_administrator" },
-            node_id: "aidash://node",
+async function approvingTenant(page: Page, locale: "en-US" | "ja-JP") {
+  await installBearerDashboard(page, "fixture");
+  await page.addInitScript(
+    (value) => localStorage.setItem("aidash-locale", value),
+    locale,
+  );
+  const fences = { catalog: 7, activation: 3, denied: false };
+  const row = (id: string) => ({
+    installation: {
+      id,
+      tenant: "a",
+      package_key: `package-${id}`,
+      latest_revision: 2,
+      active_revision: null,
+      activation_revision: fences.activation,
+    },
+    revision: 2,
+    digest: `digest-${id}`,
+    entry: {
+      id: `mkt-${id}`,
+      version: "1.0.0",
+      kind: id === "bundle" ? "bundle" : "tool",
+      name: { en: id },
+      description: { en: "Installed copy" },
+      config:
+        id === "bundle"
+          ? { members: [{ id: "mkt-task", version: "1.0.0" }] }
+          : { transport: "native", operation: "echo" },
+      schema: {},
+      tags: [],
+      skills: [],
+      languages: [],
+      capabilities: [],
+    },
+    config: {},
+    dependencies: [],
+    bindings: [],
+    approved: false,
+    actions: [],
+  });
+  const decisions: { path: string; body: unknown }[] = [];
+  const access = { kind: "subject", tenant: "a", subject: "alice" };
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({ json: { access, node_id: "aidash://node" } });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access,
+          node: {
+            id: "aidash://node",
+            endpoint: "http://localhost",
+            protocol_version: "0.1",
+            capabilities: [],
+            clusters: [],
           },
-        });
-      if (path === "/api/mesh")
-        return route.fulfill({ json: { nodes: [], errors: [] } });
-      if (path === "/api/state")
-        return route.fulfill({
-          json: {
-            access: { kind: "deployment_administrator" },
-            node: {
-              id: "aidash://node",
-              endpoint: "http://localhost",
-              protocol_version: "0.1",
-              capabilities: [],
-              clusters: [],
-            },
-            registry: [],
-            workspaces: [],
-            tasks: [],
-            artifacts: [],
-            events: [],
-            runs: [],
-            conversations: [],
-            human_requests: [],
-            installations: [],
-            peers: [],
-          },
-        });
-      if (path === "/api/marketplace/administration")
-        return route.fulfill({ json: [row("bundle"), row("task")] });
-      if (path === "/api/authorization/a/catalog")
-        return denied
-          ? route.fulfill({ status: 403, json: { error: "forbidden" } })
-          : route.fulfill({
-              json: ["bundle", "task"].map((id) => ({
-                entry_id: `mkt-${id}`,
-                entry_version: "1.0.0",
-                revision: catalogRevision,
-                enabled: false,
-                tenant: "a",
-              })),
-            });
-      if (path === "/api/marketplace/host-packages") {
-        prepared = route.request().postDataJSON();
-        return route.fulfill({
-          json: {
-            installations: [row("bundle"), row("task")],
-            unavailable: { shell: "runner unavailable" },
-          },
-        });
-      }
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+          peers: [],
+        },
+      });
+    if (path === "/api/marketplace/installations")
+      return route.fulfill({ json: [row("bundle"), row("task")] });
+    if (path === "/api/authorization/a/catalog")
+      return fences.denied
+        ? route.fulfill({ status: 403, json: { error: "forbidden" } })
+        : route.fulfill({
+            json: ["bundle", "task"].map((id) => ({
+              entry_id: `mkt-${id}`,
+              entry_version: "1.0.0",
+              revision: fences.catalog,
+              enabled: false,
+              tenant: "a",
+            })),
+          });
+    if (
+      route.request().method() === "POST" &&
+      path.startsWith("/api/marketplace/")
+    ) {
+      decisions.push({ path, body: route.request().postDataJSON() });
       if (path === "/api/marketplace/approval-sets") {
-        selections.push(route.request().postDataJSON());
-        catalogRevision = 8;
-        activationRevision = 4;
+        fences.catalog = 8;
+        fences.activation = 4;
         return route.fulfill({
           status: 409,
           json: { error: "stale selection" },
         });
       }
-      return route.fulfill({ json: [] });
-    });
-    await page.goto("/marketplace");
-    const administration = page.locator("section.panel").filter({
+      return route.fulfill({ json: row("task").installation });
+    }
+    return route.fulfill({ json: [] });
+  });
+  return { fences, decisions };
+}
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`Catalog Approval reviews an exact pending Marketplace set (${locale})`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    const { fences, decisions } = await approvingTenant(page, locale);
+    await routeTenantActions(page, ["catalog.approve"], { tenant: "a" });
+    await page.goto("/settings?view=marketplace");
+    const review = page.locator("section.panel").filter({
       has: page.getByRole("heading", {
-        name: ja ? "テナント導入の承認" : "Tenant installation approval",
-        exact: true,
-      }),
-    });
-    await administration
-      .getByLabel(ja ? "テナント" : "Tenant", { exact: true })
-      .fill("a");
-    await administration
-      .getByRole("button", { name: ja ? "読み込み" : "Load", exact: true })
-      .click();
-    const host = administration.locator("section.panel").filter({
-      has: page.getByRole("heading", {
-        name: ja ? "Host パッケージ" : "Host packages",
+        name: ja ? "まとめて承認" : "Approve a reviewed set",
         exact: true,
       }),
     });
     await expect(
-      host.getByLabel("mkt-task@1.0.0", { exact: true }),
+      review.getByLabel("mkt-task@1.0.0", { exact: true }),
     ).toBeEnabled();
-    await host.getByLabel("shell", { exact: true }).check();
-    await host.getByLabel("task_assign", { exact: true }).check();
-    await host
-      .getByRole("button", {
-        name: ja ? "承認待ちを作成" : "Prepare pending packages",
-        exact: true,
-      })
-      .click();
-    await expect(
-      host.getByText("shell: runner unavailable", { exact: true }),
-    ).toBeVisible();
-    expect(prepared).toMatchObject({
-      tenant: "a",
-      groups: ["shell", "task_assign"],
-    });
-    expect(prepared?.idempotency_key).toEqual(expect.any(String));
-    await host.getByLabel("mkt-bundle@1.0.0", { exact: true }).check();
-    await host.getByLabel("mkt-task@1.0.0", { exact: true }).check();
-    const approve = host.getByRole("button", {
+    await review.getByLabel("mkt-bundle@1.0.0", { exact: true }).check();
+    await review.getByLabel("mkt-task@1.0.0", { exact: true }).check();
+    const approve = review.getByRole("button", {
       name: ja
         ? "選択した対象を承認して有効化"
         : "Approve and activate selected set",
       exact: true,
     });
-    await expect(host.locator(".host-package-selection")).toContainText(
+    await expect(review.locator(".approval-set-selection")).toContainText(
       '"id": "mkt-task"',
     );
     await approve.click();
-    await expect.poll(() => selections.length).toBe(1);
-    expect(selections[0]).toEqual({
-      tenant: "a",
-      installations: ["bundle", "task"].map((id) => ({
-        installation: id,
-        revision: 2,
-        digest: `digest-${id}`,
-        expected_activation_revision: 3,
-      })),
-      approvals: ["bundle", "task"].map((id) => ({
-        reference: { id: `mkt-${id}`, version: "1.0.0" },
-        expected_catalog_revision: 7,
-      })),
+    await expect.poll(() => decisions.length).toBe(1);
+    expect(decisions[0]).toEqual({
+      path: "/api/marketplace/approval-sets",
+      body: {
+        tenant: "a",
+        installations: ["bundle", "task"].map((id) => ({
+          installation: id,
+          revision: 2,
+          digest: `digest-${id}`,
+          expected_activation_revision: 3,
+        })),
+        approvals: ["bundle", "task"].map((id) => ({
+          reference: { id: `mkt-${id}`, version: "1.0.0" },
+          expected_catalog_revision: 7,
+        })),
+      },
     });
     await expect(
-      host.getByRole("status").filter({
+      review.getByRole("status").filter({
         hasText: ja ? "承認対象が変更" : "reviewed selection changed",
       }),
     ).toBeVisible();
     // A repeated action cannot silently substitute refreshed approval fences.
     await approve.click();
-    await expect.poll(() => selections.length).toBe(2);
-    expect(selections[1]).toEqual(selections[0]);
-    await host
-      .getByRole("button", {
-        name: ja ? "承認対象を再読み込み" : "Reload approval selection",
-        exact: true,
-      })
-      .click();
-    await expect(approve).toBeDisabled();
-    await host.getByLabel("mkt-task@1.0.0", { exact: true }).check();
-    await approve.click();
-    await expect.poll(() => selections.length).toBe(3);
-    expect(selections[2]).toMatchObject({
-      installations: [
-        { installation: "task", expected_activation_revision: 4 },
-      ],
-      approvals: [{ expected_catalog_revision: 8 }],
+    await expect.poll(() => decisions.length).toBe(2);
+    expect(decisions[1]).toEqual(decisions[0]);
+    const reload = review.getByRole("button", {
+      name: ja ? "承認対象を再読み込み" : "Reload approval selection",
+      exact: true,
     });
-    // Revocation clears the retained review content and pending receipt.
-    denied = true;
-    await host
-      .getByRole("button", {
-        name: ja ? "承認対象を再読み込み" : "Reload approval selection",
-        exact: true,
-      })
-      .click();
-    await expect(host.getByRole("alert")).toBeVisible();
-    await expect(host.getByText("mkt-task@1.0.0", { exact: true })).toHaveCount(
-      0,
-    );
+    await reload.click();
+    await expect(approve).toBeDisabled();
+    await review.getByLabel("mkt-task@1.0.0", { exact: true }).check();
+    await approve.click();
+    await expect.poll(() => decisions.length).toBe(3);
+    expect(decisions[2]).toMatchObject({
+      body: {
+        installations: [
+          { installation: "task", expected_activation_revision: 4 },
+        ],
+        approvals: [{ expected_catalog_revision: 8 }],
+      },
+    });
+    fences.denied = true;
+    await reload.click();
+    await expect(review.getByRole("alert")).toBeVisible();
+    await expect(
+      review.getByText("mkt-task@1.0.0", { exact: true }),
+    ).toHaveCount(0);
   });
 }
+
+test("Catalog Approval activates one installation with the current approval fence", async ({
+  page,
+}) => {
+  const { decisions } = await approvingTenant(page, "en-US");
+  await routeTenantActions(page, ["catalog.approve"], { tenant: "a" });
+  await page.goto("/settings?view=marketplace");
+  const task = page
+    .locator("li")
+    .filter({ has: page.getByRole("heading", { name: "task", exact: true }) });
+  await task
+    .getByRole("button", { name: "Approve and activate", exact: true })
+    .click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0]).toEqual({
+    path: "/api/marketplace/installations/task/activation",
+    body: {
+      tenant: "a",
+      revision: 2,
+      expected_activation_revision: 3,
+      expected_catalog_revision: 7,
+      enabled: true,
+    },
+  });
+  await expect(
+    task.getByRole("button", { name: "Revoke this revision", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("a member without Catalog Approval sees installations without approval controls", async ({
+  page,
+}) => {
+  await approvingTenant(page, "en-US");
+  await routeTenantActions(page, ["marketplace.install"], { tenant: "a" });
+  await page.goto("/settings?view=marketplace");
+  await expect(
+    page.getByRole("heading", { name: "task", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Approve and activate/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Approve a reviewed set", exact: true }),
+  ).toHaveCount(0);
+});
 
 for (const locale of ["en-US", "ja-JP"] as const) {
   test(`scoped Marketplace stages and publishes exact definitions (${locale})`, async ({
@@ -591,7 +586,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
 }
 
 for (const locale of ["en-US", "ja-JP"] as const) {
-  test(`Deployment Administrator Marketplace pages retained revisions and clears revoked results (${locale})`, async ({
+  test(`Deployment Administrator Marketplace lists retained revisions read-only and clears revoked results (${locale})`, async ({
     page,
   }) => {
     await installBearerDashboard(page, "fixture");
@@ -686,7 +681,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     const ja = locale === "ja-JP";
     const panel = page.locator(".panel").filter({
       has: page.getByRole("heading", {
-        name: ja ? "テナント導入の承認" : "Tenant installation approval",
+        name: ja ? "テナント別の導入一覧" : "Installations by Tenant",
         exact: true,
       }),
     });
@@ -701,6 +696,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         name: ja ? /最初のrevision/ : /First revision/,
       }),
     ).toBeVisible();
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "承認して有効化" : "Approve and activate",
+      }),
+    ).toHaveCount(0);
     await panel
       .getByRole("button", {
         name: ja ? "次のページ" : "Next page",

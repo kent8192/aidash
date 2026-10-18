@@ -29,6 +29,35 @@ fn subject(actor: &Actor) -> Result<&crate::authorization::identity::SubjectIden
 	}
 }
 
+/// A Tenant route acts only for a subject of the Tenant it names.
+fn approving_subject(
+	actor: &Actor,
+	tenant: &str,
+) -> Result<crate::authorization::identity::SubjectIdentity> {
+	match actor {
+		Actor::Subject(identity) if identity.tenant == tenant => Ok(identity.clone()),
+		_ => Err(Error::Forbidden),
+	}
+}
+
+/// `catalog.approve` on the exact version an activation approves, decided only
+/// for a revision installed in the subject's own Tenant.
+async fn require_approval(
+	access: &mut Access,
+	revision: &aidash_domain::marketplace::Revision,
+) -> Result<()> {
+	if revision.tenant != access.identity.tenant {
+		return Err(Error::Forbidden);
+	}
+	let entry = &revision.entry;
+	let resource = access.resource(
+		"registry",
+		format!("{}/{}@{}", entry.kind, entry.id, entry.version),
+		aidash_application::authorization::catalog::attributes(entry),
+	);
+	access.require(&resource, "catalog.approve").await
+}
+
 fn principal(actor: &Actor) -> aidash_domain::identity::Principal {
 	match actor {
 		Actor::DeploymentAdministrator => {
@@ -270,85 +299,100 @@ impl MarketplaceManagement {
 		handoff(&f.store, access, result).await
 	}
 
+	/// Activating an installed revision approves it in the subject's Tenant,
+	/// under `catalog.approve` (ADR 0029).
 	pub(crate) async fn activate(
 		&self,
 		actor: Actor,
-		browser: Option<BrowserOrigin>,
 		id: String,
 		input: Activate,
 	) -> Result<Installation> {
 		let f = self.runtime.clone();
-		deployment_administrator(&actor)?;
-		let origin = browser.as_ref();
-		let mut tx = deployment_administrator_begin(&f.store, origin).await?;
-		let result = aidash_application::marketplace::operations::activate(
-			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-				&f.store,
-				&mut tx,
-				principal(&actor),
-			),
-			&id,
-			&aidash_application::marketplace::operations::ActivationCommand {
-				tenant: input.tenant,
-				revision: input.revision,
-				expected_activation_revision: input.expected_activation_revision,
-				expected_catalog_revision: input.expected_catalog_revision,
-				enabled: input.enabled,
-			},
-		)
-		.await?;
-		deployment_administrator_commit(tx, origin).await?;
-		Ok(result)
+		let identity = approving_subject(&actor, &input.tenant)?;
+		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let result = async {
+			let revision = crate::apps::marketplace::repositories::installations::revision(
+				&mut access.tx,
+				&id,
+				input.revision,
+			)
+			.await?;
+			require_approval(&mut access, &revision).await?;
+			let enabled = input.enabled;
+			let installation = aidash_application::marketplace::operations::activate(
+				&mut crate::bootstrap::marketplace_tenant_activation_scope(
+					&f.store,
+					&mut access.tx,
+					principal(&actor),
+					identity.tenant.clone(),
+				),
+				&id,
+				&aidash_application::marketplace::operations::ActivationCommand {
+					tenant: input.tenant,
+					revision: input.revision,
+					expected_activation_revision: input.expected_activation_revision,
+					expected_catalog_revision: input.expected_catalog_revision,
+					enabled: input.enabled,
+				},
+			)
+			.await?;
+			if enabled {
+				crate::apps::identity::repositories::catalog_approvals::admit_agents(
+					&mut access,
+					&f.config.node_id,
+					&[revision.entry],
+				)
+				.await?;
+			}
+			Ok(installation)
+		}
+		.await;
+		access.finish(result).await
 	}
 
 	pub(crate) async fn approve_set(
 		&self,
 		actor: Actor,
-		browser: Option<BrowserOrigin>,
 		input: aidash_application::marketplace::operations::approval_set::ApprovalSet,
 	) -> Result<Vec<Installation>> {
-		deployment_administrator(&actor)?;
-		let origin = browser.as_ref();
-		let mut tx = deployment_administrator_begin(&self.runtime.store, origin).await?;
-		let result =
-			aidash_application::marketplace::operations::approval_set::approve_and_activate(
-				&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-					&self.runtime.store,
-					&mut tx,
-					principal(&actor),
-				),
-				&crate::bootstrap::registry_validation_for(&self.runtime.store),
-				&input,
-				&self.runtime.store.node_id,
+		let f = self.runtime.clone();
+		let identity = approving_subject(&actor, &input.tenant)?;
+		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let result = async {
+			let mut entries = Vec::with_capacity(input.installations.len());
+			for selection in &input.installations {
+				let revision = crate::apps::marketplace::repositories::installations::revision(
+					&mut access.tx,
+					&selection.installation,
+					selection.revision,
+				)
+				.await?;
+				require_approval(&mut access, &revision).await?;
+				entries.push(revision.entry);
+			}
+			let installations =
+				aidash_application::marketplace::operations::approval_set::approve_and_activate(
+					&mut crate::bootstrap::marketplace_tenant_activation_scope(
+						&f.store,
+						&mut access.tx,
+						principal(&actor),
+						identity.tenant.clone(),
+					),
+					&crate::bootstrap::registry_validation_for(&f.store),
+					&input,
+					&f.store.node_id,
+				)
+				.await?;
+			crate::apps::identity::repositories::catalog_approvals::admit_agents(
+				&mut access,
+				&f.config.node_id,
+				&entries,
 			)
 			.await?;
-		deployment_administrator_commit(tx, origin).await?;
-		Ok(result)
-	}
-	pub(crate) async fn host_packages(
-		&self,
-		actor: Actor,
-		browser: Option<BrowserOrigin>,
-		input: aidash_application::marketplace::operations::host_packages::HostPackages,
-	) -> Result<aidash_application::marketplace::operations::host_packages::PendingHostPackages> {
-		deployment_administrator(&actor)?;
-		let origin = browser.as_ref();
-		let mut tx = deployment_administrator_begin(&self.runtime.store, origin).await?;
-		let validation = crate::bootstrap::registry_validation_for(&self.runtime.store);
-		let result = aidash_application::marketplace::operations::host_packages::provision(
-			&mut crate::bootstrap::marketplace_deployment_administrator_scope(
-				&self.runtime.store,
-				&mut tx,
-				principal(&actor),
-			),
-			&validation,
-			&validation,
-			&input,
-			&self.runtime.store.node_id,
-		)
-		.await?;
-		deployment_administrator_commit(tx, origin).await?;
-		Ok(result)
+			Ok(installations)
+		}
+		.await;
+		access.finish(result).await
 	}
 
 	pub(crate) async fn administration(

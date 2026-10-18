@@ -145,7 +145,7 @@ async fn local_execution_authorizes_before_optional_initialization(
 ) {
 	repository.0.lock().unwrap().files = files;
 	run.control = control;
-	let entry = execution(&repository, &run).await.unwrap().unwrap();
+	let entry = execution(&repository, &run).await.unwrap();
 	assert!(!entry.remote);
 	assert_eq!(entry.agent.core_capabilities.enabled(), files);
 	let mut expected = vec!["receiver", "local", "authorize_execution"];
@@ -172,7 +172,6 @@ async fn scoped_receivers_keep_their_agent_without_entering_the_local_path(
 	} else {
 		execution(&repository, &run).await
 	}
-	.unwrap()
 	.unwrap();
 	assert!(entry.remote);
 	assert!(entry.scope.remote);
@@ -184,7 +183,7 @@ async fn scoped_receivers_keep_their_agent_without_entering_the_local_path(
 #[case::execution(false)]
 #[case::delivery(true)]
 #[tokio::test]
-async fn unscoped_legacy_runs_do_not_gain_a_new_local_authority(
+async fn runs_without_a_grant_never_execute(
 	repository: Repository,
 	run: Run,
 	#[case] delivery_only: bool,
@@ -194,9 +193,8 @@ async fn unscoped_legacy_runs_do_not_gain_a_new_local_authority(
 		delivery(&repository, &run.metadata()).await
 	} else {
 		execution(&repository, &run).await
-	}
-	.unwrap();
-	assert!(entry.is_none());
+	};
+	assert!(matches!(entry, Err(crate::Error::Forbidden)));
 	let state = repository.0.lock().unwrap();
 	assert_eq!(state.calls, vec!["receiver", "local"]);
 	assert_eq!(state.alive, 0);
@@ -207,10 +205,7 @@ async fn delivery_checks_current_authority_without_decoding_context_or_initializ
 	repository: Repository,
 	run: Run,
 ) {
-	let entry = delivery(&repository, &run.metadata())
-		.await
-		.unwrap()
-		.unwrap();
+	let entry = delivery(&repository, &run.metadata()).await.unwrap();
 	assert!(!entry.remote);
 	assert_eq!(
 		repository.0.lock().unwrap().calls,

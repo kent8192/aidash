@@ -61,14 +61,18 @@ impl DraftRepository for Repository {
 	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
 		self.runtime
 			.registry
-			.get(id, version)
+			.get(&self.actor.registry_tenant()?, id, version)
 			.await
 			.map_err(Into::into)
 	}
 	async fn original_documents(&self, entry: &Entry) -> Result<Value> {
-		crate::knowledge::load(&self.runtime.registry, entry)
-			.await
-			.map_err(Into::into)
+		crate::knowledge::load(
+			&self.runtime.registry,
+			&self.actor.registry_tenant()?,
+			entry,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {
@@ -89,18 +93,6 @@ impl DraftRepository for Repository {
 }
 #[async_trait]
 impl DefinitionLookup for Scope {
-	async fn foreign_agent(
-		&mut self,
-		node: &str,
-		reference: &aidash_domain::registry::bindings::QualifiedRef,
-	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		if !matches!(self.actor, Actor::DeploymentAdministrator) || node != self.node {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		NativeScope(&mut *self.tx)
-			.foreign_agent(node, reference)
-			.await
-	}
 	async fn binding_installation(
 		&mut self,
 		p: &aidash_domain::registry::Projection,

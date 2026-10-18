@@ -218,7 +218,7 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 		{
 			scope(store, &mut initialization, &input.bank, "memory.configure").await?;
 		}
-		policy(&mut initialization, &input.provider).await?;
+		policy(&mut initialization, &input.bank.tenant, &input.provider).await?;
 		repository::bank_id(&mut initialization, &input.bank, true).await?;
 		if !matches!(input.action, Action::ConfigureBank { .. }) {
 			super::super::repositories::bank_settings::ensure(
@@ -294,7 +294,7 @@ pub(crate) async fn operate_staged(
 	) {
 		bank_provider(lease, &input.bank, &input.provider).await?;
 	}
-	let policy = policy(lease, &input.provider).await?;
+	let policy = policy(lease, &input.bank.tenant, &input.provider).await?;
 	let digest = aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(&input)?);
 	let check_mutation = |mutation: &Mutation| -> Result<()> {
 		if mutation.provider != input.provider
@@ -580,7 +580,7 @@ pub(crate) async fn run_mutate(
 	repository::lock_workspace(lease, run.workspace_id, true).await?;
 	scope(store, lease, &mutation.bank, "memory.write").await?;
 	bank_provider(lease, &mutation.bank, &mutation.provider).await?;
-	let policy = policy(lease, &mutation.provider).await?;
+	let policy = policy(lease, &mutation.bank.tenant, &mutation.provider).await?;
 	// Model tools may only change unverified content. Check targets under the
 	// same Workspace mutation lock as CAS; supplied replacement content cannot
 	// downgrade an existing human verification or bypass it through deletion.
@@ -639,11 +639,21 @@ pub(crate) async fn run_recall(
 /// Role configuration comes from the immutable definition, never an installation overlay.
 pub(crate) async fn definition(
 	lease: &mut Lease<'_>,
+	tenant: &str,
 	reference: &EntityRef,
 	kind: &str,
 ) -> Result<crate::registry::Entry> {
-	let entry = crate::apps::registry::models::Definition::read_in(
+	if lease
+		.tx()
+		.scope()
+		.and_then(|scope| scope.tenant_name())
+		.is_some_and(|scope| scope.as_ref() != tenant)
+	{
+		return Err(Error::Forbidden);
+	}
+	let entry = crate::apps::registry::models::Definition::read_of(
 		&mut **lease.tx(),
+		tenant,
 		&reference.id,
 		&reference.version,
 	)
@@ -662,8 +672,12 @@ pub(crate) async fn definition(
 	}
 	Ok(entry)
 }
-pub(crate) async fn policy(lease: &mut Lease<'_>, provider: &EntityRef) -> Result<Policy> {
-	let entry = definition(lease, provider, "memory").await?;
+pub(crate) async fn policy(
+	lease: &mut Lease<'_>,
+	tenant: &str,
+	provider: &EntityRef,
+) -> Result<Policy> {
+	let entry = definition(lease, tenant, provider, "memory").await?;
 	let config: ProviderConfig = serde_json::from_value(entry.config)?;
 	config.policy.validate()?;
 	Ok(config.policy)
@@ -700,15 +714,17 @@ pub(crate) async fn bank_provider(
 	if let Some(id) = bank.participant {
 		let row = native::query(
 			&Query::select()
-				.columns(["agent_id", "agent_version"].map(Alias::new))
+				.columns(["tenant", "agent_id", "agent_version"].map(Alias::new))
 				.from(Alias::new("memory_participants"))
 				.and_where(Expr::col("id").eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_one(&mut **lease.tx())
 		.await?;
+		let tenant: String = row.try_get("tenant")?;
 		let agent = definition(
 			lease,
+			&tenant,
 			&EntityRef {
 				id: row.try_get("agent_id")?,
 				version: row.try_get("agent_version")?,
@@ -717,7 +733,8 @@ pub(crate) async fn bank_provider(
 		)
 		.await?;
 		let config =
-			super::super::repositories::bindings::configuration(lease, &agent, &bank.home).await?;
+			super::super::repositories::bindings::configuration(lease, &tenant, &agent, &bank.home)
+				.await?;
 		if config.memory.as_ref() != Some(provider) {
 			return Err(Error::Conflict(
 				"memory provider differs from the participant's accepted Agent version".into(),
@@ -739,7 +756,7 @@ pub async fn mutate(store: &Store, actor: &Actor, mutation: Mutation) -> Result<
 		repository::lock_workspace(&mut lease, mutation.bank.workspace, true).await?;
 		scope(store, &mut lease, &mutation.bank, "memory.write").await?;
 		bank_provider(&mut lease, &mutation.bank, &mutation.provider).await?;
-		let policy = policy(&mut lease, &mutation.provider).await?;
+		let policy = policy(&mut lease, &mutation.bank.tenant, &mutation.provider).await?;
 		validate_direct_mutation(&mut lease, &mutation, &policy).await?;
 		repository::mutate(&mut lease, &mutation, &policy.bounds).await
 	}
@@ -787,7 +804,7 @@ pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<U
 	let result = async {
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
 		bank_provider(&mut lease, &input.bank, &input.provider).await?;
-		let policy = policy(&mut lease, &input.provider).await?;
+		let policy = policy(&mut lease, &input.bank.tenant, &input.provider).await?;
 		repository::list(
 			&mut lease,
 			&input.bank,
@@ -818,15 +835,16 @@ pub async fn upgrade_participant(
 	let result = async {
 		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 		scope(store, &mut lease, &bank, "memory.participant.manage").await?;
-		let accepted = definition(&mut lease, &input.agent, "agent").await?;
+		let accepted = definition(&mut lease, &bank.tenant, &input.agent, "agent").await?;
 		let configuration = super::super::repositories::bindings::configuration(
 			&mut lease,
+			&bank.tenant,
 			&accepted,
 			&store.node_id,
 		)
 		.await?;
 		if let Some(provider) = &configuration.memory {
-			policy(&mut lease, provider).await?;
+			policy(&mut lease, &bank.tenant, provider).await?;
 		}
 		let row = native::query(
 			&Query::select()
@@ -897,13 +915,6 @@ pub async fn create_participant(
 		lease
 			.workspace(workspace, "memory.participant.manage")
 			.await?;
-		let accepted = definition(&mut lease, &input.agent, "agent").await?;
-		let configuration = super::super::repositories::bindings::configuration(
-			&mut lease,
-			&accepted,
-			&store.node_id,
-		)
-		.await?;
 		let tenant: String = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
@@ -912,6 +923,14 @@ pub async fn create_participant(
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **lease.tx())
+		.await?;
+		let accepted = definition(&mut lease, &tenant, &input.agent, "agent").await?;
+		let configuration = super::super::repositories::bindings::configuration(
+			&mut lease,
+			&tenant,
+			&accepted,
+			&store.node_id,
+		)
 		.await?;
 		let principal = lease.saved()?["subject"]
 			.as_str()

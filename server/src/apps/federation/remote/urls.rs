@@ -8,7 +8,5 @@ pub fn url_patterns() -> UnifiedRouter {
 		server
 			.endpoint(management::task_delegate)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(management::remote_action)
-			.with_route_middleware(AccessBoundary::deployment_administrator().with_visibility())
 	})
 }

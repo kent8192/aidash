@@ -344,7 +344,9 @@ async fn live_supported_evidence(
 	let settings = bank_settings::get(lease, bank_scope)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &bank_scope.tenant, &settings.provider)
+			.await?;
 	let bank = repository::bank_id(lease, bank_scope, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
@@ -613,7 +615,8 @@ pub(crate) async fn page(
 	let settings = bank_settings::get(lease, &bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &bank.tenant, &settings.provider).await?;
 	let Some(decay) = &policy.decay else {
 		return Ok(0);
 	};

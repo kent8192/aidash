@@ -1236,7 +1236,6 @@ async fn generated_document_sources_follow_current_draft_content(
 		_ => old_documents,
 	};
 	let mut repository = Repository::new(draft.clone());
-	repository.deployment_administrator = true;
 	repository.definitions = vec![old_source.clone(), explicit.clone()];
 	let mut scope = repository.begin().await.unwrap();
 	let validated = crate::registry::workbench::validate_content(
