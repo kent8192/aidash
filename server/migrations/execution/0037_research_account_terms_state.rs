@@ -5,7 +5,7 @@
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0036_research_account_terms_state", "execution")
+	Migration::new("0037_research_account_terms_state", "execution")
 		.add_operation(Operation::CreateTable {
 			name: "research_account_terminations".to_string(),
 			columns: vec![
@@ -131,7 +131,7 @@ pub(super) fn migration() -> Migration {
 				.with_domain_option(None),
 			mysql_options: None,
 		})
-		.add_dependency("execution", "0035_research_account_terms")
+		.add_dependency("execution", "0036_research_account_terms")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(true)

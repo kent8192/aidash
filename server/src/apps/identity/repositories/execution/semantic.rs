@@ -11,7 +11,7 @@ use aidash_application::{
 	Result,
 	ports::semantic::run_context::{RunSemanticJournal, RunSemanticRepository, RunSemanticScope},
 };
-use aidash_domain::semantic::{InputRead, results::SearchResult};
+use aidash_domain::semantic::InputRead;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -79,7 +79,11 @@ impl RunSemanticRepository for ContextRepository<'_> {
 }
 #[async_trait]
 impl RunSemanticScope for Scope<'_> {
-	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<Option<SearchResult>> {
+	async fn retrieve(
+		&mut self,
+		query: &str,
+		budget: usize,
+	) -> Result<aidash_application::semantic::retrieval::WorkspaceContext> {
 		crate::semantic::service::context_in(
 			self.store,
 			&mut crate::semantic::service::Lease::Inherited(&mut self.access),

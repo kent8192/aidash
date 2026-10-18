@@ -435,12 +435,12 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 	) -> Result<aidash_application::provider_access::Access> {
 		use aidash_application::provider_access::Source;
 		if let Source::Plan { provider } = source {
-			let (service, id) = self.plan(context, endpoint, provider).await?;
+			let (service, pin) = self.plan(context, endpoint, provider).await?;
 			return Ok(aidash_application::provider_access::Access {
 				endpoint: aidash_domain::provider_credentials::Provider::Chatgpt
 					.base_url()
 					.into(),
-				bearer: service.bearer(id).await?,
+				bearer: service.bearer(pin).await?,
 				keyless: None,
 			});
 		}
@@ -460,8 +460,8 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 	) -> Result<()> {
 		use aidash_application::provider_access::Source;
 		if let Source::Plan { provider } = source {
-			let (service, id) = self.plan(context, endpoint, provider).await?;
-			return service.usable(id).await;
+			let (service, pin) = self.plan(context, endpoint, provider).await?;
+			return service.usable(pin).await;
 		}
 		let Source::Tenant { provider } = source else {
 			return crate::bootstrap::keyless_provider_access(&self.store)
@@ -480,7 +480,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 	) -> Result<bool> {
 		use aidash_domain::plan_connections::Disposition;
 		use aidash_domain::provider_credentials::Provider;
-		let (service, id) = self
+		let (service, pin) = self
 			.plan(
 				context,
 				Provider::Chatgpt.base_url(),
@@ -488,8 +488,8 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			)
 			.await?;
 		match disposition {
-			Disposition::RefreshThenReconnect => service.refresh_rejected(id).await,
-			Disposition::MarkIneligible => service.mark_ineligible(id).await.map(|()| false),
+			Disposition::RefreshThenReconnect => service.refresh_rejected(pin).await,
+			Disposition::MarkIneligible => service.mark_ineligible(pin).await.map(|()| false),
 			Disposition::Fail(_) | Disposition::Transient => Ok(false),
 		}
 	}
@@ -517,7 +517,7 @@ impl AdmittedAccess {
 		provider: &str,
 	) -> Result<(
 		std::sync::Arc<aidash_application::plan_connections::Service>,
-		Uuid,
+		aidash_domain::plan_connections::Pin,
 	)> {
 		use aidash_domain::plan_connections::Failure;
 		let provider = aidash_domain::provider_credentials::Provider::plan(provider)?;
@@ -543,14 +543,14 @@ impl AdmittedAccess {
 				));
 			}
 		};
-		let id = super::plan_connections::pinned(
+		let pin = super::plan_connections::pinned(
 			&self.store.control_pool,
 			&context.tenant,
 			run,
 			provider,
 		)
 		.await?;
-		Ok((service, id))
+		Ok((service, pin))
 	}
 	/// The call scope with the Run's admitted Provider Credential pin. Runless
 	/// maintenance and a Run's Decision Attempts use the Tenant's current

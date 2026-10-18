@@ -7,9 +7,9 @@
 // account's declaration.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0035_research_account_terms", "execution")
+	Migration::new("0036_research_account_terms", "execution")
         .database_only(true)
-        .add_dependency("execution", "0034_tokenized_estimate_confidence")
+        .add_dependency("execution", "0035_run_semantic_retry_cycle")
         .add_operation(Operation::AddColumn {
             table: "research_attempts".into(),
             column: ColumnDefinition::new("retention_account_id", FieldType::Text),

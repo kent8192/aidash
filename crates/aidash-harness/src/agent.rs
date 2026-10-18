@@ -838,6 +838,7 @@ impl<'a> Executor<'a> {
 		entry: &aidash_domain::registry::Entry,
 		bindings: &str,
 		retrieves: bool,
+		degrade_on_outage: bool,
 	) -> Result<OrderedSemantic> {
 		let key = if retrieves {
 			let scope = self.environment.retrieval_scope(run).await?;
@@ -885,7 +886,15 @@ impl<'a> Executor<'a> {
 		let value = match &key {
 			Some(key) => {
 				self.environment
-					.semantic_context(run, task, inputs, budget, entry, Some(key))
+					.semantic_context(
+						run,
+						task,
+						inputs,
+						budget,
+						entry,
+						Some(key),
+						degrade_on_outage,
+					)
 					.await?
 			}
 			None => None,
@@ -953,6 +962,9 @@ impl<'a> Executor<'a> {
 				.await?;
 			return Ok(());
 		}
+		// Read before the retry state is cleared: this attempt may degrade an
+		// unavailable workspace slot when it is the last one (ADR 0059).
+		let degrade_on_outage = run.recovery.degrades_on_outage();
 		run.recovery.retry = None;
 		if std::mem::take(&mut run.recovery.lease_recovered) {
 			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease"});
@@ -1506,24 +1518,85 @@ impl<'a> Executor<'a> {
 						))
 					})
 					.collect::<Vec<_>>();
-                if ordered {
-                    let retrieves = guard.is_some() || home.local();
-                    let semantic = self.ordered_semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, &binding_digest, retrieves).await?;
-                    if let Some(value) = &semantic.value { pinned["semantic_memory"] = value.clone(); }
-                    if let Some(observation) = semantic.observation(&pinned, &binding_digest, ordered_skill, context.source_observation.as_ref())? {
-                        context.source_observation = Some(observation);
-                        run.context = context.clone();
-                        store.observe_sources(run, token).await?;
-                    }
-                } else {
-                let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, None).await? } else { None };
-                if let Some(semantic) = &semantic { pinned["semantic_memory"] = semantic.clone(); }
-                if cached_sources.is_none() {
-                    context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(source_boundary, binding_digest, json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}))?);
-                    run.context = context.clone();
-                    store.observe_sources(run, token).await?;
-                }
-                }
+				if ordered {
+					let retrieves = guard.is_some() || home.local();
+					let semantic = self
+						.ordered_semantic_context(
+							run,
+							&task,
+							&semantic_inputs,
+							semantic_budget,
+							&entry,
+							&binding_digest,
+							retrieves,
+							degrade_on_outage,
+						)
+						.await?;
+					if let Some(value) = &semantic.value {
+						pinned["semantic_memory"] = value.clone();
+					}
+					if let Some(cause) = semantic.degraded() {
+						// Degraded context is never cached (ADR 0059): the next
+						// step, or a recovery of this one, retrieves again.
+						run.context = context.clone();
+						degrade_context(store, run, token, cause).await?;
+					} else {
+						if semantic.retrieved {
+							run.recovery.degraded.recovered();
+						}
+						if let Some(observation) = semantic.observation(
+							&pinned,
+							&binding_digest,
+							ordered_skill,
+							context.source_observation.as_ref(),
+						)? {
+							context.source_observation = Some(observation);
+							run.context = context.clone();
+							store.observe_sources(run, token).await?;
+						}
+					}
+				} else {
+					let semantic = if let Some(cached) = &cached_sources {
+						cached
+							.get("semantic_memory")
+							.filter(|v| !v.is_null())
+							.cloned()
+					} else if guard.is_some() || home.local() {
+						self.environment
+							.semantic_context(
+								run,
+								&task,
+								&semantic_inputs,
+								semantic_budget,
+								&entry,
+								None,
+								degrade_on_outage,
+							)
+							.await?
+					} else {
+						None
+					};
+					if let Some(semantic) = &semantic {
+						pinned["semantic_memory"] = semantic.clone();
+					}
+					let degraded = semantic
+						.as_ref()
+						.and_then(aidash_domain::semantic::degraded::degraded);
+					if let Some(cause) = degraded {
+						run.context = context.clone();
+						degrade_context(store, run, token, cause).await?;
+					} else if cached_sources.is_none() {
+						run.recovery.degraded.recovered();
+						context.source_observation =
+							Some(aidash_domain::context::sources::SourceObservation::new(
+								source_boundary,
+								binding_digest,
+								json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}),
+							)?);
+						run.context = context.clone();
+						store.observe_sources(run, token).await?;
+					}
+				}
                 self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 // History imported from a pre-journal Run may never have been
                 // saved; journal it whole before pruning or a summary drops any.
@@ -3072,6 +3145,13 @@ struct OrderedSemantic {
 	retrieved: bool,
 }
 impl OrderedSemantic {
+	/// The outage cause when this step retrieved Degraded context.
+	fn degraded(&self) -> Option<aidash_domain::semantic::degraded::OutageCause> {
+		self.retrieved
+			.then_some(self.value.as_ref())
+			.flatten()
+			.and_then(aidash_domain::semantic::degraded::degraded)
+	}
 	/// The observation to persist, or `None` when every cached entry was reused.
 	/// Reused entries keep their original bytes and need no new journal.
 	fn observation(
@@ -3106,6 +3186,26 @@ impl OrderedSemantic {
 		observation.skill = skill;
 		Ok(Some(observation))
 	}
+}
+
+/// Record a step that ran with Degraded context. Only the step's first
+/// degradation is saved, with `run.semantic_degraded`. A re-entry of the same
+/// step saves nothing here: the degradation is already durable, and the
+/// refreshed cause rides on the step's next save.
+async fn degrade_context(
+	store: &dyn ExecutionStore,
+	run: &mut Run,
+	token: Uuid,
+	cause: aidash_domain::semantic::degraded::OutageCause,
+) -> Result<()> {
+	let new_step = run.recovery.degraded.record(run.step, cause);
+	// The outage this step absorbed is over for retry purposes; a stale reason
+	// must not make a later step's first failure look like its last retry.
+	run.recovery.semantic_reason = None;
+	if new_step {
+		store.degrade_sources(run, token).await?;
+	}
+	Ok(())
 }
 
 async fn compact_execution(

@@ -405,6 +405,34 @@ export function OperationsDialog({
   );
 }
 
+/**
+ * Steps that went without optional Workspace semantic context (ADR 0059). Only a
+ * Run local to its executing node degrades, which need not be the viewer's node.
+ */
+function DegradedContext({ run }: { run: Run }) {
+  const { t } = useI18n();
+  const degraded = run.recovery?.degraded;
+  if (!degraded?.count) return null;
+  return (
+    <section className="grid min-w-0 gap-1.5" role="status">
+      <p className="text-xs font-medium text-foreground">
+        {t("runDegradedContext")} ({degraded.count})
+      </p>
+      <Hint>{t("runDegradedContextHint")}</Hint>
+      <Facts
+        items={degraded.recent.map(({ step, cause }) => [
+          `${t("runStep")} ${step}`,
+          t(
+            cause === "embedding_provider"
+              ? "degradedCauseEmbedding"
+              : "degradedCauseVector",
+          ),
+        ])}
+      />
+    </section>
+  );
+}
+
 function RunPanel({
   id,
   node,
@@ -536,6 +564,7 @@ function RunPanel({
           {run.error}
         </p>
       )}
+      <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
       {local && !managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />

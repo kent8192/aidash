@@ -163,7 +163,7 @@ fn a_state_without_requirements_keeps_the_legacy_envelope_bytes() {
 
 	assert!(stored.get("requires").is_none());
 	assert_eq!(stored, envelope(tool_data()));
-	assert!(StateRequirements::of(&state).is_empty());
+	assert!(StateRequirements::of(&state, &recovery).is_empty());
 }
 #[rstest::rstest]
 fn fields_a_worker_does_not_know_are_a_capability_mismatch_not_a_corrupt_run() {
@@ -230,7 +230,7 @@ fn a_stored_requirement_may_exceed_what_the_state_derives() {
 	let (state, recovery) = decode(RunPhase::ToolCall, reserved).unwrap();
 
 	// Assert: this build derives nothing, so re-saving drops the reservation.
-	assert!(StateRequirements::of(&state).is_empty());
+	assert!(StateRequirements::of(&state, &recovery).is_empty());
 	assert_eq!(encode(&state, &recovery).unwrap(), envelope(tool_data()));
 	assert!(StateRequirements::default().covered_by(&StateRequirements::default()));
 	assert!(
@@ -254,10 +254,35 @@ fn a_tool_batch_end_requires_the_tool_batch_capability() {
 	let saved = encode(&state, &recovery).unwrap();
 
 	// Assert: the requirement is derived from the state and written on save.
-	assert_eq!(StateRequirements::of(&state).names(), ["tool_batch_state"]);
+	assert_eq!(
+		StateRequirements::of(&state, &recovery).names(),
+		["tool_batch_state"]
+	);
 	assert_eq!(saved, requiring(&["tool_batch_state"], data));
-	let (plain, _) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
-	assert!(StateRequirements::of(&plain).is_empty());
+	let (plain, recovery) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
+	assert!(StateRequirements::of(&plain, &recovery).is_empty());
+}
+#[rstest::rstest]
+fn degraded_context_requires_the_degraded_context_capability() {
+	// Arrange: a step ran with Degraded context (ADR 0059).
+	let mut degraded = envelope(json!({}));
+	degraded["recovery"]["degraded"] =
+		json!({"count":1,"recent":[{"step":0,"cause":"vector_backend"}],"outage":true});
+	let mut reserved = degraded.clone();
+	reserved["requires"] = json!(["degraded_context"]);
+
+	// Act
+	let (state, recovery) = decode(RunPhase::Ready, reserved.clone()).unwrap();
+	let short = decode(RunPhase::Ready, degraded).unwrap_err();
+
+	// Assert: the requirement is derived from the recovery state and written on
+	// save, and an envelope that omits it would let an older worker claim it.
+	assert_eq!(
+		StateRequirements::of(&state, &recovery).names(),
+		["degraded_context"]
+	);
+	assert_eq!(encode(&state, &recovery).unwrap(), reserved);
+	assert!(matches!(&short, Error::Invalid(message) if message.contains("does not cover")));
 }
 #[rstest::rstest]
 fn a_requirement_that_falls_short_is_invalid() {

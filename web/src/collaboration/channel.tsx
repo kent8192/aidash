@@ -97,6 +97,7 @@ const requestCopy = {
       "task.abandoned": "タスクを中止しました",
       "run.created": "実行を開始しました",
       "run.cancelled": "実行を中止しました",
+      "run.semantic_degraded": "Degraded contextで続行しました",
     } as Record<string, string>,
   },
   "en-US": {
@@ -126,6 +127,7 @@ const requestCopy = {
       "task.abandoned": "Task abandoned",
       "run.created": "Run started",
       "run.cancelled": "Run cancelled",
+      "run.semantic_degraded": "Continued with Degraded context",
     } as Record<string, string>,
   },
 } as const;

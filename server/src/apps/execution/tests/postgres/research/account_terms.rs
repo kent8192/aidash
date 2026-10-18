@@ -131,7 +131,7 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	// find in that page, and a read of the same Source by Aidash's own reader.
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,
@@ -232,7 +232,7 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 	assert_eq!(fragment.passage_digest, passage_digest(&delivered.text));
 	assert_eq!(fragment.text_digest, delivered.text_digest);
 	// The Harness learns which results to replace in later requests.
-	let expired = ExecutionStore::expired_research(&store.for_run(TEST_FIXTURE), &run)
+	let expired = ExecutionStore::expired_research(&store.for_run(ACME.clone()), &run)
 		.await
 		.unwrap();
 	assert_eq!(expired.sources, [source].into());
@@ -267,7 +267,7 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 	// Arrange: a recent search under terms that keep results for 30 days.
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,

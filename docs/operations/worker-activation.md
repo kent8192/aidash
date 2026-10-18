@@ -152,6 +152,12 @@ gate build, and only then raise it. A worker at 1 never admits a Tool Batch, so 
 `requires`. Rolling back below the gate build while such Runs exist stalls or fails them
 exactly as the Projection Version note above describes.
 
+Degraded context (#234, ADR 0059) is the second capability, `degraded_context`. It is
+derived from `RecoveryState`, not from the state: a Run requires it once a step ran with
+Degraded context, and keeps it for as long as that record is kept. Only Agents whose
+`workspace_retrieval` sources opt in with `on_unavailable: degrade` write it, so roll out
+every worker before an Agent opts in.
+
 On shutdown, stop new pulls/claims and drain the current step. Do not clear a lease
 while an external effect might still run. Never delete the durable on shutdown.
 `activation_quarantine` stores only a digest, bounded reason, sequence, and time;
