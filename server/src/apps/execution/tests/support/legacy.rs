@@ -466,6 +466,13 @@ pub fn execution_database(
 pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client) -> RuntimeFuture {
 	async move {
 		let database = execution_database.await;
+		// The deterministic research fixture provider never leaves the Node.
+		aidash_server::research::configure(
+			&serde_json::from_value(json!({"page_reading": false, "fixture": true, "brave": null}))
+				.unwrap(),
+			&reinhardt::conf::settings::profile::Profile::Development,
+		)
+		.unwrap();
 
 		let store = database
 			.environment
