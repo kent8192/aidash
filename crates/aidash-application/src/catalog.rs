@@ -43,10 +43,10 @@ impl CatalogCache {
 	pub async fn get(
 		&self,
 		source: &dyn ModelCatalog,
-		now: impl Fn() -> DateTime<Utc>,
+		clock: impl Fn() -> DateTime<Utc>,
 	) -> Result<CatalogSnapshot> {
 		let mut state = self.state.lock().await;
-		let now = now();
+		let now = clock();
 		let snapshot = |fetched: &Fetched, stale: bool| CatalogSnapshot {
 			models: fetched.models.clone(),
 			stale,
@@ -72,8 +72,10 @@ impl CatalogCache {
 				Ok(snapshot(fetched, false))
 			}
 			failure => {
+				// The retry floor runs from when the attempt ended: a slow
+				// failure would otherwise leave no floor at all.
 				if failure.is_some() {
-					state.failed_at = Some(now);
+					state.failed_at = Some(clock());
 				}
 				match &state.fetched {
 					Some(fetched) if now - fetched.at < STALE_FOR => Ok(snapshot(fetched, true)),

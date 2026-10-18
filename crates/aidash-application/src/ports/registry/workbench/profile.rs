@@ -36,6 +36,10 @@ pub trait ProfileRepository: Send + Sync {
 	/// The same page for those who write the profiles. A Subject needs
 	/// `workbench.test_profile.update` in the same transaction.
 	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>>;
+	/// Decides `workbench.test_profile.update` for a Subject before anything
+	/// about the rules is read, keeping nothing; `save` decides it again with
+	/// the write, which keeps that decision.
+	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()>;
 	/// The definition in the profile's Tenant, which the caller names.
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry>;
 	/// Preserve the exclusive row lock, expected-revision fence and atomic

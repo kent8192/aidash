@@ -89,6 +89,25 @@ impl ProfileRepository for Repository<'_> {
 		actions.record_denial(pool).await?;
 		result.map_err(Into::into)
 	}
+	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()> {
+		let pool = &self.runtime.store.pool;
+		let actions = self.tenant_actions();
+		let mut check = pool.begin(&TenancyScope::tenant(tenant)?).await?;
+		let result = actions
+			.require(
+				&mut check,
+				pool.dashboard_policy().as_ref(),
+				tenant,
+				aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+				id,
+			)
+			.await;
+		// Nothing is kept: `save` decides again with the write and keeps that
+		// decision; a denial is audited after the rollback.
+		check.rollback().await?;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
+	}
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
 			.registry

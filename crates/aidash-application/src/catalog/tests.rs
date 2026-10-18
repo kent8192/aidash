@@ -73,3 +73,25 @@ async fn without_a_catalog_the_upstream_failure_is_returned() {
 	assert!(cache.get(&upstream, || at(1)).await.is_err());
 	assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn the_retry_floor_runs_from_when_a_slow_failure_ended() {
+	let cache = CatalogCache::new();
+	let upstream = Upstream::default();
+	upstream.failing.store(true, Ordering::SeqCst);
+	// The failed attempt started at 0 and ended 40 s later.
+	let reads = AtomicUsize::new(0);
+	let clock = || {
+		if reads.fetch_add(1, Ordering::SeqCst) == 0 {
+			at(0)
+		} else {
+			at(40)
+		}
+	};
+	assert!(cache.get(&upstream, clock).await.is_err());
+	// 20 s after it ended, nobody calls OpenRouter again.
+	assert!(cache.get(&upstream, || at(60)).await.is_err());
+	assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
+	assert!(cache.get(&upstream, || at(70)).await.is_err());
+	assert_eq!(upstream.calls.load(Ordering::SeqCst), 2);
+}

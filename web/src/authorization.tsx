@@ -328,7 +328,10 @@ function TenantAuthorization({
             snapshot={current}
             record={access.deploymentAdministrator}
           />
-          {access.can("credential.read") && (
+          {/* Issuing is granted apart from reading: either opens the panel,
+              and only reading shows the list. */}
+          {(access.can("credential.read") ||
+            access.can("credential.issue")) && (
             <Panel
               title={t("authCredentials")}
               action={
@@ -348,74 +351,78 @@ function TenantAuthorization({
               }
             >
               <Hint>{t("authCredentialsHelp")}</Hint>
-              {credentials.isError && (
+              {access.can("credential.read") && credentials.isError && (
                 <Alert>{credentials.error.message}</Alert>
               )}
-              {credentials.isPending && <Loading />}
-              {!credentials.isError && credentials.data?.length === 0 && (
-                <Empty />
+              {access.can("credential.read") && credentials.isPending && (
+                <Loading />
               )}
-              {!credentials.isError && !!credentials.data?.length && (
-                <RowList>
-                  {credentials.data.map((credential) => (
-                    <div
-                      className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
-                      key={credential.id}
-                    >
-                      <div className="grid min-w-0 gap-0.5">
-                        <span className="truncate font-medium text-foreground">
-                          {credential.subject}
-                        </span>
-                        <span className="truncate text-[11px] text-faint">
-                          <time
-                            className="font-mono"
-                            dateTime={credential.created_at}
-                          >
-                            {new Date(credential.created_at).toLocaleString(
-                              locale,
-                            )}
-                          </time>
-                          {" · "}
-                          {t("authExpires")}{" "}
-                          <time
-                            className="font-mono"
-                            dateTime={credential.expires_at}
-                          >
-                            {new Date(credential.expires_at).toLocaleString(
-                              locale,
-                            )}
-                          </time>
-                        </span>
+              {access.can("credential.read") &&
+                !credentials.isError &&
+                credentials.data?.length === 0 && <Empty />}
+              {access.can("credential.read") &&
+                !credentials.isError &&
+                !!credentials.data?.length && (
+                  <RowList>
+                    {credentials.data.map((credential) => (
+                      <div
+                        className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                        key={credential.id}
+                      >
+                        <div className="grid min-w-0 gap-0.5">
+                          <span className="truncate font-medium text-foreground">
+                            {credential.subject}
+                          </span>
+                          <span className="truncate text-[11px] text-faint">
+                            <time
+                              className="font-mono"
+                              dateTime={credential.created_at}
+                            >
+                              {new Date(credential.created_at).toLocaleString(
+                                locale,
+                              )}
+                            </time>
+                            {" · "}
+                            {t("authExpires")}{" "}
+                            <time
+                              className="font-mono"
+                              dateTime={credential.expires_at}
+                            >
+                              {new Date(credential.expires_at).toLocaleString(
+                                locale,
+                              )}
+                            </time>
+                          </span>
+                        </div>
+                        <AccessBadge
+                          value={
+                            credential.revoked_at
+                              ? "authRevoked"
+                              : Date.parse(credential.expires_at) <=
+                                  credentials.dataUpdatedAt
+                                ? "authExpired"
+                                : "authActive"
+                          }
+                        />
+                        {!credential.revoked_at &&
+                          access.can("credential.revoke") && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="col-span-2 justify-self-start sm:col-span-1"
+                              disabled={busy}
+                              onClick={() => {
+                                setError("");
+                                setRevoking(credential);
+                              }}
+                            >
+                              {t("authRevoke")}
+                            </Button>
+                          )}
                       </div>
-                      <AccessBadge
-                        value={
-                          credential.revoked_at
-                            ? "authRevoked"
-                            : Date.parse(credential.expires_at) <=
-                                credentials.dataUpdatedAt
-                              ? "authExpired"
-                              : "authActive"
-                        }
-                      />
-                      {!credential.revoked_at &&
-                        access.can("credential.revoke") && (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="col-span-2 justify-self-start sm:col-span-1"
-                            disabled={busy}
-                            onClick={() => {
-                              setError("");
-                              setRevoking(credential);
-                            }}
-                          >
-                            {t("authRevoke")}
-                          </Button>
-                        )}
-                    </div>
-                  ))}
-                </RowList>
-              )}
+                    ))}
+                  </RowList>
+                )}
             </Panel>
           )}
           {access.can("peer_mapping.read") && (

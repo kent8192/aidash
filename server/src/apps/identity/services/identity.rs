@@ -178,7 +178,20 @@ impl SubjectIdentity {
 				),
 				col("m", "identity_id").equals((Alias::new("i"), Alias::new("id"))),
 			)
-			.and_where(col("m", "credential_id").eq(Expr::value(self.credential_id)))
+			// A Mapping's own credential, or one its member issued through it.
+			.and_where(
+				Condition::any()
+					.add(col("m", "credential_id").eq(Expr::value(self.credential_id)))
+					.add(
+						col("m", "id").in_subquery(
+							Query::select()
+								.column(Alias::new("mapping_id"))
+								.from(Alias::new("authorization_credentials"))
+								.and_where(Expr::col("id").eq(Expr::value(self.credential_id)))
+								.to_owned(),
+						),
+					),
+			)
 			.to_string(PostgresQueryBuilder);
 		let row: Option<(Uuid, String, String)> = pool
 			.scoped(&self.tenancy()?, async |tx| {

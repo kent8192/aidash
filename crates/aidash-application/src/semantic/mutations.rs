@@ -13,11 +13,13 @@ pub async fn configure(
 	revision: i64,
 	spec: IndexingSpec,
 ) -> Result<Index> {
-	repository.validate(&spec)?;
 	mutations::validate_revision(revision, "invalid index revision")?;
 	let mut scope = repository.begin().await?;
-	scope.lock_workspace(workspace).await?;
+	// Authority comes first: a caller without it learns neither whether the
+	// Workspace exists nor which private embedding origins are allowed.
 	scope.authorize(workspace).await?;
+	repository.validate(&spec)?;
+	scope.lock_workspace(workspace).await?;
 	let tenant = scope.tenant(workspace).await?;
 	let old = scope.index(workspace).await?;
 	let value = serde_json::to_value(&spec)?;

@@ -154,6 +154,9 @@ pub async fn put(
 			"invalid test profile identity or size".into(),
 		));
 	}
+	// Before any definition is loaded or endpoint classified, so a caller
+	// without the action learns nothing about either.
+	repository.authorize_update(&tenant, &id).await?;
 	let mut seen = HashSet::new();
 	for rule in &input.rules {
 		if !seen.insert((&rule.tool.id, &rule.tool.version))

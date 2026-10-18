@@ -146,6 +146,14 @@ impl ProfileRepository for Repository {
 		}
 		Ok(vec![profile("allowed", true, json!([rule()]))])
 	}
+	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()> {
+		assert_eq!((tenant, id), ("tenant", "profile"));
+		self.state.lock().unwrap().calls.push("authorize");
+		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
 	async fn definition(&self, tenant: &str, entry: &EntityRef) -> Result<Entry> {
 		assert_eq!((tenant, entry), ("tenant", &reference("tool")));
 		self.state.lock().unwrap().calls.push("definition");
@@ -316,6 +324,11 @@ async fn a_subject_writes_its_tenants_profile_under_the_action(#[case] authorize
 	.await;
 	assert_eq!(result.is_ok(), authorized);
 	assert_eq!(r.state.lock().unwrap().saved.is_some(), authorized);
+	// A refused caller is refused before any definition is read.
+	assert_eq!(
+		r.state.lock().unwrap().calls.contains(&"definition"),
+		authorized
+	);
 }
 #[rstest]
 #[case("duplicate")]

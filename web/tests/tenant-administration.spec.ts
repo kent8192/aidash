@@ -473,3 +473,83 @@ test("a member issues its own API token, and a policy reader simulates without r
     page.getByText("Save this decision to the audit history"),
   ).toHaveCount(0);
 });
+
+test("a policy reader allowed to issue credentials but not to list them can still issue one (#363)", async ({
+  page,
+}) => {
+  await installBearerDashboard(page, "fixture", {
+    tenant: "alpha",
+    name: "alice",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const listed: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/session")
+      return route.fulfill({ json: { access, node_id: "aidash://test" } });
+    if (path === "/api/state")
+      return route.fulfill({
+        json: {
+          access,
+          node: {
+            id: "aidash://test",
+            endpoint: "http://localhost",
+            protocol_version: "0.1",
+            capabilities: [],
+            clusters: [],
+          },
+          registry: [],
+          workspaces: [],
+          tasks: [],
+          artifacts: [],
+          events: [],
+          runs: [],
+          conversations: [],
+          human_requests: [],
+          installations: [],
+          peers: [],
+        },
+      });
+    if (path === "/api/mesh")
+      return route.fulfill({ json: { nodes: [], errors: [] } });
+    if (path === "/api/tenants/alpha/administration")
+      return route.fulfill({
+        json: {
+          tenant: "alpha",
+          actions: ["policy.read", "credential.issue"],
+          assignable_groups: [],
+          policy_revision: 3,
+        },
+      });
+    if (path === "/api/authorization/alpha")
+      return route.fulfill({
+        json: {
+          revision: 3,
+          bundle: {
+            tenant: "alpha",
+            subjects: { alice: { kind: "user", groups: [] } },
+            groups: {},
+            roles: {},
+            policies: [],
+          },
+        },
+      });
+    if (path === "/api/authorization/alpha/credentials") {
+      if (url.searchParams.get("mine") !== "true") listed.push(url.search);
+      return route.fulfill({ json: [] });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/trust?view=authorization");
+  await expect(
+    page.getByRole("button", { name: "Issue credential", exact: true }),
+  ).toHaveCount(1);
+  await expect(page.getByText("Subject credentials")).toBeVisible();
+  // The Tenant's credential list stays unread without `credential.read`.
+  await page.waitForTimeout(1_000);
+  expect(listed).toEqual([]);
+});
