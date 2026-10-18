@@ -309,8 +309,15 @@ impl PostgresStore {
 			.ok_or_else(|| invalid("Provider Credential Store key registration failed"))?;
 		key.verify(&stored.check_nonce, &stored.check_ciphertext)
 			.map_err(|_| invalid("Provider Credential Store Master Key check failed"))?;
+		tx.commit().await.map_err(db_error)?;
 
 		// Count unavailable key identifiers without loading every encrypted payload.
+		// Versions belong to Tenants, so the count reads in a Deployment Scope.
+		let mut tx = self
+			.begin(&TenancyScope::Deployment(
+				DeploymentScopeReason::CredentialReconcile,
+			))
+			.await?;
 		let (sql, values) = Query::select()
 			.column(Alias::new("key_id"))
 			.expr_as(

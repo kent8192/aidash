@@ -1,5 +1,6 @@
 //! Recheck browser authority after authentication and before a native mutation.
 use super::{Workbench, captured_actor_application, common, request, workbench};
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::identity::models::{
 	DashboardIdentity, DashboardMapping, DashboardSession,
 };
@@ -86,8 +87,15 @@ async fn browser_workbench(
 		.enabled(true)
 		.revision(1)
 		.finish();
-	DashboardMapping::objects()
-		.create_with_conn(&mut db, &mapping)
+	// Mappings hold a row-level policy; seed this one in the fixture scope.
+	wb.f.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			DashboardMapping::objects()
+				.create_with_conn(tx, &mapping)
+				.await?;
+			Ok(())
+		})
 		.await
 		.unwrap();
 	let mut headers = HeaderMap::new();
@@ -187,7 +195,7 @@ async fn native_draft_mutations_recheck_browser_authority(
 	let (revision, release_notes): (i64, String) =
 		sqlx::query_as("SELECT revision, release_notes FROM agent_drafts WHERE id = $1")
 			.bind(uuid::Uuid::parse_str(wb.draft["id"].as_str().unwrap()).unwrap())
-			.fetch_one(wb.f.store.pool.driver())
+			.fetch_one(wb.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	assert_eq!(revision, if expected_status == 200 { 2 } else { 1 });

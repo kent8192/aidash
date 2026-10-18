@@ -79,6 +79,11 @@ pub enum DeploymentScopeReason {
 	Retention,
 	/// Listing atomic transactions that need recovery.
 	TransactionRecovery,
+	/// Preparing, committing and rolling back an atomic transaction's
+	/// mutations at a participant. The manifest names Tasks and Runs by id,
+	/// not a Tenant, so no Tenant Scope can open the participant transaction
+	/// until #265 records the Tenant on the Task and the Run.
+	AtomicParticipant,
 	/// Processing and reconciling capability operations, transferring
 	/// capability records to peers, erasing and reclaiming capability work
 	/// areas, and reaping Python heaps.
@@ -142,6 +147,7 @@ impl DeploymentScopeReason {
 			Self::SemanticMaintenance => "semantic-maintenance",
 			Self::Retention => "retention",
 			Self::TransactionRecovery => "transaction-recovery",
+			Self::AtomicParticipant => "atomic-participant",
 			Self::CapabilityMaintenance => "capability-maintenance",
 			Self::BuiltInSeeding => "built-in-seeding",
 			Self::SharedRegistry => "shared-registry",
@@ -182,7 +188,8 @@ impl DeploymentScopeReason {
 			| Self::LegacyRun
 			| Self::IdentityTenants
 			| Self::TenantCreation
-			| Self::IdentityStatus => true,
+			| Self::IdentityStatus
+			| Self::AtomicParticipant => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
 			| Self::CredentialReconcile
@@ -223,6 +230,7 @@ mod tests {
 			DeploymentScopeReason::SemanticMaintenance,
 			DeploymentScopeReason::Retention,
 			DeploymentScopeReason::TransactionRecovery,
+			DeploymentScopeReason::AtomicParticipant,
 			DeploymentScopeReason::CapabilityMaintenance,
 			DeploymentScopeReason::BuiltInSeeding,
 			DeploymentScopeReason::SharedRegistry,

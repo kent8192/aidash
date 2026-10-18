@@ -292,7 +292,7 @@ async fn pending_transactions(f: &Federation) -> i64 {
 		.from(Alias::new("dashboard_login_transactions"))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -674,7 +674,7 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -777,7 +777,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 			.and_where(Expr::cust("action = 'registration.reject'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(rejected_for.as_deref(), Some("acme"));
@@ -789,7 +789,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&force_stale)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	status.outage.store(true, Ordering::SeqCst);
@@ -811,7 +811,7 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&deadline)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -926,7 +926,7 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 		.from(Alias::new("dashboard_sessions"))
 		.to_string(PostgresQueryBuilder);
 	let sessions: Vec<(Option<chrono::DateTime<Utc>>, bool)> = sqlx::query_as(&query)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(sessions.len(), 2);
@@ -943,7 +943,7 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&stale)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1026,7 +1026,7 @@ async fn a_pending_request_is_not_reused_once_its_pool_is_bound_to_another_tenan
 			)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(ended, "expired");
@@ -1102,7 +1102,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
 	.unwrap();
-	common::tenant_root_in(f.store.pool.driver(), "acme").await;
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -1154,7 +1154,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		.and_where(Expr::col("identity_id").eq(Expr::val(identity)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (state, cookie) = transaction(&app, "acme").await;
@@ -1187,7 +1187,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	);
 	assert!(
 		sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap()
 			.is_none()
@@ -1230,7 +1230,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		tokio::time::timeout(std::time::Duration::from_secs(5), async {
 			loop {
 				if sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
-					.fetch_one(f.store.pool.driver())
+					.fetch_one(f.store.pool.fixture_driver())
 					.await
 					.unwrap()
 					.is_some()
@@ -1247,7 +1247,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	}
 	assert!(
 		sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap()
 			.is_some()
@@ -1265,7 +1265,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		// them behind an explicit Identity restore rather than a fresh login.
 		assert!(
 			sqlx::query_scalar::<_, bool>(&enabled)
-				.fetch_one(f.store.pool.driver())
+				.fetch_one(f.store.pool.fixture_driver())
 				.await
 				.unwrap(),
 			"{table} approval must still exist while the Identity is disabled"
@@ -1315,7 +1315,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 			json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[]}),
 		)
 		.unwrap();
-		common::tenant_root_in(f.store.pool.driver(), tenant).await;
+		common::tenant_root_in(f.store.pool.fixture_driver(), tenant).await;
 		aidash_server::authorization::Authorization {
 			pool: f.store.pool.clone(),
 		}
@@ -1377,10 +1377,10 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 		)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&pending)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let mut boundary = f.store.pool.driver().begin().await.unwrap();
+	let mut boundary = f.store.pool.fixture_driver().begin().await.unwrap();
 	let locked = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("dashboard_mappings"))
@@ -1414,7 +1414,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 		.and_where(Expr::col("id").eq(Expr::val(id)))
 		.to_string(PostgresQueryBuilder);
 	let credential: uuid::Uuid = sqlx::query_scalar(&credential_query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	for (table, id) in [
@@ -1427,7 +1427,7 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 			.and_where(Expr::col("id").eq(Expr::val(id)))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&update)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -1478,7 +1478,7 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Freshly authenticated").await;
@@ -1523,7 +1523,7 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 	assert_eq!(view["verified_email"], "person@example.test");
 	// Expiry without another replacement still erases unmapped display data.
 	sqlx::query(&expire)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let expired: Value = browser()
@@ -1581,7 +1581,7 @@ async fn expired_registration_clears_unmapped_display_attributes(
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let expired: Value = browser()
@@ -1628,7 +1628,7 @@ async fn age(f: &Federation, table: &str, column: &str, interval: &str) {
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&update)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 }
@@ -1736,7 +1736,7 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	age(
@@ -1748,7 +1748,7 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 	.await;
 	age(&f, "dashboard_sessions", "revoked_at", "0 seconds").await;
 	// A fresh sign-in holds the identity lock while it records new claims.
-	let mut tx = f.store.pool.driver().begin().await.unwrap();
+	let mut tx = f.store.pool.fixture_driver().begin().await.unwrap();
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("dashboard_identities"))
@@ -1776,7 +1776,7 @@ async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
 		.to_string(PostgresQueryBuilder);
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
 		while sqlx::query_scalar::<_, i64>(&waiters)
-			.fetch_one(f.store.pool.driver())
+			.fetch_one(f.store.pool.fixture_driver())
 			.await
 			.unwrap() == 0
 		{
@@ -1822,7 +1822,7 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
 	.unwrap();
-	common::tenant_root_in(f.store.pool.driver(), "acme").await;
+	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -2092,7 +2092,7 @@ async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retenti
 		.value_expr(Alias::new("disabled_at"), Expr::cust("null"))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&restore)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	sweep(&f).await;
@@ -2240,7 +2240,7 @@ where
 	T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
 {
 	sqlx::query_scalar(sql)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -2562,7 +2562,7 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 	let history: Vec<(String, String, Option<uuid::Uuid>, Option<uuid::Uuid>)> = sqlx::query_as(
 		"SELECT action, actor_kind, actor_identity_id, actor_mapping_id FROM dashboard_administration_history ORDER BY occurred_at, action",
 	)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let admin_identity = uuid::Uuid::parse_str(admin_identity).unwrap();
@@ -2691,7 +2691,7 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 		"INSERT INTO dashboard_identities (id, issuer, subject, gcip_tenant, display_name) VALUES ($1, 'https://securetoken.google.com/previous-project', 'person', 'pool-a', 'Previous')",
 	)
 	.bind(previous)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let registration = uuid::Uuid::new_v4();
@@ -2700,7 +2700,7 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 	)
 	.bind(registration)
 	.bind(previous)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	// A full page of Mappings left by that issuer or by a previous Tenant
@@ -2724,7 +2724,7 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 		SELECT gen_random_uuid(), i.id, 'acme', c.subject, c.id
 		FROM identities i JOIN credentials c ON c.subject = 'a-' || i.subject",
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	// Another GCIP Tenant's queue, larger than one statement's bind parameter
@@ -2740,7 +2740,7 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 		SELECT gen_random_uuid(), id, 'pending', clock_timestamp(), clock_timestamp() + interval '7 days'
 		FROM identities",
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 
@@ -2825,7 +2825,7 @@ async fn tenant_administrators_disabling_each_other_are_serialized(
 		mapped_browser(&app, &f, ("acme", "pool-a", "second"), "deputy").await;
 	// Each disable's authorization decision waits on the decision log's
 	// serialization lock, holding every lock it took before the decision.
-	let mut barrier = f.store.pool.driver().begin().await.unwrap();
+	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query("SELECT pg_advisory_xact_lock(71003202)")
 		.execute(&mut *barrier)
 		.await

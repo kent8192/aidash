@@ -61,7 +61,7 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 ) {
 	// Arrange: a minimal valid Agent definition binding one Tool.
 	let (f, url, schema) = runtime.parts();
-	let pool = f.store.pool.driver().clone();
+	let pool = f.store.pool.fixture_driver().clone();
 	let agent = |parallelism: Option<Value>, narrow: Value| {
 		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test",
 			"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":narrow}]});
@@ -500,7 +500,7 @@ async fn invocations(f: &Federation, run: Uuid) -> Vec<Journaled> {
 		"SELECT idempotency_key, tool, status, replay_safe, input, result FROM invocations WHERE run_id = $1 ORDER BY idempotency_key",
 	)
 	.bind(run)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap()
 	.into_iter()
@@ -670,7 +670,7 @@ async fn batched_reads_share_the_working_area_row(
 	}
 	// Another reader holds a shared lock on the Working Area row.
 	let area: Uuid = serde_json::from_value(run_area(&b, &run).await).unwrap();
-	let pool = b.f.store.pool.driver().clone();
+	let pool = b.f.store.pool.fixture_driver().clone();
 	let mut reader = pool.begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
@@ -842,7 +842,7 @@ async fn rejected_batch_admission_writes_nothing(
 	let b = Batching::new(runtime, scripted_model, 1, 1).await;
 	let (run, mut worker) = leased_tool_run(&b).await;
 	let (keys, inputs) = batch_calls(&run);
-	let driver = b.f.store.pool.driver();
+	let driver = b.f.store.pool.fixture_driver();
 	let mut existing = 0;
 	match rejection {
 		Rejection::NewerInput => {
@@ -981,7 +981,7 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 	.unwrap();
 	// Migrations run as the table owner, as a deployment's migration Job does.
 	let mut executor = DatabaseMigrationExecutor::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(common::owner_pool(b.f.store.pool.driver()).await),
+		PostgresBackend::new(common::owner_pool(b.f.store.pool.fixture_driver()).await),
 	)));
 	// Act / Assert: the unfinished Run refuses the rollback.
 	let error = executor
@@ -1123,7 +1123,7 @@ async fn tool_batch_latency_benchmark(
 			"UPDATE runs SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
 		)
 		.bind(run.id)
-		.execute(b.f.store.pool.driver())
+		.execute(b.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}

@@ -587,7 +587,7 @@ async fn advance_retry(fixture: &ControlledContext, run: Uuid) {
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(fixture.f.store.pool.driver())
+	.execute(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 }
@@ -1012,7 +1012,7 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 			.from(reinhardt::query::Alias::new("semantic_collections"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	for (collection, config) in rows {
@@ -1302,7 +1302,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1321,7 +1321,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1515,7 +1515,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1727,7 +1727,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1741,7 +1741,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
@@ -1859,7 +1859,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(f.store.pool.driver())
+	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
