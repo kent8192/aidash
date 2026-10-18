@@ -821,8 +821,9 @@ impl DashboardSessions {
 	}
 	pub(crate) async fn admin_registrations(
 		&self,
+		page: AdminMappingPage,
 	) -> Result<Vec<crate::apps::identity::serializers::oidc::PendingRegistration>> {
-		DashboardRegistrationRequest::pending(&self.runtime.store.pool).await
+		DashboardRegistrationRequest::pending(&self.runtime.store.pool, page.offset).await
 	}
 	pub(crate) async fn admin_identity(&self, id: Uuid) -> Result<IdentityView> {
 		Ok(self

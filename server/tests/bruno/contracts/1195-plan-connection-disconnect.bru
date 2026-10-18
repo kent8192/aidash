@@ -1,23 +1,29 @@
 meta {
-  name: 1195 plan-connection-disconnect - Forged bearer cannot reach a Plan Connection
+  name: 1195 plan-connection-disconnect - Anonymous request is rejected
   type: http
   seq: 1195
 }
 
 delete {
-  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt
-  body: text
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/__bruno_missing__
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer forged
-  Content-Type: application/json
 }
 
-body:text {
-  {"expected_revision": 1}
+script:pre-request {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
+
+}
+
+script:post-response {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("deployment_administrator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
+
 }
 
 tests {

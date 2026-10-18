@@ -1,5 +1,5 @@
 meta {
-  name: 1131 tenants-label - Subject Credential bearer never relabels a Tenant
+  name: 1131 tenants-label - Deployment Administrator bearer never relabels a Tenant
   type: http
   seq: 1131
 }
@@ -12,7 +12,7 @@ put {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
   Content-Type: application/json
 }
 

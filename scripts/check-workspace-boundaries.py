@@ -1,9 +1,33 @@
 #!/usr/bin/env python3
 """Validate the locked production dependency graph and Rust module conventions."""
+import argparse
 import json
+import os
 from pathlib import Path
+import re
 import sys
 import tomllib
+
+# A path segment named `enterprise`, not a word inside a package name such as
+# `aidash-enterprise-server`.
+ENTERPRISE_PATH = re.compile(r"(?<![\w-])enterprise(?![\w-])")
+PRUNED = {".git", "enterprise", "node_modules", "target"}
+
+
+def enterprise_references(root):
+    """Community build inputs that name `enterprise/` (ADR 0032)."""
+    inputs = [root / "Dockerfile"]
+    for directory, children, files in os.walk(root):
+        children[:] = [child for child in children if child not in PRUNED]
+        here = Path(directory)
+        inputs.extend(here / name for name in files if name in ("Cargo.toml", "Cargo.lock"))
+        if here.name == ".cargo":
+            inputs.extend(here / name for name in files if name.startswith("config"))
+    return [
+        f"Community build input names enterprise/: {path.relative_to(root)}"
+        for path in inputs
+        if path.is_file() and ENTERPRISE_PATH.search(path.read_text())
+    ]
 
 
 def violations(metadata, root):
@@ -79,20 +103,70 @@ def violations(metadata, root):
             if feature != "test-support" and any(
                     value == "test-support" or value.endswith("/test-support") for value in enabled):
                 errors.append(f"feature {name}/{feature} must not enable test-support")
-    for directory in (root / "crates", root / "server"):
-        for path in directory.rglob("mod.rs"):
-            if "target" not in path.parts:
-                errors.append(f"use module.rs with a sibling directory: {path.relative_to(root)}")
+    enterprise = root / "enterprise"
+    for package in packages.values():
+        if package["source"] is None and Path(package["manifest_path"]).is_relative_to(enterprise):
+            errors.append(f"Community resolves an Enterprise package: {package['name']}")
+    errors.extend(enterprise_references(root))
+    errors.extend(module_violations(root, (root / "crates", root / "server")))
+    return errors
+
+
+def module_violations(root, directories):
+    return [
+        f"use module.rs with a sibling directory: {path.relative_to(root)}"
+        for directory in directories
+        for path in directory.rglob("mod.rs")
+        if "target" not in path.parts
+    ]
+
+
+def enterprise_violations(metadata, root):
+    """The Enterprise workspace composes Community crates and nothing else local."""
+    packages = {package["id"]: package for package in metadata["packages"]}
+    members = {packages[member]["name"]: member for member in metadata["workspace_members"]}
+    errors = []
+    expected = {"aidash-enterprise-server"}
+    if set(members) != expected:
+        errors.append(f"Enterprise workspace packages must be {sorted(expected)}, found {sorted(members)}")
+    for name, member in members.items():
+        if packages[member]["edition"] != "2024":
+            errors.append(f"{name} must use Rust 2024")
+    manifest = tomllib.loads((root / "Cargo.toml").read_text())
+    workspace = manifest["workspace"]
+    if workspace.get("resolver") != "3":
+        errors.append("the Enterprise workspace must use resolver 3")
+    if workspace.get("members") != ["server"]:
+        errors.append("the Enterprise workspace must include server")
+    if "package" in manifest:
+        errors.append("the Enterprise root manifest must be a virtual workspace")
+    community = root.parent
+    for package in packages.values():
+        path = Path(package["manifest_path"]).parent
+        if package["source"] is not None or path.is_relative_to(root):
+            continue
+        if path != community / "server" and path.parent != community / "crates":
+            errors.append(f"Enterprise may depend locally only on Community crates: {package['name']}")
+    errors.extend(module_violations(root, (root / "server",)))
     return errors
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", choices=("community", "enterprise"), default="community")
+    args = parser.parse_args()
     metadata = json.load(sys.stdin)
-    errors = violations(metadata, Path(metadata["workspace_root"]))
+    root = Path(metadata["workspace_root"])
+    if args.workspace == "enterprise":
+        errors = enterprise_violations(metadata, root)
+        message = "The Enterprise workspace composes only Community crates and follows the Rust 2024 conventions."
+    else:
+        errors = violations(metadata, root)
+        message = "Rust 2024 workspace, production dependency boundaries, test-only features, module names, single migration ownership and the absence of Enterprise references are valid."
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print("Rust 2024 workspace, production dependency boundaries, test-only features, module names, and single migration ownership are valid.")
+    print(message)
     return 0
 
 

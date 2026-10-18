@@ -1,12 +1,12 @@
 meta {
-  name: 1193 plan-authorization-complete - Plan Tokens are not an accepted field
+  name: 1193 plan-authorization-complete - Malformed JSON cannot reach the use case
   type: http
   seq: 1193
 }
 
 post {
   url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt/authorizations/complete
-  body: text
+  body: file
   auth: none
 }
 
@@ -16,8 +16,8 @@ headers {
   Content-Type: application/json
 }
 
-body:text {
-  {"access_token": "pasted"}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 script:pre-request {
@@ -33,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 422", function () { expect(res.getStatus()).to.equal(422); });
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

@@ -1,5 +1,5 @@
 meta {
-  name: 1164 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery
+  name: 1164 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain
   type: http
   seq: 1164
 }
@@ -12,16 +12,17 @@ post {
 
 headers {
   Accept: application/json
-  Origin: https://untrusted.example
+  Origin: {{base_url}}
   Content-Type: application/x-www-form-urlencoded
 }
 
 body:form-urlencoded {
   email: alice@acme.example
+  return_to: /
 }
 
 tests {
   test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
   test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
-  test("OIDC deployment refuses foreign-origin discovery contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
+  test("OIDC deployment cannot route a Sign-in Domain contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
 }

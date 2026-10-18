@@ -270,9 +270,10 @@ impl DashboardRegistrationRequest {
 		.await
 	}
 
-	/// Every pending request, with the groups its Invitation proposed, which
-	/// may be in any Tenant.
-	pub(crate) async fn pending(db: &Pool) -> Result<Vec<PendingRegistration>> {
+	/// One page of pending requests, newest first, with the groups each
+	/// Invitation proposed, which may be in any Tenant. An identity may wait
+	/// on every Tenant at once, so the queue is never loaded whole.
+	pub(crate) async fn pending(db: &Pool, offset: u64) -> Result<Vec<PendingRegistration>> {
 		let scope = TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList);
 		db.atomic(&scope, async |tx| {
 			let now = database_time(tx).await?;
@@ -280,6 +281,8 @@ impl DashboardRegistrationRequest {
 				.filter(Self::field_status().eq("pending"))
 				.filter(Self::field_expires_at().gt(now))
 				.order_by(&["-created_at", "-id"])
+				.limit(200)
+				.offset(offset as usize)
 				.all_with_db(tx)
 				.await?;
 			let invitations: BTreeMap<Uuid, TenantInvitation> = TenantInvitation::objects()
