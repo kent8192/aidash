@@ -1,6 +1,15 @@
 //! Model capabilities used to select definitions for Agents.
 use serde::{Deserialize, Serialize};
 
+/// The eligible OpenRouter models as the server last fetched them (#362).
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct CatalogSnapshot {
+	pub models: Vec<CatalogModel>,
+	/// The last refresh failed, so these are the models of an earlier one.
+	pub stale: bool,
+	pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CatalogModel {
 	pub id: String,

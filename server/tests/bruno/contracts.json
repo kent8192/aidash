@@ -2595,19 +2595,6 @@
         "$ref": "#/components/schemas/IssuedCredential"
       },
       "definitions": {
-        "IssuedCredential": {
-          "type": "object",
-          "description": "The bearer value is returned exactly once; only its SHA-256 digest is stored.",
-          "required": ["credential", "token"],
-          "properties": {
-            "credential": {
-              "$ref": "#/components/schemas/Credential"
-            },
-            "token": {
-              "type": "string"
-            }
-          }
-        },
         "Credential": {
           "type": "object",
           "required": [
@@ -2617,7 +2604,8 @@
             "created_at",
             "expires_at",
             "revoked_at",
-            "issued_by"
+            "issued_by",
+            "mapping_id"
           ],
           "properties": {
             "created_at": {
@@ -2635,6 +2623,11 @@
             "issued_by": {
               "type": "string"
             },
+            "mapping_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Mapping a member issued this credential through for itself."
+            },
             "revoked_at": {
               "type": ["string", "null"],
               "format": "date-time"
@@ -2643,6 +2636,19 @@
               "type": "string"
             },
             "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "IssuedCredential": {
+          "type": "object",
+          "description": "The bearer value is returned exactly once; only its SHA-256 digest is stored.",
+          "required": ["credential", "token"],
+          "properties": {
+            "credential": {
+              "$ref": "#/components/schemas/Credential"
+            },
+            "token": {
               "type": "string"
             }
           }
@@ -2657,7 +2663,7 @@
     "source": "server/src/apps/identity/views/policies.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": ["offset"],
+    "query_parameters": ["mine", "offset"],
     "response": {
       "schema": {
         "type": "array",
@@ -2675,7 +2681,8 @@
             "created_at",
             "expires_at",
             "revoked_at",
-            "issued_by"
+            "issued_by",
+            "mapping_id"
           ],
           "properties": {
             "created_at": {
@@ -2692,6 +2699,11 @@
             },
             "issued_by": {
               "type": "string"
+            },
+            "mapping_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Mapping a member issued this credential through for itself."
             },
             "revoked_at": {
               "type": ["string", "null"],
@@ -2731,6 +2743,7 @@
             "expires_at",
             "revoked_at",
             "issued_by",
+            "mapping_id",
             "pending_transactions"
           ],
           "properties": {
@@ -2748,6 +2761,11 @@
             },
             "issued_by": {
               "type": "string"
+            },
+            "mapping_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Mapping a member issued this credential through for itself."
             },
             "pending_transactions": {
               "type": "array",
@@ -21674,7 +21692,8 @@
             "max_duration_secs",
             "max_concurrent",
             "payload_days",
-            "incident_evidence_days"
+            "incident_evidence_days",
+            "revision"
           ],
           "properties": {
             "incident_evidence_days": {
@@ -21724,6 +21743,149 @@
               "format": "int32",
               "maximum": 365,
               "minimum": 1
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The revision the limits were read at. A write sends it back and fails\nwith a conflict when another write came first.",
+              "default": 0
+            },
+            "tenant": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/workbench/test-limits/{tenant}",
+    "name": "workbench-tenant-test-limits",
+    "source": "server/src/apps/registry/workbench/views/test.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/TenantTestLimits"
+      },
+      "definitions": {
+        "TenantTestLimits": {
+          "type": "object",
+          "description": "A Tenant's Test Limits as it set them, with the Deployment's ceilings.",
+          "required": ["limits", "ceilings"],
+          "properties": {
+            "ceilings": {
+              "$ref": "#/components/schemas/TestLimitCeilings"
+            },
+            "limits": {
+              "$ref": "#/components/schemas/TestLimits2"
+            }
+          }
+        },
+        "TestLimitCeilings": {
+          "type": "object",
+          "description": "The Deployment's ceilings on every Tenant's Test Limits (#361). Tests run\non workers the Tenants share, so the Deployment bounds what one Tenant may\ntake, and each Tenant sets its own values within the ceilings.",
+          "required": [
+            "max_input_bytes",
+            "max_output_tokens",
+            "max_total_tokens",
+            "max_steps",
+            "max_duration_secs",
+            "max_concurrent",
+            "payload_days",
+            "incident_evidence_days"
+          ],
+          "properties": {
+            "incident_evidence_days": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_concurrent": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_duration_secs": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_input_bytes": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_output_tokens": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_steps": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_total_tokens": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "payload_days": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false
+        },
+        "TestLimits2": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "max_input_bytes",
+            "max_output_tokens",
+            "max_total_tokens",
+            "max_steps",
+            "max_duration_secs",
+            "max_concurrent",
+            "payload_days",
+            "incident_evidence_days",
+            "revision"
+          ],
+          "properties": {
+            "incident_evidence_days": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_concurrent": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_duration_secs": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_input_bytes": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_output_tokens": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_steps": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_total_tokens": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "payload_days": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The revision the limits were read at. A write sends it back and fails\nwith a conflict when another write came first.",
+              "default": 0
             },
             "tenant": {
               "type": "string"
@@ -21744,13 +21906,26 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/TestLimits"
+        "$ref": "#/components/schemas/TenantTestLimits"
       },
       "definitions": {
-        "TestLimits": {
+        "TenantTestLimits": {
           "type": "object",
+          "description": "A Tenant's Test Limits as it set them, with the Deployment's ceilings.",
+          "required": ["limits", "ceilings"],
+          "properties": {
+            "ceilings": {
+              "$ref": "#/components/schemas/TestLimitCeilings"
+            },
+            "limits": {
+              "$ref": "#/components/schemas/TestLimits2"
+            }
+          }
+        },
+        "TestLimitCeilings": {
+          "type": "object",
+          "description": "The Deployment's ceilings on every Tenant's Test Limits (#361). Tests run\non workers the Tenants share, so the Deployment bounds what one Tenant may\ntake, and each Tenant sets its own values within the ceilings.",
           "required": [
-            "tenant",
             "max_input_bytes",
             "max_output_tokens",
             "max_total_tokens",
@@ -21763,51 +21938,91 @@
           "properties": {
             "incident_evidence_days": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 3650,
-              "minimum": 1
+              "format": "int32"
             },
             "max_concurrent": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 32,
-              "minimum": 1
+              "format": "int32"
             },
             "max_duration_secs": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 900,
-              "minimum": 5
+              "format": "int32"
             },
             "max_input_bytes": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 1000000,
-              "minimum": 1024
+              "format": "int32"
             },
             "max_output_tokens": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 8192,
-              "minimum": 64
+              "format": "int32"
             },
             "max_steps": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 64,
-              "minimum": 1
+              "format": "int32"
             },
             "max_total_tokens": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 1000000,
-              "minimum": 256
+              "format": "int32"
             },
             "payload_days": {
               "type": "integer",
-              "format": "int32",
-              "maximum": 365,
-              "minimum": 1
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false
+        },
+        "TestLimits2": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "max_input_bytes",
+            "max_output_tokens",
+            "max_total_tokens",
+            "max_steps",
+            "max_duration_secs",
+            "max_concurrent",
+            "payload_days",
+            "incident_evidence_days",
+            "revision"
+          ],
+          "properties": {
+            "incident_evidence_days": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_concurrent": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_duration_secs": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_input_bytes": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_output_tokens": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_steps": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "max_total_tokens": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "payload_days": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The revision the limits were read at. A write sends it back and fails\nwith a conflict when another write came first.",
+              "default": 0
             },
             "tenant": {
               "type": "string"
@@ -22084,6 +22299,56 @@
             "revision": {
               "type": "integer",
               "format": "int64"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/workbench/test-profiles/{tenant}",
+    "name": "workbench-tenant-test-profiles",
+    "source": "server/src/apps/registry/workbench/views/profile.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TestProfile"
+        }
+      },
+      "definitions": {
+        "TestProfile": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "id",
+            "revision",
+            "enabled",
+            "rules",
+            "updated_at"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "rules": {},
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         }
@@ -25432,12 +25697,27 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/CatalogModel"
-        }
+        "$ref": "#/components/schemas/CatalogSnapshot"
       },
       "definitions": {
+        "Architecture": {
+          "type": "object",
+          "required": ["input_modalities", "output_modalities"],
+          "properties": {
+            "input_modalities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "output_modalities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
         "CatalogModel": {
           "type": "object",
           "required": [
@@ -25497,21 +25777,24 @@
             }
           }
         },
-        "Architecture": {
+        "CatalogSnapshot": {
           "type": "object",
-          "required": ["input_modalities", "output_modalities"],
+          "description": "The eligible OpenRouter models as the server last fetched them (#362).",
+          "required": ["models", "stale", "fetched_at"],
           "properties": {
-            "input_modalities": {
+            "fetched_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "models": {
               "type": "array",
               "items": {
-                "type": "string"
+                "$ref": "#/components/schemas/CatalogModel"
               }
             },
-            "output_modalities": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
+            "stale": {
+              "type": "boolean",
+              "description": "The last refresh failed, so these are the models of an earlier one."
             }
           }
         },

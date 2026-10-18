@@ -106,11 +106,15 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 			assert_eq!(result["control"], "ACTIVE");
 			accepted = Uuid::parse_str(credential["credential"]["id"].as_str().unwrap()).unwrap();
 		}
-		let grant = AuthorizationExecution::objects()
-			.filter(AuthorizationExecution::field_run_id().eq(run.id))
-			.get_with_db(&mut app.database.lease.handle())
-			.await
-			.unwrap();
+		let grant = app
+			.database
+			.fixture(async |tx| {
+				Ok(AuthorizationExecution::objects()
+					.filter(AuthorizationExecution::field_run_id().eq(run.id))
+					.get_with_db(tx)
+					.await?)
+			})
+			.await;
 		assert_eq!(
 			grant.credential_id(),
 			accepted,

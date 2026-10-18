@@ -1,8 +1,10 @@
 //! Infrastructure-only, read-only activity snapshot. No application writes or migrations.
-use sea_orm::{
-	AccessMode, ConnectOptions, ConnectionTrait, Database, DatabaseTransaction, DbBackend,
-	IsolationLevel, TransactionTrait,
-	sea_query::{Alias, Asterisk, Condition, Expr, ExprTrait, Func, Query, SimpleExpr},
+use reinhardt_db::backends::{
+	DatabaseConnection, IsolationLevel, QueryValue, Row, TransactionExecutor,
+};
+use reinhardt_query::{
+	Alias, ColumnRef, Condition, Expr, ExprTrait, Func, IntoIden, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::{Value, json};
 use std::{
@@ -11,6 +13,83 @@ use std::{
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
+type Transaction = Box<dyn TransactionExecutor>;
+
+/// The tenancy scope this observer reads in, as the transaction-local settings
+/// that row-level policies read ("Tenancy scope settings" in
+/// server/migrations/README.md). This workspace cannot depend on the server,
+/// so it writes the server's string contract by hand: a read-only Deployment
+/// Scope for the `activity-observer` reason.
+const SCOPE: [(&str, &str); 4] = [
+	("aidash.scope", "deployment"),
+	("aidash.tenant", ""),
+	("application_name", "deployment:activity-observer"),
+	("transaction_read_only", "on"),
+];
+
+fn call(function: &'static str, arguments: Vec<SimpleExpr>) -> SimpleExpr {
+	SimpleExpr::FunctionCall(function.into_iden(), arguments)
+}
+
+/// Opens the observation's snapshot in its Deployment Scope. The settings are
+/// written before any other statement, so the snapshot starts with them.
+#[allow(clippy::disallowed_methods)] // The scope is written before any other statement.
+async fn begin(database: &DatabaseConnection) -> Result<Transaction, Error> {
+	let mut tx = database
+		.begin_with_isolation(IsolationLevel::RepeatableRead)
+		.await?;
+	let mut scope = Query::select();
+	for (name, value) in SCOPE {
+		scope.expr(call(
+			"set_config",
+			vec![
+				Expr::value(name).into(),
+				Expr::value(value).into(),
+				Expr::value(true).into(),
+			],
+		));
+	}
+	tx.execute_generated(scope.build(PostgresQueryBuilder), None)
+		.await?;
+	Ok(tx)
+}
+
+fn column<'r>(row: &'r Row, name: &str) -> Result<&'r QueryValue, Error> {
+	row.data
+		.get(name)
+		.ok_or_else(|| format!("missing column {name}").into())
+}
+
+fn integer(row: &Row, name: &str) -> Result<i64, Error> {
+	match column(row, name)? {
+		QueryValue::Int(value) => Ok(*value),
+		_ => Err(format!("{name} is not an integer").into()),
+	}
+}
+
+fn text(row: &Row, name: &str) -> Result<String, Error> {
+	match column(row, name)? {
+		QueryValue::String(value) => Ok(value.clone()),
+		_ => Err(format!("{name} is not text").into()),
+	}
+}
+
+fn number(row: &Row, name: &str) -> Result<Option<f64>, Error> {
+	match column(row, name)? {
+		QueryValue::Float(value) => Ok(Some(*value)),
+		QueryValue::Int(value) => Ok(Some(*value as f64)),
+		QueryValue::Null => Ok(None),
+		_ => Err(format!("{name} is not a number").into()),
+	}
+}
+
+fn document(row: &Row, name: &str) -> Result<Value, Error> {
+	match column(row, name)? {
+		QueryValue::Json(value) => Ok(value.as_deref().cloned().unwrap_or(Value::Null)),
+		QueryValue::Null => Ok(Value::Null),
+		_ => Err(format!("{name} is not JSON").into()),
+	}
+}
 
 fn human_wait(phase: &str, pending: &Value) -> bool {
 	// A timed WAITING phase is work. A human/approval wait can also carry an
@@ -21,35 +100,34 @@ fn human_wait(phase: &str, pending: &Value) -> bool {
 			.any(|key| pending.get(key).is_some_and(|v| v.is_string()))
 }
 
-async fn count(tx: &DatabaseTransaction, table: &str, condition: SimpleExpr) -> Result<i64, Error> {
+async fn count(tx: &mut Transaction, table: &str, condition: SimpleExpr) -> Result<i64, Error> {
 	let query = Query::select()
-		.expr_as(Func::count(Expr::col(Asterisk)), Alias::new("total"))
+		.expr_as(
+			Func::count(Expr::col(ColumnRef::Asterisk).into()),
+			Alias::new("total"),
+		)
 		.from(Alias::new(table))
 		.and_where(condition)
-		.to_owned();
-	let row = tx
-		.query_one(DbBackend::Postgres.build(&query))
-		.await?
-		.ok_or("missing count")?;
-	Ok(row.try_get("", "total")?)
+		.build(PostgresQueryBuilder);
+	integer(&tx.fetch_one_generated(query, None).await?, "total")
 }
 
 async fn waiting_ids(
-	tx: &DatabaseTransaction,
+	tx: &mut Transaction,
 	table: &str,
 	condition: SimpleExpr,
 ) -> Result<HashSet<String>, Error> {
 	let query = Query::select()
 		.expr_as(
-			Expr::col(Alias::new("id")).cast_as(Alias::new("text")),
+			Expr::col(Alias::new("id")).cast_as("text"),
 			Alias::new("id"),
 		)
 		.from(Alias::new(table))
 		.and_where(condition)
-		.to_owned();
+		.build(PostgresQueryBuilder);
 	let mut ids = HashSet::new();
-	for row in tx.query_all(DbBackend::Postgres.build(&query)).await? {
-		ids.insert(row.try_get("", "id")?);
+	for row in tx.fetch_all_generated(query, None).await? {
+		ids.insert(text(&row, "id")?);
 	}
 	Ok(ids)
 }
@@ -62,19 +140,30 @@ async fn waiting_ids(
 /// digest; retries and object reclamation do not. The per-receipt work is one
 /// native hash, so the summary costs no more than the other predicate scans of
 /// `core_records` in this observation, instead of a SHA-256 per receipt.
-async fn receipt_summary(tx: &DatabaseTransaction) -> Result<(i64, String), Error> {
-	let id_fold = Func::cust(Alias::new("uuid_hash_extended"))
-		.args([Expr::col(Alias::new("id")).into(), Expr::val(0_i64).into()]);
-	let fold = Func::coalesce([Func::sum(id_fold).into(), Expr::val(0).into()])
-		.cast_as(Alias::new("text"));
-	let digest = Func::cust(Alias::new("encode")).args([
-		Func::cust(Alias::new("sha256"))
-			.arg(Func::cust(Alias::new("convert_to")).args([fold, Expr::val("UTF8").into()]))
-			.into(),
-		Expr::val("hex").into(),
-	]);
+async fn receipt_summary(tx: &mut Transaction) -> Result<(i64, String), Error> {
+	let id_fold = call(
+		"uuid_hash_extended",
+		vec![
+			Expr::col(Alias::new("id")).into(),
+			Expr::value(0_i64).into(),
+		],
+	);
+	let fold = Func::coalesce(vec![Func::sum(id_fold), Expr::value(0_i64).into()]).cast_as("text");
+	let digest = call(
+		"encode",
+		vec![
+			call(
+				"sha256",
+				vec![call("convert_to", vec![fold, Expr::value("UTF8").into()])],
+			),
+			Expr::value("hex").into(),
+		],
+	);
 	let query = Query::select()
-		.expr_as(Func::count(Expr::col(Asterisk)), Alias::new("total"))
+		.expr_as(
+			Func::count(Expr::col(ColumnRef::Asterisk).into()),
+			Alias::new("total"),
+		)
 		.expr_as(digest, Alias::new("digest"))
 		.from(Alias::new("core_records"))
 		.cond_where(
@@ -90,29 +179,17 @@ async fn receipt_summary(tx: &DatabaseTransaction) -> Result<(i64, String), Erro
 						.and(Expr::col(Alias::new("state")).eq("committed")),
 				),
 		)
-		.to_owned();
-	let row = tx
-		.query_one(DbBackend::Postgres.build(&query))
-		.await?
-		.ok_or("missing receipt summary")?;
-	Ok((row.try_get("", "total")?, row.try_get("", "digest")?))
+		.build(PostgresQueryBuilder);
+	let row = tx.fetch_one_generated(query, None).await?;
+	Ok((integer(&row, "total")?, text(&row, "digest")?))
 }
 
+#[allow(clippy::disallowed_methods)] // The observer has no server runtime to connect through.
 async fn observe(database_url: &str) -> Result<Value, Error> {
-	let mut options = ConnectOptions::new(database_url);
-	options
-		.max_connections(1)
-		.sqlx_logging(false)
-		.connect_timeout(Duration::from_secs(5))
-		.acquire_timeout(Duration::from_secs(5));
-	let database = Database::connect(options).await?;
-	let tx = database
-		.begin_with_config(
-			Some(IsolationLevel::RepeatableRead),
-			Some(AccessMode::ReadOnly),
-		)
-		.await?;
-	let query = Query::select()
+	let database =
+		DatabaseConnection::connect_postgres_with_pool_size(database_url, Some(1)).await?;
+	let mut tx = begin(&database).await?;
+	let runs = Query::select()
 		.columns([
 			Alias::new("phase"),
 			Alias::new("pending"),
@@ -120,27 +197,27 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 		])
 		.from(Alias::new("runs"))
 		.and_where(Expr::col(Alias::new("phase")).is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
-		.to_owned();
+		.build(PostgresQueryBuilder);
 	let mut busy = BTreeMap::new();
 	let unanswered = waiting_ids(
-		&tx,
+		&mut tx,
 		"human_requests",
 		Expr::col(Alias::new("response")).is_null(),
 	)
 	.await?;
 	let approvals = waiting_ids(
-		&tx,
+		&mut tx,
 		"core_records",
 		Expr::col(Alias::new("state"))
 			.eq("pending")
-			.and(Expr::col(Alias::new("expires_at")).gt(Func::cust(Alias::new("clock_timestamp")))),
+			.and(Expr::col(Alias::new("expires_at")).gt(call("clock_timestamp", vec![]))),
 	)
 	.await?;
 	let mut active_runs = 0_i64;
-	for row in tx.query_all(DbBackend::Postgres.build(&query)).await? {
-		let phase: String = row.try_get("", "phase")?;
-		let pending: Value = row.try_get("", "pending")?;
-		let control: String = row.try_get("", "control")?;
+	for row in tx.fetch_all_generated(runs, None).await? {
+		let phase = text(&row, "phase")?;
+		let pending = document(&row, "pending")?;
+		let control = text(&row, "control")?;
 		let awaiting_person = pending["human_request_id"]
 			.as_str()
 			.is_some_and(|id| unanswered.contains(id))
@@ -177,13 +254,13 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	] {
 		busy.insert(
 			name,
-			count(&tx, table, Expr::col(Alias::new(column)).is_in(states)).await?,
+			count(&mut tx, table, Expr::col(Alias::new(column)).is_in(states)).await?,
 		);
 	}
 	busy.insert(
 		"operations",
 		count(
-			&tx,
+			&mut tx,
 			"core_operations",
 			Expr::col(Alias::new("state")).is_not_in([
 				"completed",
@@ -197,7 +274,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	busy.insert(
 		"transfers",
 		count(
-			&tx,
+			&mut tx,
 			"core_records",
 			Expr::col(Alias::new("kind")).eq("transfer_out").and(
 				Expr::col(Alias::new("state")).is_in(["pending", "transferring", "committing"]),
@@ -208,7 +285,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	busy.insert(
 		"transactions",
 		count(
-			&tx,
+			&mut tx,
 			"atomic_coordinators",
 			Expr::col(Alias::new("complete")).eq(false),
 		)
@@ -217,9 +294,9 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	busy.insert(
 		"leases",
 		count(
-			&tx,
+			&mut tx,
 			"runs",
-			Expr::col(Alias::new("lease_until")).gt(Func::cust(Alias::new("clock_timestamp"))),
+			Expr::col(Alias::new("lease_until")).gt(call("clock_timestamp", vec![])),
 		)
 		.await?,
 	);
@@ -227,8 +304,8 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	// including work whose durable row has not yet committed. Exclude this
 	// observer connection and other databases. Unknown schema => process error.
 	let condition = Condition::all()
-		.add(Expr::col(Alias::new("datname")).eq(Func::cust(Alias::new("current_database"))))
-		.add(Expr::col(Alias::new("pid")).ne(Func::cust(Alias::new("pg_backend_pid"))))
+		.add(Expr::col(Alias::new("datname")).eq(call("current_database", vec![])))
+		.add(Expr::col(Alias::new("pid")).ne(call("pg_backend_pid", vec![])))
 		.add(Expr::col(Alias::new("backend_type")).eq("client backend"))
 		.add(Expr::col(Alias::new("state")).is_in([
 			"active",
@@ -236,15 +313,15 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 			"idle in transaction (aborted)",
 		]));
 	let query = Query::select()
-		.expr_as(Func::count(Expr::col(Asterisk)), Alias::new("total"))
+		.expr_as(
+			Func::count(Expr::col(ColumnRef::Asterisk).into()),
+			Alias::new("total"),
+		)
 		.from(Alias::new("pg_stat_activity"))
 		.cond_where(condition)
-		.to_owned();
-	let row = tx
-		.query_one(DbBackend::Postgres.build(&query))
-		.await?
-		.ok_or("missing database activity")?;
-	busy.insert("database_work", row.try_get::<i64>("", "total")?);
+		.build(PostgresQueryBuilder);
+	let row = tx.fetch_one_generated(query, None).await?;
+	busy.insert("database_work", integer(&row, "total")?);
 	// A short operation can begin and finish between timer samples. Preserve its
 	// actual completion time so that it still receives a full idle interval.
 	let mut last_work_completed = 0.0_f64;
@@ -270,21 +347,20 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	] {
 		let query = Query::select()
 			.expr_as(
-				Func::cust(Alias::new("date_part")).args([
-					Expr::val("epoch").into(),
-					Func::max(Expr::col(Alias::new("updated_at"))).into(),
-				]),
+				call(
+					"date_part",
+					vec![
+						Expr::value("epoch").into(),
+						Func::max(Expr::col(Alias::new("updated_at")).into()),
+					],
+				),
 				Alias::new("completed"),
 			)
 			.from(Alias::new(table))
 			.and_where(Expr::col(Alias::new(column)).is_in(terminal))
-			.to_owned();
-		let row = tx
-			.query_one(DbBackend::Postgres.build(&query))
-			.await?
-			.ok_or("missing completion time")?;
-		last_work_completed =
-			last_work_completed.max(row.try_get::<Option<f64>>("", "completed")?.unwrap_or(0.0));
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one_generated(query, None).await?;
+		last_work_completed = last_work_completed.max(number(&row, "completed")?.unwrap_or(0.0));
 	}
 	// core_records has no completion timestamp. Summarize the durable receipts
 	// so the collector can start a full idle interval when a completion is
@@ -293,7 +369,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	// receipt into new activity. Receipts have no deletion path, so only a
 	// fixed-size summary leaves the database; see "Activity observation
 	// contract" in infra/gcp/helm/environment/README.md.
-	let (completed_transfers_count, completed_transfers_digest) = receipt_summary(&tx).await?;
+	let (completed_transfers_count, completed_transfers_digest) = receipt_summary(&mut tx).await?;
 	tx.rollback().await?;
 	Ok(json!({
 		"protocol": "aidash-infra-activity/1",
@@ -319,296 +395,4 @@ async fn main() {
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-	#[test]
-	fn only_explicit_human_waits_can_idle() {
-		assert!(human_wait(
-			"WAITING",
-			&json!({"human_request_id":"id", "wake_at":"expiry"})
-		));
-		assert!(human_wait("WAITING", &json!({"core_approval_id":"id"})));
-		assert!(!human_wait("WAITING", &json!({"wake_at":"later"})));
-		assert!(!human_wait(
-			"THINKING",
-			&json!({"human_request_id":"old-id"})
-		));
-		assert!(!human_wait("WAITING", &json!({"human_request_id":null})));
-		assert!(!human_wait("FUTURE_PHASE", &json!({})));
-	}
-
-	#[tokio::test]
-	#[ignore = "requires a fresh disposable PostgreSQL aidash_observer_test database"]
-	async fn database_snapshot_covers_all_rows_and_fails_closed() -> Result<(), Error> {
-		use sea_orm::sea_query::{ColumnDef, Table};
-		let url = std::env::var("AIDASH_OBSERVER_TEST_DATABASE_URL")?;
-		assert!(
-			url.ends_with("/aidash_observer_test"),
-			"use only the disposable test database"
-		);
-		// The deployed observer's own role; its grants come from
-		// infra/gcp/control/kube.py observer_sql, run here as on the cluster.
-		let role_url = std::env::var("AIDASH_OBSERVER_TEST_ROLE_URL")?;
-		assert!(
-			role_url.ends_with("/aidash_observer_test"),
-			"use only the disposable test database"
-		);
-		let database = Database::connect(&url).await?;
-		for (table, columns) in [
-			(
-				"runs",
-				vec![
-					("phase", "text"),
-					("control", "text"),
-					("pending", "json"),
-					("lease_until", "time"),
-					("updated_at", "time"),
-				],
-			),
-			("human_requests", vec![("id", "uuid"), ("response", "json")]),
-			(
-				"core_records",
-				vec![
-					("id", "uuid"),
-					("state", "text"),
-					("kind", "text"),
-					("expires_at", "time"),
-				],
-			),
-			(
-				"core_operations",
-				vec![("state", "text"), ("updated_at", "time")],
-			),
-			(
-				"agent_test_sessions",
-				vec![("status", "text"), ("updated_at", "time")],
-			),
-			("generation_requests", vec![("status", "text")]),
-			("invocations", vec![("status", "text")]),
-			("atomic_participants", vec![("phase", "text")]),
-			("atomic_coordinators", vec![("complete", "bool")]),
-		] {
-			let mut query = Table::create();
-			query.table(Alias::new(table));
-			for (name, kind) in columns {
-				let mut column = ColumnDef::new(Alias::new(name));
-				match kind {
-					"uuid" => column.uuid(),
-					"json" => column.json_binary(),
-					"time" => column.timestamp_with_time_zone(),
-					"bool" => column.boolean(),
-					_ => column.text(),
-				};
-				query.col(&mut column);
-			}
-			database.execute(DbBackend::Postgres.build(&query)).await?;
-		}
-		database
-			.execute_unprepared(&std::env::var("AIDASH_OBSERVER_TEST_ROLE_SQL")?)
-			.await?;
-		let mut insert = Query::insert();
-		insert
-			.into_table(Alias::new("runs"))
-			.columns(["phase", "control", "pending"].map(Alias::new));
-		for _ in 0..600 {
-			insert.values(["THINKING".into(), "RUNNING".into(), json!({}).into()])?;
-		}
-		database.execute(DbBackend::Postgres.build(&insert)).await?;
-		let snapshot = observe(&url).await?;
-		assert_eq!(snapshot["counts"]["runs"], 600);
-		assert_eq!(snapshot["busy"], true);
-		let update = Query::update()
-			.table(Alias::new("runs"))
-			.value(Alias::new("phase"), "COMPLETED")
-			.value(Alias::new("updated_at"), Expr::current_timestamp())
-			.to_owned();
-		database.execute(DbBackend::Postgres.build(&update)).await?;
-		assert_eq!(observe(&url).await?["busy"], false);
-		assert!(
-			observe(&url).await?["last_work_completed"]
-				.as_f64()
-				.unwrap() > 1_000_000_000.0
-		);
-		let previous = observe(&url).await?["last_work_completed"]
-			.as_f64()
-			.unwrap();
-		// Each terminal outcome can begin and finish between observation samples.
-		for (index, status) in [
-			"completed",
-			"failed",
-			"blocked",
-			"timed_out",
-			"outcome_unknown",
-			"stopped",
-		]
-		.into_iter()
-		.enumerate()
-		{
-			let completed = previous + 10.0 + index as f64;
-			let insert = Query::insert()
-				.into_table(Alias::new("agent_test_sessions"))
-				.columns(["status", "updated_at"].map(Alias::new))
-				.values([
-					Expr::val(status).into(),
-					Func::cust(Alias::new("to_timestamp")).arg(completed).into(),
-				])?
-				.to_owned();
-			database.execute(DbBackend::Postgres.build(&insert)).await?;
-			let snapshot = observe(&url).await?;
-			assert_eq!(snapshot["busy"], false, "terminal test status {status}");
-			assert_eq!(
-				snapshot["last_work_completed"].as_f64().unwrap(),
-				completed,
-				"terminal test status {status}"
-			);
-		}
-		let insert = Query::insert()
-			.into_table(Alias::new("agent_test_sessions"))
-			.columns(["status", "updated_at"].map(Alias::new))
-			.values([
-				Expr::val("running").into(),
-				Func::cust(Alias::new("to_timestamp"))
-					.arg(previous + 100.0)
-					.into(),
-			])?
-			.to_owned();
-		database.execute(DbBackend::Postgres.build(&insert)).await?;
-		let snapshot = observe(&url).await?;
-		assert_eq!(snapshot["counts"]["verification"], 1);
-		assert_eq!(
-			snapshot["last_work_completed"].as_f64().unwrap(),
-			previous + 15.0
-		);
-		let delete = Query::delete()
-			.from_table(Alias::new("agent_test_sessions"))
-			.to_owned();
-		database.execute(DbBackend::Postgres.build(&delete)).await?;
-		for (id, kind, state) in [
-			(
-				"00000000-0000-0000-0000-000000000001",
-				"transfer_out",
-				"delivered",
-			),
-			(
-				"00000000-0000-0000-0000-000000000002",
-				"transfer_in",
-				"committed",
-			),
-			(
-				"00000000-0000-0000-0000-000000000003",
-				"reference",
-				"committed",
-			),
-			(
-				"00000000-0000-0000-0000-000000000004",
-				"transfer_out",
-				"blocked",
-			),
-		] {
-			let insert = Query::insert()
-				.into_table(Alias::new("core_records"))
-				.columns(["id", "kind", "state"].map(Alias::new))
-				.values([
-					Expr::val(id).cast_as(Alias::new("uuid")),
-					Expr::val(kind).into(),
-					Expr::val(state).into(),
-				])?
-				.to_owned();
-			database.execute(DbBackend::Postgres.build(&insert)).await?;
-		}
-		let snapshot = observe(&url).await?;
-		assert_eq!(snapshot["busy"], false);
-		assert_eq!(snapshot["completed_transfers_count"], 2);
-		let small = snapshot["completed_transfers_digest"]
-			.as_str()
-			.unwrap()
-			.to_owned();
-		assert!(small.len() == 64 && small.bytes().all(|b| b.is_ascii_hexdigit()));
-		assert!(snapshot.get("completed_transfers").is_none());
-		// Receipts only accumulate: a very large set must still produce a
-		// fixed-size observation that a new receipt visibly changes.
-		database
-			.execute_unprepared(
-				"INSERT INTO core_records (id, kind, state) \
-				 SELECT gen_random_uuid(), 'transfer_out', 'delivered' FROM generate_series(1, 50000)",
-			)
-			.await?;
-		let large = observe(&url).await?;
-		assert_eq!(large["completed_transfers_count"], 50_002);
-		assert_ne!(large["completed_transfers_digest"], small);
-		let bytes = serde_json::to_string(&large)?.len();
-		assert!(
-			bytes < 1024,
-			"observation grew with the receipt set: {bytes} bytes"
-		);
-		assert_eq!(
-			observe(&url).await?["completed_transfers_digest"],
-			large["completed_transfers_digest"],
-			"an unchanged set must keep its digest"
-		);
-		let insert = Query::insert()
-			.into_table(Alias::new("core_records"))
-			.columns(["id", "kind", "state"].map(Alias::new))
-			.values([
-				Expr::val("00000000-0000-0000-0000-000000000005").cast_as(Alias::new("uuid")),
-				Expr::val("transfer_in").into(),
-				Expr::val("committed").into(),
-			])?
-			.to_owned();
-		database.execute(DbBackend::Postgres.build(&insert)).await?;
-		let renewed = observe(&url).await?;
-		assert_eq!(renewed["completed_transfers_count"], 50_003);
-		assert_ne!(
-			renewed["completed_transfers_digest"], large["completed_transfers_digest"],
-			"a new receipt must change the digest so idle is renewed"
-		);
-		// The role sees the same evidence, including other sessions' open
-		// transactions, which pg_stat_activity hides without pg_read_all_stats.
-		let role = observe(&role_url).await?;
-		assert_eq!(role["busy"], snapshot["busy"]);
-		assert_eq!(role["counts"], snapshot["counts"]);
-		let holder = Database::connect(&url).await?;
-		let open = holder.begin().await?;
-		open.execute_unprepared("SELECT 1").await?;
-		let role = observe(&role_url).await?;
-		assert_eq!(role["counts"]["database_work"], 1);
-		assert_eq!(role["busy"], true);
-		open.rollback().await?;
-		holder.close().await?;
-		assert_eq!(observe(&role_url).await?["busy"], false);
-		// It can neither change retained data nor read any other table.
-		let observer = Database::connect(&role_url).await?;
-		assert!(
-			observer
-				.execute_unprepared("DELETE FROM core_records")
-				.await
-				.is_err()
-		);
-		database
-			.execute_unprepared("CREATE TABLE unrelated_fixture (secret text)")
-			.await?;
-		assert!(
-			observer
-				.execute_unprepared("SELECT secret FROM unrelated_fixture")
-				.await
-				.is_err()
-		);
-		observer.close().await?;
-		let insert = Query::insert()
-			.into_table(Alias::new("core_operations"))
-			.columns([Alias::new("state")])
-			.values(["future_active_state".into()])?
-			.to_owned();
-		database.execute(DbBackend::Postgres.build(&insert)).await?;
-		assert_eq!(observe(&url).await?["busy"], true);
-		let drop = Table::drop()
-			.table(Alias::new("agent_test_sessions"))
-			.to_owned();
-		database.execute(DbBackend::Postgres.build(&drop)).await?;
-		assert!(
-			observe(&url).await.is_err(),
-			"missing verification state must never mean idle"
-		);
-		Ok(())
-	}
-}
+mod tests;

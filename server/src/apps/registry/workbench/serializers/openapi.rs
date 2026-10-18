@@ -125,6 +125,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
+	contracts.response::<_, Vec<TestProfile>>(
+		document,
+		views::profile::administered,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::profile::administered, &["String"])?;
 	contracts.response::<_, TestProfile>(document, views::profile::put, 200, "application/json")?;
 	contracts.request::<_, ProfileInput>(document, views::profile::put)?;
 	contracts.path(document, views::profile::put, &["String", "String"])?;
@@ -135,7 +142,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::test::get_limits, &["Uuid"])?;
-	contracts.response::<_, TestLimits>(
+	contracts.response::<_, aidash_domain::registry::workbench::sandbox::TenantTestLimits>(
+		document,
+		views::test::tenant_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::test::tenant_limits, &["String"])?;
+	contracts.response::<_, aidash_domain::registry::workbench::sandbox::TenantTestLimits>(
 		document,
 		views::test::set_limits,
 		200,

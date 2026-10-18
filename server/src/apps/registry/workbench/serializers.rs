@@ -8,6 +8,8 @@ pub mod profile;
 
 pub mod test;
 
+pub mod test_limit_ceilings;
+
 pub mod trust;
 
 pub mod contracts;

@@ -9,6 +9,7 @@ use crate::apps::knowledge::{
 use crate::apps::{
 	identity::models::AuthorizationWorkspace, workspaces::models::Workspace as WorkspaceRecord,
 };
+use crate::authorization::identity::Actor;
 use crate::{Error, Result as NativeResult, store::Store};
 use aidash_application::{Result, ports::semantic::mutations::*};
 use aidash_domain::semantic::{
@@ -25,13 +26,28 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Configuring a Workspace's semantic index (#360).
+pub(crate) const SEMANTIC_INDEX_MANAGE: &str = "semantic.index.manage";
+
 pub(crate) struct NativeConfiguration {
 	pub store: Store,
-	/// The Tenant of the Workspace whose index is configured.
-	pub scope: aidash_application::tenancy::TenancyScope,
+	pub actor: Actor,
+	/// The Workspace whose index is configured.
+	pub workspace: Uuid,
 }
+/// One configuration, decided and written under the caller's lease.
 struct Configuration {
-	transaction: Box<dyn TransactionExecutor>,
+	lease: Option<Lease<'static>>,
+}
+impl Configuration {
+	fn tx(&mut self) -> Result<&mut dyn TransactionExecutor> {
+		Ok(self
+			.lease
+			.as_mut()
+			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?
+			.tx()
+			.as_mut())
+	}
 }
 pub(crate) struct Entries<'a, 'scope> {
 	pub lease: &'a mut Lease<'scope>,
@@ -41,43 +57,61 @@ pub(crate) struct Entries<'a, 'scope> {
 impl SemanticConfigurationRepository for NativeConfiguration {
 	fn validate(&self, spec: &IndexingSpec) -> Result<()> {
 		native::IndexSpec::from(spec.clone())
-			.validate_with(&crate::bootstrap::registry_validation_for(&self.store))
-			.map_err(Into::into)
+			.validate_with(&crate::bootstrap::registry_validation_for(&self.store))?;
+		// An address literal is refused when configured, as before any call; a
+		// host name is checked again at each connection.
+		if spec.embedding.provider_credential.is_none()
+			&& self.store.keyless.destination(&spec.embedding.endpoint)?
+				== aidash_domain::keyless::Destination::Forbidden
+		{
+			return Err(aidash_application::Error::Invalid(
+				"a Keyless endpoint at a non-public address needs its origin in \
+				 [keyless_endpoints] permitted_private_origins"
+					.into(),
+			));
+		}
+		Ok(())
 	}
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {
 		Ok(Box::new(Configuration {
-			transaction: self
-				.store
-				.pool
-				.begin(&self.scope)
-				.await
-				.and_then(crate::database::native::Transaction::into_executor)?,
+			lease: Some(Lease::begin(&self.store, &self.actor, self.workspace).await?),
 		}))
 	}
 }
 #[async_trait]
 impl SemanticConfigurationSession for Configuration {
 	async fn lock_workspace(&mut self, workspace: Uuid) -> Result<()> {
-		WorkspaceRecord::lock_existing(self.transaction.as_mut(), workspace)
+		WorkspaceRecord::lock_existing(self.tx()?, workspace)
 			.await
 			.map_err(Into::into)
 	}
+	/// A Subject needs `semantic.index.manage` on the Workspace; a denial is
+	/// audited after this transaction rolls back.
+	async fn authorize(&mut self, workspace: Uuid) -> Result<()> {
+		let mut lease = self
+			.lease
+			.take()
+			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
+		match lease.workspace(workspace, SEMANTIC_INDEX_MANAGE).await {
+			Ok(()) => {
+				self.lease = Some(lease);
+				Ok(())
+			}
+			Err(error) => lease.finish(Err(error)).await.map_err(Into::into),
+		}
+	}
 	async fn tenant(&mut self, workspace: Uuid) -> Result<String> {
-		Ok(
-			AuthorizationWorkspace::tenant_in(self.transaction.as_mut(), workspace)
-				.await?
-				.unwrap_or_default(),
-		)
+		Ok(AuthorizationWorkspace::tenant_in(self.tx()?, workspace)
+			.await?
+			.unwrap_or_default())
 	}
 	async fn index(&mut self, workspace: Uuid) -> Result<Option<Index>> {
-		Ok(
-			SemanticIndexe::locked(self.transaction.as_mut(), workspace, true)
-				.await?
-				.map(Into::into),
-		)
+		Ok(SemanticIndexe::locked(self.tx()?, workspace, true)
+			.await?
+			.map(Into::into))
 	}
 	async fn counts(&mut self, workspace: Uuid) -> Result<(i64, usize)> {
-		SemanticEntry::configuration_counts(self.transaction.as_mut(), workspace)
+		SemanticEntry::configuration_counts(self.tx()?, workspace)
 			.await
 			.map_err(Into::into)
 	}
@@ -116,7 +150,7 @@ impl SemanticConfigurationSession for Configuration {
 					.limit(256)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(self.transaction.as_mut())
+			.fetch_all(self.tx()?)
 			.await?;
 			if rows.is_empty() {
 				break;
@@ -137,7 +171,7 @@ impl SemanticConfigurationSession for Configuration {
 					continue;
 				}
 				let provider = crate::apps::registry::models::Definition::read_of(
-					self.transaction.as_mut(),
+					self.tx()?,
 					&reference.0,
 					&reference.1,
 					&reference.2,
@@ -147,7 +181,7 @@ impl SemanticConfigurationSession for Configuration {
 					serde_json::from_value(provider.config)?;
 				let role = &config.policy.embedding;
 				let embedding = crate::apps::registry::models::Definition::read_of(
-					self.transaction.as_mut(),
+					self.tx()?,
 					&reference.0,
 					&role.id,
 					&role.version,
@@ -163,7 +197,7 @@ impl SemanticConfigurationSession for Configuration {
 			}
 		}
 		Ok(SemanticIndexe::replace_generation(
-			self.transaction.as_mut(),
+			self.tx()?,
 			workspace,
 			tenant,
 			revision,
@@ -174,7 +208,7 @@ impl SemanticConfigurationSession for Configuration {
 		.into())
 	}
 	async fn retire_collections(&mut self, workspace: Uuid) -> Result<()> {
-		SemanticCollection::retire_workspace(self.transaction.as_mut(), workspace)
+		SemanticCollection::retire_workspace(self.tx()?, workspace)
 			.await
 			.map_err(Into::into)
 	}
@@ -184,43 +218,30 @@ impl SemanticConfigurationSession for Configuration {
 		collection: &str,
 		vector: Value,
 	) -> Result<()> {
-		SemanticCollection::record_generation(
-			self.transaction.as_mut(),
-			collection,
-			workspace,
-			vector,
-		)
-		.await
-		.map_err(Into::into)
+		SemanticCollection::record_generation(self.tx()?, collection, workspace, vector)
+			.await
+			.map_err(Into::into)
 	}
 	async fn active(&mut self, workspace: Uuid) -> Result<Vec<Uuid>> {
-		Ok(
-			SemanticEntry::lock_active(self.transaction.as_mut(), workspace)
-				.await?
-				.into_iter()
-				.map(|entry| entry.id)
-				.collect(),
-		)
+		Ok(SemanticEntry::lock_active(self.tx()?, workspace)
+			.await?
+			.into_iter()
+			.map(|entry| entry.id)
+			.collect())
 	}
 	async fn reconfigure(&mut self, id: Uuid, revision: i64) -> Result<Entry> {
-		Ok(
-			SemanticEntry::reconfigure(self.transaction.as_mut(), id, revision)
-				.await?
-				.into(),
-		)
+		Ok(SemanticEntry::reconfigure(self.tx()?, id, revision)
+			.await?
+			.into())
 	}
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()> {
-		SemanticPoint::schedule(
-			self.transaction.as_mut(),
-			&native::Entry::from(entry.clone()),
-			collection,
-		)
-		.await
-		.map_err(Into::into)
+		SemanticPoint::schedule(self.tx()?, &native::Entry::from(entry.clone()), collection)
+			.await
+			.map_err(Into::into)
 	}
 	async fn history(&mut self, workspace: Uuid, revision: i64) -> Result<()> {
 		SemanticHistory::append(
-			self.transaction.as_mut(),
+			self.tx()?,
 			workspace,
 			None,
 			revision,
@@ -231,10 +252,11 @@ impl SemanticConfigurationSession for Configuration {
 		.map_err(Into::into)
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
-		self.transaction
-			.commit()
+		self.lease
+			.take()
+			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?
+			.finish(Ok(()))
 			.await
-			.map_err(Error::from)
 			.map_err(Into::into)
 	}
 }

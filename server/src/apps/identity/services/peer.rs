@@ -19,8 +19,22 @@ use crate::{Result, federation::Federation, registry::Entry};
 use serde_json::json;
 
 pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Result<PeerMapping> {
+	write_as(f, tenant, input, None).await
+}
+
+/// Writes a Peer Mapping as a Deployment Administrator, or as a Tenant
+/// Administrator acting through its Mapping (#359).
+pub(crate) async fn write_as(
+	f: &Federation,
+	tenant: &str,
+	input: PeerMappingInput,
+	administrator: Option<std::sync::Arc<crate::apps::identity::models::TenantAdministrator>>,
+) -> Result<PeerMapping> {
 	aidash_application::authorization::peer::mappings::write(
-		&crate::bootstrap::peer_mapping_repository(f),
+		&crate::apps::identity::repositories::peer_mappings::Repository {
+			runtime: f,
+			administrator,
+		},
 		tenant,
 		input,
 	)
@@ -57,6 +71,9 @@ pub(crate) use crate::apps::identity::serializers::peer::{
 };
 pub use crate::apps::identity::serializers::peer::{PeerMapping, PeerMappingInput};
 
+use crate::apps::identity::oidc::BrowserOrigin;
+use crate::apps::identity::services::tenant_administration::TenantAdministrations;
+use crate::authorization::identity::Actor;
 use http::HeaderMap;
 
 #[derive(Clone)]
@@ -77,27 +94,75 @@ pub(crate) async fn provide_peer_mappings(
 }
 
 impl PeerMappings {
+	fn administrations(&self) -> TenantAdministrations {
+		TenantAdministrations {
+			runtime: self.runtime.clone(),
+		}
+	}
 	pub(crate) async fn history(
 		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
 		tenant: String,
 		page: HistoryPage,
 	) -> Result<Vec<MappingRevision>> {
 		identifier(&tenant)?;
 		crate::http::validate(&page)?;
-		self.records
-			.history(&tenant, page.after, page.limit as usize)
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return self
+				.records
+				.history(&tenant, page.after, page.limit as usize)
+				.await;
+		}
+		let pool = self.runtime.store.pool.clone();
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.peer_mapping_history(&pool, page.after, page.limit as usize)
+					.await
+			})
 			.await
 	}
-	pub(crate) async fn list(&self, tenant: String, page: MappingPage) -> Result<Vec<PeerMapping>> {
+	pub(crate) async fn list(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		page: MappingPage,
+	) -> Result<Vec<PeerMapping>> {
 		identifier(&tenant)?;
 		crate::http::validate(&page)?;
-		self.records
-			.list(&tenant, page.offset as usize, page.limit as usize)
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return self
+				.records
+				.list(&tenant, page.offset as usize, page.limit as usize)
+				.await;
+		}
+		let pool = self.runtime.store.pool.clone();
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				administrator
+					.peer_mappings(&pool, page.offset as usize, page.limit as usize)
+					.await
+			})
 			.await
 	}
-	pub(crate) async fn set(&self, tenant: String, input: PeerMappingInput) -> Result<PeerMapping> {
+	pub(crate) async fn set(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		input: PeerMappingInput,
+	) -> Result<PeerMapping> {
 		let f = self.runtime.clone();
-		write(&f, &tenant, input).await
+		if matches!(actor, Actor::DeploymentAdministrator) {
+			return write(&f, &tenant, input).await;
+		}
+		self.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				write_as(&f, &tenant, input, Some(administrator.clone())).await
+			})
+			.await
 	}
 	pub(crate) async fn discover(
 		&self,

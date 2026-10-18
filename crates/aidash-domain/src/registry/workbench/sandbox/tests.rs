@@ -14,6 +14,7 @@ fn limits() -> TestLimits {
 		max_concurrent: 1,
 		payload_days: 1,
 		incident_evidence_days: 1,
+		revision: 0,
 	}
 }
 
@@ -207,4 +208,72 @@ fn recovery_detects_any_durable_unknown_outcome(
 	#[case] unknown: bool,
 ) {
 	assert_eq!(has_unknown_call(&calls), unknown);
+}
+
+#[test]
+fn the_default_ceilings_are_the_largest_values_a_tenant_may_set() {
+	let ceilings = TestLimitCeilings::default();
+	ceilings.validate().unwrap();
+	let mut largest = limits();
+	largest.max_input_bytes = 1_000_000;
+	largest.max_output_tokens = 8192;
+	largest.max_steps = 64;
+	largest.max_duration_secs = 900;
+	largest.max_concurrent = 32;
+	largest.payload_days = 365;
+	largest.incident_evidence_days = 3650;
+	validate_limits(&largest).unwrap();
+	ceilings.permits(&largest).unwrap();
+}
+
+#[rstest]
+#[case::below_the_range(0)]
+#[case::above_the_range(33)]
+fn a_ceiling_outside_the_settable_range_is_refused(#[case] max_concurrent: i32) {
+	let ceilings = TestLimitCeilings {
+		max_concurrent,
+		..TestLimitCeilings::MAXIMA
+	};
+	assert!(ceilings.validate().is_err());
+}
+
+#[test]
+fn a_value_above_a_ceiling_is_refused_by_name() {
+	let ceilings = TestLimitCeilings {
+		max_steps: 4,
+		..TestLimitCeilings::MAXIMA
+	};
+	let mut value = limits();
+	value.max_steps = 5;
+	let error = ceilings.permits(&value).unwrap_err().to_string();
+	assert!(error.contains("max_steps"), "{error}");
+	value.max_steps = 4;
+	ceilings.permits(&value).unwrap();
+}
+
+#[test]
+fn a_lowered_ceiling_cuts_stored_values_and_keeps_the_output_within_the_total() {
+	let ceilings = TestLimitCeilings {
+		max_total_tokens: 512,
+		max_concurrent: 1,
+		..TestLimitCeilings::MAXIMA
+	};
+	let stored = TestLimits {
+		max_output_tokens: 2048,
+		max_total_tokens: 16384,
+		max_concurrent: 4,
+		revision: 3,
+		..limits()
+	};
+	let effective = ceilings.effective(stored);
+	assert_eq!(
+		(
+			effective.max_output_tokens,
+			effective.max_total_tokens,
+			effective.max_concurrent,
+			effective.revision,
+		),
+		(512, 512, 1, 3)
+	);
+	validate_limits(&effective).unwrap();
 }

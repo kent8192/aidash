@@ -141,13 +141,17 @@ test("authority controls distinguish pending revocation while ordinary data is u
   await expect(notice).toHaveCount(0);
 });
 
-test("subjects visiting authorization see the restriction without Deployment Administrator controls", async ({
+test("subjects visiting authorization see their own API tokens without Deployment Administrator controls", async ({
   page,
 }) => {
   await setup(page, { subject: true });
   const deploymentAdministratorRequests: string[] = [];
   await page.route("**/api/authorization/**", (route) => {
-    deploymentAdministratorRequests.push(route.request().url());
+    const url = new URL(route.request().url());
+    // A member reads the API tokens it issued for itself (#363).
+    if (url.searchParams.get("mine") === "true")
+      return route.fulfill({ json: [] });
+    deploymentAdministratorRequests.push(url.toString());
     return route.fulfill({ status: 403, json: { error: "forbidden" } });
   });
   await page.goto("/");
@@ -155,9 +159,7 @@ test("subjects visiting authorization see the restriction without Deployment Adm
     history.pushState(null, "", "/authorization");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
-  await expect(
-    page.getByText("This page is available to administrators."),
-  ).toBeVisible();
+  await expect(page.getByText("Your API tokens")).toBeVisible();
   await expect(
     page.locator('.collab-settings-select option[value="authorization"]'),
   ).toHaveCount(0);
