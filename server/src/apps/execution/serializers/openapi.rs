@@ -7,6 +7,7 @@ use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::research::{
 	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
+	TenantRetentionView,
 };
 use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::StateResponse;
@@ -17,7 +18,6 @@ use crate::apps::workspaces::serializers::entities::Task;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::{Result, config::openapi::Contracts};
-use aidash_application::retention::TenantRetention;
 use aidash_domain::retention::RetentionChange;
 use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
@@ -70,6 +70,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, RevocationInput>(document, views::research::revoke)?;
 	contracts.path(document, views::research::revoke, &["Uuid"])?;
+	contracts.response::<_, RevocationRecord>(
+		document,
+		views::research::revocation,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::research::revocation, &["Uuid"])?;
 	contracts.response::<_, Vec<RevocationRecord>>(
 		document,
 		views::research::revocations,
@@ -78,14 +85,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, HistoryPage>(document, views::research::revocations)?;
 	contracts.path(document, views::research::revocations, &["String"])?;
-	contracts.response::<_, TenantRetention>(
+	contracts.response::<_, TenantRetentionView>(
 		document,
 		views::research::retention,
 		200,
 		"application/json",
 	)?;
 	contracts.path(document, views::research::retention, &["String"])?;
-	contracts.response::<_, TenantRetention>(
+	contracts.response::<_, TenantRetentionView>(
 		document,
 		views::research::retention_update,
 		200,

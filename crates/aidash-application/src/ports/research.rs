@@ -310,9 +310,15 @@ pub trait RevocationScope: Send {
 pub trait RevocationRecordScope: Send {
 	/// Who is reading.
 	fn decider(&self) -> Decider;
-	/// A subject must be permitted `action` on its Tenant's revocation records;
-	/// a Deployment Administrator needs no Tenant policy.
-	async fn require(&mut self, tenant: &str, action: &str) -> Result<()>;
+	/// Whether a subject is permitted `action` on its Tenant's revocation
+	/// records; a Deployment Administrator needs no Tenant policy.
+	async fn permits(&mut self, tenant: &str, action: &str) -> Result<bool>;
+	/// Whether a subject sees the Run and is permitted `action` on the Run's
+	/// `research` resource, as [`RevocationScope::require`] decides it; a
+	/// Deployment Administrator needs no Tenant policy.
+	async fn permits_run(&mut self, run: Uuid, action: &str) -> Result<bool>;
+	/// The Run's revocation record, if its evidence was revoked.
+	async fn record(&mut self, run: Uuid) -> Result<Option<EvidenceRevocation>>;
 	/// The Tenant's records, newest first.
 	async fn records(
 		&mut self,

@@ -30,17 +30,29 @@ fn digest(name: &str) -> SimpleExpr {
 impl Research {
 	/// Bob, a member of the Tenant whose policy refuses him `research.revoke`
 	/// and `retention.update`; returns his token.
-	async fn refuse_bob(&mut self) -> String {
-		self.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"bob-keeps-evidence","effect":"deny","subjects":{"ids":["bob"]},"actions":["research.revoke","retention.update"],"resources":{"kinds":["research","retention"]}}));
+	/// Deny `subject` Evidence Revocation and retention updates.
+	async fn refuse(&mut self, subject: &str) {
+		self.c.policy["policies"].as_array_mut().unwrap().push(json!({"id":format!("{subject}-keeps-evidence"),"effect":"deny","subjects":{"ids":[subject]},"actions":["research.revoke","retention.update"],"resources":{"kinds":["research","retention"]}}));
+		let (_, snapshot) = request(
+			&self.c.app,
+			&self.c.f.config.api_token,
+			"GET",
+			"/api/authorization/acme",
+			json!(null),
+		)
+		.await;
 		let (status, value) = request(
 			&self.c.app,
 			&self.c.f.config.api_token,
 			"POST",
 			"/api/authorization/acme",
-			json!({"expected_revision":3,"bundle":self.c.policy}),
+			json!({"expected_revision":snapshot["revision"],"bundle":self.c.policy}),
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");
+	}
+	async fn refuse_bob(&mut self) -> String {
+		self.refuse("bob").await;
 		let (status, bob) = request(
 			&self.c.app,
 			&self.c.f.config.api_token,
@@ -162,9 +174,40 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	assert_eq!(status, 200);
 	let bob = r.refuse_bob().await;
 	let revoke = format!("/api/runs/{}/research-revocation", run.id);
+	let research = format!("/api/runs/{}/research", run.id);
 
-	// Act and assert: Bob may read the Run but not revoke its evidence, and a
-	// reason is required.
+	// Act and assert: the dashboard learns who may revoke before anyone does.
+	let (status, view) = request(&r.c.app, &r.c.token, "GET", &research, json!(null)).await;
+	assert_eq!(status, 200, "{view}");
+	assert_eq!(
+		(
+			&view["revoked_at"],
+			&view["can_revoke"],
+			&view["can_read_revocation"]
+		),
+		(&json!(null), &json!(true), &json!(true))
+	);
+	// Bob cannot read this Run, so its research view refuses him as the Run
+	// itself does.
+	let (status, view) = request(&r.c.app, &bob, "GET", &research, json!(null)).await;
+	assert_eq!(status, 403, "{view}");
+	let (status, body) = request(&r.c.app, &r.c.token, "GET", &revoke, json!(null)).await;
+	assert_eq!(status, 404, "a Run not revoked has no record: {body}");
+	// A Run ID pasted into another Tenant's form revokes nothing.
+	let (status, body) = request(
+		&r.c.app,
+		&r.c.f.config.api_token,
+		"POST",
+		&revoke,
+		json!({"reason":"removal request","tenant":"other"}),
+	)
+	.await;
+	assert_eq!(status, 404, "{body}");
+	let (status, _) = request(&r.c.app, &r.c.token, "GET", &evidence, json!(null)).await;
+	assert_eq!(status, 200, "nothing was revoked");
+
+	// Bob may read the Run but not revoke its evidence, and a reason is
+	// required.
 	let (status, body) = request(
 		&r.c.app,
 		&bob,
@@ -297,6 +340,26 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	assert_eq!((status, list.as_array().map(Vec::len)), (200, Some(1)));
 	let (status, _) = request(&r.c.app, &bob, "GET", records, json!(null)).await;
 	assert_eq!(status, 403);
+	for token in [&r.c.token, &r.c.f.config.api_token] {
+		let (status, read) = request(&r.c.app, token, "GET", &revoke, json!(null)).await;
+		assert_eq!(status, 200, "{read}");
+		assert_eq!(read, record);
+	}
+	// Every reader of the Run learns that and when, but not who or why: once
+	// Alice may no longer revoke, she reads only the revoked state.
+	r.refuse("alice").await;
+	let (status, view) = request(&r.c.app, &r.c.token, "GET", &research, json!(null)).await;
+	assert_eq!(status, 200, "{view}");
+	assert_eq!(
+		(
+			&view["revoked_at"],
+			&view["can_revoke"],
+			&view["can_read_revocation"]
+		),
+		(&record["revoked_at"], &json!(false), &json!(false))
+	);
+	let (status, body) = request(&r.c.app, &r.c.token, "GET", &revoke, json!(null)).await;
+	assert_eq!(status, 403, "{body}");
 	r.close().await;
 }
 
@@ -538,6 +601,17 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	assert_eq!(rules["deployment"], defaults);
 	assert_eq!(rules["tenant_rules"], json!(null));
 	assert_eq!(rules["effective"], defaults);
+	let can = |rules: &Value| {
+		[
+			rules["can_update"].clone(),
+			rules["can_read_history"].clone(),
+			rules["can_read_revocations"].clone(),
+		]
+	};
+	assert_eq!(can(&rules), [json!(true), json!(true), json!(true)]);
+	let (status, refused) = request(&r.c.app, &bob, "GET", path, json!(null)).await;
+	assert_eq!(status, 200, "{refused}");
+	assert_eq!(can(&refused), [json!(false), json!(false), json!(false)]);
 
 	// Act and assert: a Tenant cannot keep longer than the Deployment, Bob
 	// may not change the periods, and Alice shortens them.
@@ -603,6 +677,7 @@ async fn a_tenant_shortens_its_periods_and_the_sweep_purges_content_already_kept
 	.await;
 	assert_eq!(status, 200, "{rules}");
 	assert_eq!(rules["effective"], defaults);
+	assert_eq!(can(&rules), [json!(true), json!(true), json!(true)]);
 	// Rules are never stored for a Tenant that does not exist, which a Tenant
 	// created later under that name would inherit.
 	let (status, body) = request(

@@ -592,7 +592,8 @@ impl EvidenceStore for Evidence {
 }
 
 /// One Run's research usage, charges and unsettled attempts. The caller has
-/// already decided that the reader may read the Run.
+/// already decided that the reader may read the Run, and fills in the
+/// reader's standing towards the Run's Evidence Revocation.
 pub(crate) async fn run_research(
 	store: &Store,
 	scope: &aidash_application::tenancy::TenancyScope,
@@ -636,5 +637,8 @@ pub(crate) async fn run_research(
 				requested_at: record.created_at,
 			})
 			.collect(),
+		revoked_at: None,
+		can_revoke: false,
+		can_read_revocation: false,
 	})
 }

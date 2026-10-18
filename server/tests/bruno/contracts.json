@@ -30243,9 +30243,20 @@
             "estimated_micro_usd",
             "uncertain_attempts",
             "in_flight_attempts",
-            "url_intents"
+            "url_intents",
+            "revoked_at",
+            "can_revoke",
+            "can_read_revocation"
           ],
           "properties": {
+            "can_read_revocation": {
+              "type": "boolean",
+              "description": "Whether the reader may read the Run's revocation record."
+            },
+            "can_revoke": {
+              "type": "boolean",
+              "description": "Whether the reader may revoke the Run's research evidence."
+            },
             "estimated_micro_usd": {
               "type": "integer",
               "format": "uint64",
@@ -30260,6 +30271,11 @@
             },
             "limits": {
               "$ref": "#/components/schemas/ResearchLimits"
+            },
+            "revoked_at": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the Run's research evidence was revoked (ADR 0046). Who revoked it\nand why is in its revocation record, readable only by its audience."
             },
             "uncertain_attempts": {
               "type": "integer",
@@ -31395,6 +31411,15 @@
   },
   {
     "method": "POST",
+    "path": "/api/tenants/{tenant}/leave",
+    "name": "tenant-leave",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
     "path": "/api/tenants",
     "name": "tenants-create",
     "source": "server/src/apps/identity/views/tenants.rs",
@@ -31417,6 +31442,33 @@
     "name": "tenants-label",
     "source": "server/src/apps/identity/views/tenants.rs",
     "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/personal",
+    "name": "tenants-personal",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/deletion",
+    "name": "tenants-delete",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/restore",
+    "name": "tenants-restore",
+    "source": "server/src/apps/identity/views/tenants.rs",
+    "json": false,
     "uuid_parameters": [],
     "query_parameters": []
   },
@@ -32201,6 +32253,104 @@
   },
   {
     "method": "GET",
+    "path": "/api/runs/{id}/research-revocation",
+    "name": "run-research-revocation-read",
+    "source": "server/src/apps/execution/views/research.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RevocationRecord"
+      },
+      "definitions": {
+        "RevocationRecord": {
+          "type": "object",
+          "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
+          "required": [
+            "run_id",
+            "tenant",
+            "revoked_by",
+            "reason",
+            "revoked_at",
+            "removed"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "removed": {
+              "$ref": "#/components/schemas/RemovedCopies"
+            },
+            "revoked_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revoked_by": {
+              "type": "string",
+              "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token."
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant": {
+              "type": ["string", "null"],
+              "description": "The Run's Tenant, when it has one."
+            }
+          }
+        },
+        "RemovedCopies": {
+          "type": "object",
+          "description": "What a revocation removed, counted and identified by digest only.",
+          "required": [
+            "sources",
+            "snapshots",
+            "fragments",
+            "attempts",
+            "invocations",
+            "snapshot_digests"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "fragments": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "invocations": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_digests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "`sha256:` text digests of the revoked Document snapshots."
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
     "path": "/api/tenants/{tenant}/research-revocations",
     "name": "research-revocation-list",
     "source": "server/src/apps/execution/views/research.rs",
@@ -32310,38 +32460,9 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/TenantRetention"
+        "$ref": "#/components/schemas/TenantRetentionView"
       },
       "definitions": {
-        "TenantRetention": {
-          "type": "object",
-          "description": "The periods that apply to one Tenant and where they come from.",
-          "required": ["tenant", "deployment", "tenant_rules", "effective"],
-          "properties": {
-            "deployment": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "The Deployment's periods, also the longest the Tenant may keep."
-            },
-            "effective": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "What applies: the shorter of the two for every period."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "tenant_rules": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/RetentionRules"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The Tenant's own shorter periods, if it stores any."
-            }
-          }
-        },
         "RetentionRules": {
           "type": "object",
           "description": "The periods of every kind of content Aidash keeps only for a while.",
@@ -32372,6 +32493,55 @@
             }
           },
           "additionalProperties": false
+        },
+        "TenantRetentionView": {
+          "type": "object",
+          "description": "The Retention Rules that apply to one Tenant, with what the caller may do\nabout them, so a dashboard offers only that.",
+          "required": [
+            "tenant",
+            "deployment",
+            "tenant_rules",
+            "effective",
+            "can_update",
+            "can_read_history",
+            "can_read_revocations"
+          ],
+          "properties": {
+            "can_read_history": {
+              "type": "boolean",
+              "description": "Whether the caller may read the history of the Tenant's periods."
+            },
+            "can_read_revocations": {
+              "type": "boolean",
+              "description": "Whether the caller may read the Tenant's Evidence Revocation records."
+            },
+            "can_update": {
+              "type": "boolean",
+              "description": "Whether the caller may change or clear the Tenant's periods."
+            },
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
         }
       }
     }
@@ -32386,38 +32556,9 @@
     "query_parameters": [],
     "response": {
       "schema": {
-        "$ref": "#/components/schemas/TenantRetention"
+        "$ref": "#/components/schemas/TenantRetentionView"
       },
       "definitions": {
-        "TenantRetention": {
-          "type": "object",
-          "description": "The periods that apply to one Tenant and where they come from.",
-          "required": ["tenant", "deployment", "tenant_rules", "effective"],
-          "properties": {
-            "deployment": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "The Deployment's periods, also the longest the Tenant may keep."
-            },
-            "effective": {
-              "$ref": "#/components/schemas/RetentionRules",
-              "description": "What applies: the shorter of the two for every period."
-            },
-            "tenant": {
-              "type": "string"
-            },
-            "tenant_rules": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/RetentionRules"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The Tenant's own shorter periods, if it stores any."
-            }
-          }
-        },
         "RetentionRules": {
           "type": "object",
           "description": "The periods of every kind of content Aidash keeps only for a while.",
@@ -32448,6 +32589,55 @@
             }
           },
           "additionalProperties": false
+        },
+        "TenantRetentionView": {
+          "type": "object",
+          "description": "The Retention Rules that apply to one Tenant, with what the caller may do\nabout them, so a dashboard offers only that.",
+          "required": [
+            "tenant",
+            "deployment",
+            "tenant_rules",
+            "effective",
+            "can_update",
+            "can_read_history",
+            "can_read_revocations"
+          ],
+          "properties": {
+            "can_read_history": {
+              "type": "boolean",
+              "description": "Whether the caller may read the history of the Tenant's periods."
+            },
+            "can_read_revocations": {
+              "type": "boolean",
+              "description": "Whether the caller may read the Tenant's Evidence Revocation records."
+            },
+            "can_update": {
+              "type": "boolean",
+              "description": "Whether the caller may change or clear the Tenant's periods."
+            },
+            "deployment": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "The Deployment's periods, also the longest the Tenant may keep."
+            },
+            "effective": {
+              "$ref": "#/components/schemas/RetentionRules",
+              "description": "What applies: the shorter of the two for every period."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "tenant_rules": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetentionRules"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Tenant's own shorter periods, if it stores any."
+            }
+          }
         }
       }
     }

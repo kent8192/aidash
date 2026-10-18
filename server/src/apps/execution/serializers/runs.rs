@@ -89,6 +89,13 @@ pub struct RunResearch {
 	/// The pages people asked the Run to read, oldest first. Each only asked
 	/// for a Page reading; none approved a Web disclosure.
 	pub url_intents: Vec<RunUrlIntent>,
+	/// When the Run's research evidence was revoked (ADR 0046). Who revoked it
+	/// and why is in its revocation record, readable only by its audience.
+	pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+	/// Whether the reader may revoke the Run's research evidence.
+	pub can_revoke: bool,
+	/// Whether the reader may read the Run's revocation record.
+	pub can_read_revocation: bool,
 }
 
 /// The pages one input asked a Run to read.

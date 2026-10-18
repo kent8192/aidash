@@ -117,6 +117,10 @@ pub struct RevocationInput {
 	/// history after the Run is deleted, so do not include URLs, page content
 	/// or personal data.
 	pub reason: String,
+	/// The Tenant the caller expects the Run to belong to. When present, a Run
+	/// of any other Tenant answers 404 and nothing is revoked.
+	#[serde(default)]
+	pub tenant: Option<String>,
 }
 
 /// The audit record of one Evidence Revocation. It holds digests but no
@@ -179,6 +183,20 @@ pub struct HistoryPage {
 
 fn history_limit() -> u32 {
 	50
+}
+
+/// The Retention Rules that apply to one Tenant, with what the caller may do
+/// about them, so a dashboard offers only that.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TenantRetentionView {
+	#[serde(flatten)]
+	pub retention: aidash_application::retention::TenantRetention,
+	/// Whether the caller may change or clear the Tenant's periods.
+	pub can_update: bool,
+	/// Whether the caller may read the history of the Tenant's periods.
+	pub can_read_history: bool,
+	/// Whether the caller may read the Tenant's Evidence Revocation records.
+	pub can_read_revocations: bool,
 }
 
 /// A change of a Tenant's own Retention Rules (ADR 0045).

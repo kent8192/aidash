@@ -129,3 +129,90 @@ test("a person without a Mapping can create a Tenant where the rules allow it", 
   ).toBeVisible();
   expect(created).toEqual([{ label: "Research" }]);
 });
+
+test("a deleted Tenant is offered for restore through its own Mapping", async ({
+  page,
+}) => {
+  await signedIn(page, {
+    deleted_tenants: [
+      {
+        tenant,
+        label: "Research",
+        mapping_id: "mapping-research",
+        personal: false,
+        purge_after: "2026-11-16T00:00:00Z",
+        restorable: true,
+      },
+      {
+        tenant: "calm-heron-p2s8d1qe",
+        label: "Shared",
+        mapping_id: "mapping-shared",
+        personal: false,
+        purge_after: "2026-11-16T00:00:00Z",
+        restorable: false,
+      },
+    ],
+  });
+  await page.route("**/auth/registration", (route) =>
+    route.fulfill({ json: null }),
+  );
+  const contexts: (string | null)[] = [];
+  await page.route(`**/api/tenants/${tenant}/restore`, (route) => {
+    contexts.push(route.request().headers()["x-aidash-context"] ?? null);
+    return route.fulfill({ json: { tenant } });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByText("Deleted Tenants")).toBeVisible();
+  await expect(page.getByText("Shared")).toBeVisible();
+  // Only the Tenant this Mapping may restore offers Restore.
+  await expect(page.getByRole("button", { name: "Restore" })).toHaveCount(1);
+  await page.getByRole("button", { name: "Restore" }).click();
+  await expect
+    .poll(() => contexts)
+    .toEqual([`mapping:${tenant}:mapping-research`]);
+});
+
+test("a deleted Personal Tenant can be replaced by a new one on request", async ({
+  page,
+}) => {
+  await signedIn(page, {
+    personal_account: true,
+    personal_tenant_deleted: true,
+    deleted_tenants: [
+      {
+        tenant,
+        label: "Personal",
+        mapping_id: "mapping-personal",
+        personal: true,
+        purge_after: "2026-11-16T00:00:00Z",
+        restorable: true,
+      },
+    ],
+  });
+  await page.route("**/auth/registration", (route) =>
+    route.fulfill({ json: null }),
+  );
+  let created = 0;
+  await page.route("**/api/tenants/personal", (route) => {
+    created += 1;
+    return route.fulfill({
+      status: 201,
+      json: {
+        name: "calm-heron-p2s8d1qe",
+        label: "Personal",
+        created_at: "2026-10-17T00:00:00Z",
+        mapping_id: "mapping-new",
+      },
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(
+    page.getByText("Restore it above to keep its data"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "New Personal Tenant" }).click();
+  await expect.poll(() => created).toBe(1);
+});
