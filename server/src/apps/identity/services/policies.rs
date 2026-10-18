@@ -190,7 +190,11 @@ impl PolicyAdministration {
 		} else {
 			self.administrations()
 				.run(actor, origin, &tenant, async |administrator| {
-					administrator.revoke_credential(&f.store.pool, id).await
+					// Revocation keeps its own pool, as a Deployment
+					// Administrator's does, so a busy API pool cannot delay it.
+					administrator
+						.revoke_credential(&f.store.control_pool, id)
+						.await
 				})
 				.await?
 		};
@@ -254,7 +258,7 @@ impl PolicyAdministration {
 				.run(actor, origin, &tenant, async |administrator| {
 					administrator
 						.replace_policy(
-							&f.store.pool,
+							&f.store.control_pool,
 							&AdministrationActor::TenantAdministrator(administrator.clone()),
 							input.expected_revision,
 							&input.bundle,

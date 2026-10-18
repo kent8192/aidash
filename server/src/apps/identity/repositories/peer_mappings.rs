@@ -243,29 +243,24 @@ impl MappingWrite for WriteScope {
 	/// Mapping's own, and never one a member issued for itself, which would
 	/// let someone outside the Deployment act as that person.
 	async fn lock_credential(&mut self, tenant: &str, id: Uuid, subject: &str) -> Result<()> {
-		let result: NativeResult<Option<i32>> = async {
-			Ok(crate::database::native::query_scalar(
-				&Query::select()
-					.expr(Expr::cust("1"))
-					.from(Alias::new("authorization_credentials"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(tenant = ? AND id = ? AND issued_by <> 'dashboard-oidc' AND mapping_id IS NULL)"
-							.to_owned(),
-						vec![
-							Expr::value(tenant.to_owned()).into(),
-							Expr::value(id).into(),
-						],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut *self.tx)
-			.await?)
-		}
-		.await;
-		if result
-			.map_err(Into::<aidash_application::Error>::into)?
-			.is_none()
-		{
+		let exportable: Option<i32> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("1"))
+				.from(Alias::new("authorization_credentials"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(tenant = ? AND id = ? AND issued_by <> 'dashboard-oidc' AND mapping_id IS NULL)"
+						.to_owned(),
+					vec![
+						Expr::value(tenant.to_owned()).into(),
+						Expr::value(id).into(),
+					],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.tx)
+		.await
+		.map_err(aidash_application::Error::from)?;
+		if exportable.is_none() {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let identity = SubjectIdentity {
