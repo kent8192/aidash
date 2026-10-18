@@ -42,14 +42,18 @@ impl BehavioralTests {
 		tenant: String,
 		input: TestLimits,
 	) -> Result<TenantTestLimits> {
-		Ok(
-			aidash_application::registry::workbench::sandbox::set_limits(
-				&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
-				tenant,
-				input.into(),
-			)
-			.await?,
+		let repository = crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor);
+		let result = aidash_application::registry::workbench::sandbox::set_limits(
+			&repository,
+			tenant,
+			input.into(),
 		)
+		.await;
+		repository
+			.tenant_actions
+			.record_denial(&self.runtime.store.pool)
+			.await?;
+		Ok(result?)
 	}
 	/// A Tenant's limits and the Deployment's ceilings (#361).
 	pub(crate) async fn tenant_limits(
@@ -58,13 +62,15 @@ impl BehavioralTests {
 		tenant: String,
 	) -> Result<TenantTestLimits> {
 		aidash_domain::policy::identifier(&tenant)?;
-		Ok(
-			aidash_application::registry::workbench::sandbox::tenant_limits(
-				&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
-				tenant,
-			)
-			.await?,
-		)
+		let repository = crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor);
+		let result =
+			aidash_application::registry::workbench::sandbox::tenant_limits(&repository, tenant)
+				.await;
+		repository
+			.tenant_actions
+			.record_denial(&self.runtime.store.pool)
+			.await?;
+		Ok(result?)
 	}
 	pub(crate) async fn sessions(&self, actor: Actor, id: Uuid) -> Result<Vec<TestSession>> {
 		aidash_application::registry::workbench::sandbox::sessions(

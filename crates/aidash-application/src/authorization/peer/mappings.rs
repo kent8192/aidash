@@ -34,6 +34,9 @@ pub async fn write<R: MappingRepository>(
 		.await?
 		.ok_or(Error::Forbidden)?;
 	scope.authorize(tenant, &input, &subject).await?;
+	// A disabled mapping may keep a revoked or expired credential, never one
+	// that could not be exported.
+	scope.exportable(tenant, input.credential_id).await?;
 	if input.enabled {
 		scope
 			.lock_credential(tenant, input.credential_id, &subject)

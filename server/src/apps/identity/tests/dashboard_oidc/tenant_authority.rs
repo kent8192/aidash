@@ -480,6 +480,12 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 		.alice("POST", "/peer-mappings", mapping(&service, 1, false))
 		.await;
 	assert_eq!(status, 200, "{disabled}");
+	let revision = disabled["revision"].as_i64().unwrap();
+	// A disabled mapping takes no credential an enabled one could not.
+	let (status, body) = t
+		.alice("POST", "/peer-mappings", mapping(&own, revision, false))
+		.await;
+	assert_eq!(status, 403, "{body}");
 	// No one binds a Mapping's own credential, Deployment Administrators included.
 	let mapping_credential: Uuid =
 		sqlx::query_scalar("SELECT credential_id FROM dashboard_mappings WHERE id = $1::uuid")
@@ -495,6 +501,12 @@ async fn a_peer_mapping_binds_only_a_credential_its_author_could_issue(
 				"credential_id":mapping_credential,"enabled":true,"expected_revision":0}),
 		)
 		.await;
+	assert_eq!(status, 403, "{body}");
+	let mut disabled = mapping(&service, revision, false);
+	disabled["credential_id"] = json!(mapping_credential);
+	let (status, body) =
+		t.d.as_deployment_administrator("POST", &t.path("/peer-mappings"), disabled)
+			.await;
 	assert_eq!(status, 403, "{body}");
 	t.finish().await;
 }

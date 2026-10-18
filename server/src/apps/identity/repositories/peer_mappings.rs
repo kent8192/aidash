@@ -242,7 +242,7 @@ impl MappingWrite for WriteScope {
 	/// A mapped peer acts with an exportable credential only: never a
 	/// Mapping's own, and never one a member issued for itself, which would
 	/// let someone outside the Deployment act as that person.
-	async fn lock_credential(&mut self, tenant: &str, id: Uuid, subject: &str) -> Result<()> {
+	async fn exportable(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		let exportable: Option<i32> = crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("1"))
@@ -263,6 +263,9 @@ impl MappingWrite for WriteScope {
 		if exportable.is_none() {
 			return Err(aidash_application::Error::Forbidden);
 		}
+		Ok(())
+	}
+	async fn lock_credential(&mut self, tenant: &str, id: Uuid, subject: &str) -> Result<()> {
 		let identity = SubjectIdentity {
 			http_session: None,
 			credential_id: id,

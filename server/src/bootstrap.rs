@@ -2013,6 +2013,11 @@ pub(crate) fn workbench_sandbox_repository(
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
 		node_id: runtime.config.node_id.clone(),
+		tenant_actions:
+			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
+				actor.clone(),
+				runtime.config.node_id.clone(),
+			),
 		actor,
 	}
 }

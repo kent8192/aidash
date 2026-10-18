@@ -19,6 +19,9 @@ pub trait MappingWrite: Send + Sized {
 	) -> Result<()> {
 		Ok(())
 	}
+	/// Refuses a credential no Peer Mapping may bind, whether or not it is
+	/// enabled.
+	async fn exportable(&mut self, tenant: &str, id: Uuid) -> Result<()>;
 	async fn lock_credential(&mut self, tenant: &str, id: Uuid, subject: &str) -> Result<()>;
 	async fn insert(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>>;
 	async fn update(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>>;

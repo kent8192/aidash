@@ -71,20 +71,23 @@ impl ProfileRepository for Repository<'_> {
 	}
 	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
 		let pool = &self.runtime.store.pool;
-		pool.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-			super::authority::require_tenant_action(
-				&mut *tx,
-				pool,
-				&self.actor,
-				tenant,
-				aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
-				aidash_domain::identity::tenant_administration::COLLECTION,
-			)
-			.await?;
-			AgentTestProfile::page(tx, tenant).await
-		})
-		.await
-		.map_err(Into::into)
+		let actions = self.tenant_actions();
+		let result = pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				actions
+					.require(
+						&mut *tx,
+						pool.dashboard_policy().as_ref(),
+						tenant,
+						aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+						aidash_domain::identity::tenant_administration::COLLECTION,
+					)
+					.await?;
+				AgentTestProfile::page(tx, tenant).await
+			})
+			.await;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
 	}
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
@@ -99,20 +102,32 @@ impl ProfileRepository for Repository<'_> {
 	}
 	async fn save(&self, tenant: &str, id: &str, input: &ProfileInput) -> Result<TestProfile> {
 		let pool = &self.runtime.store.pool;
-		pool.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-			super::authority::require_tenant_action(
-				&mut *tx,
-				pool,
-				&self.actor,
-				tenant,
-				aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
-				id,
-			)
-			.await?;
-			AgentTestProfile::save(tx, tenant, id, input).await
-		})
-		.await
-		.map_err(Into::into)
+		let actions = self.tenant_actions();
+		let result = pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				actions
+					.require(
+						&mut *tx,
+						pool.dashboard_policy().as_ref(),
+						tenant,
+						aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+						id,
+					)
+					.await?;
+				AgentTestProfile::save(tx, tenant, id, input).await
+			})
+			.await;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
+	}
+}
+impl Repository<'_> {
+	/// A denial is audited after `pool.atomic` has rolled its transaction back.
+	fn tenant_actions(&self) -> super::authority::TenantActions {
+		super::authority::TenantActions::new(
+			self.actor.clone(),
+			self.runtime.config.node_id.clone(),
+		)
 	}
 }
 #[async_trait]

@@ -1,4 +1,5 @@
 use crate::endpoint::{assert_json, endpoint, subject};
+use aidash_server::apps::identity::models::AuthorizationDecision;
 use aidash_server::apps::registry::workbench::models::AgentDraft;
 use aidash_server::apps::registry::workbench::models::AgentTestLimit;
 use reinhardt::db::orm::Model;
@@ -154,9 +155,12 @@ async fn tenants_set_their_own_test_limits_at_the_revision_they_read(
 		200,
 	);
 	let mut bundle = policy["bundle"].clone();
+	// The evaluation names this Deployment's node, as every other API path does.
 	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"no-test-limits","effect":"deny","subjects":{"ids":["alice"]},
-		"actions":["workbench.test_limits.update"],"resources":{"kinds":["*"]}
+		"actions":["workbench.test_limits.update"],"resources":{"kinds":["*"]},
+		"condition":{"op":"eq","left":{"source":"environment","path":"/node_id"},
+			"right":{"source":"literal","value":app.runtime.config.node_id}}
 	}));
 	assert_json(
 		app.deployment_administrator
@@ -170,6 +174,19 @@ async fn tenants_set_their_own_test_limits_at_the_revision_they_read(
 		200,
 	);
 	assert_json(alice.get(path).await.unwrap(), 403);
+	let denied = AuthorizationDecision::objects()
+		.filter(AuthorizationDecision::field_tenant().eq("endpoint"))
+		.filter(AuthorizationDecision::field_action().eq("workbench.test_limits.update"))
+		.order_by(&["-sequence"])
+		.first_with_db(&mut app.database.lease.handle())
+		.await
+		.unwrap()
+		.expect("the denial is audited after its transaction rolled back");
+	assert_eq!(
+		denied.decision.0["allowed"], false,
+		"{:?}",
+		denied.decision.0
+	);
 	let saved = AgentTestLimit::objects()
 		.filter(AgentTestLimit::field_tenant().eq("endpoint"))
 		.get_with_db(&mut app.database.lease.handle())

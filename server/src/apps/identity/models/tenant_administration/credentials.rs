@@ -110,12 +110,14 @@ impl TenantAdministrator {
 					self.require(tx, &snapshot, rules::CREDENTIAL_CREATE, subject, json!({}))
 						.await?;
 					lock_issues(tx, self.mapping_id).await?;
+					// Expiry follows the database clock, as issuance and authentication do.
+					let now = super::super::dashboard_administration::database_time(tx).await?;
 					let active = AuthorizationCredential::objects()
 						.filter(
 							AuthorizationCredential::field_mapping_id().eq(Some(self.mapping_id)),
 						)
 						.filter(AuthorizationCredential::field_revoked_at().is_null())
-						.filter(AuthorizationCredential::field_expires_at().gt(chrono::Utc::now()))
+						.filter(AuthorizationCredential::field_expires_at().gt(now))
 						.all_with_db(tx)
 						.await?
 						.len();

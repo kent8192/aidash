@@ -19,11 +19,15 @@ pub(crate) struct Repository {
 	pub(crate) store: Store,
 	pub(crate) node_id: String,
 	pub(crate) actor: Actor,
+	/// Shared with every scope, so the caller audits a denial after the scope's
+	/// transaction has rolled back.
+	pub(crate) tenant_actions: super::authority::TenantActions,
 }
 struct Scope {
 	node_id: String,
 	tx: crate::database::native::Transaction,
 	actor: Actor,
+	tenant_actions: super::authority::TenantActions,
 	ceilings: TestLimitCeilings,
 }
 #[async_trait]
@@ -43,6 +47,7 @@ impl SandboxRepository for Repository {
 		Ok(Box::new(Scope {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
 			actor: self.actor.clone(),
+			tenant_actions: self.tenant_actions.clone(),
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
 		}))
@@ -69,17 +74,11 @@ impl SandboxScope for Scope {
 		.await
 	}
 	async fn authorize_tenant(&mut self, tenant: &str, action: &str, id: &str) -> Result<()> {
-		let pool = self.tx.pool().clone();
-		super::authority::require_tenant_action(
-			&mut self.tx,
-			&pool,
-			&self.actor,
-			tenant,
-			action,
-			id,
-		)
-		.await
-		.map_err(Into::into)
+		let policy = self.tx.pool().dashboard_policy();
+		self.tenant_actions
+			.require(&mut self.tx, policy.as_ref(), tenant, action, id)
+			.await
+			.map_err(Into::into)
 	}
 	async fn limits(&mut self, tenant: &str) -> Result<TestLimits> {
 		let stored = self.stored_limits(tenant).await?;
