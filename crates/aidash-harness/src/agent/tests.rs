@@ -813,8 +813,15 @@ impl ExecutionAuthority for Backend {
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
 	) -> Result<HumanMediaBatch> {
-		let _ = (messages, model);
-		unexpected("ExecutionAuthority.human_message_media")
+		let _ = model;
+		if !self.0.human_media_pending {
+			unexpected("ExecutionAuthority.human_message_media");
+		}
+		Ok(HumanMediaBatch {
+			parts: vec![],
+			through_seq: messages.first().map(|(seq, _, _)| *seq),
+			has_more: true,
+		})
 	}
 	async fn reserve_inference(
 		&self,
@@ -1031,22 +1038,6 @@ impl ExecutionEnvironment for Backend {
 			.expect("interruption sender lives with the backend");
 		self.0.interruption.send_replace(None);
 		Ok(interruption)
-	}
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		let _ = (run, model);
-		if !self.0.human_media_pending {
-			unexpected("ExecutionEnvironment.operator_human_message_media");
-		}
-		Ok(HumanMediaBatch {
-			parts: vec![],
-			through_seq: messages.first().map(|(seq, _, _)| *seq),
-			has_more: true,
-		})
 	}
 
 	fn node_id(&self) -> &str {
@@ -4212,9 +4203,9 @@ async fn deferred_media_intake_reports_no_tool_exposure(mut fixture: Fixture) {
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	run_message(&mut fixture);
 	deferred_agent(&mut fixture);
-	Arc::get_mut(&mut fixture.backend.0)
-		.unwrap()
-		.human_media_pending = true;
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	backend.human_media_pending = true;
+	backend.scoped = true;
 	// Act
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: no tools were sent, so none are measured as exposed.

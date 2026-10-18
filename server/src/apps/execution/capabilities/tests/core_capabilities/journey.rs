@@ -459,9 +459,9 @@ fn journey_router(
 fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 	async move {
 		let mut c = core.await;
-		let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
+		let mut tool = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "http", "1.0.0").await.unwrap();
 		tool.version = "1.1.0".into();
-		let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+		let mut agent = c.f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
 		agent.binding_normalization = None;
 		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.node_id,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
@@ -469,7 +469,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		for entry in [tool, agent] {
 			let (status, result) = request(
 				&c.app,
-				&c.f.config.api_token,
+				&c.token,
 				"POST",
 				"/api/registry",
 				json!(entry),
@@ -478,7 +478,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 			assert_eq!(status, 200, "{result}");
 			let (status, result) = request(
 				&c.app,
-				&c.f.config.api_token,
+				&c.token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
@@ -489,15 +489,7 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		c.policy["subjects"]
 			[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
 			json!({"kind":"agent"});
-		let (status, result) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":2,"bundle":c.policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
+		crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 		c
 	}
 	.boxed()

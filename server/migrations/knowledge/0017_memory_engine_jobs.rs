@@ -24,7 +24,6 @@ pub(super) fn migration() -> Migration {
  ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
  ], constraints: vec![
  Constraint::ForeignKey { name: "memory_job_bank".into(), columns: vec!["bank_id".into()], referenced_table: "memory_banks".into(), referenced_columns: vec!["id".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
- Constraint::ForeignKey { name: "memory_job_provider".into(), columns: vec!["provider_id".into(),"provider_version".into()], referenced_table: "registry".into(), referenced_columns: vec!["id".into(),"version".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
  Constraint::Check { name: "memory_job_state".into(), expression: "state IN ('pending','running','complete','blocked','failed') AND attempts >= 0 AND kind IN ('learn','observation','mental_model')".into() },
  ], without_rowid: None, interleave_in_parent: None, partition: None,
  })

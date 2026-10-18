@@ -112,7 +112,7 @@ impl Definitions for Scope {
 	async fn definition(&self, _: &RunMetadata, _: &str, _: &str) -> Result<Entry> {
 		panic!("headroom reads only the admitted closure")
 	}
-	async fn documents(&self, entry: &Entry) -> Result<Value> {
+	async fn documents(&self, _: &RunMetadata, entry: &Entry) -> Result<Value> {
 		self.trace.lock().unwrap().push("documents".into());
 		if self.document_error {
 			Err(Error::External("private contents unavailable".into()))

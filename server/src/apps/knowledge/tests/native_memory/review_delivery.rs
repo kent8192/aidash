@@ -170,14 +170,40 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 			.unwrap();
 		tx.commit().await.unwrap();
 	}
-	let mut replacement = registry.get("p", "1.0.0").await.unwrap();
+	let mut replacement = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	replacement.id = "smaller-capacity".into();
 	replacement.config["policy"]["retention"]["max_model_operations"] = json!(2);
-	registry.register(replacement).await.unwrap();
-	let mut agent = registry.get("a", "1.0.0").await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			replacement,
+		)
+		.await
+		.unwrap();
+	let mut agent = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"a",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.1.0".into();
 	replace_memory_binding(&mut agent, reference("smaller-capacity"));
-	registry.register(agent).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	let result = memory::upgrade_participant(
 		&store,
 		&Actor::DeploymentAdministrator,

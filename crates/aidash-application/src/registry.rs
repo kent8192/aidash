@@ -4,7 +4,7 @@ use crate::{
 	ports::registry::{DefinitionLookup, DefinitionWriter, RegistrationScope, RegistryRead},
 };
 use aidash_domain::{
-	registry::{AgentPage, ClusterConfig, Entry, Search},
+	registry::{ClusterConfig, Entry, Search},
 	tool::ToolConfig,
 };
 use serde_json::{Value, json};
@@ -37,67 +37,6 @@ pub async fn get_for_run(
 	let root = scope.definition(&run.agent_id, &run.agent_version).await?;
 	let _ = root;
 	scope.definition(id, version).await
-}
-
-pub async fn legacy_agents(
-	scope: &mut dyn RegistryRead,
-	search: &Search,
-	offset: u64,
-) -> Result<AgentPage> {
-	let mut cursor = offset;
-	let mut entries = vec![];
-	let mut bytes = 0;
-	loop {
-		let rows = scope
-			.definitions(
-				Some("agent"),
-				usize::try_from(cursor)
-					.map_err(|_| Error::Invalid("agent offset exceeds platform limits".into()))?,
-				Some(64),
-			)
-			.await?;
-		let exhausted = rows.len() < 64;
-		for row in rows {
-			if row.metadata.get("installation").is_some()
-				|| scope.generated(&row.id, &row.version).await?
-			{
-				cursor += 1;
-				continue;
-			}
-			let entry: Entry = serde_json::from_value(row.metadata)?;
-			if !search.matches(&entry) {
-				cursor += 1;
-				continue;
-			}
-			let size = serde_json::to_vec(&entry)?.len() + 1;
-			if bytes + size > 3_000_000 {
-				if entries.is_empty() {
-					return Err(Error::Invalid(
-						"agent metadata exceeds discovery page limit".into(),
-					));
-				}
-				return Ok(AgentPage {
-					entries,
-					next_offset: Some(cursor),
-				});
-			}
-			bytes += size;
-			cursor += 1;
-			entries.push(entry);
-			if entries.len() == 64 {
-				return Ok(AgentPage {
-					entries,
-					next_offset: Some(cursor),
-				});
-			}
-		}
-		if exhausted {
-			return Ok(AgentPage {
-				entries,
-				next_offset: None,
-			});
-		}
-	}
 }
 
 pub async fn validate_references(
@@ -303,6 +242,7 @@ pub async fn register(
 	entry.normalize_agent(node)?;
 	if tracked {
 		scope.assign_id(&mut entry, key).await?;
+		scope.authorize(&entry).await?;
 	}
 	let inserted = register_definition(scope, validation, &entry, node).await?;
 	if tracked && inserted {

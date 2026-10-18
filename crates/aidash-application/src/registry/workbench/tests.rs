@@ -147,12 +147,13 @@ async fn sharing_is_not_accepted_for_owner_operations(draft: Draft) {
 }
 #[rstest]
 #[tokio::test]
-async fn deployment_administrator_authority_does_not_query_subject_grants(draft: Draft) {
+async fn a_deployment_administrator_reaches_no_draft(draft: Draft) {
 	let mut scope = Fake::new("ignored");
 	scope.principal = Principal::DeploymentAdministrator;
-	authorize(&mut scope, &draft, "agent_draft.register", true)
-		.await
-		.unwrap();
+	assert!(matches!(
+		authorize(&mut scope, &draft, "agent_draft.register", true).await,
+		Err(Error::Forbidden)
+	));
 	assert!(scope.log.is_empty());
 }
 #[rstest]

@@ -103,7 +103,8 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			if current.provider != provider {
 				return Ok(());
 			}
-			let policy = crate::semantic::native_memory::policy(&mut lease, &provider).await?;
+			let policy =
+				crate::semantic::native_memory::policy(&mut lease, &bank.tenant, &provider).await?;
 			let now = Utc::now();
 			let retention = &policy.retention;
 			// Staleness also retires derived rows when no viable automatic repair

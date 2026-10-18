@@ -91,7 +91,7 @@ impl WorkerStep for Step {
 			.map_err(Into::into)
 	}
 	async fn admit(&mut self) -> Result<()> {
-		self.guard = Guard::begin(&self.federation, &self.run).await?;
+		self.guard = Some(Guard::begin(&self.federation, &self.run).await?);
 		Ok(())
 	}
 	async fn invoke(&mut self, token: Uuid) -> Result<()> {
@@ -198,7 +198,7 @@ impl FailureScope for Failure {
 		.is_some())
 	}
 	async fn admit(&mut self) -> Result<()> {
-		self.guard = DeliveryGuard::begin(&self.federation, &self.record.metadata).await?;
+		self.guard = Some(DeliveryGuard::begin(&self.federation, &self.record.metadata).await?);
 		Ok(())
 	}
 	async fn deliver_inputs(&mut self) -> Result<()> {

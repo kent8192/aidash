@@ -101,6 +101,7 @@ impl SemanticConfigurationSession for Configuration {
 						("s", "bank_id"),
 						("s", "provider_id"),
 						("s", "provider_version"),
+						("memory_banks", "tenant"),
 					])
 					.from_as(Alias::new("memory_bank_settings"), Alias::new("s"))
 					.inner_join(
@@ -128,23 +129,26 @@ impl SemanticConfigurationSession for Configuration {
 				}
 				after = row.try_get("bank_id")?;
 				let reference = (
+					row.try_get::<String>("tenant")?,
 					row.try_get::<String>("provider_id")?,
 					row.try_get::<String>("provider_version")?,
 				);
 				if !checked.insert(reference.clone()) {
 					continue;
 				}
-				let provider = crate::apps::registry::models::Definition::read_in(
+				let provider = crate::apps::registry::models::Definition::read_of(
 					self.transaction.as_mut(),
 					&reference.0,
 					&reference.1,
+					&reference.2,
 				)
 				.await?;
 				let config: aidash_domain::memory::ProviderConfig =
 					serde_json::from_value(provider.config)?;
 				let role = &config.policy.embedding;
-				let embedding = crate::apps::registry::models::Definition::read_in(
+				let embedding = crate::apps::registry::models::Definition::read_of(
 					self.transaction.as_mut(),
+					&reference.0,
 					&role.id,
 					&role.version,
 				)

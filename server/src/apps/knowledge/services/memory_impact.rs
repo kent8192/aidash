@@ -15,7 +15,7 @@ pub async fn impact(store: &Store, actor: &Actor, input: ImpactQuery) -> Result<
 	let result = async {
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
 		bank_provider(&mut lease, &input.bank, &input.provider).await?;
-		let policy = policy(&mut lease, &input.provider).await?;
+		let policy = policy(&mut lease, &input.bank.tenant, &input.provider).await?;
 		input.validate(&policy.bounds)?;
 		let limits = Limits {
 			runs_per_unit: RUNS_PER_UNIT,

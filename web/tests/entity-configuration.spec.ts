@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import {
+  routeRegistryVersions,
+  routeTenantActions,
+  tenantSubject,
+} from "./registry-fixture";
 
 test.beforeEach(async ({ page }) => {
   await installBearerDashboard(page, "fixture-token");
@@ -12,14 +17,14 @@ test.beforeEach(async ({ page }) => {
     if (path === "/api/session")
       return route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node_id: "aidash://test",
         },
       });
     if (path === "/api/state")
       return route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",
@@ -104,6 +109,8 @@ test.beforeEach(async ({ page }) => {
       });
     return route.fulfill({ json: [] });
   });
+  await routeTenantActions(page, ["registry.create"]);
+  await routeRegistryVersions(page, () => []);
   await page.goto("/registry");
   await page
     .getByRole("button", { name: "Register entity", exact: true })

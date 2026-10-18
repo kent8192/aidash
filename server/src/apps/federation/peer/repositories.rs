@@ -6,9 +6,8 @@ use aidash_application::{
 	Result,
 	ports::federation::peers::{PeerConfiguration, PeerWrite},
 };
-use aidash_domain::{federation::Peer, registry::EntityRef};
+use aidash_domain::federation::Peer;
 use async_trait::async_trait;
-use uuid::Uuid;
 
 pub(crate) struct Configuration(pub(crate) Federation);
 struct Write {
@@ -38,22 +37,5 @@ impl PeerConfiguration for Configuration {
 	}
 	async fn all(&self) -> Result<Vec<Peer>> {
 		self.0.peers().await.map_err(Into::into)
-	}
-	async fn authorized(&self, node: &str, task: Uuid, agent: &EntityRef) -> Result<bool> {
-		// An inbound peer names a task, not its Tenant, until #241.
-		let scope = aidash_application::tenancy::TenancyScope::Deployment(
-			aidash_application::tenancy::DeploymentScopeReason::FederationInbound,
-		);
-		self.0
-			.store
-			.pool
-			.atomic(&scope, async |tx| {
-				crate::apps::federation::remote::models::Delegation::authorized(
-					tx, task, node, agent,
-				)
-				.await
-			})
-			.await
-			.map_err(Into::into)
 	}
 }

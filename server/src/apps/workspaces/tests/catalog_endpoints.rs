@@ -9,9 +9,10 @@ use uuid::Uuid;
 #[tokio::test]
 async fn task_pages_preserve_timestamp_ties_and_public_fields(#[future] endpoint: EndpointFixture) {
 	let app = endpoint.await;
-	let workspace = workspace(&app.deployment_administrator, "Task discovery").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Task discovery").await;
 	let created = assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&format!(
 					"/api/workspaces/{}/tasks",
@@ -48,20 +49,8 @@ async fn task_pages_preserve_timestamp_ties_and_public_fields(#[future] endpoint
 		.await
 		.unwrap();
 
-	let first = assert_json(
-		app.deployment_administrator
-			.get("/api/tasks")
-			.await
-			.unwrap(),
-		200,
-	);
-	let second = assert_json(
-		app.deployment_administrator
-			.get("/api/tasks?offset=500")
-			.await
-			.unwrap(),
-		200,
-	);
+	let first = assert_json(member.get("/api/tasks").await.unwrap(), 200);
+	let second = assert_json(member.get("/api/tasks?offset=500").await.unwrap(), 200);
 	assert_eq!(first["next_offset"], 500);
 	assert_eq!(second["next_offset"], json!(null));
 	let first_tasks = first["tasks"].as_array().unwrap();
@@ -82,13 +71,7 @@ async fn task_pages_preserve_timestamp_ties_and_public_fields(#[future] endpoint
 		})
 		.collect();
 	assert_eq!(actual, expected);
-	let exhausted = assert_json(
-		app.deployment_administrator
-			.get("/api/tasks?offset=501")
-			.await
-			.unwrap(),
-		200,
-	);
+	let exhausted = assert_json(member.get("/api/tasks?offset=501").await.unwrap(), 200);
 	assert_eq!(exhausted["tasks"], json!([]));
 	assert_eq!(exhausted["next_offset"], json!(null));
 }

@@ -31,7 +31,8 @@ pub trait ProfileRepository: Send + Sync {
 	async fn begin_draft(&self) -> Result<Box<dyn ProfileDraftScope + '_>>;
 	/// Preserve the existing ordered 100-row native profile transaction.
 	async fn page(&self, tenant: &str) -> Result<Vec<TestProfile>>;
-	async fn definition(&self, reference: &EntityRef) -> Result<Entry>;
+	/// The definition in the profile's Tenant, which the caller names.
+	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry>;
 	/// Preserve the exclusive row lock, expected-revision fence and atomic update/reload.
 	async fn save(&self, tenant: &str, id: &str, input: &ProfileInput) -> Result<TestProfile>;
 }

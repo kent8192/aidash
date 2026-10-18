@@ -16,3 +16,5 @@ mod native_database;
 mod offering;
 #[path = "tenancy.rs"]
 mod tenancy;
+#[path = "support/tenant_roots.rs"]
+mod tenant_roots;

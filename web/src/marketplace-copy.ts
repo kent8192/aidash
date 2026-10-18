@@ -40,7 +40,9 @@ export const marketplaceCopy = {
     activeRevision: "Active revision",
     saved: "Saved",
     conflict: "The revision changed. Reload before applying another change.",
-    admin: "Tenant installation approval",
+    admin: "Installations by Tenant",
+    adminHelp:
+      "Each Tenant approves its own installations through Catalog Approval. This list is read-only.",
     tenant: "Tenant",
     load: "Load",
     approve: "Approve and activate",
@@ -54,7 +56,7 @@ export const marketplaceCopy = {
       "Prepare dependencies before installation. Nothing is fetched automatically.",
     reviewInstall: "Review and install",
     installHelp:
-      "Check the exact digest and requested permissions. The installation stays pending until a Deployment Administrator approves it.",
+      "Check the exact digest and requested permissions. The installation stays pending until a member with Catalog Approval approves it.",
     cancel: "Cancel",
     colPackage: "Package",
     colKind: "Kind",
@@ -65,6 +67,21 @@ export const marketplaceCopy = {
     noPermissions: "No permissions requested",
     capabilities: "Capabilities",
     sharing: "Sharing",
+    reviewSet: "Approve a reviewed set",
+    reviewSetHelp:
+      "Choose pending installations to approve and activate together. The selection keeps the exact revisions and approval fences you reviewed until you submit it.",
+    reloadSelection: "Reload approval selection",
+    reviewDefinition: "Review definition and dependencies",
+    installationRevision: "Installation revision",
+    exactSelection: "Exact approval selection",
+    activationRevision: "activation revision",
+    catalogRevision: "catalog revision",
+    submittedRequest: "Submitted request (JSON)",
+    approveSet: "Approve and activate selected set",
+    setApproved: "The reviewed set is approved and active.",
+    selectionChanged:
+      "The reviewed selection changed. Reload the list and review it again.",
+    approvalUnavailable: "Current approval state is unavailable.",
   },
   "ja-JP": {
     publicationVersion: "公開するバージョン",
@@ -106,7 +123,9 @@ export const marketplaceCopy = {
     activeRevision: "有効なrevision",
     saved: "保存しました",
     conflict: "Revisionが更新されました。再読み込み後に変更してください。",
-    admin: "テナント導入の承認",
+    admin: "テナント別の導入一覧",
+    adminHelp:
+      "導入の承認は各テナントがカタログ承認で行います。この一覧は閲覧専用です。",
     tenant: "テナント",
     load: "読み込み",
     approve: "承認して有効化",
@@ -119,7 +138,7 @@ export const marketplaceCopy = {
     dependencies: "依存関係は導入前に準備してください。自動取得は行いません。",
     reviewInstall: "確認して導入",
     installHelp:
-      "ダイジェストと要求される権限を確認してください。管理者が承認するまで導入は承認待ちのままです。",
+      "ダイジェストと要求される権限を確認してください。カタログ承認の権限を持つメンバーが承認するまで、導入は承認待ちのままです。",
     cancel: "キャンセル",
     colPackage: "パッケージ",
     colKind: "種類",
@@ -130,5 +149,20 @@ export const marketplaceCopy = {
     noPermissions: "要求される権限はありません",
     capabilities: "機能",
     sharing: "共有範囲",
+    reviewSet: "まとめて承認",
+    reviewSetHelp:
+      "承認待ちの導入を選び、まとめて承認・有効化します。送信するまで、確認した時点の revision と承認の前提がそのまま保持されます。",
+    reloadSelection: "承認対象を再読み込み",
+    reviewDefinition: "定義と依存関係を確認",
+    installationRevision: "導入 revision",
+    exactSelection: "承認する対象",
+    activationRevision: "有効化revision",
+    catalogRevision: "カタログrevision",
+    submittedRequest: "送信する内容（JSON）",
+    approveSet: "選択した対象を承認して有効化",
+    setApproved: "選択した対象を承認し、有効化しました。",
+    selectionChanged:
+      "承認対象が変更されました。一覧を再読み込みし、内容を再確認してください。",
+    approvalUnavailable: "現在の承認状態を取得できません。",
   },
 } as const;

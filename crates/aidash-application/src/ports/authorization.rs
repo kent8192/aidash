@@ -11,10 +11,9 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ExecutionGrantRepository: Send + Sync {
 	fn node_id(&self) -> &str;
+	/// Every Run executes under a grant; a Run without one belongs to no Tenant
+	/// and is refused (ADR 0043).
 	async fn grant(&self, run: Uuid) -> Result<Option<ExecutionGrant>>;
-	async fn require_legacy_remote_task(&self, home: &str, task: Uuid) -> Result<()>;
-	async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()>;
-	async fn require_legacy_agent(&self, agent: &str, version: &str) -> Result<()>;
 }
 
 #[async_trait]

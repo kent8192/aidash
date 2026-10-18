@@ -7,6 +7,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "registry_memory_role_refs".into(),
 			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("source_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("role", FieldType::Text).with_not_null(true),
@@ -16,9 +17,9 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("reference_version", FieldType::Text).with_not_null(true),
 			],
 			constraints: vec![
-				Constraint::PrimaryKey { name: "registry_memory_role_refs_pkey".into(), columns: vec!["source_id".into(), "source_version".into(), "role".into(), "ordinal".into()] },
-				Constraint::ForeignKey { name: "registry_memory_role_source".into(), columns: vec!["source_id".into(), "source_version".into()], referenced_table: "registry".into(), referenced_columns: vec!["id".into(), "version".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
-				Constraint::ForeignKey { name: "registry_memory_role_target".into(), columns: vec!["reference_id".into(), "reference_version".into(), "required_kind".into()], referenced_table: "registry".into(), referenced_columns: vec!["id".into(), "version".into(), "kind".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
+				Constraint::PrimaryKey { name: "registry_memory_role_refs_pkey".into(), columns: vec!["tenant".into(), "source_id".into(), "source_version".into(), "role".into(), "ordinal".into()] },
+				Constraint::ForeignKey { name: "registry_memory_role_source".into(), columns: vec!["tenant".into(), "source_id".into(), "source_version".into()], referenced_table: "registry".into(), referenced_columns: vec!["tenant".into(), "id".into(), "version".into()], on_delete: ForeignKeyAction::Cascade, on_update: ForeignKeyAction::Restrict, deferrable: None },
+				Constraint::ForeignKey { name: "registry_memory_role_target".into(), columns: vec!["tenant".into(), "reference_id".into(), "reference_version".into(), "required_kind".into()], referenced_table: "registry".into(), referenced_columns: vec!["tenant".into(), "id".into(), "version".into(), "kind".into()], on_delete: ForeignKeyAction::Restrict, on_update: ForeignKeyAction::Restrict, deferrable: None },
 			],
 			without_rowid: None, interleave_in_parent: None, partition: None,
 		})
