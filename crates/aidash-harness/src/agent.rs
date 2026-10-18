@@ -3,7 +3,7 @@ use aidash_application::{Error, Result, execution::*, ports::execution::*};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
-	media::Selection,
+	media::ModelMedia,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
 	provider::estimate::{EstimateSnapshot, RequestEstimator},
@@ -2388,12 +2388,9 @@ impl<'a> Executor<'a> {
 						Err(e) => return Err(e),
 					}
 				};
-				if contract.behavior.model_media_result(&call.arguments, &output)
+				if let Some(selection) =
+					contract.behavior.model_media_selection(&call.arguments, &output)
 				{
-					let selection: Selection =
-						serde_json::from_value(
-							json!({"file_id":call.arguments["file_id"],"expected_digest":call.arguments["expected_digest"]}),
-						)?;
 					let mut selected = run.state.tool()?.selected_media.clone();
 					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {
@@ -2786,7 +2783,7 @@ async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
 	run: &Run,
 	guard: Option<&dyn ExecutionAuthority>,
-	selections: &[Selection],
+	selections: &[ModelMedia],
 	messages: &[(i64, Uuid, usize)],
 	headroom: usize,
 	model: &ModelConfig,

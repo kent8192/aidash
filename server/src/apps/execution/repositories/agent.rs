@@ -11,7 +11,7 @@ use aidash_application::{
 	ports::{CompactionClassifier, CompactionQuestions, ModelProvider, execution::*},
 };
 use aidash_domain::{
-	media::Selection,
+	media::ModelMedia,
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall,
@@ -467,7 +467,7 @@ impl ExecutionAuthority for Authority<'_> {
 	async fn human_read(&self, id: Uuid) -> Result<()> {
 		self.guard.human_read(id).await.map_err(Into::into)
 	}
-	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>> {
+	async fn model_media(&self, selections: &[ModelMedia]) -> Result<Vec<ContentPart>> {
 		self.guard
 			.model_media(&self.federation.store, selections)
 			.await

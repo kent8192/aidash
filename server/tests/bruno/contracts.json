@@ -30226,7 +30226,8 @@
             "line_start",
             "line_end",
             "pages",
-            "context"
+            "context",
+            "image"
           ],
           "properties": {
             "completeness": {
@@ -30255,6 +30256,17 @@
               "type": "string",
               "format": "date-time",
               "description": "When the snapshot was retrieved; the live page may have changed since."
+            },
+            "image": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EvidenceImage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The page image delivered to the Agent, for a fragment that is a page\nimage rather than a passage (ADR 0053); then `text` is empty and the\nlines are zero."
             },
             "line_end": {
               "type": "integer",
@@ -30336,6 +30348,47 @@
               "items": {
                 "$ref": "#/components/schemas/Line"
               }
+            }
+          }
+        },
+        "EvidenceImage": {
+          "type": "object",
+          "description": "One page of a PDF rendered from the retained original, as the Agent saw it.",
+          "required": [
+            "page",
+            "media_type",
+            "width",
+            "height",
+            "digest",
+            "data"
+          ],
+          "properties": {
+            "data": {
+              "type": "string",
+              "description": "The image bytes, base64-encoded."
+            },
+            "digest": {
+              "type": "string",
+              "description": "`sha256:` digest of the image bytes."
+            },
+            "height": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "page": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "The 1-based physical page.",
+              "minimum": 0
+            },
+            "width": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
             }
           }
         },

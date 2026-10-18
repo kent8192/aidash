@@ -5,7 +5,7 @@ use crate::{
 	Result,
 	ports::research::{
 		Budget, DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider,
-		Reservation, Reserved, SearchProvider, WebDisclosure,
+		PageRenderer, Reservation, Reserved, SearchProvider, WebDisclosure,
 	},
 };
 use aidash_domain::research::{
@@ -73,6 +73,18 @@ pub fn specification(operation: Operation) -> aidash_domain::provider::ToolSpec 
 				"additionalProperties": false,
 			}),
 		),
+		Operation::View => (
+			"View one page of a document already read in this Run as an image, when its fetch result lists the page under pages_without_text. Give document_id and page. The image is an Evidence fragment with an evidence_ref; cite it as [[cite:<evidence_ref>]]. Nothing leaves the Node.",
+			json!({
+				"type": "object",
+				"required": ["document_id", "page"],
+				"properties": {
+					"document_id": {"type": "string", "format": "uuid"},
+					"page": {"type": "integer", "minimum": 1},
+				},
+				"additionalProperties": false,
+			}),
+		),
 	};
 	aidash_domain::provider::ToolSpec {
 		name: aidash_domain::tool::providers::research_alias(operation).into(),
@@ -109,6 +121,13 @@ struct FetchInput {
 	document_id: Option<Uuid>,
 	cursor: Option<String>,
 	max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewInput {
+	document_id: Uuid,
+	page: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -507,6 +526,67 @@ impl Research<'_> {
 			"ok"
 		});
 		Ok(result)
+	}
+
+	/// Render a page that carries no text from the retained original as a
+	/// page-image Evidence fragment for the Run's model (ADR 0053). Nothing
+	/// leaves the Node.
+	pub async fn view(
+		&self,
+		call: &Call<'_>,
+		renderer: &dyn PageRenderer,
+		input: &Value,
+	) -> Result<Value> {
+		let operation = Operation::View;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
+		let Ok(input) = serde_json::from_value::<ViewInput>(input.clone()) else {
+			return Ok(failure(operation, Failure::InvalidInput));
+		};
+		let Some(snapshot) = self.store.snapshot(call.run, input.document_id).await? else {
+			return Ok(failure(operation, Failure::UnknownDocument));
+		};
+		if let Err(purged) = snapshot.readable() {
+			return Ok(failure(operation, purged));
+		}
+		if !snapshot.pages_without_text.contains(&input.page) {
+			return Ok(failure(operation, Failure::PageNotViewable));
+		}
+		if !snapshot
+			.original
+			.as_ref()
+			.is_some_and(|original| original.retained)
+		{
+			return Ok(failure(operation, Failure::OriginalNotRetained));
+		}
+		if self.store.usage(call.run).await?.page_views >= self.limits.page_views {
+			return Ok(failure(operation, Failure::ViewLimit));
+		}
+		let Some(original) = self.store.original(call.run, snapshot.id).await? else {
+			return Ok(failure(operation, Failure::OriginalNotRetained));
+		};
+		let image = match renderer.render(original, input.page).await {
+			Ok(image) if image.validate().is_ok() => image,
+			Ok(_) => return Ok(failure(operation, Failure::RenderFailed)),
+			Err(error) => return Ok(failure(operation, error)),
+		};
+		// The store checks the view limit, revocation and purge again under the
+		// Run's lock.
+		let fragment = match self
+			.store
+			.record_page_image(call.run, &snapshot, input.page, &image, &self.limits)
+			.await?
+		{
+			Ok(fragment) => fragment,
+			Err(refused) => return Ok(failure(operation, refused)),
+		};
+		Ok(envelope(
+			operation,
+			"ok",
+			fragment.delivered(&snapshot),
+			false,
+		))
 	}
 
 	/// Deliver one passage and retain it as an Evidence fragment. The passage

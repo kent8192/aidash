@@ -40,7 +40,7 @@ impl Research {
 		(run, evidence_ref(answer).unwrap())
 	}
 	/// One column of every row of `table` for the Run, as JSON.
-	async fn column(&self, table: &str, expression: &str, run: Uuid) -> Vec<Value> {
+	pub(super) async fn column(&self, table: &str, expression: &str, run: Uuid) -> Vec<Value> {
 		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 		let sql = Query::select()
 			.expr(Expr::cust(expression))

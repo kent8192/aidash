@@ -205,4 +205,16 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.await
 			.map_err(Into::into)
 	}
+	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
+		use aidash_application::ports::research::EvidenceStore;
+		// A page image is the Run's own evidence; it needs no file access.
+		let Ok(reference) = reference.parse() else {
+			return Ok(None);
+		};
+		crate::apps::execution::repositories::research::Evidence {
+			store: self.store.clone(),
+		}
+		.page_image(self.run.id, &reference)
+		.await
+	}
 }

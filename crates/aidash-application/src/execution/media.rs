@@ -122,36 +122,77 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 	})
 }
 
-/// Resolve one inference's explicit file references under its current execution authority.
+/// Resolve one inference's explicit file references and page images under its
+/// current execution authority. A request of page images alone, the Run's own
+/// evidence, needs no file access (ADR 0053).
 pub async fn selected(
 	scope: &mut dyn crate::ports::execution::media::SelectedMediaScope,
-	selections: &[aidash_domain::media::Selection],
+	selections: &[aidash_domain::media::ModelMedia],
 ) -> Result<Vec<ContentPart>> {
+	use aidash_domain::media::ModelMedia;
 	if selections.len() > 8 {
 		return Err(Error::Invalid(
 			"model media input exceeds count limit".into(),
 		));
 	}
-	let files = scope.current_files().await?;
+	// Only page images, the Run's own evidence, skip the file authority; an
+	// empty request still requires it.
+	let files = if selections.is_empty()
+		|| selections
+			.iter()
+			.any(|selection| matches!(selection, ModelMedia::File(_)))
+	{
+		scope.current_files().await?
+	} else {
+		Vec::new()
+	};
 	let mut parts = Vec::with_capacity(selections.len() * 2);
 	let mut total = 0_u64;
 	for selection in selections {
-		let file = files
-			.iter()
-			.find(|file| file.file_id == selection.file_id)
-			.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
-		if file.digest != selection.expected_digest {
-			return Err(Error::Conflict("FILE_CHANGED".into()));
-		}
-		total = total.saturating_add(file.size);
-		if total > 8 * 1024 * 1024 {
-			return Err(Error::Invalid(
-				"model media input exceeds byte limit".into(),
-			));
-		}
-		let bytes = scope.read(file.file_id).await?;
-		parts.push(ContentPart::Text(format!("Selected file: {}", file.path)));
-		parts.push(ContentPart::from_media(&file.media_type, bytes)?);
+		let (label, media_type, bytes) = match selection {
+			ModelMedia::File(selection) => {
+				let file = files
+					.iter()
+					.find(|file| file.file_id == selection.file_id)
+					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				if file.digest != selection.expected_digest {
+					return Err(Error::Conflict("FILE_CHANGED".into()));
+				}
+				total = total.saturating_add(file.size);
+				if total > 8 * 1024 * 1024 {
+					return Err(Error::Invalid(
+						"model media input exceeds byte limit".into(),
+					));
+				}
+				(
+					format!("Selected file: {}", file.path),
+					file.media_type.clone(),
+					scope.read(file.file_id).await?,
+				)
+			}
+			ModelMedia::PageImage(selection) => {
+				let (media_type, bytes) = scope
+					.page_image(&selection.evidence_ref)
+					.await?
+					.ok_or_else(|| Error::NotFound("page image unavailable".into()))?;
+				if format!("sha256:{:x}", Sha256::digest(&bytes)) != selection.expected_digest {
+					return Err(Error::Conflict("PAGE_IMAGE_CHANGED".into()));
+				}
+				total = total.saturating_add(bytes.len() as u64);
+				if total > 8 * 1024 * 1024 {
+					return Err(Error::Invalid(
+						"model media input exceeds byte limit".into(),
+					));
+				}
+				(
+					format!("Page image: {}", selection.evidence_ref),
+					media_type,
+					bytes,
+				)
+			}
+		};
+		parts.push(ContentPart::Text(label));
+		parts.push(ContentPart::from_media(&media_type, bytes)?);
 	}
 	Ok(parts)
 }

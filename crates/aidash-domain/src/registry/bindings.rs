@@ -729,6 +729,33 @@ pub struct BindingSnapshot {
 	pub foreign_agents: Vec<ForeignAgentSnapshot>,
 }
 
+impl BindingSnapshot {
+	/// Whether the Agent's pinned model declares image input, so that a page
+	/// image can be delivered to it (ADR 0053).
+	pub fn model_reads_images(&self) -> bool {
+		let Some(model) = self
+			.definitions
+			.iter()
+			.find(|definition| definition.identity == self.agent)
+			.map(|agent| &agent.definition.config["model"])
+		else {
+			return false;
+		};
+		let (Some(id), Some(version)) = (model["id"].as_str(), model["version"].as_str()) else {
+			return false;
+		};
+		self.definitions
+			.iter()
+			.find(|definition| {
+				definition.definition.kind == "model"
+					&& definition.identity.id == id
+					&& definition.identity.version == version
+			})
+			.and_then(|model| model.definition.config["modalities"].as_array())
+			.is_some_and(|modalities| modalities.iter().any(|modality| modality == "image"))
+	}
+}
+
 /// One authenticated receiver's public closure. Nested foreign or private
 /// dependencies require their own supported disclosure/admission protocol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

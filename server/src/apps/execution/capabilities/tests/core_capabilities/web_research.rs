@@ -92,7 +92,8 @@ async fn research_fixture(
 	.await;
 	assert_eq!(status, 200, "{pending}");
 	let installations = pending["installations"].as_array().unwrap().clone();
-	assert_eq!(installations.len(), 4, "{pending}");
+	// search, fetch, find and view, and the bundle that binds them.
+	assert_eq!(installations.len(), 5, "{pending}");
 	let selection = json!({"tenant":"acme","installations":installations.iter().map(|r|json!({"installation":r["installation"]["id"],"revision":r["revision"],"digest":r["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),"approvals":installations.iter().map(|r|json!({"reference":{"id":r["entry"]["id"],"version":r["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
 	let (status, activated) = request(
 		&c.app,
@@ -556,3 +557,5 @@ async fn a_reader_of_the_run_opens_its_cited_fragment_and_everyone_else_sees_the
 
 #[path = "web_research/retention.rs"]
 mod retention;
+#[path = "web_research/view.rs"]
+mod view;

@@ -9,13 +9,16 @@ use crate::{
 use aidash_domain::research::{
 	account::AccountProfile,
 	citations::EvidenceRef,
-	document::{ExtractedPage, Line},
-	evidence::{EvidenceFragment, Original, Purge, PurgeReason, RunUsage, SourceRecord},
+	document::{ExtractedPage, Line, RenderedPage},
+	evidence::{
+		EvidenceFragment, FragmentImage, Original, Purge, PurgeReason, RunUsage, SourceRecord,
+	},
 	revocation,
 	search::{ProviderCandidate, ProviderResults, SourceCandidate},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Duration};
+use sha2::{Digest, Sha256};
 use std::{
 	collections::{BTreeMap, BTreeSet},
 	sync::{
@@ -31,6 +34,8 @@ struct Memory {
 	snapshots: Mutex<Vec<DocumentSnapshot>>,
 	/// Retained originals: Run, snapshot and bytes.
 	originals: Mutex<Vec<(Uuid, Uuid, Vec<u8>)>>,
+	/// Page image bytes by fragment.
+	page_images: Mutex<BTreeMap<Uuid, (String, Vec<u8>)>>,
 	fragments: Mutex<Vec<EvidenceFragment>>,
 	spend: Mutex<u64>,
 	revoked: Mutex<BTreeSet<Uuid>>,
@@ -127,6 +132,13 @@ impl EvidenceStore for Memory {
 				.flat_map(|snapshot| &snapshot.lines)
 				.map(|line| line.text.len() as u64)
 				.sum(),
+			page_views: self
+				.fragments
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|fragment| fragment.run_id == run && fragment.image.is_some())
+				.count() as u32,
 		})
 	}
 	async fn account_spend(&self, _: &str, _: DateTime<Utc>) -> Result<u64> {
@@ -385,6 +397,66 @@ impl EvidenceStore for Memory {
 		let fragment = EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), document, passage);
 		self.fragments.lock().unwrap().push(fragment.clone());
 		Ok(Ok(fragment))
+	}
+	async fn record_page_image(
+		&self,
+		run: Uuid,
+		document: &DocumentSnapshot,
+		page: u32,
+		image: &RenderedPage,
+		limits: &Limits,
+	) -> Result<std::result::Result<EvidenceFragment, Failure>> {
+		if self.is_revoked(run) {
+			return Ok(Err(Failure::EvidenceRevoked));
+		}
+		if let Some(Err(unreadable)) = self
+			.snapshots
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|snapshot| snapshot.id == document.id && snapshot.run_id == run)
+			.map(DocumentSnapshot::readable)
+		{
+			return Ok(Err(unreadable));
+		}
+		if self.usage(run).await?.page_views >= limits.page_views {
+			return Ok(Err(Failure::ViewLimit));
+		}
+		let fragment = EvidenceFragment::page_image(
+			EvidenceRef(Uuid::new_v4()),
+			document,
+			FragmentImage {
+				page,
+				media_type: image.media_type.clone(),
+				width: image.width,
+				height: image.height,
+				digest: image.digest(),
+			},
+		);
+		self.page_images.lock().unwrap().insert(
+			fragment.reference.0,
+			(image.media_type.clone(), image.bytes.clone()),
+		);
+		self.fragments.lock().unwrap().push(fragment.clone());
+		Ok(Ok(fragment))
+	}
+	async fn page_image(
+		&self,
+		run: Uuid,
+		reference: &EvidenceRef,
+	) -> Result<Option<(String, Vec<u8>)>> {
+		if self.is_revoked(run) {
+			return Ok(None);
+		}
+		let delivered = self
+			.fragments
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|fragment| fragment.run_id == run && fragment.reference == *reference);
+		Ok(delivered
+			.then(|| self.page_images.lock().unwrap().get(&reference.0).cloned())
+			.flatten())
 	}
 	async fn fragments(
 		&self,
@@ -2198,4 +2270,168 @@ async fn originals_beyond_the_run_limit_are_not_retained() {
 	}
 	assert_eq!(states, [json!("available"), json!("original_not_retained")]);
 	assert_eq!(store.originals.lock().unwrap().len(), 1);
+}
+
+/// A 1x1 grayscale PNG.
+const PIXEL: [u8; 67] = [
+	137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0,
+	0, 0, 58, 126, 155, 85, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 104, 0, 0, 0, 130, 0, 129,
+	119, 205, 114, 182, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+/// A renderer with a scripted outcome, standing in for the bounded child.
+struct Renderer(std::result::Result<RenderedPage, Failure>);
+
+#[async_trait]
+impl PageRenderer for Renderer {
+	async fn render(&self, pdf: Vec<u8>, page: u32) -> std::result::Result<RenderedPage, Failure> {
+		assert!(!pdf.is_empty() && page > 0);
+		self.0.clone()
+	}
+}
+
+fn pixel() -> Renderer {
+	Renderer(Ok(RenderedPage {
+		media_type: "image/png".into(),
+		bytes: PIXEL.to_vec(),
+		width: 1,
+		height: 1,
+	}))
+}
+
+/// Read a three-page PDF whose second page carries no text; returns its
+/// document identifier.
+async fn read_scan(research: &Research<'_>, run: Uuid, original_bytes: usize) -> Value {
+	let read = research
+		.fetch(
+			&call(run, "read", "research.page@1"),
+			&scanned(&[("Page one has text.", 1)], vec![2], original_bytes),
+			&json!({"url":"https://example.com/report.pdf"}),
+		)
+		.await
+		.unwrap();
+	read["data"]["document_id"].clone()
+}
+
+#[tokio::test]
+async fn a_page_without_text_is_viewed_as_a_citable_page_image() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let document = read_scan(&research, run, 1024).await;
+	let input = json!({"document_id": document, "page": 2});
+	let viewed = research
+		.view(&call(run, "view", "research.page@1"), &pixel(), &input)
+		.await
+		.unwrap();
+	assert_eq!(viewed["status"], "ok", "{viewed}");
+	assert_eq!(viewed["operation"], "view");
+	assert_eq!(viewed["data"]["page"], 2);
+	assert_eq!(viewed["data"]["image"]["media_type"], "image/png");
+	let digest = format!("sha256:{:x}", Sha256::digest(PIXEL));
+	assert_eq!(viewed["data"]["image"]["digest"], json!(digest));
+	// The result selects the page image as model input.
+	let selection = aidash_domain::tool::providers::research_contract(Operation::View)
+		.behavior
+		.model_media_selection(&input, &viewed)
+		.unwrap();
+	let reference: EvidenceRef = viewed["data"]["evidence_ref"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	assert_eq!(
+		selection,
+		aidash_domain::media::ModelMedia::PageImage(aidash_domain::media::PageImageSelection {
+			evidence_ref: reference.to_string(),
+			expected_digest: digest,
+		})
+	);
+	// It is an Evidence fragment of this Run, so it can be cited.
+	let fragments = store.fragments(run, &[reference]).await.unwrap();
+	assert_eq!(fragments.len(), 1);
+	assert_eq!(fragments[0].pages, vec![2]);
+	assert_eq!(
+		store.page_image(run, &reference).await.unwrap(),
+		Some(("image/png".into(), PIXEL.to_vec()))
+	);
+	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
+}
+
+#[tokio::test]
+async fn only_retained_pages_without_text_can_be_viewed_within_the_limit() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			page_views: 1,
+			original_bytes: 1024,
+			..Limits::default()
+		},
+	};
+	let run = Uuid::new_v4();
+	let document = read_scan(&research, run, 1024).await;
+	let view = |page: u32| json!({"document_id": document, "page": page});
+	let code = |result: Value| result["error"]["code"].as_str().map(str::to_owned);
+	let viewer = call(run, "view", "research.page@1");
+	// A page that carries text, or no such page.
+	for page in [1, 4] {
+		assert_eq!(
+			code(research.view(&viewer, &pixel(), &view(page)).await.unwrap()),
+			Some("page_not_viewable".into())
+		);
+	}
+	// A renderer that leaves the image bounds.
+	let oversized = Renderer(Ok(RenderedPage {
+		media_type: "image/png".into(),
+		bytes: PIXEL.to_vec(),
+		width: 4000,
+		height: 1,
+	}));
+	assert_eq!(
+		code(research.view(&viewer, &oversized, &view(2)).await.unwrap()),
+		Some("render_failed".into())
+	);
+	// The limit admits one view.
+	assert_eq!(
+		research.view(&viewer, &pixel(), &view(2)).await.unwrap()["status"],
+		"ok"
+	);
+	assert_eq!(
+		code(research.view(&viewer, &pixel(), &view(2)).await.unwrap()),
+		Some("view_limit".into())
+	);
+	// A second document did not fit the original limit, so it cannot be viewed.
+	let unretained = research
+		.fetch(
+			&call(run, "read-2", "research.page@1"),
+			&scanned(&[("Text.", 1)], vec![2], 1024),
+			&json!({"url":"https://example.com/other.pdf"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		code(
+			research
+				.view(
+					&viewer,
+					&pixel(),
+					&json!({"document_id": unretained["data"]["document_id"], "page": 2})
+				)
+				.await
+				.unwrap()
+		),
+		Some("original_not_retained".into())
+	);
+	// After an Evidence Revocation the Run can view nothing.
+	store.revoke(run);
+	assert_eq!(
+		code(research.view(&viewer, &pixel(), &view(2)).await.unwrap()),
+		Some("evidence_revoked".into())
+	);
 }

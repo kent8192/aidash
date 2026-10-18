@@ -39,12 +39,12 @@ The response contains `installations` with exact immutable entry IDs, revision d
 
 Web research providers are packages of the same Deployment Administrator workflow. Their
 groups are `research_brave` (`research.brave@1`: `search`), `research_page`
-(`research.page@1`: `fetch`, `find`) and `research_fixture`
-(`research.fixture@1`: `search`, `fetch`, `find`). Request them by name in
+(`research.page@1`: `fetch`, `find`, `view`) and `research_fixture`
+(`research.fixture@1`: `search`, `fetch`, `find`, `view`). Request them by name in
 `POST /api/marketplace/host-packages` or `node.default_host_packages`, then
 review and approve them like Host groups. Entries are named
 `aidash.research.<provider>.<operation>@1.0.0` and use the default Model
-aliases `research_search`, `research_fetch` and `research_find` with the same
+aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same
 schema for every provider, so a tenant can replace `research_brave` and
 `research_page` with another provider package without changing its Agents. A
 group whose provider is not configured on the Node is reported in

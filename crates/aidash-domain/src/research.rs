@@ -26,6 +26,9 @@ pub enum Operation {
 	Fetch,
 	/// Locates passages in a retained Document snapshot. No disclosure.
 	Find,
+	/// Renders a page that carries no text from a retained original as an
+	/// image for the Run's model (ADR 0053). No disclosure.
+	View,
 }
 
 impl Operation {
@@ -34,6 +37,7 @@ impl Operation {
 			"search" => Self::Search,
 			"fetch" => Self::Fetch,
 			"find" => Self::Find,
+			"view" => Self::View,
 			_ => return None,
 		})
 	}
@@ -42,11 +46,12 @@ impl Operation {
 			Self::Search => "search",
 			Self::Fetch => "fetch",
 			Self::Find => "find",
+			Self::View => "view",
 		}
 	}
 	/// Search and fetch send Run-derived content outside the Node.
 	pub fn discloses(self) -> bool {
-		!matches!(self, Self::Find)
+		matches!(self, Self::Search | Self::Fetch)
 	}
 }
 
@@ -78,6 +83,16 @@ pub enum Failure {
 	EncryptedDocument,
 	/// A PDF whose permissions forbid extracting its text.
 	ExtractionNotPermitted,
+	/// The page is not one of the document's pages that carry no text.
+	PageNotViewable,
+	/// The document's original is not retained, so its pages cannot be viewed.
+	OriginalNotRetained,
+	/// The Run viewed as many pages as it may.
+	ViewLimit,
+	/// The page could not be rendered within the image bounds.
+	RenderFailed,
+	/// The Run's model does not read images, so it cannot view a page.
+	ImageInputRequired,
 	/// A page redirected to another host than the approved destination.
 	CrossHostRedirect,
 	/// A page redirected from https to an unencrypted address.
@@ -117,6 +132,11 @@ impl Failure {
 			Self::ExtractionFailed => "extraction_failed",
 			Self::EncryptedDocument => "encrypted_document",
 			Self::ExtractionNotPermitted => "extraction_not_permitted",
+			Self::PageNotViewable => "page_not_viewable",
+			Self::OriginalNotRetained => "original_not_retained",
+			Self::ViewLimit => "view_limit",
+			Self::RenderFailed => "render_failed",
+			Self::ImageInputRequired => "image_input_required",
 			Self::CrossHostRedirect => "cross_host_redirect",
 			Self::InsecureRedirect => "insecure_redirect",
 			Self::Timeout => "timeout",
@@ -152,6 +172,15 @@ impl Failure {
 			Self::ExtractionNotPermitted => {
 				"The document's permissions forbid extracting its text."
 			}
+			Self::PageNotViewable => {
+				"Only a page the document lists as carrying no text can be viewed."
+			}
+			Self::OriginalNotRetained => {
+				"The document is not retained, so its pages cannot be viewed."
+			}
+			Self::ViewLimit => "The Run reached its page view limit.",
+			Self::RenderFailed => "The page could not be rendered as an image.",
+			Self::ImageInputRequired => "Viewing a page needs a model that reads images.",
 			Self::CrossHostRedirect => {
 				"The page redirected to another host; request that address in a new call."
 			}

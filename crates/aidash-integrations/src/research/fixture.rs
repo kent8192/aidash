@@ -4,10 +4,10 @@
 //! sends anything outside the Node.
 use super::admit_public_url;
 use crate::research::Failure;
-use aidash_application::ports::research::{Outbound, PageProvider, SearchProvider};
+use aidash_application::ports::research::{Outbound, PageProvider, PageRenderer, SearchProvider};
 use aidash_domain::research::{
 	account::AccountProfile,
-	document::{Completeness, ExtractedPage, Line, fold},
+	document::{Completeness, ExtractedPage, Line, RenderedPage, fold},
 	search::{ProviderCandidate, ProviderResults, SearchQuery},
 };
 use async_trait::async_trait;
@@ -199,6 +199,23 @@ impl PageProvider for FixtureResearch {
 				.filter(|pdf| !pdf.pages_without_text.is_empty())
 				.map(|pdf| pdf.original.clone()),
 		})
+	}
+}
+
+#[async_trait]
+impl PageRenderer for FixtureResearch {
+	/// Only the corpus's own documents are rendered, in this process: they are
+	/// trusted, so no child is started. Anything else is refused.
+	async fn render(&self, pdf: Vec<u8>, page: u32) -> Result<RenderedPage, Failure> {
+		if !self.pages.iter().any(|candidate| {
+			candidate
+				.pdf
+				.as_ref()
+				.is_some_and(|known| known.original == pdf)
+		}) {
+			return Err(Failure::RenderFailed);
+		}
+		super::pdf::render(&pdf, page)
 	}
 }
 

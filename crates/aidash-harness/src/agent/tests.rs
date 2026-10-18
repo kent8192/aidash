@@ -750,7 +750,10 @@ impl ExecutionAuthority for Backend {
 		self.record("authority.human_read");
 		Ok(())
 	}
-	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>> {
+	async fn model_media(
+		&self,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>> {
 		let _ = selections;
 		unexpected("ExecutionAuthority.model_media")
 	}

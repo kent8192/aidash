@@ -10,19 +10,19 @@ use crate::{
 use aidash_application::{
 	capabilities::approvals::DisclosureRequest,
 	ports::research::{
-		DisclosureGate, DisclosureState, PageProvider, SearchProvider, WebDisclosure,
+		DisclosureGate, DisclosureState, PageProvider, PageRenderer, SearchProvider, WebDisclosure,
 	},
 	research::{Call, Research},
 };
 use aidash_domain::{
-	research::{Operation, account::AccountProfile, evidence::Limits},
+	research::{Failure, Operation, account::AccountProfile, evidence::Limits, failure},
 	tool::{
 		ToolContract,
 		providers::{ToolDescriptor, research_contract, research_operation},
 	},
 };
 use aidash_integrations::research::{
-	brave::BraveSearch, fixture::FixtureResearch, page::PageReader,
+	brave::BraveSearch, fixture::FixtureResearch, page::PageReader, pdf::ChildEngine,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -40,16 +40,24 @@ pub const FIXTURE_ENV: &str = "AIDASH_RESEARCH_FIXTURE";
 pub struct Providers {
 	brave: std::result::Result<Arc<BraveSearch>, String>,
 	pages: Option<Arc<PageReader>>,
+	/// Renders pages of PDFs that page reading retained, in a bounded child.
+	renderer: Option<Arc<ChildEngine>>,
 	fixture: Option<Arc<FixtureResearch>>,
 	pub limits: Limits,
 }
 
 impl Providers {
 	pub fn from_env() -> Self {
+		let page_reading = std::env::var(PAGE_READING_ENV).as_deref() == Ok("enabled");
 		Self {
 			brave: brave_from_env(),
-			pages: (std::env::var(PAGE_READING_ENV).as_deref() == Ok("enabled"))
-				.then(|| Arc::new(PageReader::default())),
+			pages: page_reading.then(|| Arc::new(PageReader::default())),
+			// A binary that cannot name itself fails each render instead.
+			renderer: page_reading.then(|| {
+				Arc::new(ChildEngine::new(
+					std::env::current_exe().unwrap_or_else(|_| "aidash".into()),
+				))
+			}),
 			fixture: (std::env::var(FIXTURE_ENV).as_deref() == Ok("enabled"))
 				.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
@@ -108,6 +116,24 @@ impl Providers {
 				.fixture
 				.clone()
 				.map(|fixture| fixture as Arc<dyn PageProvider>)
+				.ok_or_else(|| unavailable(provider)),
+			_ => Err(unavailable(provider)),
+		}
+	}
+}
+
+impl Providers {
+	fn renderer(&self, provider: &str) -> Result<Arc<dyn PageRenderer>> {
+		match provider {
+			"research.page@1" => self
+				.renderer
+				.clone()
+				.map(|renderer| renderer as Arc<dyn PageRenderer>)
+				.ok_or_else(|| unavailable(provider)),
+			"research.fixture@1" => self
+				.fixture
+				.clone()
+				.map(|fixture| fixture as Arc<dyn PageRenderer>)
 				.ok_or_else(|| unavailable(provider)),
 			_ => Err(unavailable(provider)),
 		}
@@ -245,6 +271,20 @@ impl Tool for ResearchTool {
 					.await
 			}
 			Operation::Find => research.find(&call, &input).await,
+			Operation::View => {
+				// A viewed page reaches the model as an image (ADR 0053).
+				if !run
+					.context
+					.binding_snapshot
+					.as_ref()
+					.is_some_and(|snapshot| snapshot.model_reads_images())
+				{
+					return Ok(failure(Operation::View, Failure::ImageInputRequired));
+				}
+				research
+					.view(&call, providers.renderer(&self.provider)?.as_ref(), &input)
+					.await
+			}
 		};
 		result.map_err(Into::into)
 	}

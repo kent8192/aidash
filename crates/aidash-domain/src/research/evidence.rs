@@ -109,8 +109,8 @@ pub struct Purge {
 	pub reason: PurgeReason,
 }
 
-/// A passage of a Document snapshot delivered to the Agent and eligible to
-/// support a Source citation.
+/// A passage or page image of a Document snapshot delivered to the Agent and
+/// eligible to support a Source citation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceFragment {
 	pub reference: EvidenceRef,
@@ -118,10 +118,26 @@ pub struct EvidenceFragment {
 	pub document_id: Uuid,
 	pub source_id: Uuid,
 	pub text_digest: String,
+	/// Empty for a page image.
 	pub text: String,
+	/// 1-based, inclusive; zero for a page image.
 	pub line_start: usize,
 	pub line_end: usize,
 	pub pages: Vec<u32>,
+	/// Set when the fragment is a page image rather than a passage (ADR 0053).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub image: Option<FragmentImage>,
+}
+
+/// The page image an Evidence fragment delivered. Its bytes are kept apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FragmentImage {
+	pub page: u32,
+	pub media_type: String,
+	pub width: u32,
+	pub height: u32,
+	/// `sha256:` digest of the image bytes.
+	pub digest: String,
 }
 
 impl EvidenceFragment {
@@ -136,10 +152,49 @@ impl EvidenceFragment {
 			line_start: passage.line_start,
 			line_end: passage.line_end,
 			pages: passage.pages.clone(),
+			image: None,
+		}
+	}
+	/// A page image rendered from `document`'s retained original.
+	pub fn page_image(
+		reference: EvidenceRef,
+		document: &DocumentSnapshot,
+		image: FragmentImage,
+	) -> Self {
+		Self {
+			reference,
+			run_id: document.run_id,
+			document_id: document.id,
+			source_id: document.source_id,
+			text_digest: document.text_digest.clone(),
+			text: String::new(),
+			line_start: 0,
+			line_end: 0,
+			pages: vec![image.page],
+			image: Some(image),
 		}
 	}
 	/// The fragment as delivered to the model, with its snapshot provenance.
 	pub fn delivered(&self, document: &DocumentSnapshot) -> Value {
+		if let Some(image) = &self.image {
+			return json!({
+				"evidence_ref": self.reference.to_string(),
+				"source_id": self.source_id,
+				"document_id": self.document_id,
+				"url": document.url,
+				"title": document.title,
+				"fetched_at": document.fetched_at,
+				"text_digest": self.text_digest,
+				"page": image.page,
+				"pages": self.pages,
+				"image": {
+					"media_type": image.media_type,
+					"width": image.width,
+					"height": image.height,
+					"digest": image.digest,
+				},
+			});
+		}
 		json!({
 			"evidence_ref": self.reference.to_string(),
 			"source_id": self.source_id,
@@ -215,11 +270,14 @@ pub struct CitedEvidence {
 	/// `None` once the snapshot's text is no longer retained; the fragment
 	/// itself stays readable.
 	pub context: Option<SnapshotContext>,
+	/// The bytes of a page-image fragment; they stay after the snapshot is
+	/// purged, as a passage's text does.
+	pub image: Option<Vec<u8>>,
 }
 
 impl CitedEvidence {
 	pub fn new(fragment: EvidenceFragment, document: &DocumentSnapshot) -> Self {
-		let context = (!document.lines.is_empty()).then(|| {
+		let context = (!document.lines.is_empty() && fragment.image.is_none()).then(|| {
 			SnapshotContext::around(&document.lines, fragment.line_start, fragment.line_end)
 		});
 		Self {
@@ -231,6 +289,7 @@ impl CitedEvidence {
 			fetched_at: document.fetched_at,
 			completeness: document.completeness,
 			context,
+			image: None,
 		}
 	}
 }
@@ -282,6 +341,8 @@ pub struct RunUsage {
 	pub sources: u32,
 	pub snapshots: u32,
 	pub snapshot_bytes: u64,
+	/// Page images delivered by `view`.
+	pub page_views: u32,
 }
 
 impl RunUsage {
@@ -289,7 +350,7 @@ impl RunUsage {
 		match operation {
 			Operation::Search => self.search_attempts,
 			Operation::Fetch => self.fetch_attempts,
-			Operation::Find => 0,
+			Operation::Find | Operation::View => 0,
 		}
 	}
 }
@@ -306,10 +367,17 @@ pub struct Limits {
 	/// Bytes of originals one Run retains (ADR 0053).
 	#[serde(default = "default_original_bytes")]
 	pub original_bytes: u64,
+	/// Page images one Run may view (ADR 0053).
+	#[serde(default = "default_page_views")]
+	pub page_views: u32,
 }
 
 fn default_original_bytes() -> u64 {
 	64 * 1024 * 1024
+}
+
+fn default_page_views() -> u32 {
+	30
 }
 
 impl Default for Limits {
@@ -321,6 +389,7 @@ impl Default for Limits {
 			snapshots: 50,
 			snapshot_bytes: 8 * 1024 * 1024,
 			original_bytes: default_original_bytes(),
+			page_views: default_page_views(),
 		}
 	}
 }

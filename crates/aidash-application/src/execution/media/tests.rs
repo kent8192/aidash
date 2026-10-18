@@ -1,5 +1,6 @@
 use super::*;
 use crate::ports::execution::media::{MediaAttachment, MediaTransaction};
+use aidash_domain::media::{ModelMedia, PageImageSelection};
 use aidash_domain::{RunControl, RunPhase, model::MediaRouteEvidence};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -668,6 +669,7 @@ struct FileScope {
 	calls: Vec<(&'static str, Uuid)>,
 	denied: bool,
 	read_fault: Option<Uuid>,
+	page_images: BTreeMap<String, (String, Vec<u8>)>,
 }
 #[fixture]
 fn file_scope() -> FileScope {
@@ -690,10 +692,11 @@ fn file_scope() -> FileScope {
 		calls: vec![],
 		denied: false,
 		read_fault: None,
+		page_images: BTreeMap::new(),
 	}
 }
-fn selection(scope: &FileScope, file_id: Uuid) -> Selection {
-	Selection {
+fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
+	ModelMedia::File(Selection {
 		file_id,
 		expected_digest: scope
 			.files
@@ -702,7 +705,7 @@ fn selection(scope: &FileScope, file_id: Uuid) -> Selection {
 			.unwrap()
 			.digest
 			.clone(),
-	}
+	})
 }
 #[async_trait]
 impl SelectedMediaScope for FileScope {
@@ -722,6 +725,10 @@ impl SelectedMediaScope for FileScope {
 			))));
 		}
 		Ok(self.content[&file].clone())
+	}
+	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
+		self.calls.push(("page_image", Uuid::nil()));
+		Ok(self.page_images.get(reference).cloned())
 	}
 }
 #[rstest]
@@ -800,10 +807,10 @@ async fn selected_missing_file_keeps_order_and_the_original_not_found(
 	if after_valid {
 		selections.push(selection(&file_scope, id(1)));
 	}
-	selections.push(Selection {
+	selections.push(ModelMedia::File(Selection {
 		file_id: id(99),
 		expected_digest: "unavailable".into(),
-	});
+	}));
 	let error = selected(&mut file_scope, &selections).await.err().unwrap();
 	assert!(matches!(error,Error::NotFound(ref message) if message == "file unavailable"));
 	let mut expected = vec![("snapshot", Uuid::nil())];
@@ -824,10 +831,10 @@ async fn selected_changed_digest_is_rejected_before_reading_that_file(
 	if after_valid {
 		selections.push(selection(&file_scope, id(1)));
 	}
-	selections.push(Selection {
+	selections.push(ModelMedia::File(Selection {
 		file_id: id(2),
 		expected_digest: "stale digest".into(),
-	});
+	}));
 	let error = selected(&mut file_scope, &selections).await.err().unwrap();
 	assert!(matches!(error,Error::Conflict(ref message) if message == "FILE_CHANGED"));
 	let mut expected = vec![("snapshot", Uuid::nil())];
@@ -887,10 +894,10 @@ async fn selected_duplicate_metadata_uses_the_first_matching_saved_file(mut file
 	let mut duplicate = file_scope.files[0].clone();
 	duplicate.digest = "later duplicate digest".into();
 	file_scope.files.push(duplicate);
-	let selections = [Selection {
+	let selections = [ModelMedia::File(Selection {
 		file_id: id(1),
 		expected_digest: "later duplicate digest".into(),
-	}];
+	})];
 	assert!(
 		matches!(selected(&mut file_scope,&selections).await,Err(Error::Conflict(ref message)) if message == "FILE_CHANGED")
 	);
@@ -935,4 +942,43 @@ async fn selected_media_rejection_keeps_the_domain_error(
 		file_scope.calls,
 		vec![("snapshot", Uuid::nil()), ("read", id(1))]
 	);
+}
+
+/// A 1x1 grayscale PNG.
+const PIXEL: [u8; 67] = [
+	137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0,
+	0, 0, 58, 126, 155, 85, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 104, 0, 0, 0, 130, 0, 129,
+	119, 205, 114, 182, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+#[rstest]
+#[tokio::test]
+async fn page_images_need_no_file_authority_and_must_keep_their_digest(mut file_scope: FileScope) {
+	// Arrange: file access would be denied; a page image is the Run's evidence.
+	file_scope.denied = true;
+	file_scope
+		.page_images
+		.insert("ev_page".into(), ("image/png".into(), PIXEL.to_vec()));
+	let page = |reference: &str, digest: String| {
+		ModelMedia::PageImage(PageImageSelection {
+			evidence_ref: reference.into(),
+			expected_digest: digest,
+		})
+	};
+	let digest = format!("sha256:{:x}", Sha256::digest(PIXEL));
+	// Act
+	let output = selected(&mut file_scope, &[page("ev_page", digest.clone())])
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(output.len(), 2);
+	assert_eq!(file_scope.calls, vec![("page_image", Uuid::nil())]);
+	assert!(matches!(
+		selected(&mut file_scope, &[page("ev_page", "sha256:00".into())]).await,
+		Err(Error::Conflict(ref message)) if message == "PAGE_IMAGE_CHANGED"
+	));
+	assert!(matches!(
+		selected(&mut file_scope, &[page("ev_missing", digest)]).await,
+		Err(Error::NotFound(_))
+	));
 }

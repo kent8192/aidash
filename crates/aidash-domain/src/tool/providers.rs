@@ -71,10 +71,14 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 /// no configuration change.
 pub const RESEARCH_PROVIDERS: &[(&str, &[&str], ToolTier)] = &[
 	("research.brave@1", &["search"], ToolTier::Host),
-	("research.page@1", &["fetch", "find"], ToolTier::Host),
+	(
+		"research.page@1",
+		&["fetch", "find", "view"],
+		ToolTier::Host,
+	),
 	(
 		"research.fixture@1",
-		&["search", "fetch", "find"],
+		&["search", "fetch", "find", "view"],
 		ToolTier::Fixture,
 	),
 ];
@@ -93,6 +97,7 @@ pub fn research_alias(operation: ResearchOperation) -> &'static str {
 		ResearchOperation::Search => "research_search",
 		ResearchOperation::Fetch => "research_fetch",
 		ResearchOperation::Find => "research_find",
+		ResearchOperation::View => "research_view",
 	}
 }
 pub fn research_descriptor(node: &str, provider: &str, operation: &str) -> Result<ToolDescriptor> {
@@ -117,7 +122,9 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 			vec![Yield::Fetch, Yield::Citations],
 			DisclosureBoundary::External,
 		),
-		ResearchOperation::Find => (vec![Yield::Citations], DisclosureBoundary::Local),
+		ResearchOperation::Find | ResearchOperation::View => {
+			(vec![Yield::Citations], DisclosureBoundary::Local)
+		}
 	};
 	ToolContract {
 		identity: ToolIdentity::Builtin(format!("research:{}", operation.as_str())),
@@ -134,7 +141,8 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 			continuation: Continuation::Ordinary,
 			catch_up: false,
 			media_pending: false,
-			yields_model_media: false,
+			// A viewed page reaches the model as an image (ADR 0053).
+			yields_model_media: operation == ResearchOperation::View,
 			workbench_approval: false,
 			// Web disclosure approval takes the worker's outer authority lease.
 			concurrency: Concurrency::Sequential,
