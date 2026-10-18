@@ -15,9 +15,6 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 async fn run_visible(scope: &mut dyn InspectionScope, run: &RunMetadata) -> Result<bool> {
-	if scope.principal() == Principal::DeploymentAdministrator {
-		return Ok(true);
-	}
 	let result = async {
 		let workspace = scope.workspace(run.workspace_id).await?;
 		if !scope.decide(&workspace, "workspace.read").await? {
@@ -86,6 +83,10 @@ pub async fn inspect(
 	reference: EntityRef,
 ) -> Result<Inspection> {
 	let mut scope = repository.begin().await?;
+	// Agent versions are Tenant content (ADR 0029).
+	if !matches!(scope.principal(), Principal::Subject { .. }) {
+		return Err(Error::Forbidden);
+	}
 	scope.require_inspection(&reference).await?;
 	let entry = scope.effective(&reference).await?;
 	if entry.kind != "agent" {

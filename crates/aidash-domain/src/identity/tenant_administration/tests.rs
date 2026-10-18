@@ -87,10 +87,8 @@ fn membership_changes_retain_groups_outside_the_assignable_boundary(mut bundle: 
 		replace_assignable_memberships(&mut bundle, "root", &set(&["administrators"])),
 		Err(Error::Invalid(_))
 	));
-	assert!(matches!(
-		replace_assignable_memberships(&mut bundle, "bot", &set(&["members"])),
-		Err(Error::Invalid(_))
-	));
+	assert!(replace_assignable_memberships(&mut bundle, "bot", &set(&["members"])).unwrap());
+	assert!(bundle.subjects["bot"].groups.contains("members"));
 }
 
 #[rstest]

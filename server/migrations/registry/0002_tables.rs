@@ -14,6 +14,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "agent_draft_registrations".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("draft_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
 				ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true),
@@ -138,6 +139,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "agent_knowledge".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("documents", FieldType::Jsonb).with_not_null(true),
@@ -325,6 +327,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 				            name: "registry".to_owned(),
 				            columns: vec![
+				                ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("id", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("version", FieldType::Text).with_not_null(true),
 				                ColumnDefinition::new("kind", FieldType::Text).with_not_null(true),
@@ -471,6 +474,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "registry_agent_model_refs".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("model_id", FieldType::Text).with_not_null(true),
@@ -490,6 +494,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "registry_agent_resource_refs".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("agent_version", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("required_kind", FieldType::Text).with_not_null(true),
@@ -510,6 +515,8 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateTable {
 			name: "registry_requests".to_owned(),
 			columns: vec![
+				ColumnDefinition::new("principal", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("key", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("request", FieldType::Jsonb).with_not_null(true),
 				ColumnDefinition::new("entity_id", FieldType::Text).with_not_null(true),

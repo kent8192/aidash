@@ -40,6 +40,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0029_completion_policy"),
 	("registry", "0030_plan_connection_models"),
 	("registry", "0031_model_request_estimator"),
+	("registry", "0032_degraded_context"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 ];
@@ -78,7 +79,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0031_embedding_provider_keys");
+	assert_eq!(knowledge[0].name, "0032_memory_attempt_retry_cycle");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -314,14 +315,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0035_policy_probe")
+		.get_migration("execution", "0036_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0034_tokenized_estimate_confidence".to_owned()
+			"0035_run_semantic_retry_cycle".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -1258,6 +1259,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 				"modalities":["text"],"cost":{},
 				"projection_versions":["legacy","ordered"],"cache_mode":cache_mode}});
 		Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(DefinitionKind::Model)
@@ -1466,6 +1468,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1496,6 +1499,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 			.create_with_conn(
 				&mut connection,
 				&Definition::build()
+					.tenant("acme")
 					.id(id.clone())
 					.version("1.0.0")
 					.kind(DefinitionKind::Agent)
@@ -1544,6 +1548,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("parallel")
 				.version("1.0.0")
 				.kind(DefinitionKind::Agent)
@@ -1688,6 +1693,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1698,6 +1704,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 		.unwrap();
 	let definition = |id: &str, policy: serde_json::Value| {
 		Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(DefinitionKind::Agent)
@@ -1869,6 +1876,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1881,6 +1889,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("verified")
 				.version("1.0.0")
 				.kind(DefinitionKind::Agent)
@@ -1908,6 +1917,111 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 	assert!(
 		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(full)]).await,
 		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn degraded_context_migration_admits_only_workspace_opt_ins_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let source = |source: serde_json::Value| json!({"schema_version":1,"source":source});
+	let accepts = |config: serde_json::Value, kind: &'static str| {
+		let pool = pool.clone();
+		async move {
+			contract_accepts(&pool, "aidash_context_is_valid", vec![config, json!(kind)]).await
+		}
+	};
+	let degrade = source(json!({"adapter":"workspace_retrieval","on_unavailable":"degrade"}));
+	// Assert: only workspace_retrieval may declare pause or degrade (ADR 0059).
+	for valid in [
+		source(json!({"adapter":"workspace_retrieval"})),
+		source(json!({"adapter":"workspace_retrieval","on_unavailable":"pause"})),
+		degrade.clone(),
+	] {
+		assert!(accepts(valid.clone(), "source").await, "{valid}");
+	}
+	for (invalid, kind) in [
+		(
+			source(json!({"adapter":"workspace_retrieval","on_unavailable":"skip"})),
+			"source",
+		),
+		(
+			source(json!({"adapter":"workspace_retrieval","on_unavailable":null})),
+			"source",
+		),
+		(
+			source(json!({"adapter":"workspace_retrieval","on_unavailable":true})),
+			"source",
+		),
+		(
+			source(json!({"adapter":"semantic_memory","on_unavailable":"degrade"})),
+			"memory",
+		),
+	] {
+		assert!(!accepts(invalid.clone(), kind).await, "{invalid}");
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0032_degraded_context")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without stored opt-ins the reverse restores the 0011 validator.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(accepts(source(json!({"adapter":"workspace_retrieval"})), "source").await);
+	assert!(!accepts(degrade.clone(), "source").await);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path stores an opted-in source.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("workspace")
+				.version("1.0.0")
+				.kind(DefinitionKind::Source)
+				.metadata(
+					json!({"id":"workspace","version":"1.0.0","kind":"source",
+						"name":{"en":"Workspace"},"description":{"en":"Migration test"},
+						"config":degrade.clone()})
+					.into(),
+				)
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored opt-in refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0032_degraded_context cannot be reversed: 1 Definitions"),
+		"{error}"
+	);
+	assert!(
+		accepts(degrade, "source").await,
+		"the denied rollback must retain the upgraded validator"
 	);
 }
 
@@ -2259,6 +2373,7 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		("exposure-agent", DefinitionKind::Agent, agent),
 	] {
 		let definition = Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(kind)

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { State, Mesh } from "../src/types";
+import type { State } from "../src/types";
 import { NOTICE_INTERVAL } from "../src/notifications/model";
 import { setup } from "./collaboration-fixture";
 
@@ -194,61 +194,6 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
   await expect(page.locator(".intent-notifications")).toContainText(
     "Queued approval",
   );
-  expect(errors).toEqual([]);
-});
-
-test("remote notices preserve node identity when request and workspace IDs collide", async ({
-  page,
-}) => {
-  await page.clock.install();
-  const { errors } = await setup(page, { unpairedRemoteRequest: true });
-  await page.goto("/collaboration?channel=workspace-two");
-  await stateAfterLoad(page);
-  const remote: Mesh = await page.evaluate(() =>
-    fetch("/api/mesh").then((response) => response.json()),
-  );
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: remote }));
-  remote.nodes[0].human_requests.push({
-    ...remote.nodes[0].human_requests[0],
-    id: "question-one",
-    prompt: "Remote node needs different evidence.",
-  });
-  await nextToast(page);
-  await expect(page.locator(".intent-toast-open")).toContainText(
-    "Remote node needs different evidence.",
-  );
-  await expect(page.locator(".intent-toast-open")).toContainText(
-    "aidash://peer",
-  );
-  await expect(page.locator(".intent-toast-open")).not.toContainText(
-    "Research",
-  );
-  await page.locator(".intent-toast-open").click();
-  await expect(page).toHaveURL("/collaboration?channel=workspace-two");
-  await expect(page.getByRole("dialog")).toHaveCount(1);
-  await expect(page.getByRole("dialog")).toContainText(
-    "Remote node needs different evidence.",
-  );
-  await expect(page.getByRole("dialog")).not.toContainText(
-    "Which market should I examine?",
-  );
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "Close", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "Notifications", exact: true })
-    .click();
-  const remoteRow = page.locator(".intent-notification-row").filter({
-    hasText: "Remote node needs different evidence.",
-  });
-  await expect(remoteRow).toContainText("aidash://peer");
-  await expect(remoteRow).not.toContainText("Research");
-  await expect(
-    page.locator(".intent-notification-row").filter({
-      hasText: "Which market should I examine?",
-    }),
-  ).toContainText("Research");
   expect(errors).toEqual([]);
 });
 

@@ -107,13 +107,11 @@ export function CreatorTools({
   );
 }
 export function TrustTools({
-  entries,
   deploymentAdministrator,
   invitations,
   tenant,
   initiallyOpen,
 }: {
-  entries: State["registry"];
   deploymentAdministrator: boolean;
   /** Whether this Deployment issues Invitations. */
   invitations: boolean;
@@ -138,7 +136,7 @@ export function TrustTools({
       {deploymentAdministrator ? (
         <Suspense fallback={loading}>
           <DashboardIdentityAdministration />
-          <AuthorizationPage entries={entries} invitations={invitations} />
+          <AuthorizationPage invitations={invitations} />
         </Suspense>
       ) : tenant ? (
         <Suspense fallback={loading}>

@@ -760,10 +760,12 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	.await;
 	assert_eq!(status, 200, "{grant}");
 	assert_eq!(grant["revision"], 1);
+	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let workspace = federation
 		.store
 		.create_workspace(
-			&TEST_FIXTURE,
+			&acme,
+			"alice",
 			"Browser management",
 			"Pause and cancel an admitted run",
 		)
@@ -772,7 +774,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	let task = federation
 		.store
 		.create_task(
-			&TEST_FIXTURE,
+			&acme,
 			workspace.id,
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
@@ -787,6 +789,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		.await
 		.unwrap();
 	// Browser controls operate on a real admitted Binding graph.
+	let mut agent = None;
 	for (kind, id, config) in [
 		(
 			"model",
@@ -799,23 +802,13 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Browser management fixture","bindings":[],"remove_default":[]}),
 		),
 	] {
-		federation
+		agent = Some(federation
 			.registry
-			.register(serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Browser management fixture"},"schema":{},"config":config})).unwrap())
+			.register(acme.tenant_name().unwrap(), serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Browser management fixture"},"schema":{},"config":config})).unwrap())
 			.await
-			.unwrap();
+			.unwrap());
 	}
-	let run = federation
-		.store
-		.accept_run(
-			&TEST_FIXTURE,
-			&task,
-			&federation.config.node_id,
-			"fixture-agent",
-			"1.0.0",
-		)
-		.await
-		.unwrap();
+	let run = common::local_run(&federation.store, &acme, &task, &agent.unwrap()).await;
 	let run_management = format!("/api/runs/{}/management", run.id);
 	assert_eq!(
 		call(

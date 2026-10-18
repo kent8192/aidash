@@ -43,6 +43,15 @@ pub const ADMINISTRATION_ACTIONS: [&str; 8] = [
 	crate::identity::tenancy::TENANT_DELETE,
 ];
 
+/// Creating a definition or version in the Tenant's Registry.
+pub const REGISTRY_CREATE: &str = "registry.create";
+/// Deciding a Catalog Approval.
+pub const CATALOG_APPROVE: &str = "catalog.approve";
+/// Installing a Marketplace package as the Tenant's own copy.
+pub const MARKETPLACE_INSTALL: &str = "marketplace.install";
+/// The Registry actions the dashboard shows controls for (ADR 0029).
+pub const REGISTRY_ACTIONS: [&str; 3] = [REGISTRY_CREATE, CATALOG_APPROVE, MARKETPLACE_INSTALL];
+
 /// Resource ID used when a capability or collection, not one item, is checked.
 pub const COLLECTION: &str = "all";
 
@@ -55,6 +64,8 @@ pub fn resource_kind(action: &str) -> &'static str {
 		crate::identity::tenancy::TENANT_UPDATE | crate::identity::tenancy::TENANT_DELETE => {
 			"tenant"
 		}
+		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
+		MARKETPLACE_INSTALL => "package",
 		_ => "subject",
 	}
 }
@@ -161,8 +172,42 @@ pub fn add_user_subject(
 	bundle.validate()
 }
 
-/// Replaces only a user subject's Assignable Group memberships. Returns whether
-/// the bundle changed; every other group and role is retained.
+/// The groups an agent subject joins when its Catalog Approval names none:
+/// `members` when the policy marks it Assignable, otherwise none (ADR 0062).
+pub fn default_agent_groups(bundle: &PolicyBundle) -> BTreeSet<String> {
+	assignable_groups(bundle)
+		.into_iter()
+		.filter(|group| group == crate::identity::tenancy::MEMBERS)
+		.collect()
+}
+
+/// Adds the agent subject of an approved agent version. It has no delegator,
+/// so its authority is its groups intersected with each Run's chain.
+pub fn add_agent_subject(
+	bundle: &mut PolicyBundle,
+	subject: &str,
+	groups: &BTreeSet<String>,
+) -> Result<()> {
+	if bundle.subjects.contains_key(subject) {
+		return Err(Error::Conflict("subject already exists".into()));
+	}
+	require_assignable(bundle, groups)?;
+	bundle.subjects.insert(
+		subject.into(),
+		Subject {
+			kind: SubjectKind::Agent,
+			groups: groups.clone(),
+			roles: BTreeSet::new(),
+			attributes: json!({}),
+			enabled: true,
+			delegated_by: None,
+		},
+	);
+	bundle.validate()
+}
+
+/// Replaces only a user or agent subject's Assignable Group memberships.
+/// Returns whether the bundle changed; every other group and role is retained.
 pub fn replace_assignable_memberships(
 	bundle: &mut PolicyBundle,
 	subject: &str,
@@ -174,9 +219,9 @@ pub fn replace_assignable_memberships(
 		.subjects
 		.get_mut(subject)
 		.ok_or_else(|| Error::Invalid(format!("unknown subject: {subject}")))?;
-	if entry.kind != SubjectKind::User {
+	if !matches!(entry.kind, SubjectKind::User | SubjectKind::Agent) {
 		return Err(Error::Invalid(
-			"only user subjects have Assignable Group memberships".into(),
+			"only user and agent subjects have Assignable Group memberships".into(),
 		));
 	}
 	let next: BTreeSet<String> = entry

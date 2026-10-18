@@ -15,18 +15,6 @@ pub(super) fn migration() -> Migration {
 			sql: include_str!("sql/forward/baseline_search_path.sql").into(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").into()),
 		})
-		.add_operation(Operation::DropConstraintDefinition {
-			table: "installations".into(),
-			constraint: Constraint::ForeignKey {
-				name: "installations_id_version_fkey".into(),
-				columns: vec!["id".into(), "version".into()],
-				referenced_table: "registry".into(),
-				referenced_columns: vec!["id".into(), "version".into()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0026_remove_legacy_installations.sql").into(),
 			reverse_sql: Some(

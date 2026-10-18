@@ -18,7 +18,10 @@ use serde_json::{Value, json};
 pub use settings::settings_for;
 use std::sync::Arc;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
-pub use tenant_roots::{tenant_root, tenant_root_in};
+pub use tenant_roots::{
+	admitted_run, approve_agent, local_run, remote_run, replace_policy, tenant_root,
+	tenant_root_in, tenant_scope, tenant_token,
+};
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
 #[derive(Clone)]
@@ -233,6 +236,46 @@ pub async fn subject(
 	client
 }
 
+#[allow(dead_code)]
+pub async fn tenant_subject(fixture: &EndpointFixture, name: &str) -> Arc<APIClient> {
+	subject(
+		fixture,
+		name,
+		Arc::new(api_client_from_url(&fixture.server.url)),
+	)
+	.await
+}
+
+#[allow(dead_code)]
+pub async fn tenant_member(fixture: &EndpointFixture) -> (Arc<APIClient>, String) {
+	let token = tenant_token(&fixture.runtime.store, "acme").await;
+	let client = api_client_from_url(&fixture.server.url);
+	client
+		.set_header("Authorization", &format!("Bearer {token}"))
+		.await
+		.unwrap();
+	(Arc::new(client), token)
+}
+
+#[allow(dead_code)]
+pub async fn approve(fixture: &EndpointFixture, tenant: &str, id: &str, version: &str) {
+	aidash_server::authorization::Authorization {
+		pool: fixture.runtime.store.pool.clone(),
+	}
+	.set_catalog(
+		tenant,
+		&aidash_server::registry::EntityRef {
+			id: id.into(),
+			version: version.into(),
+		},
+		0,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.expect("the catalog approval is recorded");
+}
+
 #[fixture]
 pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 	async move { Arc::new(api_client_from_url(&endpoint.await.server.url)) }
@@ -244,6 +287,8 @@ pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 #[allow(dead_code)]
 pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 	let model = format!("{id}-fixture-model");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	fixture.runtime.registry.seed(&tenant).await.unwrap();
 	for (kind, key, config) in [
 		(
 			"model",
@@ -256,6 +301,6 @@ pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 			json!({"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Native Run fixture","bindings":[],"remove_default":[]}),
 		),
 	] {
-		fixture.runtime.registry.register(serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
+		fixture.runtime.registry.register(&tenant, serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
 	}
 }

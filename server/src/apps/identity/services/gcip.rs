@@ -230,7 +230,7 @@ pub(crate) async fn exchange(
 	// durably disables an existing identity whose Binding has been removed.
 	let identity = crate::bootstrap::dashboard_authority(f)
 		.admit_login(
-			&mut crate::bootstrap::dashboard_login(f.store.pool.clone()),
+			&mut crate::bootstrap::dashboard_login(f.store.pool.clone(), &f.config.node_id),
 			&sign_in,
 		)
 		.await?;

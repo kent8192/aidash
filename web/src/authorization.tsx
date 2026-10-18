@@ -18,22 +18,16 @@ import {
   authorizationIssueCredential,
   authorizationRevokeCredential,
   transactionRevocations,
-  authorizationCatalog,
-  authorizationSetCatalog,
-  registryGet,
 } from "./generated/aidash";
 import type {
-  Binding,
   Credential,
   Decision,
-  Entry,
   Evaluation,
   IssuedCredential,
   PolicyBundle,
   Snapshot,
 } from "./generated/models";
 import { ApiError } from "./transport";
-import { keylessOrigin } from "./keyless";
 import {
   Badge,
   Empty,
@@ -42,7 +36,6 @@ import {
   Modal,
   Panel,
   useI18n,
-  useEntryLabel,
   type StatusTone,
 } from "./ui";
 import {
@@ -101,10 +94,8 @@ const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 
 /** A Deployment Administrator's view of one Tenant at a time. */
 export function AuthorizationPage({
-  entries,
   invitations,
 }: {
-  entries: Entry[];
   /** Whether this Deployment issues Invitations. */
   invitations: boolean;
 }) {
@@ -146,7 +137,6 @@ export function AuthorizationPage({
         <TenantAuthorization
           key={tenant}
           tenant={tenant}
-          entries={entries}
           invitations={invitations}
         />
       )}
@@ -156,15 +146,12 @@ export function AuthorizationPage({
 
 function TenantAuthorization({
   tenant,
-  entries,
   invitations,
 }: {
   tenant: string;
-  entries: Entry[];
   invitations: boolean;
 }) {
   const { t, locale } = useI18n();
-  const entryLabel = useEntryLabel(entries);
   const client = useQueryClient();
   const path = encodeURIComponent(tenant);
   const [editor, setEditor] = useState<Snapshot | null>(null);
@@ -197,12 +184,6 @@ function TenantAuthorization({
         if (page.length < 200) return all;
       }
     },
-    enabled: !!current,
-    refetchInterval: 5000,
-  });
-  const catalog = useQuery({
-    queryKey: ["authorization", tenant, "catalog"],
-    queryFn: () => authorizationCatalog(path),
     enabled: !!current,
     refetchInterval: 5000,
   });
@@ -399,88 +380,6 @@ function TenantAuthorization({
                   </div>
                 ))}
               </RowList>
-            )}
-          </Panel>
-          <Panel title={t("authCatalog")}>
-            <Hint>{t("authCatalogHelp")}</Hint>
-            {catalog.isError ? (
-              <Alert>{catalog.error.message}</Alert>
-            ) : catalog.data ? (
-              <>
-                <CatalogForm
-                  entries={entries}
-                  bindings={catalog.data}
-                  busy={busy}
-                  save={(binding) =>
-                    mutate(() => authorizationSetCatalog(path, binding))
-                  }
-                />
-                {catalog.data.length > 0 && (
-                  <RowList>
-                    {catalog.data.map((binding) => (
-                      <div
-                        className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
-                        key={`${binding.entry_id}@${binding.entry_version}`}
-                      >
-                        <div className="grid min-w-0 gap-0.5">
-                          <span className="truncate font-medium text-foreground">
-                            {entryLabel({
-                              id: binding.entry_id,
-                              version: binding.entry_version,
-                            })}
-                          </span>
-                          <span className="text-[11px] text-faint">
-                            {t("revision")}{" "}
-                            <span className="font-mono tabular">
-                              {binding.revision}
-                            </span>
-                          </span>
-                          <KeylessOrigin
-                            id={binding.entry_id}
-                            version={binding.entry_version}
-                            known={entries.find(
-                              (entry) =>
-                                entry.id === binding.entry_id &&
-                                entry.version === binding.entry_version,
-                            )}
-                          />
-                        </div>
-                        <AccessBadge
-                          value={
-                            binding.enabled ? "authApproved" : "authDisabled"
-                          }
-                        />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="col-span-2 justify-self-start sm:col-span-1"
-                          disabled={busy}
-                          onClick={() =>
-                            void mutate(() =>
-                              authorizationSetCatalog(path, {
-                                entry: {
-                                  id: binding.entry_id,
-                                  version: binding.entry_version,
-                                },
-                                expected_revision: binding.revision,
-                                enabled: !binding.enabled,
-                              }),
-                            )
-                          }
-                        >
-                          {t(
-                            binding.enabled
-                              ? "authDisableApproval"
-                              : "authApprove",
-                          )}
-                        </Button>
-                      </div>
-                    ))}
-                  </RowList>
-                )}
-              </>
-            ) : (
-              <Loading />
             )}
           </Panel>
           <PeerMappings
@@ -961,134 +860,6 @@ function EvaluationPanel({
         </div>
       </form>
     </Panel>
-  );
-}
-
-function CatalogForm({
-  entries,
-  bindings,
-  busy,
-  save,
-}: {
-  entries: Entry[];
-  bindings: Binding[];
-  busy: boolean;
-  save: (input: {
-    entry: { id: string; version: string };
-    expected_revision: number;
-    enabled: boolean;
-  }) => Promise<boolean>;
-}) {
-  const { t, local } = useI18n();
-  const [selected, setSelected] = useState("");
-  const available = entries.filter(
-    (entry) =>
-      !bindings.some(
-        (binding) =>
-          binding.entry_id === entry.id &&
-          binding.entry_version === entry.version &&
-          binding.enabled,
-      ),
-  );
-  // A refetch can remove the selected option; the controlled select then
-  // returns to the placeholder instead of silently showing another entry
-  // whose Keyless notice was never rendered.
-  const choice = available.find(
-    (entry) => JSON.stringify([entry.id, entry.version]) === selected,
-  );
-  return (
-    <form
-      className="flex flex-wrap items-end gap-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const entry = choice;
-        if (!entry) return;
-        const binding = bindings.find(
-          (binding) =>
-            binding.entry_id === entry.id &&
-            binding.entry_version === entry.version,
-        );
-        void save({
-          entry: { id: entry.id, version: entry.version },
-          expected_revision: binding?.revision ?? 0,
-          enabled: true,
-        });
-      }}
-    >
-      <div className="w-full min-w-0 sm:w-96">
-        <Field label={t("authCatalogEntry")}>
-          <NativeSelect
-            name="entry"
-            required
-            value={choice ? selected : ""}
-            onChange={(event) => setSelected(event.currentTarget.value)}
-          >
-            <option value="" disabled>
-              {t("authSelectEntry")}
-            </option>
-            {available.map((entry) => (
-              <option
-                value={JSON.stringify([entry.id, entry.version])}
-                key={`${entry.id}@${entry.version}`}
-              >
-                {local(entry.name) || t("unnamedEntity")} · {entry.version}
-              </option>
-            ))}
-          </NativeSelect>
-        </Field>
-      </div>
-      <Button variant="outline" disabled={busy || !available.length}>
-        {t("authApprove")}
-      </Button>
-      <KeylessNotice entry={choice} />
-    </form>
-  );
-}
-
-/** Before approval: a Keyless definition carries no data retention guarantee (ADR 0036). */
-function KeylessNotice({ entry }: { entry?: Entry }) {
-  const { t } = useI18n();
-  const origin = entry && keylessOrigin(entry);
-  if (!origin) return null;
-  return (
-    <Notice tone="warning" role="status" className="keyless-notice w-full">
-      {t("authKeylessNotice")} <span className="font-mono">{origin}</span>
-    </Notice>
-  );
-}
-
-/**
- * On an approved row: where the Keyless definition sends requests. The
- * definition is read on its own when the Registry state is unavailable, so a
- * degraded dashboard still shows the warning.
- */
-function KeylessOrigin({
-  id,
-  version,
-  known,
-}: {
-  id: string;
-  version: string;
-  known?: Entry;
-}) {
-  const { t } = useI18n();
-  const fetched = useQuery({
-    queryKey: ["registry", id, version],
-    queryFn: () =>
-      registryGet(encodeURIComponent(id), encodeURIComponent(version)),
-    enabled: !known,
-    // A definition never changes, but a failed read during the same outage
-    // must not leave the warning missing: poll like the catalog until it loads.
-    staleTime: Infinity,
-    refetchInterval: (query) => (query.state.data ? false : 5000),
-  });
-  const entry = known ?? (!fetched.isError ? fetched.data : undefined);
-  const origin = entry && keylessOrigin(entry);
-  if (!origin) return null;
-  return (
-    <span className="keyless-origin text-[11px] text-warning [overflow-wrap:anywhere]">
-      {t("authKeyless")} · <span className="font-mono">{origin}</span>
-    </span>
   );
 }
 

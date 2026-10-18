@@ -57,7 +57,11 @@ pub(super) fn migration() -> Migration {
 			table: "agent_knowledge".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "agent_knowledge_pkey".to_owned(),
-				columns: vec!["agent_id".to_owned(), "agent_version".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"agent_id".to_owned(),
+					"agent_version".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -106,7 +110,11 @@ pub(super) fn migration() -> Migration {
 			table: "registry_agent_model_refs".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "registry_agent_model_refs_pkey".to_owned(),
-				columns: vec!["agent_id".to_owned(), "agent_version".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"agent_id".to_owned(),
+					"agent_version".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
@@ -114,6 +122,7 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::PrimaryKey {
 				name: "registry_agent_resource_refs_pkey".to_owned(),
 				columns: vec![
+					"tenant".to_owned(),
 					"agent_id".to_owned(),
 					"agent_version".to_owned(),
 					"required_kind".to_owned(),
@@ -125,20 +134,28 @@ pub(super) fn migration() -> Migration {
 			table: "registry".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "registry_pkey".to_owned(),
-				columns: vec!["id".to_owned(), "version".to_owned()],
+				columns: vec!["tenant".to_owned(), "id".to_owned(), "version".to_owned()],
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "registry_requests".to_owned(),
 			constraint: Constraint::PrimaryKey {
 				name: "registry_requests_pkey".to_owned(),
-				columns: vec!["key".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"principal".to_owned(),
+					"key".to_owned(),
+				],
 			},
 		})
 		.add_operation(Operation::CreateNamedIndex {
 			table: "agent_draft_registrations".to_owned(),
 			name: "agent_draft_registered_version".to_owned(),
-			columns: vec!["agent_id".to_owned(), "version".to_owned()],
+			columns: vec![
+				"tenant".to_owned(),
+				"agent_id".to_owned(),
+				"version".to_owned(),
+			],
 			unique: true,
 			index_type: Some(IndexType::BTree),
 			where_clause: None,
@@ -186,7 +203,12 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::CreateNamedIndex {
 			table: "registry".to_owned(),
 			name: "registry_id_version_kind_unique".to_owned(),
-			columns: vec!["id".to_owned(), "version".to_owned(), "kind".to_owned()],
+			columns: vec![
+				"tenant".to_owned(),
+				"id".to_owned(),
+				"version".to_owned(),
+				"kind".to_owned(),
+			],
 			unique: true,
 			index_type: Some(IndexType::BTree),
 			where_clause: None,

@@ -51,9 +51,17 @@ pub(super) fn migration() -> Migration {
 			table: "agent_knowledge".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "agent_knowledge_agent_id_agent_version_fkey".to_owned(),
-				columns: vec!["agent_id".to_owned(), "agent_version".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"agent_id".to_owned(),
+					"agent_version".to_owned(),
+				],
 				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"version".to_owned(),
+				],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,
@@ -72,24 +80,20 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::AddConstraintDefinition {
-			table: "installations".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "installations_id_version_fkey".to_owned(),
-				columns: vec!["id".to_owned(), "version".to_owned()],
-				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
 			table: "registry_agent_model_refs".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "registry_agent_model_source".to_owned(),
-				columns: vec!["agent_id".to_owned(), "agent_version".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"agent_id".to_owned(),
+					"agent_version".to_owned(),
+				],
 				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"version".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::Cascade,
 				deferrable: None,
@@ -100,12 +104,18 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::ForeignKey {
 				name: "registry_agent_model_target".to_owned(),
 				columns: vec![
+					"tenant".to_owned(),
 					"model_id".to_owned(),
 					"model_version".to_owned(),
 					"model_kind".to_owned(),
 				],
 				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned(), "kind".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"version".to_owned(),
+					"kind".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Restrict,
 				on_update: ForeignKeyAction::Restrict,
 				deferrable: None,
@@ -115,9 +125,17 @@ pub(super) fn migration() -> Migration {
 			table: "registry_agent_resource_refs".to_owned(),
 			constraint: Constraint::ForeignKey {
 				name: "registry_agent_resource_source".to_owned(),
-				columns: vec!["agent_id".to_owned(), "agent_version".to_owned()],
+				columns: vec![
+					"tenant".to_owned(),
+					"agent_id".to_owned(),
+					"agent_version".to_owned(),
+				],
 				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"version".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Cascade,
 				on_update: ForeignKeyAction::Cascade,
 				deferrable: None,
@@ -128,12 +146,18 @@ pub(super) fn migration() -> Migration {
 			constraint: Constraint::ForeignKey {
 				name: "registry_agent_resource_target".to_owned(),
 				columns: vec![
+					"tenant".to_owned(),
 					"reference_id".to_owned(),
 					"reference_version".to_owned(),
 					"required_kind".to_owned(),
 				],
 				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned(), "kind".to_owned()],
+				referenced_columns: vec![
+					"tenant".to_owned(),
+					"id".to_owned(),
+					"version".to_owned(),
+					"kind".to_owned(),
+				],
 				on_delete: ForeignKeyAction::Restrict,
 				on_update: ForeignKeyAction::Restrict,
 				deferrable: None,

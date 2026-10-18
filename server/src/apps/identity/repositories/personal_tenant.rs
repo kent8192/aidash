@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// Creates the identity's Personal Tenant unless it ever had one. The link is
 /// written once at sign-in, so a disabled Mapping, a changed policy or a
 /// deleted Personal Tenant is never repaired by signing in.
-pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
+pub(crate) async fn provision(db: &Pool, node: &str, identity: Uuid) -> Result<()> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::TenantCreation);
 	db.atomic(&scope, async |tx| {
 		lock(tx, identity).await?;
@@ -30,7 +30,7 @@ pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
 		{
 			return Ok(());
 		}
-		create(tx, identity, None).await.map(drop)
+		create(tx, node, identity, None).await.map(drop)
 	})
 	.await
 }
@@ -40,6 +40,7 @@ pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
 /// toward no limit; the deleted one, if restored later, is no longer linked.
 pub(crate) async fn recreate(
 	db: &Pool,
+	node: &str,
 	identity: Uuid,
 	session: &crate::authorization::identity::HttpSession,
 ) -> Result<Created> {
@@ -63,7 +64,7 @@ pub(crate) async fn recreate(
 		// The session at the write boundary: a logout committing meanwhile
 		// waits, or is seen here.
 		session.current(tx, true).await?;
-		create(tx, identity, link).await
+		create(tx, node, identity, link).await
 	})
 	.await
 }
@@ -91,6 +92,7 @@ async fn lock(tx: &mut AtomicTransaction, identity: Uuid) -> Result<()> {
 /// Creates a Personal Tenant and links the identity to it, replacing `link`.
 async fn create(
 	tx: &mut AtomicTransaction,
+	node: &str,
 	identity: Uuid,
 	link: Option<PersonalTenantLink>,
 ) -> Result<Created> {
@@ -101,7 +103,8 @@ async fn create(
 	{
 		return Err(Error::Forbidden);
 	}
-	let created = tenants::create(tx, PERSONAL_LABEL, true, Creator::Identity(identity)).await?;
+	let created =
+		tenants::create(tx, node, PERSONAL_LABEL, true, Creator::Identity(identity)).await?;
 	let account = DashboardIdentity::objects()
 		.filter(DashboardIdentity::field_id().eq(identity))
 		.select_for_update()

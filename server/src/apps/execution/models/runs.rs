@@ -50,6 +50,11 @@ pub struct Run {
 	pub observed_input_seq: i64,
 	#[field(default = false)]
 	pub ledger_worker_ready: bool,
+	/// The Run's Retry Cycle. Each authorized manual retry of a semantic pause
+	/// increments it, so native-memory model operations get a fresh retry
+	/// ledger without changing their operation ID (ADR 0057).
+	#[field(default = 0)]
+	pub semantic_retry_cycle: i32,
 
 	/// Local continuations retain their owning-Run FK; remote continuations live at Home.
 	/// DDL exception: SchemaExpr cannot express JSON extraction and CASE yet.

@@ -94,6 +94,23 @@ body:json {
               "value": "alice"
             }
           }
+        },
+        {
+          "id": "registry-reader",
+          "effect": "allow",
+          "subjects": {
+            "ids": [
+              "alice"
+            ]
+          },
+          "actions": [
+            "registry.read"
+          ],
+          "resources": {
+            "kinds": [
+              "registry"
+            ]
+          }
         }
       ]
     }

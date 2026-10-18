@@ -78,9 +78,10 @@ impl IncidentScope for Scope {
 		)
 		.await
 	}
-	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry> {
-		crate::apps::registry::services::admission::definition(
+	async fn effective(&mut self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
+		crate::apps::registry::models::Definition::read_of(
 			&mut self.tx,
+			tenant,
 			&reference.id,
 			&reference.version,
 		)

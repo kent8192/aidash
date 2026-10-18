@@ -11,8 +11,8 @@ use crate::apps::identity::serializers::peer::PeerMapping;
 use crate::apps::identity::serializers::peer::PeerMappingInput;
 use crate::apps::identity::serializers::policies::AuthorizationPage;
 use crate::apps::identity::serializers::policies::AuthorizationUpdate;
-use crate::apps::identity::serializers::policies::CatalogInput;
 use crate::apps::identity::serializers::policies::CredentialInput;
+use crate::apps::identity::serializers::policies::{CatalogApprovals, CatalogInput};
 use crate::apps::identity::serializers::remote::PrepareInput;
 use crate::apps::identity::serializers::remote::Prepared;
 use crate::apps::identity::serializers::services_policy::Decision;
@@ -285,6 +285,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, CatalogInput>(document, views::policies::set_catalog)?;
 	contracts.path(document, views::policies::set_catalog, &["String"])?;
+	contracts.response::<_, Vec<Binding>>(
+		document,
+		views::policies::approve_catalog,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, CatalogApprovals>(document, views::policies::approve_catalog)?;
+	contracts.path(document, views::policies::approve_catalog, &["String"])?;
 	contracts.response::<_, IssuedCredential>(
 		document,
 		views::policies::issue_credential,

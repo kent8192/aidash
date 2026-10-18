@@ -890,6 +890,7 @@ impl ExecutionEnvironment for Bench {
 		_budget: usize,
 		_entry: &Entry,
 		_key: Option<&RetrievalKey>,
+		_degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		unexpected("ExecutionEnvironment.semantic_context")
 	}
@@ -928,14 +929,6 @@ impl ExecutionEnvironment for Bench {
 			.await
 			.map_err(|_| Error::Conflict("cancellation channel closed".into()))?;
 		Ok(InferenceInterruption::Cancelled)
-	}
-	async fn operator_human_message_media(
-		&self,
-		_run: &Run,
-		_messages: &[(i64, Uuid, usize)],
-		_model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		unexpected("ExecutionEnvironment.operator_human_message_media")
 	}
 	async fn summary_dependencies_current(
 		&self,

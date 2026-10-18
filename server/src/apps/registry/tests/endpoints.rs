@@ -19,35 +19,33 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let registrar = crate::endpoint::tenant_subject(&app, "registrar").await;
 	let seeded_definitions = app
 		.runtime
 		.registry
-		.list(&Default::default())
+		.list(
+			&aidash_domain::tenancy::TenantName::new("endpoint").unwrap(),
+			&Default::default(),
+		)
 		.await
 		.unwrap();
 	let mut invalid = skill.clone();
 	invalid["schema"] = json!({"type":"unknown-json-schema-type"});
 	// Act
-	let rejected = app
-		.deployment_administrator
+	let rejected = registrar
 		.post("/api/registry", &invalid, "json")
 		.await
 		.unwrap();
-	let created = app
-		.deployment_administrator
+	let created = registrar
 		.post("/api/registry", &skill, "json")
 		.await
 		.unwrap();
-	let found = app
-		.deployment_administrator
+	crate::endpoint::approve(&app, "endpoint", "endpoint-skill", "1.0.0").await;
+	let found = registrar
 		.get("/api/registry/endpoint-skill/1.0.0")
 		.await
 		.unwrap();
-	let excluded = app
-		.deployment_administrator
-		.get("/api/registry?kind=agent")
-		.await
-		.unwrap();
+	let excluded = registrar.get("/api/registry?kind=agent").await.unwrap();
 	// Assert
 	assert_json(rejected, 400);
 	assert_eq!(assert_json(created, 200)["id"], skill["id"]);
@@ -69,14 +67,18 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 ) {
 	// Arrange: one key survives a failed attempt, then two concurrent retries.
 	let app = endpoint.await;
+	let registrar = crate::endpoint::tenant_subject(&app, "registrar").await;
 	let seeded_definitions = app
 		.runtime
 		.registry
-		.list(&Default::default())
+		.list(
+			&aidash_domain::tenancy::TenantName::new("endpoint").unwrap(),
+			&Default::default(),
+		)
 		.await
 		.unwrap();
 	let key = Uuid::new_v4();
-	app.deployment_administrator
+	registrar
 		.set_header("Idempotency-Key", &key.to_string())
 		.await
 		.unwrap();
@@ -84,7 +86,7 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 	let mut invalid = skill.clone();
 	invalid["schema"] = json!({"type":"invalid-schema-type"});
 	assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/registry", &invalid, "json")
 			.await
 			.unwrap(),
@@ -100,17 +102,14 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 	);
 	// Act
 	let (first, second) = tokio::join!(
-		app.deployment_administrator
-			.post("/api/registry", &skill, "json"),
-		app.deployment_administrator
-			.post("/api/registry", &skill, "json"),
+		registrar.post("/api/registry", &skill, "json"),
+		registrar.post("/api/registry", &skill, "json"),
 	);
 	let first = assert_json(first.unwrap(), 200);
 	let second = assert_json(second.unwrap(), 200);
 	let mut conflict = skill;
 	conflict["config"]["instructions"] = json!("Different instructions");
-	let rejected = app
-		.deployment_administrator
+	let rejected = registrar
 		.post("/api/registry", &conflict, "json")
 		.await
 		.unwrap();
@@ -149,35 +148,53 @@ async fn personal_documents_commit_once_and_remain_private_on_public_registry_re
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let registrar = crate::endpoint::tenant_subject(&app, "registrar").await;
 	assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/registry", &model, "json")
 			.await
 			.unwrap(),
 		200,
 	);
-	app.deployment_administrator
+	registrar
 		.set_header("Idempotency-Key", &Uuid::new_v4().to_string())
 		.await
 		.unwrap();
 	let input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Private reference test"},"config":{"model":{"id":"personal-model","version":"1.0.0"},"instructions":"Use the attached reference documents.","schema_version":1,"bindings":[],"remove_default":[]}},"documents":[{"name":"private.txt","media_type":"text/plain","text":"PRIVATE-REFERENCE-ONLY"}]});
 	// Act
 	let created = assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/agents/personal", &input, "json")
 			.await
 			.unwrap(),
 		200,
 	);
 	let repeated = assert_json(
-		app.deployment_administrator
+		registrar
 			.post("/api/agents/personal", &input, "json")
 			.await
 			.unwrap(),
 		200,
 	);
+	let source = created["config"]["bindings"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|binding| binding["kind"] == "source")
+		.unwrap()["target"]
+		.clone();
+	for (id, version) in [
+		("personal-model", "1.0.0"),
+		(
+			source["id"].as_str().unwrap(),
+			source["version"].as_str().unwrap(),
+		),
+		(created["id"].as_str().unwrap(), "1.0.0"),
+	] {
+		crate::endpoint::approve(&app, "endpoint", id, version).await;
+	}
 	let found = assert_json(
-		app.deployment_administrator
+		registrar
 			.get(&format!(
 				"/api/registry/{}/1.0.0",
 				created["id"].as_str().unwrap()
@@ -188,8 +205,7 @@ async fn personal_documents_commit_once_and_remain_private_on_public_registry_re
 	);
 	let mut changed = input;
 	changed["documents"][0]["text"] = json!("Changed private reference");
-	let conflict = app
-		.deployment_administrator
+	let conflict = registrar
 		.post("/api/agents/personal", &changed, "json")
 		.await
 		.unwrap();

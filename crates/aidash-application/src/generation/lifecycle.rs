@@ -31,6 +31,9 @@ pub async fn control(
 	let mut scope = repository.begin(&TenancyScope::tenant(tenant)?).await?;
 	let result = async {
 		if matches!(principal, Principal::DeploymentAdministrator) {
+			if matches!(input.action, Action::Approve) {
+				return Err(Error::Forbidden);
+			}
 			scope.authority(tenant).await?;
 		}
 		let job = scope.load(tenant, id).await?;
@@ -39,6 +42,9 @@ pub async fn control(
 				return Err(Error::Forbidden);
 			}
 			if !scope.decide(&job, input.action.authorization()).await? {
+				return Err(Error::Forbidden);
+			}
+			if matches!(input.action, Action::Approve) && !scope.decide_catalog(&job).await? {
 				return Err(Error::Forbidden);
 			}
 		}
