@@ -54,6 +54,7 @@ import {
   type Submit,
 } from "../forms";
 import { GenerationAssignForm } from "../generation";
+import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
@@ -547,6 +548,14 @@ function RunPanel({
       {/* The server denies subjects the stream of a foreign-home run. */}
       {local && !managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
+      )}
+      {local && !managed && (
+        <RunResearchEvidence
+          run={id}
+          deploymentAdministrator={
+            data.access.kind === "deployment_administrator"
+          }
+        />
       )}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}

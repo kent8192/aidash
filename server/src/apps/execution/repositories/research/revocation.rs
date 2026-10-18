@@ -337,11 +337,19 @@ impl Scope<'_> {
 	/// A subject must be permitted `action` on `resource`; a Deployment
 	/// Administrator needs no Tenant policy.
 	async fn permit(&mut self, kind: &str, id: &str, action: &str) -> Result<()> {
+		if self.permits_on(kind, id, action).await? {
+			Ok(())
+		} else {
+			Err(Error::Forbidden)
+		}
+	}
+
+	async fn permits_on(&mut self, kind: &str, id: &str, action: &str) -> Result<bool> {
 		let Transaction::Subject { access, .. } = &mut self.tx else {
-			return Ok(());
+			return Ok(true);
 		};
 		let resource = access.resource(kind, id, json!({}));
-		native(access.require(&resource, action).await)
+		native(access.decide(&resource, action).await)
 	}
 
 	/// Remove the exact content from every Web disclosure approval of the Run,
@@ -517,8 +525,18 @@ impl RevocationRecordScope for Scope<'_> {
 	fn decider(&self) -> Decider {
 		self.decider.clone()
 	}
-	async fn require(&mut self, _: &str, action: &str) -> Result<()> {
-		self.permit("research", RECORDS, action).await
+	async fn permits(&mut self, _: &str, action: &str) -> Result<bool> {
+		self.permits_on("research", RECORDS, action).await
+	}
+	async fn permits_run(&mut self, run: Uuid, action: &str) -> Result<bool> {
+		match RevocationScope::require(self, run, action).await {
+			Ok(()) => Ok(true),
+			Err(Error::Forbidden) => Ok(false),
+			Err(error) => Err(error),
+		}
+	}
+	async fn record(&mut self, run: Uuid) -> Result<Option<EvidenceRevocation>> {
+		native(ResearchRevocation::find(self.executor(), run).await)
 	}
 	async fn records(
 		&mut self,

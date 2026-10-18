@@ -21,6 +21,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::research::revoke)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::research::revocation)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::research::revocations)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::research::retention)

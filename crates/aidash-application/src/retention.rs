@@ -1,6 +1,9 @@
 //! A Tenant's Retention Rules (ADR 0045). The Deployment's periods are also
 //! the longest a Tenant may keep; a Tenant may store shorter ones.
-use crate::{Error, Result, ports::retention::RetentionRepository};
+use crate::{
+	Error, Result,
+	ports::retention::{RetentionRepository, RetentionScope},
+};
 use aidash_domain::retention::{self, Decider, RetentionChange, RetentionRules};
 use serde::Serialize;
 
@@ -35,6 +38,29 @@ fn own_tenant(decider: &Decider, tenant: &str) -> Result<()> {
 	}
 }
 
+/// A subject must be permitted `retention.update`; a Deployment
+/// Administrator needs no Tenant policy.
+async fn require(scope: &mut dyn RetentionScope, tenant: &str) -> Result<()> {
+	if scope.permits(tenant, retention::UPDATE).await? {
+		Ok(())
+	} else {
+		Err(Error::Forbidden)
+	}
+}
+
+/// Whether the caller may change `tenant`'s periods and read their history,
+/// so a dashboard offers only what it may do.
+pub async fn may_update(repository: &dyn RetentionRepository, tenant: &str) -> Result<bool> {
+	let mut scope = repository.begin().await?;
+	let result = async {
+		own_tenant(&scope.decider(), tenant)?;
+		scope.permits(tenant, retention::UPDATE).await
+	}
+	.await;
+	scope.finish(result.is_ok()).await?;
+	result
+}
+
 /// The periods that apply to `tenant`. Every subject of the Tenant may read them.
 pub async fn rules(repository: &dyn RetentionRepository, tenant: &str) -> Result<TenantRetention> {
 	let mut scope = repository.begin().await?;
@@ -59,7 +85,7 @@ pub async fn history(
 	let mut scope = repository.begin().await?;
 	let result = async {
 		own_tenant(&scope.decider(), tenant)?;
-		scope.require(tenant, retention::UPDATE).await?;
+		require(scope.as_mut(), tenant).await?;
 		scope
 			.history(tenant, offset, limit.clamp(1, retention::MAX_PAGE))
 			.await
@@ -80,7 +106,7 @@ pub async fn update(
 	let result = async {
 		let decider = scope.decider();
 		own_tenant(&decider, tenant)?;
-		scope.require(tenant, retention::UPDATE).await?;
+		require(scope.as_mut(), tenant).await?;
 		let deployment = scope.deployment();
 		if let Some(rules) = &rules {
 			rules.validate_for_tenant(&deployment)?;

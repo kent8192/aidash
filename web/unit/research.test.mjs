@@ -3,10 +3,18 @@ import assert from "node:assert/strict";
 import {
   approvalNotice,
   dollars,
+  exceedsCeiling,
+  hasResearch,
+  periodSeconds,
+  periodUnits,
+  periodWords,
+  recordedActor,
   researchFailure,
   researchBindings,
   runGrantScope,
+  shortenedPeriods,
   snapshotReadsPages,
+  splitPeriod,
   urlIntents,
 } from "../src/research.ts";
 
@@ -359,4 +367,64 @@ test("a Run reads pages only through a fetch Binding it was admitted with", () =
   );
   assert.equal(snapshotReadsPages(undefined), false);
   assert.equal(snapshotReadsPages(null), false);
+});
+
+test("a retention period reads in the longest unit that divides it", () => {
+  assert.deepEqual(splitPeriod(604_800), { value: 7, unit: "days" });
+  assert.deepEqual(splitPeriod(86_400 + 3_600), { value: 25, unit: "hours" });
+  assert.deepEqual(splitPeriod(90), { value: 90, unit: "seconds" });
+  assert.deepEqual(splitPeriod(0), { value: 0, unit: "hours" });
+  assert.equal(periodSeconds(25, "hours"), 90_000);
+  assert.equal(periodWords(86_400, false), "1 day");
+  assert.equal(periodWords(86_400 * 7, true), "7 日");
+  assert.deepEqual(periodUnits(3_600), ["days", "hours", "minutes"]);
+  assert.deepEqual(periodUnits(90), ["days", "hours", "minutes", "seconds"]);
+});
+
+const periods = (after, max) => ({
+  document_snapshots: { after_run_seconds: after, max_age_seconds: max },
+});
+
+test("only a shortening, or a Tenant period above a lowered ceiling, is called out", () => {
+  assert.deepEqual(
+    shortenedPeriods(periods(86_400, 604_800), periods(3_600, 604_800)),
+    ["after_run_seconds"],
+  );
+  assert.deepEqual(
+    shortenedPeriods(periods(3_600, 86_400), periods(86_400, 604_800)),
+    [],
+  );
+  assert.equal(exceedsCeiling(null, periods(1, 1)), false);
+  assert.equal(
+    exceedsCeiling(periods(7_200, 60), periods(3_600, 604_800)),
+    true,
+  );
+  assert.equal(exceedsCeiling(periods(3_600, 60), periods(3_600, 60)), false);
+});
+
+test("a Deployment Administrator's identity is shown only to Deployment Administrators", () => {
+  assert.equal(recordedActor("subject:acme/alice", false, false), "alice");
+  assert.equal(
+    recordedActor("deployment-administrator:4b2c", false, false),
+    "Deployment Administrator",
+  );
+  assert.equal(
+    recordedActor("deployment-administrator:4b2c", true, false),
+    "Deployment Administrator (4b2c)",
+  );
+  assert.equal(
+    recordedActor("deployment-administrator", false, true),
+    "デプロイメント管理者",
+  );
+});
+
+test("a Run offers revocation only once it has done research", () => {
+  const research = (search, inFlight = 0) => ({
+    usage: { search_attempts: search, fetch_attempts: 0, sources: 0 },
+    uncertain_attempts: 0,
+    in_flight_attempts: inFlight,
+  });
+  assert.equal(hasResearch(research(0)), false);
+  assert.equal(hasResearch(research(1)), true);
+  assert.equal(hasResearch(research(0, 1)), true);
 });

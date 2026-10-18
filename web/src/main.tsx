@@ -1030,6 +1030,7 @@ function Dashboard({
                         invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}
                         initiallyOpen={route.integration === "authorization"}
+                        evidenceOpen={route.integration === "evidence"}
                       />
                     )
                   }
@@ -1062,6 +1063,7 @@ function Dashboard({
                 invitations={browserSession?.invitations ?? false}
                 tenant={subjectTenant}
                 initiallyOpen={route.integration === "authorization"}
+                evidenceOpen={route.integration === "evidence"}
               />
             </div>
           )}

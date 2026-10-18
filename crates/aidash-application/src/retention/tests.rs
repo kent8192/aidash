@@ -37,12 +37,12 @@ impl RetentionScope for Scope<'_> {
 	fn deployment(&self) -> RetentionRules {
 		RetentionRules::DEFAULT
 	}
-	async fn require(&mut self, _: &str, action: &str) -> Result<()> {
+	async fn permits(&mut self, _: &str, action: &str) -> Result<bool> {
 		assert_eq!(action, "retention.update");
-		match (&self.tenants.decider, self.tenants.permitted) {
-			(Decider::DeploymentAdministrator { .. }, _) | (_, true) => Ok(()),
-			_ => Err(Error::Forbidden),
-		}
+		Ok(matches!(
+			(&self.tenants.decider, self.tenants.permitted),
+			(Decider::DeploymentAdministrator { .. }, _) | (_, true)
+		))
 	}
 	async fn stored(&mut self, tenant: &str) -> Result<Option<RetentionRules>> {
 		Ok(self.tenants.stored.lock().unwrap().get(tenant).copied())
@@ -217,6 +217,33 @@ async fn history_is_newest_first_and_only_for_those_who_may_change_the_periods()
 	));
 	assert!(matches!(
 		history(&tenants, "other", 0, 10).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[tokio::test]
+async fn a_dashboard_learns_who_may_change_the_periods() {
+	assert!(
+		may_update(&Tenants::new(subject("acme"), true), "acme")
+			.await
+			.unwrap()
+	);
+	assert!(
+		!may_update(&Tenants::new(subject("acme"), false), "acme")
+			.await
+			.unwrap()
+	);
+	assert!(
+		may_update(
+			&Tenants::new(Decider::DeploymentAdministrator { identity: None }, false),
+			"acme"
+		)
+		.await
+		.unwrap()
+	);
+	// Another Tenant's periods stay as closed as they are to `rules`.
+	assert!(matches!(
+		may_update(&Tenants::new(subject("acme"), true), "other").await,
 		Err(Error::Forbidden)
 	));
 }

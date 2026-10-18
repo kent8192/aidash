@@ -1,5 +1,8 @@
 //! Evidence Revocation of all of one Run's Research evidence (ADR 0046).
-use crate::{Error, Result, ports::research::RevocationRepository};
+use crate::{
+	Error, Result,
+	ports::research::{RevocationRecordScope, RevocationRepository},
+};
 use aidash_domain::{
 	context::{Context, ContextEvent, HistoryEntry},
 	research::revocation::{self, EvidenceRevocation, REVOKE, Removed},
@@ -11,11 +14,14 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// Revoke all of one Run's Research evidence. Revocation is irreversible:
-/// revoking a Run again returns its first record unchanged.
+/// revoking a Run again returns its first record unchanged. When `expected`
+/// names a Tenant, a Run of any other Tenant is unavailable, so a Run ID
+/// pasted into the wrong Tenant's form revokes nothing.
 pub async fn revoke(
 	repository: &dyn RevocationRepository,
 	run: Uuid,
 	reason: &str,
+	expected: Option<&str>,
 	now: DateTime<Utc>,
 ) -> Result<EvidenceRevocation> {
 	let reason = revocation::reason(reason)?;
@@ -33,6 +39,9 @@ pub async fn revoke(
 			}
 		}
 		let tenant = scope.tenant(run).await?;
+		if expected.is_some_and(|expected| tenant.as_deref() != Some(expected)) {
+			return Err(Error::NotFound("run unavailable".into()));
+		}
 		scope
 			.revoke(&EvidenceRevocation {
 				run_id: run,
@@ -60,15 +69,91 @@ pub async fn records(
 ) -> Result<Vec<EvidenceRevocation>> {
 	let mut scope = repository.begin_records().await?;
 	let result = async {
-		if let Decider::Subject { tenant: own, .. } = scope.decider()
-			&& own != tenant
-		{
+		if !may_read(scope.as_mut(), tenant).await? {
 			return Err(Error::Forbidden);
 		}
-		scope.require(tenant, REVOKE).await?;
 		scope
 			.records(tenant, offset, limit.clamp(1, retention::MAX_PAGE))
 			.await
+	}
+	.await;
+	scope.finish(result.is_ok()).await?;
+	result
+}
+
+/// Whether the reader may read `tenant`'s revocation records: a subject of
+/// that Tenant permitted `research.revoke`, or a Deployment Administrator.
+async fn may_read(scope: &mut dyn RevocationRecordScope, tenant: &str) -> Result<bool> {
+	match scope.decider() {
+		Decider::Subject { tenant: own, .. } if own != tenant => Ok(false),
+		_ => scope.permits(tenant, REVOKE).await,
+	}
+}
+
+/// Whether the caller may read `tenant`'s revocation records, so a dashboard
+/// offers them only to their audience.
+pub async fn may_read_records(repository: &dyn RevocationRepository, tenant: &str) -> Result<bool> {
+	let mut scope = repository.begin_records().await?;
+	let result = may_read(scope.as_mut(), tenant).await;
+	scope.finish(result.is_ok()).await?;
+	result
+}
+
+/// What one reader of a Run may know and do about its Evidence Revocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+	/// When the Run's evidence was revoked. Every reader of the Run may know
+	/// that and when, but not who or why.
+	pub revoked_at: Option<DateTime<Utc>>,
+	/// Whether the reader may revoke the Run's evidence.
+	pub may_revoke: bool,
+	/// Whether the reader may read the Run's revocation record.
+	pub may_read_record: bool,
+}
+
+/// The reader's [`Standing`] towards one Run. The caller has already decided
+/// that the reader may read the Run.
+pub async fn standing(repository: &dyn RevocationRepository, run: Uuid) -> Result<Standing> {
+	let mut scope = repository.begin_records().await?;
+	let result = async {
+		let record = scope.record(run).await?;
+		let (may_revoke, may_read_record) = match scope.decider() {
+			Decider::DeploymentAdministrator { .. } => (true, true),
+			Decider::Subject { tenant, .. } => (
+				scope.permits_run(run, REVOKE).await?,
+				scope.permits(&tenant, REVOKE).await?,
+			),
+		};
+		Ok(Standing {
+			revoked_at: record.map(|record| record.revoked_at),
+			may_revoke,
+			may_read_record,
+		})
+	}
+	.await;
+	scope.finish(result.is_ok()).await?;
+	result
+}
+
+/// One Run's revocation record, for the audience of its Tenant's records. A
+/// Run whose evidence was not revoked, or whose Tenant is not the subject's,
+/// has none.
+pub async fn record(repository: &dyn RevocationRepository, run: Uuid) -> Result<EvidenceRevocation> {
+	let mut scope = repository.begin_records().await?;
+	let result = async {
+		let own = match scope.decider() {
+			Decider::Subject { tenant, .. } => {
+				if !scope.permits(&tenant, REVOKE).await? {
+					return Err(Error::Forbidden);
+				}
+				Some(tenant)
+			}
+			Decider::DeploymentAdministrator { .. } => None,
+		};
+		match scope.record(run).await? {
+			Some(record) if own.is_none() || record.tenant == own => Ok(record),
+			_ => Err(Error::NotFound("revocation unavailable".into())),
+		}
 	}
 	.await;
 	scope.finish(result.is_ok()).await?;
