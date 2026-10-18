@@ -69,6 +69,7 @@ mod controlled_context_composition {
 		#[default(true)] memory: bool,
 		#[default(true)] workspace_retrieval: bool,
 		#[default(false)] ordered: bool,
+		#[default(false)] degrade: bool,
 		#[from(context_runtime)]
 		#[with(ordered)]
 		_runtime: common::RuntimeFuture,
@@ -152,7 +153,11 @@ mod controlled_context_composition {
 			if !enabled {
 				continue;
 			}
-			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":adapter}}});
+			let mut source = json!({"adapter":adapter});
+			if degrade && adapter == "workspace_retrieval" {
+				source["on_unavailable"] = json!("degrade");
+			}
+			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
 			f.registry
 				.register(&acme, serde_json::from_value(entry).unwrap())
 				.await
@@ -738,6 +743,111 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 		"step 5 reuses step 4"
 	);
 	assert_eq!(ordered_semantic_memory(&fixture, 5), refreshed);
+
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+/// Issue #234 (ADR 0059): an opted-in workspace source degrades after the
+/// bounded retry. The step reaches inference with the typed marker, records the
+/// degraded step and emits `run.semantic_degraded`. Missing vector points need
+/// repair, so they still pause even with the opt-in.
+#[rstest::rstest]
+#[case::embedding_outage(true)]
+#[case::missing_points(false)]
+#[tokio::test]
+async fn an_opted_in_local_workspace_outage_degrades_after_the_bounded_retry(
+	#[case] embedding_outage: bool,
+	#[future(awt)]
+	#[with(false, true, false, true)]
+	controlled_context: ControlledContext,
+) {
+	let fixture = controlled_context;
+	if embedding_outage {
+		fixture.fault.set(Fault::Unavailable);
+	} else {
+		let mut connection = fixture
+			.worker
+			.federation
+			.store
+			.pool
+			.begin(&TEST_FIXTURE)
+			.await
+			.unwrap();
+		aidash_server::database::native::query(
+			&reinhardt::query::Query::delete()
+				.from_table(reinhardt::query::Alias::new("semantic_vectors"))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.execute(&mut *connection)
+		.await
+		.unwrap();
+		connection.commit().await.unwrap();
+	}
+	for attempt in 1..=6 {
+		assert!(
+			fixture.worker.worker_once().await.unwrap(),
+			"attempt {attempt}"
+		);
+		let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+		if attempt < 6 {
+			assert!(
+				fixture.captured.lock().unwrap().is_empty(),
+				"attempt {attempt}"
+			);
+			assert_eq!(
+				run.recovery.retry.as_ref().unwrap().count,
+				attempt,
+				"{run:?}"
+			);
+			advance_retry(&fixture, run.id).await;
+			continue;
+		}
+		if !embedding_outage {
+			assert!(fixture.captured.lock().unwrap().is_empty());
+			assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
+			assert_eq!(
+				serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+				"retries_exhausted"
+			);
+			assert!(run.recovery.degraded.is_empty(), "{run:?}");
+			continue;
+		}
+		let contexts = fixture.captured.lock().unwrap().clone();
+		assert_eq!(
+			contexts.len(),
+			1,
+			"the degraded step reaches inference: {run:?}"
+		);
+		let semantic = &contexts[0]["current"]["semantic_memory"];
+		assert_eq!(
+			semantic.get("workspace").unwrap_or(semantic),
+			&json!({"status":"unavailable","cause":"embedding_provider"}),
+			"{}",
+			contexts[0]
+		);
+		assert_ne!(run.control.as_str(), "PAUSED", "{run:?}");
+		assert_eq!(run.recovery.degraded.count, 1, "{run:?}");
+		assert_eq!(
+			serde_json::to_value(&run.recovery.degraded.recent).unwrap(),
+			json!([{"step":0,"cause":"embedding_provider"}])
+		);
+		let events = fixture
+			.f
+			.store
+			.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
+			.await
+			.unwrap();
+		let degraded = events
+			.iter()
+			.find(|event| event.kind == "run.semantic_degraded")
+			.expect("run.semantic_degraded");
+		assert_eq!(degraded.data["cause"], "embedding_provider");
+		assert_eq!(degraded.data["run_id"], json!(run.id));
+	}
 
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;

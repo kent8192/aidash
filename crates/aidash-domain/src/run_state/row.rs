@@ -212,5 +212,16 @@ impl RawRun {
 		}
 	}
 }
+impl RawRun {
+	/// The semantic pause an authorized manual retry of this Run clears, if
+	/// any. Clearing one opens the Run's next Retry Cycle (ADR 0057); a context
+	/// pause or an ordinary pause does not.
+	pub fn manual_semantic_retry(&self) -> crate::Result<Option<crate::semantic::Failure>> {
+		let (_, recovery) = decode(self.phase, self.pending.clone())?;
+		Ok(recovery
+			.semantic_reason
+			.filter(|_| self.control == RunControl::Paused))
+	}
+}
 #[cfg(test)]
 mod resume_tests;

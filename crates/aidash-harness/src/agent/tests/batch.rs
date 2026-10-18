@@ -891,6 +891,7 @@ impl ExecutionEnvironment for Bench {
 		_budget: usize,
 		_entry: &Entry,
 		_key: Option<&RetrievalKey>,
+		_degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		unexpected("ExecutionEnvironment.semantic_context")
 	}

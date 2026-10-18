@@ -1,10 +1,10 @@
 // reinhardt-migration-source: 1
 // Reinhardt makemigrations model state for the `decider` definition kind.
-// The physical kind check is applied by 0032_decider_kind.
+// The physical kind check is applied by 0033_decider_kind.
 
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0033_decider_kind_state", "registry")
+	Migration::new("0034_decider_kind_state", "registry")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "registry".to_string(),
 			constraint: Constraint::EnumDomain {
@@ -55,7 +55,7 @@ pub(super) fn migration() -> Migration {
 				},
 			},
 		})
-		.add_dependency("registry", "0032_decider_kind")
+		.add_dependency("registry", "0033_decider_kind")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(true)

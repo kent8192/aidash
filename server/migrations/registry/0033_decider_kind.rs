@@ -11,9 +11,9 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0032_decider_kind", "registry")
+	Migration::new("0033_decider_kind", "registry")
 		.database_only(true)
-		.add_dependency("registry", "0031_model_request_estimator")
+		.add_dependency("registry", "0032_degraded_context")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "registry".into(),
 			constraint: Constraint::Check {

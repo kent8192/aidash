@@ -744,6 +744,7 @@ impl Guard {
 		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let workspace_budget = if self.remote.is_some() {
 			budget
@@ -761,6 +762,8 @@ impl Guard {
 			task,
 			inputs,
 			workspace_budget,
+			// Required-Home semantic context never degrades (ADR 0059).
+			degrade_on_outage && self.remote.is_none() && self.agent.workspace_degrades,
 		)
 		.await
 		.map_err(Error::from)?;

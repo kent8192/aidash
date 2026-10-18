@@ -61,11 +61,14 @@ pub trait SemanticSearchScope: Send {
 		}
 		Ok(None)
 	}
+	/// `cycle` is the claimed attempt's Retry Cycle, which bounds the Home's
+	/// memory model retries for this operation (ADR 0057).
 	async fn native_context(
 		&mut self,
 		_: &str,
 		binding: &aidash_domain::semantic::remote::Binding,
 		_: &Operation,
+		_: i32,
 		_: usize,
 	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
 		if binding.native().is_some() {

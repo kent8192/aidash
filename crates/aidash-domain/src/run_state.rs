@@ -350,9 +350,33 @@ pub struct RecoveryState {
 	/// recovered lease continues the same one (#108).
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub decision_cycle: u32,
+	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
+	#[serde(
+		default,
+		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
+	)]
+	pub degraded: crate::semantic::degraded::DegradedContext,
 }
 fn is_zero(value: &u32) -> bool {
 	*value == 0
+}
+impl RecoveryState {
+	/// Whether this attempt may degrade an unavailable workspace slot: it is
+	/// the last one of the bounded outage retry, or an earlier step of the Run
+	/// already degraded and no retrieval has succeeded since (ADR 0059).
+	///
+	/// A `pending` memory replay keeps the retry count, so after the last
+	/// outage retry it is still the last one: it must not spend a sixth.
+	pub fn degrades_on_outage(&self) -> bool {
+		self.degraded.outage
+			|| (matches!(
+				self.semantic_reason,
+				Some(crate::semantic::Failure::Unavailable | crate::semantic::Failure::Pending)
+			) && self
+				.retry
+				.as_ref()
+				.is_some_and(|retry| retry.count >= crate::semantic::OUTAGE_RETRIES))
+	}
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -387,7 +411,7 @@ pub fn encode(state: &RunState, recovery: &RecoveryState) -> Result<Value> {
 		state_version: StateVersion::default(),
 		data,
 		recovery: recovery.clone(),
-		requires: StateRequirements::of(state),
+		requires: StateRequirements::of(state, recovery),
 	})?)
 }
 pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryState)> {
@@ -442,7 +466,7 @@ pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryStat
 	// workers away), but one that falls short would let them claim unreadable state.
 	// Records written before the requirement existed are not accepted: Aidash has
 	// no deployment yet, so there is no persisted state to carry forward.
-	if !StateRequirements::of(&state).covered_by(&pending.requires) {
+	if !StateRequirements::of(&state, &pending.recovery).covered_by(&pending.requires) {
 		return Err(Error::Invalid(
 			"stored capability requirement does not cover the state".into(),
 		));

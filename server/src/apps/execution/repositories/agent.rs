@@ -67,6 +67,17 @@ impl ExecutionStore for RunStore {
 			Store::save_run(&self.store, &self.scope, run, token, "run.sources_observed").await?;
 		Ok(())
 	}
+	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"run.semantic_degraded",
+		)
+		.await?;
+		Ok(())
+	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run = Store::save_run(&self.store, &self.scope, run, token, "run.estimate_pinned").await?;
 		Ok(())
@@ -1164,6 +1175,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		budget: usize,
 		entry: &Entry,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let settings =
 			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
@@ -1175,7 +1187,14 @@ impl ExecutionEnvironment for Environment<'_> {
 		if let Some(authority) = &self.authority {
 			return authority
 				.guard
-				.semantic_context(&self.federation.store, task, inputs, budget, key)
+				.semantic_context(
+					&self.federation.store,
+					task,
+					inputs,
+					budget,
+					key,
+					degrade_on_outage,
+				)
 				.await
 				.map_err(Into::into);
 		}
@@ -1200,8 +1219,20 @@ impl ExecutionEnvironment for Environment<'_> {
 			&agent,
 		)
 		.await;
+		let degrade = degrade_on_outage && agent.workspace_degrades;
 		let result = async {
-			let semantic = semantic?.map(serde_json::to_value).transpose()?;
+			let semantic =
+				match semantic? {
+					// Optional workspace context may degrade; memory still follows
+					// and still fails closed (ADR 0059).
+					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
+						cause,
+					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
+					workspace => workspace
+						.required()?
+						.map(serde_json::to_value)
+						.transpose()?,
+				};
 			let reserved =
 				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
 			let memory = crate::semantic::services::memory_context::retrieve(

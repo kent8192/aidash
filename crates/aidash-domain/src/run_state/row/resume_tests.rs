@@ -72,6 +72,27 @@ fn manual_context_retry_clears_its_typed_reason_and_schedule(mut raw: RawRun) {
 	);
 }
 #[rstest]
+fn a_manual_retry_of_a_semantic_pause_names_its_cause(raw: RawRun) {
+	assert_eq!(
+		raw.manual_semantic_retry().unwrap(),
+		Some(crate::semantic::Failure::RetriesExhausted)
+	);
+}
+#[rstest]
+#[case::active(RunControl::Active)]
+#[case::cancelled(RunControl::Cancelled)]
+fn only_a_paused_run_opens_a_retry_cycle(mut raw: RawRun, #[case] control: RunControl) {
+	raw.metadata.control = control;
+	assert_eq!(raw.manual_semantic_retry().unwrap(), None);
+}
+#[rstest]
+fn a_context_pause_does_not_open_a_retry_cycle(mut raw: RawRun) {
+	let recovery = raw.pending["recovery"].as_object_mut().unwrap();
+	recovery.remove("semantic_reason");
+	recovery.insert("context_reason".into(), json!("output_truncated"));
+	assert_eq!(raw.manual_semantic_retry().unwrap(), None);
+}
+#[rstest]
 #[case::unsupported_state("state")]
 #[case::incomplete_pending("pending")]
 #[case::malformed_context("context")]

@@ -5,14 +5,14 @@
 //! Summary Stage completed is `staged`, and incomplete durable answers have a
 //! reason of their own. `staged` is final like `applied` and `shadow`.
 //! Aidash is undeployed, so v2 rows are not migrated: the new attempt column
-//! has no default. Physical DDL precedes the `0036_decision_evidence_v3_state`
+//! has no default. Physical DDL precedes the `0037_decision_evidence_v3_state`
 //! snapshot.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0035_decision_evidence_v3", "execution")
+	Migration::new("0036_decision_evidence_v3", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0034_tokenized_estimate_confidence")
+		.add_dependency("execution", "0035_run_semantic_retry_cycle")
 		.add_operation(Operation::AddColumn {
 			table: "decision_attempts".into(),
 			column: ColumnDefinition::new("question_digest", FieldType::Text).with_not_null(true),
