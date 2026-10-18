@@ -176,6 +176,10 @@ impl Pool {
 	}
 	pub async fn close(&self) {
 		self.driver.close().await;
+		#[cfg(debug_assertions)]
+		if let Some(fixture) = self.fixture_driver.get() {
+			fixture.close().await;
+		}
 	}
 	pub fn options(&self) -> &sqlx::pool::PoolOptions<sqlx::Postgres> {
 		self.driver.options()
