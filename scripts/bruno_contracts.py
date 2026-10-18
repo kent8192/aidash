@@ -29,6 +29,100 @@ COOKIE = {
     "Origin": "{{base_url}}",
     "X-Aidash-CSRF": "{{csrf}}",
 }
+# A built-in every Tenant's Registry holds from its creation (ADR 0033).
+BUILTIN = {"id": "aidash.workspace_read", "version": "1.0.0"}
+APPROVAL = {"entry": BUILTIN, "enabled": True, "expected_revision": 0}
+AGENT = {"id": "research", "version": "1.0.0"}
+# Tenant routes: a Deployment Administrator reaches no Tenant's Registry,
+# catalog or work (ADR 0029, ADR 0043). Each body passes its JSON extractor and
+# input validation, so the 403 is the authority decision. A `refusal` is the
+# contract subject's 403 for lacking the route's action; `path` aims the request
+# at the journey's own workspace or task.
+TENANT_ROUTES = {
+    "POST /api/registry": {
+        "body": {"id": "bruno.contract-skill", "version": "1.0.0", "kind": "skill",
+                 "name": {"en": "Bruno"}, "description": {"en": "Contract probe"}},
+        "refusal": "Subject without registry.create cannot register a definition",
+    },
+    "POST /api/agents/personal": {
+        "body": {"entry": {"id": "bruno.personal", "version": "1.0.0", "kind": "agent",
+                           "name": {"en": "Bruno"}, "description": {"en": "Contract probe"}},
+                 "documents": []},
+    },
+    "POST /api/skills/import": {
+        "body": {"url": "https://github.com/bruno/skills"},
+        "refusal": "Subject without registry.create cannot import a Skill",
+    },
+    "POST /api/authorization/{tenant}/catalog": {
+        "body": APPROVAL,
+        "refusal": "Subject without catalog.approve cannot approve a version",
+    },
+    "POST /api/authorization/{tenant}/catalog/approvals": {
+        "body": {"approvals": [APPROVAL]},
+        "refusal": "Subject without catalog.approve cannot approve a closure",
+    },
+    "POST /api/marketplace/installations/{id}/activation": {
+        "body": {"tenant": "{{tenant}}", "revision": 1, "enabled": True,
+                 "expected_activation_revision": 0, "expected_catalog_revision": 0},
+    },
+    "POST /api/marketplace/approval-sets": {
+        "body": {"tenant": "{{tenant}}", "installations": [], "approvals": []},
+    },
+    "POST /api/discover": {"body": {}},
+    "POST /api/workspaces": {"body": {"title": "Refused workspace", "goal": "Must not persist"}},
+    "PATCH /api/workspaces/{id}": {
+        "body": {"revision": 1, "state": {"refused": True}},
+        "path": "/api/workspaces/{{workspace_id}}",
+    },
+    "POST /api/workspaces/{id}/tasks": {
+        "body": {"title": "Refused task", "description": "Must not persist", "requirements": {},
+                 "dependencies": [], "parent_id": None},
+        "path": "/api/workspaces/{{workspace_id}}/tasks",
+    },
+    "POST /api/workspaces/{id}/messages": {
+        "body": {"content": "Must not persist"},
+        "path": "/api/workspaces/{{workspace_id}}/messages",
+    },
+    "POST /api/conversations": {
+        "body": {"title": "Refused conversation", "goal": "Must not persist",
+                 "target": AGENT, "target_kind": "agent"},
+    },
+    "POST /api/tasks/{id}/claim": {
+        "body": {"revision": 0, "agent": AGENT},
+        "path": "/api/tasks/{{task_id}}/claim",
+    },
+    "POST /api/tasks/{id}/delegate": {
+        "body": {"node_id": "{{node_id}}", "agent": AGENT},
+        "path": "/api/tasks/{{task_id}}/delegate",
+    },
+    "POST /api/runs/{id}/message": {"body": {"content": "Must not persist"}},
+    "POST /api/human-requests/{id}/answer": {"body": {"answer": "Must not persist"}},
+}
+# Tenant reads by subjects. Journey 05 gives the contract subject `registry.read`
+# on the Registry itself, which lets it list versions and approvals, but on no
+# definition, so every list is empty; the journey's denied subject holds no
+# action at all.
+DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
+SUBJECT_READS = {
+    "GET /api/registry/versions": [
+        ("Tenant subject lists only the versions it may read", 200, SUBJECT, None,
+         "expect(res.getBody().versions).to.eql([]);"),
+        ("Subject without registry.read cannot list the versions", 403, DENIED_SUBJECT, None, ""),
+    ],
+    "GET /api/authorization/{tenant}/catalog": [
+        ("Tenant subject reads a catalog that approved nothing", 200, SUBJECT, None,
+         "expect(res.getBody()).to.eql([]);"),
+        ("Subject without registry.read cannot read the catalog", 403, DENIED_SUBJECT, None, ""),
+    ],
+    "GET /api/registry": [
+        ("Subject discovers no definition it may not read", 200, SUBJECT, None,
+         "expect(res.getBody()).to.eql([]);"),
+    ],
+    "GET /api/registry/{id}/{version}": [
+        ("Subject cannot read a definition it may not read", 403, SUBJECT,
+         "/api/registry/aidash.workspace_read/1.0.0", ""),
+    ],
+}
 
 
 def key(route):
@@ -718,10 +812,8 @@ def render():
             else:
                 add(
                     endpoint,
-                    "Unknown admission cannot supply receiving authority"
-                    if route["name"] == "admissions-verify"
-                    else "Unknown legacy agent has no discovery record",
-                    403 if route["name"] == "admissions-verify" else 404,
+                    "Unknown admission cannot supply receiving authority",
+                    403,
                     headers=PEER,
                 )
             continue
@@ -738,6 +830,15 @@ def render():
                 headers=DEPLOYMENT_ADMINISTRATOR, body="{", immutable=True)
             continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
+        if endpoint in TENANT_ROUTES:
+            tenant_route = TENANT_ROUTES[endpoint]
+            body = json.dumps(tenant_route["body"])
+            add(endpoint, "Deployment Administrator bearer has no Tenant authority", 403,
+                path=tenant_route.get("path"), headers=DEPLOYMENT_ADMINISTRATOR, body=body,
+                immutable=True)
+            if "refusal" in tenant_route:
+                add(endpoint, tenant_route["refusal"], 403, path=tenant_route.get("path"),
+                    headers=SUBJECT, body=body, immutable=True)
         if route["source"] == "server/src/apps/identity/views/tenants.rs":
             if method == "GET":
                 add(endpoint, "Subject Credential cannot list Tenants", 403, headers=SUBJECT)
@@ -987,8 +1088,9 @@ def render():
         label = "Application read preserves the typed response contract"
         # Authority is checked before disclosing missing resources on these routes.
         # Sources: identity remote/graph, generation reads, capability run_access,
-        # and Marketplace subject dispatch. Deployment Administrator credentials cannot replace
-        # a subject or browser-bound graph grant.
+        # Marketplace subject dispatch, the Tenant Registry (ADR 0029) and workbench
+        # inspection of a Tenant's version. Deployment Administrator credentials cannot
+        # replace a subject or browser-bound graph grant.
         denied_reads = {
             "memory-participant-current",
             "remote-semantic-home-provenance",
@@ -1007,6 +1109,12 @@ def render():
             "marketplace-read-consent",
             "marketplace-installations",
             "marketplace-installation",
+            "registry-list",
+            "registry-get",
+            "registry-versions",
+            "authorization-catalog",
+            "workbench-inspect-version",
+            "workbench-export-report",
         }
         if route["name"] in denied_reads:
             status = 403
@@ -1104,6 +1212,11 @@ def render():
                 + "=invalid",
                 headers=headers,
             )
+        for read_label, read_status, read_headers, read_path, read_checks in SUBJECT_READS.get(
+            endpoint, []
+        ):
+            add(endpoint, read_label, read_status, path=read_path, headers=read_headers,
+                checks=read_checks)
 
     # Exact generated file set; no stale request can silently increase coverage.
     for path in directory.glob("[0-9]*.bru"):

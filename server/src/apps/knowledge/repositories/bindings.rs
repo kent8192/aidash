@@ -99,7 +99,18 @@ pub(crate) async fn admit(
 	run: &RunMetadata,
 	agent: &Entry,
 ) -> Result<Option<Binding>> {
-	let config = configuration(lease, agent, &store.node_id).await?;
+	let tenant: String = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("authorization_workspaces"))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut **lease.tx())
+	.await?
+	.ok_or(Error::Forbidden)?;
+	let config = configuration(lease, &tenant, agent, &store.node_id).await?;
 	let Some(provider) = config.memory else {
 		return Ok(None);
 	};
@@ -115,18 +126,7 @@ pub(crate) async fn admit(
 		}
 		return Ok(Some(binding));
 	}
-	crate::semantic::native_memory::policy(lease, &provider).await?;
-	let tenant: String = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("tenant"))
-			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
-			.lock(LockType::Share)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **lease.tx())
-	.await?
-	.ok_or(Error::Forbidden)?;
+	crate::semantic::native_memory::policy(lease, &tenant, &provider).await?;
 	let assigned = native::query(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -257,6 +257,7 @@ pub(crate) async fn admit(
 /// Execution admission independently pins and validates the complete Tool closure.
 pub(crate) async fn configuration(
 	lease: &mut Lease<'_>,
+	tenant: &str,
 	agent: &Entry,
 	node: &str,
 ) -> Result<AgentConfig> {
@@ -272,9 +273,13 @@ pub(crate) async fn configuration(
 		if binding.target.registry_node != node {
 			return Err(Error::Forbidden);
 		}
-		let entry =
-			crate::semantic::native_memory::definition(lease, &binding.target.local(), kind)
-				.await?;
+		let entry = crate::semantic::native_memory::definition(
+			lease,
+			tenant,
+			&binding.target.local(),
+			kind,
+		)
+		.await?;
 		if entry.config.get("schema_version").is_some() {
 			continue;
 		}

@@ -182,6 +182,31 @@ async fn hidden_transitive_dependency_prevents_a_partial_graph() {
 }
 #[rstest]
 #[tokio::test]
+async fn deployment_definitions_travel_by_name_without_export() {
+	let mut scope = graph();
+	let root = entry(
+		"root",
+		"agent",
+		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","aidash.workspace_read")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"cluster":null}),
+	);
+	let dependencies = publication_graph(&mut scope, &root, &[], "aidash://local")
+		.await
+		.unwrap();
+	assert_eq!(
+		dependencies
+			.iter()
+			.map(|d| d.reference.id.as_str())
+			.collect::<Vec<_>>(),
+		vec!["model"]
+	);
+	assert!(
+		!scope
+			.calls
+			.contains(&"registry.export:aidash.workspace_read".into())
+	);
+}
+#[rstest]
+#[tokio::test]
 async fn publication_checks_export_before_disclosing_dependency_content() {
 	let mut scope = graph();
 	scope.denied = Some("registry.export:tool".into());

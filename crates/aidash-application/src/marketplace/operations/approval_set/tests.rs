@@ -95,6 +95,7 @@ async fn missing_dependency_and_ordinary_subject_do_not_receive_implicit_approva
 		tenant: input.tenant.clone(),
 		subject: "administrator-display-name".into(),
 	};
+	scope.approving = None;
 	assert!(matches!(
 		approve_and_activate(&mut scope, &validation(), &input, "aidash://node").await,
 		Err(Error::Forbidden)

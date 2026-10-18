@@ -1,6 +1,5 @@
 //! Peer observations isolate the home node and bound durable journal payloads.
 use crate::isolated;
-use aidash_application::tenancy::TEST_FIXTURE;
 
 use crate::endpoint::{EndpointFixture, assert_json, endpoint};
 use aidash_server::apps::execution::models::{HumanRequest, Invocation};
@@ -37,10 +36,11 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		.create_with_conn(&mut db, &peer)
 		.await
 		.unwrap();
+	let scope = crate::endpoint::tenant_scope(&app.runtime.store, "acme").await;
 	let workspace = app
 		.runtime
 		.store
-		.create_workspace(&TEST_FIXTURE, "Journal", "Bounded observation")
+		.create_workspace(&scope, "alice", "Journal", "Bounded observation")
 		.await
 		.unwrap();
 	crate::endpoint::register_fixture_agent(&app, "agent").await;
@@ -51,7 +51,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 			.runtime
 			.store
 			.create_task(
-				&TEST_FIXTURE,
+				&scope,
 				workspace.id,
 				&NewTask {
 					title: home.into(),
@@ -65,12 +65,8 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 			)
 			.await
 			.unwrap();
-		let run = app
-			.runtime
-			.store
-			.accept_run(&TEST_FIXTURE, &task, home, "agent", "1.0.0")
-			.await
-			.unwrap();
+		let run =
+			crate::endpoint::remote_run(&app.runtime.store, &task, home, "agent", "1.0.0").await;
 		if count > 1 {
 			observed_run = run.id;
 		}

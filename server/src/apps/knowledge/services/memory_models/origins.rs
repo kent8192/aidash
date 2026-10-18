@@ -119,6 +119,7 @@ impl Models {
 					dependencies.push(
 						definition(
 							&mut Lease::Inherited(&mut parent),
+							&self.bank.tenant,
 							&EntityRef {
 								id: role.id.clone(),
 								version: role.version.clone(),
@@ -129,8 +130,13 @@ impl Models {
 					);
 				}
 				dependencies.push(
-					definition(&mut Lease::Inherited(&mut parent), &self.provider, "memory")
-						.await?,
+					definition(
+						&mut Lease::Inherited(&mut parent),
+						&self.bank.tenant,
+						&self.provider,
+						"memory",
+					)
+					.await?,
 				);
 				parent.track_registry(&dependencies).await?;
 				let mut child = Access::under_lease_on(&parent, &self.store.control_pool).await?;

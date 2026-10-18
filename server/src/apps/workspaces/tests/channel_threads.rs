@@ -64,7 +64,7 @@ async fn channel_threads_survive_new_router_and_do_not_become_tasks(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let token = app.runtime.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
 	let workspace = workspace(&app, &token, "Threads").await;
 	let (status, root) = post(&app, &token, &workspace, "A question", None, Uuid::new_v4()).await;
 	assert_eq!(status, 200, "{root}");
@@ -139,7 +139,7 @@ async fn duplicate_message_reuses_id_but_changed_thread_or_content_conflicts(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let token = app.runtime.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
 	let workspace = workspace(&app, &token, "Idempotency").await;
 	let key = Uuid::new_v4();
 	let (status, first) = post(&app, &token, &workspace, "Original", None, key).await;
@@ -166,7 +166,7 @@ async fn threads_and_cursors_cannot_cross_workspace_boundaries(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let token = app.runtime.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
 	let a = workspace(&app, &token, "A").await;
 	let b = workspace(&app, &token, "B").await;
 	let (status, root) = post(&app, &token, &a, "Private to A", None, Uuid::new_v4()).await;
@@ -202,7 +202,7 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let token = app.runtime.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
 	let workspace = workspace(&app, &token, "Paging").await;
 	for content in ["first", "second", "third"] {
 		let (status, value) = post(&app, &token, &workspace, content, None, Uuid::new_v4()).await;
@@ -223,8 +223,8 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 	}
 	let blank = post(&app, &token, &workspace, "   ", None, Uuid::new_v4()).await;
 	assert_eq!(blank.0, 400);
-	let spoof = app
-		.deployment_administrator
+	let spoof = client_for(&app.server.url, &token)
+		.await
 		.post(
 			&format!("/api/workspaces/{workspace}/thread-messages"),
 			&json!({"content":"spoof","sender":"admin","idempotency_key":Uuid::new_v4()}),
@@ -241,7 +241,7 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 #[tokio::test]
 async fn concurrent_identical_submissions_create_one_message(#[future] endpoint: EndpointFixture) {
 	let app = endpoint.await;
-	let token = app.runtime.config.api_token.clone();
+	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
 	let workspace = workspace(&app, &token, "Concurrent").await;
 	let key = Uuid::new_v4();
 	let (a, b) = tokio::join!(
@@ -267,12 +267,8 @@ async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
 		workspace: channel_id,
 	} = Box::pin(scoped_channel).await;
 	let deployment_administrator = app.runtime.config.api_token.clone();
-	let foreign = workspace(
-		&app,
-		&deployment_administrator,
-		"Deployment Administrator-owned",
-	)
-	.await;
+	let other = crate::endpoint::tenant_token(&app.runtime.store, "other").await;
+	let foreign = workspace(&app, &other, "Another Tenant's").await;
 	let workspace = channel_id;
 	let mut ids = Vec::new();
 	for text in ["first", "hidden", "last"] {

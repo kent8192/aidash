@@ -89,6 +89,7 @@ struct Scope {
 	denied: bool,
 	configured_exists: bool,
 	embedded: Option<(Uuid, EmbeddingConfig, String, Option<Uuid>)>,
+	embed_failure: Option<Failure>,
 }
 impl Scope {
 	fn new(calls: Calls) -> Self {
@@ -102,6 +103,7 @@ impl Scope {
 			denied: false,
 			configured_exists: true,
 			embedded: None,
+			embed_failure: None,
 		}
 	}
 	fn touch(&self, name: &'static str) {
@@ -162,6 +164,9 @@ impl SemanticRetrievalSession for Scope {
 	) -> Result<Vec<f32>> {
 		self.touch("embed");
 		self.embedded = Some((workspace, config.clone(), text.into(), run));
+		if let Some(failure) = self.embed_failure {
+			return Err(Error::RemoteSemantic(failure));
+		}
 		Ok(vec![0.25, 0.75])
 	}
 }
@@ -928,4 +933,34 @@ async fn disabled_auto_context_does_not_read_or_embed_ordinary_candidates() {
 	assert!(result.matches.is_empty());
 	assert_eq!(scope.embedded, None);
 	assert_eq!(*calls.lock().unwrap(), ["workspace", "index"]);
+}
+/// Only an outage that waiting can fix is returned as a cause the caller may
+/// degrade (ADR 0059). Missing points and a key rejection stay errors.
+#[rstest]
+#[case::missing_points(|_: &mut Scope, v: &mut Vector| v.presence = || Ok(false), None)]
+#[case::vector_check_outage(|_: &mut Scope, v: &mut Vector| v.presence = || Err(Error::External("down".into())), Some(OutageCause::VectorBackend))]
+#[case::embedding_outage(|s: &mut Scope, _: &mut Vector| s.embed_failure = Some(Failure::Unavailable), Some(OutageCause::EmbeddingProvider))]
+#[case::embedding_key_rejection(|s: &mut Scope, _: &mut Vector| s.embed_failure = Some(Failure::Configuration), None)]
+#[case::vector_query_outage(|_: &mut Scope, v: &mut Vector| v.failure = Some(Failure::Unavailable), Some(OutageCause::VectorBackend))]
+#[tokio::test]
+async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
+	#[case] fault: fn(&mut Scope, &mut Vector),
+	#[case] expected: Option<OutageCause>,
+) {
+	let (_, mut scope, mut vector) = fixture();
+	fault(&mut scope, &mut vector);
+	let result = workspace_context(
+		&mut scope,
+		&vector,
+		&run(),
+		"query",
+		1024,
+		&controls(true, true),
+	)
+	.await;
+	match (result, expected) {
+		(Ok(WorkspaceContext::Unavailable(cause)), Some(expected)) => assert_eq!(cause, expected),
+		(Err(Error::RemoteSemantic(_)), None) => {}
+		(other, _) => panic!("unexpected {other:?}"),
+	}
 }

@@ -226,18 +226,19 @@ listed.
 
 ## Cost attribution and limits
 
-A search provider may name the Research account holder's account: whoever
-runs the Deployment holds it and pays for it. The Brave package reads that
-account's profile, which records the agreement,
-retention terms, request price and monthly limit. Before dispatch the host
-checks the terms are current and that one more request fits the month's limit
-(base fee plus every charged or still-unknown attempt). The reservation records
-the account and price. An attempt stays charged once the provider was called,
+A provider may name the Research account holder's account: whoever runs the
+Deployment holds it and pays for it. Its Research account terms record the
+agreement, the data-handling terms, a price for each charged operation it
+implements (`search_price_micro_usd`, `fetch_price_micro_usd`; zero is a free
+request that is still attributed) and one monthly limit shared by both
+operations. Before disclosure the host checks the terms are current and that
+one more request fits the month's limit (base fee plus every charged or
+still-unknown attempt). The reservation records the account and price. An attempt stays charged once the provider was called,
 even if it then failed (for example an HTTP error or an invalid response); only
 an attempt stopped before the call, such as one whose one-time approval was
 already used, is not charged.
-Charges are recorded as signed 64-bit amounts, so a profile whose monthly limit
-exceeds 9,223,372,036,854,775,807 micro-USD is unavailable.
+Charges are recorded as signed 64-bit amounts, so terms whose monthly limit
+exceeds 9,223,372,036,854,775,807 micro-USD are refused at startup.
 
 Per-Run limits block a request before disclosure or dispatch: 20 searches, 50
 page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text. A page
@@ -325,35 +326,48 @@ Administrators.
 
 ## Providers
 
-| Provider             | Tier      | Availability                                                                                                                      |
-| -------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `research.brave@1`   | `host`    | `AIDASH_RESEARCH_BRAVE_PROFILE` names a valid account profile and its secret is set                                               |
-| `research.page@1`    | `host`    | `AIDASH_RESEARCH_PAGE_READING=enabled`                                                                                            |
-| `research.fixture@1` | `fixture` | `AIDASH_RESEARCH_FIXTURE=enabled`; a deterministic in-memory corpus that sends nothing outside the Node, for tests and evaluation |
+Whoever runs the Deployment declares its Research providers in the
+`[research_providers]` settings (see `server/settings/base.example.toml`):
 
-The Brave key is a **tool secret**: the profile's `credential_env` names an
-`AIDASH_SECRET_*` environment variable. It is not a Provider Credential.
+| Provider             | Tier      | Availability                                                                                                     |
+| -------------------- | --------- | ---------------------------------------------------------------------------------------------------------------- |
+| `research.brave@1`   | `host`    | `[research_providers.brave]` declares current account terms and its Deployment secret is set                     |
+| `research.page@1`    | `host`    | `page_reading = true`                                                                                            |
+| `research.fixture@1` | `fixture` | `fixture = true`; a deterministic in-memory corpus that sends nothing outside the Node, for tests and evaluation |
 
-```json
-{
-  "account_id": "brave-account",
-  "agreement_reference": "contract-2026-10",
-  "verified_by": "deployment_administrator",
-  "verified_at": "2026-10-01T00:00:00Z",
-  "review_after": "2027-01-01T00:00:00Z",
-  "storage_permitted": true,
-  "query_training_prohibited": true,
-  "evaluation_permitted": true,
-  "retention_days": 90,
-  "deletion_after_termination_days": 30,
-  "credential_env": "AIDASH_SECRET_BRAVE_SEARCH",
-  "price_effective_at": "2026-10-01T00:00:00Z",
-  "price_review_after": "2027-01-01T00:00:00Z",
-  "request_price_micro_usd": 5000,
-  "monthly_base_fee_micro_usd": 0,
-  "monthly_limit_micro_usd": 20000000
-}
+The production profile refuses `fixture = true`. The Brave key is a
+**Deployment secret**: `secret` names an `AIDASH_SECRET_*` environment
+variable, which no tool definition can name and which is not a Provider
+Credential. It stays outside the account terms, because Tenants are shown
+those terms.
+
+```toml
+[research_providers.brave]
+secret = "AIDASH_SECRET_BRAVE_SEARCH"
+
+[research_providers.brave.account]
+account_id = "brave-account"
+agreement_reference = "contract-2026-10"
+verified_by = "deployment_administrator"
+verified_at = "2026-10-01T00:00:00Z"
+review_after = "2027-01-01T00:00:00Z"
+storage_permitted = true
+query_training_prohibited = true
+evaluation_permitted = true
+retention_days = 90
+deletion_after_termination_days = 30
+price_effective_at = "2026-10-01T00:00:00Z"
+price_review_after = "2027-01-01T00:00:00Z"
+search_price_micro_usd = 5000
+monthly_base_fee_micro_usd = 0
+monthly_limit_micro_usd = 20000000
 ```
+
+Incomplete terms (a missing or extra price, a data-handling term Aidash
+requires left false, or a limit below the base fee plus a price) refuse to
+start. Terms whose verification or prices lapse later, or a Deployment secret
+that is not set, leave the provider not set up: its requests fail with
+`account_unavailable` or `provider_unavailable`.
 
 Providers are read once at startup; restart the Node after changing them. The
 page provider reads `text/html`, `application/xhtml+xml` and `text/plain` only,
@@ -404,10 +418,11 @@ or both ports of `aidash_application::ports::research`:
 - `SearchProvider`: `disclosure(query)` returns the exact destination and
   content it will send (or a contract failure if it cannot send the query
   unchanged), `account()` returns the Research account holder's current terms
-  or `None`, and `search(query)` returns raw candidates or a contract
+  or `None` for a provider that charges nothing, and `search(query)` returns raw candidates or a contract
   `Failure`. It must not relax the query's filters; the host filters again.
 - `PageProvider`: `admit(url)` performs literal destination checks before any
-  disclosure, and `fetch(url)` returns an `ExtractedPage` within the snapshot
+  disclosure, `account()` returns current terms that price `fetch` (Aidash's
+  own page reader charges nothing), and `fetch(url)` returns an `ExtractedPage` within the snapshot
   bounds. It must resolve and pin public addresses itself, check every
   redirect and never follow one to another host than the approved destination.
 

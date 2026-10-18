@@ -1,5 +1,9 @@
 use aidash_server::{
-	config::Config, domain::qualified_agent, federation::Federation, registry::Registry,
+	authorization::Authorization,
+	config::Config,
+	domain::qualified_agent,
+	federation::Federation,
+	registry::{EntityRef, Registry},
 	store::Store,
 };
 use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
@@ -40,7 +44,10 @@ pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, nat
 #[path = "tenant_roots.rs"]
 mod tenant_roots;
 #[allow(unused_imports)] // Only suites that create Tenants under fixed names use these.
-pub use tenant_roots::{tenant_root, tenant_root_in};
+pub use tenant_roots::{
+	admitted_run, approve_agent, local_run, remote_run, replace_policy, tenant_root,
+	tenant_root_in, tenant_scope, tenant_token,
+};
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
 pub async fn http_response(
@@ -167,26 +174,32 @@ async fn bootstrap_with_resources(
 	let mut agent_bindings = vec![
 		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
 	];
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let approve = async |id: &str| {
+		authorization
+			.set_catalog(
+				"acme",
+				&EntityRef {
+					id: id.into(),
+					version: "1.0.0".into(),
+				},
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	};
 	if semantic {
 		let memory = json!({"id":"semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Semantic Memory"},"description":{"en":"Explicit retrieval opt-in"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}});
-		let (status, result) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/registry",
-			memory,
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
-		let (status, result) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"semantic-memory","version":"1.0.0"},"enabled":true,"expected_revision":0}),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
+		f.registry
+			.register(&tenant, serde_json::from_value(memory).unwrap())
+			.await
+			.unwrap();
+		approve("semantic-memory").await;
 		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
 	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
@@ -210,27 +223,11 @@ async fn bootstrap_with_resources(
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
-		assert_eq!(
-			request(
-				app,
-				deployment_administrator,
-				"POST",
-				"/api/registry",
-				entry
-			)
+		f.registry
+			.register(&tenant, serde_json::from_value(entry).unwrap())
 			.await
-			.0,
-			200
-		);
-		let (status, response) = request(
-			app,
-			deployment_administrator,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
-		)
-		.await;
-		assert_eq!(status, 200, "catalog admission: {response}");
+			.unwrap();
+		approve(id).await;
 	}
 	let (status, credential) = request(
 		app,
@@ -380,7 +377,7 @@ pub struct RuntimeFixture {
 }
 
 impl RuntimeFixture {
-	#[allow(dead_code)] // Process and protocol suites inspect the retained broker environment.
+	/// The disposable services that also bound this runtime's fixture stages.
 	pub fn environment(&self) -> Arc<TestEnvironment> {
 		self._database.environment.clone()
 	}
@@ -410,31 +407,47 @@ pub fn execution_database(
 		// The preserved baseline names public explicitly. Isolate databases, not
 		// search paths. TestEnvironment owns the container and every database, so
 		// unwinding also removes fixtures that never reach explicit cleanup.
-		let logins = postgres::prepare_database(&environment.database_url, &database).await;
+		// Each stage names the database, which the PostgreSQL snapshot of a
+		// hang lists for every session connected to it (#320).
+		let logins = environment
+			.bounded_setup(
+				format!("create the fixture database {database}"),
+				postgres::prepare_database(&environment.database_url, &database),
+			)
+			.await;
 		// Migrations run as the owner; everything else uses the server role.
-		let owner = PgPoolOptions::new()
-			.max_connections(2)
-			.connect(&logins.owner_url)
-			.await
-			.unwrap();
-		let migrations =
-			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+		environment
+			.bounded_setup(format!("migrate the fixture database {database}"), async {
+				let owner = PgPoolOptions::new()
+					.max_connections(2)
+					.connect(&logins.owner_url)
+					.await
+					.unwrap();
+				let migrations = FilesystemSource::new(
+					PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+				)
 				.all_migrations()
 				.await
 				.expect("load the native migration graph");
-		postgres::apply_migrations(
-			DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone()))),
-			&migrations,
-		)
-		.await;
-		owner.close().await;
+				postgres::apply_migrations(
+					DatabaseConnection::new(Arc::new(PostgresBackend::new(owner.clone()))),
+					&migrations,
+				)
+				.await;
+				owner.close().await;
+			})
+			.await;
 		let url = logins.server_url;
 		let options = PgConnectOptions::from_str(&url)
 			.unwrap()
 			.application_name(&database);
-		let pool = PgPoolOptions::new()
-			.max_connections(max_connections)
-			.connect_with(options)
+		let pool = environment
+			.bounded_setup(
+				format!("connect the server pool to {database}"),
+				PgPoolOptions::new()
+					.max_connections(max_connections)
+					.connect_with(options),
+			)
 			.await
 			.unwrap();
 		Arc::new(ExecutionDatabase {
@@ -453,8 +466,20 @@ pub fn execution_database(
 pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client) -> RuntimeFuture {
 	async move {
 		let database = execution_database.await;
+		// The deterministic research fixture provider never leaves the Node.
+		aidash_server::research::configure(
+			&serde_json::from_value(json!({"page_reading": false, "fixture": true, "brave": null}))
+				.unwrap(),
+			&reinhardt::conf::settings::profile::Profile::Development,
+		)
+		.unwrap();
 
-		let store = Store::from_pool(database.pool.clone(), "aidash://execution-test".into())
+		let store = database
+			.environment
+			.bounded_setup(
+				format!("open the Store on {}", database.schema),
+				Store::from_pool(database.pool.clone(), "aidash://execution-test".into()),
+			)
 			.await
 			.unwrap();
 		let federation = Federation {

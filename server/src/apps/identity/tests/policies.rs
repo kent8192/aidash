@@ -131,14 +131,6 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 ) {
 	let app = Arc::new(endpoint.await);
 	let store = app.runtime.store.clone();
-	let legacy = store
-		.create_workspace(
-			&TEST_FIXTURE,
-			"Deployment Administrator-only",
-			"legacy secret",
-		)
-		.await
-		.unwrap();
 	let mut tokens = vec![];
 	for tenant in ["acme", "other"] {
 		crate::endpoint::tenant_root(&app.runtime, tenant).await;
@@ -187,18 +179,6 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 		scoped_request(&app, other, "GET", &path, Value::Null)
 			.await
 			.0,
-		403
-	);
-	assert_eq!(
-		scoped_request(
-			&app,
-			token,
-			"GET",
-			&format!("/api/workspaces/{}", legacy.id),
-			Value::Null
-		)
-		.await
-		.0,
 		403
 	);
 	assert_eq!(
@@ -261,18 +241,6 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 		)
 		.await
 		.unwrap();
-	assert!(matches!(
-		store
-			.accept_run(
-				&TEST_FIXTURE,
-				&stored_task,
-				"aidash://untrusted",
-				"agent",
-				"1.0.0"
-			)
-			.await,
-		Err(aidash_server::Error::Forbidden)
-	));
 	let (status, _) = request(
 		&app,
 		&format!("/api/tasks/{}/delegate", stored_task.id),

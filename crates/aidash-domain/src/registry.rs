@@ -131,6 +131,9 @@ pub struct AgentConfig {
 	pub conversation_memory: bool,
 	pub semantic_memory: bool,
 	pub workspace_context: bool,
+	/// Every source of optional Workspace semantic context opted into
+	/// `on_unavailable: degrade` (ADR 0059).
+	pub workspace_degrades: bool,
 	pub schema_version: u8,
 	pub bindings: Vec<bindings::Binding>,
 	pub remove_default: Vec<String>,

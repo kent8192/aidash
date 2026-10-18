@@ -1,5 +1,5 @@
 meta {
-  name: 0654 peer-observe - Require the peer node identity
+  name: 0654 peer-observe - Require the peer bearer credential
   type: http
   seq: 654
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{peer_token}}
+  X-Aidash-Node: {{peer_node}}
   X-Aidash-Protocol: 0.2
 }
 

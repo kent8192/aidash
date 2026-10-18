@@ -26,6 +26,8 @@ pub struct Attempt {
 	pub operation_id: Uuid,
 	pub id: Uuid,
 	pub fence: i64,
+	/// The operation's Retry Cycle when the attempt was claimed (ADR 0057).
+	pub cycle: i32,
 }
 pub enum Claim {
 	Attempt(Attempt),

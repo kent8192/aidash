@@ -1,9 +1,6 @@
 //! Retrieved semantic text is disclosed only after its durable Run dependency journal commits.
-use crate::Result;
-use aidash_domain::{
-	Task,
-	semantic::{InputRead, results::SearchResult},
-};
+use crate::{Result, semantic::retrieval::WorkspaceContext};
+use aidash_domain::{Task, semantic::InputRead};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -14,7 +11,7 @@ pub trait RunSemanticJournal: Send {
 }
 #[async_trait]
 pub trait RunSemanticScope: Send {
-	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<Option<SearchResult>>;
+	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<WorkspaceContext>;
 	/// Authority and source locks remain held by this scope through journal commit.
 	async fn begin_dependencies(&mut self) -> Result<Box<dyn RunSemanticJournal + '_>>;
 }

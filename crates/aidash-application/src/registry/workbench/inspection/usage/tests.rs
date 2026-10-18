@@ -281,27 +281,16 @@ async fn overflow_counts_visible_runs_and_merges_current_and_latest_usage() {
 }
 #[rstest]
 #[tokio::test]
-async fn deployment_administrator_uses_existing_inspection_authority_without_subject_resource_checks()
- {
+async fn a_deployment_administrator_cannot_inspect_a_tenant_agent_version() {
 	let mut r = Repository::new();
 	r.principal = Principal::DeploymentAdministrator;
-	r.forbidden = Some(Uuid::from_u128(1));
-	r.pages = vec![vec![
-		run(1, 1, "READY"),
-		run(2, 2, "CANCELLED"),
-		run(3, 3, "COMPLETED"),
-	]];
-	let result = inspect(&r, reference()).await.unwrap();
-	assert_eq!(
-		result
-			.workspaces
-			.iter()
-			.map(|w| w.workspace_id)
-			.collect::<Vec<_>>(),
-		vec![Uuid::from_u128(1), Uuid::from_u128(2)]
+	r.pages = vec![vec![run(1, 1, "READY")]];
+	let result = inspect(&r, reference()).await;
+	assert!(
+		matches!(result, Err(Error::Forbidden)),
+		"{:?}",
+		result.err()
 	);
-	assert!(result.workspaces[0].current);
-	assert!(!result.workspaces[1].current);
 	assert_eq!(r.state.lock().unwrap().workspace_reads, 0);
 }
 #[rstest]

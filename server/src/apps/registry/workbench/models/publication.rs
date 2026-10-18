@@ -1,6 +1,7 @@
 //! Immutable draft revision provenance and completed behavioral evidence.
 use super::{AgentDraftRegistration, AgentTestSession};
 use crate::Result;
+use crate::apps::registry::models::transaction_records::scope_tenant;
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::apps::registry::workbench::serializers::contracts::Draft;
 use reinhardt::core::exception::Error as FrameworkError;
@@ -11,13 +12,17 @@ use reinhardt::query::{Alias, OnConflict, PostgresQueryBuilder, Query, QueryStat
 use uuid::Uuid;
 
 impl AgentDraftRegistration {
+	/// The registrations of one agent version in the transaction's Tenant,
+	/// where another Tenant may register the same identity.
 	pub(crate) async fn for_agent(
 		tx: &mut dyn TransactionExecutor,
 		agent: &str,
 		version: &str,
 		limit: usize,
 	) -> Result<Vec<Self>> {
+		let tenant = scope_tenant(tx).await?;
 		Ok(Self::objects()
+			.filter(Self::field_tenant().eq(tenant))
 			.filter(Self::field_agent_id().eq(agent))
 			.filter(Self::field_version().eq(version))
 			.order_by(&["-registered_at", "-revision", "draft_id"])
@@ -46,7 +51,9 @@ impl AgentDraftRegistration {
 		tx: &mut dyn TransactionExecutor,
 		entry: &Entry,
 	) -> Result<Option<Self>> {
+		let tenant = scope_tenant(tx).await?;
 		Ok(Self::objects()
+			.filter(Self::field_tenant().eq(tenant))
 			.filter(Self::field_agent_id().eq(&entry.id))
 			.filter(Self::field_version().eq(&entry.version))
 			.all_with_executor(tx)
@@ -81,6 +88,7 @@ impl AgentDraftRegistration {
 			.into_table(Alias::new(Self::table_name()))
 			.columns(
 				[
+					"tenant",
 					"draft_id",
 					"revision",
 					"agent_id",
@@ -94,6 +102,7 @@ impl AgentDraftRegistration {
 				.map(Alias::new),
 			)
 			.values_panic([
+				IntoValue::into_value(&draft.tenant),
 				IntoValue::into_value(draft.id),
 				IntoValue::into_value(draft.revision),
 				IntoValue::into_value(&entry.id),

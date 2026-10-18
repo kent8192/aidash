@@ -22,11 +22,11 @@ pub(crate) struct Repository(pub(crate) Federation);
 
 /// External Identities and sessions are Deployment-wide, so these ports work
 /// in the no-Tenant scope; a personal Tenant is provisioned in its own scope.
-pub(crate) struct Login(pub(crate) Pool);
+pub(crate) struct Login(pub(crate) Pool, pub(crate) String);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
-		super::personal_tenant::provision(&self.0, identity)
+		super::personal_tenant::provision(&self.0, &self.1, identity)
 			.await
 			.map_err(Into::into)
 	}

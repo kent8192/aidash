@@ -67,6 +67,17 @@ impl ExecutionStore for RunStore {
 			Store::save_run(&self.store, &self.scope, run, token, "run.sources_observed").await?;
 		Ok(())
 	}
+	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"run.semantic_degraded",
+		)
+		.await?;
+		Ok(())
+	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run = Store::save_run(&self.store, &self.scope, run, token, "run.estimate_pinned").await?;
 		Ok(())
@@ -844,8 +855,10 @@ impl ExecutionEnvironment for Environment<'_> {
 				context.source,
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
+				let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
 				let value =
-					crate::knowledge::load(&self.federation.registry, &binding.definition).await?;
+					crate::knowledge::load(&self.federation.registry, &tenant, &binding.definition)
+						.await?;
 				documents.extend(
 					value
 						.as_array()
@@ -997,6 +1010,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		budget: usize,
 		entry: &Entry,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let settings =
 			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
@@ -1008,7 +1022,14 @@ impl ExecutionEnvironment for Environment<'_> {
 		if let Some(authority) = &self.authority {
 			return authority
 				.guard
-				.semantic_context(&self.federation.store, task, inputs, budget, key)
+				.semantic_context(
+					&self.federation.store,
+					task,
+					inputs,
+					budget,
+					key,
+					degrade_on_outage,
+				)
 				.await
 				.map_err(Into::into);
 		}
@@ -1033,8 +1054,20 @@ impl ExecutionEnvironment for Environment<'_> {
 			&agent,
 		)
 		.await;
+		let degrade = degrade_on_outage && agent.workspace_degrades;
 		let result = async {
-			let semantic = semantic?.map(serde_json::to_value).transpose()?;
+			let semantic =
+				match semantic? {
+					// Optional workspace context may degrade; memory still follows
+					// and still fails closed (ADR 0059).
+					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
+						cause,
+					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
+					workspace => workspace
+						.required()?
+						.map(serde_json::to_value)
+						.transpose()?,
+				};
 			let reserved =
 				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
 			let memory = crate::semantic::services::memory_context::retrieve(
@@ -1119,21 +1152,6 @@ impl ExecutionEnvironment for Environment<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		crate::authorization::execution::operator_human_message_media(
-			&self.federation.store,
-			run,
-			messages,
-			model,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn summary_dependencies_current(
 		&self,
 		run: &Run,
@@ -1178,13 +1196,10 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			home: self.native_home(),
 			scope: self.run_store.scope.clone(),
 		});
-		let authority = if let Some(authority) = &self.authority {
-			authority.guard.binding_authority()
-		} else {
-			Arc::new(super::bindings::OperatorAuthority {
-				federation: self.federation.clone(),
-			}) as Arc<dyn aidash_application::ports::bindings::BindingAuthority>
+		let Some(authority) = &self.authority else {
+			return Err(aidash_application::Error::Forbidden);
 		};
+		let authority = authority.guard.binding_authority();
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,
