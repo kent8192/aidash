@@ -2,7 +2,6 @@ import { defineConfig, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { dependencies } from "./package.json";
 const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
 /**
@@ -13,15 +12,13 @@ const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 export function dashboardConfig(extension?: string): UserConfig {
   const backend = process.env.AIDASH_BACKEND ?? "http://127.0.0.1:8080";
   return {
+    root: here("."),
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
         "@": here("./src"),
         "@slots": extension ? `${extension}/src/slots` : here("./src/slots"),
       },
-      // Sources outside this package have no node_modules above them, so
-      // they import the packages installed here.
-      dedupe: extension ? Object.keys(dependencies) : [],
     },
     build: {
       ...(extension && { outDir: `${extension}/dist`, emptyOutDir: true }),

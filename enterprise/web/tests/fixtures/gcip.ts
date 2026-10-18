@@ -3,7 +3,7 @@ import { createSign, createVerify } from "node:crypto";
 import { expect, type Page } from "@playwright/test";
 const privateKey = readFileSync(
   new URL(
-    "../../../server/src/apps/execution/tests/fixtures/oidc/signing-test-only.pem",
+    "../../../../server/src/apps/execution/tests/fixtures/oidc/signing-test-only.pem",
     import.meta.url,
   ),
 );

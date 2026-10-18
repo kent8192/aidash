@@ -12,11 +12,11 @@ import {
   SECOND_FACTOR_UNSUPPORTED,
 } from "./gcip-second-factor";
 import { clearGcipStorage } from "./gcip-storage";
-import type { Locale } from "./ui";
-import { Button } from "./components/ui/button";
-import { Input } from "./components/ui/input";
-import { AuthCard } from "./shell/auth-card";
-import { Loading, Notice } from "./components/patterns";
+import type { Locale } from "@/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { AuthCard } from "@/shell/auth-card";
+import { Loading, Notice } from "@/components/patterns";
 import { clearEmailHint, EMAIL_KEY, takeEmailHint } from "./gcip-email-hint";
 
 const copy = {

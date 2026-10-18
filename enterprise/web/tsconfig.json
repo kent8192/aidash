@@ -1,0 +1,12 @@
+{
+  "extends": "../../web/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../../web",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@slots/*": ["../enterprise/web/src/slots/*"]
+    }
+  },
+  "include": ["../../web/src", "src", "vite.config.ts"],
+  "exclude": ["../../web/src/slots"]
+}
