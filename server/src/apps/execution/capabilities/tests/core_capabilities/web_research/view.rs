@@ -102,5 +102,25 @@ async fn a_model_without_image_input_is_refused_a_page_view(
 		.await
 		.is_empty()
 	);
+
+	// A revocation redacts the stored view result like every research result.
+	let revoke = format!("/api/runs/{}/research-revocation", run.id);
+	let (status, record) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&revoke,
+		json!({"reason":"removal request"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{record}");
+	let views = r
+		.column("invocations", retention::col("result"), run.id)
+		.await
+		.into_iter()
+		.filter(|result| result["operation"] == "view")
+		.collect::<Vec<_>>();
+	assert_eq!(views.len(), 1, "{views:?}");
+	assert_eq!(views[0]["error"]["code"], "evidence_revoked", "{views:?}");
 	r.close().await;
 }

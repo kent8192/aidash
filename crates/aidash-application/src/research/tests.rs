@@ -471,6 +471,30 @@ impl EvidenceStore for Memory {
 		self.fragments.lock().unwrap().push(fragment.clone());
 		Ok(Ok(fragment))
 	}
+	async fn viewed_page(
+		&self,
+		run: Uuid,
+		document: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>> {
+		if self.is_revoked(run) {
+			return Ok(None);
+		}
+		Ok(self
+			.fragments
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|fragment| {
+				fragment.run_id == run
+					&& fragment.document_id == document
+					&& fragment
+						.image
+						.as_ref()
+						.is_some_and(|image| image.page == page)
+			})
+			.cloned())
+	}
 	async fn page_image(
 		&self,
 		run: Uuid,
@@ -2702,7 +2726,16 @@ async fn only_retained_pages_without_text_can_be_viewed_within_the_limit() {
 		},
 	};
 	let run = Uuid::new_v4();
-	let document = read_scan(&research, run, 1024).await;
+	// Pages 2 and 3 of this report carry no text.
+	let document = research
+		.fetch(
+			&call(run, "read", "research.page@1"),
+			&scanned(&[("Page one has text.", 1)], vec![2, 3], 1024),
+			&json!({"url":"https://example.com/report.pdf"}),
+		)
+		.await
+		.unwrap()["data"]["document_id"]
+		.clone();
 	let view = |page: u32| json!({"document_id": document, "page": page});
 	let code = |result: Value| result["error"]["code"].as_str().map(str::to_owned);
 	let viewer = call(run, "view", "research.page@1");
@@ -2724,13 +2757,16 @@ async fn only_retained_pages_without_text_can_be_viewed_within_the_limit() {
 		code(research.view(&viewer, &oversized, &view(2)).await.unwrap()),
 		Some("render_failed".into())
 	);
-	// The limit admits one view.
+	// The limit admits one view. Viewing the same page again, as a replay
+	// after a lost result does, returns the same evidence and takes no view.
+	let first = research.view(&viewer, &pixel(), &view(2)).await.unwrap();
+	assert_eq!(first["status"], "ok", "{first}");
+	let again = research.view(&viewer, &pixel(), &view(2)).await.unwrap();
+	assert_eq!(again["status"], "ok", "{again}");
+	assert_eq!(again["data"]["evidence_ref"], first["data"]["evidence_ref"]);
+	assert_eq!(store.usage(run).await.unwrap().page_views, 1);
 	assert_eq!(
-		research.view(&viewer, &pixel(), &view(2)).await.unwrap()["status"],
-		"ok"
-	);
-	assert_eq!(
-		code(research.view(&viewer, &pixel(), &view(2)).await.unwrap()),
+		code(research.view(&viewer, &pixel(), &view(3)).await.unwrap()),
 		Some("view_limit".into())
 	);
 	// A second document did not fit the original limit, so it cannot be viewed.

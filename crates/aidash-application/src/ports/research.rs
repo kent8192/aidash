@@ -185,6 +185,14 @@ pub trait EvidenceStore: Send + Sync {
 		image: &RenderedPage,
 		limits: &Limits,
 	) -> Result<std::result::Result<EvidenceFragment, Failure>>;
+	/// The page-image fragment already delivered to this Run for `page` of
+	/// `document`; none once the Run's evidence is revoked.
+	async fn viewed_page(
+		&self,
+		run: Uuid,
+		document: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>>;
 	/// The media type and bytes of the page image `reference` delivered to this
 	/// Run; absent once its evidence is revoked.
 	async fn page_image(

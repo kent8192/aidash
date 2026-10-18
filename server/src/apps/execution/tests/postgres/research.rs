@@ -732,7 +732,8 @@ async fn a_viewed_page_is_stored_as_a_page_image_fragment_within_the_view_limit(
 	assert_eq!(fragments[0].pages, vec![2]);
 	assert_eq!(fragments[0].image.as_ref().unwrap().page, 2);
 	assert_eq!(evidence.usage(run.id).await.unwrap().page_views, 1);
-	// Another Run never reads it, and the limit admits no second view.
+	// Another Run never reads it. Viewing the page again, as a replay after a
+	// lost result does, returns the same evidence and takes no second view.
 	assert_eq!(
 		evidence
 			.page_image(Uuid::new_v4(), &reference)
@@ -748,6 +749,11 @@ async fn a_viewed_page_is_stored_as_a_page_image_fragment_within_the_view_limit(
 		)
 		.await
 		.unwrap();
-	assert_eq!(again["error"]["code"], "view_limit", "{again}");
+	assert_eq!(again["status"], "ok", "{again}");
+	assert_eq!(
+		again["data"]["evidence_ref"],
+		viewed["data"]["evidence_ref"]
+	);
+	assert_eq!(evidence.usage(run.id).await.unwrap().page_views, 1);
 	cleanup(store, &url, &schema).await;
 }

@@ -478,6 +478,13 @@ impl EvidenceStore for Evidence {
 				{
 					return Ok(Err(unreadable));
 				}
+				// A concurrent view of the same page recorded it first.
+				if let Some(viewed) =
+					ResearchFragment::viewed(tx.as_mut(), run, document.id, page).await?
+				{
+					tx.commit().await?;
+					return Ok(Ok(viewed));
+				}
 				if ResearchFragment::page_views(tx.as_mut(), run).await? >= limits.page_views {
 					return Ok(Err(Failure::ViewLimit));
 				}
@@ -486,6 +493,31 @@ impl EvidenceStore for Evidence {
 					.await?;
 				tx.commit().await?;
 				Ok(Ok(fragment))
+			}
+			.await,
+		)
+	}
+	async fn viewed_page(
+		&self,
+		run: Uuid,
+		document: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>> {
+		native(
+			async {
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
+				let viewed = if ResearchRevocation::exists(tx.as_mut(), run).await? {
+					None
+				} else {
+					ResearchFragment::viewed(tx.as_mut(), run, document, page).await?
+				};
+				tx.commit().await?;
+				Ok(viewed)
 			}
 			.await,
 		)

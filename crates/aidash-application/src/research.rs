@@ -570,6 +570,21 @@ impl Research<'_> {
 		{
 			return Ok(failure(operation, Failure::OriginalNotRetained));
 		}
+		// A page is one piece of evidence: viewing it again, or replaying a
+		// view whose result was lost, returns the fragment already recorded
+		// and takes no second view.
+		if let Some(fragment) = self
+			.store
+			.viewed_page(call.run, snapshot.id, input.page)
+			.await?
+		{
+			return Ok(envelope(
+				operation,
+				"ok",
+				fragment.delivered(&snapshot),
+				false,
+			));
+		}
 		if self.store.usage(call.run).await?.page_views >= self.limits.page_views {
 			return Ok(failure(operation, Failure::ViewLimit));
 		}

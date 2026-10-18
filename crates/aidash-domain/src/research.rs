@@ -33,6 +33,8 @@ pub enum Operation {
 }
 
 impl Operation {
+	/// Every operation, for redaction that must miss none of their results.
+	pub const ALL: [Self; 4] = [Self::Search, Self::Fetch, Self::Find, Self::View];
 	pub fn parse(operation: &str) -> Option<Self> {
 		Some(match operation {
 			"search" => Self::Search,

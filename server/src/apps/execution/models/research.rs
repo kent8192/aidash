@@ -1029,7 +1029,7 @@ impl ResearchAttempt {
 	/// the tombstone of its operation. Attempts stay, with their charges.
 	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
 		let mut removed = 0;
-		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		for operation in Operation::ALL {
 			let (sql, values) = Query::update()
 				.table(Alias::new(Self::table_name()))
 				.value(Alias::new("result"), revoked_result(operation))
@@ -1071,7 +1071,7 @@ pub(crate) async fn revoke_invocations(
 	run: Option<Uuid>,
 ) -> Result<u32> {
 	let mut removed = 0;
-	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+	for operation in Operation::ALL {
 		let tombstone = revoked_result(operation);
 		let result = || Expr::col(Alias::new("result"));
 		let mut update = Query::update();
@@ -1178,7 +1178,7 @@ async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>)
 		}
 	};
 	let data = || Expr::col(Alias::new("data"));
-	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+	for operation in Operation::ALL {
 		let tombstone = revoked_result(operation).to_string();
 		let result = || json_field(data(), "result");
 		let (sql, values) = Query::update()
@@ -1374,6 +1374,30 @@ impl ResearchFragment {
 			.as_i64()
 			.unwrap_or(0);
 		Ok(u32::try_from(n).unwrap_or(u32::MAX))
+	}
+
+	/// The page-image fragment of `page` of snapshot `snapshot` delivered to
+	/// `run`, if that page was viewed.
+	pub(crate) async fn viewed(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		snapshot: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>> {
+		let page = i32::try_from(page).ok();
+		let Some(id) = Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_snapshot_id().eq(snapshot))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.into_iter()
+			.find(|record| page.is_some() && record.image_page == page)
+			.map(|record| record.id)
+		else {
+			return Ok(None);
+		};
+		Ok(Self::delivered(tx, run, &[EvidenceRef(id)]).await?.pop())
 	}
 }
 
