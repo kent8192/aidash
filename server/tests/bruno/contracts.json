@@ -30234,82 +30234,6 @@
         "$ref": "#/components/schemas/RunResearch"
       },
       "definitions": {
-        "ResearchLimits": {
-          "type": "object",
-          "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
-          "required": [
-            "search_attempts",
-            "fetch_attempts",
-            "sources",
-            "snapshots",
-            "snapshot_bytes"
-          ],
-          "properties": {
-            "fetch_attempts": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "search_attempts": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "snapshot_bytes": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "snapshots": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "sources": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          }
-        },
-        "ResearchUsage": {
-          "type": "object",
-          "description": "What one Run has used of its research limits.",
-          "required": [
-            "search_attempts",
-            "fetch_attempts",
-            "sources",
-            "snapshots",
-            "snapshot_bytes"
-          ],
-          "properties": {
-            "fetch_attempts": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "search_attempts": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "snapshot_bytes": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "snapshots": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "sources": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          }
-        },
         "RunResearch": {
           "type": "object",
           "description": "A Run's research usage against its limits, for anyone who may read the Run.",
@@ -30371,6 +30295,51 @@
             }
           }
         },
+        "ResearchUsage": {
+          "type": "object",
+          "description": "What one Run has used of its research limits.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes",
+            "page_views"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images the Run has viewed.",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
+        },
         "RunUrlIntent": {
           "type": "object",
           "description": "The pages one input asked a Run to read.",
@@ -30398,6 +30367,51 @@
         "UrlIntentInput": {
           "type": "string",
           "enum": ["task", "run_message"]
+        },
+        "ResearchLimits": {
+          "type": "object",
+          "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
+          "required": [
+            "search_attempts",
+            "fetch_attempts",
+            "sources",
+            "snapshots",
+            "snapshot_bytes",
+            "page_views"
+          ],
+          "properties": {
+            "fetch_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images one Run may view.",
+              "minimum": 0
+            },
+            "search_attempts": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "snapshot_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snapshots": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "sources": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          }
         }
       }
     }
@@ -30489,12 +30503,19 @@
             "fetch_attempts",
             "sources",
             "snapshots",
-            "snapshot_bytes"
+            "snapshot_bytes",
+            "page_views"
           ],
           "properties": {
             "fetch_attempts": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "page_views": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "Page images one Run may view.",
               "minimum": 0
             },
             "search_attempts": {
@@ -31948,7 +31969,8 @@
             "line_start",
             "line_end",
             "pages",
-            "context"
+            "context",
+            "image"
           ],
           "properties": {
             "completeness": {
@@ -31977,6 +31999,17 @@
               "type": "string",
               "format": "date-time",
               "description": "When the snapshot was retrieved; the live page may have changed since."
+            },
+            "image": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EvidenceImage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The page image delivered to the Agent, for a fragment that is a page\nimage rather than a passage (ADR 0053); then `text` is empty and the\nlines are zero."
             },
             "line_end": {
               "type": "integer",
@@ -32058,6 +32091,47 @@
               "items": {
                 "$ref": "#/components/schemas/Line"
               }
+            }
+          }
+        },
+        "EvidenceImage": {
+          "type": "object",
+          "description": "One page of a PDF rendered from the retained original, as the Agent saw it.",
+          "required": [
+            "page",
+            "media_type",
+            "width",
+            "height",
+            "digest",
+            "data"
+          ],
+          "properties": {
+            "data": {
+              "type": "string",
+              "description": "The image bytes, base64-encoded."
+            },
+            "digest": {
+              "type": "string",
+              "description": "`sha256:` digest of the image bytes."
+            },
+            "height": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "page": {
+              "type": "integer",
+              "format": "uint32",
+              "description": "The 1-based physical page.",
+              "minimum": 0
+            },
+            "width": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
             }
           }
         },

@@ -6,7 +6,7 @@ use aidash_domain::research::{
 	Failure, Operation,
 	account::{AccountTerms, CostAttribution},
 	citations::EvidenceRef,
-	document::{ExtractedPage, Passage},
+	document::{ExtractedPage, Passage, RenderedPage},
 	evidence::{
 		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, RunUsage,
 		SourceRecord,
@@ -55,6 +55,13 @@ pub trait PageProvider: Send + Sync {
 		Ok(None)
 	}
 	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure>;
+}
+
+/// Renders one page of a retained original as an image. It must keep within
+/// the page image bounds; the host checks them again.
+#[async_trait]
+pub trait PageRenderer: Send + Sync {
+	async fn render(&self, pdf: Vec<u8>, page: u32) -> std::result::Result<RenderedPage, Failure>;
 }
 
 /// A reservation made before a provider is called. A repeated invocation key
@@ -166,6 +173,33 @@ pub trait EvidenceStore: Send + Sync {
 		document: &DocumentSnapshot,
 		passage: &Passage,
 	) -> Result<std::result::Result<EvidenceFragment, Failure>>;
+	/// Record `image`, rendered from page `page` of `document`, as a page-image
+	/// Evidence fragment. Under the Run's lock the fragment is refused when the
+	/// evidence was revoked, the snapshot was purged, or the Run reached
+	/// `limits.page_views` (ADR 0053).
+	async fn record_page_image(
+		&self,
+		run: Uuid,
+		document: &DocumentSnapshot,
+		page: u32,
+		image: &RenderedPage,
+		limits: &Limits,
+	) -> Result<std::result::Result<EvidenceFragment, Failure>>;
+	/// The page-image fragment already delivered to this Run for `page` of
+	/// `document`; none once the Run's evidence is revoked.
+	async fn viewed_page(
+		&self,
+		run: Uuid,
+		document: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>>;
+	/// The media type and bytes of the page image `reference` delivered to this
+	/// Run; absent once its evidence is revoked.
+	async fn page_image(
+		&self,
+		run: Uuid,
+		reference: &EvidenceRef,
+	) -> Result<Option<(String, Vec<u8>)>>;
 	/// The subset of `references` delivered to this Run; none once the Run's
 	/// evidence is revoked, so later citations of it are unknown.
 	async fn fragments(

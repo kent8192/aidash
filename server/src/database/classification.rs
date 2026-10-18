@@ -83,6 +83,7 @@ pub const TABLES: &[Table] = &[
 	table("execution", "research_attempts", Pending(265)),
 	table("execution", "research_fragments", Pending(265)),
 	table("execution", "research_originals", Pending(265)),
+	table("execution", "research_page_images", Pending(265)),
 	table("execution", "research_revocations", TenantOwned),
 	table("execution", "research_snapshots", Pending(265)),
 	table("execution", "research_sources", Pending(265)),

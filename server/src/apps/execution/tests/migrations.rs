@@ -42,6 +42,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0031_model_request_estimator"),
 	("registry", "0032_degraded_context"),
 	("registry", "0033_row_level_security"),
+	("registry", "0034_research_view"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -93,7 +94,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		34
+		35
 	);
 	let tables = migrations
 		.iter()
@@ -331,12 +332,15 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0037_policy_probe")
+		.get_migration("execution", "0039_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0036_row_level_security".to_owned())]
+		vec![(
+			"execution".to_owned(),
+			"0038_research_page_images_state".to_owned()
+		)]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -605,7 +609,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		34
+		35
 	);
 }
 

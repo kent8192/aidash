@@ -5,7 +5,6 @@ use crate::{
 	ports::{CompactionClassifier, ModelProvider},
 };
 use aidash_domain::{
-	media::Selection,
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
@@ -391,7 +390,10 @@ pub trait ExecutionAuthority: Send + Sync {
 		contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()>;
 	async fn human_read(&self, id: Uuid) -> Result<()>;
-	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>>;
+	async fn model_media(
+		&self,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>>;
 	async fn human_message_media(
 		&self,
 		messages: &[(i64, Uuid, usize)],

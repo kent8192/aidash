@@ -984,3 +984,36 @@ fn legacy_context_and_usage_json_stay_byte_identical() {
 			.contains("unloaded_eager")
 	);
 }
+
+#[rstest::rstest]
+#[case::text_only(Some(json!(["text"])), "image/png", 1, false)]
+#[case::images(Some(json!(["text", "image"])), "image/png", 1, true)]
+#[case::expired_route(Some(json!(["text", "image"])), "image/png", -1, false)]
+#[case::route_without_png(Some(json!(["text", "image"])), "image/jpeg", 1, false)]
+#[case::no_model_definition(None, "image/png", 1, false)]
+fn the_agent_model_decides_whether_page_images_can_be_delivered(
+	#[case] modalities: Option<Value>,
+	#[case] route_format: &str,
+	#[case] route_hours_left: i64,
+	#[case] reads_images: bool,
+) {
+	let now = chrono::Utc::now();
+	let mut run = Run::default();
+	if let Some(modalities) = modalities {
+		run.define(entry(
+			&reference("model"),
+			"model",
+			"",
+			json!({
+				"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1",
+				"context_window":128000,"cost":{},"modalities":modalities,
+				"media_routes":[{
+					"tag":"vendor/route","formats":[route_format],"source":"catalog",
+					"verified_at":now - chrono::Duration::hours(2),
+					"expires_at":now + chrono::Duration::hours(route_hours_left),
+				}],
+			}),
+		));
+	}
+	assert_eq!(run.snapshot().model_reads_page_images(), reads_images);
+}

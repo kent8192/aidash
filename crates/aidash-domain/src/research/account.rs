@@ -99,7 +99,7 @@ impl AccountTerms {
 		match operation {
 			Operation::Search => self.search_price_micro_usd,
 			Operation::Fetch => self.fetch_price_micro_usd,
-			Operation::Find => None,
+			Operation::Find | Operation::View => None,
 		}
 	}
 

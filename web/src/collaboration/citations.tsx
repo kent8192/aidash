@@ -164,6 +164,33 @@ function Evidence({ evidence }: { evidence: CitedEvidence }) {
           )}
         </span>
       </header>
+      {evidence.image ? (
+        // A viewed page: exactly the image the agent received. It has no text
+        // and no surrounding lines.
+        <section className="grid gap-1" aria-label={copy.pageImage}>
+          <h4 className="text-[11px] font-medium text-faint">
+            {copy.pageImage}
+          </h4>
+          <img
+            src={`data:${evidence.image.media_type};base64,${evidence.image.data}`}
+            width={evidence.image.width}
+            height={evidence.image.height}
+            alt={copy.pageImageAlt(evidence.image.page)}
+            className="h-auto max-w-full border border-border"
+          />
+        </section>
+      ) : (
+        <PassageWithContext evidence={evidence} />
+      )}
+    </article>
+  );
+}
+
+function PassageWithContext({ evidence }: { evidence: CitedEvidence }) {
+  const { locale } = useI18n();
+  const copy = citationCopy[locale];
+  return (
+    <>
       <section className="grid gap-1" aria-label={copy.excerpt}>
         <h4 className="text-[11px] font-medium text-faint">{copy.excerpt}</h4>
         <blockquote className="whitespace-pre-wrap border-l-2 border-brand-line pl-2 leading-relaxed text-foreground [overflow-wrap:anywhere]">
@@ -196,6 +223,6 @@ function Evidence({ evidence }: { evidence: CitedEvidence }) {
       ) : (
         <p className="text-[11px] text-faint">{copy.noContext}</p>
       )}
-    </article>
+    </>
   );
 }

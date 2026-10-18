@@ -3,8 +3,8 @@
 //! the authorization transaction; a Deployment Administrator needs none.
 use super::{native, run_lock};
 use crate::apps::execution::models::research::{
-	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchRevocation, ResearchSnapshot,
-	ResearchSource, json_field, json_text, lock, revoke_invocations,
+	ResearchAttempt, ResearchFragment, ResearchOriginal, ResearchPageImage, ResearchRevocation,
+	ResearchSnapshot, ResearchSource, json_field, json_text, lock, revoke_invocations,
 };
 use crate::authorization::{access::NativeAccess, identity::Actor};
 use crate::federation::Federation;
@@ -480,6 +480,7 @@ impl RevocationScope for Scope<'_> {
 		}
 		let (snapshots, snapshot_digests) = native(ResearchSnapshot::revoke(tx, run, at).await)?;
 		native(ResearchOriginal::revoke(tx, run).await)?;
+		native(ResearchPageImage::revoke(tx, run).await)?;
 		let fragments = native(ResearchFragment::revoke(tx, run).await)?;
 		let sources = native(ResearchSource::revoke(tx, run).await)?;
 		let attempts = native(ResearchAttempt::revoke(tx, run).await)?;

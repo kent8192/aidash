@@ -221,6 +221,34 @@ fn an_encrypted_document_that_permits_extraction_is_read() {
 	);
 }
 
+#[rstest]
+fn a_page_without_text_renders_within_the_image_bounds() {
+	let report = crate::research::fixture::ANNUAL_REPORT_PDF;
+	let image = render(report, 2).unwrap();
+	assert!(image.validate().is_ok());
+	assert_eq!(image.media_type, "image/png");
+	assert_eq!(image.width.max(image.height), MAX_PAGE_IMAGE_EDGE - 1);
+	// A US Letter page keeps its proportions.
+	assert!((image.height as f32 / image.width as f32 - 792.0 / 612.0).abs() < 0.01);
+}
+
+#[rstest]
+#[case::zero(0)]
+#[case::beyond(4)]
+fn a_page_outside_the_document_is_not_viewable(#[case] page: u32) {
+	let report = crate::research::fixture::ANNUAL_REPORT_PDF;
+	assert_eq!(render(report, page), Err(Failure::PageNotViewable));
+}
+
+#[rstest]
+fn a_rendered_page_round_trips_through_the_child_reply() {
+	let image = render(crate::research::fixture::ANNUAL_REPORT_PDF, 2).unwrap();
+	let encoded = serde_json::to_vec(&Reply::Page(image.clone())).unwrap();
+	assert!(
+		matches!(serde_json::from_slice(&encoded).unwrap(), Reply::Page(decoded) if decoded == image)
+	);
+}
+
 /// A reply within the snapshot bounds fits the child's output cap even when
 /// JSON escaping doubles its text.
 #[rstest]

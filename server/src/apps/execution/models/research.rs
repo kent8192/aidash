@@ -8,8 +8,8 @@ use aidash_domain::research::{
 	citations::EvidenceRef,
 	document::{Completeness, Line},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Original, Purge,
-		PurgeReason, SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, FragmentImage, Original,
+		Purge, PurgeReason, SourceRecord,
 	},
 	revocation::{EvidenceRevocation, Removed},
 };
@@ -178,6 +178,32 @@ pub struct ResearchFragment {
 	pub line_end: i32,
 	#[field]
 	pub pages: Json<Value>,
+	/// The page of a page-image fragment (ADR 0053); null for a passage.
+	#[field(null = true)]
+	pub image_page: Option<i32>,
+	#[field(field_type = "text", null = true)]
+	pub image_media_type: Option<String>,
+	#[field(null = true)]
+	pub image_width: Option<i32>,
+	#[field(null = true)]
+	pub image_height: Option<i32>,
+	#[field(field_type = "text", null = true)]
+	pub image_digest: Option<String>,
+	#[field(auto_now_add = true)]
+	pub created_at: DateTime<Utc>,
+}
+
+/// The bytes of a page-image Evidence fragment (ADR 0053), kept apart so that
+/// reading fragments never loads them.
+#[model(app_label = "execution", table_name = "research_page_images")]
+#[derive(Serialize, Deserialize)]
+pub struct ResearchPageImage {
+	#[field(primary_key = true, field_type = "uuid")]
+	pub fragment_id: Uuid,
+	#[field]
+	pub run_id: Uuid,
+	#[field]
+	pub bytes: Vec<u8>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }
@@ -392,7 +418,7 @@ impl ResearchAttempt {
 		let limits = &reservation.limits;
 		let maximum = match reservation.operation {
 			Operation::Search => limits.search_attempts,
-			Operation::Fetch | Operation::Find => limits.fetch_attempts,
+			Operation::Fetch | Operation::Find | Operation::View => limits.fetch_attempts,
 		};
 		if Self::count(tx, run, reservation.operation).await? >= maximum {
 			return Ok(Reserved::AttemptLimit);
@@ -694,6 +720,31 @@ impl ResearchFragment {
 			.line_start(stored(fragment.line_start))
 			.line_end(stored(fragment.line_end))
 			.pages(Json(serde_json::to_value(&fragment.pages)?))
+			.image_page(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| i32::try_from(image.page).unwrap_or(i32::MAX)),
+			)
+			.image_media_type(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| image.media_type.clone()),
+			)
+			.image_width(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| i32::try_from(image.width).unwrap_or(i32::MAX)),
+			)
+			.image_height(
+				fragment
+					.image
+					.as_ref()
+					.map(|image| i32::try_from(image.height).unwrap_or(i32::MAX)),
+			)
+			.image_digest(fragment.image.as_ref().map(|image| image.digest.clone()))
 			.finish();
 		Self::objects()
 			.insert_with_executor(tx, &record)
@@ -736,6 +787,22 @@ impl ResearchFragment {
 				line_start: usize::try_from(record.line_start).unwrap_or(0),
 				line_end: usize::try_from(record.line_end).unwrap_or(0),
 				pages: serde_json::from_value(record.pages.0)?,
+				image: match (record.image_page, record.image_media_type) {
+					(Some(page), Some(media_type)) => Some(FragmentImage {
+						page: u32::try_from(page).unwrap_or(0),
+						media_type,
+						width: record
+							.image_width
+							.and_then(|width| u32::try_from(width).ok())
+							.unwrap_or(0),
+						height: record
+							.image_height
+							.and_then(|height| u32::try_from(height).ok())
+							.unwrap_or(0),
+						digest: record.image_digest.unwrap_or_default(),
+					}),
+					_ => None,
+				},
 			});
 		}
 		Ok(fragments)
@@ -962,7 +1029,7 @@ impl ResearchAttempt {
 	/// the tombstone of its operation. Attempts stay, with their charges.
 	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
 		let mut removed = 0;
-		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+		for operation in Operation::ALL {
 			let (sql, values) = Query::update()
 				.table(Alias::new(Self::table_name()))
 				.value(Alias::new("result"), revoked_result(operation))
@@ -1004,7 +1071,7 @@ pub(crate) async fn revoke_invocations(
 	run: Option<Uuid>,
 ) -> Result<u32> {
 	let mut removed = 0;
-	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+	for operation in Operation::ALL {
 		let tombstone = revoked_result(operation);
 		let result = || Expr::col(Alias::new("result"));
 		let mut update = Query::update();
@@ -1111,7 +1178,7 @@ async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>)
 		}
 	};
 	let data = || Expr::col(Alias::new("data"));
-	for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
+	for operation in Operation::ALL {
 		let tombstone = revoked_result(operation).to_string();
 		let result = || json_field(data(), "result");
 		let (sql, values) = Query::update()
@@ -1287,4 +1354,98 @@ impl ResearchRevocation {
 /// What a research result is replaced with once its Run's evidence is revoked.
 pub(crate) fn revoked_result(operation: Operation) -> Value {
 	aidash_domain::research::revocation::tombstone(operation)
+}
+
+impl ResearchFragment {
+	/// Page images delivered to `run`; call under the Run's lock to check the
+	/// view limit.
+	pub(crate) async fn page_views(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u32> {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Func::count(Expr::col(Alias::new("id")).into()),
+				Alias::new("n"),
+			)
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("image_page").is_not_null())
+			.build(PostgresQueryBuilder);
+		let row = tx.fetch_one(&sql, convert_values(values)).await?;
+		let n = QueryRow::from_backend_row(row).data["n"]
+			.as_i64()
+			.unwrap_or(0);
+		Ok(u32::try_from(n).unwrap_or(u32::MAX))
+	}
+
+	/// The page-image fragment of `page` of snapshot `snapshot` delivered to
+	/// `run`, if that page was viewed.
+	pub(crate) async fn viewed(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		snapshot: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>> {
+		let page = i32::try_from(page).ok();
+		let Some(id) = Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_snapshot_id().eq(snapshot))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.into_iter()
+			.find(|record| page.is_some() && record.image_page == page)
+			.map(|record| record.id)
+		else {
+			return Ok(None);
+		};
+		Ok(Self::delivered(tx, run, &[EvidenceRef(id)]).await?.pop())
+	}
+}
+
+impl ResearchPageImage {
+	/// Keep the bytes of the recorded page-image fragment `fragment` of `run`.
+	pub(crate) async fn record(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		fragment: Uuid,
+		bytes: &[u8],
+	) -> Result<()> {
+		let record = Self::build()
+			.fragment_id(fragment)
+			.run_id(run)
+			.bytes(bytes.to_vec())
+			.finish();
+		Self::objects()
+			.insert_with_executor(tx, &record)
+			.await
+			.map_err(FrameworkError::from)?;
+		Ok(())
+	}
+
+	/// The bytes of the page-image fragment `fragment` of `run`.
+	pub(crate) async fn get(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		fragment: Uuid,
+	) -> Result<Option<Vec<u8>>> {
+		Ok(Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_fragment_id().eq(fragment))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.map(|record| record.bytes))
+	}
+
+	/// Remove the page images of `run` for an Evidence Revocation.
+	pub(crate) async fn revoke(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<u64> {
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(Self::table_name()))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected)
+	}
 }

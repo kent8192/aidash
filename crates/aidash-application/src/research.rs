@@ -5,7 +5,7 @@ use crate::{
 	Error, Result,
 	ports::research::{
 		Budget, DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider,
-		Reservation, Reserved, SearchProvider, WebDisclosure,
+		PageRenderer, Reservation, Reserved, SearchProvider, WebDisclosure,
 	},
 };
 use aidash_domain::research::{
@@ -30,9 +30,8 @@ pub mod reading;
 
 /// Instruction returned with a pending Web disclosure approval.
 pub const APPROVAL_INSTRUCTION: &str = "Web disclosure approval is required before this request leaves the Node. The Run waits for the decision; after approval, repeat this exact call.";
-/// Instruction returned with the pages of a retained document that carry no
-/// text while no research operation can show them as images.
-pub const NO_VIEW_INSTRUCTION: &str = "These pages carry no text, and no research operation can view them as images yet, so their contents cannot be read.";
+/// Instruction returned with the pages of a document that carry no text.
+pub const VIEW_INSTRUCTION: &str = "These pages carry no text. View one as an image with the view operation, if it is bound; a model without image input cannot read them.";
 /// Instruction returned when those pages cannot be viewed.
 pub const NOT_RETAINED_INSTRUCTION: &str =
 	"These pages carry no text, and the document is not retained, so they cannot be viewed.";
@@ -70,6 +69,18 @@ pub fn specification(operation: Operation) -> aidash_domain::provider::ToolSpec 
 					"case_sensitive": {"type": "boolean"},
 					"cursor": {"type": "string", "maxLength": 1100},
 					"max_matches": {"type": "integer", "minimum": 1, "maximum": MAX_FIND_MATCHES},
+				},
+				"additionalProperties": false,
+			}),
+		),
+		Operation::View => (
+			"View one page of a document already read in this Run as an image, when its fetch result lists the page under pages_without_text. Give document_id and page. The image is an Evidence fragment with an evidence_ref; cite it as [[cite:<evidence_ref>]]. Nothing leaves the Node.",
+			json!({
+				"type": "object",
+				"required": ["document_id", "page"],
+				"properties": {
+					"document_id": {"type": "string", "format": "uuid"},
+					"page": {"type": "integer", "minimum": 1},
 				},
 				"additionalProperties": false,
 			}),
@@ -124,6 +135,13 @@ struct FetchInput {
 	document_id: Option<Uuid>,
 	cursor: Option<String>,
 	max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewInput {
+	document_id: Uuid,
+	page: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -520,6 +538,82 @@ impl Research<'_> {
 		Ok(result)
 	}
 
+	/// Render a page that carries no text from the retained original as a
+	/// page-image Evidence fragment for the Run's model (ADR 0053). Nothing
+	/// leaves the Node.
+	pub async fn view(
+		&self,
+		call: &Call<'_>,
+		renderer: &dyn PageRenderer,
+		input: &Value,
+	) -> Result<Value> {
+		let operation = Operation::View;
+		if let Some(revoked) = self.revoked(call, operation).await? {
+			return Ok(revoked);
+		}
+		let Ok(input) = serde_json::from_value::<ViewInput>(input.clone()) else {
+			return Ok(failure(operation, Failure::InvalidInput));
+		};
+		let Some(snapshot) = self.store.snapshot(call.run, input.document_id).await? else {
+			return Ok(failure(operation, Failure::UnknownDocument));
+		};
+		if let Err(purged) = snapshot.readable() {
+			return Ok(failure(operation, purged));
+		}
+		if !snapshot.pages_without_text.contains(&input.page) {
+			return Ok(failure(operation, Failure::PageNotViewable));
+		}
+		if !snapshot
+			.original
+			.as_ref()
+			.is_some_and(|original| original.retained)
+		{
+			return Ok(failure(operation, Failure::OriginalNotRetained));
+		}
+		// A page is one piece of evidence: viewing it again, or replaying a
+		// view whose result was lost, returns the fragment already recorded
+		// and takes no second view.
+		if let Some(fragment) = self
+			.store
+			.viewed_page(call.run, snapshot.id, input.page)
+			.await?
+		{
+			return Ok(envelope(
+				operation,
+				"ok",
+				fragment.delivered(&snapshot),
+				false,
+			));
+		}
+		if self.store.usage(call.run).await?.page_views >= self.limits.page_views {
+			return Ok(failure(operation, Failure::ViewLimit));
+		}
+		let Some(original) = self.store.original(call.run, snapshot.id).await? else {
+			return Ok(failure(operation, Failure::OriginalNotRetained));
+		};
+		let image = match renderer.render(original, input.page).await {
+			Ok(image) if image.validate().is_ok() => image,
+			Ok(_) => return Ok(failure(operation, Failure::RenderFailed)),
+			Err(error) => return Ok(failure(operation, error)),
+		};
+		// The store checks the view limit, revocation and purge again under the
+		// Run's lock.
+		let fragment = match self
+			.store
+			.record_page_image(call.run, &snapshot, input.page, &image, &self.limits)
+			.await?
+		{
+			Ok(fragment) => fragment,
+			Err(refused) => return Ok(failure(operation, refused)),
+		};
+		Ok(envelope(
+			operation,
+			"ok",
+			fragment.delivered(&snapshot),
+			false,
+		))
+	}
+
 	/// Deliver one passage and retain it as an Evidence fragment. The passage
 	/// shrinks until its JSON result fits; the fragment is recorded only then.
 	async fn deliver(
@@ -784,23 +878,21 @@ fn fetch_result(snapshot: &DocumentSnapshot, mut fragment: Value, next: Option<P
 	)
 }
 
-/// The pages of a snapshot that carry no text, and why their images cannot be
-/// viewed (ADR 0053). The original is retained for the `view` operation, which
-/// no research contract binds yet (#312), so a retained original is not yet
-/// reported `available` either.
+/// The pages of a snapshot that carry no text, and whether their images can be
+/// viewed from the retained original (ADR 0053).
 fn pages_without_text(snapshot: &DocumentSnapshot) -> Option<Value> {
 	if snapshot.pages_without_text.is_empty() {
 		return None;
 	}
-	let retained = snapshot.purged.is_none()
+	let viewable = snapshot.purged.is_none()
 		&& snapshot
 			.original
 			.as_ref()
 			.is_some_and(|original| original.retained);
 	Some(json!({
 		"pages": snapshot.pages_without_text,
-		"page_images": if retained { "no_view_operation" } else { "original_not_retained" },
-		"instruction": if retained { NO_VIEW_INSTRUCTION } else { NOT_RETAINED_INSTRUCTION },
+		"page_images": if viewable { "available" } else { "original_not_retained" },
+		"instruction": if viewable { VIEW_INSTRUCTION } else { NOT_RETAINED_INSTRUCTION },
 	}))
 }
 

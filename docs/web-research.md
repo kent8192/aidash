@@ -20,7 +20,7 @@ research flags. It reacts only to declared tool behavior:
 
 ## Operations
 
-Every provider package implements one or more of three operations. The host
+Every provider package implements one or more of four operations. The host
 gives each a stable default Model alias, description and argument schema, which
 are identical for every provider.
 
@@ -29,8 +29,9 @@ are identical for every provider.
 | `search`  | `research_search` | yes       | `Search`             | `research.brave@1`, `research.fixture@1` |
 | `fetch`   | `research_fetch`  | yes       | `Fetch`, `Citations` | `research.page@1`, `research.fixture@1`  |
 | `find`    | `research_find`   | no        | `Citations`          | `research.page@1`, `research.fixture@1`  |
+| `view`    | `research_view`   | no        | `Citations`          | `research.page@1`, `research.fixture@1`  |
 
-All three are `ReadOnly`, replay-safe and local to the executing Node (they are
+All four are `ReadOnly`, replay-safe and local to the executing Node (they are
 not exposed to remote Runs).
 
 - **`search`** takes `query`, optional `language` (`ja`, `en`), `country`,
@@ -49,13 +50,21 @@ not exposed to remote Runs).
   returned `next_cursor`; continuing reads the retained snapshot and never
   fetches again. A PDF snapshot's lines carry their physical page, so its
   passages report `pages`. Pages that carry no text are listed under
-  `pages_without_text` with `page_images` `no_view_operation` (the original
-  is retained, but no research operation shows page images yet) or
-  `original_not_retained`; a PDF whose pages all lack text
+  `pages_without_text` with `page_images` `available` (the original is
+  retained) or `original_not_retained`; a PDF whose pages all lack text
   delivers no passage (`status: "empty"`).
 - **`find`** returns lines of a retained snapshot that contain `query`. Matching
   folds case (and `ß` to `ss`) unless `case_sensitive` is set. Every match is an
   Evidence fragment. Nothing leaves the Node.
+- **`view`** renders one page of a retained PDF snapshot as an image, given
+  `document_id` and a `page` the snapshot lists in `pages_without_text`. The
+  image is an Evidence fragment with an `evidence_ref`, the `page` and the
+  image's media type, size and digest; the image itself reaches the model as
+  selected model media on its next request, like a file read as model input.
+  Only a model whose definition lists the `image` modality and that holds a
+  current media route for `image/png` may view a page; any other gets
+  `image_input_required`, and the view is neither recorded nor counted.
+  Nothing leaves the Node.
 
 Results share one envelope: `{version, operation, status, limits, data}` with
 `status` `ok`, `partial`, `empty`, `error`, `uncertain` or `approval_required`.
@@ -63,7 +72,8 @@ A result never exceeds 32 KiB; a passage shrinks rather than being cut silently,
 and the cursor resumes exactly after the delivered text. Errors carry a stable
 `code` (for example `unknown_source`, `invalid_cursor`, `disclosure_denied`,
 `non_public_destination`, `attempt_limit`, `budget_exhausted`, `rate_limited`,
-`timeout`) and never contain provider response bodies or credentials.
+`timeout`, `page_not_viewable`, `original_not_retained`, `view_limit`,
+`image_input_required`) and never contain provider response bodies or credentials.
 
 ## Research evidence
 
@@ -127,7 +137,9 @@ delivered, has no citations: its markers stay literal text.
 Run, for example `GET /api/runs/<run>/evidence/ev_<uuid>`. It returns:
 
 - the passage exactly as delivered to the Agent, with its lines, pages and the
-  snapshot's `text_digest`;
+  snapshot's `text_digest`; for a viewed page, `image` instead holds the page,
+  media type, size, digest and the exact image the model received (`data`,
+  base64), and the passage is empty;
 - the Document snapshot's final `url` (and `requested_url` when a redirect
   changed it), title, media type, `fetched_at` and completeness;
 - `context`: up to 20 whole snapshot lines and 4 KiB of text on each side of
@@ -241,7 +253,8 @@ Charges are recorded as signed 64-bit amounts, so terms whose monthly limit
 exceeds 9,223,372,036,854,775,807 micro-USD are refused at startup.
 
 Per-Run limits block a request before disclosure or dispatch: 20 searches, 50
-page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text. A page
+page reads, 100 Source records, 50 snapshots, 8 MiB of snapshot text, 64 MiB of
+retained PDF originals and 30 page views. A page
 read by URL creates its Source record when its attempt is reserved, before the
 page is requested, so it counts against the Source record limit (and keeps the
 record if the read then fails); reading an existing Source record creates none.
@@ -406,6 +419,13 @@ annotations, forms, scripts or attachments.
   A Run keeps at most 64 MiB of originals; beyond that a snapshot records only
   the original's digest and size. Originals are snapshot contents: the
   Retention Rules purge them and an Evidence Revocation removes them.
+- `view` renders a page in another child (`aidash __research-pdf render <page>`)
+  under the same limits, as a PNG whose longest edge is under 1568 pixels and
+  whose size is at most 1 MiB; the child lowers the resolution until it fits,
+  and a page that still does not fit returns `render_failed`. Annotations are
+  not drawn. The image is kept with its fragment, so a reader sees exactly what
+  the model saw; a purge keeps it like a passage's text, and an Evidence
+  Revocation removes it.
 
 On macOS the first PDF a server process reads can take about 30 s while the
 system assesses the unsigned binary; Linux has no such delay.
