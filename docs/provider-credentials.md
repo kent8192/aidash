@@ -21,11 +21,10 @@ references keep their `AIDASH_SECRET_*` configuration. HTTP and MCP tool
 transports can no longer name one (#296).
 
 Jev also runs through OpenRouter, at `POST {base}/systemone` with
-`provider.zdr = true` (ADR 0041). `compactor` and `decider` configurations name
+`provider.zdr = true` (ADR 0041). `decider` configurations name
 `provider_credential = "openrouter"` and an exact release such as
-`typesafe/jev-1.13`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
-`AIDASH_JEV_MODEL` are gone, and the `registry_compactor_config` constraint
-rejects the old shape. Each request is a Decision Attempt of the Run whose
+`typesafe/jev-1.14`; `AIDASH_SECRET_JEV`, `AIDASH_JEV_ENDPOINT` and
+`AIDASH_JEV_MODEL` are gone, and the `compactor` kind was removed (#108). Each request is a Decision Attempt of the Run whose
 context it reduces, and it uses the Provider Credential that the Tenant's
 OpenRouter binding names at the time of the call, not the Run's admitted
 inference pin: Runs on a Plan Connection or a Keyless endpoint have no such
@@ -50,7 +49,9 @@ origin in `[keyless_endpoints] permitted_private_origins` (Helm:
 extend to another port or scheme on the same host.
 
 - A host that is a non-public address literal (loopback, private, link-local,
-  the metadata server and similar ranges) is refused before any request.
+  the metadata server and similar ranges) is refused before any request, and
+  a Workspace semantic index that names one is refused when it is configured.
+  Workbench test endpoints follow the same rule and share the list.
 - A host name must resolve only to public addresses. The check runs when each
   connection is made, against every resolved address, so a later DNS answer
   cannot redirect it. Keyless calls follow no redirects and use no proxy.

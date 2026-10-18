@@ -58,9 +58,9 @@ Successful, complete, positive and bounded provider usage refunds unused reserva
 
 ## Approved compaction
 
-Register a `compactor` Registry entry and approve its exact version in the tenant catalog. Its configuration names `provider_credential: "openrouter"`, an exact Jev release as `model` (such as `typesafe/jev-1.13`; aliases are refused), `max_request_bytes` (1024–1048576), `max_questions` (1–1024) and `max_response_bytes` (128–1048576). It has no endpoint or key: calls go to OpenRouter's System One API with the Tenant's current OpenRouter Provider Credential and `provider.zdr = true` (ADR 0041). The bilingual Registry form exposes these fields. Approved calls never follow redirects, have a 5-second connection timeout and a 30-second request timeout, and enforce response size while reading.
+Generated chains prune through a compaction Decider, like every other Run (see the [decision gate](decision-gate.md)), but they never inherit an Agent's default Binding. Register a `decider` Registry entry and approve its exact version in the tenant catalog. Its configuration names `provider_credential: "openrouter"`, an exact Jev release as `model` (such as `typesafe/jev-1.14`; aliases are refused), its mode, its per-Run call limit and its state budget. It has no endpoint or key: calls go to OpenRouter's System One API with the Tenant's current OpenRouter Provider Credential and `provider.zdr = true` (ADR 0041). The bilingual Registry form exposes these fields.
 
-A policy explicitly references that entry:
+A policy explicitly references that Decider version:
 
 ```json
 {
@@ -72,11 +72,11 @@ A policy explicitly references that entry:
 }
 ```
 
-The request pins this contract to its immutable policy revision. Each generation reserves its per-agent call allowance against the policy total. Termination returns unused allowance exactly once; consumed calls remain allocated. Before each System One HTTP attempt, the worker checks live authority, `registry.read`, `compaction.invoke`, catalog approval, expiry and the provider agreement of every generated ancestor. An ordinary child executing within a generated chain inherits this contract too. All generated ancestors must approve the same exact provider version; an omitted or different reference rejects external compaction before disclosure.
+The request pins this contract to its immutable policy revision. Each generation reserves its per-agent call allowance against the policy total. Termination returns unused allowance exactly once; consumed calls remain allocated. Before each Decision Attempt, the worker checks live authority, `registry.read`, `decision.invoke`, catalog approval, expiry and the Decider agreement of every generated ancestor. An ordinary child executing within a generated chain inherits this contract too. All generated ancestors must approve the same exact Decider version; an omitted or different reference leaves the Run unpruned, and its Summary Stage may still run on its own.
 
-Input bytes and question counts are checked before reservation. The worker then atomically commits one call and an attempt record for every generated ancestor before network I/O. The ledger retains provider/version, run, byte count and question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries reserve new attempts. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after successful compaction and rechecks lifetime before its own HTTP request.
+The journal charges each Decision Attempt once: against the Decider version's per-Run call limit and, in the same reservation, one call and an attempt record for every generated ancestor, before network I/O. Each ancestor's charge is kept as an owner receipt of the attempt. The ledger retains the Decider version, run, the version's maximum request bytes and the question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries recover the charged attempt instead of charging it again. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after the pruned context is saved and rechecks lifetime before its own HTTP request.
 
-No configured compaction permission is needed when the context already fits. There is no environment-selected Jev provider: an ordinary agent outside a generated chain is not pruned and stops with `prune_unavailable` when its context outgrows its model, until #108 binds the built-in compaction Decider. A Tenant without an OpenRouter binding fails the same way before any allowance is reserved.
+No configured compaction permission is needed when the context already fits. There is no environment-selected Jev provider. A Run whose Decider cannot run pauses with `decider_unapproved`, `decider_calls_exhausted` or `decider_unavailable`; a Tenant without an OpenRouter binding pauses with `decider_unavailable` before any allowance is reserved.
 
 ## Approved Summary Stage model
 
@@ -181,7 +181,7 @@ Read the stored definition, including default fields. `remote.compaction` and
 `remote.summary` use the same provider/call-limit shape as `remote.embedding`. Local provider approvals
 continue to use `embedding`, `compaction` and the policy's model references. For a
 generated A ancestor with a generated B executor, A approves B's inference and any
-B compactor, while B approves A's embedding. The generation policy editor exposes
+B compaction Decider, while B approves A's embedding. The generation policy editor exposes
 these complete descriptors and preserves them on subsequent edits.
 
 Every owner validates and durably reserves its own shared token balance and separate

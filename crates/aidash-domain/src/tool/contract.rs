@@ -181,10 +181,39 @@ impl ToolBehavior {
 		self.yields.contains(&kind)
 	}
 	pub fn model_media_result(&self, input: &Value, output: &Value) -> bool {
-		self.yields_model_media
-			&& input["representation"] == "model_input"
+		self.model_media_selection(input, output).is_some()
+	}
+	/// The model input a completed call selects: a Working Area file read as
+	/// model input, or the page image of an Evidence fragment (ADR 0053).
+	pub fn model_media_selection(
+		&self,
+		input: &Value,
+		output: &Value,
+	) -> Option<crate::media::ModelMedia> {
+		use crate::media::{ModelMedia, PageImageSelection, Selection};
+		if !self.yields_model_media {
+			return None;
+		}
+		if input["representation"] == "model_input"
 			&& output["status"] == "completed"
 			&& output["metadata"]["file_id"] == input["file_id"]
+		{
+			return serde_json::from_value::<Selection>(serde_json::json!({
+				"file_id": input["file_id"],
+				"expected_digest": input["expected_digest"],
+			}))
+			.ok()
+			.map(ModelMedia::File);
+		}
+		let data = &output["data"];
+		(output["status"] == "ok")
+			.then(|| {
+				Some(ModelMedia::PageImage(PageImageSelection {
+					evidence_ref: data["evidence_ref"].as_str()?.to_owned(),
+					expected_digest: data["image"]["digest"].as_str()?.to_owned(),
+				}))
+			})
+			.flatten()
 	}
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

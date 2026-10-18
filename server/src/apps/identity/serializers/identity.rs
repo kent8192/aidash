@@ -13,6 +13,8 @@ pub struct Credential {
 	pub expires_at: DateTime<Utc>,
 	pub revoked_at: Option<DateTime<Utc>>,
 	pub issued_by: String,
+	/// The Mapping a member issued this credential through for itself.
+	pub mapping_id: Option<Uuid>,
 }
 crate::native_record!(Credential {
 	id,
@@ -21,7 +23,8 @@ crate::native_record!(Credential {
 	created_at,
 	expires_at,
 	revoked_at,
-	issued_by
+	issued_by,
+	mapping_id
 });
 
 /// The bearer value is returned exactly once; only its SHA-256 digest is stored.

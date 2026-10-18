@@ -29,7 +29,7 @@ NOTICES = "THIRD_PARTY_NOTICES.md"
 # SHA-256 of the whole notices file, hashed like the root notice. Any sentence
 # in it can place material under a project's terms, so changing it is a
 # licensing decision. The checks below explain what a change broke.
-NOTICES_SHA256 = "a086a7facfc2dfcd0a9e7e44ef6cee445100caf19d05df94040de9f73ab34fc0"
+NOTICES_SHA256 = "ca376b39759165225a49389e3dfc14864c5d603e7dc6631240ff8d9262098ec6"
 # Every project whose adapted material Aidash carries: the notices section that
 # describes it, its upstream provenance, the SHA-256 of its verbatim notice
 # (hashed like the root notice) and the files that hold adapted material. The
@@ -44,11 +44,6 @@ REQUIRED_NOTICES = {
         "license": "MIT",
         "sha256": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
         "adapted": (
-            "crates/aidash-application/src/context/compaction.rs",
-            "crates/aidash-application/src/context.rs",
-            "crates/aidash-integrations/src/compaction.rs",
-            "crates/aidash-integrations/src/compaction/tests.rs",
-            "server/src/apps/execution/services/context/jev.rs",
             "crates/aidash-application/src/decision/state.rs",
         ),
     },

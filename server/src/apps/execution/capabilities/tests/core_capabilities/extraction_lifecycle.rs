@@ -85,7 +85,7 @@ fn extraction_lifecycle_fixture(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(c.f.store.pool.driver())
+			.fetch_one(c.f.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -188,7 +188,7 @@ fn extraction_lifecycle_fixture(
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(c.f.store.pool.driver())
+				.execute(c.f.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -205,7 +205,7 @@ fn extraction_lifecycle_fixture(
 							)
 							.to_string(PostgresQueryBuilder),
 					)
-					.execute(c.f.store.pool.driver())
+					.execute(c.f.store.pool.fixture_driver())
 					.await
 				}
 				.unwrap();
@@ -257,7 +257,7 @@ async fn revoked_undispatched_extraction_intent_releases_its_original_object(
 	loop {
 		let (state, data): (String, Value) = sqlx::query_as(&query)
 			.bind(f.record_id)
-			.fetch_one(f.c.f.store.pool.driver())
+			.fetch_one(f.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		if state == "revoked" && data["runner_released"] == true && data["objects_released"] == true
@@ -284,7 +284,7 @@ async fn revoked_undispatched_extraction_intent_releases_its_original_object(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(f.c.f.store.pool.driver())
+		.fetch_optional(f.c.f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

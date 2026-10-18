@@ -152,6 +152,56 @@ impl ExtractedPage {
 	}
 }
 
+/// The longest edge of a page image `view` delivers, in pixels (ADR 0053).
+pub const MAX_PAGE_IMAGE_EDGE: u32 = 1568;
+/// The largest page image `view` delivers.
+pub const MAX_PAGE_IMAGE_BYTES: usize = 1024 * 1024;
+
+/// One page rendered from a retained original, as a PNG image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderedPage {
+	pub media_type: String,
+	#[serde(with = "rendered_bytes")]
+	pub bytes: Vec<u8>,
+	pub width: u32,
+	pub height: u32,
+}
+
+impl RenderedPage {
+	/// Renderer output is untrusted; the host enforces the image bounds.
+	pub fn validate(&self) -> Result<()> {
+		if self.media_type != "image/png"
+			|| !self.bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+			|| self.bytes.len() > MAX_PAGE_IMAGE_BYTES
+			|| self.width == 0
+			|| self.height == 0
+			|| self.width.max(self.height) > MAX_PAGE_IMAGE_EDGE
+		{
+			return Err(Error::Invalid("rendered page violates image bounds".into()));
+		}
+		Ok(())
+	}
+	/// `sha256:` digest of the image bytes.
+	pub fn digest(&self) -> String {
+		format!("sha256:{:x}", Sha256::digest(&self.bytes))
+	}
+}
+
+/// Rendered bytes cross the child boundary as base64.
+mod rendered_bytes {
+	use base64::Engine;
+	use serde::{Deserialize, Deserializer, Serializer};
+	pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+	}
+	pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+		let encoded = String::deserialize(deserializer)?;
+		base64::engine::general_purpose::STANDARD
+			.decode(encoded)
+			.map_err(serde::de::Error::custom)
+	}
+}
+
 /// `sha256:` digest of a snapshot's lines; it identifies the snapshot revision.
 pub fn text_digest(lines: &[Line]) -> String {
 	let encoded = serde_json::to_vec(lines).expect("serializable lines");

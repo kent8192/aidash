@@ -43,6 +43,7 @@ import {
 } from "../catalog-approval";
 import type { RegistryVersion } from "../generated/models";
 import { useTenantActions } from "../tenant-administration";
+import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
 import { ProviderCredentialsPage } from "../provider-credentials";
@@ -573,6 +574,14 @@ export function Configuration({
               <SemanticPage data={data} workspaceId={channel} />
             </ToolSection>
           )}
+          {section === "registry" &&
+            data.access.kind === "subject" &&
+            (can("workbench.test_limits.update") ||
+              can("workbench.test_profile.update")) && (
+              <ToolSection title={t("workbenchTests")}>
+                <WorkbenchTestSettings tenant={data.access.tenant} can={can} />
+              </ToolSection>
+            )}
           {section === "marketplace" &&
             !deploymentAdministrator &&
             data.access.kind === "subject" && (

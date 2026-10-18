@@ -25,4 +25,5 @@ pub mod plan_connections;
 pub mod provider_authorizations;
 pub mod provider_credentials;
 pub mod tenant_administration;
+pub mod tenant_deletions;
 pub mod tenants;

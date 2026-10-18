@@ -1209,7 +1209,7 @@ class LiveGuardTest(unittest.TestCase):
             return status, value
         status, result = self.run_live(compacting, ceiling="500000")
         self.assertEqual(status, 1)
-        self.assertIn("Jev compactor answered", result["error"])
+        self.assertIn("Jev compaction Decider answered", result["error"])
         self.assertEqual(len(result["runs"]), 1)
         self.assertEqual(len(result["skipped_runs"]), 1)
         self.assertIn("approval attests", result["experiment"]["harness"]["jev_classifier"])
@@ -1344,7 +1344,7 @@ class LiveGuardTest(unittest.TestCase):
             return status, value
         status, result = self.run_live(failing_then_compacted, ceiling="500000")
         self.assertEqual(status, 1)
-        self.assertIn("Jev compactor answered", result["error"])
+        self.assertIn("Jev compaction Decider answered", result["error"])
         self.assertEqual([run["outcome"] for run in result["runs"]], ["infrastructure_failure"])
         self.assertEqual(result["runs"][0]["compactions"], 1)
         self.assertEqual(len(result["skipped_runs"]), 1)

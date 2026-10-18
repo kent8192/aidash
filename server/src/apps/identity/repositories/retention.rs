@@ -99,12 +99,12 @@ impl RetentionScope for Scope {
 	fn deployment(&self) -> RetentionRules {
 		self.deployment
 	}
-	async fn require(&mut self, tenant: &str, action: &str) -> Result<()> {
+	async fn permits(&mut self, tenant: &str, action: &str) -> Result<bool> {
 		let Transaction::Subject(access) = &mut self.tx else {
-			return Ok(());
+			return Ok(true);
 		};
 		let resource = access.resource(retention::RESOURCE, tenant, json!({}));
-		native(access.require(&resource, action).await)
+		native(access.decide(&resource, action).await)
 	}
 	async fn stored(&mut self, tenant: &str) -> Result<Option<RetentionRules>> {
 		let (sql, values) = Query::select()

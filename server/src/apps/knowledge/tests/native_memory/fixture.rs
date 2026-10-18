@@ -1,5 +1,6 @@
 //! Shared native-memory fixture; integration and repository tests use the same ownership.
 use super::DatabaseFixture;
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
 	apps::identity::models::{AuthorizationBundle, Tenant},
@@ -225,33 +226,32 @@ pub(super) async fn setup_endpoint_policy(
 			.await
 			.unwrap();
 	}
-	let mut db = database.lease.handle();
 	let bundle: aidash_domain::policy::PolicyBundle =
 		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
 	// A policy references its Tenant's root record (ADR 0050).
-	Tenant::objects()
-		.create_with_conn(
-			&mut db,
-			&Tenant::build()
-				.name("acme".to_owned())
-				.label(Some("acme".to_owned()))
-				.personal(false)
-				.created_at(chrono::Utc::now())
-				.created_by_kind("deployment_administrator".to_owned())
-				.created_by_identity(None)
-				.finish(),
-		)
-		.await
-		.unwrap();
-	AuthorizationBundle::objects()
-		.create_with_conn(
-			&mut db,
-			&AuthorizationBundle::build()
-				.tenant("acme")
-				.revision(1)
-				.document(Json(serde_json::to_value(bundle).unwrap()))
-				.finish(),
-		)
+	let tenant = Tenant::build()
+		.name("acme".to_owned())
+		.label(Some("acme".to_owned()))
+		.personal(false)
+		.created_at(chrono::Utc::now())
+		.created_by_kind("deployment_administrator".to_owned())
+		.created_by_identity(None)
+		.finish();
+	let authority = AuthorizationBundle::build()
+		.tenant("acme")
+		.revision(1)
+		.document(Json(serde_json::to_value(bundle).unwrap()))
+		.finish();
+	// Authorization tables hold row-level policies, so seed them in a scope.
+	store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			Tenant::objects().create_with_conn(tx, &tenant).await?;
+			AuthorizationBundle::objects()
+				.create_with_conn(tx, &authority)
+				.await?;
+			Ok(())
+		})
 		.await
 		.unwrap();
 	let workspace = store
@@ -265,6 +265,7 @@ pub(super) async fn setup_endpoint_policy(
 		.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,

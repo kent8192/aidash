@@ -1,8 +1,6 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
-use aidash_application::ports::{
-	CompactionClassifier, CompactionQuestions, InferenceProgressSink, ModelProvider,
-};
+use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_domain::capabilities::skills::SkillMetadata;
 use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
@@ -138,6 +136,8 @@ struct State {
 	/// Revoked only once this many revocation checks have answered.
 	research_revoked_after: Option<usize>,
 	research_checks: std::sync::atomic::AtomicUsize,
+	/// Provider results the Research account terms no longer keep.
+	expired_research: aidash_domain::research::expiry::ExpiredResults,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -359,6 +359,13 @@ impl ExecutionStore for Backend {
 				.research_revoked_after
 				.is_some_and(|after| checks >= after))
 	}
+	async fn expired_research(
+		&self,
+		_: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		self.record("store.expired_research");
+		Ok(self.0.expired_research.clone())
+	}
 	async fn unknown_evidence(
 		&self,
 		_: &Run,
@@ -439,7 +446,7 @@ impl ExecutionStore for Backend {
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()> {
+	) -> Result<Value> {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
@@ -448,7 +455,7 @@ impl ExecutionStore for Backend {
 			.lock()
 			.unwrap()
 			.insert(key.to_owned(), ("COMPLETED".into(), Some(output.clone())));
-		Ok(())
+		Ok(output.clone())
 	}
 	async fn reconciliation_request(
 		&self,
@@ -592,6 +599,7 @@ impl ExecutionStore for Backend {
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &Settlement,
+		_staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		assert_eq!(token, self.0.token);
 		assert_eq!(settlement.outcome, Outcome::Adopted);
@@ -806,7 +814,10 @@ impl ExecutionAuthority for Backend {
 		self.record("authority.human_read");
 		Ok(())
 	}
-	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>> {
+	async fn model_media(
+		&self,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>> {
 		let _ = selections;
 		unexpected("ExecutionAuthority.model_media")
 	}
@@ -864,6 +875,10 @@ impl ExecutionAuthority for Backend {
 				aidash_domain::context::recovery::Failure::SummaryUnavailable,
 			));
 		}
+		Ok(())
+	}
+	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
+		self.record("authority.decider_recheck");
 		Ok(())
 	}
 	async fn suspend(&self) -> Result<()> {
@@ -1086,8 +1101,12 @@ impl ExecutionEnvironment for Backend {
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		Ok(Arc::new(self.clone()))
 	}
-	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
-		Ok(Box::new(self.clone()))
+	async fn compaction_decider(
+		&self,
+		run: &Run,
+		_token: Uuid,
+	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
+		Ok(decider::ports(self, self.node_id(), run))
 	}
 	async fn summary_dependencies_current(
 		&self,
@@ -1222,20 +1241,6 @@ impl ModelProvider for Backend {
 	}
 }
 #[async_trait]
-impl CompactionClassifier for Backend {
-	async fn ask(&self, _state: &Value, questions: &CompactionQuestions) -> Result<Value> {
-		let Some(retention) = self.0.jev_retention else {
-			unexpected("compaction")
-		};
-		self.record("jev.ask");
-		let answers: serde_json::Map<_, _> = questions
-			.keys()
-			.map(|key| (key.clone(), json!({"noul":retention})))
-			.collect();
-		Ok(json!({"answers":answers}))
-	}
-}
-#[async_trait]
 impl InferenceReservation for Backend {
 	async fn settle(self: Box<Self>, response: &ModelResponse) -> Result<()> {
 		assert_eq!(response.usage_complete, !self.0.omit_output_usage);
@@ -1366,6 +1371,7 @@ fn fixture() -> Fixture {
 		research_revoked: false,
 		research_revoked_after: None,
 		research_checks: Default::default(),
+		expired_research: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,
@@ -4400,23 +4406,11 @@ async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture
 	assert!(saved.state.tool().unwrap().request_tokens <= window);
 }
 
-/// Answers every compaction question with "drop".
-struct DropAll;
-#[async_trait]
-impl CompactionClassifier for DropAll {
-	async fn ask(&self, _state: &Value, questions: &CompactionQuestions) -> Result<Value> {
-		let answers = questions
-			.keys()
-			.map(|name| (name.clone(), json!({"noul": 0.0})))
-			.collect::<serde_json::Map<_, _>>();
-		Ok(json!({"answers": answers}))
-	}
-}
-
 #[rstest]
 #[tokio::test]
-async fn compaction_leaves_the_exposure_set_intact() {
-	// Arrange
+async fn compaction_leaves_the_exposure_set_intact(mut fixture: Fixture) {
+	// Arrange: the Run's compaction Decider drops every unprotected call.
+	Arc::get_mut(&mut fixture.backend.0).unwrap().jev_retention = Some(0.0);
 	let mut context = Context::default();
 	context.exposure.apply(&ExposureUpdate::Load(Loaded {
 		alias: "tool_05".into(),
@@ -4453,14 +4447,22 @@ async fn compaction_leaves_the_exposure_set_intact() {
 		pinned: &pinned,
 		policy: &policy,
 	};
+	let ports = decider::ports(&fixture.backend, "aidash://fixture", &fixture.run);
 	// Act
-	let compaction = compact_execution(&mut context, &DropAll, &fitting)
-		.await
-		.unwrap();
-	// Assert
+	let compaction = compact_decided_execution(
+		&mut context,
+		&fixture.run,
+		fixture.backend.0.token,
+		"aidash://fixture",
+		ports.as_ref(),
+		&fitting,
+	)
+	.await
+	.unwrap();
+	// Assert: the decision saved the pruned context, which ends the step.
 	assert!(matches!(
 		compaction,
-		aidash_application::context::Compaction::Fits
+		aidash_application::context::Compaction::Saved
 	));
 	assert_eq!(context.compactions, 1);
 	assert!(context.history.len() < 24);
@@ -4468,6 +4470,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 }
 
 mod batch;
+mod decider;
 mod degraded;
 mod estimate;
 mod native;

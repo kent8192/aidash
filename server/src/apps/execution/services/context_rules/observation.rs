@@ -1,5 +1,5 @@
 //! HTTP/worker error conversion around the shared bounded observation rules.
-pub use aidash_domain::context::observation::{fit_projection, normalize_history, project};
+pub use aidash_domain::context::observation::{fit_projection, project};
 pub fn chunk_record(
 	value: serde_json::Value,
 	kind: &str,

@@ -52,6 +52,21 @@ async fn the_child_extracts_lines_with_their_pages() {
 
 #[rstest]
 #[tokio::test]
+async fn the_child_renders_a_page_without_text_within_the_image_bounds() {
+	let report = aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec();
+	let image = PdfEngine::render(&engine().await, report.clone(), 2)
+		.await
+		.unwrap();
+	assert!(image.validate().is_ok());
+	assert_eq!(image.media_type, "image/png");
+	assert_eq!(
+		PdfEngine::render(&engine().await, report, 9).await,
+		Err(Failure::PageNotViewable)
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn an_unreadable_document_fails_without_harming_the_parent() {
 	let outcome = engine()
 		.await

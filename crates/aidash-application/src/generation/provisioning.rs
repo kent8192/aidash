@@ -66,7 +66,7 @@ pub async fn activate_in(
 		.chain(
 			spec.compaction
 				.iter()
-				.map(|c| (c.provider.clone(), "compaction.invoke")),
+				.map(|c| (c.provider.clone(), "decision.invoke")),
 		)
 		.chain(
 			spec.embedding

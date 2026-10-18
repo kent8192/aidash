@@ -153,7 +153,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		0,
 		"simulation reached a real tool endpoint"
 	);
-	let (status, profile) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, profile) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, 200, "profile: {profile}");
 	let (status, visible) = request(
 		&app,
@@ -215,7 +215,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let reset = finished_test(&app, token, &path, reset["id"].as_str().unwrap()).await;
 	assert_eq!(reset["status"], "completed", "reset session: {reset}");
 	assert_eq!(real_hits.load(Ordering::SeqCst), 2);
-	let (status, revised) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
+	let (status, revised) = request(&app, &deployment_administrator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
 	assert_eq!(status, 200, "revised profile: {revised}");
 	let (status, denied) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Try outside the test resource","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "denied test: {denied}");
@@ -488,7 +488,7 @@ async fn draft_conflict_register_and_factual_inspection(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

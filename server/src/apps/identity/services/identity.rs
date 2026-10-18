@@ -48,7 +48,7 @@ pub(crate) struct HttpSession {
 	pub access_expires_at: Option<DateTime<Utc>>,
 }
 
-fn digest(token: &str) -> Vec<u8> {
+pub(crate) fn digest(token: &str) -> Vec<u8> {
 	Sha256::digest(token.as_bytes()).to_vec()
 }
 
@@ -66,11 +66,7 @@ impl Authorization {
 	) -> Result<IssuedCredential> {
 		let name = TenantName::new(tenant)?;
 		super::policy::identifier(actor)?;
-		if !(1..=2_592_000).contains(&lifetime) {
-			return Err(Error::Invalid(
-				"credential lifetime must be 1..2592000 seconds".into(),
-			));
-		}
+		credentials::validate_lifetime(lifetime)?;
 		// The token names its Tenant, so presenting it never reads across
 		// Tenants (ADR 0047).
 		let token = credentials::subject_token(&name);
@@ -84,8 +80,16 @@ impl Authorization {
 							.into(),
 					));
 				}
-				AuthorizationCredential::issue(tx, tenant, subject, digest(&token), lifetime, actor)
-					.await
+				AuthorizationCredential::issue(
+					tx,
+					tenant,
+					subject,
+					digest(&token),
+					lifetime,
+					actor,
+					None,
+				)
+				.await
 			})
 			.await?;
 		Ok(IssuedCredential { credential, token })
@@ -97,7 +101,7 @@ impl Authorization {
 	pub async fn credentials_page(&self, tenant: &str, offset: u64) -> Result<Vec<Credential>> {
 		self.pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-				AuthorizationCredential::visible_page(tx, tenant, offset).await
+				AuthorizationCredential::visible_page(tx, tenant, None, offset).await
 			})
 			.await
 	}
@@ -111,6 +115,16 @@ impl Authorization {
 		let (credential_id, tenant, subject) = self
 			.pool
 			.atomic(&TenancyScope::Tenant(name.clone()), async |tx| {
+				// A deleted Tenant's credentials look like an unknown Tenant's,
+				// so nobody outside learns that it was deleted (ADR 0060).
+				if crate::apps::identity::repositories::tenant_deletions::is_deleted(
+					tx,
+					name.as_str(),
+				)
+				.await?
+				{
+					return Err(Error::Unauthorized);
+				}
 				AuthorizationCredential::authenticate(tx, digest(token)).await
 			})
 			.await?;
@@ -174,7 +188,20 @@ impl SubjectIdentity {
 				),
 				col("m", "identity_id").equals((Alias::new("i"), Alias::new("id"))),
 			)
-			.and_where(col("m", "credential_id").eq(Expr::value(self.credential_id)))
+			// A Mapping's own credential, or one its member issued through it.
+			.and_where(
+				Condition::any()
+					.add(col("m", "credential_id").eq(Expr::value(self.credential_id)))
+					.add(
+						col("m", "id").in_subquery(
+							Query::select()
+								.column(Alias::new("mapping_id"))
+								.from(Alias::new("authorization_credentials"))
+								.and_where(Expr::col("id").eq(Expr::value(self.credential_id)))
+								.to_owned(),
+						),
+					),
+			)
 			.to_string(PostgresQueryBuilder);
 		let row: Option<(Uuid, String, String)> = pool
 			.scoped(&self.tenancy()?, async |tx| {
@@ -222,6 +249,28 @@ impl SubjectIdentity {
 	) -> Result<Snapshot> {
 		super::policy::identifier(&self.tenant)?;
 		let snapshot = AuthorizationBundle::lock_snapshot(tx, &self.tenant, exclusive).await?;
+		self.lock_holder(tx, snapshot, policy).await
+	}
+
+	/// [`Self::lock_native`] for restoring a deleted Tenant: the same checks
+	/// of this subject, against the policy the Tenant was deleted with.
+	pub(crate) async fn lock_deleted(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<Snapshot> {
+		super::policy::identifier(&self.tenant)?;
+		let snapshot = AuthorizationBundle::lock_frozen(tx, &self.tenant, true).await?;
+		self.lock_holder(tx, snapshot, policy).await
+	}
+
+	/// Locks this subject's credential and session under an already-held policy.
+	async fn lock_holder(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		snapshot: Snapshot,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<Snapshot> {
 		AuthorizationCredential::lock_valid(
 			tx,
 			self.credential_id,
@@ -267,13 +316,13 @@ impl SubjectIdentity {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 	) -> Result<()> {
-		let valid: Option<Uuid> = {
+		let valid: Option<(Uuid, Option<Uuid>)> = {
 			let query_bind_1 = self.credential_id;
 			let query_bind_2 = &self.tenant;
 			let query_bind_3 = &self.subject;
-			crate::database::native::query_scalar(
+			crate::database::native::query_as(
 				&Query::select()
-					.column(Alias::new("id"))
+					.columns([Alias::new("id"), Alias::new("mapping_id")])
 					.from(Alias::new("authorization_credentials"))
 					.and_where(
 						Condition::all()
@@ -307,17 +356,23 @@ impl SubjectIdentity {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_optional(&mut **tx)
+			.columns(&["id", "mapping_id"])
+			.fetch_optional(&mut **tx)
 			.await?
 		};
-		if valid.is_none() {
+		let Some((_, issued_through)) = valid else {
 			return Err(Error::Unauthorized);
-		}
+		};
 		// Dashboard credentials are never exported as bearer secrets. Their
 		// original mapping and external identity remain part of every durable
-		// execution lease, including leases obtained after browser logout.
+		// execution lease, including leases obtained after browser logout. A
+		// credential a member issued for itself follows the Mapping it was
+		// issued through in the same way (ADR 0063).
 		let mapping: Option<(Uuid, bool, String)> = {
-			let query_bind_1 = self.credential_id;
+			let (column, query_bind_1) = match issued_through {
+				Some(mapping) => ("id", mapping),
+				None => ("credential_id", self.credential_id),
+			};
 			crate::database::native::query_as(
 				&Query::select()
 					.columns([
@@ -327,11 +382,12 @@ impl SubjectIdentity {
 					])
 					.from(Alias::new("dashboard_mappings"))
 					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("credential_id")))
-							.eq(SimpleExpr::CustomWithExpr(
+						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(column))).eq(
+							SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
+							),
+						),
 					)
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),

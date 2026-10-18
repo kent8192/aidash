@@ -30,7 +30,7 @@ fn only_an_unrequested_semantic_version_is_a_matching_wildcard(
 #[case("node_id",json!("aidash://other"))]
 #[case("authority_digest",json!("sha256:changed"))]
 #[case("generation",json!({"revision":2}))]
-#[case("compactor",json!({"id":"compactor","version":"1.0.0"}))]
+#[case("decider",json!({"id":"decider","version":"1.0.0"}))]
 fn every_pinned_authority_or_provider_change_breaks_matching(
 	inspection: Inspection,
 	#[case] field: &str,
@@ -64,7 +64,7 @@ fn pinned_agent_metadata_and_definitions_are_exact(inspection: Inspection) {
 #[rstest]
 fn optional_protocol_extensions_keep_their_legacy_omission(inspection: Inspection) {
 	let wire = serde_json::to_value(&inspection).unwrap();
-	for field in ["generation", "lineage", "semantic_memory", "compactor"] {
+	for field in ["generation", "lineage", "semantic_memory", "decider"] {
 		assert!(wire.get(field).is_none());
 	}
 	let mut changed = wire;

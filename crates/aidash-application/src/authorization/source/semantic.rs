@@ -34,7 +34,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 ) -> Result<Binding> {
 	let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
 	let native_enabled = requirements(inspection)?.native_required;
-	let (embedding, compactor, native, summarizer) = match request {
+	let (embedding, decider, native, summarizer) = match request {
 		Request::Disabled { summarizer } => {
 			if native_enabled {
 				return Err(Error::RemoteSemantic(Failure::Configuration));
@@ -50,7 +50,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 			let mut workspace = access.source_workspace(task.workspace_id).await?;
 			workspace.attributes["remote_node"] = json!(node);
 			workspace.attributes["inference_model"] = json!(agent.model);
-			workspace.attributes["compactor"] = Value::Null;
+			workspace.attributes["decider"] = Value::Null;
 			workspace.attributes["summarizer"] = json!(summarizer.entry);
 			access
 				.source_require(&workspace, "semantic.disclose")
@@ -61,16 +61,15 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 		}
 		Request::RequiredHome {
 			embedding,
-			compactor,
+			decider,
 			native,
 			summarizer,
-		} => (embedding, compactor, native, summarizer),
+		} => (embedding, decider, native, summarizer),
 	};
 	if native_enabled != native.is_some() {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
-	if inspection.semantic_memory != VERSION || inspection.compactor.as_ref() != compactor.as_ref()
-	{
+	if inspection.semantic_memory != VERSION || inspection.decider.as_ref() != decider.as_ref() {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
 	if !agent.semantic_memory && !agent.workspace_context {
@@ -84,7 +83,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	let mut workspace = access.source_workspace(task.workspace_id).await?;
 	workspace.attributes["remote_node"] = json!(node);
 	workspace.attributes["inference_model"] = json!(agent.model);
-	workspace.attributes["compactor"] = json!(compactor);
+	workspace.attributes["decider"] = json!(decider);
 	workspace.attributes["summarizer"] = json!(summarizer.as_ref().map(|p| &p.entry));
 	access.source_require(&workspace, "semantic.search").await?;
 	// Disclosure is independently selectable in policy; local read/search is
@@ -126,11 +125,11 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	{
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
-	let compactor = if let Some(reference) = compactor {
+	let decider = if let Some(reference) = decider {
 		let definition = inspection
 			.definitions
 			.iter()
-			.find(|d| d.kind == "compactor" && &d.entry == reference)
+			.find(|d| d.kind == "decider" && &d.entry == reference)
 			.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
 		Some(Provider {
 			node_id: node.to_owned(),
@@ -176,7 +175,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 			digest: digest(&to_value(&entry)?),
 			configuration_digest: digest(&entry.config),
 		}),
-		compactor: compactor.map(Box::new),
+		decider: decider.map(Box::new),
 		summarizer: summarizer.map(Box::new),
 	})
 }

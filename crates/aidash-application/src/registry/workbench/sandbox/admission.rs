@@ -1,15 +1,11 @@
 //! A sandbox request pins only authorized inputs and commits its concurrency admission before driving work.
 use super::{
 	deferred::{self, Deferred},
-	dispatch,
 	execution::{Job, SessionExposure},
 };
 use crate::{
 	Error, Result,
-	ports::{
-		Credentials,
-		registry::workbench::sandbox::admission::{AdmissionRepository, SandboxModels},
-	},
+	ports::registry::workbench::sandbox::admission::{AdmissionRepository, SandboxModels},
 };
 use aidash_domain::{
 	model::ModelConfig,
@@ -23,11 +19,9 @@ use aidash_domain::{
 	},
 };
 use serde_json::json;
-use std::collections::BTreeMap;
 use uuid::Uuid;
 pub struct Admission<'a> {
 	pub repository: &'a dyn AdmissionRepository,
-	pub credentials: &'a dyn Credentials,
 	pub models: &'a dyn SandboxModels,
 }
 pub struct Admitted {
@@ -129,19 +123,11 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 				return Err(Error::Forbidden);
 			}
 		}
-		let mut credential_fingerprints = BTreeMap::new();
-		for name in rules.iter().filter_map(|rule| rule.credential_env.as_ref()) {
-			credential_fingerprints.insert(
-				name.clone(),
-				dispatch::credential_fingerprint(admission.credentials, name)?,
-			);
-		}
 		Some(ProfilePin {
 			id: value.id,
 			revision: value.revision,
 			tenant: draft.tenant.clone(),
 			rules,
-			credential_fingerprints,
 		})
 	} else {
 		None

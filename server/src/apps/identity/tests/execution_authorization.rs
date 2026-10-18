@@ -105,7 +105,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -496,7 +496,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -534,7 +534,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			.from(reinhardt::query::Alias::new("events"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	{
@@ -577,7 +577,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -725,7 +725,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.find(|r| r.task_id == second_id)
 		.unwrap();
 	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
-        .execute(f.store.pool.driver()).await }.unwrap();
+        .execute(f.store.pool.fixture_driver()).await }.unwrap();
 	Harness {
 		federation: f.clone(),
 	}
@@ -746,7 +746,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -872,7 +872,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -899,7 +899,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -941,7 +941,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -973,7 +973,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1036,7 +1036,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1151,7 +1151,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1188,7 +1188,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder);
 	let before_effect: i64 = sqlx::query_scalar(&audit_query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let worker = tokio::spawn(async move { harness.worker_once().await });
@@ -1196,7 +1196,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		.await
 		.unwrap();
 	let audited: i64 = sqlx::query_scalar(&audit_query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1253,7 +1253,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	});
 	tokio::time::timeout(Duration::from_secs(5),async {
         loop {
-            let waiting:i64={ let query_bind_1 = &schema; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("pg_stat_activity")).and_where(SimpleExpr::CustomWithExpr("(application_name = ? AND wait_event_type = 'Lock' AND (query LIKE '%authorization_bundles%' OR query LIKE '%authorization_credentials%'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(worker_federation.store.pool.driver()).await }.unwrap();
+            let waiting:i64={ let query_bind_1 = &schema; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("pg_stat_activity")).and_where(SimpleExpr::CustomWithExpr("(application_name = ? AND wait_event_type = 'Lock' AND (query LIKE '%authorization_bundles%' OR query LIKE '%authorization_credentials%'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(worker_federation.store.pool.fixture_driver()).await }.unwrap();
             if waiting==12 {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -1290,7 +1290,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1367,7 +1367,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 			.from(reinhardt::query::Alias::new("delegations"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(count, 0);
@@ -1439,7 +1439,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 			]);
 		}
 		sqlx::query(&insert.to_string(PostgresQueryBuilder))
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	}
@@ -1466,7 +1466,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 			.from(reinhardt::query::Alias::new("events"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let last = f
@@ -1559,7 +1559,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1625,7 +1625,7 @@ async fn decision_cursor_follows_transaction_commit_order(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_all(f.store.pool.driver())
+	.fetch_all(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(rows.len(), 2);
@@ -1686,7 +1686,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		.unwrap()
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&collision)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	// Act
@@ -1703,7 +1703,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	let binding: (i64, bool) = sqlx::query_as(
 		"SELECT revision, enabled FROM authorization_catalog WHERE tenant = 'acme' AND entry_id = 'model'",
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(binding, (1, true));
@@ -1716,7 +1716,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		.order_by(Alias::new("revision"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	let history: Vec<(i64, bool, String)> = sqlx::query_as(&history_query)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1737,7 +1737,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		.to_string(PostgresQueryBuilder);
 	assert_eq!(
 		sqlx::query(&remove)
-			.execute(f.store.pool.driver())
+			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap()
 			.rows_affected(),
@@ -1756,7 +1756,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	assert_eq!(binding.revision, 2);
 	assert!(!binding.enabled);
 	let history: Vec<(i64, bool, String)> = sqlx::query_as(&history_query)
-		.fetch_all(f.store.pool.driver())
+		.fetch_all(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(

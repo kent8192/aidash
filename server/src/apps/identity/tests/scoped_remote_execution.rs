@@ -315,7 +315,7 @@ mod scoped_pair_composition {
 		#[default(false)] semantic: bool,
 		#[default(false)] generated: bool,
 		#[default(false)] approval: bool,
-		#[default(false)] compactor: bool,
+		#[default(false)] decider: bool,
 		#[default(false)] native: bool,
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
 		#[default(false)] ordered: bool,
@@ -359,7 +359,7 @@ mod scoped_pair_composition {
 			embedding
 		});
 		let ba = receiver.application;
-		// The receiver's approved compactor calls Jev with its Tenant's OpenRouter
+		// The receiver's approved compaction Decider calls Jev with its Tenant's OpenRouter
 		// Provider Credential (ADR 0041); the fake issuer routes to the model fixture.
 		let receiver_openrouter = tenant_openrouter::install(&mut b);
 		ba.context.set_singleton(b.clone());
@@ -377,13 +377,13 @@ mod scoped_pair_composition {
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		receiver_openrouter.connect("acme").await;
 		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
-		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
+		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_contract":"typesafe.jev/1","provider_credential":"openrouter","model":"typesafe/jev-1.13","builder":"aidash.compaction/2","option_source":"history_event/1","rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce","max_calls_per_run":20,"state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}});
 		let (status, body) = request(
 			&ba,
 			&receiver_token,
 			"POST",
 			"/api/registry",
-			compactor_definition,
+			decider_definition,
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
@@ -393,7 +393,7 @@ mod scoped_pair_composition {
 				&receiver_token,
 				"POST",
 				"/api/authorization/acme/catalog",
-				json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":0,"enabled":true})
+				json!({"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":0,"enabled":true})
 			)
 			.await
 			.0,
@@ -447,7 +447,7 @@ mod scoped_pair_composition {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(local.store.pool.driver())
+				.execute(local.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -559,8 +559,8 @@ mod scoped_pair_composition {
 		if let Some(native) = &native {
 			mode["native"] = native["selection"].clone();
 		}
-		if compactor {
-			mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
+		if decider {
+			mode["decider"] = json!({"id":"remote-decider","version":"1.0.0"});
 		}
 		let admission = if approval {
 			Uuid::nil()
@@ -966,7 +966,7 @@ async fn native_remote_fixture(
 					.and_where(Expr::col("id").is_in([private, shared].map(Expr::value)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(a.store.pool.driver())
+			.fetch_all(a.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			if ready == vec!["READY".to_string(); 2] {
@@ -1190,7 +1190,7 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -1208,7 +1208,7 @@ async fn remote_retrievals(p: &Pair) -> i64 {
 			.and_where(Expr::col("run_id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.b.store.pool.driver())
+	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -1261,7 +1261,7 @@ async fn write_home_entry(
 				.and_where(Expr::col("state").ne("READY"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.a.store.pool.driver())
+		.fetch_one(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		if pending == 0 {
@@ -1289,7 +1289,7 @@ async fn advance_semantic_retry(p: &Pair) {
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.b.store.pool.driver())
+	.execute(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	sqlx::query(
@@ -1302,7 +1302,7 @@ async fn advance_semantic_retry(p: &Pair) {
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.a.store.pool.driver())
+	.execute(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 }
@@ -1356,7 +1356,7 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 			.and_where(Expr::col("node_id").eq(Expr::value(p.a.config.node_id.as_str())))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.b.store.pool.driver())
+	.execute(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	p.model.extra_tool_rounds.store(3, Ordering::Release);
@@ -1510,7 +1510,7 @@ async fn home_corpus_digests(p: &Pair) -> Vec<Option<String>> {
 			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(p.a.store.pool.driver())
+	.fetch_all(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -1747,7 +1747,7 @@ async fn the_home_refuses_a_foreign_reused_operation(
 			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.a.store.pool.driver())
+	.execute(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(tampered.rows_affected(), 1);
@@ -1989,7 +1989,7 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(p.a.store.pool.driver())
+		.fetch_all(p.a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2026,7 +2026,7 @@ async fn semantic_empty_receipt_replay_rechecks_candidates_without_an_empty_embe
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.a.store.pool.driver())
+		.fetch_one(p.a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2265,7 +2265,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 			.to_string(PostgresQueryBuilder)
 	};
 	let before: i64 = sqlx::query_scalar(&count())
-		.fetch_one(p.a.store.pool.driver())
+		.fetch_one(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(before, 6);
@@ -2287,7 +2287,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
 	let after: i64 = sqlx::query_scalar(&count())
-		.fetch_one(p.a.store.pool.driver())
+		.fetch_one(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(after, 7);
@@ -2299,7 +2299,7 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 			.from(Alias::new("semantic_remote_operations"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(cycles, 1);
@@ -2487,7 +2487,7 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("runs"))
 		.value(Alias::new("phase"),"TOOL_CALL").value_expr(Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
-		.execute(p.b.store.pool.driver()).await }.unwrap();
+		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
 	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":p.a.config.node_id,"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
 		"participants":[{"node_id":p.a.config.node_id,"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
 		{"node_id":p.b.config.node_id,"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
@@ -2643,7 +2643,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(p.a.store.pool.driver())
+				.execute(p.a.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -2675,7 +2675,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(p.a.store.pool.driver())
+				.fetch_one(p.a.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -2705,7 +2705,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(p.b.store.pool.driver())
+				.fetch_one(p.b.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -2724,7 +2724,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(p.a.store.pool.driver())
+				.execute(p.a.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -2759,7 +2759,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(p.b.store.pool.driver())
+				.execute(p.b.store.pool.fixture_driver())
 				.await
 			}
 			.unwrap();
@@ -3081,7 +3081,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3255,22 +3255,22 @@ async fn prepare_generated_pair(
 		None
 	};
 	let model_descriptor = descriptor(&b.config.node_id, &model);
-	let (_, compactor) = request(
+	let (_, decider) = request(
 		ba,
 		&common::tenant_token(&b.store, "acme").await,
 		"GET",
-		"/api/registry/remote-compactor/1.0.0",
+		"/api/registry/remote-decider/1.0.0",
 		Value::Null,
 	)
 	.await;
-	let compactor_descriptor = descriptor(&b.config.node_id, &compactor);
+	let decider_descriptor = descriptor(&b.config.node_id, &decider);
 	let common = json!({"enabled":true,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":4,"max_concurrent":4,"max_depth":4,"token_budget":4000000,"tokens_per_agent":800000,"lifetime_seconds":3600}});
 	let mut parent_spec = common.clone();
 	parent_spec["template"] = parent_template;
 	if semantic {
 		parent_spec["embedding"] = json!({"provider":{"id":"home-embedding","version":"1.0.0"},"calls_per_agent":10,"call_budget":40});
 	}
-	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":compactor_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
+	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":decider_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
 	let (status, body) = request(
 		aa,
 		&a.config.api_token,
@@ -3308,7 +3308,7 @@ async fn prepare_generated_pair(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(a.store.pool.driver())
+		.fetch_one(a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3371,14 +3371,14 @@ async fn prepare_generated_pair(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(a.store.pool.driver())
+		.execute(a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
 	let mut child_spec = common;
 	child_spec["approval_required"] = json!(approval);
 	child_spec["template"] = child_template;
-	child_spec["compaction"] = json!({"provider":{"id":"remote-compactor","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
+	child_spec["compaction"] = json!({"provider":{"id":"remote-decider","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
 	if let Some(embedding_descriptor) = embedding_descriptor {
 		child_spec["remote"] = json!({"embedding":{"provider":embedding_descriptor,"calls_per_agent":10,"call_budget":40},"memory":if native {vec![embedding_descriptor.clone()]} else {vec![]}});
 	}
@@ -3414,7 +3414,7 @@ async fn prepare_generated_pair(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(b.store.pool.driver())
+		.fetch_one(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3438,7 +3438,7 @@ async fn prepare_generated_pair(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(b.store.pool.driver())
+		.fetch_one(b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3518,7 +3518,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3558,7 +3558,7 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3620,7 +3620,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 							))
 							.to_string(PostgresQueryBuilder),
 					)
-					.execute(p.b.store.pool.driver())
+					.execute(p.b.store.pool.fixture_driver())
 					.await
 				}
 				.unwrap();
@@ -3643,7 +3643,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3662,7 +3662,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 			.and_where(Expr::cust("tenant='acme' AND id='remote-child'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.b.store.pool.driver())
+	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -3714,7 +3714,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3738,7 +3738,7 @@ async fn cancelled_foreign_intent_retries_delivery_after_an_uncertain_ack(
 		200
 	);
 	let delivered = || {
-		let pool = p.a.store.pool.driver().clone();
+		let pool = p.a.store.pool.fixture_driver().clone();
 		async move {
 			{
 				let query_bind_1 = intent;
@@ -3776,7 +3776,7 @@ async fn cancelled_foreign_intent_retries_delivery_after_an_uncertain_ack(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.a.store.pool.driver())
+		.execute(p.a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -3797,17 +3797,17 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 	let pair = scoped_pair;
 	let expectation = ReservationCheck {
 		pools: vec![
-			pair.a.store.pool.driver().clone(),
-			pair.b.store.pool.driver().clone(),
+			pair.a.store.pool.fixture_driver().clone(),
+			pair.b.store.pool.fixture_driver().clone(),
 		],
-		dispatcher: pair.a.store.pool.driver().clone(),
+		dispatcher: pair.a.store.pool.fixture_driver().clone(),
 		grant: pair.grant,
 		admission: pair.admission,
 		purpose: "embedding",
 	};
 	*pair.semantic.as_ref().unwrap().reservations.lock().await = Some(expectation.clone());
 	*pair.model.reservations.lock().await = Some(ReservationCheck {
-		dispatcher: pair.b.store.pool.driver().clone(),
+		dispatcher: pair.b.store.pool.fixture_driver().clone(),
 		purpose: "inference",
 		..expectation
 	});
@@ -3837,7 +3837,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 				.and_where(Expr::cust("state='SETTLED'"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(dispatcher.store.pool.driver())
+		.fetch_all(dispatcher.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(records.len(), 1);
@@ -3880,7 +3880,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 					.order_by(Alias::new("purpose"), reinhardt::query::Order::Asc)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(node.store.pool.driver())
+			.fetch_all(node.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -3897,7 +3897,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 				.and_where(Expr::cust("result IS NOT NULL"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(node.store.pool.driver())
+		.fetch_one(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(finalized, 2, "each owner retains a terminal attempt fence");
@@ -3913,7 +3913,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 				.from(Alias::new("generation_budgets"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(node.store.pool.driver())
+		.fetch_one(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -3985,7 +3985,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 			.and_where(Expr::cust("usage->>'purpose'='embedding'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let exact = boundary["query"].as_str().unwrap().len() as i64 + 1024;
@@ -4023,7 +4023,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -4051,7 +4051,7 @@ async fn deployment_administrator_polling_advances_past_hidden_event_pages(
 			.from(Alias::new("events"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let mut tx = p.a.store.pool.begin(&TEST_FIXTURE).await.unwrap();
@@ -4379,7 +4379,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(p.b.store.pool.driver())
+			.execute(p.b.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -4401,7 +4401,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(p.b.store.pool.driver())
+			.execute(p.b.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -4435,7 +4435,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -4456,7 +4456,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -4620,7 +4620,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.a.store.pool.driver())
+		.execute(p.a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -4680,7 +4680,7 @@ async fn generated_home_allowance_failure_releases_only_predispatch_receiver_res
 			.value(Alias::new("embedding_call_limit"), 0)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(pair.a.store.pool.driver())
+	.execute(pair.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	for _ in 0..4 {
@@ -4707,7 +4707,7 @@ async fn generated_home_allowance_failure_releases_only_predispatch_receiver_res
 			.from(Alias::new("generation_budgets"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(pair.b.store.pool.driver())
+	.fetch_one(pair.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(debit, (0, 0));
@@ -4717,7 +4717,7 @@ async fn generated_home_allowance_failure_releases_only_predispatch_receiver_res
 			.from(Alias::new("generation_remote_usage"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(pair.b.store.pool.driver())
+	.fetch_one(pair.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(state, "RELEASED");
@@ -4845,7 +4845,7 @@ async fn redirect_peer(f: &Federation, node: &str, endpoint: &str) {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -4933,7 +4933,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.b.store.pool.driver())
+		.execute(p.b.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		&p.b
@@ -4963,7 +4963,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(p.a.store.pool.driver())
+			.execute(p.a.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -4978,7 +4978,13 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 	tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
 		.await
 		.unwrap();
-	let mut tx = local.store.control_pool.driver().begin().await.unwrap();
+	let mut tx = local
+		.store
+		.control_pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
 	let exclusive: Result<bool, _> = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("singleton"))
@@ -5012,7 +5018,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(local.store.pool.driver())
+		.fetch_one(local.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	} else {
@@ -5023,7 +5029,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 				.and_where(Expr::cust("cancelled AND NOT cancel_delivered"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(local.store.pool.driver())
+		.fetch_one(local.store.pool.fixture_driver())
 		.await
 		.unwrap()
 	};
@@ -5061,7 +5067,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 				.and_where(Expr::cust("home_node='' AND status='ACTIVE'"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.a.store.pool.driver())
+		.execute(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	} else {
@@ -5072,7 +5078,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 				.and_where(Expr::cust("tenant='acme' AND id='remote-parent'"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.a.store.pool.driver())
+		.fetch_one(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		spec["enabled"] = json!(false);
@@ -5089,7 +5095,7 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 	let still_enabled: bool = sqlx::query_scalar(&Query::select().expr(Expr::cust("COUNT(*)=1"))
 		.from(Alias::new("authorization_catalog"))
 		.and_where(Expr::cust("tenant='acme' AND entry_id IN (SELECT agent_id FROM generation_requests WHERE home_node='') AND enabled"))
-		.to_string(PostgresQueryBuilder)).fetch_one(p.a.store.pool.driver()).await.unwrap();
+		.to_string(PostgresQueryBuilder)).fetch_one(p.a.store.pool.fixture_driver()).await.unwrap();
 	assert!(still_enabled, "this cut must precede lifecycle retirement");
 	p.step().await;
 	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
@@ -5158,7 +5164,7 @@ async fn seed_remote_history(p: &Pair) {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.b.store.pool.driver())
+		.execute(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5182,7 +5188,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 			.and_where(Expr::cust("usage->>'purpose'='compaction'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.b.store.pool.driver())
+	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let attempt = Uuid::new_v4();
@@ -5227,7 +5233,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.b.store.pool.driver())
+		.execute(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5250,7 +5256,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.b.store.pool.driver())
+		.execute(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5260,7 +5266,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 			.from(Alias::new("generation_budgets"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let response =
@@ -5286,7 +5292,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 			.from(Alias::new("generation_budgets"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(after, before);
@@ -5302,7 +5308,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.a.store.pool.driver())
+		.fetch_one(p.a.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5311,14 +5317,16 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 }
 
 #[rstest::rstest]
+// Home allowance and authority failures keep their semantic reason; a Decider
+// that cannot run pauses the Run with its context reason (ADR 0042).
 #[case("approved", 0, None)]
 #[case("unnecessary", 0, None)]
-#[case("ancestor_limit", 0, Some("allowance"))]
-#[case("catalog_revoked", 0, Some("authority"))]
-#[case("outage", 503, Some("unavailable"))]
-#[case("bad_answers", 1, Some("provider_contract"))]
-#[case("credential_rejected", 401, Some("configuration"))]
-#[case("unbound", 0, Some("configuration"))]
+#[case("ancestor_limit", 0, Some(("semantic_reason", "allowance")))]
+#[case("catalog_revoked", 0, Some(("semantic_reason", "authority")))]
+#[case("outage", 503, Some(("context_reason", "decider_unavailable")))]
+#[case("bad_answers", 1, Some(("context_reason", "decider_unavailable")))]
+#[case("credential_rejected", 401, Some(("context_reason", "decider_unavailable")))]
+#[case("unbound", 0, Some(("context_reason", "decider_unavailable")))]
 #[tokio::test]
 async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	#[future(awt)]
@@ -5326,7 +5334,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	scoped_pair: Pair,
 	#[case] scenario: &str,
 	#[case] status: usize,
-	#[case] reason: Option<&str>,
+	#[case] reason: Option<(&str, &str)>,
 ) {
 	let p = scoped_pair;
 	if scenario != "unnecessary" {
@@ -5335,10 +5343,10 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	p.model.compaction_status.store(status, Ordering::Release);
 	*p.model.compaction_reservations.lock().await = Some(ReservationCheck {
 		pools: vec![
-			p.a.store.pool.driver().clone(),
-			p.b.store.pool.driver().clone(),
+			p.a.store.pool.fixture_driver().clone(),
+			p.b.store.pool.fixture_driver().clone(),
 		],
-		dispatcher: p.b.store.pool.driver().clone(),
+		dispatcher: p.b.store.pool.fixture_driver().clone(),
 		grant: p.grant,
 		admission: p.admission,
 		purpose: "compaction",
@@ -5350,12 +5358,23 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 				.value(Alias::new("compaction_call_limit"), 0)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.a.store.pool.driver())
+		.execute(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	}
 	if scenario == "catalog_revoked" {
-		assert_eq!(request(&p.ba,&p.receiver_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-compactor","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
+		assert_eq!(
+			request(
+				&p.ba,
+				&p.receiver_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":1,"enabled":false})
+			)
+			.await
+			.0,
+			200
+		);
 	}
 	if scenario == "unbound" {
 		// Without a usable OpenRouter binding the receiver stops before any
@@ -5373,27 +5392,17 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 		}
 	}
 	let run = p.run().await;
-	if let Some(reason) = reason {
-		assert_eq!(
-			serde_json::to_value(run.recovery.semantic_reason).unwrap(),
-			reason,
-			"{run:?}"
-		);
-		assert_eq!(
-			run.control.as_str(),
-			if scenario == "outage" {
-				"ACTIVE"
-			} else {
-				"PAUSED"
-			}
-		);
+	if let Some((field, reason)) = reason {
+		let recovery = serde_json::to_value(&run.recovery).unwrap();
+		assert_eq!(recovery[field], reason, "{run:?}");
+		assert_eq!(run.control.as_str(), "PAUSED");
 		assert_ne!(run.phase().as_str(), "FAILED");
 		assert!(p.requests.lock().await.is_empty());
 		assert!(
 			!run.error
 				.as_deref()
 				.unwrap_or_default()
-				.contains("private compactor response")
+				.contains("private decider response")
 		);
 	} else {
 		assert_eq!(p.requests.lock().await.len(), 1, "{run:?}");
@@ -5407,10 +5416,15 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 	if let Some(call) = calls.first() {
 		assert_eq!(call["model"], "typesafe/jev-1.13");
 		assert_eq!(call["provider"], json!({"zdr": true}));
+		// The Decider classifies the Run's own history; pinned context such as
+		// Home memory is never part of its state (ADR 0042).
 		assert!(
-			call.to_string().contains("ochre falcon"),
-			"approved context must reach the exact compactor"
+			call["state"]["history"]
+				.as_array()
+				.is_some_and(|history| history.iter().any(|entry| entry["result_chars"] == 150000)),
+			"the Run's history must reach the exact decider"
 		);
+		assert!(!call.to_string().contains("ochre falcon"));
 	}
 	drop(calls);
 	for node in [&p.a, &p.b] {
@@ -5420,7 +5434,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 				.from(Alias::new("generation_budgets"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(node.store.pool.driver())
+		.fetch_one(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -5436,7 +5450,7 @@ async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
 					.and_where(Expr::cust("purpose='compaction'"))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(node.store.pool.driver())
+			.fetch_one(node.store.pool.fixture_driver())
 			.await
 			.unwrap();
 			assert_eq!(
@@ -5744,7 +5758,7 @@ async fn run_state(p: &Pair) -> (String, String) {
 			.and_where(Expr::col("id").eq(Expr::value(p.admission)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.b.store.pool.driver())
+	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap()
 }
@@ -5766,7 +5780,7 @@ async fn run_progress(p: &Pair) -> String {
 				.and_where(Expr::col("run_id").eq(Expr::value(query_bind_1)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5815,7 +5829,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.b.store.pool.driver())
+	.fetch_one(p.b.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	let before = p.run().await;
@@ -5831,7 +5845,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5852,7 +5866,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(node.store.pool.driver())
+			.fetch_one(node.store.pool.fixture_driver())
 			.await
 		}
 		.unwrap();
@@ -5877,7 +5891,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(p.b.store.pool.driver())
+		.execute(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -5917,7 +5931,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 				.and_where(Expr::cust("purpose='inference'"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(node.store.pool.driver())
+		.fetch_all(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(usages.len(), 2);
@@ -5933,7 +5947,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 				.from(Alias::new("generation_budgets"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(node.store.pool.driver())
+		.fetch_one(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -5954,7 +5968,7 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(p.b.store.pool.driver())
+		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -6019,7 +6033,7 @@ async fn generated_remote_embedding_validates_contract_and_retains_uncertain_cha
 				.from(Alias::new("generation_budgets"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(node.store.pool.driver())
+		.fetch_one(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -6061,7 +6075,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(node.store.pool.driver())
+			.execute(node.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		}
@@ -6078,7 +6092,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(p.b.store.pool.driver())
+			.execute(p.b.store.pool.fixture_driver())
 			.await
 			.unwrap();
 		}
@@ -6128,7 +6142,7 @@ async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_subs
 				.from(Alias::new("memory_units"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(node.store.pool.driver())
+		.fetch_one(node.store.pool.fixture_driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -6227,8 +6241,8 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
 		script.compactions.lock().await.push(input.clone());
 		match script.compaction_status.load(Ordering::Acquire) {
-			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
-			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
 			// OpenRouter names the dated snapshot that served the pinned release.
 			1 => reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":{}})).unwrap(),
 			_ => {
@@ -6666,7 +6680,7 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 			.and_where(Expr::col(Alias::new("kind")).eq("task.remote_human_requested"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(p.a.store.pool.driver())
+	.fetch_all(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -6750,7 +6764,7 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(p.a.store.pool.driver())
+	.fetch_one(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	for record in journal.as_array_mut().unwrap() {
@@ -6763,7 +6777,7 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(p.a.store.pool.driver())
+	.execute(p.a.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	for (id, expected, actor) in [

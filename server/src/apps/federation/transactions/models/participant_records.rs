@@ -4,7 +4,7 @@ use crate::apps::federation::transactions::serializers::contracts::Manifest;
 use crate::apps::federation::transactions::services::states::AtomicParticipantPhase;
 use crate::database::native::Pool;
 use crate::{Error, Result};
-use aidash_application::tenancy::TenancyScope;
+use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
@@ -18,11 +18,14 @@ use uuid::Uuid;
 
 impl AtomicParticipant {
 	/// Participant records are cross-node transaction plumbing, which is
-	/// Deployment-wide.
+	/// Deployment-wide. The same transaction applies the manifest's mutations,
+	/// which reach Tenant-owned rows such as `authorization_execution`.
 	pub(crate) async fn begin(db: &Pool) -> Result<Box<dyn TransactionExecutor>> {
-		db.begin_serializable(&TenancyScope::NoTenant)
-			.await?
-			.into_executor()
+		db.begin_serializable(&TenancyScope::Deployment(
+			DeploymentScopeReason::AtomicParticipant,
+		))
+		.await?
+		.into_executor()
 	}
 
 	pub(crate) async fn lock(tx: &mut dyn TransactionExecutor, id: Uuid) -> Result<Option<Self>> {

@@ -146,7 +146,7 @@ impl Purpose {
 		match self {
 			Self::Embedding => "embedding.invoke",
 			Self::Inference => "model.infer",
-			Self::Compaction => "compaction.invoke",
+			Self::Compaction => crate::decision::INVOKE,
 			Self::Memory => "memory.invoke",
 			// The summarizer is a model; its use is ordinary model inference.
 			Self::Summary => "model.infer",

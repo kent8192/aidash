@@ -95,7 +95,33 @@ pub(crate) async fn creations(
 			.filter(Tenant::field_created_by_identity().eq(Some(identity)))
 			.filter(Tenant::field_personal().eq(false))
 	};
-	let total = created().count_with_db(tx).await?;
+	// A Tenant still in its grace period counts; a purged one frees its slot.
+	let tenants = Alias::new(Tenant::table_name());
+	let deletions = Alias::new("d");
+	let purged = Query::select()
+		.expr(Expr::value(1_i64))
+		.from_as(
+			Alias::new(crate::apps::identity::models::TenantDeletion::table_name()),
+			deletions.clone(),
+		)
+		.and_where(
+			Expr::col((deletions.clone(), Alias::new("tenant")))
+				.equals((tenants.clone(), Alias::new("name"))),
+		)
+		.and_where(Expr::col((deletions, Alias::new("purged_at"))).is_not_null())
+		.to_owned();
+	let (sql, values) = Query::select()
+		.expr_as(Expr::cust("count(*)"), Alias::new("total"))
+		.from(tenants)
+		.and_where(Expr::col("created_by_kind").eq(Expr::value("identity")))
+		.and_where(Expr::col("created_by_identity").eq(Expr::value(identity)))
+		.and_where(Expr::col("personal").eq(Expr::value(false)))
+		.and_where(Expr::exists(purged).not())
+		.build(PostgresQueryBuilder);
+	let total: i64 = TransactionExecutor::fetch_one(tx, &sql, convert_values(values))
+		.await?
+		.get("total")
+		.map_err(reinhardt::core::exception::Error::from)?;
 	let recent = created()
 		.filter(Tenant::field_created_at().gt(now - chrono::Duration::hours(1)))
 		.all_with_db(tx)
@@ -175,6 +201,7 @@ pub(crate) async fn create(
 		0,
 		serde_json::to_value(&bundle)?,
 		&creator.revision_actor(),
+		None,
 	)
 	.await?;
 	crate::apps::registry::repositories::seed_tenant(
@@ -238,6 +265,7 @@ async fn map_owner(tx: &mut AtomicTransaction, tenant: &str, identity: Uuid) -> 
 		),
 		3650 * 24 * 60 * 60,
 		"dashboard-oidc",
+		None,
 	)
 	.await?;
 	let mapping = DashboardMapping::build()

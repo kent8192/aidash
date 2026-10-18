@@ -33,6 +33,7 @@ pub(crate) struct RetentionRepository<'a> {
 struct Scope {
 	tx: crate::database::native::Transaction,
 	actor: Actor,
+	ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
 }
 #[async_trait]
 impl IncidentRepository for Repository<'_> {
@@ -48,6 +49,7 @@ impl IncidentRepository for Repository<'_> {
 				.begin(&self.actor.tenancy()?)
 				.await?,
 			actor: self.actor.clone(),
+			ceilings: self.runtime.store.test_limit_ceilings,
 		}))
 	}
 }
@@ -141,7 +143,8 @@ impl IncidentScope for Scope {
 	async fn evidence_days(&mut self, tenant: &str) -> Result<i32> {
 		Ok(AgentTestLimit::locked(&mut self.tx, tenant)
 			.await?
-			.incident_evidence_days)
+			.incident_evidence_days
+			.min(self.ceilings.incident_evidence_days))
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
 		Box::new(self.tx)

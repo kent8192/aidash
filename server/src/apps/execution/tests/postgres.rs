@@ -2243,7 +2243,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2370,7 +2370,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(store.pool.driver())
+		.execute(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();
@@ -2391,7 +2391,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(store.pool.driver())
+		.fetch_all(store.pool.fixture_driver())
 		.await
 		.unwrap()
 	};
@@ -2415,7 +2415,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(store.pool.driver())
+		.fetch_one(store.pool.fixture_driver())
 		.await
 	}
 	.unwrap();

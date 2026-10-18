@@ -1,11 +1,7 @@
 //! Durable operations required by the agent use case. Implementations retain
 //! lease/revision fences, transaction-scoped authority, audit, and outbox writes.
-use crate::{
-	Result,
-	ports::{CompactionClassifier, ModelProvider},
-};
+use crate::{Result, ports::ModelProvider};
 use aidash_domain::{
-	media::Selection,
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
@@ -147,6 +143,14 @@ pub trait ExecutionStore: Send + Sync {
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
 		Ok(false)
 	}
+	/// The Run's Provider results purged under the Research account terms
+	/// (ADR 0058). A store without research evidence has none.
+	async fn expired_research(
+		&self,
+		_run: &Run,
+	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
+		Ok(Default::default())
+	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -206,13 +210,16 @@ pub trait ExecutionStore: Send + Sync {
 		token: Uuid,
 		calls: &[BatchInvocation<'_>],
 	) -> Result<Vec<InvocationOutcome>>;
+	/// Records `output` and returns the result as stored, which the caller
+	/// carries on: an expired research result's tombstone when its account
+	/// terms ended meanwhile (ADR 0058).
 	async fn invocation_finish(
 		&self,
 		run: &Run,
 		token: Uuid,
 		key: &str,
 		output: &Value,
-	) -> Result<()>;
+	) -> Result<Value>;
 	async fn reconciliation_request(
 		&self,
 		run: &mut Run,
@@ -269,14 +276,17 @@ pub trait ExecutionStore: Send + Sync {
 		settlement: &aidash_domain::context::recovery::Settlement,
 	) -> Result<()>;
 	/// Save `run`, whose context carries the adopted projection, and mark the
-	/// attempt adopted in one lease-fenced transaction. Returns `Conflict` when
-	/// the attempt is no longer open or the journal lacks its source range.
+	/// attempt adopted in one lease-fenced transaction. A `staged` Decider
+	/// decision, whose pruning the summary completed, is recorded in the same
+	/// transaction (ADR 0056). Returns `Conflict` when the attempt is no longer
+	/// open or the journal lacks its source range.
 	async fn adopt_compaction(
 		&self,
 		run: &Run,
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
+		staged: Option<&crate::decision::StagedDecision>,
 	) -> Result<()>;
 }
 #[async_trait]
@@ -391,7 +401,10 @@ pub trait ExecutionAuthority: Send + Sync {
 		contract: &aidash_domain::tool::ToolContract,
 	) -> Result<()>;
 	async fn human_read(&self, id: Uuid) -> Result<()>;
-	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>>;
+	async fn model_media(
+		&self,
+		selections: &[aidash_domain::media::ModelMedia],
+	) -> Result<Vec<ContentPart>>;
 	async fn human_message_media(
 		&self,
 		messages: &[(i64, Uuid, usize)],
@@ -424,6 +437,11 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		summarizer: &aidash_domain::context::summary::SummaryProvider,
 	) -> Result<()>;
+	/// Repeat the Catalog Approval check of the exact pinned Decider version
+	/// after a Summary Stage, before the staged decision it completes is
+	/// adopted (ADR 0056). Returns `Error::Context(DeciderUnapproved)` when
+	/// the approval was withdrawn.
+	async fn recheck_decider(&self, decider: &aidash_domain::decision::DeciderPin) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
 	/// While suspended for inference, briefly reacquire the authority boundary,
 	/// authorize inference again, and release it. Failure means the Run may no
@@ -452,7 +470,15 @@ pub trait ExecutionEnvironment: Send + Sync {
 		None
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
-	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
+	/// The Run's compaction Decider and the ports its decisions use under the
+	/// current lease, or `None` when the Run has no compaction Decider.
+	async fn compaction_decider(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
+		Ok(None)
+	}
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
 	/// Runs Completion Gate Checks. `None` makes every applicable Check
 	/// unavailable, so a Run with a Completion Policy pauses for a person.

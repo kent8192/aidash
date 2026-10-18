@@ -26,7 +26,7 @@ fn manual_semantic_retry_clears_only_its_reason_and_schedule_and_preserves_the_c
 	assert_eq!(result["state_version"], json!(1));
 	assert_eq!(
 		result["recovery"],
-		json!({"retry":null,"lease_recovered":true})
+		json!({"retry":null,"lease_recovered":true,"decision_cycle":1})
 	);
 	assert_eq!(
 		raw.pending["recovery"]["semantic_reason"],
@@ -54,6 +54,12 @@ fn a_pause_without_a_semantic_reason_does_not_clear_ordinary_recovery(mut raw: R
 	assert_eq!(raw.resumed_pending().unwrap(), None);
 }
 #[rstest]
+fn each_manual_retry_starts_a_new_decision_cycle(mut raw: RawRun) {
+	raw.pending["recovery"]["decision_cycle"] = json!(4);
+	let result = raw.resumed_pending().unwrap().unwrap();
+	assert_eq!(result["recovery"]["decision_cycle"], json!(5));
+}
+#[rstest]
 fn manual_context_retry_clears_its_typed_reason_and_schedule(mut raw: RawRun) {
 	let recovery = raw.pending["recovery"].as_object_mut().unwrap();
 	recovery.remove("semantic_reason");
@@ -62,7 +68,7 @@ fn manual_context_retry_clears_its_typed_reason_and_schedule(mut raw: RawRun) {
 	assert_eq!(result["data"], raw.pending["data"]);
 	assert_eq!(
 		result["recovery"],
-		json!({"retry":null,"lease_recovered":true})
+		json!({"retry":null,"lease_recovered":true,"decision_cycle":1})
 	);
 }
 #[rstest]
@@ -112,7 +118,7 @@ fn a_failure_delivery_can_resume_without_decoding_a_corrupt_diagnostic_context(m
 	assert_eq!(result["data"], raw.pending["data"]);
 	assert_eq!(
 		result["recovery"],
-		json!({"retry":null,"lease_recovered":true})
+		json!({"retry":null,"lease_recovered":true,"decision_cycle":1})
 	);
 	assert!(raw.decode().is_err());
 }
