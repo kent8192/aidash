@@ -1,17 +1,18 @@
 meta {
-  name: 1203 tenant-retention - Anonymous request is rejected
+  name: 1203 research-revocation-list - Malformed bearer syntax is rejected
   type: http
   seq: 1203
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/retention
+  url: {{base_url}}/api/tenants/{{tenant}}/research-revocations
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

@@ -1,17 +1,18 @@
 meta {
-  name: 1209 tenant-retention-history - Anonymous request is rejected
+  name: 1207 tenant-retention - Malformed bearer syntax is rejected
   type: http
-  seq: 1209
+  seq: 1207
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/retention-history
+  url: {{base_url}}/api/tenants/{{tenant}}/retention
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
+  Authorization: Basic invalid
 }
 
 tests {

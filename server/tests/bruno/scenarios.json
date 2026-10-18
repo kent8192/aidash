@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 319,
+  "endpoint_count": 320,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -13084,8 +13084,42 @@
       ]
     },
     {
-      "name": "1199 research-revocation-list - Anonymous request is rejected",
-      "file": "contracts/1199-research-revocation-list.bru",
+      "name": "1199 run-research-revocation-read - Anonymous request is rejected",
+      "file": "contracts/1199-run-research-revocation-read.bru",
+      "endpoint": "GET /api/runs/{id}/research-revocation",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1200 run-research-revocation-read - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1200-run-research-revocation-read.bru",
+      "endpoint": "GET /api/runs/{id}/research-revocation",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1201 run-research-revocation-read - Application read preserves the typed response contract",
+      "file": "contracts/1201-run-research-revocation-read.bru",
+      "endpoint": "GET /api/runs/{id}/research-revocation",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Application read preserves the typed response contract contract"
+      ]
+    },
+    {
+      "name": "1202 research-revocation-list - Anonymous request is rejected",
+      "file": "contracts/1202-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13095,8 +13129,8 @@
       ]
     },
     {
-      "name": "1200 research-revocation-list - Malformed bearer syntax is rejected",
-      "file": "contracts/1200-research-revocation-list.bru",
+      "name": "1203 research-revocation-list - Malformed bearer syntax is rejected",
+      "file": "contracts/1203-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13106,8 +13140,8 @@
       ]
     },
     {
-      "name": "1201 research-revocation-list - Application read preserves the typed response contract",
-      "file": "contracts/1201-research-revocation-list.bru",
+      "name": "1204 research-revocation-list - Application read preserves the typed response contract",
+      "file": "contracts/1204-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13118,8 +13152,8 @@
       ]
     },
     {
-      "name": "1202 research-revocation-list - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1202-research-revocation-list.bru",
+      "name": "1205 research-revocation-list - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1205-research-revocation-list.bru",
       "endpoint": "GET /api/tenants/{tenant}/research-revocations",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -13129,8 +13163,8 @@
       ]
     },
     {
-      "name": "1203 tenant-retention - Anonymous request is rejected",
-      "file": "contracts/1203-tenant-retention.bru",
+      "name": "1206 tenant-retention - Anonymous request is rejected",
+      "file": "contracts/1206-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13140,8 +13174,8 @@
       ]
     },
     {
-      "name": "1204 tenant-retention - Malformed bearer syntax is rejected",
-      "file": "contracts/1204-tenant-retention.bru",
+      "name": "1207 tenant-retention - Malformed bearer syntax is rejected",
+      "file": "contracts/1207-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13151,8 +13185,8 @@
       ]
     },
     {
-      "name": "1205 tenant-retention - Application read preserves the typed response contract",
-      "file": "contracts/1205-tenant-retention.bru",
+      "name": "1208 tenant-retention - Application read preserves the typed response contract",
+      "file": "contracts/1208-tenant-retention.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13163,8 +13197,8 @@
       ]
     },
     {
-      "name": "1206 tenant-retention-update - Anonymous request is rejected",
-      "file": "contracts/1206-tenant-retention-update.bru",
+      "name": "1209 tenant-retention-update - Anonymous request is rejected",
+      "file": "contracts/1209-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13175,8 +13209,8 @@
       ]
     },
     {
-      "name": "1207 tenant-retention-update - Wrong JSON media type is rejected",
-      "file": "contracts/1207-tenant-retention-update.bru",
+      "name": "1210 tenant-retention-update - Wrong JSON media type is rejected",
+      "file": "contracts/1210-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -13187,8 +13221,8 @@
       ]
     },
     {
-      "name": "1208 tenant-retention-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1208-tenant-retention-update.bru",
+      "name": "1211 tenant-retention-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1211-tenant-retention-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/retention",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -13199,8 +13233,8 @@
       ]
     },
     {
-      "name": "1209 tenant-retention-history - Anonymous request is rejected",
-      "file": "contracts/1209-tenant-retention-history.bru",
+      "name": "1212 tenant-retention-history - Anonymous request is rejected",
+      "file": "contracts/1212-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -13210,8 +13244,8 @@
       ]
     },
     {
-      "name": "1210 tenant-retention-history - Malformed bearer syntax is rejected",
-      "file": "contracts/1210-tenant-retention-history.bru",
+      "name": "1213 tenant-retention-history - Malformed bearer syntax is rejected",
+      "file": "contracts/1213-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -13221,8 +13255,8 @@
       ]
     },
     {
-      "name": "1211 tenant-retention-history - Application read preserves the typed response contract",
-      "file": "contracts/1211-tenant-retention-history.bru",
+      "name": "1214 tenant-retention-history - Application read preserves the typed response contract",
+      "file": "contracts/1214-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -13233,8 +13267,8 @@
       ]
     },
     {
-      "name": "1212 tenant-retention-history - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1212-tenant-retention-history.bru",
+      "name": "1215 tenant-retention-history - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1215-tenant-retention-history.bru",
       "endpoint": "GET /api/tenants/{tenant}/retention-history",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
