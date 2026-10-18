@@ -195,7 +195,7 @@ async fn native_draft_mutations_recheck_browser_authority(
 	let (revision, release_notes): (i64, String) =
 		sqlx::query_as("SELECT revision, release_notes FROM agent_drafts WHERE id = $1")
 			.bind(uuid::Uuid::parse_str(wb.draft["id"].as_str().unwrap()).unwrap())
-			.fetch_one(wb.f.store.pool.driver())
+			.fetch_one(wb.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
 	assert_eq!(revision, if expected_status == 200 { 2 } else { 1 });

@@ -1703,7 +1703,7 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	let binding: (i64, bool) = sqlx::query_as(
 		"SELECT revision, enabled FROM authorization_catalog WHERE tenant = 'acme' AND entry_id = 'model'",
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(binding, (1, true));

@@ -304,7 +304,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(f.store.pool.driver())
+	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(approver, "viewer");
