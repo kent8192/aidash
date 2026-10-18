@@ -167,17 +167,17 @@ pub async fn local_graph(
 pub async fn publication_graph(
 	scope: &mut dyn DefinitionScope,
 	root: &Entry,
-	extra: &[EntityRef],
+	requested: &[EntityRef],
 	node: &str,
 ) -> Result<Vec<Dependency>> {
 	let mut queue = refs(root, node)?;
-	queue.extend(extra.iter().cloned().map(|r| (r, String::new())));
+	queue.extend(requested.iter().cloned().map(|r| (r, String::new())));
 	let mut seen = BTreeSet::new();
 	let mut result = vec![];
 	while let Some((r, kind)) = queue.pop() {
 		let entry = scope.catalog(&r, "registry.read").await?;
 		if crate::registry::system::is_deployment_definition(&entry) {
-			if extra.contains(&r) {
+			if requested.contains(&r) {
 				crate::registry::system::reject_distribution(&entry)?;
 			}
 			if !kind.is_empty() && entry.kind != kind {

@@ -8,38 +8,12 @@ use reinhardt::{
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Clone, Copy)]
-pub(crate) enum Journal {
-	Scoped(Uuid),
-}
-impl Journal {
-	fn table(self) -> &'static str {
-		match self {
-			Self::Scoped(_) => "authorization_remote_execution",
-		}
-	}
-	fn column(self) -> &'static str {
-		match self {
-			Self::Scoped(_) => "grant_id",
-		}
-	}
-	fn id(self) -> Uuid {
-		match self {
-			Self::Scoped(id) => id,
-		}
-	}
-}
-
-async fn records(
-	tx: &mut dyn TransactionExecutor,
-	grant: Journal,
-	lock: bool,
-) -> Result<Vec<Record>> {
+async fn records(tx: &mut dyn TransactionExecutor, grant: Uuid, lock: bool) -> Result<Vec<Record>> {
 	let mut query = Query::select();
 	query
 		.column(Alias::new("human_requests"))
-		.from(Alias::new(grant.table()))
-		.and_where(Expr::col(grant.column()).eq(Expr::value(grant.id())));
+		.from(Alias::new("authorization_remote_execution"))
+		.and_where(Expr::col("grant_id").eq(Expr::value(grant)));
 	if lock {
 		query.lock(LockType::Update);
 	}
@@ -51,7 +25,7 @@ async fn records(
 	let value = reinhardt::db::orm::QueryRow::from_backend_row(row).data["human_requests"].clone();
 	Ok(serde_json::from_value(value)?)
 }
-async fn save(tx: &mut dyn TransactionExecutor, grant: Journal, requests: &[Record]) -> Result<()> {
+async fn save(tx: &mut dyn TransactionExecutor, grant: Uuid, requests: &[Record]) -> Result<()> {
 	let content = serde_json::to_value(requests)?;
 	if serde_json::to_vec(&content)?.len() > 1_048_576 {
 		return Err(Error::Invalid(
@@ -59,16 +33,16 @@ async fn save(tx: &mut dyn TransactionExecutor, grant: Journal, requests: &[Reco
 		));
 	}
 	let (sql, values) = Query::update()
-		.table(Alias::new(grant.table()))
+		.table(Alias::new("authorization_remote_execution"))
 		.value(Alias::new("human_requests"), content)
-		.and_where(Expr::col(grant.column()).eq(Expr::value(grant.id())))
+		.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())
 }
 pub(crate) async fn create_in(
 	tx: &mut dyn TransactionExecutor,
-	grant: Journal,
+	grant: Uuid,
 	admission: Uuid,
 	workspace: Uuid,
 	kind: &str,
@@ -123,7 +97,7 @@ pub(crate) async fn create_in(
 }
 pub(crate) async fn answer_in(
 	tx: &mut dyn TransactionExecutor,
-	grant: Journal,
+	grant: Uuid,
 	admission: Uuid,
 	id: Uuid,
 	response: Value,
@@ -167,7 +141,7 @@ struct Record {
 }
 pub(crate) async fn read_in(
 	tx: &mut dyn TransactionExecutor,
-	grant: Journal,
+	grant: Uuid,
 	lock: bool,
 ) -> Result<Vec<HumanRequest>> {
 	let mut requests = records(tx, grant, lock).await?;
@@ -192,10 +166,7 @@ pub(crate) async fn read_in(
 	}
 	Ok(requests.into_iter().map(|r| r.request).collect())
 }
-async fn read_locked(
-	tx: &mut dyn TransactionExecutor,
-	grant: Journal,
-) -> Result<Vec<HumanRequest>> {
+async fn read_locked(tx: &mut dyn TransactionExecutor, grant: Uuid) -> Result<Vec<HumanRequest>> {
 	Box::pin(read_in(tx, grant, true)).await
 }
 
@@ -208,23 +179,14 @@ pub(crate) async fn create(
 	prompt: &str,
 	key: &str,
 ) -> Result<HumanRequest> {
-	create_in(
-		tx,
-		Journal::Scoped(grant),
-		admission,
-		workspace,
-		kind,
-		prompt,
-		key,
-	)
-	.await
+	create_in(tx, grant, admission, workspace, kind, prompt, key).await
 }
 pub(crate) async fn read(
 	tx: &mut dyn TransactionExecutor,
 	grant: Uuid,
 	lock: bool,
 ) -> Result<Vec<HumanRequest>> {
-	read_in(tx, Journal::Scoped(grant), lock).await
+	read_in(tx, grant, lock).await
 }
 pub(crate) async fn answer(
 	tx: &mut dyn TransactionExecutor,
@@ -234,5 +196,5 @@ pub(crate) async fn answer(
 	response: Value,
 	actor: &str,
 ) -> Result<HumanRequest> {
-	answer_in(tx, Journal::Scoped(grant), admission, id, response, actor).await
+	answer_in(tx, grant, admission, id, response, actor).await
 }

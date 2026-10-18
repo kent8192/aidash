@@ -408,7 +408,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) 
 		30,
 		stopping,
 	));
-	let drained = tokio::time::timeout(Duration::from_millis(250), async {
+	let drained = tokio::time::timeout(TERMINAL_IDLE, async {
 		while !repository.0.lock().unwrap().is_empty() {
 			tokio::time::sleep(Duration::from_millis(1)).await;
 		}
