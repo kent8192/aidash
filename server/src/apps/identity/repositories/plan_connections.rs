@@ -9,7 +9,7 @@ use aidash_application::{
 	Error, Result,
 	plan_connections::{Owner, Repository, Scope},
 };
-use aidash_domain::plan_connections::{MappedIdentity, PlanConnection};
+use aidash_domain::plan_connections::{MappedIdentity, Pin, PlanConnection};
 use aidash_domain::provider_credentials::Provider;
 use async_trait::async_trait;
 use reinhardt::db::{
@@ -285,23 +285,6 @@ impl Scope for NativeScope {
 			.map_err(framework)?;
 		self.event(value, event, actor).await
 	}
-	async fn release_pins(&mut self, value: &PlanConnection) -> Result<()> {
-		self.owns(value)?;
-		let (sql, values) = Query::delete()
-			.from_table(Alias::new(
-				super::super::models::plan_connections::RunPlanConnection::table_name(),
-			))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(value.tenant.clone())))
-			.and_where(Expr::col(Alias::new("subject")).eq(Expr::value(value.subject.clone())))
-			.and_where(Expr::col(Alias::new("provider")).eq(Expr::value(value.provider.id())))
-			.and_where(Expr::col(Alias::new("plan_connection_id")).eq(Expr::value(value.id)))
-			.build(PostgresQueryBuilder);
-		self.tx
-			.execute(&sql, convert_values(values))
-			.await
-			.map_err(crate::Error::from)?;
-		Ok(())
-	}
 	async fn cancel_attempts(&mut self, provider: Provider) -> Result<()> {
 		let (sql, values) = Query::delete()
 			.from_table(Alias::new(
@@ -369,6 +352,7 @@ pub async fn admit(
 					"subject",
 					"provider",
 					"plan_connection_id",
+					"identity_id",
 				]
 				.map(Alias::new),
 			)
@@ -379,6 +363,7 @@ pub async fn admit(
 				IntoValue::into_value(subject.as_str()),
 				IntoValue::into_value(provider.id()),
 				IntoValue::into_value(row.id),
+				IntoValue::into_value(row.identity_id),
 			])
 			.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned())
 			.build(PostgresQueryBuilder);
@@ -387,14 +372,15 @@ pub async fn admit(
 	Ok(())
 }
 
-/// The Plan Connection admission pinned for `run` and `provider`.
+/// The Plan Connection admission pinned for `run` and `provider`, as the
+/// identity it served then.
 pub async fn pinned(
 	pool: &crate::database::native::Pool,
 	tenant: &str,
 	run: Uuid,
 	provider: Provider,
-) -> crate::Result<Uuid> {
-	use super::super::models::plan_connections::RunPlanConnection as Pin;
+) -> crate::Result<Pin> {
+	use super::super::models::plan_connections::RunPlanConnection as RunPin;
 	// A caller without the Run's Tenant finds the pin by the Run alone.
 	let scope = if tenant.is_empty() {
 		TenancyScope::Deployment(DeploymentScopeReason::RunTenant)
@@ -402,8 +388,8 @@ pub async fn pinned(
 		TenancyScope::tenant(tenant)?
 	};
 	let mut tx = pool.begin(&scope).await?.into_executor()?;
-	let pin = Pin::objects()
-		.filter(Pin::field_id().eq(format!("{run}:{}", provider.id())))
+	let pin = RunPin::objects()
+		.filter(RunPin::field_id().eq(format!("{run}:{}", provider.id())))
 		.all_with_executor(tx.as_mut())
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
@@ -415,5 +401,8 @@ pub async fn pinned(
 	if !tenant.is_empty() && pin.tenant != tenant {
 		return Err(crate::Error::Forbidden);
 	}
-	Ok(pin.plan_connection_id)
+	Ok(Pin {
+		connection: pin.plan_connection_id,
+		identity: pin.identity_id,
+	})
 }

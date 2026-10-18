@@ -1009,6 +1009,29 @@ async fn set_disabled(f: &Federation, subject: &str, disabled: bool) {
 	.await;
 }
 
+/// Admits `run` as a Run whose delegation chain starts at alice.
+async fn admit_alice(
+	f: &Federation,
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	run: Uuid,
+) -> aidash_server::Result<()> {
+	let grant = aidash_domain::identity::execution::ExecutionGrant {
+		run_id: run,
+		task_id: Uuid::new_v4(),
+		workspace_id: Uuid::new_v4(),
+		tenant: "alpha".into(),
+		credential_id: Uuid::new_v4(),
+		root_subject: "alice".into(),
+		subject_chain: vec!["alice".into()],
+	};
+	let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+	let result = admit(tx.as_mut(), &f.store, &grant, snapshot, false).await;
+	if result.is_ok() {
+		tx.commit().await.unwrap();
+	}
+	result
+}
+
 /// Identities A (alice's) and B (bob's) are both mapped to the subject alice
 /// while B is disabled, so A connects. Disabling A and restoring B leaves B
 /// the only active identity mapped there, yet B's Runs never use A's Plan
@@ -1026,27 +1049,7 @@ async fn connections_serve_only_the_identity_that_connected_them(
 	let fixture = Fixture::new(application, parts);
 	let f = fixture.f.clone();
 	let snapshot = snapshot(&f).await;
-	let admit_once = |run: Uuid| {
-		let f = f.clone();
-		let snapshot = snapshot.clone();
-		let grant = aidash_domain::identity::execution::ExecutionGrant {
-			run_id: run,
-			task_id: Uuid::new_v4(),
-			workspace_id: Uuid::new_v4(),
-			tenant: "alpha".into(),
-			credential_id: Uuid::new_v4(),
-			root_subject: "alice".into(),
-			subject_chain: vec!["alice".into()],
-		};
-		async move {
-			let mut tx = f.store.control_pool.connection().begin().await.unwrap();
-			let result = admit(tx.as_mut(), &f.store, &grant, &snapshot, false).await;
-			if result.is_ok() {
-				tx.commit().await.unwrap();
-			}
-			result
-		}
-	};
+	let admit_once = |run: Uuid| admit_alice(&f, &snapshot, run);
 	let (_, owners) = map(&fixture, "browser-a", "alice").await;
 	let (status, _) = map(&fixture, "browser-c", "alice").await;
 	assert_eq!(status, 200);
@@ -1103,6 +1106,84 @@ async fn connections_serve_only_the_identity_that_connected_them(
 			.revoked
 			.contains(&"plan-refresh-1".to_owned())
 	);
+	fixture.cleanup().await;
+}
+
+/// Once B, the only active identity mapped to alice, reconnects A's Plan
+/// Connection, a Run admitted for A still fails: its pin names A, which the
+/// connection no longer serves, however late the call reads it (#315).
+#[rstest::rstest]
+#[tokio::test]
+async fn runs_admitted_for_another_identity_never_use_a_reconnection(
+	#[from(parts)] parts: Parts,
+	#[future(awt)]
+	#[from(plan_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
+) {
+	let fixture = Fixture::new(application, parts);
+	let f = fixture.f.clone();
+	let snapshot = snapshot(&f).await;
+	let (_, owners) = map(&fixture, "browser-a", "alice").await;
+	let (status, others) = map(&fixture, "browser-c", "alice").await;
+	assert_eq!(status, 200);
+	set_disabled(&f, "plan-connection-bob", true).await;
+	connect(&fixture, "browser-a", &owners).await;
+	let admitted = Uuid::new_v4();
+	admit_alice(&f, &snapshot, admitted).await.unwrap();
+	let pin = pinned(&f.store.control_pool, "alpha", admitted, Provider::Chatgpt)
+		.await
+		.unwrap();
+	assert_eq!(pin.identity, identity_of(&f, "plan-connection-alice").await);
+
+	set_disabled(&f, "plan-connection-alice", true).await;
+	set_disabled(&f, "plan-connection-bob", false).await;
+	let reconnected = connect(&fixture, "browser-c", &others).await;
+	assert_eq!(reconnected["outcome"], "reconnected", "{reconnected}");
+	let access = AdmittedAccess {
+		store: f.store.clone(),
+	};
+	let source = Source::Plan {
+		provider: "chatgpt".into(),
+	};
+	let endpoint = Provider::Chatgpt.base_url();
+	let context = |run| Context {
+		tenant: "alpha".into(),
+		run: Some(run),
+		..Context::default()
+	};
+	// The same connection, now B's: A's Run is refused at every entry.
+	assert_eq!(
+		pinned(&f.store.control_pool, "alpha", admitted, Provider::Chatgpt)
+			.await
+			.unwrap(),
+		pin
+	);
+	assert!(matches!(
+		access.check(&context(admitted), endpoint, &source).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert!(matches!(
+		access.resolve(&context(admitted), endpoint, &source).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert!(matches!(
+		access
+			.plan_rejected(
+				&context(admitted),
+				aidash_domain::plan_connections::Disposition::RefreshThenReconnect,
+			)
+			.await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	// A Run admitted for B uses B's tokens.
+	let current = Uuid::new_v4();
+	admit_alice(&f, &snapshot, current).await.unwrap();
+	let resolved = access
+		.resolve(&context(current), endpoint, &source)
+		.await
+		.unwrap();
+	assert_eq!(resolved.bearer.expose_secret(), "plan-access-2");
 	fixture.cleanup().await;
 }
 
@@ -1210,7 +1291,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		));
 	}
 	admit_once(run, "alice", false).await.unwrap();
-	let id = pinned(&f.store.control_pool, "alpha", run, Provider::Chatgpt)
+	let pin = pinned(&f.store.control_pool, "alpha", run, Provider::Chatgpt)
 		.await
 		.unwrap();
 
@@ -1270,7 +1351,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		)
 		.await,
 	);
-	assert_eq!(status["connection"]["id"], id.to_string());
+	assert_eq!(status["connection"]["id"], pin.connection.to_string());
 	let revision = status["connection"]["revision"].clone();
 	let disconnected = send(
 		&fixture,

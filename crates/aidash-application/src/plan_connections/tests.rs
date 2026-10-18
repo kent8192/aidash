@@ -27,8 +27,6 @@ struct Data {
 	events: Vec<String>,
 	/// Pending attempts ended by a committed disconnect.
 	cancelled_attempts: usize,
-	/// Connections whose Run pins were released.
-	released_pins: Vec<Uuid>,
 	/// Commits that fail before applying anything, as a lost database would.
 	failing_commits: usize,
 	/// Commits that succeed before `failing_commits` take effect.
@@ -111,10 +109,6 @@ impl Scope for Lease {
 	async fn delete(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
 		self.data.rows.remove(&value.id);
 		self.data.events.push(event.into());
-		Ok(())
-	}
-	async fn release_pins(&mut self, value: &PlanConnection) -> Result<()> {
-		self.data.released_pins.push(value.id);
 		Ok(())
 	}
 	async fn cancel_attempts(&mut self, _: Provider) -> Result<()> {
@@ -711,7 +705,7 @@ async fn fresh_tokens_serve_calls_without_a_refresh() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	let row = only_row(&fixture).await;
-	let bearer = fixture.service.bearer(row.id).await.unwrap();
+	let bearer = fixture.service.bearer(row.pin()).await.unwrap();
 	assert_eq!(bearer.expose_secret(), "access-1");
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
 }
@@ -722,7 +716,7 @@ async fn expiring_tokens_are_refreshed_and_rotated() {
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
 	let row = only_row(&fixture).await;
-	let bearer = fixture.service.bearer(row.id).await.unwrap();
+	let bearer = fixture.service.bearer(row.pin()).await.unwrap();
 	assert_eq!(bearer.expose_secret(), "access-r1");
 	let refreshed = only_row(&fixture).await;
 	assert!(refreshed.refreshed_at.is_some());
@@ -743,7 +737,7 @@ async fn expiring_tokens_are_refreshed_and_rotated() {
 	assert_eq!(
 		fixture
 			.service
-			.bearer(row.id)
+			.bearer(row.pin())
 			.await
 			.unwrap()
 			.expose_secret(),
@@ -763,9 +757,9 @@ async fn rejected_refreshes_discard_tokens_and_ask_for_reconnection() {
 	);
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	let row = only_row(&fixture).await;
@@ -800,9 +794,9 @@ async fn refreshes_that_drop_plan_usage_end_the_connection() {
 	);
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	assert_eq!(
@@ -824,7 +818,7 @@ async fn unavailable_refreshes_keep_the_tokens() {
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
 	let before = only_row(&fixture).await;
 	assert!(matches!(
-		fixture.service.bearer(before.id).await,
+		fixture.service.bearer(before.pin()).await,
 		Err(Error::ProviderRejected { status: 503, .. })
 	));
 	let after = only_row(&fixture).await;
@@ -837,13 +831,13 @@ async fn unavailable_refreshes_keep_the_tokens() {
 async fn unusable_connections_never_serve_calls() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	set_row(&fixture, |row| {
 		row.refresh_expires_at = Utc::now() - Duration::seconds(1)
 	})
 	.await;
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	// An expired connection records that it needs reconnection.
@@ -866,11 +860,17 @@ async fn unusable_connections_never_serve_calls() {
 	})
 	.await;
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::Ineligible))
 	));
 	assert!(matches!(
-		fixture.service.bearer(Uuid::now_v7()).await,
+		fixture
+			.service
+			.bearer(Pin {
+				connection: Uuid::now_v7(),
+				identity: IDENTITY,
+			})
+			.await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
@@ -880,10 +880,10 @@ async fn unusable_connections_never_serve_calls() {
 async fn a_second_mapping_stops_the_connection_serving_calls() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	fixture.repo.0.lock().await.mapped = mapped(2);
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
 }
@@ -892,11 +892,11 @@ async fn a_second_mapping_stops_the_connection_serving_calls() {
 async fn rejected_access_tokens_force_one_refresh() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
-	assert!(fixture.service.refresh_rejected(id).await.unwrap());
+	let pin = only_row(&fixture).await.pin();
+	assert!(fixture.service.refresh_rejected(pin).await.unwrap());
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
 	assert_eq!(
-		fixture.service.bearer(id).await.unwrap().expose_secret(),
+		fixture.service.bearer(pin).await.unwrap().expose_secret(),
 		"access-r1"
 	);
 }
@@ -905,9 +905,9 @@ async fn rejected_access_tokens_force_one_refresh() {
 async fn ineligible_plans_mark_the_connection_once() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
-	fixture.service.mark_ineligible(id).await.unwrap();
-	fixture.service.mark_ineligible(id).await.unwrap();
+	let pin = only_row(&fixture).await.pin();
+	fixture.service.mark_ineligible(pin).await.unwrap();
+	fixture.service.mark_ineligible(pin).await.unwrap();
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::Ineligible);
 	assert_eq!(row.revision, 3);
@@ -1055,25 +1055,31 @@ async fn deleting_a_tenant_retires_every_connection_in_it() {
 async fn usability_checks_read_no_tokens() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
-	fixture.service.usable(id).await.unwrap();
+	let pin = only_row(&fixture).await.pin();
+	fixture.service.usable(pin).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
 	// An expired access token is refreshed by a call, not by a check.
-	fixture.service.usable(id).await.unwrap();
+	fixture.service.usable(pin).await.unwrap();
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
 	fixture.repo.0.lock().await.mapped = mapped(0);
 	assert!(matches!(
-		fixture.service.usable(id).await,
+		fixture.service.usable(pin).await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
 	fixture.repo.0.lock().await.mapped = mapped(1);
 	set_row(&fixture, |row| row.state = State::Ineligible).await;
 	assert!(matches!(
-		fixture.service.usable(id).await,
+		fixture.service.usable(pin).await,
 		Err(Error::Plan(Failure::Ineligible))
 	));
 	assert!(matches!(
-		fixture.service.usable(Uuid::now_v7()).await,
+		fixture
+			.service
+			.usable(Pin {
+				connection: Uuid::now_v7(),
+				identity: IDENTITY,
+			})
+			.await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
 }
@@ -1082,23 +1088,23 @@ async fn usability_checks_read_no_tokens() {
 async fn unreadable_tokens_ask_for_reconnection() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	fixture
 		.service
-		.mark_unreadable(id, "provider-credential-store-recovery")
+		.mark_unreadable(pin.connection, "provider-credential-store-recovery")
 		.await
 		.unwrap();
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::NeedsReconnection);
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	// A second recovery run changes nothing.
 	let revision = row.revision;
 	fixture
 		.service
-		.mark_unreadable(id, "provider-credential-store-recovery")
+		.mark_unreadable(pin.connection, "provider-credential-store-recovery")
 		.await
 		.unwrap();
 	assert_eq!(only_row(&fixture).await.revision, revision);
@@ -1197,11 +1203,11 @@ async fn rotated_tokens_that_cannot_be_kept_are_revoked(
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	fixture.store.1.lock().unwrap().add_version = store_fails;
 	fixture.repo.0.lock().await.failing_commits = failing_commits;
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	assert_eq!(
@@ -1296,14 +1302,14 @@ async fn abandoning_a_rotation_preserves_a_concurrent_reconnect() {
 	let fixture = fixture(1, FakeAuthorization::default());
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	fixture.repo.0.lock().await.failing_commits = 1;
 	*fixture
 		.authorization
 		.reconnect_during_revoke
 		.lock()
 		.unwrap() = Some(fixture.repo.clone());
-	assert!(fixture.service.bearer(id).await.is_err());
+	assert!(fixture.service.bearer(pin).await.is_err());
 	let row = only_row(&fixture).await;
 	assert_eq!(row.state, State::Active);
 	assert_eq!(row.revision, 3);
@@ -1357,10 +1363,10 @@ async fn failed_discards_are_retried_by_the_next_call() {
 	);
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	fixture.store.1.lock().unwrap().destroy = true;
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::External(_))
 	));
 	let row = only_row(&fixture).await;
@@ -1369,7 +1375,7 @@ async fn failed_discards_are_retried_by_the_next_call() {
 	assert_eq!(fixture.store.plaintexts().len(), 1);
 	fixture.store.1.lock().unwrap().destroy = false;
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NeedsReconnection))
 	));
 	assert_eq!(only_row(&fixture).await.state, State::NeedsReconnection);
@@ -1390,17 +1396,17 @@ async fn discards_lost_after_their_cleanup_are_recorded_by_the_next_call() {
 	);
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	set_row(&fixture, |row| row.access_expires_at = Utc::now()).await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	fixture.repo.0.lock().await.failing_commits = 1;
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::External(_))
 	));
 	assert_eq!(only_row(&fixture).await.state, State::Active);
 	assert!(fixture.store.plaintexts().is_empty());
 	for _ in 0..2 {
 		assert!(matches!(
-			fixture.service.bearer(id).await,
+			fixture.service.bearer(pin).await,
 			Err(Error::Plan(Failure::NeedsReconnection))
 		));
 	}
@@ -1455,14 +1461,14 @@ async fn forced_refreshes_wait_for_the_earliest_refresh_time() {
 		row.earliest_refresh_at = Some(Utc::now() + Duration::seconds(60));
 	})
 	.await;
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	assert!(matches!(
-		fixture.service.refresh_rejected(id).await,
+		fixture.service.refresh_rejected(pin).await,
 		Err(Error::External(_))
 	));
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 0);
 	set_row(&fixture, |row| row.earliest_refresh_at = Some(Utc::now())).await;
-	assert!(fixture.service.refresh_rejected(id).await.unwrap());
+	assert!(fixture.service.refresh_rejected(pin).await.unwrap());
 	assert_eq!(fixture.authorization.calls.lock().unwrap().refreshes, 1);
 }
 
@@ -1477,10 +1483,9 @@ async fn connections_serve_only_the_identity_that_connected_them() {
 		disabled: true,
 	});
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
-	let id = only_row(&fixture).await.id;
+	let pin = only_row(&fixture).await.pin();
 	assert_eq!(only_row(&fixture).await.identity_id, IDENTITY);
-	assert!(fixture.repo.0.lock().await.released_pins.is_empty());
-	fixture.service.usable(id).await.unwrap();
+	fixture.service.usable(pin).await.unwrap();
 	fixture.repo.0.lock().await.mapped = vec![
 		MappedIdentity {
 			id: IDENTITY,
@@ -1492,11 +1497,11 @@ async fn connections_serve_only_the_identity_that_connected_them() {
 		},
 	];
 	assert!(matches!(
-		fixture.service.usable(id).await,
+		fixture.service.usable(pin).await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
 	assert!(matches!(
-		fixture.service.bearer(id).await,
+		fixture.service.bearer(pin).await,
 		Err(Error::Plan(Failure::NotConnected))
 	));
 	assert!(matches!(
@@ -1527,9 +1532,33 @@ async fn connections_serve_only_the_identity_that_connected_them() {
 		Outcome::Reconnected
 	);
 	assert_eq!(only_row(&fixture).await.identity_id, OTHER);
-	// Runs admitted for A lose their pins, so they cannot call with B's tokens.
-	assert_eq!(fixture.repo.0.lock().await.released_pins, [id]);
-	fixture.service.usable(id).await.unwrap();
+	// A pin admitted for A, even one read just before B reconnected, never
+	// reaches B's tokens.
+	assert!(matches!(
+		fixture.service.usable(pin).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert!(matches!(
+		fixture.service.bearer(pin).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	assert!(matches!(
+		fixture.service.refresh_rejected(pin).await,
+		Err(Error::Plan(Failure::NotConnected))
+	));
+	fixture.service.mark_ineligible(pin).await.unwrap();
+	let row = only_row(&fixture).await;
+	assert_eq!(row.state, State::Active);
+	fixture.service.usable(row.pin()).await.unwrap();
+	assert_eq!(
+		fixture
+			.service
+			.bearer(row.pin())
+			.await
+			.unwrap()
+			.expose_secret(),
+		"access-1"
+	);
 }
 
 /// A connection ends once the identity that connected it holds no enabled

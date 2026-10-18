@@ -10,8 +10,8 @@ use crate::{
 	provider_credentials::Store,
 };
 use aidash_domain::plan_connections::{
-	self as domain, Callback, CallbackResult, Failure, MappedIdentity, PlanConnection, PlanModel,
-	State,
+	self as domain, Callback, CallbackResult, Failure, MappedIdentity, Pin, PlanConnection,
+	PlanModel, State,
 };
 use aidash_domain::provider_credentials::Provider;
 use async_trait::async_trait;
@@ -145,10 +145,6 @@ pub trait Scope: Send {
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn save(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn delete(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
-	/// Deletes the Run admission pins of `value`. A Run admitted while
-	/// another identity held the connection then fails its next call
-	/// instead of using the new identity's Plan Tokens.
-	async fn release_pins(&mut self, value: &PlanConnection) -> Result<()>;
 	/// Ends every pending Sign in with ChatGPT attempt of the owner for
 	/// `provider`, in any session, so none of their callbacks can bring a
 	/// disconnected connection back.
@@ -547,13 +543,7 @@ impl Service {
 			.await?;
 		row.pinned_version = Some(version.clone());
 		// The identity that renewed the grant is the one it serves from now on.
-		// Runs admitted for the previous identity lose their pins with it.
-		if row.identity_id != identity
-			&& let Err(error) = scope.release_pins(&row).await
-		{
-			self.destroy_quietly(&row.tenant, &version).await;
-			return Err(error);
-		}
+		// Runs admitted for the previous identity keep pins it no longer holds.
 		row.identity_id = identity;
 		row.state = State::Active;
 		row.access_expires_at = now + lifetime;
@@ -671,17 +661,17 @@ impl Service {
 
 	/// Whether the connection admission pinned may serve a call now. Unlike
 	/// [`Self::bearer`] it neither reads Plan Tokens nor refreshes them.
-	pub async fn usable(&self, id: Uuid) -> Result<()> {
+	pub async fn usable(&self, pin: Pin) -> Result<()> {
 		let owner = self
 			.repository
-			.owner_of(id)
+			.owner_of(pin.connection)
 			.await?
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		let mut scope = self.repository.begin(&owner).await?;
 		let row = scope
 			.owned(Provider::Chatgpt)
 			.await?
-			.filter(|row| row.id == id)
+			.filter(|row| row.holds(pin))
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		let mapped = scope.mapped_identities().await?;
 		scope.commit().await?;
@@ -726,27 +716,29 @@ impl Service {
 	/// The access token for one call on the connection admission pinned.
 	/// Refreshes only when the token is about to expire, serialized under the
 	/// owner's scope.
-	pub async fn bearer(&self, id: Uuid) -> Result<SecretString> {
-		self.access(id, false).await
+	pub async fn bearer(&self, pin: Pin) -> Result<SecretString> {
+		self.access(pin, false).await
 	}
 
 	/// Forces one refresh after OpenAI rejected the access token. Returns
 	/// whether the caller may retry with the new token.
-	pub async fn refresh_rejected(&self, id: Uuid) -> Result<bool> {
-		self.access(id, true).await.map(|_| true)
+	pub async fn refresh_rejected(&self, pin: Pin) -> Result<bool> {
+		self.access(pin, true).await.map(|_| true)
 	}
 
-	async fn access(&self, id: Uuid, force: bool) -> Result<SecretString> {
+	/// The pin is checked under the owner's lock, which a reconnection by
+	/// another identity also holds, so no call sees the new identity's tokens.
+	async fn access(&self, pin: Pin, force: bool) -> Result<SecretString> {
 		let owner = self
 			.repository
-			.owner_of(id)
+			.owner_of(pin.connection)
 			.await?
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		let mut scope = self.repository.begin(&owner).await?;
 		let row = scope
 			.owned(Provider::Chatgpt)
 			.await?
-			.filter(|row| row.id == id)
+			.filter(|row| row.holds(pin))
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		if !row.serves(&scope.mapped_identities().await?) {
 			return Err(Error::Plan(Failure::NotConnected));
@@ -909,15 +901,15 @@ impl Service {
 
 	/// Marks the connection [`State::Ineligible`] after OpenAI reported that
 	/// the owner's plan cannot be used; its owner is notified by the event.
-	pub async fn mark_ineligible(&self, id: Uuid) -> Result<()> {
-		let Some(owner) = self.repository.owner_of(id).await? else {
+	pub async fn mark_ineligible(&self, pin: Pin) -> Result<()> {
+		let Some(owner) = self.repository.owner_of(pin.connection).await? else {
 			return Ok(());
 		};
 		let mut scope = self.repository.begin(&owner).await?;
 		let Some(mut row) = scope
 			.owned(Provider::Chatgpt)
 			.await?
-			.filter(|row| row.id == id && row.state == State::Active)
+			.filter(|row| row.holds(pin) && row.state == State::Active)
 		else {
 			return scope.commit().await;
 		};
@@ -932,19 +924,19 @@ impl Service {
 	/// The owner's ChatGPT model list, read with their own Plan Connection.
 	pub async fn models(&self, owner: &Owner) -> Result<Vec<PlanModel>> {
 		let mut scope = self.repository.begin(owner).await?;
-		let id = scope
+		let pin = scope
 			.owned(Provider::Chatgpt)
 			.await?
-			.map(|row| row.id)
+			.map(|row| row.pin())
 			.ok_or(Error::Plan(Failure::NotConnected))?;
 		scope.commit().await?;
-		let access = self.bearer(id).await?;
+		let access = self.bearer(pin).await?;
 		let result = match self.authorization.models(&access).await {
 			// OpenAI can reject an access token before its recorded expiry.
 			// As for inference, one forced refresh decides whether the owner
 			// must reconnect.
 			Err(Error::Plan(Failure::NeedsReconnection)) => {
-				let access = self.access(id, true).await?;
+				let access = self.access(pin, true).await?;
 				match self.authorization.models(&access).await {
 					// OpenAI asks for a new sign-in only after a terminal refresh
 					// error or a confirmed revocation; a fresh token's rejection
@@ -956,7 +948,7 @@ impl Service {
 			result => result,
 		};
 		if matches!(result, Err(Error::Plan(Failure::Ineligible))) {
-			self.mark_ineligible(id).await?;
+			self.mark_ineligible(pin).await?;
 		}
 		result
 	}

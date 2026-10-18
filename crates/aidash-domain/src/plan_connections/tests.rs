@@ -337,3 +337,16 @@ fn a_disabled_owner_still_holds_its_mapping() {
 	assert!(!value.owner_mapped(&[mapped(OTHER, false)]));
 	assert!(!value.owner_mapped(&[]));
 }
+
+#[test]
+fn pins_hold_only_the_identity_they_were_admitted_for() {
+	let mut value = connection(State::Active);
+	let pin = value.pin();
+	assert!(value.holds(pin));
+	// A reconnection by another identity keeps the connection's id, but not
+	// the pins admitted before it.
+	value.identity_id = OTHER;
+	assert!(!value.holds(pin));
+	assert!(value.holds(value.pin()));
+	assert!(!connection(State::Active).holds(pin));
+}

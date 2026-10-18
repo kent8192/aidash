@@ -95,7 +95,8 @@ pub struct PlanAuthorization {
 /// Local-only admission evidence: the Plan Connection a Run's delegation-chain
 /// root owned when the Run was admitted. Never serialized into Run or peer
 /// messages, so Federation carries no Plan Connection data. Deleting the
-/// connection deletes its pins, so the Run's next call fails.
+/// connection deletes its pins, so the Run's next call fails, as it does
+/// once another identity reconnects it.
 #[model(app_label = "identity", table_name = "run_plan_connections")]
 #[derive(Serialize, Deserialize)]
 pub struct RunPlanConnection {
@@ -111,6 +112,9 @@ pub struct RunPlanConnection {
 	pub provider: String,
 	#[field]
 	pub plan_connection_id: Uuid,
+	/// The External Identity the connection served at admission.
+	#[field]
+	pub identity_id: Uuid,
 }
 
 /// The Deployment's `ext_agent_host_id`: one random UUID, created once.

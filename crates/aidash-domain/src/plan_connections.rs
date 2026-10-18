@@ -82,6 +82,13 @@ pub struct PlanConnection {
 	pub refreshed_at: Option<DateTime<Utc>>,
 	pub revision: i64,
 }
+/// What a Run's admission pinned: one connection, as the identity it served
+/// then. A pin never follows the connection to another identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pin {
+	pub connection: Uuid,
+	pub identity: Uuid,
+}
 /// An External Identity that holds an enabled Mapping to a subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MappedIdentity {
@@ -108,6 +115,19 @@ impl PlanConnection {
 	/// is disabled never hands it the owner's plan.
 	pub fn serves(&self, mapped: &[MappedIdentity]) -> bool {
 		sole_identity(mapped) == Some(self.identity_id)
+	}
+	/// The pin an admission records for this connection now.
+	pub fn pin(&self) -> Pin {
+		Pin {
+			connection: self.id,
+			identity: self.identity_id,
+		}
+	}
+	/// Whether `pin` still names this connection as the identity it serves.
+	/// A pin read before a reconnection by another identity then fails,
+	/// however late its call reaches the owner's lock.
+	pub fn holds(&self, pin: Pin) -> bool {
+		self.pin() == pin
 	}
 	/// Whether the identity that connected this still holds an enabled
 	/// Mapping to its subject, even while disabled. Once it does not, the

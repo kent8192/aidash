@@ -17,6 +17,18 @@ pub(super) fn migration() -> Migration {
 				.with_domain_option(None),
 			mysql_options: None,
 		})
+		.add_operation(Operation::AddColumn {
+			table: "run_plan_connections".to_string(),
+			column: ColumnDefinition::new("identity_id", FieldType::Uuid)
+				.with_not_null(true)
+				.with_unique(false)
+				.with_primary_key(false)
+				.with_auto_increment(false)
+				.with_default(None)
+				.with_generated(None)
+				.with_domain_option(None),
+			mysql_options: None,
+		})
 		.add_dependency("identity", "0025_tenant_retention_rules_state")
 		.atomic(true)
 		.with_initial(None)
