@@ -432,7 +432,15 @@ function TenantResearchEvidence({
               : "This Tenant's periods exceed the Deployment's ceiling, so the ceiling applies."}
           </Notice>
         )}
-        {view.can_update && <RetentionEditor tenant={tenant} view={view} />}
+        {view.can_update && (
+          // Rules changed elsewhere start a fresh draft, so a save never
+          // writes back a period read before that change.
+          <RetentionEditor
+            key={JSON.stringify(view.effective)}
+            tenant={tenant}
+            view={view}
+          />
+        )}
       </section>
       {view.can_read_history && (
         <RetentionHistory

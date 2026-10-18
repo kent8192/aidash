@@ -426,6 +426,29 @@ test("a subject who loses the permissions no longer sees the history and records
   await expect(records).toHaveCount(0);
 });
 
+test("rules changed elsewhere replace the draft read before them", async ({
+  page,
+}) => {
+  const view: View = { tenant_rules: null, can: true };
+  await trust(page, SUBJECT, view);
+  await page.goto("/trust?view=evidence");
+  const retention = page.getByRole("region", { name: "Snapshot retention" });
+  const after = retention.getByRole("spinbutton", {
+    name: "Kept after the Run ends",
+    exact: true,
+  });
+  await expect(after).toHaveValue("1");
+  // Another administrator shortens the periods while this view stays open.
+  view.tenant_rules = periods(HOUR, DAY);
+  await expect(retention).toContainText("This Tenant's own periods apply.", {
+    timeout: 10_000,
+  });
+  await expect(
+    retention.getByRole("combobox", { name: "Unit" }).first(),
+  ).toHaveValue("hours");
+  await expect(after).toHaveValue("1");
+});
+
 test("a Deployment Administrator revokes by Run ID only within the chosen Tenant", async ({
   page,
 }) => {
