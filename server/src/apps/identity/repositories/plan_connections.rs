@@ -285,6 +285,23 @@ impl Scope for NativeScope {
 			.map_err(framework)?;
 		self.event(value, event, actor).await
 	}
+	async fn release_pins(&mut self, value: &PlanConnection) -> Result<()> {
+		self.owns(value)?;
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new(
+				super::super::models::plan_connections::RunPlanConnection::table_name(),
+			))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(value.tenant.clone())))
+			.and_where(Expr::col(Alias::new("subject")).eq(Expr::value(value.subject.clone())))
+			.and_where(Expr::col(Alias::new("provider")).eq(Expr::value(value.provider.id())))
+			.and_where(Expr::col(Alias::new("plan_connection_id")).eq(Expr::value(value.id)))
+			.build(PostgresQueryBuilder);
+		self.tx
+			.execute(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		Ok(())
+	}
 	async fn cancel_attempts(&mut self, provider: Provider) -> Result<()> {
 		let (sql, values) = Query::delete()
 			.from_table(Alias::new(

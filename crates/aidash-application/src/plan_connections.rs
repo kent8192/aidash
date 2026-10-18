@@ -145,6 +145,10 @@ pub trait Scope: Send {
 	async fn insert(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn save(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
 	async fn delete(&mut self, value: &PlanConnection, event: &str, actor: &str) -> Result<()>;
+	/// Deletes the Run admission pins of `value`. A Run admitted while
+	/// another identity held the connection then fails its next call
+	/// instead of using the new identity's Plan Tokens.
+	async fn release_pins(&mut self, value: &PlanConnection) -> Result<()>;
 	/// Ends every pending Sign in with ChatGPT attempt of the owner for
 	/// `provider`, in any session, so none of their callbacks can bring a
 	/// disconnected connection back.
@@ -543,6 +547,13 @@ impl Service {
 			.await?;
 		row.pinned_version = Some(version.clone());
 		// The identity that renewed the grant is the one it serves from now on.
+		// Runs admitted for the previous identity lose their pins with it.
+		if row.identity_id != identity
+			&& let Err(error) = scope.release_pins(&row).await
+		{
+			self.destroy_quietly(&row.tenant, &version).await;
+			return Err(error);
+		}
 		row.identity_id = identity;
 		row.state = State::Active;
 		row.access_expires_at = now + lifetime;

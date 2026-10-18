@@ -27,6 +27,8 @@ struct Data {
 	events: Vec<String>,
 	/// Pending attempts ended by a committed disconnect.
 	cancelled_attempts: usize,
+	/// Connections whose Run pins were released.
+	released_pins: Vec<Uuid>,
 	/// Commits that fail before applying anything, as a lost database would.
 	failing_commits: usize,
 	/// Commits that succeed before `failing_commits` take effect.
@@ -109,6 +111,10 @@ impl Scope for Lease {
 	async fn delete(&mut self, value: &PlanConnection, event: &str, _: &str) -> Result<()> {
 		self.data.rows.remove(&value.id);
 		self.data.events.push(event.into());
+		Ok(())
+	}
+	async fn release_pins(&mut self, value: &PlanConnection) -> Result<()> {
+		self.data.released_pins.push(value.id);
 		Ok(())
 	}
 	async fn cancel_attempts(&mut self, _: Provider) -> Result<()> {
@@ -1473,6 +1479,7 @@ async fn connections_serve_only_the_identity_that_connected_them() {
 	connect(&fixture, None, Some("oaiapp_1")).await.unwrap();
 	let id = only_row(&fixture).await.id;
 	assert_eq!(only_row(&fixture).await.identity_id, IDENTITY);
+	assert!(fixture.repo.0.lock().await.released_pins.is_empty());
 	fixture.service.usable(id).await.unwrap();
 	fixture.repo.0.lock().await.mapped = vec![
 		MappedIdentity {
@@ -1520,6 +1527,8 @@ async fn connections_serve_only_the_identity_that_connected_them() {
 		Outcome::Reconnected
 	);
 	assert_eq!(only_row(&fixture).await.identity_id, OTHER);
+	// Runs admitted for A lose their pins, so they cannot call with B's tokens.
+	assert_eq!(fixture.repo.0.lock().await.released_pins, [id]);
 	fixture.service.usable(id).await.unwrap();
 }
 
