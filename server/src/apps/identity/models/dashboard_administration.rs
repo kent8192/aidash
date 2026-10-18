@@ -379,11 +379,15 @@ impl DashboardRegistrationRequest {
 							Expr::col(Alias::new("tenant"))
 								.eq(reinhardt::query::Expr::value(input.tenant.clone())),
 						)
-						.lock(if input.groups.is_some() {
-							LockType::Update
-						} else {
-							LockType::Share
-						})
+						// An invited person who was mapped before may rejoin,
+						// which rewrites the policy too.
+						.lock(
+							if input.groups.is_some() || preliminary.invitation_id.is_some() {
+								LockType::Update
+							} else {
+								LockType::Share
+							},
+						)
 						.build(PostgresQueryBuilder);
 					let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
 						.await?
@@ -473,6 +477,12 @@ impl DashboardRegistrationRequest {
 				&identity.gcip_tenant,
 				&input.tenant,
 			)?;
+			let previously_mapped = DashboardMapping::objects()
+				.filter(DashboardMapping::field_identity_id().eq(identity.id))
+				.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+				.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+				.exists_with_db(tx)
+				.await?;
 			if let Some(administrator) = administrator {
 				if !snapshot.bundle.subjects.contains_key(&input.subject)
 					&& DashboardMapping::objects()
@@ -483,12 +493,6 @@ impl DashboardRegistrationRequest {
 				{
 					return Err(Error::Conflict("subject was previously assigned".into()));
 				}
-				let previously_mapped = DashboardMapping::objects()
-					.filter(DashboardMapping::field_identity_id().eq(identity.id))
-					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
-					.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
-					.exists_with_db(tx)
-					.await?;
 				match tenant_administration::approval_target(
 					&snapshot.bundle,
 					&input.subject,
@@ -514,6 +518,34 @@ impl DashboardRegistrationRequest {
 					}
 					tenant_administration::ApprovalTarget::Reapproval => {}
 				}
+			} else if let Some(invitation) = registration.invitation_id
+				&& previously_mapped
+				&& snapshot.bundle.subjects.contains_key(&input.subject)
+			{
+				// An invited person who left rejoins with the groups the
+				// approval names, or else the Invitation proposed, as with a
+				// Tenant Administrator; the old Assignable Groups do not return.
+				let rejoining = match &input.groups {
+					Some(groups) => groups.clone(),
+					None => TenantInvitation::objects()
+						.filter(TenantInvitation::field_id().eq(invitation))
+						.all_with_db(tx)
+						.await?
+						.pop()
+						.map(|invitation| {
+							crate::apps::identity::repositories::invitations::proposed(&invitation)
+						})
+						.unwrap_or_default(),
+				};
+				tenant_administration::rejoin(&mut snapshot.bundle, &input.subject, &rejoining)?;
+				snapshot.revision = AuthorizationBundle::replace(
+					tx,
+					&input.tenant,
+					snapshot.revision,
+					serde_json::to_value(&snapshot.bundle)?,
+					"deployment_administrator",
+				)
+				.await?;
 			}
 			dashboard_rules::require_user_mapping(&snapshot, &input.subject)?;
 			crate::apps::identity::repositories::plan_connections::refuse_shared_holder(

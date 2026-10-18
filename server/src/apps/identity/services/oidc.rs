@@ -676,22 +676,33 @@ impl DashboardSessions {
 						.await?;
 				let mut deleted = Vec::new();
 				let now = database_time(tx).await?;
+				// One read for the policies of every deleted Tenant.
+				let bundles = if deletions.is_empty() {
+					std::collections::BTreeMap::new()
+				} else {
+					<AuthorizationBundle as reinhardt::db::orm::Model>::objects()
+						.filter(
+							AuthorizationBundle::field_tenant()
+								.is_in(deletions.keys().cloned().collect::<Vec<_>>()),
+						)
+						.all_with_db(tx)
+						.await?
+						.into_iter()
+						.filter_map(|row| {
+							serde_json::from_value::<aidash_domain::policy::PolicyBundle>(
+								row.document.0,
+							)
+							.ok()
+							.map(|bundle| (row.tenant, bundle))
+						})
+						.collect()
+				};
 				for mapping in mappings
 					.iter()
 					.filter(|m| deletions.contains_key(&m.tenant))
 				{
 					let deletion = &deletions[&mapping.tenant];
-					let bundle = <AuthorizationBundle as reinhardt::db::orm::Model>::objects()
-						.filter(AuthorizationBundle::field_tenant().eq(mapping.tenant.clone()))
-						.all_with_db(tx)
-						.await?
-						.pop()
-						.and_then(|row| {
-							serde_json::from_value::<aidash_domain::policy::PolicyBundle>(
-								row.document.0,
-							)
-							.ok()
-						});
+					let bundle = bundles.get(&mapping.tenant);
 					deleted.push(
 						crate::apps::identity::serializers::tenants::DeletedTenantView {
 							tenant: mapping.tenant.clone(),
@@ -699,15 +710,17 @@ impl DashboardSessions {
 							mapping_id: mapping.id,
 							personal: personal.as_deref() == Some(mapping.tenant.as_str()),
 							purge_after: deletion.purge_after,
-							restorable: bundle
-								.is_some_and(|bundle| may_restore(&bundle, &mapping.subject))
-								&& deletion.rule().is_ok_and(|rule| {
-									aidash_domain::identity::tenancy::deletion::restorable(
+							// Restoring locks the Mapping's credential as valid.
+							restorable: active.contains(&mapping.credential_id)
+								&& bundle.is_some_and(|bundle| {
+									may_restore(bundle, &mapping.subject, &f.config.node_id)
+								}) && deletion.rule().is_ok_and(|rule| {
+								aidash_domain::identity::tenancy::deletion::restorable(
 								&rule,
 								aidash_domain::identity::tenancy::deletion::Actor::TenantAdministrator,
 								now,
 							)
-								}),
+							}),
 						},
 					);
 				}
@@ -1123,8 +1136,9 @@ use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 /// Whether `subject` may restore its deleted Tenant under the policy the
-/// Tenant was deleted with, for offering the action; restoring rechecks it.
-fn may_restore(bundle: &aidash_domain::policy::PolicyBundle, subject: &str) -> bool {
+/// Tenant was deleted with, for offering the action; restoring rechecks it in
+/// the same environment.
+fn may_restore(bundle: &aidash_domain::policy::PolicyBundle, subject: &str, node_id: &str) -> bool {
 	bundle
 		.subjects
 		.get(subject)
@@ -1139,7 +1153,7 @@ fn may_restore(bundle: &aidash_domain::policy::PolicyBundle, subject: &str) -> b
 					id: bundle.tenant.clone(),
 					attributes: serde_json::json!({}),
 				},
-				environment: serde_json::json!({"transport": "api"}),
+				environment: serde_json::json!({"node_id": node_id, "transport": "api"}),
 			})
 			.allowed
 }

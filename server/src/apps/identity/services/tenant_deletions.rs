@@ -206,6 +206,14 @@ impl TenantDeletions {
 		aidash_domain::policy::identifier(&tenant)?;
 		let steward = self.restorer(&headers, &tenant).await?;
 		let f = &self.runtime;
+		// A retirement that failed at deletion is retried before the Tenant
+		// works again: no Plan Connection outlives its Tenant's deletion, and
+		// a failure leaves the Tenant deleted (ADR 0007).
+		if let Some(service) = &f.store.plan_connections {
+			service
+				.retire_tenant(&tenant, &steward.administration_actor().decision_actor())
+				.await?;
+		}
 		let result = f
 			.store
 			.pool
@@ -305,7 +313,7 @@ fn event<'a>(action: &'a str, tenant: &'a str) -> AdministrationEvent<'a> {
 /// refresh tokens still held, so it happens now rather than at purge (ADR
 /// 0007). The deletion already committed, so a failure is logged rather than
 /// reported; a connection left behind cannot serve calls while the Tenant is
-/// deleted.
+/// deleted, and a restore retires it before the Tenant works again.
 async fn retire_plan_connections(f: &Federation, tenant: &str, actor: &AdministrationActor) {
 	let Some(service) = &f.store.plan_connections else {
 		return;

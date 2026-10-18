@@ -188,6 +188,14 @@ export async function sessionFetch(
     throw error;
   }
 }
+/** Whether the session itself is still valid; it ignores the context. */
+async function sessionHolds(): Promise<boolean> {
+  const response = await sessionFetch("/auth/session", {
+    cache: "no-store",
+  }).catch(() => null);
+  await response?.body?.cancel();
+  return response?.ok === true;
+}
 export async function authenticatedFetch(
   url: string,
   options: RequestInit = {},
@@ -202,6 +210,17 @@ export async function authenticatedFetch(
     const messages =
       localStorage.getItem("aidash-locale") === "en-US" ? en : ja;
     if (response.status === 401) {
+      // A desktop token sees a deleted Tenant as unknown (ADR 0060). While
+      // its session still holds, refresh the contexts instead of signing out.
+      if (desktopAvailable() && dashboardContext() && (await sessionHolds())) {
+        current(generation);
+        window.dispatchEvent(new Event(SESSION_CHANGED));
+        throw new ApiError(
+          typeof data.error === "string" ? data.error : response.statusText,
+          response.status,
+          true,
+        );
+      }
       window.dispatchEvent(
         new CustomEvent(AUTHENTICATION_EXPIRED, {
           detail: messages.credentialInvalid,

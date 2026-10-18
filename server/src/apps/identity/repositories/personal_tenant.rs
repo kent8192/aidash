@@ -38,7 +38,11 @@ pub(crate) async fn provision(db: &Pool, identity: Uuid) -> Result<()> {
 /// Creates a new Personal Tenant for an identity that asks for one because its
 /// Personal Tenant was deleted. The new one replaces the link and counts
 /// toward no limit; the deleted one, if restored later, is no longer linked.
-pub(crate) async fn recreate(db: &Pool, identity: Uuid) -> Result<Created> {
+pub(crate) async fn recreate(
+	db: &Pool,
+	identity: Uuid,
+	session: &crate::authorization::identity::HttpSession,
+) -> Result<Created> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::TenantCreation);
 	db.atomic(&scope, async |tx| {
 		lock(tx, identity).await?;
@@ -47,13 +51,18 @@ pub(crate) async fn recreate(db: &Pool, identity: Uuid) -> Result<Created> {
 			.all_with_db(tx)
 			.await?
 			.pop();
+		// The deletion row stays locked until the link moves, so a restore of
+		// the old Tenant either committed before and is seen here, or waits.
 		if let Some(link) = &link
-			&& super::tenant_deletions::current(tx, &link.tenant)
+			&& super::tenant_deletions::current_locked(tx, &link.tenant)
 				.await?
 				.is_none()
 		{
 			return Err(Error::Conflict("the Personal Tenant is not deleted".into()));
 		}
+		// The session at the write boundary: a logout committing meanwhile
+		// waits, or is seen here.
+		session.current(tx, true).await?;
 		create(tx, identity, link).await
 	})
 	.await

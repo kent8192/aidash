@@ -192,9 +192,12 @@ impl Tenants {
 		let f = &self.runtime;
 		let config = required_config(f)?;
 		let session = session_from_headers(f, &headers).await?;
-		if session.desktop || !csrf_allowed(config, &headers, &session, &Method::POST) {
+		// A desktop session is accepted as by ordinary Tenant creation;
+		// `csrf_allowed` requires its access token.
+		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
+		let origin = BrowserOrigin::unmapped(config, &session);
 		let identity = session.identity_id();
 		let account = f
 			.store
@@ -212,9 +215,11 @@ impl Tenants {
 		{
 			return Err(Error::Forbidden);
 		}
-		Ok(personal_tenant::recreate(&f.store.pool, identity)
-			.await?
-			.into())
+		Ok(
+			personal_tenant::recreate(&f.store.pool, identity, &origin.session)
+				.await?
+				.into(),
+		)
 	}
 
 	/// Changes the label of the caller's Tenant under `tenant.update`, through

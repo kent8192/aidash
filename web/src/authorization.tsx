@@ -293,7 +293,11 @@ function TenantAuthorization({
       )}
       {current && (
         <div className="w-full max-w-md">
-          <DeleteTenantForm key={tenant} tenant={tenant} />
+          <DeleteTenantForm
+            key={tenant}
+            tenant={tenant}
+            deleter="deployment_administrator"
+          />
         </div>
       )}
       {current && (

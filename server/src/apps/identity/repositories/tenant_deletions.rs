@@ -55,6 +55,22 @@ pub(crate) async fn current<E: OrmExecutor>(
 		.pop())
 }
 
+/// Like [`current`], holding the deletion row until the transaction ends, so
+/// a concurrent restore of the Tenant waits for it.
+pub(crate) async fn current_locked(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> Result<Option<TenantDeletion>> {
+	Ok(TenantDeletion::objects()
+		.filter(TenantDeletion::field_tenant().eq(tenant.to_owned()))
+		.filter(TenantDeletion::field_restored_at().is_null())
+		.select_for_update()
+		.all_with_executor(tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop())
+}
+
 /// The current deletions of `tenants`, by Tenant name.
 pub(crate) async fn current_of<E: OrmExecutor>(
 	tx: &mut E,
@@ -140,6 +156,8 @@ pub(crate) async fn record(
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.and_where(Expr::col("revoked_at").is_null())
 		.and_where(Expr::col("redeemed_at").is_null())
+		// An expired Invitation stays expired, also after a restore.
+		.and_where(Expr::col("expires_at").gt(Expr::value(now)))
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	stop_runs(tx, tenant).await?;

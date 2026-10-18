@@ -86,11 +86,14 @@ function changed(): void {
 export function DeleteTenantForm({
   tenant,
   graceDays,
+  deleter = "tenant_administrator",
   onDeleted,
 }: {
   tenant: string;
   /** Days the deleted Tenant stays restorable, when known. */
   graceDays?: number;
+  /** Who deletes it, which decides who may restore it (ADR 0060). */
+  deleter?: TenantDeletion["deleted_by_kind"];
   onDeleted?: (deletion: TenantDeletion) => void;
 }) {
   const { locale } = useI18n();
@@ -129,11 +132,7 @@ export function DeleteTenantForm({
       <h3 className="text-[11px] font-medium text-destructive">
         {english ? "Delete this Tenant" : "このテナントを削除"}
       </h3>
-      <Hint>
-        {english
-          ? `Nobody can use the Tenant from the moment it is deleted, and its running work is cancelled. Its administrators can restore it for ${graceDays ?? 30} days; afterwards its data is purged. Sign in with ChatGPT connections end now and must be connected again after a restore. Delete any OpenRouter keys at OpenRouter yourself.`
-          : `削除した時点で誰もこのテナントを使えなくなり、実行中の作業は取り消されます。管理者は ${graceDays ?? 30} 日間は復元でき、その後データは消去されます。Sign in with ChatGPT の接続はすぐに終了し、復元後には接続し直す必要があります。OpenRouter のキーは OpenRouter 側で削除してください。`}
-      </Hint>
+      <Hint>{deletionNotice(english, deleter, graceDays)}</Hint>
       <label className="grid gap-1 text-xs font-medium text-muted-foreground">
         {english
           ? `Type the Tenant name ${tenant} to confirm`
@@ -157,6 +156,35 @@ export function DeleteTenantForm({
       </Button>
     </form>
   );
+}
+
+/** What deleting a Tenant does, in the reader's language. Only a Deployment
+ *  Administrator restores a Tenant a Deployment Administrator deleted, and the
+ *  purge after the grace period is not built yet, so it is not promised. */
+function deletionNotice(
+  english: boolean,
+  deleter: TenantDeletion["deleted_by_kind"],
+  graceDays: number | undefined,
+): string {
+  const period = english
+    ? graceDays === undefined
+      ? "during this Deployment's grace period"
+      : `for ${graceDays} days`
+    : graceDays === undefined
+      ? "この Deployment の猶予期間中は"
+      : `${graceDays} 日間は`;
+  if (english) {
+    const restorer =
+      deleter === "deployment_administrator"
+        ? "Only a Deployment Administrator can restore it"
+        : "Its Tenant Administrators or a Deployment Administrator can restore it";
+    return `Nobody can use the Tenant from the moment it is deleted, and its running work is cancelled. ${restorer} ${period}; after that it can no longer be restored. Sign in with ChatGPT connections end now and must be connected again after a restore. Delete any OpenRouter keys at OpenRouter yourself.`;
+  }
+  const restorer =
+    deleter === "deployment_administrator"
+      ? "Deployment Administrator だけが"
+      : "Tenant Administrator または Deployment Administrator が";
+  return `削除した時点で誰もこのテナントを使えなくなり、実行中の作業は取り消されます。${period}${restorer}復元でき、その後は復元できません。Sign in with ChatGPT の接続はすぐに終了し、復元後には接続し直す必要があります。OpenRouter のキーは OpenRouter 側で削除してください。`;
 }
 
 /** Leaves the Tenant through the current Mapping. */
@@ -408,6 +436,8 @@ export function DeploymentTenants() {
                   setBusy(true);
                   setError("");
                   void restore(tenant.name, null, english)
+                    // A Mapping in the restored Tenant reappears in the session.
+                    .then(changed)
                     .catch((reason) =>
                       setError(
                         reason instanceof Error
