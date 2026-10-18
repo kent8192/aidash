@@ -48,20 +48,38 @@ pub trait CatalogMutation: Send {
 	) -> Result<()>;
 }
 
+/// A Tenant subject's Catalog Approvals and the agent subjects they create
+/// share the subject's transaction, its policy lock and its decision audit.
+#[async_trait]
+pub trait CatalogApprovalScope: CatalogMutation {
+	fn tenant(&self) -> &str;
+	fn node(&self) -> &str;
+	/// The history label of the approving subject.
+	fn actor(&self) -> &str;
+	/// Any version in the Tenant's Registry, approved or not.
+	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry>;
+	/// Whether the Tenant currently approves this exact version.
+	async fn approved(&mut self, reference: &EntityRef) -> Result<bool>;
+	/// Decide `action` on the definition's approval resource,
+	/// `registry` `{kind}/{id}@{version}`.
+	async fn require(&mut self, entry: &Entry, action: &str) -> Result<()>;
+	/// Decide `action` on a subject of the Tenant's policy.
+	async fn require_subject(
+		&mut self,
+		subject: &str,
+		action: &str,
+		groups: &std::collections::BTreeSet<String>,
+	) -> Result<()>;
+	fn policy(&mut self) -> &mut aidash_domain::policy::PolicyBundle;
+	/// Persist the changed policy as its next revision.
+	async fn save_policy(&mut self) -> Result<()>;
+}
+
 #[async_trait]
 pub trait CatalogAdministrator: CatalogMutation {
 	fn principal(&self) -> &aidash_domain::identity::Principal;
 	async fn load_tenant(&mut self, tenant: &str) -> Result<()>;
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry>;
-}
-
-#[async_trait]
-pub trait CatalogAdministrationRead: Send {
-	fn principal(&self) -> &aidash_domain::identity::Principal;
-	async fn bindings(
-		&mut self,
-		tenant: &str,
-	) -> Result<Vec<aidash_domain::identity::catalog::Binding>>;
 }
 
 pub mod retained;

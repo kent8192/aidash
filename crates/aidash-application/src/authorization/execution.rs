@@ -15,20 +15,10 @@ pub async fn grant(
 	run: &RunMetadata,
 ) -> Result<Option<ExecutionGrant>> {
 	let grant = repository.grant(run.id).await?;
-	if let Some(grant) = &grant {
-		if !grant.matches_worker(repository.node_id(), run) {
-			return Err(Error::Forbidden);
-		}
-	} else {
-		repository
-			.require_legacy_remote_task(&run.home_node, run.task_id)
-			.await?;
-		repository
-			.require_legacy_execution(run.workspace_id)
-			.await?;
-		repository
-			.require_legacy_agent(&run.agent_id, &run.agent_version)
-			.await?;
+	if let Some(grant) = &grant
+		&& !grant.matches_worker(repository.node_id(), run)
+	{
+		return Err(Error::Forbidden);
 	}
 	Ok(grant)
 }

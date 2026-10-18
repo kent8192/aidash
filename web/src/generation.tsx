@@ -39,7 +39,6 @@ import {
   Section,
 } from "./components/patterns";
 import {
-  authorizationCatalog,
   generationAssign,
   generationControl,
   generationHistory,
@@ -133,25 +132,6 @@ export function GenerationPage({ data }: { data: State }) {
     enabled: !!tenant,
     refetchInterval: 3000,
   });
-  const catalog = useQuery({
-    queryKey: ["generation", tenant, "catalog"],
-    queryFn: () => authorizationCatalog(encodeURIComponent(tenant)),
-    enabled: !!tenant && subjectTenant === null,
-    refetchInterval: 10000,
-  });
-  const entries =
-    subjectTenant !== null
-      ? data.registry
-      : data.registry.filter(
-          (entry) =>
-            !catalog.isError &&
-            catalog.data?.some(
-              (b) =>
-                b.enabled &&
-                b.entry_id === entry.id &&
-                b.entry_version === entry.version,
-            ),
-        );
   const selectedRequest = !requests.isError
     ? requests.data?.find((r) => r.id === selected)
     : undefined;
@@ -172,7 +152,7 @@ export function GenerationPage({ data }: { data: State }) {
       setBusy(false);
     }
   };
-  const queryError = policies.error ?? requests.error ?? catalog.error;
+  const queryError = policies.error ?? requests.error;
   return (
     <div className="generation-page grid min-w-0 gap-6">
       <div className="grid min-w-0 gap-3">
@@ -221,9 +201,7 @@ export function GenerationPage({ data }: { data: State }) {
             action={
               <Button
                 size="sm"
-                disabled={
-                  busy || (subjectTenant === null && !catalog.isSuccess)
-                }
+                disabled={busy}
                 onClick={() => {
                   setError("");
                   setEditing("new");
@@ -405,7 +383,7 @@ export function GenerationPage({ data }: { data: State }) {
           {error && <Alert>{error}</Alert>}
           <fieldset className="min-w-0" disabled={busy}>
             <PolicyEditor
-              entries={entries}
+              entries={data.registry}
               node={data.node.id}
               policy={editing === "new" ? undefined : editing}
               save={(id, spec) =>

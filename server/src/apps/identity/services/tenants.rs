@@ -148,7 +148,7 @@ impl Tenants {
 					tenancy::check_creation(&f.config.tenancy, now, &recent, total)
 						.map_err(Error::TenantCreation)?;
 				}
-				tenants::create(tx, &label, false, creator).await
+				tenants::create(tx, &f.config.node_id, &label, false, creator).await
 			})
 			.await?;
 		Ok(created.into())

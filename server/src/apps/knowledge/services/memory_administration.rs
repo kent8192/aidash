@@ -32,7 +32,7 @@ pub(crate) async fn reindex(
 		));
 	}
 	let embedding: EmbeddingConfig = serde_json::from_value(
-		definition(lease, &policy.embedding, "embedding")
+		definition(lease, &input.bank.tenant, &policy.embedding, "embedding")
 			.await?
 			.config,
 	)?;

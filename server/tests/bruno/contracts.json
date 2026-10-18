@@ -2555,6 +2555,53 @@
   },
   {
     "method": "POST",
+    "path": "/api/authorization/{tenant}/catalog/approvals",
+    "name": "authorization-approve-catalog",
+    "source": "server/src/apps/identity/views/policies.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Binding"
+        }
+      },
+      "definitions": {
+        "Binding": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "entry_id",
+            "entry_version",
+            "enabled",
+            "revision"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "entry_id": {
+              "type": "string"
+            },
+            "entry_version": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
     "path": "/api/authorization/{tenant}/credentials",
     "name": "authorization-issue-credential",
     "source": "server/src/apps/identity/views/policies.rs",
@@ -15461,56 +15508,11 @@
     "query_parameters": []
   },
   {
-    "method": "POST",
-    "path": "/federation/v0.1/discover",
-    "name": "peer-discover",
-    "source": "server/src/apps/federation/peer/views/management.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
-    "method": "GET",
-    "path": "/federation/v0.1/discover/{id}/{version}",
-    "name": "peer-agent",
-    "source": "server/src/apps/federation/peer/views/management.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
-    "method": "POST",
-    "path": "/federation/v0.1/offers",
-    "name": "peer-offer",
-    "source": "server/src/apps/federation/peer/views/management.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
-    "method": "POST",
-    "path": "/federation/v0.1/workspace",
-    "name": "peer-workspace",
-    "source": "server/src/apps/federation/peer/views/management.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
     "method": "GET",
     "path": "/federation/v0.1/observe",
     "name": "peer-observe",
     "source": "server/src/apps/federation/peer/views/management.rs",
     "json": false,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
-    "method": "POST",
-    "path": "/federation/v0.1/control",
-    "name": "peer-control",
-    "source": "server/src/apps/federation/peer/views/management.rs",
-    "json": true,
     "uuid_parameters": [],
     "query_parameters": []
   },
@@ -17772,6 +17774,457 @@
     }
   },
   {
+    "method": "GET",
+    "path": "/api/registry/versions",
+    "name": "registry-versions",
+    "source": "server/src/apps/registry/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["offset"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/RegistryVersions"
+      },
+      "definitions": {
+        "AgentNormalization": {
+          "type": "object",
+          "description": "Read-only registration metadata is compiled by the Node before publication.",
+          "required": ["schema_version", "registry_node", "bindings"],
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NormalizedBinding"
+              }
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "AgentSubject": {
+          "type": "object",
+          "required": ["id", "groups", "enabled"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "id": {
+              "type": "string"
+            }
+          }
+        },
+        "ApprovalRecord": {
+          "type": "object",
+          "required": ["revision", "enabled", "actor", "created_at"],
+          "properties": {
+            "actor": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["kind", "target", "narrow"],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "exposure": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BindingExposure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only valid for Tools, bundles and Skills under the `deferred@1` policy."
+            },
+            "kind": {
+              "$ref": "#/components/schemas/BindingKind"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "An empty member list binds the entire bundle. IDs are unique within a bundle."
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "target": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "BindingExposure": {
+          "type": "string",
+          "description": "Per-Binding exposure under `deferred@1`. Absent means Deferred.",
+          "enum": ["eager", "deferred"]
+        },
+        "BindingKind": {
+          "type": "string",
+          "enum": ["tool", "bundle", "skill", "memory", "source", "decider"]
+        },
+        "BindingOrigin": {
+          "type": "string",
+          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
+          "enum": [
+            "required",
+            "default",
+            "explicit",
+            "skill_support",
+            "companion"
+          ]
+        },
+        "Concurrency": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Every call runs alone, in the model's order.",
+              "enum": ["sequential"]
+            },
+            {
+              "type": "string",
+              "description": "Read-only calls whose provider derives Resource Claims and an output bound.",
+              "enum": ["shared_read"]
+            }
+          ],
+          "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
+        },
+        "Entry": {
+          "type": "object",
+          "required": [
+            "id",
+            "version",
+            "kind",
+            "name",
+            "description",
+            "capabilities",
+            "tags",
+            "languages",
+            "skills",
+            "schema",
+            "config"
+          ],
+          "properties": {
+            "binding_normalization": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentNormalization"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "config": {
+              "type": "object",
+              "default": {},
+              "additionalProperties": true
+            },
+            "description": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "languages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "name": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "schema": {
+              "default": {}
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "MarketplaceProjection": {
+          "type": "object",
+          "required": ["contract", "tenant", "installation", "revision"],
+          "properties": {
+            "contract": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Narrowing": {
+          "type": "object",
+          "description": "No effect, replay, approval or disclosure field is accepted here. Concurrency\nsafety may only be lowered; a claim above the provider's is rejected.",
+          "properties": {
+            "allowed_hosts": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "concurrency": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Concurrency"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Restrictions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "NormalizedBinding": {
+          "type": "object",
+          "required": ["binding", "origin"],
+          "properties": {
+            "binding": {
+              "$ref": "#/components/schemas/Binding3"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            }
+          },
+          "additionalProperties": false
+        },
+        "QualifiedRef": {
+          "type": "object",
+          "required": ["registry_node", "id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "RegistryVersion": {
+          "type": "object",
+          "description": "One version in the Tenant's Registry with its approval state and history.\nDiscovery and execution see only approved versions; this view sees every\nversion the caller may read.",
+          "required": [
+            "entry",
+            "needs_approval",
+            "approval",
+            "history",
+            "subject"
+          ],
+          "properties": {
+            "approval": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/VersionApproval"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "entry": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "history": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ApprovalRecord"
+              }
+            },
+            "needs_approval": {
+              "type": "boolean",
+              "description": "Whether the Tenant must approve it before use: every Tenant definition,\nand the Sandboxed, research and Decider built-ins."
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentSubject"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent subject an approval created, for an agent version (ADR 0062),\nshown to subjects who may approve the version."
+            }
+          }
+        },
+        "RegistryVersions": {
+          "type": "object",
+          "description": "One page of the versions the caller may read, in id and version order.",
+          "required": ["versions", "next_offset"],
+          "properties": {
+            "next_offset": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "The offset of the next page, absent after the last one.",
+              "minimum": 0
+            },
+            "versions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RegistryVersion"
+              }
+            }
+          }
+        },
+        "Restrictions": {
+          "type": "object",
+          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "properties": {
+            "forbid_apply": {
+              "type": "boolean",
+              "default": false
+            },
+            "keep_threshold": {
+              "type": "string",
+              "default": "3fe0000000000000"
+            },
+            "preserve_recent": {
+              "type": "integer",
+              "format": "uint",
+              "default": 6,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "VersionApproval": {
+          "type": "object",
+          "required": ["enabled", "revision"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
     "method": "POST",
     "path": "/api/registry",
     "name": "registry-create",
@@ -18014,15 +18467,6 @@
         }
       }
     }
-  },
-  {
-    "method": "POST",
-    "path": "/api/remote",
-    "name": "remote-action",
-    "source": "server/src/apps/federation/remote/views/management.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": []
   },
   {
     "method": "POST",
@@ -29816,15 +30260,6 @@
   },
   {
     "method": "POST",
-    "path": "/api/marketplace/host-packages",
-    "name": "marketplace-host-packages",
-    "source": "server/src/apps/marketplace/views/management.rs",
-    "json": true,
-    "uuid_parameters": [],
-    "query_parameters": []
-  },
-  {
-    "method": "POST",
     "path": "/api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
     "name": "remote-human-answer",
     "source": "server/src/apps/identity/views/remote_execution.rs",
@@ -29893,15 +30328,6 @@
       },
       "definitions": {}
     }
-  },
-  {
-    "method": "GET",
-    "path": "/federation/v0.1/discover/{id}/{version}/bindings",
-    "name": "peer-agent-bindings",
-    "source": "server/src/apps/federation/peer/views/management.rs",
-    "json": false,
-    "uuid_parameters": [],
-    "query_parameters": []
   },
   {
     "method": "POST",

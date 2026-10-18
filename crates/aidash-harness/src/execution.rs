@@ -151,12 +151,14 @@ pub async fn deliver_terminal_until(
 			Err(error) => tracing::warn!(%error, "terminal remote input delivery deferred"),
 		}
 		tokio::select! {
-			_ = tokio::time::sleep(Duration::from_millis(250)) => {},
+			_ = tokio::time::sleep(TERMINAL_IDLE) => {},
 			_ = stopped(&mut stopping) => break,
 		}
 	}
 	Ok(())
 }
+
+const TERMINAL_IDLE: Duration = Duration::from_millis(250);
 
 /// A failed committed-state observation never cancels an inference request.
 pub async fn wait_for_cancellation(leases: &dyn WorkerLeases, run: Uuid) -> Result<()> {

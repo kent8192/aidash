@@ -520,12 +520,6 @@ pub trait ExecutionEnvironment: Send + Sync {
 		run: Uuid,
 		included_input_seq: i64,
 	) -> Result<InferenceInterruption>;
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch>;
 	/// Whether every source an adopted Execution Summary depends on is still
 	/// readable by the Run under current authority.
 	async fn summary_dependencies_current(

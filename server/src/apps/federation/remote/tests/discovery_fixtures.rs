@@ -251,7 +251,11 @@ fn discovery_reply(ready_execution: ExecutionFuture) -> ReplyFuture {
 				.app
 				.runtime
 				.registry
-				.get("research", "1.0.0")
+				.get(
+					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+					"research",
+					"1.0.0",
+				)
 				.await
 				.unwrap(),
 			mode: Arc::new(AtomicUsize::new(0)),

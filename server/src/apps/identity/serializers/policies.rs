@@ -9,6 +9,15 @@ pub(crate) struct CatalogInput {
 	pub(crate) entry: EntityRef,
 	pub(crate) expected_revision: i64,
 	pub(crate) enabled: bool,
+	/// Assignable Groups for the subject of an approved agent version (ADR 0062).
+	#[serde(default)]
+	pub(crate) groups: Option<std::collections::BTreeSet<String>>,
+}
+/// Approvals of one dependency closure, decided together.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogApprovals {
+	pub(crate) approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

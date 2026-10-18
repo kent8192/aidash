@@ -12,6 +12,11 @@ for (const context of [
   test(`instructionless generation requires instructional context (${context.adapter})`, async ({
     page,
   }) => {
+    const subject = {
+      kind: "subject",
+      tenant: "fixture-tenant",
+      subject: "alice",
+    };
     await installBearerDashboard(page, "fixture-token");
     await page.addInitScript(() => {
       localStorage.setItem("aidash-locale", "ja-JP");
@@ -59,14 +64,14 @@ for (const context of [
       } else if (path === "/api/session") {
         await route.fulfill({
           json: {
-            access: { kind: "deployment_administrator" },
+            access: subject,
             node_id: "aidash://test",
           },
         });
       } else if (path === "/api/state") {
         await route.fulfill({
           json: {
-            access: { kind: "deployment_administrator" },
+            access: subject,
             node: {
               id: "aidash://test",
               endpoint: "http://localhost",
@@ -100,16 +105,6 @@ for (const context of [
         await route.fulfill({ json: { nodes: [], errors: [] } });
       } else if (path === "/api/discover") {
         await route.fulfill({ json: { agents: [], errors: [] } });
-      } else if (path === "/api/authorization/fixture-tenant/catalog") {
-        await route.fulfill({
-          json: [model, skill, { id: "fixture-cluster", version: "1.0.0" }].map(
-            (entry) => ({
-              entry_id: entry.id,
-              entry_version: entry.version,
-              enabled: true,
-            }),
-          ),
-        });
       } else if (path === "/api/generation/fixture-tenant/policies") {
         await route.fulfill({ json: [] });
       } else if (path === "/api/generation/fixture-tenant/requests") {
@@ -128,9 +123,6 @@ for (const context of [
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.goto("/generation");
-    const tenantForm = page.locator(".generation-tenant");
-    await tenantForm.locator('[name="tenant"]').fill("fixture-tenant");
-    await tenantForm.getByRole("button", { name: "開く", exact: true }).click();
     await page
       .getByRole("button", { name: "生成ポリシーを作成", exact: true })
       .click();

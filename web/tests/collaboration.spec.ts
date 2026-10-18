@@ -805,7 +805,7 @@ for (const viewport of [
     page,
   }) => {
     await page.setViewportSize(viewport);
-    const { errors } = await setup(page);
+    const { errors } = await setup(page, { subject: true });
     await page.goto("/settings?view=registry");
     await page
       .getByRole("button", { name: "Register entity", exact: true })
@@ -872,7 +872,7 @@ test("conversation is the landing view, with contextual progress and account set
 test("new request preserves the Japanese conversation creation contract", async ({
   page,
 }) => {
-  const { errors } = await setup(page, { locale: "ja-JP" });
+  const { errors } = await setup(page, { subject: true, locale: "ja-JP" });
   let payload: unknown;
   await page.route("**/api/conversations", (route) => {
     payload = route.request().postDataJSON();
@@ -956,7 +956,7 @@ test("message attachments show their names and download in the selected tab cont
 test("preparing a channel does not invoke agent execution", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page);
+  const { submissions, errors } = await setup(page, { subject: true });
   await page.goto("/");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page
@@ -1061,7 +1061,7 @@ test("graph focus survives contextual selection, reload, and history", async ({
 test("channel intervention answers a human request without settings navigation", async ({
   page,
 }) => {
-  const { submissions, errors } = await setup(page);
+  const { submissions, errors } = await setup(page, { subject: true });
   await page.goto("/");
   await page
     .getByRole("button")
@@ -1115,7 +1115,7 @@ test("an inaccessible explicit channel is not silently replaced with another cha
 test("legacy management links are routed into secondary settings", async ({
   page,
 }) => {
-  const { errors } = await setup(page);
+  const { errors } = await setup(page, { subject: true });
   await page.goto("/agents");
   await expect(page).toHaveURL(/\/settings\?.*view=agents/);
   await expect(
@@ -1244,20 +1244,6 @@ test("partial mesh responses tell Deployment Administrators which peer was omitt
   await expect(
     page.getByRole("status").filter({ hasText: "Unavailable item" }),
   ).toContainText("connection refused");
-  expect(errors).toEqual([]);
-});
-
-test("remote human requests remain visible without a run in the capped snapshot", async ({
-  page,
-}) => {
-  const { errors } = await setup(page, { unpairedRemoteRequest: true });
-  await page.goto("/collaboration?channel=workspace-one");
-  await expect(
-    page
-      .getByRole("region", { name: "Input required" })
-      .getByRole("button")
-      .filter({ hasText: "The run is outside the capped snapshot." }),
-  ).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -1556,7 +1542,7 @@ for (const action of ["task", "participant", "new task"] as const) {
   test(`overview ${action} replaces the progress sheet with one dismissible dialog`, async ({
     page,
   }) => {
-    const { errors } = await setup(page);
+    const { errors } = await setup(page, { subject: true });
     await page.goto("/collaboration?channel=workspace-one");
     const open = page.getByRole("button", {
       name: "Show channel status",

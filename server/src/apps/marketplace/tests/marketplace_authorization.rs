@@ -35,21 +35,32 @@ fn tool(id: &str) -> Entry {
 fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
 }
-async fn policy(f: &Federation, tenant: &str, revision: i64, value: Value) {
-	if revision == 0 {
-		common::tenant_root(f, tenant).await;
-	}
-	Authorization {
+async fn policy(f: &Federation, tenant: &str, revision: i64, mut value: Value) {
+	let authorization = Authorization {
 		pool: f.store.pool.clone(),
-	}
-	.replace(
-		tenant,
-		revision,
-		serde_json::from_value::<PolicyBundle>(value).unwrap(),
-		"deployment_administrator",
-	)
-	.await
-	.unwrap();
+	};
+	let revision = if revision == 0 {
+		common::tenant_root(f, tenant).await;
+		0
+	} else {
+		let current = authorization.snapshot(tenant).await.unwrap();
+		let existing = serde_json::to_value(&current.bundle).unwrap();
+		for (name, subject) in existing["subjects"].as_object().unwrap() {
+			if subject["kind"] == "agent" && value["subjects"].get(name).is_none() {
+				value["subjects"][name] = subject.clone();
+			}
+		}
+		current.revision
+	};
+	authorization
+		.replace(
+			tenant,
+			revision,
+			serde_json::from_value::<PolicyBundle>(value).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
 }
 async fn token(f: &Federation, tenant: &str, kind: &str) -> String {
 	policy(f, tenant, 0, bundle(tenant, kind)).await;
@@ -68,6 +79,21 @@ fn trace_errors() {
 		.try_init();
 }
 async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
+	let name = aidash_domain::tenancy::TenantName::new(tenant).unwrap();
+	if f.registry
+		.get(&name, &entry.id, &entry.version)
+		.await
+		.is_err()
+	{
+		for source in ["a", "b", "c"] {
+			let source = aidash_domain::tenancy::TenantName::new(source).unwrap();
+			if let Ok(mut copy) = f.registry.get(&source, &entry.id, &entry.version).await {
+				copy.binding_normalization = None;
+				f.registry.register(&name, copy).await.unwrap();
+				break;
+			}
+		}
+	}
 	Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -107,7 +133,14 @@ async fn activate(
 	catalog: i64,
 	enabled: bool,
 ) -> (u16, Value) {
-	request(app,&f.config.api_token,"POST",&format!("/api/marketplace/installations/{}/activation",installation["installation"]["id"].as_str().unwrap()),json!({"tenant":tenant,"revision":revision,"expected_activation_revision":pointer,"expected_catalog_revision":catalog,"enabled":enabled})).await
+	let approver = Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.issue_credential(tenant, "viewer", 3600, "deployment_administrator")
+	.await
+	.unwrap()
+	.token;
+	request(app,&approver,"POST",&format!("/api/marketplace/installations/{}/activation",installation["installation"]["id"].as_str().unwrap()),json!({"tenant":tenant,"revision":revision,"expected_activation_revision":pointer,"expected_catalog_revision":catalog,"enabled":enabled})).await
 }
 fn deny(mut value: Value, actions: Value) -> Value {
 	value["policies"].as_array_mut().unwrap().push(json!({"id":"deny","effect":"deny","subjects":{"any":true},"actions":actions,"resources":{"kinds":["*"]}}));
@@ -133,8 +166,20 @@ async fn tenant_publication_pending_installation_and_revisions(
 	let a = token(&f, "a", kind).await;
 	let b = token(&f, "b", "user").await;
 	trace_errors();
-	f.registry.register(tool("source-a")).await.unwrap();
-	f.registry.register(tool("source-b")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("source-a"),
+		)
+		.await
+		.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("source-b"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("source-a")).await;
 	approve(&f, "b", &reference("source-b")).await;
 	let pa = publish(&app, &a, "source-a").await;
@@ -248,6 +293,21 @@ async fn tenant_publication_pending_installation_and_revisions(
 	assert!(!catalog.1.to_string().contains(&entry.id));
 	let active = activate(&app, &f, "a", &installed.1, 1, 0, 0, true).await;
 	assert_eq!(active.0, 200, "{active:?}");
+	// The approval history names the subject that activated the revision.
+	let approver: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("actor"))
+			.from(Alias::new("authorization_catalog_history"))
+			.and_where(Expr::cust(format!(
+				"tenant='a' AND entry_id='{}' AND enabled",
+				entry.id
+			)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(approver, "viewer");
 	for enabled in [false, true] {
 		assert!(
 			Authorization {
@@ -294,7 +354,11 @@ async fn tenant_publication_pending_installation_and_revisions(
 	);
 	assert_eq!(
 		f.registry
-			.get(&entry.id, &entry.version)
+			.get(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				&entry.id,
+				&entry.version
+			)
 			.await
 			.unwrap()
 			.config["transport"]["endpoint"],
@@ -407,9 +471,21 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	let b = token(&f, "b", "user").await;
 	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	f.registry.register(model).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
 	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
-	f.registry.register(agent).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("hidden-model")).await;
 	approve(&f, "a", &reference("agent")).await;
 	let package = publish(&app, &a, "agent").await;
@@ -478,7 +554,10 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	);
 	assert!(
 		!f.registry
-			.list(&Default::default())
+			.list(
+				&aidash_domain::tenancy::TenantName::new("b").unwrap(),
+				&Default::default()
+			)
 			.await
 			.unwrap()
 			.iter()
@@ -531,7 +610,13 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	f.registry.register(tool("paged-source")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("paged-source"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("paged-source")).await;
 	let published = publish(&app, &a, "paged-source").await;
 	let source_key = published["key"].as_str().unwrap();
@@ -643,7 +728,13 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	let b = token(&f, "b", "user").await;
 	let c = token(&f, "c", "user").await;
 	trace_errors();
-	f.registry.register(tool("original")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("original"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("original")).await;
 	let original = publish(&app, &a, "original").await;
 	let key = original["key"].as_str().unwrap();
@@ -904,7 +995,13 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	trace_errors();
-	f.registry.register(tool("racing")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("racing"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("racing")).await;
 	let package = publish(&app, &a, "racing").await;
 	let key = package["key"].as_str().unwrap();
@@ -1128,7 +1225,13 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	f.registry.register(tool("revocation")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("revocation"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("revocation")).await;
 	let package = publish(&app, &a, "revocation").await;
 	let mut barrier = f.store.pool.driver().begin().await.unwrap();
@@ -1174,7 +1277,10 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 	assert!(matches!(denied.0, 401 | 403), "{denied:?}");
 	assert!(
 		!f.registry
-			.list(&Default::default())
+			.list(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				&Default::default()
+			)
 			.await
 			.unwrap()
 			.iter()
@@ -1205,9 +1311,21 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let a = token(&f, "a", "user").await;
 	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	f.registry.register(model).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
 	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
-	f.registry.register(agent).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("agent")).await;
 	approve(&f, "a", &reference("model")).await;
 	let package = publish(&app, &a, "agent").await;
@@ -1362,7 +1480,11 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	);
 	assert_eq!(
 		f.registry
-			.get(&old_ref.id, &old_ref.version)
+			.get(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				&old_ref.id,
+				&old_ref.version
+			)
 			.await
 			.unwrap()
 			.config["instructions"],
@@ -1436,7 +1558,13 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "agent").await;
 	trace_errors();
-	f.registry.register(tool("policy-source")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("policy-source"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("policy-source")).await;
 	let package = publish(&app, &a, "policy-source").await;
 	let key = package["key"].as_str().unwrap();
@@ -1549,10 +1677,28 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let b = token(&f, "b", "user").await;
 	trace_errors();
 	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	f.registry.register(model).await.unwrap();
-	f.registry.register(tool("dependency")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("dependency"),
+		)
+		.await
+		.unwrap();
 	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
-	f.registry.register(agent).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	for id in ["model", "dependency", "agent"] {
 		approve(&f, "a", &reference(id)).await;
 	}
@@ -1758,7 +1904,13 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	trace_errors();
-	f.registry.register(tool("handoff")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("handoff"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("handoff")).await;
 	let package = publish(&app, &a, "handoff").await;
 	let key = package["key"].as_str().unwrap();
@@ -1907,8 +2059,20 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 	let b = token(&f, "b", "user").await;
 	let c = token(&f, "c", "user").await;
 	trace_errors();
-	f.registry.register(tool("race-root")).await.unwrap();
-	f.registry.register(tool("race-dependency")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("race-root"),
+		)
+		.await
+		.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("race-dependency"),
+		)
+		.await
+		.unwrap();
 	for tenant in ["a", "c"] {
 		approve(&f, tenant, &reference("race-dependency")).await;
 	}
@@ -2146,9 +2310,21 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	let replay = executor.apply_migrations(&migrations).await.unwrap();
 	assert!(replay.applied.is_empty());
 	trace_errors();
-	f.registry.register(tool("immutable-source")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("immutable-source"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("immutable-source")).await;
-	f.registry.register(tool("published-later")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("published-later"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("published-later")).await;
 	approve(&f, "b", &reference("published-later")).await;
 	let input = json!({"source":reference("immutable-source"),"package_id":"immutable","author":"A","dependencies":[reference("published-later")],"idempotency_key":Uuid::new_v4()});
@@ -2213,7 +2389,13 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	);
 	let mut second = tool("immutable-source");
 	second.version = "2.0.0".into();
-	f.registry.register(second).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			second,
+		)
+		.await
+		.unwrap();
 	let second_ref = EntityRef {
 		id: "immutable-source".into(),
 		version: "2.0.0".into(),
@@ -2366,7 +2548,13 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	f.registry.register(tool("events")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("events"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("events")).await;
 	let package = publish(&app, &a, "events").await;
 	let installed = install(&app, &a, &package, &install_input(&package)).await;
@@ -2521,7 +2709,13 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	f.registry.register(tool("browser-source")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("browser-source"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("browser-source")).await;
 	let package = publish(&app, &a, "browser-source").await;
 	let identity = Uuid::new_v4();
@@ -2640,7 +2834,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	.unwrap();
 
-	let deployment_administrator = operation != "install";
+	let deployment_administrator = operation == "administration";
 	if deployment_administrator {
 		{
 			let query_bind_1 = identity;
@@ -2930,7 +3124,13 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 			.sequence;
 	}
 	trace_errors();
-	f.registry.register(tool("cursor-source")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("cursor-source"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("cursor-source")).await;
 	let package = publish(&app, &a, "cursor-source").await;
 	let newest = f
@@ -3013,20 +3213,47 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let a = token(&f, "a", "user").await;
 	trace_errors();
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	f.registry.register(model).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
 	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
-	f.registry.register(agent.clone()).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent.clone(),
+		)
+		.await
+		.unwrap();
 	let mut replacement = agent.clone();
 	replacement.id = "replacement".into();
-	f.registry.register(replacement).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			replacement,
+		)
+		.await
+		.unwrap();
 	let mut bridge = tool("bridge");
 	bridge.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":reference("nested")}});
-	f.registry.register(bridge).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			bridge,
+		)
+		.await
+		.unwrap();
 	let mut root = agent;
 	root.id = "root".into();
 	root.binding_normalization = None;
 	root.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"bridge","version":"1.0.0"},"narrow":{}}]);
-	f.registry.register(root).await.unwrap();
+	f.registry
+		.register(&aidash_domain::tenancy::TenantName::new("a").unwrap(), root)
+		.await
+		.unwrap();
 	for id in ["model", "nested", "replacement", "bridge", "root"] {
 		approve(&f, "a", &reference(id)).await;
 	}
@@ -3078,11 +3305,23 @@ async fn installation_rejects_missing_private_knowledge(
 	let a = token(&f, "a", "user").await;
 	trace_errors();
 	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	f.registry.register(model).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			model,
+		)
+		.await
+		.unwrap();
 	let documents = json!([{"name":"Note","media_type":"text/plain","text":"source"}]);
 	let digest = format!("{:x}", Sha256::digest(documents.to_string().as_bytes()));
 	let agent: Entry = serde_json::from_value(json!({"id":"private-agent","version":"1.0.0","kind":"source","name":{"en":"Private Source"},"description":{"en":"fixture"},"config":{"schema_version":1,"source":{"adapter":"private_references","digest":digest}}})).unwrap();
-	f.registry.register(agent).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	for id in ["private-model", "private-agent"] {
 		approve(&f, "a", &reference(id)).await;
 	}
@@ -3096,9 +3335,10 @@ async fn installation_rejects_missing_private_knowledge(
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("agent_knowledge"))
-				.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
+				.columns(["tenant", "agent_id", "agent_version", "documents"].map(Alias::new))
 				.from_subquery(
 					Query::select()
+						.expr(Expr::value("a"))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -3162,7 +3402,13 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 	trace_errors();
 	for i in 0..5 {
 		let id = format!("page-{i}");
-		f.registry.register(tool(&id)).await.unwrap();
+		f.registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+				tool(&id),
+			)
+			.await
+			.unwrap();
 		approve(&f, "a", &reference(&id)).await;
 	}
 	let mut authority = bundle("a", "user");
@@ -3247,7 +3493,13 @@ async fn owner_can_reload_and_restore_a_withdrawn_audience(
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	trace_errors();
-	f.registry.register(tool("recover-audience")).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
+			tool("recover-audience"),
+		)
+		.await
+		.unwrap();
 	approve(&f, "a", &reference("recover-audience")).await;
 	let package = publish(&app, &a, "recover-audience").await;
 	let path = format!(
