@@ -16,13 +16,11 @@ type PendingRequest = { request: HumanRequest; node: string };
 /** Decision cards for pending human requests; approvals are answered in place. */
 export function ChannelRequests({
   requests,
-  localNode,
   open,
   requester,
   className,
 }: {
   requests: PendingRequest[];
-  localNode: string;
   open: (value: Selection) => void;
   /** Display name of the agent whose run asked, when known. */
   requester?: string;
