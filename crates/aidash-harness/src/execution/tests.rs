@@ -354,3 +354,73 @@ async fn terminal_heartbeat_uses_claimed_run_and_cancels_lost_work(leases: Lease
 	assert!(dropped.load(Ordering::Acquire));
 	assert_eq!(*leases.trace.lock().unwrap(), ["renew"]);
 }
+
+/// Terminal Runs whose run messages wait for delivery to their Home.
+struct Burst(Mutex<VecDeque<RunMetadata>>);
+#[async_trait]
+impl TerminalRepository for Burst {
+	async fn claim_failure(
+		&self,
+		_: Uuid,
+		_: i32,
+	) -> Result<Option<Box<dyn aidash_application::ports::execution::terminal::FailureScope>>> {
+		Ok(None)
+	}
+	async fn pending_inputs(&self) -> Result<Option<RunMetadata>> {
+		Ok(self.0.lock().unwrap().front().cloned())
+	}
+	async fn deliver_inputs(&self, run: &RunMetadata) -> Result<()> {
+		let delivered = self.0.lock().unwrap().pop_front();
+		assert_eq!(delivered.map(|delivered| delivered.id), Some(run.id));
+		Ok(())
+	}
+	async fn defer_inputs(&self, _: Uuid) -> Result<()> {
+		panic!("a healthy delivery is never deferred")
+	}
+}
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) {
+	let burst = (0..24)
+		.map(|_| RunMetadata {
+			id: Uuid::new_v4(),
+			task_id: Uuid::new_v4(),
+			workspace_id: Uuid::new_v4(),
+			home_node: "aidash://delivery-home".into(),
+			agent_id: "fixture".into(),
+			agent_version: "1".into(),
+			phase: aidash_domain::RunPhase::Completed,
+			control: RunControl::Active,
+			step: 1,
+			revision: 1,
+			observed_input_seq: 0,
+			ledger_worker_ready: true,
+			error: None,
+			lease_owner: None,
+			lease_until: None,
+			updated_at: chrono::Utc::now(),
+		})
+		.collect();
+	let repository = Arc::new(Burst(Mutex::new(burst)));
+	let (stop, stopping) = watch::channel(false);
+	let delivery = tokio::spawn(deliver_terminal_until(
+		repository.clone(),
+		Arc::new(leases),
+		30,
+		stopping,
+	));
+	// Shorter than the loop's idle sleep, so one sleep per Run cannot fit.
+	let drained = tokio::time::timeout(Duration::from_millis(250), async {
+		while !repository.0.lock().unwrap().is_empty() {
+			tokio::time::sleep(Duration::from_millis(1)).await;
+		}
+	})
+	.await;
+	stop.send_replace(true);
+	assert!(
+		drained.is_ok(),
+		"healthy delivery sleeps between Runs: {} left",
+		repository.0.lock().unwrap().len()
+	);
+	delivery.await.unwrap().unwrap();
+}
