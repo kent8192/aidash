@@ -50,9 +50,8 @@ not exposed to remote Runs).
   returned `next_cursor`; continuing reads the retained snapshot and never
   fetches again. A PDF snapshot's lines carry their physical page, so its
   passages report `pages`. Pages that carry no text are listed under
-  `pages_without_text` with `page_images` `no_view_operation` (the original
-  is retained, but no research operation shows page images yet) or
-  `original_not_retained`; a PDF whose pages all lack text
+  `pages_without_text` with `page_images` `available` (the original is
+  retained) or `original_not_retained`; a PDF whose pages all lack text
   delivers no passage (`status: "empty"`).
 - **`find`** returns lines of a retained snapshot that contain `query`. Matching
   folds case (and `ß` to `ss`) unless `case_sensitive` is set. Every match is an
