@@ -421,7 +421,7 @@ async fn usage_records_admit_tokenized_estimates(
 
 	// Act
 	store
-		.record_usage_dispatch(&TEST_FIXTURE, &run, token, &tokenized)
+		.record_usage_dispatch(&ACME, &run, token, &tokenized)
 		.await
 		.unwrap();
 

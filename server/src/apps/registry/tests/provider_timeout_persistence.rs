@@ -332,6 +332,7 @@ async fn database_limits_request_estimators_to_known_values(
 		entry["id"] = json!(format!("raw-estimator-{index}"));
 		entry["config"]["request_estimator"] = estimator;
 		let definition = Definition::build()
+			.tenant("endpoint")
 			.id(entry["id"].as_str().unwrap())
 			.version("1.0.0")
 			.kind(DefinitionKind::Model)
