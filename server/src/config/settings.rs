@@ -47,6 +47,7 @@
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
 use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
+use crate::apps::execution::serializers::research_providers::ResearchProviderSettings;
 use crate::apps::execution::serializers::research_retention::ResearchRetentionSettings;
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
 use crate::apps::identity::serializers::keyless_endpoints::KeylessEndpointSettings;
@@ -56,6 +57,7 @@ use crate::apps::identity::serializers::provider_credentials::ManagedSource;
 use crate::apps::identity::serializers::provider_credentials::Settings as ProviderCredentialSettings;
 use crate::apps::identity::serializers::settings::DashboardSettings;
 use crate::apps::identity::serializers::tenancy_settings::TenancySettings;
+use crate::apps::operations::serializers::deployment::DeploymentSettings;
 use crate::apps::operations::serializers::settings::KubernetesSettings;
 use reinhardt::conf::settings::PendingSettings;
 use reinhardt::conf::settings::builder::{BuildError, SettingsBuilder};
@@ -66,7 +68,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_retention: ResearchRetentionSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings | keyless_endpoints: KeylessEndpointSettings | tenancy: TenancySettings | plan_connections: PlanConnectionSettings | research_providers: ResearchProviderSettings | research_retention: ResearchRetentionSettings | deployment: DeploymentSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -94,8 +96,17 @@ pub fn get_scoped_settings() -> Result<ScopedSettings, BuildError> {
 	settings_builder()?.build_scoped()
 }
 
+/// The settings profile `REINHARDT_ENV` selects; `local` when unset.
+pub fn profile() -> Profile {
+	Profile::parse(&profile_name())
+}
+
+fn profile_name() -> String {
+	env::var("REINHARDT_ENV").unwrap_or_else(|_| "local".to_string())
+}
+
 fn settings_builder() -> Result<SettingsBuilder, BuildError> {
-	let profile_str = env::var("REINHARDT_ENV").unwrap_or_else(|_| "local".to_string());
+	let profile_str = profile_name();
 
 	// Resolve the managed project root independently of the caller's working directory.
 	let base_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -164,8 +175,10 @@ fn file_settings_builder(
                 // Tenancy Rules default to the Self-hosted Offering's.
                 .with_value("tenancy", serde_json::json!({}))
                 .with_value("plan_connections", serde_json::json!({}))
+                .with_value("research_providers", serde_json::json!({}))
                 .with_value("research_retention", serde_json::json!({}))
-                .with_value("migrations", serde_json::json!({})),
+                .with_value("migrations", serde_json::json!({}))
+                .with_value("deployment", serde_json::json!({})),
         )
         // Medium priority: Base TOML file
         .add_source(TomlFileSource::new(settings_dir.join("base.toml")))

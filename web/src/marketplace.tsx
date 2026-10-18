@@ -52,7 +52,7 @@ import { cn } from "./lib/utils";
 import { useI18n, Panel, Field, type StatusTone } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
-import { HostPackages } from "./host-packages";
+import { ApprovalSetReview } from "./marketplace-approval";
 import {
   Alert,
   Disclosure,
@@ -124,7 +124,17 @@ function PageControls({
     />
   );
 }
-export function ScopedMarketplace({ identity }: { identity: string }) {
+/** A subject's Marketplace. With `catalog.approve` (`approves`) it also
+ *  activates its Tenant's installations, one by one or as a reviewed set. */
+export function ScopedMarketplace({
+  identity,
+  tenant,
+  approves,
+}: {
+  identity: string;
+  tenant: string;
+  approves: boolean;
+}) {
   const { locale, local } = useI18n();
   const copy = marketplaceCopy[locale];
   const cache = useQueryClient();
@@ -285,6 +295,23 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
       setBusy(false);
     }
   }
+  const activate = (item: MarketplaceInstallationRevision, enabled: boolean) =>
+    run(async () => {
+      const binding = (
+        await authorizationCatalog(encodeURIComponent(tenant))
+      ).find(
+        (value) =>
+          value.entry_id === item.entry.id &&
+          value.entry_version === item.entry.version,
+      );
+      await marketplaceActivate(item.installation.id, {
+        tenant,
+        revision: item.revision,
+        expected_activation_revision: item.installation.activation_revision,
+        expected_catalog_revision: binding?.revision ?? 0,
+        enabled,
+      });
+    });
   const bindingInput = () =>
     JSON.parse(bindings) as MarketplaceDependencyBinding[];
   const scopedState = (item: MarketplaceInstallationRevision): InstallState =>
@@ -700,6 +727,26 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                     {copy[state]}
                   </StateBadge>
                   <div className="flex flex-wrap gap-2">
+                    {approves && state !== "active" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void activate(item, true)}
+                      >
+                        {copy.approve}
+                      </Button>
+                    )}
+                    {approves && item.approved && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void activate(item, false)}
+                      >
+                        {copy.revoke}
+                      </Button>
+                    )}
                     {item.installation.active_revision &&
                       item.installation.active_revision !== item.revision && (
                         <Button
@@ -796,6 +843,14 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
           </div>
         )}
       </Panel>
+      {approves && installs.data && (
+        <ApprovalSetReview
+          tenant={tenant}
+          context={context}
+          revisions={installs.data}
+          onSaved={() => cache.invalidateQueries({ queryKey: context })}
+        />
+      )}
       {sources.data &&
         (sources.data.items.length > 0 ||
           sourceOffset > 0 ||
@@ -915,6 +970,8 @@ function PermissionList({
   );
 }
 
+/** A Deployment Administrator's read-only view of one Tenant's installations;
+ *  each Tenant approves its own through Catalog Approval (ADR 0029). */
 export function MarketplaceAdministration() {
   const { locale, local } = useI18n();
   const copy = marketplaceCopy[locale];
@@ -923,7 +980,6 @@ export function MarketplaceAdministration() {
   const [draft, setDraft] = useState("");
   const [revisionOffsets, setRevisionOffsets] = useState([0]);
   const revisionOffset = revisionOffsets.at(-1)!;
-  const [message, setMessage] = useState("");
   const installs = useQuery({
     queryKey: [
       "marketplace",
@@ -939,19 +995,6 @@ export function MarketplaceAdministration() {
     retry: false,
     staleTime: 0,
   });
-  async function run(action: () => Promise<unknown>) {
-    try {
-      await action();
-      setMessage(copy.saved);
-      await cache.invalidateQueries({ queryKey: ["marketplace"] });
-    } catch (error) {
-      setMessage(
-        error instanceof ApiError && error.status === 409
-          ? copy.conflict
-          : String(error),
-      );
-    }
-  }
   const adminState = (item: MarketplaceInstallationRevision): InstallState =>
     item.approved
       ? item.installation.active_revision === item.revision
@@ -964,7 +1007,6 @@ export function MarketplaceAdministration() {
           : "pending";
   return (
     <div className="grid min-w-0 gap-6">
-      {message && <Notice role="status">{message}</Notice>}
       <Panel title={copy.admin}>
         <form
           className="flex flex-wrap items-end gap-2"
@@ -994,18 +1036,8 @@ export function MarketplaceAdministration() {
             {copy.load}
           </Button>
         </form>
-        <Hint>{copy.pinned}</Hint>
+        <Hint>{copy.adminHelp}</Hint>
         {installs.isError && <Alert>{copy.unavailable}</Alert>}
-        {tenant && !installs.isError && (
-          <HostPackages
-            key={tenant}
-            tenant={tenant}
-            revisions={installs.data?.items ?? []}
-            onSaved={async () => {
-              await cache.invalidateQueries({ queryKey: ["marketplace"] });
-            }}
-          />
-        )}
         {!installs.isError && !!installs.data?.items.length && (
           <ul className="divide-y divide-border border-y border-border">
             {installs.data.items.map((item) => {
@@ -1028,38 +1060,6 @@ export function MarketplaceAdministration() {
                     <StateBadge tone={installTone[state]}>
                       {copy[state]}
                     </StateBadge>
-                    <div className="flex flex-wrap gap-2">
-                      {[true, false].map((enabled) => (
-                        <Button
-                          variant={enabled ? "outline" : "ghost"}
-                          size="sm"
-                          key={String(enabled)}
-                          disabled={!enabled && !item.approved}
-                          onClick={() =>
-                            void run(async () => {
-                              const catalog =
-                                await authorizationCatalog(tenant);
-                              const binding = catalog.find(
-                                (b) =>
-                                  b.entry_id === item.entry.id &&
-                                  b.entry_version === item.entry.version,
-                              );
-                              await marketplaceActivate(item.installation.id, {
-                                tenant,
-                                revision: item.revision,
-                                expected_activation_revision:
-                                  item.installation.activation_revision,
-                                expected_catalog_revision:
-                                  binding?.revision ?? 0,
-                                enabled,
-                              });
-                            })
-                          }
-                        >
-                          {enabled ? copy.approve : copy.revoke}
-                        </Button>
-                      ))}
-                    </div>
                   </div>
                   <Disclosure summary={copy.details}>
                     <RecordView value={item.entry} />

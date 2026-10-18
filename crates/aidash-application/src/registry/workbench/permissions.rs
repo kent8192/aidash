@@ -15,10 +15,11 @@ pub async fn inspect(
 	reference: EntityRef,
 	input: PermissionInput,
 ) -> Result<PermissionContext> {
-	if let Principal::Subject { tenant, subject } = repository.principal()
-		&& (input.tenant != tenant || input.subject != subject)
-	{
-		return Err(Error::Forbidden);
+	match repository.principal() {
+		Principal::Subject { tenant, subject }
+			if input.tenant == tenant && input.subject == subject => {}
+		// Agent versions are Tenant content (ADR 0029).
+		_ => return Err(Error::Forbidden),
 	}
 	let mut scope = repository.begin().await?;
 	scope.require_inspection(&reference).await?;

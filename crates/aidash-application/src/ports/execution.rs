@@ -137,6 +137,11 @@ pub trait ExecutionStore: Send + Sync {
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.sources_observed").await
 	}
+	/// Persist a step that ran with Degraded context without ending the
+	/// worker's lease, and emit `run.semantic_degraded` (ADR 0059).
+	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.semantic_degraded").await
+	}
 	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
 	/// without research evidence has nothing to revoke.
 	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
@@ -477,6 +482,10 @@ pub trait ExecutionEnvironment: Send + Sync {
 		run: &Run,
 	) -> Result<aidash_domain::context::sources::RetrievalScope>;
 	/// `key` is present for an Ordered Run: equal keys replay the same bytes.
+	/// `degrade_on_outage`: this attempt puts the Degraded context marker in an
+	/// unavailable workspace slot instead of failing, if every source of that
+	/// slot opted in and the Run is local (ADR 0059).
+	#[allow(clippy::too_many_arguments)]
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -485,6 +494,7 @@ pub trait ExecutionEnvironment: Send + Sync {
 		budget: usize,
 		entry: &Entry,
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	/// The pages people asked this Run to read, recorded beside the inputs
@@ -507,12 +517,6 @@ pub trait ExecutionEnvironment: Send + Sync {
 		run: Uuid,
 		included_input_seq: i64,
 	) -> Result<InferenceInterruption>;
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch>;
 	/// Whether every source an adopted Execution Summary depends on is still
 	/// readable by the Run under current authority.
 	async fn summary_dependencies_current(

@@ -138,6 +138,7 @@ where
 		));
 	}
 	let entry = validate_content(&mut scope, validation, &draft, repository.node_id()).await?;
+	super::authorize_creation(&mut scope, &draft.tenant, &entry).await?;
 
 	let behavioral_tested = behavioral_evidence(&mut scope, &draft, &entry).await?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
@@ -155,6 +156,7 @@ where
 		.await?;
 		let source =
 			registry::bindings::private::attach(&mut raw, repository.node_id(), &draft.documents)?;
+		super::authorize_creation(&mut scope, &draft.tenant, &source).await?;
 		registry::register_definition(&mut scope, validation, &source, repository.node_id())
 			.await?;
 		scope

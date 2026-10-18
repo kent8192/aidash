@@ -1,6 +1,7 @@
 import type { Artifact } from "../src/generated/models";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { registryVersion } from "./registry-fixture";
 
 function fixture(reference = false) {
   const node = {
@@ -234,7 +235,6 @@ export async function setup(
     dashboardContext?: string | null;
     olderMessages?: number;
     remoteParticipant?: boolean;
-    unpairedRemoteRequest?: boolean;
     meshErrors?: boolean;
     runMemory?: boolean;
     latestMessageChangesOnPoll?: boolean;
@@ -257,6 +257,7 @@ export async function setup(
     remoteNativeCollision?: boolean;
     /** Run-published text citing evidence, beside a person's pasted marker. */
     citations?: boolean;
+    tenantActions?: string[];
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -551,6 +552,23 @@ export async function setup(
       return route.fulfill({ json: { access, node_id: data.node.id } });
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
+    if (path === "/api/tenants/acme/administration")
+      return route.fulfill({
+        json: {
+          tenant: "acme",
+          label: null,
+          actions: options.tenantActions ?? ["registry.create"],
+          assignable_groups: [],
+          policy_revision: null,
+        },
+      });
+    if (path === "/api/registry/versions")
+      return route.fulfill({
+        json: {
+          versions: data.registry.map((entry) => registryVersion(entry)),
+          next_offset: null,
+        },
+      });
     if (path.endsWith("/memory/participants"))
       return route.fulfill({
         json: {
@@ -571,33 +589,18 @@ export async function setup(
             ...(labRuns.length
               ? [{ node_id: "aidash://lab", runs: labRuns, human_requests: [] }]
               : []),
-            ...(options.remoteParticipant || options.unpairedRemoteRequest
+            ...(options.remoteParticipant
               ? [
                   {
                     node_id: "aidash://peer",
-                    runs: options.remoteParticipant
-                      ? [
-                          {
-                            ...data.runs[0],
-                            id: "remote-run",
-                            task_id: "remote-task",
-                          },
-                        ]
-                      : [],
-                    human_requests: options.unpairedRemoteRequest
-                      ? [
-                          {
-                            id: "uncached-run-request",
-                            workspace_id: "workspace-one",
-                            run_id: "run-omitted-from-snapshot",
-                            kind: "INFORMATION_REQUEST",
-                            prompt: "The run is outside the capped snapshot.",
-                            response: null,
-                            answered_by: null,
-                            created_at: "2026-09-22T10:12:00Z",
-                          },
-                        ]
-                      : [],
+                    runs: [
+                      {
+                        ...data.runs[0],
+                        id: "remote-run",
+                        task_id: "remote-task",
+                      },
+                    ],
+                    human_requests: [],
                   },
                 ]
               : []),

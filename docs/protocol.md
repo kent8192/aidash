@@ -6,17 +6,14 @@ This document describes implemented runtime and recovery contracts. Cross-node t
 
 A node publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, capabilities, clusters and protocol version. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
 
-The Deployment Administrator token retains privileged bootstrap, legacy operation and recovery access. Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. Legacy `/offers` cannot admit work into scoped workspaces. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
+The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043). Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
 
 Federation retains the `/federation/v0.1` path namespace. A node advertises protocol `0.3` and accepts peers registered at `0.2` or `0.3`; `0.2` is the minimum for Binding contract 1, so earlier peers cannot admit new execution (drain in-flight work before upgrading). Protocol `0.3` adds one thing: the Home's reply to `scoped/execution/grants/describe` carries the current `corpus_digest` of the grant's Workspace when the grant gives the receiver Home semantic access. A node that sends `X-Aidash-Protocol: 0.2` receives the reply it always did, and a reply without the field is valid. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol` set to the version the receiving peer was registered with. Register a peer at `0.3` only after it runs `0.3`; its `/.well-known/aidash` must advertise the version you register. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted tools managed by whoever runs the Deployment. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint             | Purpose                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
 | `POST /discover`     | Search locally registered agent metadata; does not recursively broadcast          |
-| `POST /offers`       | Accept an idempotent task offer and persist a local run                           |
-| `POST /workspace`    | Claim, read or modify the offered task's home workspace                           |
 | `GET /observe`       | Return runs, invocations and human requests belonging to the caller's home node   |
-| `POST /control`      | Pause/resume/cancel, deliver messages or answer human requests for those runs     |
 | `POST /scoped/graph` | Return a bounded, receiver-authorized Graph View projection for one mapped viewer |
 
 The scoped graph endpoint authenticates the source Peer before resolving its
@@ -31,11 +28,9 @@ B's connection to C is not included in B's graph projection. See the
 [authorization contract](authorization.md#federated-graph-view-authority) and
 [Graph View controls](agent-relationship-graph.md#workspace-graph-view).
 
-The home node persists a delegation grant before sending an offer. Grants are scoped to the task, peer and exact agent version. Retrying an offer cannot replace its executor. Claims enforce capability requirements, dependency completion, `OPEN` status and the expected revision in one SQL update. A task's qualified owner is derived from the authenticated peer, never accepted as an arbitrary caller-supplied identity. Unknown task requirement/search fields are rejected. A terminal task grant permits snapshot/task reads, exact idempotent completion replay, or acknowledgment of the same terminal transition; it no longer authorizes workspace mutations.
-
 Remote workers retrieve workspace metadata with `snapshot_workspace`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB peer decoder limit. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
 
-Agent memory is separated by agent ID, version, workspace UUID and workspace home node. Existing local memory retains its local namespace; a remote offer cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
+Agent memory is separated by agent ID, version, workspace UUID and workspace home node. Existing local memory retains its local namespace; a remote Run cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
 
 ## Persistence and delivery
 
@@ -108,16 +103,39 @@ which holds no Run, Tenant or attempt identifier, and are written in the same
 transaction that completes the Usage Record. Deployment Administrators read per-key aggregates
 with `manage diagnostics calibration`.
 
-Each Run step pins an Estimate Snapshot (estimator, version, ratio and margin)
-in the Run's context before the step relies on it. A resumed step reuses it,
-so it makes the same fitting and compaction decisions even after calibration
-data changed. Run inspection shows the pinned snapshot without its sample
+A model definition that sets `request_estimator: {"tokenized": "<encoding>"}`
+counts the byte basis with that Token Encoding instead of scaling it. The list
+is closed and defined in code: `o200k_base` (OpenAI GPT-4o through GPT-5,
+counted with the gpt-oss tokenizer) and `gemma4` (Gemini 3.1 and later, which
+Google's SDK counts with Gemma 4). Registration rejects any other name and
+never compares the name with the model slug; the web form offers the encoding
+as an optional choice and never preselects one. Every string inside a message
+is counted as the text the model receives, with its JSON escaping decoded
+once, and each message adds 8 tokens. Each tool definition is counted as its
+JSON and adds 32 tokens, because providers render schemas in their own format.
+Response formats count as JSON, and the cache-salt reserve is added unchanged.
+The media allowance, output reservation and framing follow, and the result
+never exceeds the byte estimate. Text longer than 16 KiB is counted in pieces
+split where whitespace starts, which bounds counting time and keeps a piece's
+count reusable. Only the server binary embeds the tokenizer files; a binary
+without them, or a Run step pinned to an encoding version it lacks, estimates
+in bytes. A tokenized model still collects calibration samples, and its byte
+quotas convert through the key's calibrated ratio when one exists.
+
+Each Run step pins an Estimate Snapshot (estimator, version, Token Encoding,
+ratio and margin) in the Run's context before the step relies on it. A resumed
+step reuses it, so it makes the same fitting and compaction decisions even after
+calibration data changed. A calibrated or tokenized snapshot becomes the byte
+estimate for the rest of the Run after a Context Overflow, from the same step,
+or when the provider reports more input tokens than the snapshot estimated,
+from the next step. Run inspection shows the pinned snapshot without its sample
 count. Snapshot quotas are byte budgets that convert through the snapshot's
 ratio, while the Ordered Stable Prefix quota and the semantic budget always use
 the byte estimate, so calibration never changes the Stable Prefix or the
 Retrieval Key. Summary Stage requests, Jev, Registry workbench requests, the
 run-message limit and the media headroom keep the byte estimate.
-Every Usage Record keeps its Request Estimate with the byte basis, the output
+Every Usage Record keeps its Request Estimate with its confidence
+(`conservative`, `calibrated` or `tokenized`), the byte basis, the output
 reservation and the snapshot ratio, so the estimation error of an attempt is
 `estimated_tokens - output_reservation - input_tokens`.
 
@@ -317,10 +335,8 @@ explicit `truncated` marker and text preview. Durable execution records retain
 original values. Credential inventories use `?offset=N` pages of 200 records.
 Scoped collections fill pages after authorization checks.
 
-Federation discovery returns `entries` and `next_offset`, with at most 64 entries
-and 3 MB of metadata per response. Exact delegation validation uses
-`GET /federation/v0.1/discover/{id}/{version}`. Generated task-bound agents are
-excluded from these legacy discovery routes. Observation returns at most 100
+Scoped federation discovery returns `entries` and `next_offset`, with at most 64
+entries and 3 MB of metadata per response. Observation returns at most 100
 runs, human requests and invocation previews; run context and pending payloads
 remain available through the authorized run detail API.
 

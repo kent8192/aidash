@@ -120,6 +120,8 @@ struct State {
 	source_failure: Mutex<Option<Error>>,
 	retrieval: Mutex<RetrievalScope>,
 	semantic_keys: Mutex<Vec<Option<String>>>,
+	/// `degrade_on_outage` of each semantic retrieval, in call order.
+	semantic_degrade: Mutex<Vec<bool>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	instructions: String,
 	/// The semantic read returns as much content as its budget allows.
@@ -143,8 +145,10 @@ struct State {
 	checks: Option<completion::FakeChecks>,
 	/// The Completion Basis each commit fence persisted.
 	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
-	/// Serve a model version that opts into the calibrated estimator.
-	calibrated_model: bool,
+	/// The `request_estimator` the served model version declares.
+	request_estimator: Option<Value>,
+	/// Input tokens the provider reports; 200 when unset.
+	reported_input_tokens: Option<u64>,
 	/// Calibration samples the store returns, newest first.
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
 	/// URL intents recorded beside the Run's Task and inputs.
@@ -212,8 +216,13 @@ impl Backend {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
 		}
-		if self.0.calibrated_model && id != "summarizer" {
-			config["request_estimator"] = json!("calibrated");
+		if let Some(estimator) = self
+			.0
+			.request_estimator
+			.as_ref()
+			.filter(|_| id != "summarizer")
+		{
+			config["request_estimator"] = estimator.clone();
 		}
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
 	}
@@ -806,8 +815,15 @@ impl ExecutionAuthority for Backend {
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
 	) -> Result<HumanMediaBatch> {
-		let _ = (messages, model);
-		unexpected("ExecutionAuthority.human_message_media")
+		let _ = model;
+		if !self.0.human_media_pending {
+			unexpected("ExecutionAuthority.human_message_media");
+		}
+		Ok(HumanMediaBatch {
+			parts: vec![],
+			through_seq: messages.first().map(|(seq, _, _)| *seq),
+			has_more: true,
+		})
 	}
 	async fn reserve_inference(
 		&self,
@@ -959,6 +975,7 @@ impl ExecutionEnvironment for Backend {
 		budget: usize,
 		entry: &Entry,
 		key: Option<&RetrievalKey>,
+		degrade_on_outage: bool,
 	) -> Result<Option<Value>> {
 		let _ = (run, task, inputs, budget, entry);
 		self.0
@@ -966,6 +983,11 @@ impl ExecutionEnvironment for Backend {
 			.lock()
 			.unwrap()
 			.push(key.map(RetrievalKey::digest));
+		self.0
+			.semantic_degrade
+			.lock()
+			.unwrap()
+			.push(degrade_on_outage);
 		if self.0.conversation_memory {
 			self.record("source.memory");
 			if self.0.fill_semantic_budget {
@@ -1024,22 +1046,6 @@ impl ExecutionEnvironment for Backend {
 			.expect("interruption sender lives with the backend");
 		self.0.interruption.send_replace(None);
 		Ok(interruption)
-	}
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		let _ = (run, model);
-		if !self.0.human_media_pending {
-			unexpected("ExecutionEnvironment.operator_human_message_media");
-		}
-		Ok(HumanMediaBatch {
-			parts: vec![],
-			through_seq: messages.first().map(|(seq, _, _)| *seq),
-			has_more: true,
-		})
 	}
 
 	fn node_id(&self) -> &str {
@@ -1206,7 +1212,7 @@ impl ModelProvider for Backend {
 			output_tokens: if self.0.omit_output_usage { 0 } else { 10 },
 			usage_complete: !self.0.omit_output_usage,
 			reported: ReportedUsage {
-				input_tokens: Some(200),
+				input_tokens: Some(self.0.reported_input_tokens.unwrap_or(200)),
 				output_tokens: (!self.0.omit_output_usage).then_some(10),
 				cache_read_tokens: Some(150),
 				..Default::default()
@@ -1349,6 +1355,7 @@ fn fixture() -> Fixture {
 			corpus_digest: Some("corpus-1".into()),
 		}),
 		semantic_keys: Mutex::new(vec![]),
+		semantic_degrade: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
 		fill_semantic_budget: false,
@@ -1363,7 +1370,8 @@ fn fixture() -> Fixture {
 		completion: None,
 		checks: None,
 		fenced: Mutex::new(vec![]),
-		calibrated_model: false,
+		request_estimator: None,
+		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
 		url_intents: vec![],
 	}));
@@ -4204,9 +4212,9 @@ async fn deferred_media_intake_reports_no_tool_exposure(mut fixture: Fixture) {
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	run_message(&mut fixture);
 	deferred_agent(&mut fixture);
-	Arc::get_mut(&mut fixture.backend.0)
-		.unwrap()
-		.human_media_pending = true;
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	backend.human_media_pending = true;
+	backend.scoped = true;
 	// Act
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: no tools were sent, so none are measured as exposed.
@@ -4460,6 +4468,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 }
 
 mod batch;
+mod degraded;
 mod estimate;
 mod native;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.

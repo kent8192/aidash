@@ -817,6 +817,7 @@ impl<'a> Executor<'a> {
 		entry: &aidash_domain::registry::Entry,
 		bindings: &str,
 		retrieves: bool,
+		degrade_on_outage: bool,
 	) -> Result<OrderedSemantic> {
 		let key = if retrieves {
 			let scope = self.environment.retrieval_scope(run).await?;
@@ -864,7 +865,15 @@ impl<'a> Executor<'a> {
 		let value = match &key {
 			Some(key) => {
 				self.environment
-					.semantic_context(run, task, inputs, budget, entry, Some(key))
+					.semantic_context(
+						run,
+						task,
+						inputs,
+						budget,
+						entry,
+						Some(key),
+						degrade_on_outage,
+					)
 					.await?
 			}
 			None => None,
@@ -932,6 +941,9 @@ impl<'a> Executor<'a> {
 				.await?;
 			return Ok(());
 		}
+		// Read before the retry state is cleared: this attempt may degrade an
+		// unavailable workspace slot when it is the last one (ADR 0059).
+		let degrade_on_outage = run.recovery.degrades_on_outage();
 		run.recovery.retry = None;
 		if std::mem::take(&mut run.recovery.lease_recovered) {
 			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease"});
@@ -1048,18 +1060,30 @@ impl<'a> Executor<'a> {
 				// Pin this step's Estimate Snapshot before any fitting relies on it
 				// (ADR 0017). Only an opted-in, undemoted model needs calibration,
 				// and only its snapshot is saved: a resumed step reuses it even if
-				// the calibration data changed meanwhile. Every other step is
+				// the calibration data changed meanwhile. A tokenized model also
+				// calibrates, for its byte quotas. Every other step is
 				// conservative, so its Run keeps the context bytes it had.
 				let estimate = match run.context.estimate.pinned(run.step) {
-					Some(snapshot) => snapshot,
-					None if model_cfg.request_estimator() == RequestEstimator::Calibrated
+					Some(snapshot) if snapshot.usable() => snapshot,
+					// The step pinned a Token Encoding this worker lacks: it
+					// resumes on bytes, and the next step pins afresh.
+					Some(_) => {
+						let snapshot = EstimateSnapshot::conservative(run.step);
+						run.context.estimate.snapshot = Some(snapshot);
+						snapshot
+					}
+					None if model_cfg.request_estimator() != RequestEstimator::Bytes
 						&& !run.context.estimate.demoted =>
 					{
 						let samples = store
 							.calibration_samples(&model_cfg.model_id, agent.projection_version.number())
 							.await?;
-						let snapshot =
-							EstimateSnapshot::choose(run.step, RequestEstimator::Calibrated, false, &samples);
+						let snapshot = EstimateSnapshot::choose(
+							run.step,
+							model_cfg.request_estimator(),
+							false,
+							&samples,
+						);
 						run.context.estimate.snapshot = Some(snapshot);
 						store.pin_estimate(run, token).await?;
 						snapshot
@@ -1472,24 +1496,85 @@ impl<'a> Executor<'a> {
 						))
 					})
 					.collect::<Vec<_>>();
-                if ordered {
-                    let retrieves = guard.is_some() || home.local();
-                    let semantic = self.ordered_semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, &binding_digest, retrieves).await?;
-                    if let Some(value) = &semantic.value { pinned["semantic_memory"] = value.clone(); }
-                    if let Some(observation) = semantic.observation(&pinned, &binding_digest, ordered_skill, context.source_observation.as_ref())? {
-                        context.source_observation = Some(observation);
-                        run.context = context.clone();
-                        store.observe_sources(run, token).await?;
-                    }
-                } else {
-                let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, None).await? } else { None };
-                if let Some(semantic) = &semantic { pinned["semantic_memory"] = semantic.clone(); }
-                if cached_sources.is_none() {
-                    context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(source_boundary, binding_digest, json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}))?);
-                    run.context = context.clone();
-                    store.observe_sources(run, token).await?;
-                }
-                }
+				if ordered {
+					let retrieves = guard.is_some() || home.local();
+					let semantic = self
+						.ordered_semantic_context(
+							run,
+							&task,
+							&semantic_inputs,
+							semantic_budget,
+							&entry,
+							&binding_digest,
+							retrieves,
+							degrade_on_outage,
+						)
+						.await?;
+					if let Some(value) = &semantic.value {
+						pinned["semantic_memory"] = value.clone();
+					}
+					if let Some(cause) = semantic.degraded() {
+						// Degraded context is never cached (ADR 0059): the next
+						// step, or a recovery of this one, retrieves again.
+						run.context = context.clone();
+						degrade_context(store, run, token, cause).await?;
+					} else {
+						if semantic.retrieved {
+							run.recovery.degraded.recovered();
+						}
+						if let Some(observation) = semantic.observation(
+							&pinned,
+							&binding_digest,
+							ordered_skill,
+							context.source_observation.as_ref(),
+						)? {
+							context.source_observation = Some(observation);
+							run.context = context.clone();
+							store.observe_sources(run, token).await?;
+						}
+					}
+				} else {
+					let semantic = if let Some(cached) = &cached_sources {
+						cached
+							.get("semantic_memory")
+							.filter(|v| !v.is_null())
+							.cloned()
+					} else if guard.is_some() || home.local() {
+						self.environment
+							.semantic_context(
+								run,
+								&task,
+								&semantic_inputs,
+								semantic_budget,
+								&entry,
+								None,
+								degrade_on_outage,
+							)
+							.await?
+					} else {
+						None
+					};
+					if let Some(semantic) = &semantic {
+						pinned["semantic_memory"] = semantic.clone();
+					}
+					let degraded = semantic
+						.as_ref()
+						.and_then(aidash_domain::semantic::degraded::degraded);
+					if let Some(cause) = degraded {
+						run.context = context.clone();
+						degrade_context(store, run, token, cause).await?;
+					} else if cached_sources.is_none() {
+						run.recovery.degraded.recovered();
+						context.source_observation =
+							Some(aidash_domain::context::sources::SourceObservation::new(
+								source_boundary,
+								binding_digest,
+								json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}),
+							)?);
+						run.context = context.clone();
+						store.observe_sources(run, token).await?;
+					}
+				}
                 self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 // History imported from a pre-journal Run may never have been
                 // saved; journal it whole before pruning or a summary drops any.
@@ -1537,7 +1622,8 @@ impl<'a> Executor<'a> {
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
-				let request_tokens = request.estimated_total_tokens();
+				let request_estimate = request.request_estimate();
+				let request_tokens = request_estimate.tokens as usize;
 				let request_bytes = request.byte_estimate().total();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
@@ -1564,7 +1650,7 @@ impl<'a> Executor<'a> {
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
 							upstream_model: model_cfg.model_id.clone(),
-							estimate: request.request_estimate(),
+							estimate: request_estimate.clone(),
 							// Media tokens are an allowance, not text, so they never calibrate.
 							calibration_sample: request.content_parts.is_empty(),
 							cache_identity: request.cache_identity(),
@@ -1776,6 +1862,15 @@ impl<'a> Executor<'a> {
 				context.recovery.inference_accepted();
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
+				}
+				// More input than a calibrated or tokenized estimate predicted is
+				// an estimator defect, such as a wrong Token Encoding: the Run
+				// estimates in bytes from its next step (ADR 0017).
+				if let Some(reported) = result.reported.input_tokens
+					&& context.estimate.underestimated(&request_estimate, reported)
+				{
+					metrics::counter!("aidash_estimate_underestimated_total", "estimator" => estimate.id())
+						.increment(1);
 				}
 				// Unreported counts are known only through the Usage Record. The
 				// durable context keeps the shape older workers' strict decoders
@@ -2861,7 +2956,7 @@ async fn prepare_tool_result(
 }
 async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
-	run: &Run,
+	_run: &Run,
 	guard: Option<&dyn ExecutionAuthority>,
 	selections: &[Selection],
 	messages: &[(i64, Uuid, usize)],
@@ -2886,11 +2981,10 @@ async fn resolve_model_input_media(
 			through_seq: messages.last().map(|(seq, _, _)| *seq),
 			has_more: false,
 		}
-	} else if let Some(guard) = guard {
-		guard.human_message_media(messages, model).await?
 	} else {
-		environment
-			.operator_human_message_media(run, messages, model)
+		guard
+			.ok_or(Error::Forbidden)?
+			.human_message_media(messages, model)
 			.await?
 	};
 	let batch_headroom = human
@@ -3029,6 +3123,13 @@ struct OrderedSemantic {
 	retrieved: bool,
 }
 impl OrderedSemantic {
+	/// The outage cause when this step retrieved Degraded context.
+	fn degraded(&self) -> Option<aidash_domain::semantic::degraded::OutageCause> {
+		self.retrieved
+			.then_some(self.value.as_ref())
+			.flatten()
+			.and_then(aidash_domain::semantic::degraded::degraded)
+	}
 	/// The observation to persist, or `None` when every cached entry was reused.
 	/// Reused entries keep their original bytes and need no new journal.
 	fn observation(
@@ -3063,6 +3164,26 @@ impl OrderedSemantic {
 		observation.skill = skill;
 		Ok(Some(observation))
 	}
+}
+
+/// Record a step that ran with Degraded context. Only the step's first
+/// degradation is saved, with `run.semantic_degraded`. A re-entry of the same
+/// step saves nothing here: the degradation is already durable, and the
+/// refreshed cause rides on the step's next save.
+async fn degrade_context(
+	store: &dyn ExecutionStore,
+	run: &mut Run,
+	token: Uuid,
+	cause: aidash_domain::semantic::degraded::OutageCause,
+) -> Result<()> {
+	let new_step = run.recovery.degraded.record(run.step, cause);
+	// The outage this step absorbed is over for retry purposes; a stale reason
+	// must not make a later step's first failure look like its last retry.
+	run.recovery.semantic_reason = None;
+	if new_step {
+		store.degrade_sources(run, token).await?;
+	}
+	Ok(())
 }
 
 async fn compact_execution(

@@ -1361,17 +1361,31 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	let endpoint = server.url.clone();
 	let _calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
-	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut entry = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	entry.id = "discovered-only".into();
 	entry.binding_normalization = None;
 	entry
 		.description
 		.insert("en".into(), "discovered-private-metadata".into());
-	f.registry.register(entry).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry,
+		)
+		.await
+		.unwrap();
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -1429,7 +1443,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
@@ -1445,7 +1459,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
@@ -1459,18 +1473,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		200
 	);
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-discovered-registry","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["discovered-only"]}}));
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":bundle})
-		)
-		.await
-		.0,
-		200
-	);
+	common::replace_policy(&f.store, "acme", bundle.clone()).await;
 	assert_eq!(
 		request(&app, &token, "GET", &path, Value::Null).await.0,
 		403

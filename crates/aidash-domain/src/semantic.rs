@@ -47,6 +47,10 @@ pub enum Failure {
 /// first one comes after a second. None of them spends an outage retry (#233).
 pub const PENDING_REPLAY_SECONDS: i64 = 30;
 
+/// Retries of a semantic outage before a Run pauses, or degrades an opted-in
+/// workspace slot (ADR 0059), after delays of 2, 4, 8, 16 and 32 s.
+pub const OUTAGE_RETRIES: u32 = 5;
+
 impl Failure {
 	pub fn transient(self) -> bool {
 		matches!(self, Self::Unavailable)
@@ -160,6 +164,7 @@ impl Source {
 	}
 }
 
+pub mod degraded;
 pub mod indexing;
 
 pub mod mutations;

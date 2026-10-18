@@ -6,6 +6,7 @@
 server/settings/*.toml
 !server/settings/*.example.toml
 target
+**/target
 coverage
 openapi
 web/node_modules

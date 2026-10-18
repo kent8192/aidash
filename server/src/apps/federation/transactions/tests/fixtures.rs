@@ -1,5 +1,7 @@
 //! Two native HTTP nodes with disposable databases and controllable network links.
 use crate::native_database::{DatabaseFixture, DatabaseFuture, database};
+#[path = "../../../execution/tests/support/tenant_roots.rs"]
+pub(crate) mod tenant_roots;
 use crate::settings::{process_settings, settings_for};
 use aidash_server::{
 	bootstrap,
@@ -122,22 +124,19 @@ pub fn pair(
 				200
 			);
 		}
-		let wa = a
-			.post(
-				"/api/workspaces",
-				&json!({"title":"A", "goal":"Atomic state"}),
-			)
-			.await;
-		let wb = b
-			.post(
-				"/api/workspaces",
-				&json!({"title":"B", "goal":"Atomic state"}),
-			)
-			.await;
-		assert_eq!(wa.0, 200, "{}", wa.1);
-		assert_eq!(wb.0, 200, "{}", wb.1);
-		let wa: Uuid = serde_json::from_value(wa.1["id"].clone()).unwrap();
-		let wb: Uuid = serde_json::from_value(wb.1["id"].clone()).unwrap();
+		let mut workspaces = vec![];
+		for (node, title) in [(&a, "A"), (&b, "B")] {
+			let scope = tenant_roots::tenant_scope(&node.f.store, "acme").await;
+			workspaces.push(
+				node.f
+					.store
+					.create_workspace(&scope, "alice", title, "Atomic state")
+					.await
+					.unwrap()
+					.id,
+			);
+		}
+		let (wa, wb) = (workspaces[0], workspaces[1]);
 		let manifest = serde_json::from_value(json!({
 			"id":Uuid::new_v4(), "coordinator":a.f.config.node_id,
 			"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),

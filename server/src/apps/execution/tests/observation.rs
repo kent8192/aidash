@@ -5,7 +5,6 @@ mod endpoint_fixtures;
 #[path = "support/native_database.rs"]
 mod native_database;
 
-use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::workspaces::models::states::ArtifactKind;
 use aidash_server::apps::workspaces::models::{Artifact, Message};
 use aidash_server::{
@@ -13,7 +12,7 @@ use aidash_server::{
 	federation::Home,
 	tool::{ToolContext, builtins},
 };
-use endpoint_fixtures::{EndpointFixture, assert_json, endpoint};
+use endpoint_fixtures::{EndpointFixture, endpoint};
 use reinhardt::db::orm::Model;
 use rstest::rstest;
 use serde_json::json;
@@ -28,41 +27,42 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let app = endpoint.await;
 	endpoint_fixtures::register_fixture_agent(&app, "lead").await;
 	let f = &app.runtime;
-	let workspace: Workspace = serde_json::from_value(assert_json(
-		app.deployment_administrator
-			.post(
-				"/api/workspaces",
-				&json!({"title":"Airline","goal":"航空会社の新規事業計画"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	))
-	.unwrap();
-	let task: Task = serde_json::from_value(assert_json(
-		app.deployment_administrator
-			.post(
-				&format!("/api/workspaces/{}/tasks", workspace.id),
-				&json!({"title":"Plan","description":"Coordinate specialists"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	))
-	.unwrap();
-	f.store
-		.accept_run(&TEST_FIXTURE, &task, &f.config.node_id, "lead", "1.0.0")
+	let scope = endpoint_fixtures::tenant_scope(&f.store, "acme").await;
+	let workspace: Workspace = f
+		.store
+		.create_workspace(&scope, "alice", "Airline", "航空会社の新規事業計画")
 		.await
 		.unwrap();
+	let task: Task = f
+		.store
+		.create_task(
+			&scope,
+			workspace.id,
+			&NewTask {
+				title: "Plan".into(),
+				description: "Coordinate specialists".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	let lead = f
+		.registry
+		.get(scope.tenant_name().unwrap(), "lead", "1.0.0")
+		.await
+		.unwrap();
+	endpoint_fixtures::local_run(&f.store, &scope, &task, &lead).await;
 	let worker = Uuid::new_v4();
 	let run = f.store.lease_run(worker, 120).await.unwrap().unwrap();
 	let ctx = ToolContext {
 		home: Home::new(f.clone(), run.clone()),
 		store: f.store.clone(),
 		run: run.clone(),
-		scope: TEST_FIXTURE,
+		scope: scope.clone(),
 	};
 	let tools = builtins();
 	let mut first_size = 0;
@@ -71,7 +71,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		let key = format!("observe-{i}");
 		f.store
 			.invocation_start(
-				&TEST_FIXTURE,
+				&scope,
 				&run,
 				worker,
 				&key,
@@ -86,11 +86,11 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.await
 			.unwrap();
 		f.store
-			.invocation_finish(&TEST_FIXTURE, &run, worker, &key, &result)
+			.invocation_finish(&scope, &run, worker, &key, &result)
 			.await
 			.unwrap();
 		// Assert
-		let audit = f.store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
+		let audit = f.store.snapshot(&scope, workspace.id).await.unwrap();
 		assert!(
 			audit
 				.events
@@ -114,7 +114,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			"observation grew recursively: {size}"
 		);
 	}
-	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
+	let snapshot = f.store.snapshot(&scope, workspace.id).await.unwrap();
 	let event = snapshot
 		.events
 		.iter()
@@ -176,7 +176,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		let child = f
 			.store
 			.create_task(
-				&TEST_FIXTURE,
+				&scope,
 				workspace.id,
 				&NewTask {
 					title: format!("Child {index}"),
@@ -193,7 +193,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		if index == 0 {
 			f.store
 				.transition(
-					&TEST_FIXTURE,
+					&scope,
 					child.id,
 					child.revision,
 					"human",
@@ -205,7 +205,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	}
 	let children = f
 		.store
-		.child_task_summary(&TEST_FIXTURE, workspace.id, task.id)
+		.child_task_summary(&scope, workspace.id, task.id)
 		.await
 		.unwrap();
 	assert!(children.has_pending && children.has_failed);
@@ -213,7 +213,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let old_event = f
 		.store
 		.emit(
-			&TEST_FIXTURE,
+			&scope,
 			Some(workspace.id),
 			"old-record-regression",
 			json!({"marker":"beyond the recent event snapshot"}),
@@ -222,7 +222,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.unwrap();
 	f.store
 		.message(
-			&TEST_FIXTURE,
+			&scope,
 			workspace.id,
 			"review-test",
 			"old message",
@@ -262,7 +262,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	] {
 		let record = f
 			.store
-			.workspace_record(&TEST_FIXTURE, workspace.id, kind, id)
+			.workspace_record(&scope, workspace.id, kind, id)
 			.await
 			.unwrap();
 		assert!(record.to_string().contains(expected));
@@ -270,7 +270,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	for index in 0..105 {
 		f.store
 			.emit(
-				&TEST_FIXTURE,
+				&scope,
 				Some(workspace.id),
 				"newer-record",
 				json!({"index":index}),
@@ -279,7 +279,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.unwrap();
 		f.store
 			.message(
-				&TEST_FIXTURE,
+				&scope,
 				workspace.id,
 				"review-test",
 				&format!("new message {index}"),
@@ -288,7 +288,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.await
 			.unwrap();
 	}
-	let recent = f.store.snapshot(&TEST_FIXTURE, workspace.id).await.unwrap();
+	let recent = f.store.snapshot(&scope, workspace.id).await.unwrap();
 	assert!(!recent.events.iter().any(|event| event.id == old_event.id));
 	assert!(
 		!recent
@@ -322,7 +322,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let prepared_input = json!({"kind":"artifact","id":Uuid::new_v4(),"max_chars":97});
 	f.store
 		.invocation_start(
-			&TEST_FIXTURE,
+			&scope,
 			&prepared_run,
 			worker,
 			"workspace-read-plan-durability",
@@ -332,14 +332,14 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		)
 		.await
 		.unwrap();
-	let recovered = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	let recovered = f.store.run(&scope, run.id).await.unwrap();
 	assert_eq!(
 		serde_json::to_value(&recovered.state).unwrap()["data"],
 		serde_json::to_value(&prepared_run.state).unwrap()["data"]
 	);
 	let other = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "Private", "Another workspace")
+		.create_workspace(&scope, "alice", "Private", "Another workspace")
 		.await
 		.unwrap();
 	assert!(

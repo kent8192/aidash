@@ -7,6 +7,9 @@ import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
 import { Field, useI18n } from "./ui";
 
+/** The server's closed list of Token Encodings. */
+export const TOKEN_ENCODINGS = ["o200k_base", "gemma4"] as const;
+
 export function OpenRouterModelPicker({
   onNameChange,
 }: {
@@ -179,6 +182,18 @@ export function OpenRouterModelPicker({
           ))}
         </NativeSelect>
       </Field>
+      {/* Named explicitly, never inferred from the slug (ADR 0017). */}
+      <Field label={t("modelTokenEncoding")}>
+        <NativeSelect name="token_encoding" key={selectedId} defaultValue="">
+          <option value="">{t("modelTokenEncodingNone")}</option>
+          {TOKEN_ENCODINGS.map((encoding) => (
+            <option key={encoding} value={encoding}>
+              {encoding}
+            </option>
+          ))}
+        </NativeSelect>
+      </Field>
+      <Hint>{t("modelTokenEncodingHelp")}</Hint>
       <input type="hidden" name="model_id" value={selected?.id ?? ""} />
       <input
         type="hidden"

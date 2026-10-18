@@ -62,6 +62,8 @@ pub struct InstalledPackage {
 #[model(app_label = "marketplace", table_name = "marketplace_revisions")]
 #[derive(Serialize, Deserialize)]
 pub struct InstalledRevision {
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "text")]
 	pub key: String,
 	#[field]
