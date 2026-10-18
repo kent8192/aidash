@@ -22,9 +22,6 @@ pub async fn write<R: MappingRepository>(
 	input: PeerMappingInput,
 ) -> Result<Mapping> {
 	input.validate(tenant, repository.node_id())?;
-	if input.enabled {
-		repository.enabled_peer(&input.source_node).await?;
-	}
 	input.require_existing_revocation()?;
 	let tenancy = TenancyScope::tenant(tenant)?;
 	let mut scope = repository.begin_write(&tenancy, input.enabled).await?;
@@ -34,6 +31,9 @@ pub async fn write<R: MappingRepository>(
 		.await?
 		.ok_or(Error::Forbidden)?;
 	scope.authorize(tenant, &input, &subject).await?;
+	if input.enabled {
+		scope.enabled_peer(&input.source_node).await?;
+	}
 	// A disabled mapping may keep a revoked or expired credential, never one
 	// that could not be exported.
 	scope.exportable(tenant, input.credential_id).await?;

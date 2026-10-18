@@ -73,10 +73,6 @@ impl MappingRepository for Repository {
 	fn node_id(&self) -> &str {
 		"aidash://local"
 	}
-	async fn enabled_peer(&self, _: &str) -> Result<()> {
-		self.called("enabled-peer");
-		Ok(())
-	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Write> {
 		assert!(
 			scope.tenant_name().is_some(),
@@ -127,6 +123,10 @@ impl MappingWrite for Write {
 	async fn credential_subject(&mut self, _: &str, _: Uuid) -> Result<Option<String>> {
 		self.repository.called("credential-subject");
 		Ok(Some("local-subject".into()))
+	}
+	async fn enabled_peer(&mut self, _: &str) -> Result<()> {
+		self.repository.called("enabled-peer");
+		Ok(())
 	}
 	async fn exportable(&mut self, _: &str, _: Uuid) -> Result<()> {
 		self.repository.called("exportable");
@@ -204,10 +204,10 @@ async fn writes_keep_lock_order_and_revocation_uses_control_scope(
 	assert_eq!(result, mapping());
 	let mut expected = if enabled {
 		vec![
-			"enabled-peer",
 			"begin-data",
 			"policy",
 			"credential-subject",
+			"enabled-peer",
 			"exportable",
 			"lock-credential",
 		]
@@ -234,10 +234,10 @@ async fn rejected_mapped_credential_is_forbidden_without_a_mutation(
 	assert_eq!(
 		repository.calls(),
 		vec![
-			"enabled-peer",
 			"begin-data",
 			"policy",
 			"credential-subject",
+			"enabled-peer",
 			"exportable",
 			"lock-credential"
 		]
@@ -298,10 +298,10 @@ async fn failed_history_prevents_commit(mut repository: Repository, input: PeerM
 	assert_eq!(
 		repository.calls(),
 		vec![
-			"enabled-peer",
 			"begin-data",
 			"policy",
 			"credential-subject",
+			"enabled-peer",
 			"exportable",
 			"lock-credential",
 			"insert",

@@ -19,6 +19,9 @@ pub trait MappingWrite: Send + Sized {
 	) -> Result<()> {
 		Ok(())
 	}
+	/// Requires `node` to be an enabled peer, read in this transaction once
+	/// the writer is authorized, so a refused writer learns nothing of it.
+	async fn enabled_peer(&mut self, node: &str) -> Result<()>;
 	/// Refuses a credential no Peer Mapping may bind, whether or not it is
 	/// enabled.
 	async fn exportable(&mut self, tenant: &str, id: Uuid) -> Result<()>;
@@ -41,7 +44,6 @@ pub trait MappingRepository: Send + Sync {
 	type Write: MappingWrite;
 	type Access: MappingAccess;
 	fn node_id(&self) -> &str;
-	async fn enabled_peer(&self, node: &str) -> Result<()>;
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Self::Write>;
 	async fn resolved(&self, node: &str, tenant: &str, subject: &str) -> Result<Option<Mapping>>;
 	async fn credential_subject(&self, mapping: &Mapping) -> Result<Option<String>>;

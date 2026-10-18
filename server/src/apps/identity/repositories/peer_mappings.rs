@@ -42,13 +42,6 @@ impl MappingRepository for Repository<'_> {
 	fn node_id(&self) -> &str {
 		&self.runtime.config.node_id
 	}
-	async fn enabled_peer(&self, node: &str) -> Result<()> {
-		self.runtime
-			.peer(node)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<WriteScope> {
 		let result: NativeResult<WriteScope> = async {
 			let visibility = if enabled {
@@ -242,6 +235,12 @@ impl MappingWrite for WriteScope {
 	/// A mapped peer acts with an exportable credential only: never a
 	/// Mapping's own, and never one a member issued for itself, which would
 	/// let someone outside the Deployment act as that person.
+	async fn enabled_peer(&mut self, node: &str) -> Result<()> {
+		crate::apps::federation::peer::models::Peer::enabled_in(&mut self.tx, node)
+			.await?
+			.map(|_| ())
+			.ok_or(aidash_application::Error::Unauthorized)
+	}
 	async fn exportable(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		let exportable: Option<i32> = crate::database::native::query_scalar(
 			&Query::select()
