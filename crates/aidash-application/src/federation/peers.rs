@@ -9,10 +9,8 @@ use crate::{
 use aidash_domain::{
 	configuration::{same_secret, validate_node_id, validate_peer_endpoint},
 	federation::{Peer, protocol::compatible},
-	registry::EntityRef,
 };
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub struct PeerAuthority {
 	pub node: String,
@@ -71,12 +69,6 @@ impl PeerAuthority {
 			{
 				return Err(Error::Unauthorized);
 			}
-		}
-		Ok(())
-	}
-	pub async fn authorize_task(&self, node: &str, task: Uuid, agent: &EntityRef) -> Result<()> {
-		if !self.configuration.authorized(node, task, agent).await? {
-			return Err(Error::Unauthorized);
 		}
 		Ok(())
 	}

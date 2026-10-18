@@ -1,5 +1,5 @@
 use super::*;
-use crate::ports::catalog::{CatalogAdministrationRead, CatalogAdministrator, CatalogMutation};
+use crate::ports::catalog::{CatalogAdministrator, CatalogMutation};
 use aidash_domain::identity::{Principal, catalog::Binding};
 use async_trait::async_trait;
 use rstest::rstest;
@@ -86,17 +86,6 @@ impl CatalogAdministrator for Fixture {
 		Ok(self.definition.clone())
 	}
 }
-#[async_trait]
-impl CatalogAdministrationRead for Fixture {
-	fn principal(&self) -> &Principal {
-		&self.principal
-	}
-	async fn bindings(&mut self, tenant: &str) -> Result<Vec<Binding>> {
-		self.calls.push(format!("bindings:{tenant}"));
-		Ok(vec![binding()])
-	}
-}
-
 #[rstest]
 #[tokio::test]
 async fn deployment_administrator_history_label_cannot_elevate_a_subject_before_persistence() {
@@ -114,18 +103,6 @@ async fn deployment_administrator_history_label_cannot_elevate_a_subject_before_
 		"deployment_administrator",
 	)
 	.await;
-	assert!(matches!(result, Err(Error::Forbidden)));
-	assert_eq!(scope.calls, Vec::<String>::new());
-}
-#[rstest]
-#[tokio::test]
-async fn administration_read_requires_deployment_administrator_authority_for_worker_callers_too() {
-	let mut scope = Fixture::new();
-	scope.principal = Principal::Subject {
-		tenant: "tenant".into(),
-		subject: "alice".into(),
-	};
-	let result = administration(&mut scope, "tenant").await;
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(scope.calls, Vec::<String>::new());
 }
@@ -303,12 +280,4 @@ async fn marketplace_uses_the_same_cas_inside_its_existing_protected_scope() {
 			"history:tenant:skill:1.0.0:2:false:deployment-administrator-activation"
 		]
 	);
-}
-#[rstest]
-#[tokio::test]
-async fn administrator_listing_retains_the_persisted_approval_state() {
-	let mut scope = Fixture::new();
-	let result = administration(&mut scope, "tenant").await.unwrap();
-	assert_eq!(result, vec![binding()]);
-	assert_eq!(scope.calls, vec!["bindings:tenant"]);
 }

@@ -18,8 +18,12 @@ use uuid::Uuid;
 pub(crate) async fn capacity(lease: &mut Lease<'_>, binding: &NativeBinding) -> Result<usize> {
 	let mut capacity = 0_usize;
 	for declared in &binding.banks {
-		let policy =
-			crate::semantic::native_memory::policy(lease, &declared.provider.entry).await?;
+		let policy = crate::semantic::native_memory::policy(
+			lease,
+			&declared.bank.tenant,
+			&declared.provider.entry,
+		)
+		.await?;
 		// PostgreSQL COUNT cannot exceed i64::MAX. Saturation preserves otherwise
 		// valid extreme policies without overflowing the aggregate allowance.
 		capacity = capacity
@@ -304,7 +308,12 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 		}
 		policies.push((
 			declared.bank.clone(),
-			crate::semantic::native_memory::policy(&mut lease, &declared.provider.entry).await?,
+			crate::semantic::native_memory::policy(
+				&mut lease,
+				&declared.bank.tenant,
+				&declared.provider.entry,
+			)
+			.await?,
 		));
 	}
 	// Check every accumulated revision in bounded pages, including later Runs.

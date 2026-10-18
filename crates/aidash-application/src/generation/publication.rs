@@ -40,8 +40,19 @@ pub async fn publish(
 	scope.replace_snapshot(snapshot);
 	scope.save_authority(job).await?;
 	scope.register(&entry).await?;
+	if !job.home_node.is_empty() {
+		return Ok(());
+	}
+	// An unapproved generated version could never run, so a lost
+	// `catalog.approve` refuses the activation instead of publishing it.
+	let Some(approver) = scope.approver(job).await? else {
+		return Err(Error::Forbidden);
+	};
+	if !scope.may_approve(&approver, &entry).await? {
+		return Err(Error::Forbidden);
+	}
 	scope.approve(job, &entry).await?;
-	scope.catalog_history(job, &entry).await
+	scope.catalog_history(job, &entry, &approver).await
 }
 /// Every ancestor is checked using the current policy under the inherited lease.
 pub async fn require_live(

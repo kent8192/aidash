@@ -2905,7 +2905,7 @@ async fn prepare_tool_result(
 }
 async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
-	run: &Run,
+	_run: &Run,
 	guard: Option<&dyn ExecutionAuthority>,
 	selections: &[Selection],
 	messages: &[(i64, Uuid, usize)],
@@ -2930,11 +2930,10 @@ async fn resolve_model_input_media(
 			through_seq: messages.last().map(|(seq, _, _)| *seq),
 			has_more: false,
 		}
-	} else if let Some(guard) = guard {
-		guard.human_message_media(messages, model).await?
 	} else {
-		environment
-			.operator_human_message_media(run, messages, model)
+		guard
+			.ok_or(Error::Forbidden)?
+			.human_message_media(messages, model)
 			.await?
 	};
 	let batch_headroom = human

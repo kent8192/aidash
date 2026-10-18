@@ -146,7 +146,7 @@ pub async fn put(
 				"real-tool rules need unique Tools and bounded action/resource allowlists".into(),
 			));
 		}
-		let tool = repository.definition(&rule.tool).await?;
+		let tool = repository.definition(&tenant, &rule.tool).await?;
 		validate_real_rule(configuration, rule, &tool)?;
 	}
 	repository.save(&tenant, &id, &input).await

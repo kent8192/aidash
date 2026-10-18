@@ -232,7 +232,7 @@ CREATE FUNCTION public.marketplace_registry_fence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
- IF NEW.metadata ? 'installation' OR (TG_OP='UPDATE' AND OLD.metadata ? 'installation') OR EXISTS (SELECT 1 FROM registry WHERE id=NEW.id AND version=NEW.version AND metadata ? 'installation') THEN
+ IF NEW.metadata ? 'installation' OR (TG_OP='UPDATE' AND OLD.metadata ? 'installation') OR EXISTS (SELECT 1 FROM registry WHERE tenant=NEW.tenant AND id=NEW.id AND version=NEW.version AND metadata ? 'installation') THEN
   IF TG_OP <> 'INSERT' OR current_setting('aidash.marketplace_writer', true) IS DISTINCT FROM '1'
     OR NEW.metadata->'installation'->>'contract' IS DISTINCT FROM '1'
     OR NEW.id NOT LIKE 'mkt-%' THEN
@@ -247,11 +247,11 @@ CREATE FUNCTION public.sync_registry_agent_model_refs() RETURNS trigger
 BEGIN
     IF TG_OP = 'UPDATE' AND OLD.kind = 'agent' THEN
         DELETE FROM registry_agent_model_refs
-        WHERE agent_id = OLD.id AND agent_version = OLD.version;
+        WHERE tenant = OLD.tenant AND agent_id = OLD.id AND agent_version = OLD.version;
     END IF;
     IF NEW.kind = 'agent' THEN
-        INSERT INTO registry_agent_model_refs(agent_id, agent_version, model_id, model_version)
-        VALUES (NEW.id, NEW.version, NEW.metadata#>>'{config,model,id}', NEW.metadata#>>'{config,model,version}');
+        INSERT INTO registry_agent_model_refs(tenant, agent_id, agent_version, model_id, model_version)
+        VALUES (NEW.tenant, NEW.id, NEW.version, NEW.metadata#>>'{config,model,id}', NEW.metadata#>>'{config,model,version}');
     END IF;
     RETURN NEW;
 END $$;
@@ -261,29 +261,29 @@ CREATE FUNCTION public.sync_registry_agent_resource_refs() RETURNS trigger
 BEGIN
     IF TG_OP = 'UPDATE' AND OLD.kind = 'agent' THEN
         DELETE FROM registry_agent_resource_refs
-        WHERE agent_id = OLD.id AND agent_version = OLD.version;
+        WHERE tenant = OLD.tenant AND agent_id = OLD.id AND agent_version = OLD.version;
     END IF;
     IF NEW.kind = 'agent' THEN
         INSERT INTO registry_agent_resource_refs(
-            agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
+            tenant, agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
         )
-        SELECT NEW.id, NEW.version, 'tool', reference.ordinality::integer,
+        SELECT NEW.tenant, NEW.id, NEW.version, 'tool', reference.ordinality::integer,
                reference.value->>'id', reference.value->>'version'
         FROM jsonb_array_elements(COALESCE(NEW.metadata#>'{config,tools}', '[]'::jsonb))
              WITH ORDINALITY AS reference(value, ordinality);
         INSERT INTO registry_agent_resource_refs(
-            agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
+            tenant, agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
         )
-        SELECT NEW.id, NEW.version, 'skill', reference.ordinality::integer,
+        SELECT NEW.tenant, NEW.id, NEW.version, 'skill', reference.ordinality::integer,
                reference.value->>'id', reference.value->>'version'
         FROM jsonb_array_elements(COALESCE(NEW.metadata#>'{config,skills}', '[]'::jsonb))
              WITH ORDINALITY AS reference(value, ordinality);
         IF jsonb_typeof(NEW.metadata#>'{config,cluster}') = 'object' THEN
             INSERT INTO registry_agent_resource_refs(
-                agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
+                tenant, agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
             )
             VALUES (
-                NEW.id, NEW.version, 'cluster', 1,
+                NEW.tenant, NEW.id, NEW.version, 'cluster', 1,
                 NEW.metadata#>>'{config,cluster,id}',
                 NEW.metadata#>>'{config,cluster,version}'
             );

@@ -876,11 +876,11 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		)
 		.await;
 	assert_eq!(status, 200, "{overview}");
-	assert_eq!(
-		overview["actions"].as_array().unwrap().len(),
-		10,
-		"{overview}"
-	);
+	let actions = overview["actions"].as_array().unwrap();
+	assert_eq!(actions.len(), 13, "{overview}");
+	for action in ["registry.create", "catalog.approve", "marketplace.install"] {
+		assert!(actions.contains(&json!(action)), "{action}: {overview}");
+	}
 	d.finish().await;
 }
 

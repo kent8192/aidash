@@ -186,14 +186,13 @@ pub async fn configure(
 pub async fn activate(
 	#[inject] service: Depends<MarketplaceManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<BrowserOrigin>,
 	Path(id): Path<String>,
 	Json(input): Json<Activate>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(service.activate(actor, browser, id, input).await)
+	crate::http::json(service.activate(actor, id, input).await)
 }
 
 #[post(
@@ -204,24 +203,9 @@ pub async fn activate(
 pub async fn approve_set(
 	#[inject] service: Depends<MarketplaceManagement>,
 	#[inject] actor: Actor,
-	#[inject] browser: Option<BrowserOrigin>,
 	Json(input): Json<aidash_application::marketplace::operations::approval_set::ApprovalSet>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.approve_set(actor, browser, input).await)
-}
-
-#[post(
-	"/api/marketplace/host-packages",
-	name = "marketplace-host-packages",
-	auth = "protected"
-)]
-pub async fn host_packages(
-	#[inject] service: Depends<MarketplaceManagement>,
-	#[inject] actor: Actor,
-	#[inject] browser: Option<BrowserOrigin>,
-	Json(input): Json<aidash_application::marketplace::operations::host_packages::HostPackages>,
-) -> ViewResult<Response> {
-	crate::http::json(service.host_packages(actor, browser, input).await)
+	crate::http::json(service.approve_set(actor, input).await)
 }
 
 #[get(

@@ -23,6 +23,8 @@ use uuid::Uuid;
 pub(crate) struct NativeDeploymentAdministrator<'a> {
 	pub(crate) staging: NativeStaging<'a>,
 	pub(crate) principal: Principal,
+	/// The Tenant whose subject was decided `catalog.approve` for this activation.
+	pub(crate) approving: Option<String>,
 }
 #[async_trait]
 impl PrivateKnowledgeRead for NativeDeploymentAdministrator<'_> {
@@ -85,6 +87,9 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
+	fn approving_tenant(&self) -> Option<&str> {
+		self.approving.as_deref()
+	}
 	async fn load_tenant(&mut self, tenant: &str) -> aidash_application::Result<()> {
 		crate::authorization::Authorization::load(self.staging.tx, tenant)
 			.await
@@ -133,7 +138,7 @@ impl DeploymentAdministratorScope for NativeDeploymentAdministrator<'_> {
 			reference,
 			expected_revision,
 			enabled,
-			"deployment_administrator",
+			&aidash_application::marketplace::operations::actor(&self.principal),
 		)
 		.await
 		.map(|_| ())

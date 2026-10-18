@@ -25,6 +25,13 @@ fn query(tenant: &str, options: &GraphOptions, offset: u64) -> Option<(String, V
 				.add(
 					reinhardt::query::SimpleExpr::from(Expr::col((
 						Alias::new("r"),
+						Alias::new("tenant"),
+					)))
+					.eq(Expr::col((Alias::new("c"), Alias::new("tenant")))),
+				)
+				.add(
+					reinhardt::query::SimpleExpr::from(Expr::col((
+						Alias::new("r"),
 						Alias::new("id"),
 					)))
 					.eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
