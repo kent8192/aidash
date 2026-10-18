@@ -1493,6 +1493,14 @@ impl ExpiringAttempts {
 				.and_where(Expr::col("purged_at").is_null())
 				.build(PostgresQueryBuilder);
 			tx.execute(&sql, convert_values(values)).await?;
+			// The page title came from the provider too, and an earlier purge
+			// kept it, so it goes from every expired snapshot.
+			let (sql, values) = Query::update()
+				.table(Alias::new(ResearchSnapshot::table_name()))
+				.value(Alias::new("title"), Option::<String>::None)
+				.and_where(in_documents())
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
 			ResearchOriginal::purge(tx, &documents).await?;
 			// Fragments of a snapshot an earlier purge emptied go too: their
 			// passages are copies of what the provider returned.

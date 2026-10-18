@@ -187,6 +187,9 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		aidash_server::research::sweep_account_terms(&store, std::slice::from_ref(&termed.terms))
 	};
 
+	let titled = evidence.snapshot(run.id, document).await.unwrap().unwrap();
+	assert!(titled.title.is_some(), "the provider gave the page a title");
+
 	// Act: within the terms nothing goes; past them the sweep purges.
 	age(&store, run.id, 29).await;
 	assert_eq!(swept().await.unwrap(), 0);
@@ -223,6 +226,8 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		Some(PurgeReason::AccountTerms)
 	);
 	assert_eq!(snapshot.readable(), Err(Failure::SnapshotPurged));
+	// The page title came from the provider, so it goes too.
+	assert_eq!(snapshot.title, None);
 	// The fragment's text is gone; its digest still verifies the citation.
 	let fragment = evidence
 		.fragments(run.id, &[reference])
