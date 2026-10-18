@@ -64,7 +64,14 @@ pub(crate) async fn page(access: &mut Access, node: &str, offset: u64) -> Result
 				created_at: row.created_at,
 			})
 			.collect();
-		let approver = entry.kind == "agent" && access.decide(&resource, "catalog.approve").await?;
+		let approver = entry.kind == "agent" && {
+			let approval = access.resource(
+				"registry",
+				format!("{}/{}@{}", entry.kind, entry.id, entry.version),
+				aidash_application::authorization::catalog::attributes(&entry),
+			);
+			access.decide(&approval, "catalog.approve").await?
+		};
 		let subject = approver
 			.then(|| aidash_domain::qualified_agent(node, &entry.id, &entry.version))
 			.and_then(|id| {

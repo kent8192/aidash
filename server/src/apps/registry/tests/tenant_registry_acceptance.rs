@@ -544,6 +544,13 @@ async fn the_versions_list_decides_each_version_and_shows_agent_subjects_to_appr
 			"id":"hide-secret","effect":"deny","subjects":{"ids":["reader"]},
 			"actions":["registry.read"],"resources":{"kinds":["model"],"ids":["secret"]}
 		}));
+	document["bundle"]["policies"]
+		.as_array_mut()
+		.unwrap()
+		.push(json!({
+			"id":"approve-registry","effect":"allow","subjects":{"ids":["member"]},
+			"actions":["catalog.approve"],"resources":{"kinds":["registry"]}
+		}));
 	assert_json(
 		fixture
 			.deployment_administrator
@@ -557,8 +564,10 @@ async fn the_versions_list_decides_each_version_and_shows_agent_subjects_to_appr
 		200,
 	);
 	let reader = credential(&fixture, "acme", "reader").await;
+	let member = credential(&fixture, "acme", "member").await;
 	// Act
 	let read = assert_json(reader.get("/api/registry/versions").await.unwrap(), 200);
+	let approving = assert_json(member.get("/api/registry/versions").await.unwrap(), 200);
 	let administered = assert_json(owner.get("/api/registry/versions").await.unwrap(), 200);
 	// Assert
 	let find = |page: &Value, id: &str| {
@@ -572,6 +581,10 @@ async fn the_versions_list_decides_each_version_and_shows_agent_subjects_to_appr
 	assert!(find(&read, "open").is_some(), "{read}");
 	assert!(find(&read, "secret").is_none(), "{read}");
 	assert_eq!(find(&read, "helper").unwrap()["subject"], Value::Null);
+	assert_eq!(
+		find(&approving, "helper").unwrap()["subject"]["groups"],
+		json!([MEMBERS])
+	);
 	assert!(find(&administered, "secret").is_some());
 	assert_eq!(
 		find(&administered, "helper").unwrap()["subject"]["groups"],
