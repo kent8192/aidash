@@ -3,6 +3,7 @@
 //! research use case with this Node's evidence store and disclosure gate.
 use crate::{
 	Error, Result,
+	apps::execution::serializers::research_providers::{BraveSettings, ResearchProviderSettings},
 	domain::Run,
 	provider::ToolSpec,
 	tool::{Tool, ToolContext},
@@ -15,7 +16,7 @@ use aidash_application::{
 	research::{Call, Research},
 };
 use aidash_domain::{
-	research::{Operation, account::AccountProfile, evidence::Limits},
+	research::{Operation, evidence::Limits},
 	tool::{
 		ToolContract,
 		providers::{ToolDescriptor, research_contract, research_operation},
@@ -25,18 +26,13 @@ use aidash_integrations::research::{
 	brave::BraveSearch, fixture::FixtureResearch, page::PageReader,
 };
 use async_trait::async_trait;
+use reinhardt::conf::settings::profile::Profile;
 use serde_json::Value;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use uuid::Uuid;
 
-/// Path of the Research account holder's Brave account profile (JSON).
-pub const BRAVE_PROFILE_ENV: &str = "AIDASH_RESEARCH_BRAVE_PROFILE";
-/// `enabled` admits the public page reading provider.
-pub const PAGE_READING_ENV: &str = "AIDASH_RESEARCH_PAGE_READING";
-/// `enabled` admits the deterministic fixture provider (tests and evaluation).
-pub const FIXTURE_ENV: &str = "AIDASH_RESEARCH_FIXTURE";
-
-/// Research providers this Node implements, read once from its environment.
+/// Research providers this Node implements, built from the Deployment's
+/// `[research_providers]` settings.
 pub struct Providers {
 	brave: std::result::Result<Arc<BraveSearch>, String>,
 	pages: Option<Arc<PageReader>>,
@@ -44,14 +40,30 @@ pub struct Providers {
 	pub limits: Limits,
 }
 
-impl Providers {
-	pub fn from_env() -> Self {
+impl Default for Providers {
+	/// A Deployment that offers no Research provider.
+	fn default() -> Self {
 		Self {
-			brave: brave_from_env(),
-			pages: (std::env::var(PAGE_READING_ENV).as_deref() == Ok("enabled"))
-				.then(|| Arc::new(PageReader::default())),
-			fixture: (std::env::var(FIXTURE_ENV).as_deref() == Ok("enabled"))
-				.then(|| Arc::new(FixtureResearch::default())),
+			brave: Err("is not configured".into()),
+			pages: None,
+			fixture: None,
+			limits: Limits::default(),
+		}
+	}
+}
+
+impl Providers {
+	/// The providers `settings` declare. A Brave key whose Deployment secret
+	/// is not set leaves Brave not set up rather than refusing to start.
+	pub fn from_settings(settings: &ResearchProviderSettings) -> Self {
+		Self {
+			brave: settings
+				.brave
+				.as_ref()
+				.ok_or_else(|| "is not configured".to_owned())
+				.and_then(brave),
+			pages: settings.page_reading.then(|| Arc::new(PageReader::default())),
+			fixture: settings.fixture.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
 		}
 	}
@@ -71,10 +83,10 @@ impl Providers {
 				.map(|_| ())
 				.map_err(|reason| unavailable(reason)),
 			"research.page@1" if self.pages.is_none() => {
-				Err(unavailable(&format!("requires {PAGE_READING_ENV}=enabled")))
+				Err(unavailable("requires research_providers.page_reading"))
 			}
 			"research.fixture@1" if self.fixture.is_none() => {
-				Err(unavailable(&format!("requires {FIXTURE_ENV}=enabled")))
+				Err(unavailable("requires research_providers.fixture"))
 			}
 			"research.page@1" | "research.fixture@1" => Ok(()),
 			_ => Err(unavailable("is not a research provider")),
@@ -155,20 +167,12 @@ fn unavailable(provider: &str) -> Error {
 	Error::Invalid(format!("PROVIDER_UNAVAILABLE: {provider}"))
 }
 
-fn brave_from_env() -> std::result::Result<Arc<BraveSearch>, String> {
-	let path = match std::env::var(BRAVE_PROFILE_ENV) {
-		Ok(path) if !path.is_empty() => path,
-		_ => return Err(format!("requires {BRAVE_PROFILE_ENV}")),
-	};
-	let profile: AccountProfile = std::fs::read(&path)
-		.ok()
-		.and_then(|bytes| serde_json::from_slice(&bytes).ok())
-		.ok_or_else(|| "has an unreadable account profile".to_owned())?;
-	let token = crate::config::secret(&profile.credential_env)
-		.map_err(|_| "has no configured tool secret".to_owned())?;
-	BraveSearch::new(profile, &token)
+fn brave(settings: &BraveSettings) -> std::result::Result<Arc<BraveSearch>, String> {
+	let token = crate::config::secret(&settings.secret)
+		.map_err(|_| "has no configured Deployment secret".to_owned())?;
+	BraveSearch::new(settings.account.clone(), &token)
 		.map(Arc::new)
-		.map_err(|_| "has unavailable account terms".to_owned())
+		.map_err(|_| "has incomplete account terms".to_owned())
 }
 
 /// The Node's Research evidence store over `store`.
@@ -179,10 +183,36 @@ pub fn evidence_store(
 	crate::apps::execution::repositories::research::Evidence { store, scope }
 }
 
+static PROVIDERS: LazyLock<RwLock<Arc<Providers>>> =
+	LazyLock::new(|| RwLock::new(Arc::new(Providers::from_project_settings())));
+
+impl Providers {
+	/// The providers of the composed project settings, for a process that
+	/// has not been configured by startup, such as a management command.
+	fn from_project_settings() -> Self {
+		crate::config::settings::get_settings()
+			.ok()
+			.and_then(|settings| settings.resolve().ok())
+			.map(|settings| Self::from_settings(&settings.into_parts().0.research_providers))
+			.unwrap_or_default()
+	}
+}
+
+/// Install the providers `settings` declare for this process. Startup calls
+/// this before serving, after refusing a malformed declaration.
+pub fn configure(settings: &ResearchProviderSettings, profile: &Profile) -> Result<()> {
+	settings.check(profile)?;
+	*PROVIDERS.write().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+		Arc::new(Providers::from_settings(settings));
+	Ok(())
+}
+
 /// The Node's research providers. Configuration changes need a restart.
-pub fn providers() -> &'static Providers {
-	static PROVIDERS: OnceLock<Providers> = OnceLock::new();
-	PROVIDERS.get_or_init(Providers::from_env)
+pub fn providers() -> Arc<Providers> {
+	PROVIDERS
+		.read()
+		.unwrap_or_else(|poisoned| poisoned.into_inner())
+		.clone()
 }
 
 /// A bound research operation of one provider package.

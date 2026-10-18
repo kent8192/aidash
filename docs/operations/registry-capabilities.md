@@ -47,8 +47,8 @@ review and approve them like Host groups. Entries are named
 aliases `research_search`, `research_fetch` and `research_find` with the same
 schema for every provider, so a tenant can replace `research_brave` and
 `research_page` with another provider package without changing its Agents. A
-group whose provider is not configured on the Node is reported in
-`unavailable`. Descriptors with a `research.` provider cannot be registered by
+group whose provider the Deployment's `[research_providers]` settings do not
+declare is reported in `unavailable`. Descriptors with a `research.` provider cannot be registered by
 tenants; they come only from these packages. See [Web research](../web-research.md)
 for the contract, evidence store, citation checks and disclosure approval.
 
