@@ -58,9 +58,12 @@ async fn signed_token_is_scoped_to_transaction_tenant_and_ignores_authority_clai
 		keys: Arc::new(Keys),
 	};
 	let token = token(&claims());
-	let sign_in = verifier.verify(&token, "pool-a", Utc::now()).await.unwrap();
-	assert_eq!(sign_in.gcip_tenant.as_deref(), Some("pool-a"));
-	assert_eq!(sign_in.gcip_provider.as_deref(), Some("password"));
+	let (sign_in, method) = verifier.verify(&token, "pool-a", Utc::now()).await.unwrap();
+	assert_eq!(
+		sign_in.issuer,
+		"https://securetoken.google.com/fixture-project/tenants/pool-a"
+	);
+	assert_eq!(method, "password");
 	assert_eq!(sign_in.subject, "person");
 	assert_eq!(
 		sign_in.verified_email.as_deref(),
@@ -90,13 +93,16 @@ async fn second_factor_claims_never_change_the_verified_sign_in(
 		claims["firebase"]["sign_in_second_factor"] = json!(factor);
 		claims["firebase"]["second_factor_identifier"] = json!(identifier);
 	}
-	let sign_in = verifier
+	let (sign_in, method) = verifier
 		.verify(&token(&claims), "pool-a", Utc::now())
 		.await
 		.unwrap();
 	assert_eq!(sign_in.subject, "person");
-	assert_eq!(sign_in.gcip_tenant.as_deref(), Some("pool-a"));
-	assert_eq!(sign_in.gcip_provider.as_deref(), Some("password"));
+	assert_eq!(
+		sign_in.issuer,
+		"https://securetoken.google.com/fixture-project/tenants/pool-a"
+	);
+	assert_eq!(method, "password");
 	assert_eq!(
 		sign_in.verified_email.as_deref(),
 		Some("person@example.test")
@@ -139,6 +145,7 @@ async fn federated_unverified_email_is_never_saved_as_verified() {
 			.verify(&token(&claims), "pool-a", Utc::now())
 			.await
 			.unwrap()
+			.0
 			.verified_email
 			.is_none()
 	);
@@ -189,11 +196,17 @@ async fn admin_lookup_is_tenant_scoped_and_returns_both_status_values(
 		endpoint,
 		credentials: Arc::new(Credentials),
 	};
-	let status = lookup.lookup("person", Some("pool-a")).await.unwrap();
+	let pool = |tenant: &str| super::issuer("fixture-project", tenant);
+	let status = lookup.lookup(&pool("pool-a"), "person").await.unwrap();
 	assert_eq!(status.disabled, disabled);
 	assert_eq!(status.valid_since.map(|time| time.timestamp()), valid_since);
-	assert!(lookup.lookup("person", None).await.is_err());
-	assert!(lookup.lookup("person", Some("other-pool")).await.is_err());
+	for other in [
+		"https://securetoken.google.com/fixture-project".to_owned(),
+		pool("other-pool"),
+		super::issuer("other-project", "pool-a"),
+	] {
+		assert!(lookup.lookup(&other, "person").await.is_err(), "{other}");
+	}
 }
 
 #[tokio::test]
@@ -259,5 +272,10 @@ async fn admin_lookup_fails_closed_for_malformed_or_foreign_users(#[case] body: 
 		endpoint,
 		credentials: Arc::new(Credentials),
 	};
-	assert!(lookup.lookup("person", Some("pool-a")).await.is_err());
+	assert!(
+		lookup
+			.lookup(&super::issuer("fixture-project", "pool-a"), "person")
+			.await
+			.is_err()
+	);
 }

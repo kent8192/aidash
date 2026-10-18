@@ -143,13 +143,11 @@ impl Tenants {
 						.map_err(reinhardt::core::exception::Error::from)?
 						.pop()
 						.ok_or(Error::Unauthorized)?;
-					let pool =
-						(!account.gcip_tenant.is_empty()).then_some(account.gcip_tenant.as_str());
 					if account.disabled_at.is_some()
 						|| !f
 							.config
 							.dashboard_policy()
-							.is_some_and(|policy| policy.unbound(pool))
+							.is_some_and(|policy| policy.unrestricted(&account.issuer))
 					{
 						return Err(Error::Forbidden);
 					}
@@ -220,12 +218,11 @@ impl Tenants {
 				DashboardIdentity::find(tx, identity).await
 			})
 			.await?;
-		let pool = (!account.gcip_tenant.is_empty()).then_some(account.gcip_tenant.as_str());
 		if account.disabled_at.is_some()
 			|| !f
 				.config
 				.dashboard_policy()
-				.is_some_and(|policy| policy.provisions_personal(pool))
+				.is_some_and(|policy| policy.provisions_personal(&account.issuer))
 		{
 			return Err(Error::Forbidden);
 		}
@@ -296,10 +293,10 @@ impl Tenants {
 }
 
 /// Whether `identity` may create Tenants now, for the dashboard to offer it.
-pub(crate) fn creation_offered(f: &Federation, pool: Option<&str>, disabled: bool) -> bool {
+pub(crate) fn creation_offered(f: &Federation, issuer: &str, disabled: bool) -> bool {
 	!disabled
 		&& f.config.tenancy.tenant_creation
 		&& f.config
 			.dashboard_policy()
-			.is_some_and(|policy| policy.unbound(pool))
+			.is_some_and(|policy| policy.unrestricted(issuer))
 }

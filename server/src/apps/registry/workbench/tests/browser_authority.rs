@@ -38,7 +38,6 @@ async fn browser_workbench(
 		.id(Uuid::new_v4())
 		.issuer(issuer)
 		.subject("browser-fixture")
-		.gcip_tenant("")
 		.valid_since(None)
 		.verified_email(None)
 		.display_name(None)

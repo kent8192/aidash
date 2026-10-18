@@ -37,6 +37,47 @@ struct ClientConfig<'a> {
 	mfa_mandatory: bool,
 }
 
+/// GCIP Tenants with a Tenant Binding, whose External Identities may be
+/// mapped only into their bound Tenant. Any other GCIP Tenant admits nobody.
+pub(crate) struct Pools {
+	project: String,
+	bindings: std::collections::BTreeMap<String, String>,
+}
+
+impl Pools {
+	pub(crate) fn new(config: &crate::config::GcipConfig) -> Self {
+		Self {
+			project: config.project_id.clone(),
+			bindings: config.tenant_bindings.clone(),
+		}
+	}
+}
+
+impl aidash_application::ports::authorization::dashboard::Issuers for Pools {
+	fn admitted(&self) -> Vec<String> {
+		self.bindings
+			.keys()
+			.map(|pool| aidash_integrations::gcip::issuer(&self.project, pool))
+			.collect()
+	}
+	fn admits(&self, issuer: &str) -> bool {
+		self.restriction(issuer).is_some()
+	}
+	fn restriction(&self, issuer: &str) -> Option<String> {
+		self.bindings
+			.get(aidash_integrations::gcip::tenant(&self.project, issuer)?)
+			.cloned()
+	}
+	fn restricted_issuer(&self, tenant: &str) -> Option<String> {
+		self.bindings.iter().find_map(|(pool, bound)| {
+			(bound == tenant).then(|| aidash_integrations::gcip::issuer(&self.project, pool))
+		})
+	}
+	fn retires_refused(&self) -> bool {
+		true
+	}
+}
+
 /// `GET /auth/login?org=<Tenant name>` selects the GCIP Tenant explicitly.
 pub(crate) async fn login(
 	f: &Federation,
@@ -166,6 +207,15 @@ async fn transaction(
 	}
 	Ok(transaction)
 }
+/// The sign-in methods a GCIP Tenant offers.
+fn providers(config: &crate::config::GcipConfig, tenant: &str) -> Vec<String> {
+	config
+		.providers
+		.get(tenant)
+		.cloned()
+		.unwrap_or_else(|| vec!["google.com".into(), "password".into()])
+}
+
 pub(crate) async fn configuration(
 	f: &Federation,
 	headers: HeaderMap,
@@ -185,11 +235,7 @@ pub(crate) async fn configuration(
 		api_key: &config.web_api_key,
 		auth_domain: config.auth_domain(),
 		tenant_id: tenant,
-		providers: f
-			.config
-			.dashboard_policy()
-			.ok_or(Error::Unauthorized)?
-			.providers_for(tenant),
+		providers: providers(config, tenant),
 		password_sign_up: config.password_sign_up.contains(tenant),
 		mfa_mandatory: config.mfa_mandatory.contains(tenant),
 	};
@@ -218,7 +264,7 @@ pub(crate) async fn exchange(
 	if services.verifier.project != config.project_id {
 		return Err(Error::Unauthorized);
 	}
-	let sign_in = services
+	let (sign_in, method) = services
 		.verifier
 		.verify(
 			&input.id_token,
@@ -228,6 +274,11 @@ pub(crate) async fn exchange(
 		.await?;
 	// Verify the token before the shared authority checks the Binding and
 	// durably disables an existing identity whose Binding has been removed.
+	// The sign-in method is checked only for a bound GCIP Tenant; the
+	// authority refuses any other.
+	if config.tenant_bindings.contains_key(tenant) && !providers(config, tenant).contains(&method) {
+		return Err(Error::Forbidden);
+	}
 	let identity = crate::bootstrap::dashboard_authority(f)
 		.admit_login(
 			&mut crate::bootstrap::dashboard_login(f.store.pool.clone(), &f.config.node_id),

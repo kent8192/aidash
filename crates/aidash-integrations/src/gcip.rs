@@ -14,6 +14,21 @@ use tokio::sync::{Mutex, OnceCell};
 pub const JWKS_URL: &str =
 	"https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 pub const AUTH_CLOCK_SKEW_SECONDS: i64 = 30;
+
+/// The issuer of a GCIP Tenant's External Identities. The GCIP Tenant is part
+/// of it, so the same person in two GCIP Tenants is two External Identities.
+pub fn issuer(project: &str, tenant: &str) -> String {
+	format!("https://securetoken.google.com/{project}/tenants/{tenant}")
+}
+
+/// The GCIP Tenant of an issuer that [`issuer`] made for `project`.
+pub fn tenant<'a>(project: &str, issuer: &'a str) -> Option<&'a str> {
+	issuer
+		.strip_prefix("https://securetoken.google.com/")?
+		.strip_prefix(project)?
+		.strip_prefix("/tenants/")
+		.filter(|tenant| !tenant.is_empty() && !tenant.contains('/'))
+}
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[async_trait]
@@ -137,13 +152,14 @@ pub struct TokenVerifier {
 	pub keys: Arc<dyn SigningKeys>,
 }
 impl TokenVerifier {
-	/// The tenant is selected by a browser-bound server transaction, never by the token.
+	/// The tenant is selected by a browser-bound server transaction, never by
+	/// the token. Returns the sign-in and the sign-in method the token names.
 	pub async fn verify(
 		&self,
 		token: &str,
 		tenant: &str,
 		started: DateTime<Utc>,
-	) -> Result<SignIn> {
+	) -> Result<(SignIn, String)> {
 		if token.len() > 16_384 {
 			return Err(Error::Unauthorized);
 		}
@@ -184,14 +200,16 @@ impl TokenVerifier {
 		let display_name = claims
 			.name
 			.filter(|name| !name.is_empty() && name.len() <= 512);
-		Ok(SignIn {
-			subject: claims.sub,
-			gcip_tenant: Some(tenant.to_owned()),
-			gcip_provider: Some(claims.firebase.sign_in_provider),
-			auth_time,
-			verified_email,
-			display_name,
-		})
+		Ok((
+			SignIn {
+				issuer: issuer(&self.project, tenant),
+				subject: claims.sub,
+				auth_time,
+				verified_email,
+				display_name,
+			},
+			claims.firebase.sign_in_provider,
+		))
 	}
 }
 
@@ -244,8 +262,8 @@ struct User {
 }
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::AccountStatus for AccountLookup {
-	async fn lookup(&self, subject: &str, gcip_tenant: Option<&str>) -> Result<AccountState> {
-		let tenant = gcip_tenant.ok_or(Error::Forbidden)?;
+	async fn lookup(&self, issuer: &str, subject: &str) -> Result<AccountState> {
+		let tenant = tenant(&self.project, issuer).ok_or(Error::Forbidden)?;
 		tokio::time::timeout(IO_TIMEOUT, async {
 			let token = self.credentials.token().await?;
 			let mut url = reqwest::Url::parse(&self.endpoint)

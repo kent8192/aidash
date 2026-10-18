@@ -30,26 +30,21 @@ impl Config {
 	pub fn dashboard_policy(
 		&self,
 	) -> Option<aidash_application::ports::authorization::dashboard::AccountPolicy> {
+		use aidash_application::ports::authorization::dashboard::{AccountPolicy, Issuer};
 		self.gcip
 			.as_ref()
-			.map(
-				|gcip| aidash_application::ports::authorization::dashboard::AccountPolicy {
-					issuer: gcip.issuer(),
-					google: false,
-					tenant_bindings: Some(gcip.tenant_bindings.clone()),
-					gcip_providers: gcip.providers.clone(),
-					personal_tenants: self.tenancy.personal_tenants,
-				},
-			)
+			.map(|gcip| AccountPolicy {
+				issuers: std::sync::Arc::new(crate::apps::identity::services::gcip::Pools::new(
+					gcip,
+				)),
+				google: false,
+				personal_tenants: self.tenancy.personal_tenants,
+			})
 			.or_else(|| {
-				self.oidc.as_ref().map(|oidc| {
-					aidash_application::ports::authorization::dashboard::AccountPolicy {
-						issuer: oidc.issuer.clone(),
-						google: oidc.is_google(),
-						tenant_bindings: None,
-						gcip_providers: Default::default(),
-						personal_tenants: self.tenancy.personal_tenants,
-					}
+				self.oidc.as_ref().map(|oidc| AccountPolicy {
+					issuers: std::sync::Arc::new(Issuer(oidc.issuer.clone())),
+					google: oidc.is_google(),
+					personal_tenants: self.tenancy.personal_tenants,
 				})
 			})
 	}

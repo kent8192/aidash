@@ -5,22 +5,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Account {
 	pub id: Uuid,
+	/// The issuer that knows this External Identity. A GCIP Tenant is part of
+	/// it, so the same person in two GCIP Tenants is two External Identities.
 	pub issuer: String,
-	pub gcip_tenant: Option<String>,
 	pub subject: String,
 	pub valid_since: Option<DateTime<Utc>>,
 	pub last_valid_at: Option<DateTime<Utc>>,
 	pub disabled_at: Option<DateTime<Utc>>,
-}
-
-/// A GCIP Tenant is a user pool, never an authorization Tenant by itself.
-pub fn bound_tenant<'a>(
-	bindings: &'a std::collections::BTreeMap<String, String>,
-	gcip_tenant: Option<&str>,
-) -> Option<&'a str> {
-	gcip_tenant
-		.and_then(|tenant| bindings.get(tenant))
-		.map(String::as_str)
 }
 
 /// Canonical form of a Sign-in Domain: IDNA ASCII, lowercase, at least two DNS
@@ -84,10 +75,8 @@ pub fn routed_gcip_tenant<'a>(
 /// Verified display attributes never establish authority or link identities.
 #[derive(Clone)]
 pub struct SignIn {
+	pub issuer: String,
 	pub subject: String,
-	pub gcip_tenant: Option<String>,
-	/// The sign-in method from a verified GCIP token, independent of UI choices.
-	pub gcip_provider: Option<String>,
 	pub auth_time: DateTime<Utc>,
 	pub verified_email: Option<String>,
 	pub display_name: Option<String>,
@@ -98,9 +87,8 @@ pub struct SignIn {
 impl std::fmt::Debug for SignIn {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("SignIn")
+			.field("issuer", &self.issuer)
 			.field("subject", &self.subject)
-			.field("gcip_tenant", &self.gcip_tenant)
-			.field("gcip_provider", &self.gcip_provider)
 			.field("auth_time", &self.auth_time)
 			.field(
 				"verified_email",

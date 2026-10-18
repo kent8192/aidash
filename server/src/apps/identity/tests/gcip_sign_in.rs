@@ -2704,7 +2704,7 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 	// A previous GCIP project used the same GCIP Tenant ID.
 	let previous = uuid::Uuid::new_v4();
 	sqlx::query(
-		"INSERT INTO dashboard_identities (id, issuer, subject, gcip_tenant, display_name) VALUES ($1, 'https://securetoken.google.com/previous-project', 'person', 'pool-a', 'Previous')",
+		"INSERT INTO dashboard_identities (id, issuer, subject, display_name) VALUES ($1, 'https://securetoken.google.com/previous-project/tenants/pool-a', 'person', 'Previous')",
 	)
 	.bind(previous)
 	.execute(f.store.pool.fixture_driver())
@@ -2723,11 +2723,10 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 	// Binding sorts before every current Mapping.
 	sqlx::query(
 		"WITH identities AS (
-			INSERT INTO dashboard_identities (id, issuer, subject, gcip_tenant)
+			INSERT INTO dashboard_identities (id, issuer, subject)
 			SELECT gen_random_uuid(),
-				CASE WHEN n % 2 = 0 THEN 'https://securetoken.google.com/previous-project' ELSE 'https://securetoken.google.com/fixture-project' END,
-				'stale-' || n,
-				CASE WHEN n % 2 = 0 THEN 'pool-a' ELSE 'pool-b' END
+				CASE WHEN n % 2 = 0 THEN 'https://securetoken.google.com/previous-project/tenants/pool-a' ELSE 'https://securetoken.google.com/fixture-project/tenants/pool-b' END,
+				'stale-' || n
 			FROM generate_series(1, 200) AS n
 			RETURNING id, subject
 		), credentials AS (
@@ -2747,8 +2746,8 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 	// limit, is never read by this Tenant's list.
 	sqlx::query(
 		"WITH identities AS (
-			INSERT INTO dashboard_identities (id, issuer, subject, gcip_tenant)
-			SELECT gen_random_uuid(), 'https://securetoken.google.com/fixture-project', 'queued-' || n, 'pool-b'
+			INSERT INTO dashboard_identities (id, issuer, subject)
+			SELECT gen_random_uuid(), 'https://securetoken.google.com/fixture-project/tenants/pool-b', 'queued-' || n
 			FROM generate_series(1, 70000) AS n
 			RETURNING id
 		)

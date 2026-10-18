@@ -243,12 +243,11 @@ impl Invitations {
 				DashboardIdentity::find(tx, session.identity_id()).await
 			})
 			.await?;
-		let pool = (!identity.gcip_tenant.is_empty()).then_some(identity.gcip_tenant.as_str());
 		if identity.disabled_at.is_some()
 			|| !f
 				.config
 				.dashboard_policy()
-				.is_some_and(|policy| policy.unbound(pool))
+				.is_some_and(|policy| policy.unrestricted(&identity.issuer))
 		{
 			return Err(Error::Forbidden);
 		}

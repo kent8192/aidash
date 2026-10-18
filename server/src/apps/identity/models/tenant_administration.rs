@@ -152,8 +152,8 @@ pub(crate) struct TenantAdministrator {
 	pub identity_id: Uuid,
 	pub mapping_id: Uuid,
 	node_id: String,
-	/// The GCIP Tenant bound to this Tenant, if any.
-	pool: Option<String>,
+	/// The issuer whose External Identities are restricted to this Tenant.
+	restricted: Option<String>,
 	policy: AccountPolicy,
 	denial: Mutex<Option<(Evaluation, Decision)>>,
 }
@@ -167,13 +167,13 @@ impl TenantAdministrator {
 		policy: Option<AccountPolicy>,
 	) -> Result<Self> {
 		let policy = policy.ok_or(Error::Forbidden)?;
-		let pool = policy.bound_pool(&identity.tenant).map(str::to_owned);
+		let restricted = policy.issuers.restricted_issuer(&identity.tenant);
 		Ok(Self {
 			identity,
 			identity_id,
 			mapping_id,
 			node_id,
-			pool,
+			restricted,
 			policy,
 			denial: Mutex::new(None),
 		})
@@ -190,32 +190,31 @@ impl TenantAdministrator {
 
 	/// Whether this administrator may decide `registration` from `identity`: it
 	/// is addressed to this Tenant, through a Tenant Binding or an Invitation,
-	/// and comes from the configured issuer. Requests addressed to no Tenant
-	/// are decided only by Deployment Administrators.
+	/// and comes from an admitted issuer: under a restriction to this Tenant,
+	/// from its restricted issuer. Requests addressed to no Tenant are decided
+	/// only by Deployment Administrators.
 	pub(crate) fn sees(
 		&self,
 		registration: &DashboardRegistrationRequest,
 		identity: &DashboardIdentity,
 	) -> bool {
 		registration.tenant.as_deref() == Some(self.tenant())
-			&& identity.issuer == self.policy.issuer
-			&& self
-				.pool
-				.as_deref()
-				.is_none_or(|pool| identity.gcip_tenant.is_empty() || identity.gcip_tenant == pool)
+			&& match &self.restricted {
+				Some(restricted) => identity.issuer == *restricted,
+				None => self.policy.issuers.admits(&identity.issuer),
+			}
 	}
 
-	/// Narrows `identities` to the configured issuer's and, under a Tenant
-	/// Binding, to its bound GCIP Tenant, in SQL. Without a Binding, callers
-	/// pass only identities already mapped into this Tenant.
+	/// Narrows `identities` to admitted issuers' and, under a restriction to
+	/// this Tenant, to its restricted issuer, in SQL. Without a restriction,
+	/// callers pass only identities already mapped into this Tenant.
 	fn visible(&self, identities: QuerySet<DashboardIdentity>) -> QuerySet<DashboardIdentity> {
-		let identities =
-			identities.filter(DashboardIdentity::field_issuer().eq(self.policy.issuer.clone()));
-		match &self.pool {
-			Some(pool) => {
-				identities.filter(DashboardIdentity::field_gcip_tenant().eq(pool.clone()))
+		match &self.restricted {
+			Some(restricted) => {
+				identities.filter(DashboardIdentity::field_issuer().eq(restricted.clone()))
 			}
-			None => identities,
+			None => identities
+				.filter(DashboardIdentity::field_issuer().is_in(self.policy.issuers.admitted())),
 		}
 	}
 
@@ -366,9 +365,9 @@ impl TenantAdministrator {
 		self.identity.lock_deleted(tx, Some(&self.policy)).await
 	}
 
-	/// The GCIP Tenant bound to this Tenant, if it has a Tenant Binding.
-	pub(crate) fn bound_pool(&self) -> Option<&str> {
-		self.pool.as_deref()
+	/// The issuer whose External Identities are restricted to this Tenant.
+	pub(crate) fn restricted_issuer(&self) -> Option<&str> {
+		self.restricted.as_deref()
 	}
 
 	fn evaluation(&self, action: &str, id: &str, attributes: Value) -> Evaluation {

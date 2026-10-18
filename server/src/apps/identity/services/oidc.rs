@@ -608,10 +608,9 @@ impl DashboardSessions {
 		let policy = f.config.dashboard_policy();
 		// Existing sessions receive the same one-time provisioning as a fresh
 		// verified callback, without changing pending shared enrollment.
-		let gcip_pool = (!external.gcip_tenant.is_empty()).then_some(external.gcip_tenant.as_str());
 		if policy
 			.as_ref()
-			.is_some_and(|policy| policy.provisions_personal(gcip_pool))
+			.is_some_and(|policy| policy.provisions_personal(&external.issuer))
 		{
 			crate::apps::identity::repositories::personal_tenant::provision(
 				pool,
@@ -642,7 +641,6 @@ impl DashboardSessions {
 						identity::require_dashboard_mapping(
 							policy.as_ref(),
 							&external.issuer,
-							&external.gcip_tenant,
 							&mapping.tenant,
 						)
 						.is_ok()
@@ -752,7 +750,7 @@ impl DashboardSessions {
 				personal_account: personal.is_some(),
 				tenant_creation: crate::apps::identity::services::tenants::creation_offered(
 					&f,
-					gcip_pool,
+					&external.issuer,
 					external.disabled_at.is_some(),
 				),
 				invitations: f.config.tenancy.invitations,
@@ -761,7 +759,7 @@ impl DashboardSessions {
 				personal_tenant_deleted: personal_tenant_deleted
 					&& policy
 						.as_ref()
-						.is_some_and(|policy| policy.provisions_personal(gcip_pool)),
+						.is_some_and(|policy| policy.provisions_personal(&external.issuer)),
 				deployment_administrator,
 				mappings: mappings
 					.into_iter()
@@ -809,8 +807,8 @@ impl DashboardSessions {
 			return Err(Error::Forbidden);
 		}
 		let pool = &f.store.pool;
-		// A Tenant Binding addresses the request to its Tenant; otherwise only
-		// Deployment Administrators decide it.
+		// A restricted identity's request is addressed to its Tenant; otherwise
+		// only Deployment Administrators decide it.
 		let identity = pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
 				DashboardIdentity::find(tx, session.identity_id()).await
@@ -818,9 +816,8 @@ impl DashboardSessions {
 			.await?;
 		let tenant = f
 			.config
-			.gcip
-			.as_ref()
-			.and_then(|gcip| gcip.tenant_bindings.get(&identity.gcip_tenant).cloned());
+			.dashboard_policy()
+			.and_then(|policy| policy.issuers.restriction(&identity.issuer));
 		DashboardRegistrationRequest::submit(pool, session.identity_id(), tenant).await
 	}
 	pub(crate) async fn admin_registrations(
