@@ -435,6 +435,32 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "tenants".into(),
+			name: "tenants_creator".into(),
+			columns: vec!["created_by_identity".into(), "created_at".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some("created_by_identity IS NOT NULL".into()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		// The Deployment Administrators' newest-first list, scanned backwards,
+		// so a page stops after its rows however many Tenants there are.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "tenants".into(),
+			name: "tenants_created".into(),
+			columns: vec!["created_at".into(), "name".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),

@@ -436,6 +436,28 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
+		.add_operation(Operation::CreateTable {
+			name: "tenants".into(),
+			columns: vec![
+				ColumnDefinition::new("name", FieldType::Text).with_not_null(true).with_primary_key(true),
+				ColumnDefinition::new("label", FieldType::Text).with_not_null(false),
+				ColumnDefinition::new("personal", FieldType::Boolean)
+					.with_not_null(true)
+					.with_default(Some("false".into())),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("created_by_kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_by_identity", FieldType::Uuid).with_not_null(false),
+			],
+			constraints: vec![
+				Constraint::Check {
+					name: "tenants_root".into(),
+					expression: "length(name) BETWEEN 1 AND 256 AND created_by_kind IN ('identity','deployment_administrator') AND (created_by_kind <> 'identity' OR created_by_identity IS NOT NULL) AND (label IS NULL OR length(label) BETWEEN 1 AND 256)".into(),
+				},
+			],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0002_configuration.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/0002_configuration.sql").to_owned()),
