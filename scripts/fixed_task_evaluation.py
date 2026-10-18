@@ -1375,14 +1375,14 @@ def check_approval(approval, corpus_sha256, models, ceiling, now):
                   "disclosure", "external_compaction"):
         if field not in approval:
             raise GuardRefusal(f"disclosure approval is missing {field}")
-    # Ordinary Runs are never pruned (ADR 0041); only a Run whose generation policy names an
-    # approved compactor calls Jev, on the Tenant's own OpenRouter credential. Nothing here bounds
-    # or prices those calls and the Node does not expose its approvals, so the evaluator must attest
-    # that the evaluated Tenant approves no compactor.
+    # Only a Run bound to an approved compaction Decider calls Jev, on the Tenant's own OpenRouter
+    # credential (ADR 0041, ADR 0042). Nothing here bounds or prices those calls and the Node does
+    # not expose its approvals, so the evaluator must attest that the evaluated Tenant approves no
+    # compaction Decider.
     if approval["external_compaction"] != "disabled":
         raise GuardRefusal("disclosure approval external_compaction must be \"disabled\": the live tier cannot "
                            "reserve or price Jev compaction calls, so the evaluated Tenant must approve no "
-                           "compactor")
+                           "compaction Decider")
     for field in ("approver", "corpus_sha256", "disclosure"):
         if not isinstance(approval[field], str) or not approval[field].strip():
             raise GuardRefusal(f"disclosure approval {field} must be a non-empty string")

@@ -32,7 +32,7 @@ pub struct Inspection {
 	#[serde(default, skip_serializing_if = "zero")]
 	pub semantic_memory: u32,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub compactor: Option<EntityRef>,
+	pub decider: Option<EntityRef>,
 }
 
 fn zero(value: &u32) -> bool {
@@ -133,7 +133,7 @@ impl Inspection {
 			&& self.authority_digest == pinned.authority_digest
 			&& self.agent == pinned.agent
 			&& self.definitions == pinned.definitions
-			&& self.compactor == pinned.compactor
+			&& self.decider == pinned.decider
 			&& (pinned.semantic_memory == 0 || self.semantic_memory == pinned.semantic_memory)
 	}
 }

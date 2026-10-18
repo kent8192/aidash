@@ -142,3 +142,27 @@ fn a_snapshot_without_retained_text_has_no_context_but_keeps_the_fragment() {
 	assert_eq!(cited.fragment.text, "line 2");
 	assert!(cited.context.is_none());
 }
+
+#[rstest]
+fn an_empty_passage_is_expired_only_once_its_snapshot_was_purged() {
+	// Arrange: a fresh passage whose lines carry no text.
+	let mut document = snapshot(lines(2, |_| String::new()));
+	let passage = Passage {
+		text: String::new(),
+		line_start: 1,
+		line_end: 1,
+		pages: vec![],
+	};
+	let fragment = EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), &document, &passage);
+
+	// Act + Assert: still retained, so not expired.
+	assert!(!CitedEvidence::new(fragment.clone(), &document).expired);
+
+	// The account terms purge the snapshot and empty the passage.
+	document.lines.clear();
+	document.purged = Some(Purge {
+		at: Utc::now(),
+		reason: PurgeReason::AccountTerms,
+	});
+	assert!(CitedEvidence::new(fragment, &document).expired);
+}

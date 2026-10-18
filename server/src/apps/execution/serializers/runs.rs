@@ -31,6 +31,8 @@ pub struct ResearchLimits {
 	pub sources: u32,
 	pub snapshots: u32,
 	pub snapshot_bytes: u64,
+	/// Page images one Run may view.
+	pub page_views: u32,
 }
 
 impl From<aidash_domain::research::evidence::Limits> for ResearchLimits {
@@ -41,6 +43,7 @@ impl From<aidash_domain::research::evidence::Limits> for ResearchLimits {
 			sources: limits.sources,
 			snapshots: limits.snapshots,
 			snapshot_bytes: limits.snapshot_bytes,
+			page_views: limits.page_views,
 		}
 	}
 }
@@ -53,6 +56,8 @@ pub struct ResearchUsage {
 	pub sources: u32,
 	pub snapshots: u32,
 	pub snapshot_bytes: u64,
+	/// Page images the Run has viewed.
+	pub page_views: u32,
 }
 
 impl From<aidash_domain::research::evidence::RunUsage> for ResearchUsage {
@@ -63,6 +68,7 @@ impl From<aidash_domain::research::evidence::RunUsage> for ResearchUsage {
 			sources: usage.sources,
 			snapshots: usage.snapshots,
 			snapshot_bytes: usage.snapshot_bytes,
+			page_views: usage.page_views,
 		}
 	}
 }
@@ -83,6 +89,13 @@ pub struct RunResearch {
 	/// The pages people asked the Run to read, oldest first. Each only asked
 	/// for a Page reading; none approved a Web disclosure.
 	pub url_intents: Vec<RunUrlIntent>,
+	/// When the Run's research evidence was revoked (ADR 0046). Who revoked it
+	/// and why is in its revocation record, readable only by its audience.
+	pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+	/// Whether the reader may revoke the Run's research evidence.
+	pub can_revoke: bool,
+	/// Whether the reader may read the Run's revocation record.
+	pub can_read_revocation: bool,
 }
 
 /// The pages one input asked a Run to read.

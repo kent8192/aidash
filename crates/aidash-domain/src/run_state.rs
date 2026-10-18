@@ -2,7 +2,7 @@
 use super::{Run, RunPhase};
 use crate::{
 	Error, Result,
-	media::Selection,
+	media::ModelMedia,
 	provider::{ModelResponse, ToolCall},
 };
 use chrono::{DateTime, Utc};
@@ -45,7 +45,7 @@ pub struct ThinkingState {
 	pub deferred_workspace_read: Option<Box<DeferredRead>>,
 	pub deferred_skill_read: Option<Box<DeferredRead>>,
 	pub deferred_workspace_observation: Option<Box<DeferredRead>>,
-	pub selected_media: Vec<Selection>,
+	pub selected_media: Vec<ModelMedia>,
 	pub media_intake_through_seq: Option<i64>,
 	pub deferred_run_message_reads: Vec<Uuid>,
 }
@@ -85,9 +85,9 @@ pub struct ToolCallState {
 	pub finalizing: bool,
 	pub media_inferred_seq_before_response: i64,
 	pub observed_input_seq_before_response: i64,
-	pub inferred_selected_media: Vec<Selection>,
-	pub deferred_selected_media: Vec<Selection>,
-	pub selected_media: Vec<Selection>,
+	pub inferred_selected_media: Vec<ModelMedia>,
+	pub deferred_selected_media: Vec<ModelMedia>,
+	pub selected_media: Vec<ModelMedia>,
 	pub deferred_human_media: bool,
 	pub media_inferred_through_seq: Option<i64>,
 	pub media_intake_through_seq: i64,
@@ -107,7 +107,7 @@ pub struct ToolCallState {
 	pub batch_end: Option<usize>,
 }
 impl ToolCallState {
-	pub fn selected_media(&self) -> Vec<Selection> {
+	pub fn selected_media(&self) -> Vec<ModelMedia> {
 		self.deferred_selected_media
 			.iter()
 			.chain(&self.selected_media)
@@ -128,9 +128,7 @@ impl ToolCallState {
 			.chain(&self.deferred_selected_media)
 			.chain(&self.selected_media)
 		{
-			if !selected_media.iter().any(|s: &Selection| {
-				s.file_id == value.file_id && s.expected_digest == value.expected_digest
-			}) {
+			if !selected_media.contains(value) {
 				selected_media.push(value.clone());
 			}
 		}
@@ -345,12 +343,20 @@ pub struct RecoveryState {
 	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
+	/// How many times a person resumed this Run from a pause. A compaction
+	/// decision commits to it, so a resume starts a new decision while a
+	/// recovered lease continues the same one (#108).
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub decision_cycle: u32,
 	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
 	#[serde(
 		default,
 		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
 	)]
 	pub degraded: crate::semantic::degraded::DegradedContext,
+}
+fn is_zero(value: &u32) -> bool {
+	*value == 0
 }
 impl RecoveryState {
 	/// Whether this attempt may degrade an unavailable workspace slot: it is

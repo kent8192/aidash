@@ -18,6 +18,9 @@ fn config(mode: Mode) -> DeciderConfig {
 		rule: RULE.into(),
 		keep_threshold: Probability::half(),
 		mode,
+		max_calls_per_run: 1_000,
+		state_retention: policy::StateRetention::default(),
+		state_budget: StateBudget::default(),
 	}
 }
 fn definition(mode: Mode) -> aidash_domain::registry::Entry {
@@ -554,6 +557,7 @@ async fn evaluate(
 		input_revision: 2,
 		worker: Uuid::new_v4(),
 		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
+		cycle: 0,
 	};
 	if fixture.corrupt_boundary {
 		boundary.input_digest = format!("sha256:{}", "b".repeat(64));
@@ -599,7 +603,7 @@ async fn fitting_context_needs_no_authority_provider_or_allowance() {
 	};
 	let (result, context, original) =
 		evaluate(&fixture, Mode::Enforce, 200_000, disclosure()).await;
-	assert_eq!(result.unwrap(), CompactionResult::AlreadyFits);
+	assert!(matches!(result.unwrap(), CompactionResult::AlreadyFits));
 	assert_eq!(
 		serde_json::to_value(context).unwrap(),
 		serde_json::to_value(original).unwrap()
@@ -858,7 +862,9 @@ async fn history_without_disclosure_proof_stays_protected_with_zero_attempts() {
 	let fixture = Fixture::new(Mode::Enforce);
 	let (result, context, original) =
 		evaluate(&fixture, Mode::Enforce, 80_000, Disclosure::default()).await;
-	assert!(result.is_err());
+	// Nothing could be classified, so pruning changes nothing and the Summary
+	// Stage may still reduce the context.
+	assert!(matches!(result, Ok(CompactionResult::Unpruned(_))));
 	assert_eq!(context.history, original.history);
 	assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
 	assert_eq!(
@@ -1176,10 +1182,29 @@ async fn replay_rejects_impossible_reason_fit_and_mode_combinations() {
 	insufficient.outcome = Outcome::Rejected;
 	insufficient.reason = Reason::Insufficient;
 	insufficient.fit.proposed = insufficient.fit.window + 1;
+	// A decision without an effect names no projection.
+	assert!(insufficient.replay().is_err());
+	insufficient.projection_digest = None;
 	assert_eq!(insufficient.replay().unwrap(), insufficient.branches);
+	// The same pruning completed by a summary is staged and names its projection.
+	let mut staged = insufficient.clone();
+	staged.outcome = Outcome::Staged;
+	assert!(staged.replay().is_err());
+	staged.projection_digest = applied.projection_digest.clone();
+	assert_eq!(staged.replay().unwrap(), staged.branches);
+	let mut fitting = staged.clone();
+	fitting.reason = Reason::Fits;
+	fitting.fit.proposed = fitting.fit.window;
+	assert!(
+		fitting.replay().is_err(),
+		"a fitting pruning is applied, not staged"
+	);
+	staged.mode = Mode::Shadow;
+	assert!(staged.replay().is_err());
 	insufficient.mode = Mode::Shadow;
 	assert!(insufficient.replay().is_err());
 	let mut forbidden = applied;
+	forbidden.projection_digest = None;
 	forbidden.outcome = Outcome::Rejected;
 	forbidden.reason = Reason::Forbidden;
 	forbidden.restrictions.forbid_apply = true;
@@ -1286,6 +1311,7 @@ async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_statu
 			corrupt.attempts.push(AttemptEvidence {
 				id: Uuid::new_v4(),
 				request_digest: format!("sha256:{}", "c".repeat(64)),
+				question_digest: format!("sha256:{}", "d".repeat(64)),
 				questions,
 				status,
 				owner_receipts: BTreeMap::from([("run-owner".into(), Uuid::new_v4())]),
@@ -1301,10 +1327,14 @@ async fn live_stricter_protection_replays_the_actual_preserved_branch() {
 		..Fixture::new(Mode::Enforce)
 	};
 	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
-	assert!(result.is_err());
+	// Pruning was not enough: nothing is recorded until a summary completes it.
+	let Ok(CompactionResult::Insufficient(staged)) = result else {
+		panic!("expected a staged decision");
+	};
 	assert_eq!(context.history, original.history);
-	let saved = fixture.saved.lock().unwrap();
-	let evidence = &saved.evidence[0];
+	assert!(fixture.saved.lock().unwrap().evidence.is_empty());
+	staged.rejected().validate_rejection().unwrap();
+	let evidence = &staged.evidence;
 	assert_eq!(evidence.reason, Reason::Insufficient);
 	assert_eq!(evidence.restrictions.preserve_recent, 10);
 	assert!(
@@ -1380,7 +1410,7 @@ async fn state_retention_is_prior_opt_in_and_replay_requires_current_reader_auth
 	assert!(corrupt.replay().is_err());
 }
 #[test]
-fn state_and_question_sizes_have_no_aidash_ceiling() {
+fn states_are_abridged_in_stages_and_beyond_the_long_context_budget_pause() {
 	let mut context = history();
 	context.history = (0..600).map(|_| context.history[0].clone()).collect();
 	let boundary = Boundary {
@@ -1391,22 +1421,84 @@ fn state_and_question_sizes_have_no_aidash_ceiling() {
 		input_revision: 1,
 		worker: Uuid::new_v4(),
 		input_digest: format!("sha256:{}", "a".repeat(64)),
+		cycle: 0,
 	};
-	let view = Disclosure {
-		goal: Some("g".repeat(1_100_000)),
-		tool_inputs: (0..600)
+	let inputs = |count: usize| -> BTreeMap<usize, Value> {
+		(0..count)
 			.map(|i| (i, json!({"query":"permitted".repeat(256)})))
-			.collect(),
+			.collect()
+	};
+	let budget = StateBudget::default();
+	let build = |view: &Disclosure| {
+		build_compaction_state(
+			&context,
+			&boundary,
+			view,
+			&Restrictions::default(),
+			&budget,
+			false,
+		)
+	};
+	// Five complete inputs fit the default mode as they are.
+	let few = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: inputs(5),
 		..Default::default()
 	};
-	let built =
-		build_compaction_state(&context, &boundary, &view, &Restrictions::default()).unwrap();
-	assert!(built.state.to_string().len() > 1_048_576);
-	assert!(built.questions.len() > 1024);
-	assert!(serde_json::to_vec(&built.questions).unwrap().len() > 1_048_576);
-	assert!(serde_json::to_vec(&built.candidates).unwrap().len() > 1_048_576);
-	assert_eq!(built.candidates.len(), 593);
-	assert_eq!(built.state["goal"].as_str().unwrap().len(), 1_100_000);
+	let built = build(&few).unwrap();
+	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
+	assert!(built.state.to_string().contains(&"permitted".repeat(256)));
+	assert_eq!(built.candidates.len(), 4);
+	// One large old input leaves the state below the default state budget,
+	// but its question repeats it past the default request budget, so the
+	// next stage abridges it.
+	let large = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: BTreeMap::from([
+			(1, json!({"query":"x".repeat(17_000)})),
+			(2, json!({"query":"recent"})),
+		]),
+		..Default::default()
+	};
+	let built = build(&large).unwrap();
+	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
+	assert!(!built.state.to_string().contains(&"x".repeat(17_000)));
+	// Sixty inputs are abridged until the state fits the default mode.
+	let more = Disclosure {
+		goal: Some("goal".into()),
+		tool_inputs: inputs(60),
+		..Default::default()
+	};
+	let built = build(&more).unwrap();
+	assert!(serde_json::to_vec(&built.state).unwrap().len() <= budget.default_state_bytes);
+	assert!(!built.state.to_string().contains(&"permitted".repeat(256)));
+	assert_eq!(built.candidates.len(), 59);
+	// The most abridged state may still use the long-context mode.
+	let many = Disclosure {
+		goal: Some("g".repeat(100_000)),
+		tool_inputs: inputs(600),
+		..Default::default()
+	};
+	let built = build(&many).unwrap();
+	let bytes = serde_json::to_vec(&built.state).unwrap().len();
+	assert!(bytes > budget.default_state_bytes);
+	assert_eq!(
+		budget.request_limit(bytes),
+		budget.long_context_request_bytes
+	);
+	// Conversation text is never abridged, so a state beyond the long-context
+	// budget pauses the Run.
+	let too_large = Disclosure {
+		goal: Some("g".repeat(1_100_000)),
+		tool_inputs: inputs(600),
+		..Default::default()
+	};
+	assert!(matches!(
+		build(&too_large),
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::DeciderUnavailable
+		))
+	));
 }
 
 #[tokio::test]
@@ -1513,7 +1605,18 @@ async fn new_worker_reuses_charged_attempts_after_uncommitted_decision() {
 			assert!(matches!(result, Err(Error::Forbidden)));
 			assert_eq!(context.history, original.history);
 		} else {
-			assert!(matches!(result, Err(Error::Conflict(_))));
+			// A changed plan conflicts; a charged attempt whose result is
+			// unknown pauses the Run until a resume starts a new decision.
+			assert!(
+				matches!(
+					result,
+					Err(Error::Conflict(_)
+						| Error::Context(
+							aidash_domain::context::recovery::Failure::DeciderUnavailable
+						))
+				),
+				"{cut}: {result:?}"
+			);
 			assert_eq!(context.history, original.history);
 		}
 		assert_eq!(
@@ -1591,10 +1694,15 @@ async fn bound_decider_restrictions_reach_compaction_without_separate_defaults()
 		};
 		let (result, context, original) =
 			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
-		assert!(result.is_err());
 		assert_eq!(context.history, original.history);
 		let saved = fixture.saved.lock().unwrap();
-		let evidence = &saved.evidence[0];
+		// A pruning that is not enough is handed back uncommitted.
+		let staged = match &result {
+			Ok(CompactionResult::Insufficient(staged)) => Some(staged.evidence.clone()),
+			Ok(_) => panic!("the protected context cannot fit"),
+			Err(_) => None,
+		};
+		let evidence = staged.as_ref().unwrap_or_else(|| &saved.evidence[0]);
 		assert_eq!(evidence.restrictions, restrictions);
 		if restrictions.forbid_apply {
 			assert!(matches!(result, Err(Error::Forbidden)));
@@ -1615,4 +1723,174 @@ async fn bound_decider_restrictions_reach_compaction_without_separate_defaults()
 	assert_eq!(context.history, original.history);
 	assert_eq!(fixture.checks.load(Ordering::SeqCst), 0);
 	assert!(fixture.saved.lock().unwrap().permits.is_empty());
+}
+
+/// Native Runs are pruned by Model Turn: the first and the latest six turns are
+/// never classified, a turn whose calls are all dropped and that has no text
+/// leaves whole, and events outside any turn stay (ADR 0015).
+#[tokio::test]
+async fn native_decisions_prune_whole_model_turns_and_keep_markers() {
+	use aidash_domain::context::RequestProjection;
+	use aidash_domain::projection::{CacheScope, native::model_turns};
+	let fixture = Fixture::new(Mode::Enforce);
+	let correction = ContextEvent::CitationCorrectionRequired {
+		invalid: vec!["ev_unknown".into()],
+		instruction: "Correct the answer once.".into(),
+		through_seq: 1,
+	};
+	let ids = |turn: usize| [format!("t{turn}a"), format!("t{turn}b")];
+	let mut context = Context::default();
+	for turn in 0..12 {
+		context.push(ContextEvent::Assistant {
+			epoch: turn as i64,
+			text: String::new(),
+			calls: ids(turn).to_vec(),
+		});
+		for id in ids(turn) {
+			context.push(ContextEvent::Tool {
+				call: aidash_domain::provider::ToolCall {
+					id: id.clone(),
+					name: "safe_tool".into(),
+					arguments: json!({"query":"permitted"}),
+				},
+				result: json!("r".repeat(4_000)),
+			});
+		}
+		if turn == 2 {
+			context.push(correction.clone());
+		}
+	}
+	let pinned = json!({"task":{"description":"Ship the release"}});
+	let projection = RequestProjection::Native(CacheScope {
+		tenant: "tenant".into(),
+		key_version: 1,
+	});
+	let full = RequestBudget {
+		window: usize::MAX,
+		instructions: "Work on the task",
+		tools: &[],
+		max_output_tokens: 0,
+		projection: &projection,
+		estimate: Default::default(),
+	}
+	.request(&context, &pinned)
+	.estimated_total_tokens();
+	let budget = RequestBudget {
+		window: full * 3 / 4,
+		instructions: "Work on the task",
+		tools: &[],
+		max_output_tokens: 0,
+		projection: &projection,
+		estimate: Default::default(),
+	};
+	let boundary = Boundary {
+		node: "aidash://execution".into(),
+		run: Uuid::new_v4(),
+		step: 1,
+		run_revision: 1,
+		input_revision: 2,
+		worker: Uuid::new_v4(),
+		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
+		cycle: 0,
+	};
+	let definition = definition(Mode::Enforce);
+	let decider = BoundDecider {
+		pin: DeciderPin {
+			identity: aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: boundary.node.clone(),
+				id: definition.id.clone(),
+				version: definition.version.clone(),
+			},
+			definition_digest: digest(&serde_json::to_value(&definition).unwrap()),
+			configuration_digest: config(Mode::Enforce).digest().unwrap(),
+			provider_implementation: "node-decision-adapter:23".into(),
+		},
+		config: config(Mode::Enforce),
+		restrictions: Restrictions::default(),
+	};
+	let view = compaction_disclosure(&context, &pinned);
+	let input = Evaluation {
+		boundary: &boundary,
+		decider: &decider,
+		definition: &definition,
+		disclosure: &view,
+		now: Utc::now(),
+	};
+	// Act
+	let result = fixture
+		.gate()
+		.compact(&mut context, &budget, &pinned, &input)
+		.await;
+	// Assert: the five unprotected turns left whole, the marker stayed.
+	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
+	let turns: Vec<Vec<String>> = {
+		let mut grouped: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+		for (entry, turn) in context.history.iter().zip(model_turns(&context.history)) {
+			if let (Some(turn), ContextEvent::Tool { call, .. }) = (turn, &entry.event) {
+				grouped.entry(turn).or_default().push(call.id.clone());
+			}
+		}
+		grouped.into_values().collect()
+	};
+	assert_eq!(turns.len(), 7);
+	assert_eq!(turns[0], ids(0).to_vec());
+	assert_eq!(turns[1], ids(6).to_vec());
+	assert_eq!(
+		context
+			.events()
+			.filter(|event| **event == correction)
+			.count(),
+		1
+	);
+	let saved = fixture.saved.lock().unwrap();
+	let evidence = saved.evidence.last().unwrap();
+	assert_eq!(evidence.turns, Some(12));
+	assert_eq!(evidence.candidates.len(), 10);
+	assert!(evidence.candidates.iter().all(|c| c.turn.is_some()));
+	assert_eq!(evidence.fit.dropped, 10);
+	assert_eq!(evidence.fit.removed, 15);
+	assert_eq!(evidence.replay().unwrap(), evidence.branches);
+}
+
+/// A resume cycle is part of the decision identity, so a person's resume starts
+/// a new decision instead of meeting an attempt whose result is unknown.
+#[test]
+fn the_resume_cycle_changes_the_decision_identity() {
+	let decider = DeciderPin {
+		identity: aidash_domain::registry::bindings::QualifiedRef {
+			registry_node: "aidash://execution".into(),
+			id: "decider".into(),
+			version: "1.0.0".into(),
+		},
+		definition_digest: format!("sha256:{}", "a".repeat(64)),
+		configuration_digest: format!("sha256:{}", "b".repeat(64)),
+		provider_implementation: "node-decision-adapter:23".into(),
+	};
+	let mut boundary = Boundary {
+		node: "aidash://execution".into(),
+		run: Uuid::from_u128(1),
+		step: 1,
+		run_revision: 1,
+		input_revision: 2,
+		worker: Uuid::from_u128(3),
+		input_digest: format!("sha256:{}", "c".repeat(64)),
+		cycle: 0,
+	};
+	let identity = |boundary: &Boundary| {
+		decision_identity(
+			boundary,
+			&decider,
+			&Restrictions::default(),
+			&format!("sha256:{}", "d".repeat(64)),
+			&[],
+			1_000,
+		)
+	};
+	let first = identity(&boundary);
+	// A recovered lease keeps the decision.
+	boundary.worker = Uuid::from_u128(4);
+	boundary.run_revision = 2;
+	assert_eq!(identity(&boundary), first);
+	boundary.cycle = 1;
+	assert_ne!(identity(&boundary), first);
 }

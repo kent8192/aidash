@@ -9,12 +9,14 @@ use crate::{
 use aidash_domain::{
 	generation::{policy::Compaction, requests::Request},
 	policy::Resource,
-	registry::{CompactorConfig, EntityRef, Entry},
+	registry::{EntityRef, Entry},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rstest::{fixture, rstest};
+use serde_json::Value;
 use serde_json::json;
+use std::sync::Arc;
 use std::{collections::BTreeMap, sync::Mutex};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,7 +30,6 @@ struct State {
 	document: Option<Value>,
 	approved: bool,
 	enabled: bool,
-	bound: bool,
 	denied: Option<String>,
 	exhausted: Option<Uuid>,
 	fail: Option<String>,
@@ -51,7 +52,7 @@ fn world() -> World {
 	let mut spec: Spec = serde_json::from_value(test_support::specification()).unwrap();
 	spec.compaction = Some(Compaction {
 		provider: EntityRef {
-			id: "compactor".into(),
+			id: "decider".into(),
 			version: "1.0.0".into(),
 		},
 		calls_per_agent: 2,
@@ -65,11 +66,10 @@ fn world() -> World {
 		},
 		jobs,
 		document: Some(
-			json!({"id":"compactor","version":"1.0.0","kind":"compactor","name":{"en":"Compactor"},"description":{"en":""},"config":{"provider_credential":"openrouter","model":"typesafe/jev-1.13","max_request_bytes":1024,"max_questions":10,"max_response_bytes":1024}}),
+			json!({"id":"decider","version":"1.0.0","kind":"decider","name":{"en":"Decider"},"description":{"en":""},"config":crate::test_support::decider_config()}),
 		),
 		approved: true,
 		enabled: true,
-		bound: true,
 		denied: None,
 		exhausted: None,
 		fail: None,
@@ -143,10 +143,7 @@ impl CatalogScope for Authority {
 		true
 	}
 	fn approved(&self, reference: &EntityRef) -> bool {
-		assert_eq!(
-			(&*reference.id, &*reference.version),
-			("compactor", "1.0.0")
-		);
+		assert_eq!((&*reference.id, &*reference.version), ("decider", "1.0.0"));
 		self.0.0.lock().unwrap().approved
 	}
 	fn remember(&mut self, _: &EntityRef) {}
@@ -158,7 +155,7 @@ impl CatalogScope for Authority {
 		Ok(self.0.0.lock().unwrap().document.clone())
 	}
 	async fn documents(&mut self) -> Result<Vec<Value>> {
-		panic!("compaction uses an exact provider")
+		panic!("compaction uses an exact Decider")
 	}
 	fn resource(&self, entry: &Entry) -> Resource {
 		Resource {
@@ -179,73 +176,10 @@ impl CatalogScope for Authority {
 		panic!("compaction requires exact authority")
 	}
 	async fn active(&mut self, _: &Entry) -> Result<bool> {
-		panic!("compaction cannot discover providers")
+		panic!("compaction cannot discover Deciders")
 	}
 	async fn check_pinned(&mut self, _: &Entry) -> Result<()> {
 		panic!("compaction uses its retained definition")
-	}
-}
-struct Provider(World);
-struct Transport(World);
-impl GenerationCompactionProvider for Provider {
-	fn approved(&self, config: CompactorConfig) -> Result<Arc<dyn ApprovedCompactionTransport>> {
-		assert_eq!(
-			(&*config.provider_credential, &*config.model),
-			("openrouter", "typesafe/jev-1.13")
-		);
-		self.0
-			.0
-			.lock()
-			.unwrap()
-			.events
-			.push("provider.approved".into());
-		Ok(Arc::new(Transport(self.0.clone())))
-	}
-}
-#[async_trait]
-impl ApprovedCompactionTransport for Transport {
-	fn check_request(&self, state: &Value, questions: &CompactionQuestions) -> Result<usize> {
-		assert_eq!(questions.len(), 2);
-		self.0
-			.0
-			.lock()
-			.unwrap()
-			.events
-			.push("provider.check".into());
-		if state["oversized"] == true {
-			return Err(Error::Invalid(
-				"compaction request exceeds approved bounds".into(),
-			));
-		}
-		Ok(130)
-	}
-	async fn check_credential(&self) -> Result<()> {
-		let mut state = self.0.0.lock().unwrap();
-		state.events.push("provider.credential".into());
-		if !state.bound {
-			return Err(Error::Invalid(
-				"Provider Credential binding is missing".into(),
-			));
-		}
-		Ok(())
-	}
-	async fn ask(
-		&self,
-		attempt: Uuid,
-		state: &Value,
-		questions: &CompactionQuestions,
-	) -> Result<Value> {
-		assert_eq!(state, &json!({"history":"bounded"}));
-		assert_eq!(questions.len(), 2);
-		{
-			let state = self.0.0.lock().unwrap();
-			assert_eq!(state.active, 0);
-			assert!(state.commits > 0);
-			// The provider call is the attempt that was just reserved.
-			assert_eq!(attempt, state.ledger.attempts.last().unwrap().1.id);
-		}
-		point(&self.0, "provider.call".into()).await?;
-		Ok(json!({"p1":0.9,"p2":0.1}))
 	}
 }
 struct Repository(World);
@@ -294,6 +228,13 @@ impl GenerationCompactionSession for Session {
 		self.ledger.attempts.push((request, attempt.clone()));
 		Ok(())
 	}
+	async fn reserved(&mut self, request: Uuid, attempt: Uuid) -> Result<bool> {
+		Ok(self
+			.ledger
+			.attempts
+			.iter()
+			.any(|(id, saved)| *id == request && saved.id == attempt))
+	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		point(&self.world, "commit".into()).await?;
 		{
@@ -305,12 +246,6 @@ impl GenerationCompactionSession for Session {
 		Ok(())
 	}
 }
-fn questions() -> CompactionQuestions {
-	json!({"p1":"retain this call?","p2":"retain the complete result?"})
-		.as_object()
-		.unwrap()
-		.clone()
-}
 fn context() -> Context {
 	Context {
 		run: Uuid::from_u128(77),
@@ -321,14 +256,24 @@ fn context() -> Context {
 		},
 	}
 }
-async fn prepare(world: &World, state: &Value) -> Result<Option<ReservedCompaction>> {
-	reserve(
+fn reference() -> EntityRef {
+	EntityRef {
+		id: "decider".into(),
+		version: "1.0.0".into(),
+	}
+}
+async fn resolve(world: &World) -> Result<Chain> {
+	decider(&mut Authority(world.clone()), "aidash://origin", &context()).await
+}
+async fn charge_attempt(world: &World, attempt: u128) -> Result<BTreeMap<String, Uuid>> {
+	charge(
 		&mut Authority(world.clone()),
 		&Repository(world.clone()),
-		&Provider(world.clone()),
 		&context(),
-		state,
-		&questions(),
+		&reference(),
+		Uuid::from_u128(attempt),
+		600_000,
+		2,
 	)
 	.await
 }
@@ -344,136 +289,140 @@ fn assert_ledger(world: &World, calls: usize, commits: usize) {
 
 #[rstest]
 #[tokio::test]
-async fn prepared_transport_is_returned_after_every_ancestor_is_durable(world: World) {
-	let state = json!({"history":"bounded"});
-	let transport = prepare(&world, &state).await.unwrap().unwrap();
-	assert_ledger(&world, 1, 1);
-	{
-		let state = world.0.lock().unwrap();
-		let first = &state.ledger.attempts[0].1;
-		assert_eq!(first, &state.ledger.attempts[1].1);
-		assert_eq!(transport.attempt, first.id);
-		assert_eq!(
-			(first.run, first.request_bytes, first.questions),
-			(Uuid::from_u128(77), 130, 2)
+async fn the_agreed_decider_is_resolved_under_live_authority_and_its_approval(world: World) {
+	let Chain::Generated(Some(entry)) = resolve(&world).await.unwrap() else {
+		panic!("expected the agreed Decider");
+	};
+	assert_eq!((&*entry.id, &*entry.kind), ("decider", "decider"));
+	let state = world.0.lock().unwrap();
+	for required in ["live", "registry.read", "decision.invoke"] {
+		assert!(
+			state.events.iter().any(|event| event == required),
+			"{required}"
 		);
-		assert_eq!(
-			(&*first.provider.id, &*first.provider.version),
-			("compactor", "1.0.0")
-		);
-		let begin = state
-			.events
-			.iter()
-			.position(|event| event == "begin")
-			.unwrap();
-		for required in [
-			"live",
-			"registry.read",
-			"compaction.invoke",
-			"provider.check",
-			"provider.credential",
-		] {
-			assert!(
-				state
-					.events
-					.iter()
-					.position(|event| event == required)
-					.unwrap() < begin
-			);
-		}
 	}
-	assert_eq!(
-		transport.ask(&state, &questions()).await.unwrap(),
-		json!({"p1":0.9,"p2":0.1})
-	);
+	assert_eq!(state.commits, 0);
 }
 
 #[rstest]
 #[tokio::test]
-async fn ordinary_agents_keep_their_separate_transport_without_charges(world: World) {
+async fn every_ancestor_is_charged_with_the_attempt_before_dispatch(world: World) {
+	let receipts = charge_attempt(&world, 5).await.unwrap();
+	assert_ledger(&world, 1, 1);
+	assert_eq!(
+		receipts.keys().collect::<Vec<_>>(),
+		[
+			&format!("aidash://origin/generation/{}", Uuid::from_u128(11)),
+			&format!("aidash://origin/generation/{}", Uuid::from_u128(22))
+		]
+	);
+	assert!(
+		receipts
+			.values()
+			.all(|receipt| *receipt == Uuid::from_u128(5))
+	);
+	let state = world.0.lock().unwrap();
+	let first = &state.ledger.attempts[0].1;
+	assert_eq!(first, &state.ledger.attempts[1].1);
+	assert_eq!(
+		(first.id, first.run, first.request_bytes, first.questions),
+		(Uuid::from_u128(5), Uuid::from_u128(77), 600_000, 2)
+	);
+	assert_eq!(first.provider, reference());
+	let begin = state
+		.events
+		.iter()
+		.position(|event| event == "begin")
+		.unwrap();
+	let live = state
+		.events
+		.iter()
+		.position(|event| event == "live")
+		.unwrap();
+	assert!(live < begin);
+}
+
+#[rstest]
+#[tokio::test]
+async fn ordinary_agents_follow_their_own_binding_without_charges(world: World) {
 	world.0.lock().unwrap().jobs.clear();
-	assert!(prepare(&world, &json!({})).await.unwrap().is_none());
+	assert!(matches!(resolve(&world).await.unwrap(), Chain::Ordinary));
 	assert_ledger(&world, 0, 0);
 	assert_eq!(world.0.lock().unwrap().events, ["ancestors"]);
+}
+
+#[rstest]
+#[case("missing_approval")]
+#[case("different_provider")]
+#[tokio::test]
+async fn ancestors_that_disagree_leave_the_run_unpruned(world: World, #[case] reason: &str) {
+	{
+		let mut state = world.0.lock().unwrap();
+		let spec = state.specs.get_mut(&Uuid::from_u128(22)).unwrap();
+		if reason == "missing_approval" {
+			spec.as_object_mut().unwrap().remove("compaction");
+		} else {
+			spec["compaction"]["provider"]["version"] = json!("2.0.0");
+		}
+	}
+	assert!(matches!(
+		resolve(&world).await.unwrap(),
+		Chain::Generated(None)
+	));
+	// An ancestor that withdrew its approval is never charged.
+	assert!(matches!(
+		charge_attempt(&world, 5).await,
+		Err(Error::Context(Failure::DeciderUnapproved))
+	));
+	assert_ledger(&world, 0, 0);
 }
 
 #[rstest]
 #[case("disabled")]
 #[case("expired")]
 #[case("wrong_tenant")]
-#[case("missing_approval")]
-#[case("different_provider")]
 #[case("inherited_unapproved")]
 #[case("catalog_missing")]
 #[case("registry.read")]
-#[case("compaction.invoke")]
+#[case("decision.invoke")]
 #[case("wrong_kind")]
-#[case("oversized")]
-#[case("unbound")]
 #[tokio::test]
-async fn denied_or_unbounded_requests_never_reserve_provider_calls(
-	world: World,
-	#[case] reason: &str,
-) {
+async fn denied_deciders_are_never_resolved(world: World, #[case] reason: &str) {
 	{
 		let mut state = world.0.lock().unwrap();
 		match reason {
 			"disabled" => state.enabled = false,
 			"expired" => state.jobs[1].expires_at = DateTime::from_timestamp(1500, 0).unwrap(),
 			"wrong_tenant" => state.jobs[1].tenant = "other".into(),
-			"missing_approval" => state
-				.specs
-				.get_mut(&Uuid::from_u128(22))
-				.unwrap()
-				.as_object_mut()
-				.unwrap()
-				.remove("compaction")
-				.map(|_| ())
-				.unwrap(),
-			"different_provider" => {
-				state.specs.get_mut(&Uuid::from_u128(22)).unwrap()["compaction"]["provider"]["version"] =
-					json!("2.0.0")
-			}
 			"inherited_unapproved" => state.approved = false,
 			"catalog_missing" => state.document = None,
-			"registry.read" | "compaction.invoke" => state.denied = Some(reason.into()),
+			"registry.read" | "decision.invoke" => state.denied = Some(reason.into()),
 			"wrong_kind" => state.document.as_mut().unwrap()["kind"] = json!("model"),
-			"oversized" => {}
-			"unbound" => state.bound = false,
 			_ => panic!("unknown denial fixture"),
 		}
 	}
-	let state = if reason == "oversized" {
-		json!({"oversized":true})
-	} else {
-		json!({})
-	};
-	let result = prepare(&world, &state).await;
-	if reason == "missing_approval" {
-		assert!(
-			matches!(result,Err(Error::Invalid(message)) if message=="generated context requires a separately approved compaction provider")
-		);
-	} else if reason == "oversized" {
-		assert!(
-			matches!(result,Err(Error::Invalid(message)) if message=="compaction request exceeds approved bounds")
-		);
-	} else if reason == "unbound" {
-		assert!(
-			matches!(result,Err(Error::Invalid(message)) if message=="Provider Credential binding is missing")
-		);
-	} else {
-		assert!(matches!(result, Err(Error::Forbidden)));
-	}
+	assert!(matches!(resolve(&world).await, Err(Error::Forbidden)));
 	assert_ledger(&world, 0, 0);
-	assert!(
-		!world
-			.0
-			.lock()
-			.unwrap()
-			.events
-			.iter()
-			.any(|event| event == "begin")
-	);
+}
+
+#[rstest]
+#[case("disabled")]
+#[case("expired")]
+#[tokio::test]
+async fn a_chain_that_is_no_longer_live_is_never_charged(world: World, #[case] reason: &str) {
+	{
+		let mut state = world.0.lock().unwrap();
+		if reason == "disabled" {
+			state.enabled = false;
+		} else {
+			state.jobs[1].expires_at = DateTime::from_timestamp(1500, 0).unwrap();
+		}
+	}
+	assert!(matches!(
+		charge_attempt(&world, 5).await,
+		Err(Error::Forbidden)
+	));
+	assert_ledger(&world, 0, 0);
 }
 
 #[rstest]
@@ -487,7 +436,7 @@ async fn denied_or_unbounded_requests_never_reserve_provider_calls(
 async fn failed_reservations_roll_back_all_ancestors(world: World, #[case] fault: &str) {
 	world.0.lock().unwrap().fail = Some(fault.into());
 	assert!(matches!(
-		prepare(&world, &json!({})).await,
+		charge_attempt(&world, 5).await,
 		Err(Error::External(_))
 	));
 	assert_ledger(&world, 0, 0);
@@ -502,9 +451,10 @@ async fn exhausted_call_slots_cannot_partially_charge_the_lineage(
 	#[case] request: u128,
 ) {
 	world.0.lock().unwrap().exhausted = Some(Uuid::from_u128(request));
-	assert!(
-		matches!(prepare(&world,&json!({})).await,Err(Error::Invalid(message)) if message=="generated compaction call budget exhausted")
-	);
+	assert!(matches!(
+		charge_attempt(&world, 5).await,
+		Err(Error::Context(Failure::DeciderCallsExhausted))
+	));
 	assert_ledger(&world, 0, 0);
 }
 
@@ -514,9 +464,8 @@ async fn exhausted_call_slots_cannot_partially_charge_the_lineage(
 #[tokio::test]
 async fn cancelled_reservation_rolls_back_every_call_slot(world: World, #[case] pause: &str) {
 	world.0.lock().unwrap().pause = Some(pause.into());
-	let state = json!({});
 	{
-		let mut future = Box::pin(prepare(&world, &state));
+		let mut future = Box::pin(charge_attempt(&world, 5));
 		assert!(futures_util::poll!(&mut future).is_pending());
 		assert_eq!(world.0.lock().unwrap().active, 1);
 	}
@@ -526,44 +475,21 @@ async fn cancelled_reservation_rolls_back_every_call_slot(world: World, #[case] 
 
 #[rstest]
 #[tokio::test]
-async fn failed_provider_calls_stay_charged_and_retries_get_fresh_attempts(world: World) {
-	let state = json!({"history":"bounded"});
-	let first = prepare(&world, &state).await.unwrap().unwrap();
-	world.0.lock().unwrap().fail = Some("provider.call".into());
-	assert!(matches!(
-		first.ask(&state, &questions()).await,
-		Err(Error::External(_))
-	));
-	assert_ledger(&world, 1, 1);
-	world.0.lock().unwrap().fail = None;
-	let second = prepare(&world, &state).await.unwrap().unwrap();
-	assert_eq!(
-		second.ask(&state, &questions()).await.unwrap(),
-		json!({"p1":0.9,"p2":0.1})
-	);
+async fn every_attempt_is_charged_once_for_every_ancestor(world: World) {
+	charge_attempt(&world, 5).await.unwrap();
+	charge_attempt(&world, 6).await.unwrap();
 	assert_ledger(&world, 2, 2);
 	let state = world.0.lock().unwrap();
 	assert_ne!(state.ledger.attempts[0].1.id, state.ledger.attempts[2].1.id);
-	assert_eq!(
-		state
-			.events
-			.iter()
-			.filter(|event| *event == "provider.call")
-			.count(),
-		2
-	);
 }
-
 #[rstest]
 #[tokio::test]
-async fn cancelled_provider_calls_retain_the_durable_call_charge(world: World) {
-	let state = json!({"history":"bounded"});
-	let transport = prepare(&world, &state).await.unwrap().unwrap();
-	world.0.lock().unwrap().pause = Some("provider.call".into());
-	let questions = questions();
-	{
-		let mut future = Box::pin(transport.ask(&state, &questions));
-		assert!(futures_util::poll!(&mut future).is_pending());
-	}
-	assert_ledger(&world, 1, 1);
+async fn a_retried_attempt_reuses_its_committed_charge(world: World) {
+	// The charge committed, but recording the Decision Attempt failed, so the
+	// same attempt is charged again.
+	let first = charge_attempt(&world, 5).await.unwrap();
+	let retried = charge_attempt(&world, 5).await.unwrap();
+	assert_eq!(first, retried);
+	// One call per ancestor, though both sessions committed.
+	assert_ledger(&world, 1, 2);
 }

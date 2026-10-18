@@ -128,23 +128,30 @@ test("generation dashboard manages policy, approval, completion and retained his
       },
       credential.token,
     );
-    const compactor = `${id}-jev`;
+    const decider = `${id}-jev`;
     await api(
       "/api/registry",
       {
-        id: compactor,
+        id: decider,
         version: "1.0.0",
-        kind: "compactor",
+        kind: "decider",
         name: { en: "Approved compaction", ja: "承認済み圧縮" },
         description: {
           en: "Approved Jev release (never called: contexts fit)",
         },
         config: {
+          hook: "compaction",
+          answer_type: "noul",
+          description: "Keep the history the task still needs",
+          provider_contract: "typesafe.jev/1",
           provider_credential: "openrouter",
-          model: "typesafe/jev-1.13",
-          max_request_bytes: 200000,
-          max_questions: 200,
-          max_response_bytes: 16000,
+          model: "typesafe/jev-1.14",
+          builder: "aidash.compaction/2",
+          option_source: "history_event/1",
+          rule: "compaction.keep/1",
+          keep_threshold: "3fe0000000000000",
+          mode: "enforce",
+          max_calls_per_run: 20,
         },
       },
       credential.token,
@@ -152,7 +159,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await api(
       `/api/authorization/${tenant}/catalog`,
       {
-        entry: { id: compactor, version: "1.0.0" },
+        entry: { id: decider, version: "1.0.0" },
         expected_revision: 0,
         enabled: true,
       },
@@ -310,8 +317,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("権限属性（JSON）", { exact: true })
       .fill('{"team":"research"}');
     await dialog
-      .getByLabel("圧縮プロバイダー", { exact: true })
-      .selectOption(`${compactor}@1.0.0`);
+      .getByLabel("圧縮 Decider", { exact: true })
+      .selectOption(`${decider}@1.0.0`);
     await dialog
       .getByLabel("Agentごとの圧縮呼び出し上限", { exact: true })
       .fill("2");
@@ -335,8 +342,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByRole("button", { name: "ポリシーを編集", exact: true })
       .click();
     await expect(
-      dialog.getByLabel("圧縮プロバイダー", { exact: true }),
-    ).toHaveValue(`${compactor}@1.0.0`);
+      dialog.getByLabel("圧縮 Decider", { exact: true }),
+    ).toHaveValue(`${decider}@1.0.0`);
     await expect(
       dialog.getByLabel("Agentごとの圧縮呼び出し上限", { exact: true }),
     ).toHaveValue("2");

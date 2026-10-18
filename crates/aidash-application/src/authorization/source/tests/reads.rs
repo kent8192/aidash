@@ -338,7 +338,7 @@ async fn authorized_source_leaf_records_only_the_exact_admission_dependency() {
 async fn required_home_disclosure_recheck_restores_admitted_provider_attributes() {
 	let provider = |id: &str| json!({"node_id":"aidash://home","entry":{"id":id,"version":"1"},"digest":"digest","configuration_digest":"config"});
 	let mut reader = Reader::new();
-	reader.grant.as_mut().unwrap().semantic = json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":provider("embedding"),"compactor":provider("compactor"),"summarizer":provider("summarizer")});
+	reader.grant.as_mut().unwrap().semantic = json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":provider("embedding"),"decider":provider("decider"),"summarizer":provider("summarizer")});
 	assert!(
 		use_case::visible(
 			&mut reader,
@@ -356,8 +356,8 @@ async fn required_home_disclosure_recheck_restores_admitted_provider_attributes(
 		.find(|(action, ..)| action == "semantic.disclose")
 		.unwrap();
 	assert_eq!(
-		workspace.attributes["compactor"],
-		json!({"id":"compactor","version":"1"})
+		workspace.attributes["decider"],
+		json!({"id":"decider","version":"1"})
 	);
 	assert_eq!(
 		workspace.attributes["summarizer"],

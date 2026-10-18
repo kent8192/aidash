@@ -32,6 +32,13 @@ pub(crate) struct Providers {
 	pub scope: aidash_application::tenancy::TenancyScope,
 }
 impl ProviderCatalog for Providers {
+	fn decision_implementation(
+		&self,
+		config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		crate::bootstrap::registry_validation_for(&self.federation.store)
+			.decision_implementation(config)
+	}
 	fn contract(
 		&self,
 		descriptor: &ToolDescriptor,

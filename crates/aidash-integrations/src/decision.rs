@@ -1,6 +1,6 @@
 //! Explicit Jev adapter through OpenRouter's System One API and the Tenant's
-//! Provider Credential (ADR 0041); no environment-selected fallback or Aidash
-//! payload ceilings.
+//! Provider Credential (ADR 0041); no environment-selected fallback. Requests
+//! stay within the byte budget the pinned Decider version declares.
 use crate::{Error, Result};
 use aidash_application::{
 	ports::decision::{DecisionProvider, DispatchError, PreparedDispatch, PreparedRequest},
@@ -23,6 +23,19 @@ pub trait JevCapacity: Send + Sync {
 		questions: &Questions,
 		encoded: &[u8],
 	) -> Result<bool>;
+}
+
+/// Jev's capacity as a Decider version declares it: a request may be as large
+/// as the mode its state travels in allows (ADR 0042, 2026-10-17).
+pub struct ByteBudget(pub StateBudget);
+impl JevCapacity for ByteBudget {
+	fn fits(&self, _: &str, state: &Value, _: &Questions, encoded: &[u8]) -> Result<bool> {
+		let state = serde_json::to_vec(state)?.len();
+		Ok(self
+			.0
+			.request_limit(state)
+			.is_some_and(|limit| encoded.len() <= limit))
+	}
 }
 
 pub struct JevDecisionProvider {

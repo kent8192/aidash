@@ -4,9 +4,9 @@
 use crate::Result;
 use aidash_domain::research::{
 	Failure, Operation,
-	account::{AccountTerms, CostAttribution},
+	account::{AccountTerms, CostAttribution, Termination},
 	citations::EvidenceRef,
-	document::{ExtractedPage, Passage},
+	document::{ExtractedPage, Passage, RenderedPage},
 	evidence::{
 		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, RunUsage,
 		SourceRecord,
@@ -50,11 +50,19 @@ pub trait PageProvider: Send + Sync {
 	/// Literal address checks performed before any disclosure or attempt.
 	fn admit(&self, url: &Url) -> std::result::Result<(), Failure>;
 	/// The Research account holder's current account terms, or `None` for a
-	/// provider that charges nothing, such as Aidash's own page reader.
+	/// provider that charges nothing, such as Aidash's own page reader, whose
+	/// pages are not Provider results (ADR 0058).
 	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
 		Ok(None)
 	}
 	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure>;
+}
+
+/// Renders one page of a retained original as an image. It must keep within
+/// the page image bounds; the host checks them again.
+#[async_trait]
+pub trait PageRenderer: Send + Sync {
+	async fn render(&self, pdf: Vec<u8>, page: u32) -> std::result::Result<RenderedPage, Failure>;
 }
 
 /// A reservation made before a provider is called. A repeated invocation key
@@ -66,6 +74,9 @@ pub struct Reservation {
 	pub provider: String,
 	pub destination: String,
 	pub attribution: Option<CostAttribution>,
+	/// The account terms the result will be retrieved under, for a provider
+	/// with Research account terms; recorded with the attempt (ADR 0058).
+	pub retention: Option<RetrievalTerms>,
 	/// The Run's research limits. Attempts of this operation, and the Run's
 	/// Source records (search, or a page read by address) or Document
 	/// snapshots (fetch, counting every still dispatched read as one), are
@@ -77,6 +88,22 @@ pub struct Reservation {
 	/// Source record is created with the reservation, within the Run's Source
 	/// record limit, so the slot is held before anything is sent.
 	pub source_url: Option<String>,
+}
+
+/// The Research account terms a Provider result is retrieved under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetrievalTerms {
+	pub account_id: String,
+	pub retention_days: u16,
+}
+
+impl RetrievalTerms {
+	pub fn of(account: &AccountTerms) -> Self {
+		Self {
+			account_id: account.account_id.clone(),
+			retention_days: account.retention_days,
+		}
+	}
 }
 
 /// Charges an account may hold since `since`, including the new attempt.
@@ -135,7 +162,8 @@ pub trait EvidenceStore: Send + Sync {
 		outcome: AttemptOutcome,
 		result: &Value,
 	) -> Result<Value>;
-	/// Source records in candidate order.
+	/// Source records in candidate order, recorded as created by the attempt
+	/// of `key`.
 	async fn record_sources(
 		&self,
 		run: Uuid,
@@ -147,9 +175,11 @@ pub trait EvidenceStore: Send + Sync {
 	/// A new Document snapshot of the Source record `source`. Under the Run's
 	/// lock, the snapshot is refused with `SnapshotLimit` when it would exceed
 	/// the Run's snapshot limits, or with `EvidenceRevoked`.
+	/// `key` is the invocation key of the attempt that read it.
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
+		key: &str,
 		source: Uuid,
 		requested_url: &str,
 		page: &ExtractedPage,
@@ -166,6 +196,33 @@ pub trait EvidenceStore: Send + Sync {
 		document: &DocumentSnapshot,
 		passage: &Passage,
 	) -> Result<std::result::Result<EvidenceFragment, Failure>>;
+	/// Record `image`, rendered from page `page` of `document`, as a page-image
+	/// Evidence fragment. Under the Run's lock the fragment is refused when the
+	/// evidence was revoked, the snapshot was purged, or the Run reached
+	/// `limits.page_views` (ADR 0053).
+	async fn record_page_image(
+		&self,
+		run: Uuid,
+		document: &DocumentSnapshot,
+		page: u32,
+		image: &RenderedPage,
+		limits: &Limits,
+	) -> Result<std::result::Result<EvidenceFragment, Failure>>;
+	/// The page-image fragment already delivered to this Run for `page` of
+	/// `document`; none once the Run's evidence is revoked.
+	async fn viewed_page(
+		&self,
+		run: Uuid,
+		document: Uuid,
+		page: u32,
+	) -> Result<Option<EvidenceFragment>>;
+	/// The media type and bytes of the page image `reference` delivered to this
+	/// Run; absent once its evidence is revoked.
+	async fn page_image(
+		&self,
+		run: Uuid,
+		reference: &EvidenceRef,
+	) -> Result<Option<(String, Vec<u8>)>>;
 	/// The subset of `references` delivered to this Run; none once the Run's
 	/// evidence is revoked, so later citations of it are unknown.
 	async fn fragments(
@@ -276,9 +333,15 @@ pub trait RevocationScope: Send {
 pub trait RevocationRecordScope: Send {
 	/// Who is reading.
 	fn decider(&self) -> Decider;
-	/// A subject must be permitted `action` on its Tenant's revocation records;
-	/// a Deployment Administrator needs no Tenant policy.
-	async fn require(&mut self, tenant: &str, action: &str) -> Result<()>;
+	/// Whether a subject is permitted `action` on its Tenant's revocation
+	/// records; a Deployment Administrator needs no Tenant policy.
+	async fn permits(&mut self, tenant: &str, action: &str) -> Result<bool>;
+	/// Whether a subject sees the Run and is permitted `action` on the Run's
+	/// `research` resource, as [`RevocationScope::require`] decides it; a
+	/// Deployment Administrator needs no Tenant policy.
+	async fn permits_run(&mut self, run: Uuid, action: &str) -> Result<bool>;
+	/// The Run's revocation record, if its evidence was revoked.
+	async fn record(&mut self, run: Uuid) -> Result<Option<EvidenceRevocation>>;
 	/// The Tenant's records, newest first.
 	async fn records(
 		&mut self,
@@ -333,4 +396,40 @@ pub trait SnapshotRetention: Send + Sync {
 		expired: &(dyn for<'a> Fn(&'a RetainedSnapshot) -> bool + Sync),
 		at: DateTime<Utc>,
 	) -> Result<u64>;
+}
+
+/// A research attempt whose Provider result is still kept, with the terms it
+/// was retrieved under (ADR 0058).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedResult {
+	pub attempt_id: Uuid,
+	pub account_id: String,
+	pub retrieved_at: DateTime<Utc>,
+	pub retention_days: u16,
+}
+
+/// The Provider results the account-terms sweeper may purge, across every
+/// Tenant.
+#[async_trait]
+pub trait ProviderResultRetention: Send + Sync {
+	/// Record each termination not recorded yet. A recorded one is kept as
+	/// it is, so removing or changing a declaration never undoes it.
+	async fn record_terminations(&self, terminations: &[Termination]) -> Result<()>;
+	/// Every recorded termination.
+	async fn terminations(&self) -> Result<Vec<Termination>>;
+	/// Up to `limit` attempts after `after` in identifier order whose Provider
+	/// result is unpurged and that were retrieved at or before
+	/// `retrieved_before` or under one of `accounts`. Others cannot have lost
+	/// their basis yet.
+	async fn candidates(
+		&self,
+		after: Option<Uuid>,
+		retrieved_before: DateTime<Utc>,
+		accounts: &[String],
+		limit: u32,
+	) -> Result<Vec<RetainedResult>>;
+	/// Replace every stored copy of the Provider results of `attempts` with
+	/// tombstones, keeping identities and digests, and mark them purged at
+	/// `at` (ADR 0058). Returns how many attempts were purged.
+	async fn purge(&self, attempts: &[Uuid], at: DateTime<Utc>) -> Result<u64>;
 }

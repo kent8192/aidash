@@ -208,7 +208,7 @@ pub async fn create_in(
 				.spec
 				.compaction
 				.iter()
-				.map(|c| (c.provider.clone(), "compaction.invoke")),
+				.map(|c| (c.provider.clone(), "decision.invoke")),
 		)
 		.chain(
 			policy

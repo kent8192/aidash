@@ -3,7 +3,7 @@ use aidash_application::{Error, Result, execution::*, ports::execution::*};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	exposure,
-	media::Selection,
+	media::ModelMedia,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
 	provider::estimate::{EstimateSnapshot, RequestEstimator},
@@ -203,7 +203,9 @@ impl<'a> Executor<'a> {
 						Err(error) => return Err(error),
 					},
 				};
-				store
+				// The stored result replaces a research result whose account
+				// terms ended meanwhile (ADR 0058).
+				let output = store
 					.invocation_finish(admitted, token, key, &output)
 					.await?;
 				Ok((offset, output))
@@ -419,6 +421,7 @@ impl<'a> Executor<'a> {
 		fitting: &aidash_application::context::Fitting<'_>,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
+		staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		use aidash_application::context::{
 			record_stage, record_tokens, summary_candidate, summary_request,
@@ -650,6 +653,11 @@ impl<'a> Executor<'a> {
 			if let Some(guard) = guard {
 				guard.inference().await?;
 				guard.recheck_summary(&summarizer).await?;
+				// The Decider's approval may have been withdrawn while the
+				// summary ran; a staged decision is adopted only under it.
+				if let Some(staged) = staged {
+					guard.recheck_decider(&staged.evidence.decider).await?;
+				}
 			}
 			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
 		}
@@ -675,7 +683,7 @@ impl<'a> Executor<'a> {
 					.map(|summary| summary.digest.clone());
 				let previous = std::mem::replace(&mut run.context, candidate);
 				if let Err(error) = store
-					.adopt_compaction(run, token, attempt.id, &adopted)
+					.adopt_compaction(run, token, attempt.id, &adopted, staged)
 					.await
 				{
 					run.context = previous;
@@ -771,6 +779,27 @@ impl<'a> Executor<'a> {
 			&revocation::RunJournal { store, run: run.id },
 		)
 		.await
+	}
+	/// Provider results the Research account terms no longer keep never reach
+	/// a model provider again (ADR 0058). Each research result built from one
+	/// becomes the expired placeholder, keeping its call's arguments, and an
+	/// Execution Summary that absorbed one is discarded and its range
+	/// restored from the Context Journal, without pausing. A revoked Run's
+	/// results are placeholders already.
+	async fn apply_research_expiry(&self, run: &mut Run) -> Result<()> {
+		use aidash_application::research::{account_terms, revocation};
+		if run.context.research_revoked || !revocation::may_carry_research(&run.context) {
+			return Ok(());
+		}
+		let store = self.environment.store();
+		let expired = store.expired_research(run).await?;
+		account_terms::expire_projection(
+			&mut run.context,
+			&expired,
+			&revocation::RunJournal { store, run: run.id },
+		)
+		.await?;
+		Ok(())
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
@@ -1041,6 +1070,7 @@ impl<'a> Executor<'a> {
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
 				self.apply_research_revocation(run).await?;
+				self.apply_research_expiry(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
@@ -1581,17 +1611,39 @@ impl<'a> Executor<'a> {
                 if run.context.journal.imported_through > run.context.journal.inferred_through {
                     store.journal_context(run, token).await?;
                 }
-                let compactor = self.environment.compactor()?;
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
-                let compaction = compact_execution(&mut context, compactor.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
+                // Every Run prunes only through its own compaction Decider; one
+                // without a Decider may let the Summary Stage reduce it alone.
+                let decider = if fitting.fits(&context) { None } else { self.environment.compaction_decider(run, token).await? };
+                let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
+                let plan = match compaction {
+                    aidash_application::context::Compaction::Fits => None,
+                    // The decision saved the pruned context and released the
+                    // lease, which ends the step; the next step rechecks the
+                    // summary sources under its own lease.
+                    aidash_application::context::Compaction::Saved => {
+                        run.context = context;
+                        return Ok(());
+                    }
+                    aidash_application::context::Compaction::NeedsSummary(plan) => Some(plan),
+                };
                 // Pruning may release authority for Jev I/O, and a local Run's
                 // sources may change during it too; a source revoked meanwhile
                 // must reach neither the summarizer nor the model.
                 self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
-                match compaction {
-                    aidash_application::context::Compaction::Fits => {}
-                    aidash_application::context::Compaction::NeedsSummary(plan) => {
-                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools)).await.map_err(|error| remote_budget(guard, error));
+                match plan {
+                    None => {}
+                    Some(mut plan) => {
+                        let staged = plan.staged.take();
+                        let summarized = Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await;
+                        // A pruning no summary completed changes nothing (ADR 0056).
+                        if summarized.is_err() && let (Some(staged), Some(ports)) = (&staged, &decider) {
+                            let gate = aidash_application::decision::DecisionGate { authority: ports.authority.as_ref(), journal: ports.journal.as_ref(), provider: ports.provider.as_ref() };
+                            if let Err(error) = gate.reject_staged(staged).await {
+                                tracing::warn!(run = %run.id, %error, "staged compaction decision was not recorded as rejected");
+                            }
+                        }
+                        return summarized.map_err(|error| remote_budget(guard, error));
                     }
                 }
 
@@ -2550,12 +2602,9 @@ impl<'a> Executor<'a> {
 						Err(e) => return Err(e),
 					}
 				};
-				if contract.behavior.model_media_result(&call.arguments, &output)
+				if let Some(selection) =
+					contract.behavior.model_media_selection(&call.arguments, &output)
 				{
-					let selection: Selection =
-						serde_json::from_value(
-							json!({"file_id":call.arguments["file_id"],"expected_digest":call.arguments["expected_digest"]}),
-						)?;
 					let mut selected = run.state.tool()?.selected_media.clone();
 					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {
@@ -2626,9 +2675,13 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-				if invocation.status != "COMPLETED" {
-					store.invocation_finish(run, token, &key, &output).await?;
-				}
+				// The stored result replaces a research result whose account
+				// terms ended meanwhile (ADR 0058).
+				let output = if invocation.status != "COMPLETED" {
+					store.invocation_finish(run, token, &key, &output).await?
+				} else {
+					output
+				};
 				// Load/Unload results are staged with the same save that records
 				// them and take effect with the next inference.
 				if contract.behavior.exposure_update
@@ -2958,7 +3011,7 @@ async fn resolve_model_input_media(
 	environment: &dyn ExecutionEnvironment,
 	_run: &Run,
 	guard: Option<&dyn ExecutionAuthority>,
-	selections: &[Selection],
+	selections: &[ModelMedia],
 	messages: &[(i64, Uuid, usize)],
 	headroom: usize,
 	model: &ModelConfig,
@@ -3186,21 +3239,60 @@ async fn degrade_context(
 	Ok(())
 }
 
-async fn compact_execution(
+/// Prune through the Run's compaction Decider, or without one let the Summary
+/// Stage reduce the context alone. The context changes only when it fits.
+async fn compact_decided_execution(
 	context: &mut Context,
-	classifier: &dyn aidash_application::ports::CompactionClassifier,
+	run: &Run,
+	token: Uuid,
+	node: &str,
+	decider: Option<&aidash_application::ports::decision::DecisionPorts<'_>>,
 	fitting: &aidash_application::context::Fitting<'_>,
 ) -> Result<aidash_application::context::Compaction> {
+	use aidash_application::context::{Compaction, Decision, compact_decided};
+	use aidash_application::decision::{
+		DecisionGate, Evaluation, compaction_disclosure, compaction_input_digest,
+	};
 	// Compaction replaces history only; the Exposure set is carried unchanged.
 	let mut candidate = context.clone();
 	context::observation::normalize_history(&mut candidate.history);
-	let compaction =
-		aidash_application::context::compact(&mut candidate, classifier, fitting).await?;
-	if matches!(compaction, aidash_application::context::Compaction::Fits) {
+	let compaction = match decider {
+		None => compact_decided(&mut candidate, None, fitting).await?,
+		Some(ports) => {
+			let boundary = aidash_domain::decision::Boundary {
+				node: node.to_owned(),
+				run: run.id,
+				step: run.step,
+				run_revision: run.revision,
+				input_revision: run.observed_input_seq,
+				worker: token,
+				input_digest: compaction_input_digest(&candidate, fitting.budget, fitting.pinned)?,
+				cycle: run.recovery.decision_cycle,
+			};
+			let disclosure = compaction_disclosure(&candidate, fitting.pinned);
+			let decision = Decision {
+				gate: DecisionGate {
+					authority: ports.authority.as_ref(),
+					journal: ports.journal.as_ref(),
+					provider: ports.provider.as_ref(),
+				},
+				evaluation: Evaluation {
+					boundary: &boundary,
+					decider: &ports.decider,
+					definition: &ports.definition,
+					disclosure: &disclosure,
+					now: ports.journal.now(),
+				},
+			};
+			compact_decided(&mut candidate, Some(&decision), fitting).await?
+		}
+	};
+	if matches!(compaction, Compaction::Fits | Compaction::Saved) {
 		*context = candidate;
 	}
 	Ok(compaction)
 }
+
 /// Local Runs recheck summary sources under worker authority without
 /// recording reads. A remote executor asks its Home through the same
 /// filtered record path that admitted the original reads.

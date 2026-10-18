@@ -28,9 +28,9 @@ pub enum DefinitionKind {
 	#[model_enum(value = "node")]
 	#[serde(rename = "node")]
 	Node,
-	#[model_enum(value = "compactor")]
-	#[serde(rename = "compactor")]
-	Compactor,
+	#[model_enum(value = "decider")]
+	#[serde(rename = "decider")]
+	Decider,
 	#[model_enum(value = "embedding")]
 	#[serde(rename = "embedding")]
 	Embedding,

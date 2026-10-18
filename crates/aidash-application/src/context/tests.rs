@@ -1,123 +1,14 @@
 use super::*;
-use crate::ports::{CompactionClassifier as JevAsker, CompactionQuestions as Questions};
 use aidash_domain::context::*;
 use aidash_domain::provider;
 
-use async_trait::async_trait;
-use std::sync::Mutex;
-
 mod native;
 
-struct FakeJev {
-	answer: fn(&str) -> Value,
-	seen: Mutex<Vec<(Value, Questions)>>,
-}
-impl FakeJev {
-	fn new(answer: fn(&str) -> Value) -> Self {
-		Self {
-			answer,
-			seen: Mutex::new(Vec::new()),
-		}
-	}
-}
-#[async_trait]
-impl JevAsker for FakeJev {
-	async fn ask(&self, state: &Value, questions: &Questions) -> Result<Value> {
-		self.seen
-			.lock()
-			.unwrap()
-			.push((state.clone(), questions.clone()));
-		let answers: serde_json::Map<_, _> = questions
-			.keys()
-			.map(|key| (key.clone(), (self.answer)(key)))
-			.collect();
-		Ok(json!({"answers":answers}))
-	}
-}
-fn drop_all(_: &str) -> Value {
-	json!({"noul":0.0})
-}
 fn tool(id: &str, result: &str) -> ContextEvent {
 	event(
 		json!({"kind":"tool","call":{"id":id,"name":"read","arguments":{"path":id}},"result":result}),
 	)
 }
-fn history() -> Vec<ContextEvent> {
-	let mut history = vec![
-		tool("first", "pinned first result"),
-		tool("obsolete", &"old".repeat(3000)),
-		ContextEvent::Human {
-			request: "Never deploy".into(),
-			request_kind: "APPROVAL_REQUIRED".into(),
-			response: json!({"approved":false}),
-		},
-		ContextEvent::ModelMediaObservation {
-			text: "Preserve this exact path: src/generated".into(),
-			through_seq: None,
-			truncated: false,
-		},
-	];
-	for i in 0..6 {
-		history.push(tool(&format!("recent-{i}"), "recent"));
-	}
-	history
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn japanese_history_compacts_before_the_final_request_check() {
-	let mut context = journaled(history());
-	context.history[1].event = tool("obsolete", &"日".repeat(4000));
-	let asker = FakeJev::new(drop_all);
-	let pinned = json!({"task":"航空会社の新規事業計画"});
-	compact(&mut context, &asker, 12000, &pinned, "")
-		.await
-		.unwrap();
-	let request = RequestBudget {
-		window: 12000,
-		instructions: "",
-		tools: &[],
-		max_output_tokens: 256,
-		projection: &RequestProjection::Legacy,
-		estimate: Default::default(),
-	}
-	.request(&context, &pinned);
-	check_request(12000, &request).unwrap();
-	assert_eq!(context.compactions, 1);
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn media_space_is_reserved_before_retained_history_is_compacted() {
-	let media = vec![provider::ContentPart::Image {
-		media_type: "image/png".into(),
-		bytes: vec![0; 8192],
-	}];
-	let window = 12_000;
-	let budget = RequestBudget {
-		window: window
-			- provider::ModelRequest::content_parts_reservation(
-				&media,
-				aidash_domain::projection::ProjectionVersion::Legacy,
-			),
-		instructions: "Inspect the image",
-		tools: &[],
-		max_output_tokens: 256,
-		projection: &RequestProjection::Legacy,
-		estimate: Default::default(),
-	};
-	let pinned = json!({"task":"Inspect accepted image"});
-	let mut context = journaled(history());
-	context.history[1].event = tool("obsolete", &"old".repeat(6000));
-	legacy(&mut context, &FakeJev::new(drop_all), &budget, &pinned)
-		.await
-		.unwrap();
-	let mut request = budget.request(&context, &pinned);
-	request.content_parts = media;
-	check_request(window, &request).unwrap();
-	assert_eq!(context.compactions, 1);
-}
-
 #[rstest::rstest]
 fn request_check_reserves_completion_tokens() {
 	let request = provider::ModelRequest {
@@ -204,263 +95,16 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 		};
 		let request = budget.request(&context, &pinned);
 		budget.window = request.estimated_total_tokens();
-		let asker = FakeJev::new(drop_all);
-		legacy(&mut context, &asker, &budget, &pinned)
-			.await
-			.unwrap();
+		prune_only(&mut context, &budget, &pinned).await.unwrap();
 		check_request(budget.window, &budget.request(&context, &pinned)).unwrap();
 		let before = json!(context);
 		budget.window -= 1;
 		assert!(check_request(budget.window, &request).is_err());
-		assert!(
-			legacy(&mut context, &asker, &budget, &pinned)
-				.await
-				.is_err()
-		);
+		assert!(matches!(
+			prune_only(&mut context, &budget, &pinned).await,
+			Err(Error::Context(recovery::Failure::ContextUnreducible))
+		));
 		assert_eq!(json!(context), before);
-		assert!(asker.seen.lock().unwrap().is_empty());
-	}
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn compaction_uses_jev_without_rewriting_text() {
-	let mut context = journaled(history());
-	let before = context.history.clone();
-	let asker = FakeJev::new(drop_all);
-	compact(
-		&mut context,
-		&asker,
-		4000,
-		&json!({"task":{"description":"Fix the test"}}),
-		"Keep secrets private",
-	)
-	.await
-	.unwrap();
-	assert_eq!(context.compactions, 1);
-	assert!(context.execution_summary.is_none());
-	assert_eq!(context.history, [&before[..1], &before[2..]].concat());
-	let seen = asker.seen.lock().unwrap();
-	assert_eq!(seen.len(), 1);
-	assert_eq!(seen[0].1.len(), 2);
-	let state = seen[0].0.to_string();
-	assert!(state.contains("Keep secrets private"));
-	assert!(state.contains("Never deploy"));
-	assert!(state.contains("recent-5"));
-	assert!(!state.contains(&"old".repeat(100)));
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn failed_or_insufficient_compaction_never_mutates_context() {
-	for answer in [
-		drop_all as fn(&str) -> Value,
-		|_| json!({"noul":1.0}),
-		|_| json!({"noul":"invalid"}),
-	] {
-		let mut context = journaled(history());
-		let before = json!(context);
-		assert!(
-			compact(&mut context, &FakeJev::new(answer), 10, &json!({}), "")
-				.await
-				.is_err()
-		);
-		assert_eq!(json!(context), before);
-	}
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn short_runs_and_pinned_only_histories_never_call_jev() {
-	let asker = FakeJev::new(drop_all);
-	let mut context = journaled(vec![tool("only", "small")]);
-	compact(&mut context, &asker, 2000, &json!({}), "")
-		.await
-		.unwrap();
-	assert_eq!(context.compactions, 0);
-	assert!(
-		compact(&mut context, &asker, 1, &json!({}), "")
-			.await
-			.is_err()
-	);
-	assert!(asker.seen.lock().unwrap().is_empty());
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn decisions_keep_pairs_truncate_results_and_drop_only_obsolete_pairs() {
-	let mut events = vec![
-		ContextEvent::Human {
-			request: "original instruction".into(),
-			request_kind: "INFORMATION_REQUEST".into(),
-			response: Value::Null,
-		},
-		tool("drop", &"discard".repeat(200)),
-		tool("truncate", &"日".repeat(1000)),
-		tool("keep-result", "exact retained output"),
-		tool("short", "short result"),
-		ContextEvent::ModelMediaObservation {
-			text: "Pending read".into(),
-			through_seq: None,
-			truncated: false,
-		},
-		ContextEvent::Human {
-			request: "rejected approval".into(),
-			request_kind: "INFORMATION_REQUEST".into(),
-			response: Value::Null,
-		},
-	];
-	events.extend((0..6).map(|i| tool(&format!("recent-{i}"), "pinned")));
-	let asker = FakeJev::new(|name| {
-		let probability = match name {
-			"call_t2" | "call_t4" => 0.5,
-			"result_t3" => 0.5,
-			_ => 0.0,
-		};
-		json!({"noul":probability})
-	});
-	let events = entries(events);
-	let output = compaction::prune(&events, &json!({}), &asker, &compaction::Options::default())
-		.await
-		.unwrap();
-	assert_eq!(output.calls_dropped, 1);
-	assert_eq!(output.results_truncated, 1);
-	assert_eq!(output.history.len(), events.len() - 1);
-	assert_eq!(output.history[0], events[0]);
-	assert_eq!(
-		json!(output.history[1].event)["call"],
-		json!(events[2].event)["call"]
-	);
-	assert!(
-		json!(output.history[1].event)["result"]
-			.as_str()
-			.unwrap()
-			.starts_with(&"日".repeat(300))
-	);
-	assert!(
-		json!(output.history[1].event)["result"]
-			.as_str()
-			.unwrap()
-			.contains("700 chars")
-	);
-	assert_eq!(output.history[2..], events[3..]);
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn batches_resend_the_same_state_and_fit_the_request_budget() {
-	let mut events = vec![ContextEvent::Human {
-		request: "Do the task".into(),
-		request_kind: "INFORMATION_REQUEST".into(),
-		response: Value::Null,
-	}];
-	events.extend((0..12).map(|i| tool(&format!("old-{i}"), "output")));
-	let events = entries(events);
-	let asker = FakeJev::new(drop_all);
-	let mut options = compaction::Options {
-		preserve_recent: 0,
-		..Default::default()
-	};
-	compaction::prune(&events, &json!({}), &asker, &options)
-		.await
-		.unwrap();
-	let state = asker.seen.lock().unwrap()[0].0.clone();
-	// Room for about one call's two questions, with the same full state in each request.
-	options.max_request_tokens =
-		compaction::estimate_tokens(&json!({"state":state,"questions":{}}).to_string()) + 260;
-	let asker = FakeJev::new(drop_all);
-	let output = compaction::prune(&events, &json!({}), &asker, &options)
-		.await
-		.unwrap();
-	{
-		let seen = asker.seen.lock().unwrap();
-		assert!(seen.len() > 1);
-		assert_eq!(seen.len(), output.requests);
-		let mut names = std::collections::BTreeSet::new();
-		for (actual_state, questions) in seen.iter() {
-			assert_eq!(actual_state, &state);
-			let request = json!({"model":"jev-latest","state":actual_state,"questions":questions});
-			assert!(
-				compaction::estimate_tokens(&request.to_string()) <= options.max_request_tokens
-			);
-			for name in questions.keys() {
-				assert!(names.insert(name.clone()));
-			}
-		}
-		assert_eq!(names.len(), 24);
-	}
-	assert_eq!(output.history, events[..1]);
-	options.max_request_tokens = 1;
-	assert!(
-		compaction::prune(&events, &json!({}), &FakeJev::new(drop_all), &options)
-			.await
-			.is_err()
-	);
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn state_fitting_shrinks_only_the_classification_view() {
-	let mut events = vec![ContextEvent::Human {
-		request: "first instruction".into(),
-		request_kind: "INFORMATION_REQUEST".into(),
-		response: Value::Null,
-	}];
-	for i in 0..40 {
-		let mut event = tool(&format!("tool-{i}"), "SECRET RESULT CONTENT");
-		if let ContextEvent::Tool { call, .. } = &mut event {
-			call.arguments["content"] = json!("content ".repeat(1000));
-		}
-		events.push(event);
-	}
-	events.push(ContextEvent::Human {
-		request: "last instruction".into(),
-		request_kind: "INFORMATION_REQUEST".into(),
-		response: Value::Null,
-	});
-	let events = entries(events);
-	let original = events.clone();
-	let asker = FakeJev::new(|_| json!({"noul":1.0}));
-	let options = compaction::Options {
-		max_state_tokens: 1800,
-		preserve_recent: 1,
-		..Default::default()
-	};
-	let output = compaction::prune(&events, &json!({}), &asker, &options)
-		.await
-		.unwrap();
-	assert_eq!(output.history, original);
-	assert_ne!(output.stage, "full");
-	for (state, _) in asker.seen.lock().unwrap().iter() {
-		let serialized = state.to_string();
-		assert!(compaction::estimate_tokens(&serialized) <= options.max_state_tokens);
-		assert!(serialized.contains("first instruction"));
-		assert!(serialized.contains("last instruction"));
-		assert!(!serialized.contains("SECRET RESULT CONTENT"));
-		for i in 1..=40 {
-			assert!(serialized.contains(&format!("t{i}")));
-		}
-	}
-	let impossible = compaction::Options {
-		max_state_tokens: 1,
-		..options
-	};
-	assert!(
-		compaction::prune(&events, &json!({}), &asker, &impossible)
-			.await
-			.is_err()
-	);
-}
-
-#[rstest::rstest]
-fn jev_token_estimate_matches_upstream_examples() {
-	for (input, tokens) in [
-		("", 0),
-		("hello world", 2),
-		("internationalization", 4),
-		("12345678", 4),
-	] {
-		assert_eq!(compaction::estimate_tokens(input), tokens);
 	}
 }
 
@@ -548,34 +192,10 @@ fn compaction_snapshot_redacts_private_documents_without_mutating_inference_cont
 	);
 }
 
-// Exercise the same complete-request fitting path as the harness.
-async fn compact(
+/// An Agent version without a Context Policy and without a compaction
+/// Decider: its context either fits or is unreducible.
+async fn prune_only(
 	context: &mut Context,
-	asker: &dyn JevAsker,
-	window: usize,
-	pinned: &Value,
-	instructions: &str,
-) -> Result<()> {
-	legacy(
-		context,
-		asker,
-		&RequestBudget {
-			window,
-			instructions,
-			tools: &[],
-			max_output_tokens: 256,
-			projection: &RequestProjection::Legacy,
-			estimate: Default::default(),
-		},
-		pinned,
-	)
-	.await
-}
-
-/// Prune-only behavior of an Agent version without a Context Policy.
-async fn legacy(
-	context: &mut Context,
-	asker: &dyn JevAsker,
 	budget: &RequestBudget<'_>,
 	pinned: &Value,
 ) -> Result<()> {
@@ -585,43 +205,12 @@ async fn legacy(
 		pinned,
 		policy: &policy,
 	};
-	match super::compact(context, asker, &fitting).await? {
+	match super::compact_decided(context, None, &fitting).await? {
 		Compaction::Fits => Ok(()),
-		Compaction::NeedsSummary(_) => panic!("prune-only policy has no Summary Stage"),
+		Compaction::NeedsSummary(_) | Compaction::Saved => {
+			panic!("a prune-only policy without a Decider never summarizes or saves")
+		}
 	}
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn compaction_counts_private_documents_without_disclosing_them() {
-	let mut context = journaled(history());
-	let asker = FakeJev::new(drop_all);
-	let pinned =
-		json!({"task":"Summarize", "reference_documents":"PRIVATE-REFERENCE-123".repeat(50)});
-	let budget = RequestBudget {
-		window: 6000,
-		instructions: "",
-		tools: &[],
-		max_output_tokens: 256,
-		projection: &RequestProjection::Legacy,
-		estimate: Default::default(),
-	};
-	legacy(&mut context, &asker, &budget, &pinned)
-		.await
-		.unwrap();
-	assert_eq!(context.compactions, 1);
-	let seen = asker.seen.lock().unwrap();
-	assert!(!seen.is_empty());
-	assert!(
-		seen.iter()
-			.all(|(state, _)| !state.to_string().contains("PRIVATE-REFERENCE-123"))
-	);
-	assert!(budget.request(&context, &pinned).estimated_total_tokens() <= budget.window);
-	assert!(
-		serde_json::to_string(&budget.request(&context, &pinned).context)
-			.unwrap()
-			.contains("PRIVATE-REFERENCE-123")
-	);
 }
 
 fn event(value: Value) -> ContextEvent {
@@ -634,15 +223,8 @@ fn journaled(events: Vec<ContextEvent>) -> Context {
 	}
 	context
 }
-fn entries(events: Vec<ContextEvent>) -> Vec<HistoryEntry> {
-	journaled(events).history
-}
 fn check_request(window: usize, request: &provider::ModelRequest) -> aidash_domain::Result<()> {
 	request.ensure_fits(window)
-}
-
-fn keep_all(_: &str) -> Value {
-	json!({"noul":1.0})
 }
 
 fn recovery_policy(summary: bool) -> policy::Effective {
@@ -727,7 +309,7 @@ impl Scenario {
 			pinned: &self.pinned,
 			policy,
 		};
-		super::compact(context, &FakeJev::new(keep_all), &fitting).await
+		super::compact_decided(context, None, &fitting).await
 	}
 	fn adopt(
 		&self,
@@ -748,7 +330,7 @@ impl Scenario {
 fn needs_summary(compaction: Compaction) -> SummaryPlan {
 	match compaction {
 		Compaction::NeedsSummary(plan) => *plan,
-		Compaction::Fits => panic!("expected the Summary Stage"),
+		Compaction::Fits | Compaction::Saved => panic!("expected the Summary Stage"),
 	}
 }
 
@@ -902,39 +484,6 @@ async fn unreducible_context_pauses_with_typed_reasons() {
 		));
 		assert_eq!(json!(context), saved);
 	}
-	// Under an explicit policy an unavailable Jev is a typed pause, and the
-	// Summary Stage never stands in for it.
-	let budget = Scenario::budget(scenario.window);
-	let policy = recovery_policy(true);
-	let fitting = Fitting {
-		budget: &budget,
-		pinned: &scenario.pinned,
-		policy: &policy,
-	};
-	assert!(matches!(
-		super::compact(
-			&mut long_history(),
-			&FakeJev::new(|_| json!({"noul":"invalid"})),
-			&fitting
-		)
-		.await,
-		Err(Error::Context(recovery::Failure::PruneUnavailable))
-	));
-	// Legacy versions keep their original error class.
-	let legacy_policy = policy::Effective::of(None);
-	let fitting = Fitting {
-		policy: &legacy_policy,
-		..fitting
-	};
-	assert!(matches!(
-		super::compact(
-			&mut long_history(),
-			&FakeJev::new(|_| json!({"noul":"invalid"})),
-			&fitting
-		)
-		.await,
-		Err(Error::External(_))
-	));
 }
 
 #[rstest::rstest]

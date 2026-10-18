@@ -87,6 +87,9 @@ fn config() -> DeciderConfig {
 		rule: RULE.into(),
 		keep_threshold: Probability::half(),
 		mode: Mode::Enforce,
+		max_calls_per_run: 20,
+		state_retention: Default::default(),
+		state_budget: StateBudget::default(),
 	}
 }
 fn provider(endpoint: &str, cap: Option<usize>) -> JevDecisionProvider {
@@ -482,4 +485,36 @@ fn answered_responses_report_the_served_model_and_numeric_usage_for_the_attempt_
 		.unwrap();
 		assert_eq!((answered.input_tokens, answered.cost_usd), (None, None));
 	}
+}
+
+#[test]
+fn the_byte_budget_keeps_requests_in_the_mode_their_state_allows() {
+	let budget = StateBudget::default();
+	let capacity = ByteBudget(budget.clone());
+	let questions = Questions::new();
+	let state = |bytes: usize| json!("s".repeat(bytes - 2));
+	let small = state(1_000);
+	assert!(
+		capacity
+			.fits("typesafe/jev-1.13", &small, &questions, &[0; 32_000])
+			.unwrap()
+	);
+	assert!(
+		!capacity
+			.fits("typesafe/jev-1.13", &small, &questions, &[0; 32_001])
+			.unwrap()
+	);
+	// A state beyond the default mode travels in the long-context mode.
+	let large = state(30_000);
+	assert!(
+		capacity
+			.fits("typesafe/jev-1.13", &large, &questions, &[0; 40_000])
+			.unwrap()
+	);
+	let too_large = state(560_001);
+	assert!(
+		!capacity
+			.fits("typesafe/jev-1.13", &too_large, &questions, &[0; 1])
+			.unwrap()
+	);
 }

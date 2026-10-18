@@ -15,6 +15,7 @@ fn profile() -> AccountTerms {
 		evaluation_permitted: true,
 		retention_days: 90,
 		deletion_after_termination_days: 30,
+		terminated_at: None,
 		price_effective_at: now - chrono::Duration::days(1),
 		price_review_after: now + chrono::Duration::days(1),
 		search_price_micro_usd: Some(5000),

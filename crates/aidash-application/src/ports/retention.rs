@@ -9,9 +9,9 @@ pub trait RetentionScope: Send {
 	fn decider(&self) -> Decider;
 	/// The Deployment's periods, which are also the longest a Tenant may keep.
 	fn deployment(&self) -> RetentionRules;
-	/// A subject must be permitted `action` on its Tenant's `retention`
+	/// Whether a subject is permitted `action` on its Tenant's `retention`
 	/// collection; a Deployment Administrator needs no Tenant policy.
-	async fn require(&mut self, tenant: &str, action: &str) -> Result<()>;
+	async fn permits(&mut self, tenant: &str, action: &str) -> Result<bool>;
 	/// The Tenant's stored periods, locked until the scope finishes.
 	async fn stored(&mut self, tenant: &str) -> Result<Option<RetentionRules>>;
 	/// Store or clear the Tenant's periods and keep the change in history.

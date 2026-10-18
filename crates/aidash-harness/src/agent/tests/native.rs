@@ -506,7 +506,10 @@ async fn an_oversized_native_run_elides_old_results_and_keeps_every_turn_whole(
 	// Arrange: Jev drops every old result.
 	native_thinking_over_the_window(&mut fixture);
 	Arc::get_mut(&mut fixture.backend.0).unwrap().jev_retention = Some(0.0);
-	// Act
+	// Act: the decision saves the pruned context, which ends its step, and
+	// the next step infers from it.
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert
 	let request = last_request(&fixture);
