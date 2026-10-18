@@ -40,8 +40,16 @@ fn approving_subject(
 	}
 }
 
-/// `catalog.approve` on the exact version an activation approves.
-async fn require_approval(access: &mut Access, entry: &crate::registry::Entry) -> Result<()> {
+/// `catalog.approve` on the exact version an activation approves, decided only
+/// for a revision installed in the subject's own Tenant.
+async fn require_approval(
+	access: &mut Access,
+	revision: &aidash_domain::marketplace::Revision,
+) -> Result<()> {
+	if revision.tenant != access.identity.tenant {
+		return Err(Error::Forbidden);
+	}
+	let entry = &revision.entry;
 	let resource = access.resource(
 		"registry",
 		format!("{}/{}@{}", entry.kind, entry.id, entry.version),
@@ -309,7 +317,7 @@ impl MarketplaceManagement {
 				input.revision,
 			)
 			.await?;
-			require_approval(&mut access, &revision.entry).await?;
+			require_approval(&mut access, &revision).await?;
 			let enabled = input.enabled;
 			let installation = aidash_application::marketplace::operations::activate(
 				&mut crate::bootstrap::marketplace_tenant_activation_scope(
@@ -359,7 +367,7 @@ impl MarketplaceManagement {
 					selection.revision,
 				)
 				.await?;
-				require_approval(&mut access, &revision.entry).await?;
+				require_approval(&mut access, &revision).await?;
 				entries.push(revision.entry);
 			}
 			let installations =
