@@ -232,6 +232,13 @@ export function dollars(microUsd: number): string {
   return `$${(microUsd / 1_000_000).toFixed(6).replace(/(\.\d{4}\d*?)0+$/, "$1")}`;
 }
 
+/** One request's price as an approver reads it. A zero price is a free
+ *  request that is still attributed to the Research account. */
+export function requestPrice(microUsd: number, ja: boolean): string {
+  if (microUsd === 0) return ja ? "無料" : "Free";
+  return `${dollars(microUsd)} ${ja ? "（見積もり。請求額ではありません）" : "(estimate, not an invoice)"}`;
+}
+
 /**
  * What an "allow for this Run" decision on a Web disclosure covers. A Run
  * grant names a destination host, so for search it covers every later query

@@ -14,7 +14,7 @@ Every Tenant's Registry holds the built-in declarations at exact immutable versi
 
 ## Sandboxed and research built-ins
 
-The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and the research providers are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
+The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and the research providers are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one whose `[research_providers]` settings do not declare a research provider offers no group for it. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
 
 | Group              | Bundle                           | Operations                                                           |
 | ------------------ | -------------------------------- | -------------------------------------------------------------------- |

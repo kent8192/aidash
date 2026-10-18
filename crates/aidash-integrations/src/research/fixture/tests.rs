@@ -8,7 +8,8 @@ async fn search_ranks_folded_term_matches_and_sends_nothing_out() {
 	let fixture = FixtureResearch::default();
 	let query = SearchQuery::parse(&json!({"query":"STRASSE line"}), None).unwrap();
 	assert_eq!(fixture.disclosure(&query).unwrap().destination, DESTINATION);
-	assert_eq!(fixture.account(), Ok(None));
+	assert_eq!(SearchProvider::account(&fixture), Ok(None));
+	assert_eq!(PageProvider::account(&fixture), Ok(None));
 	let results = fixture.search(&query).await.unwrap();
 	assert_eq!(results.candidates.len(), 1);
 	assert_eq!(
