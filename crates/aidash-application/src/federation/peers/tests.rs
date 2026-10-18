@@ -88,9 +88,6 @@ impl PeerConfiguration for Scope {
 	async fn all(&self) -> Result<Vec<Peer>> {
 		Ok(self.peers.lock().unwrap().clone())
 	}
-	async fn authorized(&self, _: &str, _: Uuid, _: &EntityRef) -> Result<bool> {
-		Ok(false)
-	}
 }
 fn authority(scope: Arc<Scope>) -> PeerAuthority {
 	PeerAuthority {
@@ -203,22 +200,4 @@ fn missing_enabled_peer_credential_fails_registration_closed(scope: Scope, mut p
 	assert!(
 		matches!(require_distinct_credentials(vec![peer], "aidash://remote", "current credential", &scope), Err(Error::Invalid(reason)) if reason == "credential is not configured")
 	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn absent_delegation_cannot_authorize_task_execution(scope: Scope) {
-	assert!(matches!(
-		authority(Arc::new(scope))
-			.authorize_task(
-				"aidash://remote",
-				Uuid::new_v4(),
-				&EntityRef {
-					id: "agent".into(),
-					version: "1".into()
-				}
-			)
-			.await,
-		Err(Error::Unauthorized)
-	));
 }

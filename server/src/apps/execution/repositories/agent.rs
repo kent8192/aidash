@@ -844,8 +844,10 @@ impl ExecutionEnvironment for Environment<'_> {
 				context.source,
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
+				let tenant = self.federation.store.run_tenant(self.step_run.id).await?;
 				let value =
-					crate::knowledge::load(&self.federation.registry, &binding.definition).await?;
+					crate::knowledge::load(&self.federation.registry, &tenant, &binding.definition)
+						.await?;
 				documents.extend(
 					value
 						.as_array()
@@ -1119,21 +1121,6 @@ impl ExecutionEnvironment for Environment<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn operator_human_message_media(
-		&self,
-		run: &Run,
-		messages: &[(i64, Uuid, usize)],
-		model: &ModelConfig,
-	) -> Result<HumanMediaBatch> {
-		crate::authorization::execution::operator_human_message_media(
-			&self.federation.store,
-			run,
-			messages,
-			model,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn summary_dependencies_current(
 		&self,
 		run: &Run,
@@ -1178,13 +1165,10 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			home: self.native_home(),
 			scope: self.run_store.scope.clone(),
 		});
-		let authority = if let Some(authority) = &self.authority {
-			authority.guard.binding_authority()
-		} else {
-			Arc::new(super::bindings::OperatorAuthority {
-				federation: self.federation.clone(),
-			}) as Arc<dyn aidash_application::ports::bindings::BindingAuthority>
+		let Some(authority) = &self.authority else {
+			return Err(aidash_application::Error::Forbidden);
 		};
+		let authority = authority.guard.binding_authority();
 		aidash_application::registry::bindings::execution::PinnedResolver {
 			providers,
 			authority,

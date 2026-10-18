@@ -113,14 +113,40 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	assert_eq!(compatible.revision, before.revision + 1);
 	assert_ne!(compatible.collection, before.collection);
 
-	let mut embedding = registry.get("e", "1.0.0").await.unwrap();
+	let mut embedding = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"e",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	embedding.id = "different-embedding".into();
 	embedding.config["model"] = json!("different-model");
-	registry.register(embedding).await.unwrap();
-	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			embedding,
+		)
+		.await
+		.unwrap();
+	let mut provider = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	provider.id = "different-provider".into();
 	provider.config["policy"]["embedding"] = json!(reference("different-embedding"));
-	registry.register(provider).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			provider,
+		)
+		.await
+		.unwrap();
 	// The same invariant also applies when pinning a bank against an existing index.
 	let shared = Bank {
 		participant: None,
@@ -302,10 +328,23 @@ async fn policy_replacement_cannot_shrink_below_existing_reverse_impact(
 	let root = add(&store, &bank, vec![]).await;
 	add(&store, &bank, vec![root.evidence()]).await;
 	add(&store, &bank, vec![root.evidence()]).await;
-	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	let mut provider = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	provider.id = "small-impact".into();
 	provider.config["policy"]["bounds"]["max_graph_visits"] = json!(2);
-	registry.register(provider).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			provider,
+		)
+		.await
+		.unwrap();
 	assert!(
 		matches!(memory::operate(&store, &Actor::DeploymentAdministrator, memory::Operation { operation_id: Uuid::now_v7(), provider: reference("small-impact"), bank: bank.clone(), action: memory::Action::ConfigureBank { expected_revision: 1 } }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("dependency impact"))

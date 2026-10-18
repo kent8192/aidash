@@ -6,10 +6,7 @@ use aidash_application::ports::VectorIndex;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::{
-		identity::models::AuthorizationWorkspace, knowledge::services::native_memory as memory,
-	},
-	authorization::identity::Actor,
+	apps::knowledge::services::native_memory as memory, authorization::identity::Actor,
 	store::Store,
 };
 use reinhardt::ServerRouter as Router;
@@ -2177,16 +2174,32 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	.await;
 	let agent_ref = if delivery == "later_bank" {
 		registry
-			.register(entry(
-				"source",
-				"shared-source",
-				json!({"scope":"workspace","memory":reference("p"),"max_tokens":8192}),
-			))
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				entry(
+					"source",
+					"shared-source",
+					json!({"scope":"workspace","memory":reference("p"),"max_tokens":8192}),
+				),
+			)
 			.await
 			.unwrap();
-		let mut incompatible = registry.get("p", "1.0.0").await.unwrap();
+		let mut incompatible = registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"p",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
 		incompatible.id = "other-memory".into();
-		registry.register(incompatible).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				incompatible,
+			)
+			.await
+			.unwrap();
 		let shared = Bank {
 			home: store.node_id.clone(),
 			tenant: "acme".into(),
@@ -2207,11 +2220,24 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		)
 		.await
 		.unwrap();
-		let mut agent = registry.get("a", "1.0.0").await.unwrap();
+		let mut agent = registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"a",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
 		agent.id = "late-agent".into();
 		agent.binding_normalization = None;
 		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
-		registry.register(agent).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				agent,
+			)
+			.await
+			.unwrap();
 		reference("late-agent")
 	} else {
 		reference("a")
@@ -3929,7 +3955,10 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 	let disabled =
 		json!({"model":reference("m"),"instructions":"Memory is disabled","tools":[],"skills":[]});
 	registry
-		.register(entry("agent", "disabled", disabled.clone()))
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry("agent", "disabled", disabled.clone()),
+		)
 		.await
 		.unwrap();
 	let initial = memory::create_participant(
@@ -3967,7 +3996,13 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 	.unwrap();
 	let mut version = entry("agent", "a", disabled);
 	version.version = "1.1.0".into();
-	registry.register(version).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			version,
+		)
+		.await
+		.unwrap();
 	let upgraded = memory::upgrade_participant(
 		&store,
 		&Actor::DeploymentAdministrator,

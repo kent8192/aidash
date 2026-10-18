@@ -13,21 +13,20 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let created = workspace(&app.deployment_administrator, "Workspace over HTTP").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let created = workspace(&member, "Workspace over HTTP").await;
 	let id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
 	let path = format!("/api/workspaces/{id}");
 	// Act
-	let updated = app
-		.deployment_administrator
+	let updated = member
 		.patch(&path, &json!({"revision":0,"state":{"step":1}}), "json")
 		.await
 		.unwrap();
-	let stale = app
-		.deployment_administrator
+	let stale = member
 		.patch(&path, &json!({"revision":0,"state":{"step":2}}), "json")
 		.await
 		.unwrap();
-	let snapshot = app.deployment_administrator.get(&path).await.unwrap();
+	let snapshot = member.get(&path).await.unwrap();
 	// Assert
 	assert_eq!(assert_json(updated, 200)["revision"], 1);
 	assert_json(stale, 409);
@@ -51,11 +50,12 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let workspace = workspace(&app.deployment_administrator, "Task graph").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Task graph").await;
 	let workspace_id = workspace["id"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace_id}/tasks");
 	let ancestor = assert_json(
-		app.deployment_administrator
+		member
 			.post(
 				&path,
 				&json!({"title":"Ancestor","description":"Root"}),
@@ -68,7 +68,7 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 	let dependent_input = json!({"title":"Dependent","description":"Wait for ancestor","dependencies":[ancestor["id"],ancestor["id"]]});
 	// Act
 	let dependent = assert_json(
-		app.deployment_administrator
+		member
 			.request(Method::POST, &path)
 			.header("idempotency-key", "endpoint-task")
 			.json(&dependent_input)
@@ -77,15 +77,14 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 			.unwrap(),
 		200,
 	);
-	let repeated = app
-		.deployment_administrator
+	let repeated = member
 		.request(Method::POST, &path)
 		.header("idempotency-key", "endpoint-task")
 		.json(&dependent_input)
 		.send()
 		.await
 		.unwrap();
-	let cycle = app.deployment_administrator.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();
+	let cycle = member.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();
 	// Assert
 	assert_eq!(assert_json(repeated, 200)["id"], dependent["id"]);
 	// The development baseline enforces combined cycles with a DB trigger.
@@ -102,7 +101,7 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 		.unwrap();
 	assert_eq!(links.len(), 1);
 	let snapshot = assert_json(
-		app.deployment_administrator
+		member
 			.get(&format!("/api/workspaces/{workspace_id}"))
 			.await
 			.unwrap(),
@@ -118,14 +117,13 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	// Act
-	let malformed = app
-		.deployment_administrator
+	let malformed = member
 		.post_raw("/api/workspaces", b"{", "application/json")
 		.await
 		.unwrap();
-	let unknown = app
-		.deployment_administrator
+	let unknown = member
 		.post(
 			"/api/workspaces",
 			&json!({"title":"Rejected","goal":"Contract","unexpected":true}),
@@ -133,11 +131,7 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 		)
 		.await
 		.unwrap();
-	let invalid_id = app
-		.deployment_administrator
-		.get("/api/workspaces/not-a-uuid")
-		.await
-		.unwrap();
+	let invalid_id = member.get("/api/workspaces/not-a-uuid").await.unwrap();
 	// Assert
 	assert_eq!(malformed.status_code(), 400, "{}", malformed.text());
 	assert_eq!(unknown.status_code(), 422, "{}", unknown.text());
@@ -158,7 +152,8 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
-	let home = workspace(&app.deployment_administrator, "Validation boundary").await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let home = workspace(&member, "Validation boundary").await;
 	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
 	let whitespace: Vec<_> = (0..=0x10ffff)
 		.filter_map(char::from_u32)
@@ -170,8 +165,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 		for field in ["title", "goal"] {
 			let mut input = json!({"title":"Workspace", "goal":"Goal"});
 			input[field] = json!(blank);
-			let response = app
-				.deployment_administrator
+			let response = member
 				.post("/api/workspaces", &input, "json")
 				.await
 				.unwrap();
@@ -185,11 +179,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 		for field in ["title", "description"] {
 			let mut input = json!({"title":"Task", "description":"Work"});
 			input[field] = json!(blank);
-			let response = app
-				.deployment_administrator
-				.post(&path, &input, "json")
-				.await
-				.unwrap();
+			let response = member.post(&path, &input, "json").await.unwrap();
 			assert_eq!(
 				response.status_code(),
 				400,
@@ -217,7 +207,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 	);
 	for content in ["\t\u{a0}content\u{3000}\n", "\u{200b}"] {
 		let created = assert_json(
-			app.deployment_administrator
+			member
 				.post(
 					&path,
 					&json!({"title":content,"description":content}),

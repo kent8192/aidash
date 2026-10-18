@@ -11,11 +11,24 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 ) {
 	let database = database.await;
 	let (store, registry, workspace) = setup(&database, bounds).await;
-	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	let mut provider = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	provider.id = "short-history".into();
 	provider.config["policy"]["retention"]["history_days"] = json!(1);
 	provider.config["policy"]["retention"]["purge_after_seconds"] = json!(86_400);
-	registry.register(provider).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			provider,
+		)
+		.await
+		.unwrap();
 	let bank = Bank {
 		home: store.node_id.clone(),
 		tenant: "acme".into(),
@@ -538,10 +551,23 @@ async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
 		panic!("candidate list")
 	};
 	assert_eq!(before[0].state, CandidateState::Pending);
-	let mut replacement = registry.get("p", "1.0.0").await.unwrap();
+	let mut replacement = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	replacement.id = "small-purge-graph".into();
 	replacement.config["policy"]["bounds"]["max_graph_visits"] = json!(2);
-	registry.register(replacement).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			replacement,
+		)
+		.await
+		.unwrap();
 	memory::operate(
 		&store,
 		&Actor::DeploymentAdministrator,

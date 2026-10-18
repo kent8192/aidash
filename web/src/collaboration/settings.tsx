@@ -27,18 +27,28 @@ import {
 } from "../components/ui/table";
 import { DeploymentPage } from "../deployment";
 import {
+  Alert,
   Disclosure,
   Facts,
+  Loading,
   Notice,
   ScreenHeader,
 } from "../components/patterns";
 import { ToolSection } from "../integrated-tools";
+import { keylessOrigin } from "../keyless";
+import {
+  ApprovalBadge,
+  KeylessOrigin,
+  useRegistryVersions,
+} from "../catalog-approval";
+import type { RegistryVersion } from "../generated/models";
+import { useTenantActions } from "../tenant-administration";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
 import { ProviderCredentialsPage } from "../provider-credentials";
 import { RecordView, ReferenceName } from "../record-view";
 import { SemanticPage } from "../semantic";
-import type { Entry, State } from "../types";
+import type { State } from "../types";
 import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import type { Selection } from "./details";
@@ -174,23 +184,33 @@ function initials(name: string) {
   ).toUpperCase();
 }
 
-const rowClass =
-  "entity-card group grid w-full min-w-0 cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-3 py-2 text-left transition-colors duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:grid-cols-[1.75rem_minmax(0,1fr)_7rem_minmax(0,12rem)_5.5rem_1rem]";
-const headClass =
-  "hidden h-8 items-center gap-x-3 border-b border-border px-3 text-[11px] font-medium text-faint md:grid md:grid-cols-[1.75rem_minmax(0,1fr)_7rem_minmax(0,12rem)_5.5rem_1rem]";
+const columns =
+  "md:grid-cols-[1.75rem_minmax(0,1fr)_7rem_minmax(0,10rem)_7.5rem_5.5rem_1rem]";
+const rowClass = cn(
+  "entity-card group grid w-full min-w-0 cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-3 py-2 text-left transition-colors duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+  columns,
+);
+const headClass = cn(
+  "hidden h-8 items-center gap-x-3 border-b border-border px-3 text-[11px] font-medium text-faint md:grid",
+  columns,
+);
 
 function EntryRow({
   name,
   description,
+  keyless,
   kind,
   tags,
+  approval,
   trailing,
   onOpen,
 }: {
   name: string;
   description: string;
+  keyless: string | null;
   kind: string;
   tags: readonly string[];
+  approval: ReactNode;
   trailing: ReactNode;
   onOpen: () => void;
 }) {
@@ -212,9 +232,15 @@ function EntryRow({
               {description}
             </p>
           )}
+          {keyless && (
+            <p className="truncate">
+              <KeylessOrigin origin={keyless} />
+            </p>
+          )}
         </span>
-        <span className="col-start-2 row-start-2 flex min-w-0 items-center gap-2 md:col-start-auto md:row-start-auto">
+        <span className="col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-2 md:col-start-auto md:row-start-auto">
           <Badge value={kind} />
+          <span className="md:hidden">{approval}</span>
           <span className="font-mono text-xs text-muted-foreground tabular md:hidden">
             {trailing}
           </span>
@@ -231,6 +257,7 @@ function EntryRow({
             </span>
           )}
         </span>
+        <span className="hidden min-w-0 md:flex">{approval}</span>
         <span className="hidden truncate font-mono text-xs text-muted-foreground tabular md:block">
           {trailing}
         </span>
@@ -244,21 +271,22 @@ function EntryRow({
 }
 
 function EntryList({
-  entries,
+  versions,
   open,
   action,
 }: {
-  entries: Entry[];
+  versions: RegistryVersion[];
   open: (selection: Selection) => void;
   action?: ReactNode;
 }) {
   const { t, local, locale } = useI18n();
+  const entries = versions.map((version) => version.entry);
   const entityName = useEntityName(entries);
   const copy = listCopy[locale];
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
-  const shown = entries.filter(
-    (entry) =>
+  const shown = versions.filter(
+    ({ entry }) =>
       !needle ||
       [
         entityName(entry),
@@ -301,6 +329,7 @@ function EntryList({
             <span>{t("name")}</span>
             <span>{t("kind")}</span>
             <span>{t("tags")}</span>
+            <span>{t("catalogApprovalColumn")}</span>
             <span>{t("version")}</span>
             <span />
           </div>
@@ -310,15 +339,19 @@ function EntryList({
             </p>
           ) : (
             <ul className="divide-y divide-border">
-              {shown.map((entry) => (
+              {shown.map((version) => (
                 <EntryRow
-                  key={`${entry.kind}:${entry.id}@${entry.version}`}
-                  name={entityName(entry)}
-                  description={local(entry.description)}
-                  kind={entry.kind}
-                  tags={entry.tags ?? []}
-                  trailing={entry.version}
-                  onOpen={() => open({ kind: "entityDetail", entity: entry })}
+                  key={`${version.entry.kind}:${version.entry.id}@${version.entry.version}`}
+                  name={entityName(version.entry)}
+                  description={local(version.entry.description)}
+                  keyless={keylessOrigin(version.entry)}
+                  kind={version.entry.kind}
+                  tags={version.entry.tags ?? []}
+                  approval={<ApprovalBadge version={version} />}
+                  trailing={version.entry.version}
+                  onOpen={() =>
+                    open({ kind: "entityDetail", entity: version.entry })
+                  }
                 />
               ))}
             </ul>
@@ -435,6 +468,48 @@ function NodeView({
   );
 }
 
+/** The subject's own Tenant Registry: every version with its Catalog
+ *  Approval, and registration for subjects holding `registry.create`. */
+function TenantRegistry({
+  data,
+  section,
+  open,
+}: {
+  data: State;
+  section: "agents" | "registry" | "clusters";
+  open: (selection: Selection) => void;
+}) {
+  const { t } = useI18n();
+  const versions = useRegistryVersions(data.access);
+  const { can } = useTenantActions(data.access);
+  if (versions.isError) return <Alert>{t("catalogRegistryUnavailable")}</Alert>;
+  if (!versions.data) return <Loading />;
+  const kind = { agents: "agent", clusters: "cluster", registry: null }[
+    section
+  ];
+  return (
+    <EntryList
+      versions={versions.data.filter(
+        (version) => kind === null || version.entry.kind === kind,
+      )}
+      open={open}
+      action={
+        can("registry.create") && (
+          <Button
+            type="button"
+            onClick={() =>
+              open({ kind: section === "clusters" ? "cluster" : "entity" })
+            }
+          >
+            <Plus aria-hidden />
+            {t("register")}
+          </Button>
+        )
+      }
+    />
+  );
+}
+
 export function Configuration({
   data,
   section,
@@ -453,22 +528,12 @@ export function Configuration({
   channel?: string;
 }) {
   const { t, locale } = useI18n();
+  const { can } = useTenantActions(data.access);
   const deploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const restricted =
     !deploymentAdministrator &&
     deploymentAdministratorSections[section] === true;
-  const registerAction = deploymentAdministrator && (
-    <Button
-      type="button"
-      onClick={() =>
-        open({ kind: section === "clusters" ? "cluster" : "entity" })
-      }
-    >
-      <Plus aria-hidden />
-      {t("register")}
-    </Button>
-  );
   return (
     <SettingsFrame
       section={section}
@@ -487,18 +552,17 @@ export function Configuration({
           )}
           {(section === "agents" ||
             section === "registry" ||
-            section === "clusters") && (
-            <EntryList
-              key={section}
-              entries={data.registry.filter(
-                (entry) =>
-                  section === "registry" ||
-                  entry.kind === (section === "agents" ? "agent" : "cluster"),
-              )}
-              open={open}
-              action={registerAction}
-            />
-          )}
+            section === "clusters") &&
+            (deploymentAdministrator ? (
+              <Notice role="status">{t("catalogTenantDefinitions")}</Notice>
+            ) : (
+              <TenantRegistry
+                key={section}
+                data={data}
+                section={section}
+                open={open}
+              />
+            ))}
           {section === "registry" && (
             <ToolSection
               title={
@@ -515,6 +579,8 @@ export function Configuration({
               <ScopedMarketplace
                 key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
                 identity={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                tenant={data.access.tenant}
+                approves={can("catalog.approve")}
               />
             )}
           {section === "marketplace" && deploymentAdministrator && (

@@ -525,22 +525,6 @@ impl WorkerAuthority {
 	}
 }
 
-pub(crate) async fn operator_human_message_media(
-	store: &Store,
-	run: &Run,
-	messages: &[(i64, Uuid, usize)],
-	model: &crate::registry::ModelConfig,
-) -> Result<HumanMediaBatch> {
-	aidash_application::execution::media::deployment_administrator(
-		&crate::bootstrap::operator_media_repository(store, store.run_tenancy(run.id).await?),
-		&run.metadata(),
-		messages,
-		model,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 pub(crate) use aidash_application::ports::execution::HumanMediaBatch;
 
 pub(crate) struct Guard {
@@ -624,23 +608,19 @@ impl Guard {
 		})
 	}
 
-	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
 		let entry = aidash_application::authorization::worker_entry::execution(
 			&crate::bootstrap::worker_entry_repository(f),
 			run,
 		)
 		.await?;
-		entry
-			.map(|entry| {
-				Ok(Self {
-					tenancy: entry.scope.tenancy()?,
-					remote: entry.remote.then(|| f.clone()),
-					access: Arc::new(RwLock::new(entry.scope)),
-					run: run.clone(),
-					agent: entry.agent,
-				})
-			})
-			.transpose()
+		Ok(Self {
+			tenancy: entry.scope.tenancy()?,
+			remote: entry.remote.then(|| f.clone()),
+			access: Arc::new(RwLock::new(entry.scope)),
+			run: run.clone(),
+			agent: entry.agent,
+		})
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.write().await;
@@ -1223,16 +1203,16 @@ pub(crate) struct DeliveryGuard {
 }
 
 impl DeliveryGuard {
-	pub async fn begin(f: &Federation, run: &RunMetadata) -> Result<Option<Self>> {
+	pub async fn begin(f: &Federation, run: &RunMetadata) -> Result<Self> {
 		let entry = aidash_application::authorization::worker_entry::delivery(
 			&crate::bootstrap::worker_entry_repository(f),
 			run,
 		)
 		.await?;
-		Ok(entry.map(|entry| Self {
+		Ok(Self {
 			access: Arc::new(RwLock::new(entry.scope)),
 			remote: entry.remote,
-		}))
+		})
 	}
 }
 
