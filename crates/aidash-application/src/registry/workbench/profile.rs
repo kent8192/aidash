@@ -1,10 +1,12 @@
-//! Deployment Administrator-owned profiles are exposed to subjects only after current draft-test authority and rule matching.
+//! Tenant-owned real-tool profiles (#361). Subjects see them only after
+//! current draft-test authority and rule matching.
 use crate::{
 	Error, Result,
 	ports::registry::workbench::profile::{ProfileConfiguration, ProfileRepository},
 };
 use aidash_domain::{
 	identity::Principal,
+	keyless::Destination,
 	registry::{
 		Entry,
 		workbench::profile::{
@@ -22,15 +24,21 @@ pub fn validate_real_rule(
 	aidash_domain::configuration::validate_endpoint(&rule.endpoint)?;
 	let url = url::Url::parse(&rule.endpoint)
 		.map_err(|_| Error::Invalid("invalid test endpoint".into()))?;
-	if url.scheme() != "https"
-		&& !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-	{
-		return Err(Error::Invalid(
-			"test endpoints require HTTPS except on loopback".into(),
-		));
-	}
-	if let Some(name) = &rule.credential_env {
-		configuration.require_secret(name)?;
+	// The Tenant chooses the endpoint the server calls, so it reaches only
+	// public addresses unless the Deployment permits its origin.
+	match configuration.destination(&rule.endpoint)? {
+		Destination::Forbidden => {
+			return Err(Error::Invalid(
+				"a test endpoint at a non-public address needs its origin in [keyless_endpoints] permitted_private_origins"
+					.into(),
+			));
+		}
+		Destination::PublicOnly if url.scheme() != "https" => {
+			return Err(Error::Invalid(
+				"test endpoints require HTTPS unless the Deployment permits their origin".into(),
+			));
+		}
+		Destination::Permitted | Destination::PublicOnly => {}
 	}
 
 	if tool.kind != "tool" {
@@ -43,8 +51,6 @@ pub fn validate_real_rule(
 	let cfg = descriptor
 		.transport
 		.ok_or_else(|| Error::Invalid("real tests require an integration transport".into()))?;
-	// A production Tool carries no Deployment secret (#296), so a test
-	// credential, which only the Deployment's settings name, is always separate.
 	let isolated = match cfg {
 		ToolConfig::Http { endpoint, .. } => {
 			let production = url::Url::parse(&endpoint)
@@ -54,7 +60,10 @@ pub fn validate_real_rule(
 		_ => false,
 	};
 	if !isolated {
-		return Err(Error::Invalid("real tests require a Deployment Administrator-verified read-only HTTP test endpoint and separate test credentials".into()));
+		return Err(Error::Invalid(
+			"real tests require a read-only HTTP test endpoint, verified by the profile's writer and separate from the production endpoint"
+				.into(),
+		));
 	}
 	Ok(())
 }
@@ -113,6 +122,18 @@ pub async fn list(
 		})
 		.collect())
 }
+/// Every profile of a Tenant with its rules, for those who write them (#361).
+pub async fn administered(
+	repository: &dyn ProfileRepository,
+	tenant: String,
+) -> Result<Vec<TestProfile>> {
+	if let Principal::Subject { tenant: own, .. } = repository.principal()
+		&& own != tenant
+	{
+		return Err(Error::Forbidden);
+	}
+	repository.administered(&tenant).await
+}
 pub async fn put(
 	repository: &dyn ProfileRepository,
 	configuration: &dyn ProfileConfiguration,
@@ -120,7 +141,11 @@ pub async fn put(
 	id: String,
 	input: ProfileInput,
 ) -> Result<TestProfile> {
-	if repository.principal() != Principal::DeploymentAdministrator {
+	// A Subject writes only its own Tenant's profiles, under
+	// `workbench.test_profile.update`, which the repository checks with the write.
+	if let Principal::Subject { tenant: own, .. } = repository.principal()
+		&& own != tenant
+	{
 		return Err(Error::Forbidden);
 	}
 	if tenant.trim().is_empty() || id.trim().is_empty() || id.len() > 100 || input.rules.len() > 32
@@ -129,6 +154,9 @@ pub async fn put(
 			"invalid test profile identity or size".into(),
 		));
 	}
+	// Before any definition is loaded or endpoint classified, so a caller
+	// without the action learns nothing about either.
+	repository.authorize_update(&tenant, &id).await?;
 	let mut seen = HashSet::new();
 	for rule in &input.rules {
 		if !seen.insert((&rule.tool.id, &rule.tool.version))

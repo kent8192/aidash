@@ -201,6 +201,7 @@ pub(crate) async fn create(
 		0,
 		serde_json::to_value(&bundle)?,
 		&creator.revision_actor(),
+		None,
 	)
 	.await?;
 	crate::apps::registry::repositories::seed_tenant(
@@ -264,6 +265,7 @@ async fn map_owner(tx: &mut AtomicTransaction, tenant: &str, identity: Uuid) -> 
 		),
 		3650 * 24 * 60 * 60,
 		"dashboard-oidc",
+		None,
 	)
 	.await?;
 	let mapping = DashboardMapping::build()

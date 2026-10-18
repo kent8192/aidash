@@ -34,6 +34,7 @@ fn mapping() -> Mapping {
 struct Repository {
 	calls: Arc<Mutex<Vec<&'static str>>>,
 	credential_denied: bool,
+	not_exportable: bool,
 	changed: bool,
 	peer_enabled: bool,
 	history_failed: bool,
@@ -43,6 +44,7 @@ fn repository() -> Repository {
 	Repository {
 		calls: Arc::new(Mutex::new(vec![])),
 		credential_denied: false,
+		not_exportable: false,
 		changed: false,
 		peer_enabled: true,
 		history_failed: false,
@@ -70,10 +72,6 @@ impl MappingRepository for Repository {
 	type Access = Access;
 	fn node_id(&self) -> &str {
 		"aidash://local"
-	}
-	async fn enabled_peer(&self, _: &str) -> Result<()> {
-		self.called("enabled-peer");
-		Ok(())
 	}
 	async fn begin_write(&self, scope: &TenancyScope, enabled: bool) -> Result<Write> {
 		assert!(
@@ -125,6 +123,18 @@ impl MappingWrite for Write {
 	async fn credential_subject(&mut self, _: &str, _: Uuid) -> Result<Option<String>> {
 		self.repository.called("credential-subject");
 		Ok(Some("local-subject".into()))
+	}
+	async fn enabled_peer(&mut self, _: &str) -> Result<()> {
+		self.repository.called("enabled-peer");
+		Ok(())
+	}
+	async fn exportable(&mut self, _: &str, _: Uuid) -> Result<()> {
+		self.repository.called("exportable");
+		if self.repository.not_exportable {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
 	}
 	async fn lock_credential(&mut self, _: &str, _: Uuid, _: &str) -> Result<()> {
 		self.repository.called("lock-credential");
@@ -194,14 +204,20 @@ async fn writes_keep_lock_order_and_revocation_uses_control_scope(
 	assert_eq!(result, mapping());
 	let mut expected = if enabled {
 		vec![
-			"enabled-peer",
 			"begin-data",
 			"policy",
 			"credential-subject",
+			"enabled-peer",
+			"exportable",
 			"lock-credential",
 		]
 	} else {
-		vec!["begin-control", "policy", "credential-subject"]
+		vec![
+			"begin-control",
+			"policy",
+			"credential-subject",
+			"exportable",
+		]
 	};
 	expected.extend([mutation, "history", "commit"]);
 	assert_eq!(repository.calls(), expected);
@@ -218,10 +234,11 @@ async fn rejected_mapped_credential_is_forbidden_without_a_mutation(
 	assert_eq!(
 		repository.calls(),
 		vec![
-			"enabled-peer",
 			"begin-data",
 			"policy",
 			"credential-subject",
+			"enabled-peer",
+			"exportable",
 			"lock-credential"
 		]
 	);
@@ -245,11 +262,30 @@ async fn revocation_does_not_require_the_old_credential_to_remain_usable(
 			"begin-control",
 			"policy",
 			"credential-subject",
+			"exportable",
 			"update",
 			"history",
 			"commit"
 		]
 	);
+}
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn a_credential_that_cannot_be_exported_is_refused_enabled_or_not(
+	mut repository: Repository,
+	mut input: PeerMappingInput,
+	#[case] enabled: bool,
+) {
+	repository.not_exportable = true;
+	input.enabled = enabled;
+	input.expected_revision = 7;
+	assert!(matches!(
+		write(&repository, "tenant", input).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(repository.calls().last(), Some(&"exportable"));
 }
 #[rstest]
 #[tokio::test]
@@ -262,10 +298,11 @@ async fn failed_history_prevents_commit(mut repository: Repository, input: PeerM
 	assert_eq!(
 		repository.calls(),
 		vec![
-			"enabled-peer",
 			"begin-data",
 			"policy",
 			"credential-subject",
+			"enabled-peer",
+			"exportable",
 			"lock-credential",
 			"insert",
 			"history"

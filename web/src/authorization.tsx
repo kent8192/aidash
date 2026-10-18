@@ -92,6 +92,39 @@ const jsonObject = (text: string) => {
 };
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 
+/** What the caller may do on a Tenant's policy page: everything for a
+ *  Deployment Administrator, its Tenant's policy actions for a subject acting
+ *  through a Mapping (#363). The server decides; hidden controls only spare a
+ *  refused request. */
+type PolicyAccess = {
+  deploymentAdministrator: boolean;
+  can: (action: string) => boolean;
+};
+const DEPLOYMENT_ADMINISTRATOR: PolicyAccess = {
+  deploymentAdministrator: true,
+  can: () => true,
+};
+
+/** A Tenant's own view of its policy, credentials and Peer Mappings, for a
+ *  subject whose Tenant's policy grants `policy.read`. */
+export function TenantPolicyAdministration({
+  tenant,
+  can,
+}: {
+  tenant: string;
+  can: (action: string) => boolean;
+}) {
+  return (
+    <div className="authorization-page grid min-w-0 gap-6">
+      <TenantAuthorization
+        tenant={tenant}
+        invitations={false}
+        access={{ deploymentAdministrator: false, can }}
+      />
+    </div>
+  );
+}
+
 /** A Deployment Administrator's view of one Tenant at a time. */
 export function AuthorizationPage({
   invitations,
@@ -148,6 +181,7 @@ export function AuthorizationPage({
               queryKey: ["deployment-tenants"],
             });
           }}
+          access={DEPLOYMENT_ADMINISTRATOR}
         />
       )}
     </div>
@@ -158,11 +192,14 @@ function TenantAuthorization({
   tenant,
   invitations,
   onDeleted,
+  access,
 }: {
   tenant: string;
   invitations: boolean;
-  /** The Deployment Administrator deleted this Tenant. */
-  onDeleted: () => void;
+  /** The Deployment Administrator deleted this Tenant. Only the Deployment
+   *  Administrator's page passes it; members delete from their Tenant page. */
+  onDeleted?: () => void;
+  access: PolicyAccess;
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
@@ -185,6 +222,7 @@ function TenantAuthorization({
   const admissions = useQuery({
     queryKey: ["authorization", tenant, "transaction-revocations"],
     queryFn: () => transactionRevocations(path),
+    enabled: access.deploymentAdministrator,
     refetchInterval: 1000,
   });
   const credentials = useQuery({
@@ -197,7 +235,7 @@ function TenantAuthorization({
         if (page.length < 200) return all;
       }
     },
-    enabled: !!current,
+    enabled: !!current && access.can("credential.read"),
     refetchInterval: 5000,
   });
   const message = (reason: unknown) =>
@@ -267,16 +305,18 @@ function TenantAuthorization({
         <Panel
           title={t("authPolicyBundle")}
           action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setError("");
-                setEditor(current);
-              }}
-            >
-              {t("authEditPolicy")}
-            </Button>
+            access.can("policy.update") && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setError("");
+                  setEditor(current);
+                }}
+              >
+                {t("authEditPolicy")}
+              </Button>
+            )
           }
         >
           <BundleSummary snapshot={current} />
@@ -285,7 +325,7 @@ function TenantAuthorization({
           </Disclosure>
         </Panel>
       )}
-      {current && (
+      {current && onDeleted && (
         <div className="w-full max-w-md">
           <DeleteTenantForm
             key={tenant}
@@ -295,7 +335,7 @@ function TenantAuthorization({
           />
         </div>
       )}
-      {current && (
+      {current && access.deploymentAdministrator && (
         // A Tenant a Deployment Administrator created has nobody in it yet;
         // its first administrator joins through an Invitation issued here.
         <TenantInvitations
@@ -312,104 +352,124 @@ function TenantAuthorization({
             key={current.revision}
             tenant={tenant}
             snapshot={current}
+            record={access.deploymentAdministrator}
           />
-          <Panel
-            title={t("authCredentials")}
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setError("");
-                  setIssued(null);
-                  setIssuing(true);
-                }}
-              >
-                {t("authIssueCredential")}
-              </Button>
-            }
-          >
-            <Hint>{t("authCredentialsHelp")}</Hint>
-            {credentials.isError && <Alert>{credentials.error.message}</Alert>}
-            {credentials.isPending && <Loading />}
-            {!credentials.isError && credentials.data?.length === 0 && (
-              <Empty />
-            )}
-            {!credentials.isError && !!credentials.data?.length && (
-              <RowList>
-                {credentials.data.map((credential) => (
-                  <div
-                    className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
-                    key={credential.id}
+          {/* Issuing is granted apart from reading: either opens the panel,
+              and only reading shows the list. */}
+          {(access.can("credential.read") ||
+            access.can("credential.issue")) && (
+            <Panel
+              title={t("authCredentials")}
+              action={
+                access.can("credential.issue") && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setError("");
+                      setIssued(null);
+                      setIssuing(true);
+                    }}
                   >
-                    <div className="grid min-w-0 gap-0.5">
-                      <span className="truncate font-medium text-foreground">
-                        {credential.subject}
-                      </span>
-                      <span className="truncate text-[11px] text-faint">
-                        <time
-                          className="font-mono"
-                          dateTime={credential.created_at}
-                        >
-                          {new Date(credential.created_at).toLocaleString(
-                            locale,
-                          )}
-                        </time>
-                        {" · "}
-                        {t("authExpires")}{" "}
-                        <time
-                          className="font-mono"
-                          dateTime={credential.expires_at}
-                        >
-                          {new Date(credential.expires_at).toLocaleString(
-                            locale,
-                          )}
-                        </time>
-                      </span>
-                    </div>
-                    <AccessBadge
-                      value={
-                        credential.revoked_at
-                          ? "authRevoked"
-                          : Date.parse(credential.expires_at) <=
-                              credentials.dataUpdatedAt
-                            ? "authExpired"
-                            : "authActive"
-                      }
-                    />
-                    {!credential.revoked_at && (
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="col-span-2 justify-self-start sm:col-span-1"
-                        disabled={busy}
-                        onClick={() => {
-                          setError("");
-                          setRevoking(credential);
-                        }}
+                    {t("authIssueCredential")}
+                  </Button>
+                )
+              }
+            >
+              <Hint>{t("authCredentialsHelp")}</Hint>
+              {access.can("credential.read") && credentials.isError && (
+                <Alert>{credentials.error.message}</Alert>
+              )}
+              {access.can("credential.read") && credentials.isPending && (
+                <Loading />
+              )}
+              {access.can("credential.read") &&
+                !credentials.isError &&
+                credentials.data?.length === 0 && <Empty />}
+              {access.can("credential.read") &&
+                !credentials.isError &&
+                !!credentials.data?.length && (
+                  <RowList>
+                    {credentials.data.map((credential) => (
+                      <div
+                        className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                        key={credential.id}
                       >
-                        {t("authRevoke")}
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </RowList>
-            )}
-          </Panel>
-          <PeerMappings
-            tenant={tenant}
-            credentials={!credentials.isError ? (credentials.data ?? []) : []}
-          />
+                        <div className="grid min-w-0 gap-0.5">
+                          <span className="truncate font-medium text-foreground">
+                            {credential.subject}
+                          </span>
+                          <span className="truncate text-[11px] text-faint">
+                            <time
+                              className="font-mono"
+                              dateTime={credential.created_at}
+                            >
+                              {new Date(credential.created_at).toLocaleString(
+                                locale,
+                              )}
+                            </time>
+                            {" · "}
+                            {t("authExpires")}{" "}
+                            <time
+                              className="font-mono"
+                              dateTime={credential.expires_at}
+                            >
+                              {new Date(credential.expires_at).toLocaleString(
+                                locale,
+                              )}
+                            </time>
+                          </span>
+                        </div>
+                        <AccessBadge
+                          value={
+                            credential.revoked_at
+                              ? "authRevoked"
+                              : Date.parse(credential.expires_at) <=
+                                  credentials.dataUpdatedAt
+                                ? "authExpired"
+                                : "authActive"
+                          }
+                        />
+                        {!credential.revoked_at &&
+                          access.can("credential.revoke") && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="col-span-2 justify-self-start sm:col-span-1"
+                              disabled={busy}
+                              onClick={() => {
+                                setError("");
+                                setRevoking(credential);
+                              }}
+                            >
+                              {t("authRevoke")}
+                            </Button>
+                          )}
+                      </div>
+                    ))}
+                  </RowList>
+                )}
+            </Panel>
+          )}
+          {access.can("peer_mapping.read") && (
+            <PeerMappings
+              tenant={tenant}
+              credentials={!credentials.isError ? (credentials.data ?? []) : []}
+              editable={access.can("peer_mapping.update")}
+            />
+          )}
           <HistoryPanel
             key={`${tenant}-revisions`}
             tenant={tenant}
             kind="revisions"
           />
-          <HistoryPanel
-            key={`${tenant}-decisions`}
-            tenant={tenant}
-            kind="decisions"
-          />
+          {access.can("decision.read") && (
+            <HistoryPanel
+              key={`${tenant}-decisions`}
+              tenant={tenant}
+              kind="decisions"
+            />
+          )}
         </>
       )}
       {editor && (
@@ -454,7 +514,15 @@ function TenantAuthorization({
               <Field label={t("authSubject")}>
                 <NativeSelect name="subject" required className="font-mono">
                   {Object.entries(current?.bundle.subjects ?? {})
-                    .filter(([, subject]) => subject.enabled !== false)
+                    // A Tenant issues credentials only for its service and
+                    // agent subjects; a person issues its own (ADR 0063).
+                    .filter(
+                      ([, subject]) =>
+                        subject.enabled !== false &&
+                        (access.deploymentAdministrator ||
+                          subject.kind === "service" ||
+                          subject.kind === "agent"),
+                    )
                     .map(([id]) => (
                       <option key={id}>{id}</option>
                     ))}
@@ -731,9 +799,14 @@ function DecisionView({ decision }: { decision: Decision }) {
 function EvaluationPanel({
   tenant,
   snapshot,
+  record,
 }: {
   tenant: string;
   snapshot: Snapshot;
+  /** Whether the caller may save a scenario to the decision log, which only
+   *  a Deployment Administrator may: a saved scenario is indistinguishable
+   *  from a real decision there. */
+  record: boolean;
 }) {
   const { t } = useI18n();
   const client = useQueryClient();
@@ -853,13 +926,15 @@ function EvaluationPanel({
             <Button disabled={busy}>
               {t(audit ? "authEvaluateRecord" : "authDryRun")}
             </Button>
-            <Check
-              checked={audit}
-              disabled={busy}
-              onChange={(event) => setAudit(event.target.checked)}
-            >
-              {t("authRecordDecision")}
-            </Check>
+            {record && (
+              <Check
+                checked={audit}
+                disabled={busy}
+                onChange={(event) => setAudit(event.target.checked)}
+              >
+                {t("authRecordDecision")}
+              </Check>
+            )}
           </div>
         </div>
         <div className="grid min-w-0 content-start gap-3">

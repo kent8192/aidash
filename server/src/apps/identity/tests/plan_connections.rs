@@ -10,6 +10,7 @@ use aidash_application::{
 	plan_connections::{Authorization, ExchangeRequest, Issued, RefreshFailure, Service},
 	provider_access::{Context, KeyMaterialReader, ProviderAccess, Source},
 	provider_credentials::Store,
+	tenancy::TenancyScope,
 };
 use aidash_domain::plan_connections::{Failure, PlanModel, SCOPES};
 use aidash_domain::provider_credentials::Provider;
@@ -284,7 +285,7 @@ fn disabled_parts() -> Parts {
 
 async fn execute(f: &Federation, query: String) {
 	sqlx::query(&query)
-		.execute(f.store.pool.driver())
+		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 }
@@ -573,7 +574,7 @@ async fn table_text(f: &Federation, table: &str) -> String {
 		.from_as(Alias::new(table), Alias::new("t"))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query)
-		.fetch_one(f.store.pool.driver())
+		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap()
 }
@@ -1061,7 +1062,12 @@ async fn admit_alice(
 		root_subject: "alice".into(),
 		subject_chain: vec!["alice".into()],
 	};
-	let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+	let mut tx = f
+		.store
+		.control_pool
+		.begin(&TenancyScope::tenant("alpha").unwrap())
+		.await
+		.unwrap();
 	let result = admit(tx.as_mut(), &f.store, &grant, snapshot, false).await;
 	if result.is_ok() {
 		tx.commit().await.unwrap();
@@ -1299,7 +1305,12 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		let snapshot = snapshot.clone();
 		let grant = grant(run, subject);
 		async move {
-			let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+			let mut tx = f
+				.store
+				.control_pool
+				.begin(&TenancyScope::tenant("alpha").unwrap())
+				.await
+				.unwrap();
 			let result = admit(tx.as_mut(), &f.store, &grant, &snapshot, federated).await;
 			if result.is_ok() {
 				tx.commit().await.unwrap();
@@ -1327,7 +1338,12 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 	));
 	// Peer admission refuses Plan Connection models outright.
 	{
-		let mut tx = f.store.control_pool.connection().begin().await.unwrap();
+		let mut tx = f
+			.store
+			.control_pool
+			.begin(&TenancyScope::tenant("alpha").unwrap())
+			.await
+			.unwrap();
 		assert!(matches!(
 			aidash_server::apps::identity::repositories::provider_credentials::admit(
 				tx.as_mut(),
@@ -1430,7 +1446,7 @@ async fn context_header(fixture: &Fixture, subject: &str) -> String {
 		)))
 		.to_string(PostgresQueryBuilder);
 	let id: String = sqlx::query_scalar(&query)
-		.fetch_one(fixture.f.store.pool.driver())
+		.fetch_one(fixture.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	format!("mapping:alpha:{id}")

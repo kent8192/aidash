@@ -196,15 +196,11 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			assert_json(response, 400);
 		}
 	}
-	let mut db = app.database.lease.handle();
-	assert!(
-		SemanticIndexe::objects()
-			.all()
-			.all_with_db(&mut db)
-			.await
-			.unwrap()
-			.is_empty()
-	);
+	let indexes = app
+		.database
+		.fixture(async |tx| Ok(SemanticIndexe::objects().all().all_with_db(tx).await?))
+		.await;
+	assert!(indexes.is_empty());
 	let mut revision = 0;
 	for (field, min, max) in bounds {
 		for value in [min, max] {
@@ -417,7 +413,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	.unwrap();
 	// Real FK holds inject deletion failures in the current PostgreSQL adapter.
 	// Only the table owner can create the holds; the server role holds DML.
-	let owner: native::Pool = crate::native_database::owner_pool(store.pool.driver())
+	let owner: native::Pool = crate::native_database::owner_pool(store.pool.fixture_driver())
 		.await
 		.into();
 	let mut tx = owner.begin(&TEST_FIXTURE).await.unwrap();
@@ -718,4 +714,109 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 		assert_json(member.get(&index).await.unwrap(), 200)["revision"],
 		1
 	);
+}
+
+/// Adds a deny of `action` for `subject` to the `endpoint` Tenant's policy.
+async fn deny(app: &EndpointFixture, subject: &str, action: &str) {
+	let policy = assert_json(
+		app.deployment_administrator
+			.get("/api/authorization/endpoint")
+			.await
+			.unwrap(),
+		200,
+	);
+	let mut bundle = policy["bundle"].clone();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":format!("deny-{action}"),"effect":"deny","subjects":{"ids":[subject]},
+		"actions":[action],"resources":{"kinds":["*"]}
+	}));
+	assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/authorization/endpoint",
+				&json!({"expected_revision":policy["revision"],"bundle":bundle}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn members_configure_their_index_under_semantic_index_manage(
+	#[future] endpoint: EndpointFixture,
+	index_spec: Value,
+) {
+	let app = endpoint.await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Configured by a member").await;
+	let id = workspace["id"].as_str().unwrap();
+	let index = format!("/api/workspaces/{id}/semantic/index");
+	assert_json(
+		member
+			.post(
+				&index,
+				&json!({"expected_revision":0,"spec":index_spec}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_json(
+		member
+			.get(&format!("/api/workspaces/{id}/semantic/cleanup"))
+			.await
+			.unwrap(),
+		200,
+	);
+	deny(&app, "member", "semantic.index.manage").await;
+	let denials = || async {
+		sqlx::query_scalar::<_, i64>(
+			"SELECT count(*) FROM authorization_decisions WHERE subject = 'member' \
+			 AND action = 'semantic.index.manage' AND NOT (decision->>'allowed')::boolean",
+		)
+		.fetch_one(app.runtime.store.pool.driver())
+		.await
+		.unwrap()
+	};
+	let before = denials().await;
+	assert_json(
+		member
+			.post(
+				&index,
+				&json!({"expected_revision":1,"spec":index_spec}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		403,
+	);
+	assert_eq!(denials().await, before + 1, "the refusal is audited");
+}
+
+#[rstest]
+#[case::private("http://10.0.0.7:8080/v1")]
+#[case::loopback("http://127.0.0.1:9/v1")]
+#[case::metadata("http://169.254.169.254/v1")]
+#[tokio::test]
+async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_configured(
+	#[future] endpoint: EndpointFixture,
+	mut index_spec: Value,
+	#[case] address: &str,
+) {
+	let app = endpoint.await;
+	let member = crate::endpoint::tenant_subject(&app, "member").await;
+	let workspace = workspace(&member, "Private embeddings").await;
+	index_spec["embedding"]["endpoint"] = json!(address);
+	let body = json!({"expected_revision":0,"spec":index_spec});
+	let path = format!(
+		"/api/workspaces/{}/semantic/index",
+		workspace["id"].as_str().unwrap()
+	);
+	for client in [&member, &app.deployment_administrator] {
+		assert_json(client.post(&path, &body, "json").await.unwrap(), 400);
+	}
 }

@@ -23,6 +23,19 @@ pub async fn list(
 	crate::http::json(service.list(actor, query).await)
 }
 
+#[get(
+	"/api/workbench/test-profiles/{tenant}",
+	name = "workbench-tenant-test-profiles",
+	auth = "protected"
+)]
+pub async fn administered(
+	#[inject] service: Depends<TestProfiles>,
+	#[inject] actor: Actor,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::json(service.administered(actor, tenant).await)
+}
+
 #[put(
 	"/api/workbench/test-profiles/{tenant}/{id}",
 	name = "workbench-put-test-profile",

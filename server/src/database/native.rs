@@ -21,6 +21,8 @@ pub struct Pool {
 	memory_recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
 	memory_recovery_bypass: bool,
 	dashboard_policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	#[cfg(debug_assertions)]
+	fixture_driver: Arc<std::sync::OnceLock<sqlx::PgPool>>,
 }
 impl From<sqlx::PgPool> for Pool {
 	fn from(driver: sqlx::PgPool) -> Self {
@@ -30,6 +32,8 @@ impl From<sqlx::PgPool> for Pool {
 			memory_recovery: None,
 			memory_recovery_bypass: false,
 			dashboard_policy: None,
+			#[cfg(debug_assertions)]
+			fixture_driver: Default::default(),
 		}
 	}
 }
@@ -77,6 +81,19 @@ impl Pool {
 	}
 	pub fn driver(&self) -> &sqlx::PgPool {
 		&self.driver
+	}
+	/// A second SQLx pool on the same database for test fixtures that seed or
+	/// inspect rows of every Tenant directly. See
+	/// [`super::scope::test_fixture_driver`].
+	#[cfg(debug_assertions)]
+	#[allow(clippy::disallowed_methods)] // The fixture pool itself is test-only.
+	pub fn fixture_driver(&self) -> &sqlx::PgPool {
+		self.fixture_driver.get_or_init(|| {
+			super::scope::test_fixture_driver(
+				self.driver.connect_options().as_ref().clone(),
+				self.driver.options().get_max_connections(),
+			)
+		})
 	}
 	/// Open a transaction in `scope`. The scope is fixed for the transaction's
 	/// lifetime; savepoints inherit it.
@@ -159,6 +176,10 @@ impl Pool {
 	}
 	pub async fn close(&self) {
 		self.driver.close().await;
+		#[cfg(debug_assertions)]
+		if let Some(fixture) = self.fixture_driver.get() {
+			fixture.close().await;
+		}
 	}
 	pub fn options(&self) -> &sqlx::pool::PoolOptions<sqlx::Postgres> {
 		self.driver.options()

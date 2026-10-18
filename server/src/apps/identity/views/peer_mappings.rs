@@ -1,7 +1,9 @@
 //! Native HTTP endpoints.
+use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::peer::PeerMappings;
 use crate::apps::identity::serializers::peer::PeerMappingInput;
 use crate::apps::identity::serializers::peer::{DiscoveryInput, HistoryPage, MappingPage};
+use crate::authorization::identity::Actor;
 use crate::http::json::Json;
 use reinhardt::Depends;
 use reinhardt::Path;
@@ -18,10 +20,12 @@ use reinhardt::{get, post};
 )]
 pub async fn history(
 	#[inject] service: Depends<PeerMappings>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Query(page): Query<HistoryPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.history(tenant, page).await)
+	crate::http::json(service.history(actor, origin, tenant, page).await)
 }
 
 #[get(
@@ -31,10 +35,12 @@ pub async fn history(
 )]
 pub async fn list(
 	#[inject] service: Depends<PeerMappings>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Query(page): Query<MappingPage>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.list(tenant, page).await)
+	crate::http::json(service.list(actor, origin, tenant, page).await)
 }
 
 #[post(
@@ -44,10 +50,12 @@ pub async fn list(
 )]
 pub async fn set(
 	#[inject] service: Depends<PeerMappings>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
 	Json(input): Json<PeerMappingInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.set(tenant, input).await)
+	crate::http::json(service.set(actor, origin, tenant, input).await)
 }
 
 #[post(

@@ -1,4 +1,4 @@
-//! Deployment Administrator-owned, tenant-specific connection profiles for confined real-tool tests.
+//! Tenant-owned connection profiles for confined real-tool tests (#361).
 use super::*;
 use reinhardt::injectable;
 
@@ -29,6 +29,19 @@ impl TestProfiles {
 		.await
 		.map_err(Into::into)
 	}
+	pub(crate) async fn administered(
+		&self,
+		actor: Actor,
+		tenant: String,
+	) -> Result<Vec<TestProfile>> {
+		aidash_domain::policy::identifier(&tenant)?;
+		aidash_application::registry::workbench::profile::administered(
+			&crate::bootstrap::workbench_profile_repository(&self.runtime, actor),
+			tenant,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	pub(crate) async fn put(
 		&self,
 		actor: Actor,
@@ -37,7 +50,7 @@ impl TestProfiles {
 	) -> Result<TestProfile> {
 		aidash_application::registry::workbench::profile::put(
 			&crate::bootstrap::workbench_profile_repository(&self.runtime, actor),
-			&crate::bootstrap::workbench_profile_configuration(),
+			&crate::bootstrap::workbench_profile_configuration(&self.runtime),
 			tenant,
 			id,
 			input,

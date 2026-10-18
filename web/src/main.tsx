@@ -308,6 +308,10 @@ function Dashboard({
     session.data?.access.kind === "deployment_administrator";
   const subjectTenant =
     session.data?.access.kind === "subject" ? session.data.access.tenant : null;
+  const subjectName =
+    session.data?.access.kind === "subject"
+      ? session.data.access.subject
+      : null;
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -1034,6 +1038,7 @@ function Dashboard({
                         deploymentAdministrator={deploymentAdministrator}
                         invitations={browserSession?.invitations ?? false}
                         tenant={subjectTenant}
+                        subject={subjectName}
                         initiallyOpen={route.integration === "authorization"}
                       />
                     )
@@ -1065,6 +1070,7 @@ function Dashboard({
                 deploymentAdministrator={deploymentAdministrator}
                 invitations={browserSession?.invitations ?? false}
                 tenant={subjectTenant}
+                subject={subjectName}
                 initiallyOpen={route.integration === "authorization"}
               />
             </div>

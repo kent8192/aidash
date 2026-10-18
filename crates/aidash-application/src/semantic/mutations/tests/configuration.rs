@@ -53,6 +53,9 @@ impl SemanticConfigurationSession for Configuration {
 	async fn lock_workspace(&mut self, _: Uuid) -> Result<()> {
 		self.touch("workspace")
 	}
+	async fn authorize(&mut self, _: Uuid) -> Result<()> {
+		self.touch("authorize")
+	}
 	async fn tenant(&mut self, _: Uuid) -> Result<String> {
 		self.touch("tenant")?;
 		Ok("tenant".into())
@@ -132,8 +135,9 @@ async fn configuring_commits_one_complete_immutable_generation() {
 	assert_eq!(
 		*repository.0.calls.lock().unwrap(),
 		[
-			"validate",
 			"begin",
+			"authorize",
+			"validate",
 			"workspace",
 			"tenant",
 			"index",
@@ -168,8 +172,9 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 	assert_eq!(
 		*repository.0.calls.lock().unwrap(),
 		[
-			"validate",
 			"begin",
+			"authorize",
+			"validate",
 			"workspace",
 			"tenant",
 			"index",
@@ -178,8 +183,9 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 	);
 }
 #[rstest]
-#[case::validate("validate")]
 #[case::begin("begin")]
+#[case::authorize("authorize")]
+#[case::validate("validate")]
 #[case::workspace("workspace")]
 #[case::tenant("tenant")]
 #[case::index("index")]
@@ -203,7 +209,7 @@ async fn failed_configuration_does_not_commit_partial_generations(#[case] failur
 		failure
 	);
 	let calls = repository.0.calls.lock().unwrap();
-	if matches!(failure, "validate" | "begin") {
+	if failure == "begin" {
 		assert_eq!(calls.last(), Some(&failure));
 	} else {
 		assert_eq!(calls.last(), Some(&"rollback"));
@@ -225,7 +231,7 @@ async fn invalid_revision_never_opens_a_database_transaction(#[case] revision: i
 			.to_string(),
 		"invalid index revision"
 	);
-	assert_eq!(*repository.0.calls.lock().unwrap(), ["validate"]);
+	assert!(repository.0.calls.lock().unwrap().is_empty());
 }
 #[rstest]
 #[case::sources((9,0),"index limit is below the current source count")]
@@ -246,8 +252,9 @@ async fn shared_index_lock_fences_configuration_against_existing_sources(
 	assert_eq!(
 		*repository.0.calls.lock().unwrap(),
 		[
-			"validate",
 			"begin",
+			"authorize",
+			"validate",
 			"workspace",
 			"tenant",
 			"index",
@@ -270,8 +277,9 @@ async fn stale_configuration_does_not_replace_another_generation() {
 	assert_eq!(
 		*repository.0.calls.lock().unwrap(),
 		[
-			"validate",
 			"begin",
+			"authorize",
+			"validate",
 			"workspace",
 			"tenant",
 			"index",

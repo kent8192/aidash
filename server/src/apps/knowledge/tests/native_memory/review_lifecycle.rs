@@ -264,6 +264,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	spec.max_sources = 2 * page + 4;
 	aidash_server::semantic::service::configure(
 		&store,
+		&aidash_server::authorization::identity::Actor::DeploymentAdministrator,
 		workspace,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,

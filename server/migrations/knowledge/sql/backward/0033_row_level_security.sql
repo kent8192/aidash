@@ -1,0 +1,12 @@
+DROP POLICY tenant_isolation ON public.semantic_vectors;
+ALTER TABLE public.semantic_vectors NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.semantic_vectors DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.semantic_indexes;
+ALTER TABLE public.semantic_indexes NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.semantic_indexes DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.memory_participants;
+ALTER TABLE public.memory_participants NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.memory_participants DISABLE ROW LEVEL SECURITY;
+DROP POLICY tenant_isolation ON public.memory_banks;
+ALTER TABLE public.memory_banks NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.memory_banks DISABLE ROW LEVEL SECURITY;

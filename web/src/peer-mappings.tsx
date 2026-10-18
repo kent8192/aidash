@@ -31,9 +31,12 @@ const PAGE_SIZE = 25;
 export function PeerMappings({
   tenant,
   credentials,
+  editable = true,
 }: {
   tenant: string;
   credentials: Credential[];
+  /** Whether the caller may create, change and disable mappings. */
+  editable?: boolean;
 }) {
   const { t, locale } = useI18n();
   const credentialLabels = disambiguateLabels(
@@ -99,16 +102,18 @@ export function PeerMappings({
       <Panel
         title={t("authPeerMappings")}
         action={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setError("");
-              setEditing("new");
-            }}
-          >
-            {t("authAddPeerMapping")}
-          </Button>
+          editable && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setError("");
+                setEditing("new");
+              }}
+            >
+              {t("authAddPeerMapping")}
+            </Button>
+          )
         }
       >
         <Hint>{t("authPeerMappingHelp")}</Hint>
@@ -156,36 +161,40 @@ export function PeerMappings({
                   value={mapping.enabled ? "authApproved" : "authDisabled"}
                   tone={mapping.enabled ? "success" : "neutral"}
                 />
-                <div className="col-span-2 flex flex-wrap gap-1.5 md:col-span-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => {
-                      setError("");
-                      setEditing(mapping);
-                    }}
-                  >
-                    {t("authEditPeerMapping")}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      void save({
-                        expected_revision: mapping.revision,
-                        enabled: !mapping.enabled,
-                        source_node: mapping.source_node,
-                        source_tenant: mapping.source_tenant,
-                        source_subject: mapping.source_subject,
-                        credential_id: mapping.credential_id,
-                      })
-                    }
-                  >
-                    {t(mapping.enabled ? "authDisableApproval" : "authApprove")}
-                  </Button>
-                </div>
+                {editable && (
+                  <div className="col-span-2 flex flex-wrap gap-1.5 md:col-span-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => {
+                        setError("");
+                        setEditing(mapping);
+                      }}
+                    >
+                      {t("authEditPeerMapping")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        void save({
+                          expected_revision: mapping.revision,
+                          enabled: !mapping.enabled,
+                          source_node: mapping.source_node,
+                          source_tenant: mapping.source_tenant,
+                          source_subject: mapping.source_subject,
+                          credential_id: mapping.credential_id,
+                        })
+                      }
+                    >
+                      {t(
+                        mapping.enabled ? "authDisableApproval" : "authApprove",
+                      )}
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </RowList>
