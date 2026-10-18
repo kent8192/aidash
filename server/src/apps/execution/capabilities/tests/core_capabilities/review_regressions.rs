@@ -487,15 +487,7 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 	let content = observed.content.clone();
 	let mut policy = c.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-skill-list","effect":"deny","subjects":{"any":true},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[aidash_domain::registry::bindings::QualifiedRef::builtin(&c.f.config.node_id,"skill_list").resource_id()]}}));
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
 	let blocked = loop {
 		harness.worker_once().await.unwrap();
@@ -569,15 +561,7 @@ async fn direct_host_http_rejects_a_withdrawn_bound_tool_before_creating_an_oper
 		"actions":["registry.read"],
 		"resources":{"kinds":["tool"],"ids":[identity.resource_id()]}
 	}));
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, body) = request(
 		&c.app,
 		&c.token,

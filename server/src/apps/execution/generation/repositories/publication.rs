@@ -153,17 +153,50 @@ impl GenerationPublication for NativePublication<'_> {
 		.await?;
 		Ok(())
 	}
+	async fn approver(&mut self, job: &Request) -> aidash_application::Result<Option<String>> {
+		use crate::apps::execution::generation::models::GenerationHistory;
+		use reinhardt::db::orm::Model;
+		Ok(GenerationHistory::objects()
+			.filter(GenerationHistory::field_request_id().eq(job.id))
+			.filter(GenerationHistory::field_status().eq("QUEUED".to_owned()))
+			.order_by(&["-sequence"])
+			.all_with_executor(&mut **self.access.tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?
+			.into_iter()
+			.next()
+			.map(|row| row.actor))
+	}
+	async fn may_approve(
+		&mut self,
+		subject: &str,
+		entry: &Entry,
+	) -> aidash_application::Result<bool> {
+		let access = &*self.access;
+		let evaluation = access.evaluation(
+			subject,
+			&access.resource(
+				"registry",
+				format!("{}/{}@{}", entry.kind, entry.id, entry.version),
+				aidash_application::authorization::catalog::attributes(entry),
+			),
+			"catalog.approve",
+		);
+		Ok(access.snapshot.bundle.evaluate(&evaluation).allowed)
+	}
 	async fn catalog_history(
 		&mut self,
 		job: &Request,
 		entry: &Entry,
+		actor: &str,
 	) -> aidash_application::Result<()> {
 		let access = &mut *self.access;
 
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = &entry.id;
 		let query_bind_3 = &entry.version;
-		let query_bind_4 = &job.root_subject;
+		let query_bind_4 = actor;
 		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new(

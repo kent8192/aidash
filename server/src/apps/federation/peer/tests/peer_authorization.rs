@@ -234,34 +234,40 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 		200
 	);
 	// Tenant approval is independent of the mapped subject's wildcard policy.
-	assert_eq!(
-		request(
-			app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false})
-		)
-		.await
-		.0,
-		200
-	);
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	assert_eq!(
 		discover(app, SOURCE, peer_token, "remote", "bob").await.1,
 		json!([])
 	);
-	assert_eq!(
-		request(
-			app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true})
-		)
-		.await
-		.0,
-		200
-	);
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		2,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	// An explicit deny on the mapped local identity filters the remote result.
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-agent","effect":"deny","subjects":{"any":true},"actions":["agent.execute"],"resources":{"kinds":["agent"]}}));
 	assert_eq!(

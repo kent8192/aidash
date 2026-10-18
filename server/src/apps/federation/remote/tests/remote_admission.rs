@@ -138,18 +138,6 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		"duplicate delivery must return the same local binding"
 	);
 	let source_task = a.store.task(&TEST_FIXTURE, task).await.unwrap();
-	assert_eq!(
-		peer(
-			&ba,
-			&a.config.node_id,
-			"/federation/v0.1/offers",
-			json!({"task":source_task,"agent":{"id":"research","version":"1.0.0"}})
-		)
-		.await
-		.0,
-		403,
-		"legacy offers cannot bypass the accepted scoped binding"
-	);
 	let receipt = first.1;
 	assert_eq!(receipt["task_id"], task.to_string());
 	let verification = format!("{admit}/{}/verify", receipt["id"].as_str().unwrap());
@@ -456,8 +444,6 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	.await
 	.unwrap();
 	assert_eq!(count, 1);
-	// Race scoped admission against legacy run creation for a fresh task. The
-	// two modes must never both commit, regardless of which request wins.
 	let (status, candidate) = request(
 		&aa,
 		&at,
@@ -483,21 +469,14 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.0,
 		200
 	);
-	let (scoped, legacy) = tokio::join!(
-		peer(
-			&fresh_app,
-			&a.config.node_id,
-			admit,
-			json!({"grant_id":race_grant})
-		),
-		b.store.accept_run(
-			&TEST_FIXTURE,
-			&candidate,
-			&a.config.node_id,
-			"research",
-			"1.0.0"
-		)
-	);
+	let scoped = peer(
+		&fresh_app,
+		&a.config.node_id,
+		admit,
+		json!({"grant_id":race_grant}),
+	)
+	.await;
+	assert_eq!(scoped.0, 200, "{scoped:?}");
 	let runs: i64 = {
 		let query_bind_1 = &a.config.node_id;
 		let query_bind_2 = candidate.id;
@@ -540,33 +519,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.await
 	}
 	.unwrap();
-	assert_eq!(
-		runs + admissions,
-		1,
-		"legacy and scoped admission must be mutually exclusive"
-	);
-	match legacy {
-		Ok(run) => {
-			assert_eq!(scoped.0, 409);
-			{
-				let query_bind_1 = run.id;
-				sqlx::query(
-					&reinhardt::query::Query::delete()
-						.from_table(reinhardt::query::Alias::new("runs"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.execute(b.store.pool.fixture_driver())
-				.await
-			}
-			.unwrap();
-		}
-		Err(aidash_server::Error::Forbidden) => assert_eq!(scoped.0, 200),
-		Err(error) => panic!("unexpected legacy admission error: {error}"),
-	}
+	assert_eq!((runs, admissions), (0, 1));
 	for f in [&a, &b] {
 		let count: i64 = sqlx::query_scalar(
 			&reinhardt::query::Query::select()

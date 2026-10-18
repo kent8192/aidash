@@ -40,18 +40,32 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let b_app = destination.application;
 	let endpoint = model_server.url.clone();
 	let (a_policy, token, task) = bootstrap(&a, &a_app, &endpoint).await;
-	let (b_policy, _, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
-	let mut entry = b.registry.get("research", "1.0.0").await.unwrap();
+	let (b_policy, b_token, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
+	let mut entry = b
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	entry.id = "remote-only".into();
 	entry.binding_normalization = None;
 	entry
 		.description
 		.insert("en".into(), "remote-private-metadata".into());
-	b.registry.register(entry).await.unwrap();
+	b.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			entry,
+		)
+		.await
+		.unwrap();
 	assert_eq!(
 		request(
 			&b_app,
-			&b.config.api_token,
+			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -155,8 +169,17 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	);
 	// A misconfigured/replaced peer must not substitute different metadata under
 	// an already copied id/version. Simulate that otherwise forbidden mutation.
-	let original =
-		serde_json::to_value(b.registry.get("remote-only", "1.0.0").await.unwrap()).unwrap();
+	let original = serde_json::to_value(
+		b.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"remote-only",
+				"1.0.0",
+			)
+			.await
+			.unwrap(),
+	)
+	.unwrap();
 	let mut altered = original.clone();
 	altered["description"]["en"] = json!("substituted metadata");
 	{
@@ -208,45 +231,22 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 
 	// Discovery admitted both read and execution authority. Revoke only execution
 	// independently at each end while the catalog and credentials remain valid.
-	for (node, app, original, resource) in [
+	for (node, original, resource) in [
 		(
 			&a,
-			&a_app,
 			&a_policy,
 			aidash_server::domain::qualified_agent(&b.config.node_id, "remote-only", "1.0.0"),
 		),
-		(&b, &b_app, &b_policy, "remote-only".to_owned()),
+		(&b, &b_policy, "remote-only".to_owned()),
 	] {
 		let mut denied = original.clone();
 		denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-execution","effect":"deny","subjects":{"ids":["alice"]},"actions":["agent.execute"],"resources":{"kinds":["agent"],"ids":[resource]}}));
-		assert_eq!(
-			request(
-				app,
-				&node.config.api_token,
-				"POST",
-				"/api/authorization/acme",
-				json!({"expected_revision":1,"bundle":denied})
-			)
-			.await
-			.0,
-			200
-		);
+		common::replace_policy(&node.store, "acme", denied).await;
 		assert_eq!(
 			request(&a_app, &token, "GET", &path, Value::Null).await.0,
 			403
 		);
-		assert_eq!(
-			request(
-				app,
-				&node.config.api_token,
-				"POST",
-				"/api/authorization/acme",
-				json!({"expected_revision":2,"bundle":original})
-			)
-			.await
-			.0,
-			200
-		);
+		common::replace_policy(&node.store, "acme", original.clone()).await;
 		assert_eq!(
 			request(&a_app, &token, "GET", &path, Value::Null).await.0,
 			200
@@ -256,7 +256,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	assert_eq!(
 		request(
 			&b_app,
-			&b.config.api_token,
+			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
@@ -291,7 +291,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	assert_eq!(
 		request(
 			&b_app,
-			&b.config.api_token,
+			&b_token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":2,"enabled":true})

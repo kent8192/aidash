@@ -388,120 +388,6 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 	);
 }
 
-#[rstest::rstest]
-#[tokio::test]
-async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
-	#[from(workspace_id)] workspace: Uuid,
-	#[from(terminal_delivery_drains_a_burst_without_per_run_sleep_router)]
-	#[with(runtime.clone(), workspace)]
-	_router: upstream_fixtures::RouterFuture,
-	#[from(upstream_fixtures::async_upstream)]
-	#[with(_router.clone())]
-	server: upstream_fixtures::UpstreamFuture,
-) {
-	let server = server.await;
-
-	let runtime = runtime.await;
-	let (f, url, schema) = runtime.parts();
-
-	let endpoint = server.url.clone();
-	sqlx::query(
-		&Query::insert()
-			.into_table(a("peers"))
-			.columns(
-				[
-					"node_id",
-					"endpoint",
-					"credential_env",
-					"protocol_version",
-					"enabled",
-				]
-				.map(a),
-			)
-			.values_panic::<_, reinhardt::query::Value>([
-				"aidash://delivery-home".into(),
-				endpoint.into(),
-				"AIDASH_SECRET_TEST_PEER".into(),
-				"0.2".into(),
-				true.into(),
-			])
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let mut runs = Vec::new();
-	for _ in 0..24 {
-		let id = super::unblock::insert_run(&f, "ACTIVE").await;
-		sqlx::query(
-			&Query::update()
-				.table(a("runs"))
-				.value(a("home_node"), "aidash://delivery-home")
-				.value(a("workspace_id"), workspace)
-				.value(a("phase"), "COMPLETED")
-				.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		sqlx::query(
-			&Query::insert()
-				.into_table(a("run_inputs"))
-				.columns(["run_id", "sender", "content", "idempotency_key"].map(a))
-				.values_panic::<_, reinhardt::query::Value>([
-					id.into(),
-					"human".into(),
-					"terminal correction".into(),
-					id.to_string().into(),
-				])
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		runs.push(id);
-	}
-	let harness = aidash_server::harness::Harness {
-		federation: f.clone(),
-	};
-	let (stop, stopping) = tokio::sync::watch::channel(false);
-	let delivery =
-		tokio::spawn(async move { harness.deliver_terminal_messages_until(stopping).await });
-	let drained = tokio::time::timeout(Duration::from_secs(3), async {
-		loop {
-			if f.store
-				.pending_terminal_run_message()
-				.await
-				.unwrap()
-				.is_none()
-			{
-				break;
-			}
-			tokio::time::sleep(Duration::from_millis(10)).await;
-		}
-	})
-	.await;
-	stop.send_replace(true);
-	delivery.await.unwrap().unwrap();
-	let mut delivered = 0;
-	for id in runs {
-		delivered += usize::from(
-			f.store.run_inputs(&TEST_FIXTURE, id).await.unwrap()[0]
-				.message_id
-				.is_some(),
-		);
-	}
-	drop(server);
-	cleanup(f, &url, &schema).await;
-	assert!(
-		drained.is_ok(),
-		"healthy delivery still sleeps between Runs: {delivered}/24"
-	);
-	assert_eq!(delivered, 24);
-}
-
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::Expr;
@@ -910,16 +796,21 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.unwrap()
 			.failure_delivery()
 	);
-	let deployment_administrator = &f.config.api_token;
-	let (status, _) = common::request(
-		&app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -940,15 +831,21 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.status
 			.is_terminal()
 	);
-	let (status, _) = common::request(
-		&app,
-		deployment_administrator,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_server::registry::EntityRef {
+			id: "research".into(),
+			version: "1.0.0".into(),
+		},
+		2,
+		true,
+		"deployment_administrator",
 	)
-	.await;
-	assert_eq!(status, 200);
+	.await
+	.unwrap();
 	let (status, resumed) = common::request(
 		&app,
 		&token,
@@ -986,27 +883,6 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	cleanup(f, &url, &schema).await;
 }
 
-#[rstest::fixture]
-fn terminal_delivery_drains_a_burst_without_per_run_sleep_router(
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
-	#[from(workspace_id)] workspace: Uuid,
-) -> upstream_fixtures::RouterFuture {
-	use futures_util::FutureExt;
-	async move { let runtime = runtime.await; let node = runtime.federation.config.node_id.clone(); Arc::new(reinhardt::test::stub::StubRouter::new()
-.route("/federation/v0.1/workspace", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
-        let node = node.clone();
-        async move {
-            match input["operation"].as_str().unwrap() {
-                "run_message_commit" => reinhardt::Response::ok().with_json(&json!({"committed":true})).unwrap(),
-                "run_message_delivery" => reinhardt::Response::ok().with_json(&json!({"id":Uuid::new_v4(),"workspace_id":workspace,
-                    "sender":"human","content":input["data"]["content"],
-                    "idempotency_key":format!("{}:{}:{}",node,input["task_id"].as_str().unwrap(),input["data"]["key"].as_str().unwrap()),
-                    "created_at":chrono::Utc::now()})).unwrap(),
-                other => panic!("unexpected operation {other}"),
-            }
-        }
-    })).into_server_router()) }.boxed().shared()
-}
 #[rstest::fixture]
 fn notification_claim_disposes_invalid_context_without_poisoning_healthy_work_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,

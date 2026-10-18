@@ -3,7 +3,7 @@ use super::DatabaseFixture;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
-	apps::identity::models::{AuthorizationBundle, AuthorizationWorkspace, Tenant},
+	apps::identity::models::{AuthorizationBundle, Tenant},
 	registry::{Entry, Registry},
 	store::Store,
 };
@@ -66,25 +66,6 @@ pub(super) fn bounds() -> Bounds {
 		max_retries: 2,
 		max_call_seconds: 30,
 	}
-}
-/// Give `workspace` to Tenant `acme`. Its authorization row holds a row-level
-/// policy, so the fixture writes it in the test-fixture scope.
-pub(super) async fn own_workspace(store: &Store, workspace: Uuid) {
-	let owner = AuthorizationWorkspace::build()
-		.workspace_id(workspace)
-		.tenant("acme")
-		.owner_subject("deployment_administrator")
-		.finish();
-	store
-		.pool
-		.atomic(&TEST_FIXTURE, async |tx| {
-			AuthorizationWorkspace::objects()
-				.create_with_conn(tx, &owner)
-				.await?;
-			Ok(())
-		})
-		.await
-		.unwrap();
 }
 pub(super) async fn setup(database: &DatabaseFixture, bounds: Bounds) -> (Store, Registry, Uuid) {
 	setup_endpoint(database, bounds, "http://127.0.0.1:9/v1").await
@@ -156,6 +137,10 @@ pub(super) async fn setup_endpoint_policy(
 	// The model and embedding fixture is a Keyless endpoint on loopback (ADR 0036).
 	store.keyless.permit_origin_of(endpoint).unwrap();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	registry
+		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
+		.await
+		.unwrap();
 	registry.seed_system().await.unwrap();
 	for (kind, id, config) in [
 		(
@@ -233,12 +218,14 @@ pub(super) async fn setup_endpoint_policy(
 			json!({"model":reference("m"),"instructions":"Use current evidence","tools":[],"skills":[],"memory":reference("p"),"allow_memory_write":true}),
 		),
 	] {
-		registry.register(entry(kind, id, config)).await.unwrap();
+		registry
+			.register(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				entry(kind, id, config),
+			)
+			.await
+			.unwrap();
 	}
-	let workspace = store
-		.create_workspace(&TEST_FIXTURE, "Memory", "Keep current evidence")
-		.await
-		.unwrap();
 	let bundle: aidash_domain::policy::PolicyBundle =
 		serde_json::from_value(json!({"tenant":"acme"})).unwrap();
 	// A policy references its Tenant's root record (ADR 0050).
@@ -267,7 +254,15 @@ pub(super) async fn setup_endpoint_policy(
 		})
 		.await
 		.unwrap();
-	own_workspace(&store, workspace.id).await;
+	let workspace = store
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"deployment_administrator",
+			"Memory",
+			"Keep current evidence",
+		)
+		.await
+		.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
 		workspace.id,

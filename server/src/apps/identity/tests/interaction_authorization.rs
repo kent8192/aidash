@@ -593,7 +593,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let cluster = json!({"id":"cluster","version":"1.0.0","kind":"cluster","name":{"en":"cluster"},"description":{"en":"fixture"},"schema":{},"config":{"coordinator":{"id":"research","version":"1.0.0"}}});
 	assert_eq!(
-		request(&app, &f.config.api_token, "POST", "/api/registry", cluster)
+		request(&app, &token, "POST", "/api/registry", cluster)
 			.await
 			.0,
 		200
@@ -610,7 +610,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -629,7 +629,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	assert_eq!(
 		request(
 			&app,
-			&f.config.api_token,
+			&token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":1,"enabled":false})

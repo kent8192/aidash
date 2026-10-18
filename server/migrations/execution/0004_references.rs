@@ -62,18 +62,6 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "generation_compaction_usage".to_owned(),
 			constraint: Constraint::ForeignKey {
-				name: "generation_compaction_usage_provider_id_provider_version_fkey".to_owned(),
-				columns: vec!["provider_id".to_owned(), "provider_version".to_owned()],
-				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
-			table: "generation_compaction_usage".to_owned(),
-			constraint: Constraint::ForeignKey {
 				name: "generation_compaction_usage_request_id_fkey".to_owned(),
 				columns: vec!["request_id".to_owned()],
 				referenced_table: "generation_requests".to_owned(),
@@ -90,18 +78,6 @@ pub(super) fn migration() -> Migration {
 				columns: vec!["run_id".to_owned()],
 				referenced_table: "runs".to_owned(),
 				referenced_columns: vec!["id".to_owned()],
-				on_delete: ForeignKeyAction::NoAction,
-				on_update: ForeignKeyAction::NoAction,
-				deferrable: None,
-			},
-		})
-		.add_operation(Operation::AddConstraintDefinition {
-			table: "generation_embedding_usage".to_owned(),
-			constraint: Constraint::ForeignKey {
-				name: "generation_embedding_usage_provider_id_provider_version_fkey".to_owned(),
-				columns: vec!["provider_id".to_owned(), "provider_version".to_owned()],
-				referenced_table: "registry".to_owned(),
-				referenced_columns: vec!["id".to_owned(), "version".to_owned()],
 				on_delete: ForeignKeyAction::NoAction,
 				on_update: ForeignKeyAction::NoAction,
 				deferrable: None,

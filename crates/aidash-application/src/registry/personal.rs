@@ -89,6 +89,7 @@ pub async fn register(
 	node: &str,
 ) -> Result<Entry> {
 	scope.assign_id(&mut registration.entry, Some(key)).await?;
+	scope.authorize(&registration.entry).await?;
 	let preview_source = registration.source.id.clone();
 	let mut input: aidash_domain::registry::bindings::AgentBindings =
 		serde_json::from_value(registration.entry.config.clone())?;
@@ -97,6 +98,7 @@ pub async fn register(
 	registration.source =
 		super::bindings::private::attach(&mut registration.entry, node, &registration.documents)?;
 	registration.entry.normalize_agent(node)?;
+	scope.authorize(&registration.source).await?;
 	register_definition(scope, validation, &registration.source, node).await?;
 	let inserted = register_definition(scope, validation, &registration.entry, node).await?;
 	scope

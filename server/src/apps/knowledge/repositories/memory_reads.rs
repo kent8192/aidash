@@ -38,7 +38,9 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	let binding = bindings::load(&mut **lease.tx(), &metadata)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let policy = crate::semantic::native_memory::policy(lease, &binding.provider).await?;
+	let policy =
+		crate::semantic::native_memory::policy(lease, &binding.bank.tenant, &binding.provider)
+			.await?;
 	// Separate gate avoids upgrading the binding lock held by the calling scope.
 	native::query(
 		&Query::insert()
@@ -217,13 +219,16 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 	if let Err(error) = units::authorize(lease, &binding.bank, "memory.read").await {
 		return binding_change(error);
 	}
-	let policy =
-		match crate::apps::knowledge::services::native_memory::policy(lease, &binding.provider)
-			.await
-		{
-			Ok(policy) => policy,
-			Err(error) => return binding_change(error),
-		};
+	let policy = match crate::apps::knowledge::services::native_memory::policy(
+		lease,
+		&binding.bank.tenant,
+		&binding.provider,
+	)
+	.await
+	{
+		Ok(policy) => policy,
+		Err(error) => return binding_change(error),
+	};
 	// The journal spans the whole Run. Each bounded page still validates every
 	// delivered revision; accumulated dependencies must never be sampled away.
 	let page_size = policy.bounds.max_graph_visits.min(256) as u64;

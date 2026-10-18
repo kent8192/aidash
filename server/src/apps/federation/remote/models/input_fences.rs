@@ -2,8 +2,6 @@
 use super::RemoteRunMessageFence;
 use crate::apps::federation::remote::services::input_fences::terminal;
 use crate::apps::workspaces::models::{Message, Task};
-use crate::apps::workspaces::serializers::entities::Message as MessageContract;
-use crate::store::RunMessageDelivery;
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -11,9 +9,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::query::FieldAssignment;
 use reinhardt::db::orm::{AtomicTransaction, Model};
-use reinhardt::query::{
-	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
-};
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
 
 pub(crate) enum TerminalInputs<'a> {
@@ -201,62 +197,5 @@ impl RemoteRunMessageFence {
 			}
 		}
 		Ok(())
-	}
-
-	pub(crate) async fn deliver(
-		tx: &mut AtomicTransaction,
-		node: &str,
-		delivery: RunMessageDelivery<'_>,
-	) -> Result<MessageContract> {
-		let RunMessageDelivery {
-			workspace,
-			task_id,
-			run_id,
-			sender,
-			content,
-			input_key,
-			message_key,
-		} = delivery;
-		let task = locked_task(tx, task_id).await?;
-		if task.workspace_id != workspace {
-			return Err(Error::Unauthorized);
-		}
-		let now = database_time(tx).await?;
-		let record = Self::by_key(tx, task_id, input_key)
-			.await?
-			.filter(|record| record.run_id == run_id)
-			.ok_or_else(|| Error::Conflict("remote run message was not reserved at home".into()))?;
-		if record.content != content {
-			return Err(Error::Conflict(
-				"remote run message reservation changed".into(),
-			));
-		}
-		if !record.consumed && record.expires_at.is_some_and(|deadline| deadline <= now) {
-			return Err(Error::Conflict(
-				"remote run message reservation expired".into(),
-			));
-		}
-		if !record.consumed && record.expires_at.is_some() && terminal(&task.status) {
-			return Err(Error::Conflict("home task is terminal".into()));
-		}
-		let (sql, values) = Query::select()
-			.expr(SimpleExpr::FunctionCall(
-				"set_config".into_iden(),
-				vec![
-					Expr::value("aidash.run_message_delivery").into(),
-					Expr::value("true").into(),
-					Expr::value(true).into(),
-				],
-			))
-			.build(PostgresQueryBuilder);
-		TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-		let message =
-			Message::append_in(tx, node, workspace, sender, content, message_key, None).await?;
-		Self::objects()
-			.filter(Self::field_task_id().eq(record.task_id))
-			.filter(Self::field_idempotency_key().eq(&record.idempotency_key))
-			.update_fields_with_conn(tx, [(Self::field_expires_at(), None::<DateTime<Utc>>)])
-			.await?;
-		Ok(message)
 	}
 }

@@ -715,9 +715,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_application::provider_access::{Context, ProviderAccess, Source};
-	use aidash_server::apps::identity::models::{
-		AuthorizationWorkspace, provider_credentials::RunProviderCredential as Pin,
-	};
+	use aidash_server::apps::identity::models::provider_credentials::RunProviderCredential as Pin;
 	use aidash_server::apps::knowledge::models::SemanticIndexe;
 	use reinhardt::db::orm::{Json, Model};
 	let mut f = endpoint.await;
@@ -747,22 +745,12 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 			json!({"schema_version":1,"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read"]}),
 		),
 	] {
-		f.runtime.registry.register(serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();
+		f.runtime.registry.register(&aidash_domain::tenancy::TenantName::new("beta").unwrap(), serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();
 	}
 
 	f.context.set_singleton(f.runtime.clone());
 	for id in ["environment-agent-fixture-model", "environment-agent"] {
-		assert_json(
-			f.deployment_administrator
-				.post(
-					"/api/authorization/beta/catalog",
-					&json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
+		endpoint_fixtures::approve(&f, "beta", id, "1.0.0").await;
 	}
 	let token = assert_json(
 		f.deployment_administrator
@@ -786,19 +774,15 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let workspace = f
 		.runtime
 		.store
-		.create_workspace(&TEST_FIXTURE, "BYOK retrieval", "Test admission")
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("beta").unwrap(),
+			"actor",
+			"BYOK retrieval",
+			"Test admission",
+		)
 		.await
 		.unwrap();
 	let mut tx = f.database.begin_fixture().await;
-	let authority = AuthorizationWorkspace::build()
-		.workspace_id(workspace.id)
-		.tenant("beta")
-		.owner_subject("actor")
-		.finish();
-	AuthorizationWorkspace::objects()
-		.insert_with_executor(tx.as_mut(), &authority)
-		.await
-		.unwrap();
 	let index = SemanticIndexe::build()
 		.workspace_id(workspace.id).tenant("beta").revision(1)
 		.spec(Json(json!({
@@ -962,7 +946,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	assert!(
 		f.runtime
 			.registry
-			.register(model.clone())
+			.register(
+				&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+				model.clone()
+			)
 			.await
 			.unwrap_err()
 			.to_string()
@@ -970,7 +957,14 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	);
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
-	f.runtime.registry.register(model.clone()).await.unwrap();
+	f.runtime
+		.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+			model.clone(),
+		)
+		.await
+		.unwrap();
 	for seconds in [3601_u32, u32::MAX] {
 		let mut invalid = model.clone();
 		invalid.id = format!("byok-too-long-{seconds}");
@@ -978,7 +972,10 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		assert!(
 			f.runtime
 				.registry
-				.register(invalid)
+				.register(
+					&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+					invalid
+				)
 				.await
 				.unwrap_err()
 				.to_string()
@@ -986,7 +983,18 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		);
 	}
 	f.context.set_singleton(f.runtime.clone());
-	let draft = assert_json(f.deployment_administrator.post("/api/workbench/drafts", &json!({
+	let actor = reinhardt::test::fixtures::api_client_from_url(&f.server.url);
+	let issued = aidash_server::authorization::Authorization {
+		pool: f.runtime.store.pool.clone(),
+	}
+	.issue_credential("beta", "actor", 3600, "deployment_administrator")
+	.await
+	.unwrap();
+	actor
+		.set_header("Authorization", &format!("Bearer {}", issued.token))
+		.await
+		.unwrap();
+	let draft = assert_json(actor.post("/api/workbench/drafts", &json!({
 		"tenant":"beta","owner":"actor","entry":{
 			"id":"","version":"1.0.0","kind":"agent","name":{"en":"Tenant sandbox"},"description":{"en":"Tenant sandbox"},
 			"config":{"schema_version":1,"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}
@@ -1003,7 +1011,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		draft["id"].as_str().unwrap()
 	);
 	let rejected = assert_json(
-		f.deployment_administrator
+		actor
 			.post(
 				&sandbox_path,
 				&json!({"expected_revision":draft["revision"],"message":"Test the Tenant model"}),
@@ -1019,10 +1027,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			.contains("Workbench tests do not support Tenant Provider Credentials"),
 		"{rejected}"
 	);
-	let sessions = assert_json(
-		f.deployment_administrator.get(&sandbox_path).await.unwrap(),
-		200,
-	);
+	let sessions = assert_json(actor.get(&sandbox_path).await.unwrap(), 200);
 	assert_eq!(
 		sessions,
 		json!([]),
@@ -1037,7 +1042,14 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			id: &str,
 			version: &str,
 		) -> Result<aidash_domain::registry::Entry> {
-			self.0.get(id, version).await.map_err(Into::into)
+			self.0
+				.get(
+					&aidash_domain::tenancy::TenantName::new("beta").unwrap(),
+					id,
+					version,
+				)
+				.await
+				.map_err(Into::into)
 		}
 	}
 	let snapshot = aidash_application::registry::bindings::resolve(

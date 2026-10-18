@@ -21,7 +21,15 @@ async fn working_files_require_explicit_agent_settings(
 	let (f, url, schema) = application.runtime.parts();
 	let app = application.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://localhost:19999").await;
-	let mut stripped = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut stripped = f
+		.registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"research",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	stripped.version = "1.0.1".into();
 	stripped.binding_normalization = None;
 	for name in ["file_read", "file_search"] {
@@ -30,22 +38,20 @@ async fn working_files_require_explicit_agent_settings(
 			removed.push(json!(name));
 		}
 	}
-	f.registry.register(stripped).await.unwrap();
+	f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			stripped,
+		)
+		.await
+		.unwrap();
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
 		json!({"kind":"agent"});
+	common::replace_policy(&f.store, "acme", policy.clone()).await;
 	let (status, body) = request(
 		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":1,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-	let (status, body) = request(
-		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
@@ -259,41 +265,59 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
-	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
+	let mut entry = f.registry.get(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), "research", "1.0.0").await.unwrap();
 	entry.version = "1.1.0".into();
 	entry.binding_normalization = None;
 	entry.config["bindings"] = json!([]);
 	entry.config["remove_default"] = json!([]);
-	let (status, pending) = request(&app,&f.config.api_token,"POST","/api/marketplace/host-packages",json!({"tenant":"acme","groups":["shell","python","outbound_get","apply_patch","file_share","task_assign"],"idempotency_key":Uuid::new_v4()})).await;
-	assert_eq!(status, 200, "{pending}");
-	let installations = pending["installations"].as_array().unwrap();
-	assert!(
-		installations
-			.iter()
-			.all(|r| r["approved"] == false && r["installation"]["active_revision"].is_null())
-	);
-	let selection = json!({"tenant":"acme","installations":installations.iter().map(|r|json!({"installation":r["installation"]["id"],"revision":r["revision"],"digest":r["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),"approvals":installations.iter().map(|r|json!({"reference":{"id":r["entry"]["id"],"version":r["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
-	let (status, activated) = request(
+	let offered: Vec<aidash_server::registry::Entry> = f
+		.registry
+		.list(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			&aidash_server::registry::Search {
+				kind: Some("bundle".into()),
+				..Default::default()
+			},
+		)
+		.await
+		.unwrap()
+		.into_iter()
+		.filter(|bundle| bundle.tags.iter().any(|tag| tag == "sandboxed"))
+		.collect();
+	let approvals: Vec<Value> = offered
+		.iter()
+		.flat_map(|bundle| {
+			std::iter::once(json!({"id":bundle.id,"version":bundle.version})).chain(
+				bundle.config["members"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.map(|member| json!({"id":member["id"],"version":member["version"]})),
+			)
+		})
+		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0}))
+		.collect();
+	let (status, approved) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
-		"/api/marketplace/approval-sets",
-		selection,
+		"/api/authorization/acme/catalog/approvals",
+		json!({ "approvals": approvals }),
 	)
 	.await;
-	assert_eq!(status, 200, "{activated}");
-	entry.config["bindings"] = json!(installations.iter().filter(|r|r["entry"]["kind"]=="bundle").map(|r|json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":r["entry"]["id"],"version":r["entry"]["version"]},"narrow":{}})).collect::<Vec<_>>());
+	assert_eq!(status, 200, "{approved}");
+	entry.config["bindings"] = json!(offered.iter().map(|bundle| json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":bundle.id,"version":bundle.version},"narrow":{}})).collect::<Vec<_>>());
 	let instructions = "---\nname: analysis\ndescription: Analyze the selected CSV\nlicense: MIT\n---\nLoad this only when selected. Scripts are data.";
 	let files = json!([{"path":"references/guide.md","content":"東京\n"},{"path":"scripts/analyze.py","content":"raise RuntimeError('must never run on activation')"}]);
 	let digest =
 		aidash_server::registry::digest(&json!({"instructions":instructions,"files":files}));
 	let source = json!({"id":"fixture-skills","version":"1.0.0","kind":"source","name":{"en":"Fixture Skills"},"description":{"en":"Explicit immutable Skill attachments"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"skill_attachments","attachments":[{"skill_id":Uuid::new_v4(),"origin":"fixture:project","digest":digest,"instructions":instructions,"files":files},{"skill_id":Uuid::new_v4(),"origin":"fixture:user","digest":digest,"instructions":instructions,"files":files}]}}});
 	let (status, response) =
-		request(&app, &f.config.api_token, "POST", "/api/registry", source).await;
+		request(&app, &token, "POST", "/api/registry", source).await;
 	assert_eq!(status, 200, "{response}");
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
@@ -304,7 +328,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/registry",
 		json!(entry),
@@ -313,7 +337,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	assert_eq!(status, 200, "{response}");
 	let (status, response) = request(
 		&app,
-		&f.config.api_token,
+		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
@@ -679,15 +703,7 @@ async fn files_preserve_unicode_revision_and_source_authority(
 		"id":"revoke-source", "effect":"deny", "subjects":{"any":true},
 		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[message.to_string()]}
 	}));
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":revoked}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	common::replace_policy(&c.f.store, "acme", revoked.clone()).await;
 	let (status, result) = request(
 		&c.app,
 		&c.token,
@@ -993,15 +1009,7 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"human_request"
 	]);
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["outbound"]}}));
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	(c, run)
 }
 #[rstest::rstest]
@@ -1076,15 +1084,7 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 	assert_eq!(again["status"], "blocked");
 	let mut tightened = c.policy.clone();
 	tightened["policies"].as_array_mut().unwrap().push(json!({"id":"upper-network-deny","effect":"deny","subjects":{"any":true},"actions":["network.get"],"resources":{"kinds":["outbound"]}}));
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":3,"bundle":tightened}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	common::replace_policy(&c.f.store, "acme", tightened.clone()).await;
 	let (status, value) = request(
 		&c.app,
 		&c.token,
@@ -1168,21 +1168,22 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = capability_fixture.await;
 	let sender = admit(&c).await;
-	let mut reader = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut reader =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	reader.id = "reader".into();
 	reader.binding_normalization = None;
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		json!(reader),
-	)
-	.await;
+	let (status, value) = request(&c.app, &c.token, "POST", "/api/registry", json!(reader)).await;
 	assert_eq!(status, 200, "{value}");
 	let (_, value) = request(
 		&c.app,
-		&c.f.config.api_token,
+		&c.token,
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
@@ -1193,15 +1194,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "reader", "1.1.0")] =
 		json!({"kind":"agent"});
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
+	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, task) = request(
 		&c.app,
 		&c.token,
@@ -1397,7 +1390,15 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		.0,
 		200
 	);
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	agent.version = "1.2.0".into();
 	agent.binding_normalization = None;
 	let source = reference_limit_tests::register_reference_source(
@@ -1410,19 +1411,12 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		.as_array_mut()
 		.unwrap()
 		.push(source);
-	let (status, value) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/registry",
-		json!(agent),
-	)
-	.await;
+	let (status, value) = request(&c.app, &c.token, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{value}");
 	assert_eq!(
 		request(
 			&c.app,
-			&c.f.config.api_token,
+			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true})

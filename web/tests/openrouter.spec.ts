@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import {
+  routeRegistryVersions,
+  routeTenantActions,
+  tenantSubject,
+} from "./registry-fixture";
 
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
@@ -49,14 +54,14 @@ test.beforeEach(async ({ page }) => {
     } else if (path === "/api/session") {
       await route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node_id: "aidash://test",
         },
       });
     } else if (path === "/api/state") {
       await route.fulfill({
         json: {
-          access: { kind: "deployment_administrator" },
+          access: tenantSubject,
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",
@@ -89,6 +94,8 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill({ json: [] });
     }
   });
+  await routeTenantActions(page, ["registry.create"]);
+  await routeRegistryVersions(page, () => []);
   await page.goto("/registry");
   await page
     .getByRole("button", { name: "エンティティを登録", exact: true })

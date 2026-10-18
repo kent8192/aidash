@@ -18,3 +18,5 @@ mod offering;
 mod row_level_security;
 #[path = "tenancy.rs"]
 mod tenancy;
+#[path = "support/tenant_roots.rs"]
+mod tenant_roots;

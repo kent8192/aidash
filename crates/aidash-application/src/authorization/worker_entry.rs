@@ -1,4 +1,6 @@
-//! Worker entry prefers a scoped receiver and otherwise authorizes the current local Run.
+//! Worker entry prefers a scoped receiver and otherwise authorizes the current
+//! local Run. A Run with neither belongs to no Tenant and never executes.
+use crate::Error;
 use crate::{Result, ports::authorization::worker_entry::WorkerEntryRepository};
 use aidash_domain::{Run, RunControl, RunMetadata, registry::AgentConfig};
 pub struct WorkerEntry<S> {
@@ -10,31 +12,29 @@ async fn acquire<S: Send>(
 	repository: &dyn WorkerEntryRepository<S>,
 	run: &RunMetadata,
 	read_context: bool,
-) -> Result<Option<WorkerEntry<S>>> {
+) -> Result<WorkerEntry<S>> {
 	if let Some((scope, agent)) = repository.receiver_lease(run).await? {
-		return Ok(Some(WorkerEntry {
+		return Ok(WorkerEntry {
 			scope,
 			agent,
 			remote: true,
-		}));
+		});
 	}
 	let Some(mut scope) = repository.local_lease(run, true).await? else {
-		return Ok(None);
+		return Err(Error::Forbidden);
 	};
 	let agent = repository.authorize(&mut scope, run, read_context).await?;
-	Ok(Some(WorkerEntry {
+	Ok(WorkerEntry {
 		scope,
 		agent,
 		remote: false,
-	}))
+	})
 }
 pub async fn execution<S: Send>(
 	repository: &dyn WorkerEntryRepository<S>,
 	run: &Run,
-) -> Result<Option<WorkerEntry<S>>> {
-	let Some(entry) = acquire(repository, &run.metadata(), true).await? else {
-		return Ok(None);
-	};
+) -> Result<WorkerEntry<S>> {
+	let entry = acquire(repository, &run.metadata(), true).await?;
 	if !entry.remote
 		&& entry.agent.core_capabilities.enabled()
 		&& run.control != RunControl::Cancelled
@@ -43,12 +43,12 @@ pub async fn execution<S: Send>(
 			.initialize(&entry.scope, run, &entry.agent)
 			.await?;
 	}
-	Ok(Some(entry))
+	Ok(entry)
 }
 pub async fn delivery<S: Send>(
 	repository: &dyn WorkerEntryRepository<S>,
 	run: &RunMetadata,
-) -> Result<Option<WorkerEntry<S>>> {
+) -> Result<WorkerEntry<S>> {
 	acquire(repository, run, false).await
 }
 #[cfg(test)]

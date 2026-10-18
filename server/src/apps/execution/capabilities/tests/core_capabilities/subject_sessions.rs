@@ -257,19 +257,22 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 #[rstest::fixture]
 async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (SharedThread, Uuid) {
 	let mut f = Box::pin(shared_thread).await;
-	let mut entry = f.c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut entry =
+		f.c.f
+			.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	entry.id = "reviewer".into();
 	entry.binding_normalization = None;
 	assert_eq!(
-		request(
-			&f.c.app,
-			&f.c.f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(entry)
-		)
-		.await
-		.0,
+		request(&f.c.app, &f.c.token, "POST", "/api/registry", json!(entry))
+			.await
+			.0,
 		200
 	);
 	f.c.policy["subjects"]
@@ -290,7 +293,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 	assert_eq!(
 		request(
 			&f.c.app,
-			&f.c.f.config.api_token,
+			&f.c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})

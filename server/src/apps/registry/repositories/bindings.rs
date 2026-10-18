@@ -217,14 +217,6 @@ pub(crate) async fn preview(
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	preview_mode(tx, node, entry, false, configured).await
 }
-pub(crate) async fn preview_remote(
-	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	node: &str,
-	entry: &aidash_domain::registry::Entry,
-	configured: bool,
-) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	preview_mode(tx, node, entry, true, configured).await
-}
 async fn preview_mode(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	node: &str,

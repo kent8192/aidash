@@ -29,39 +29,41 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	c.root = storage.path().to_owned();
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
 	c.app.context.set_singleton(c.f.clone());
-	let mut model = c.f.registry.get("model", "1.0.0").await.unwrap();
+	let mut model =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"model",
+				"1.0.0",
+			)
+			.await
+			.unwrap();
 	model.version = "1.1.0".into();
 	model.config["modalities"] = json!(["text", "image"]);
 	model.config["media_routes"] = json!([{"tag":"fixture/selected","formats":["image/png"],"source":"local provider contract","verified_at":chrono::Utc::now()-chrono::Duration::hours(1),"expires_at":chrono::Utc::now()+chrono::Duration::hours(1)}]);
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+	let mut agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
 	agent.version = "1.1.1".into();
 	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.1.0");
 	c.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.1.1")] =
 		json!({"kind":"agent"});
-	let (status, body) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	for entry in [model, agent] {
-		let (status, body) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(&entry),
-		)
-		.await;
+		let (status, body) =
+			request(&c.app, &c.token, "POST", "/api/registry", json!(&entry)).await;
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(
 			&c.app,
-			&c.f.config.api_token,
+			&c.token,
 			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),

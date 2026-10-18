@@ -68,6 +68,17 @@ async fn observe(pool: &sqlx::PgPool) -> BTreeMap<String, Observed> {
 		.collect()
 }
 
+const REGISTRY_KEYED_BY_TENANT: &[&str] = &[
+	"agent_draft_registrations",
+	"agent_knowledge",
+	"marketplace_revisions",
+	"registry",
+	"registry_agent_model_refs",
+	"registry_agent_resource_refs",
+	"registry_memory_role_refs",
+	"registry_requests",
+];
+
 #[rstest]
 #[tokio::test]
 async fn every_table_is_classified_and_matches_its_policies(#[future] database: DatabaseFixture) {
@@ -132,9 +143,15 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 					table.name
 				);
 				// #265 copies the Tenant onto the tables that reach it only
-				// through a parent.
+				// through a parent. #243 keyed the Registry tables by Tenant
+				// ahead of #265, which still enforces them.
 				match issue {
-					265 => assert!(!actual.tenant_column, "{} has a tenant column", table.name),
+					265 => assert_eq!(
+						actual.tenant_column,
+						REGISTRY_KEYED_BY_TENANT.contains(&table.name),
+						"{} tenant column",
+						table.name
+					),
 					241 => {}
 					other => panic!("{}: no step of #223 is #{other}", table.name),
 				}

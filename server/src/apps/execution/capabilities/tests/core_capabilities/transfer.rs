@@ -747,15 +747,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	assert_eq!(area["manifest"], json!([]), "staging is not visible");
 	let mut revoked = c.a.policy.clone();
 	revoked["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-transfer","effect":"deny","subjects":{"ids":["alice"]},"actions":["file.share"],"resources":{"kinds":["working_area"]}}));
-	let (status, result) = request(
-		&c.a.app,
-		&c.a.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":3,"bundle":revoked}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	crate::common::replace_policy(&c.a.f.store, "acme", revoked.clone()).await;
 	assert_eq!(
 		peer_request(&c.b, &c.a.f.config.node_id, "commit", identity)
 			.await
@@ -826,7 +818,7 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	)
 	.await
 	.unwrap();
-	let (status,activated)=request(&c.app,&c.f.config.api_token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
+	let (status,activated)=request(&c.app,&c.token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
         json!({"tenant":"acme","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{activated}");
 	let (status, admitted) = request(
