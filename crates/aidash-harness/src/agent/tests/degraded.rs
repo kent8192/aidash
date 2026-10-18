@@ -72,7 +72,7 @@ async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
 #[case::legacy(false)]
 #[case::ordered(true)]
 #[tokio::test]
-async fn a_step_that_degrades_again_emits_one_degradation_event(
+async fn a_step_that_degrades_again_saves_one_degradation_and_no_observation(
 	mut canonical: Fixture,
 	#[case] is_ordered: bool,
 ) {
@@ -84,19 +84,20 @@ async fn a_step_that_degrades_again_emits_one_degradation_event(
 	// The same step is entered again, as after a worker crash.
 	assert!(advance_sources(&mut canonical).await.is_err());
 
-	assert_eq!(saved(&canonical, "run.semantic_degraded").len(), 1);
-	let resaved = saved(&canonical, "run.sources_observed");
-	assert_eq!(resaved.len(), 1);
-	assert_eq!(resaved[0].recovery.degraded.count, 1);
-	assert!(resaved[0].recovery.degraded.outage);
-	assert!(resaved[0].context.source_observation.is_none());
+	let degraded = saved(&canonical, "run.semantic_degraded");
+	assert_eq!(degraded.len(), 1);
+	assert_eq!(degraded[0].recovery.degraded.count, 1);
+	assert!(degraded[0].recovery.degraded.outage);
+	// The replay observed no source, so it reports none.
+	assert!(saved(&canonical, "run.sources_observed").is_empty());
 }
 
 #[rstest]
 #[case::first_attempt(None, None, false, false)]
 #[case::fourth_retry(Some(SemanticFailure::Unavailable), Some(4), false, false)]
 #[case::last_retry(Some(SemanticFailure::Unavailable), Some(5), false, true)]
-#[case::last_pending_replay(Some(SemanticFailure::Pending), Some(5), false, false)]
+#[case::pending_replay_before_the_last_retry(Some(SemanticFailure::Pending), Some(4), false, false)]
+#[case::pending_replay_of_the_last_retry(Some(SemanticFailure::Pending), Some(5), false, true)]
 #[case::after_a_degraded_step(None, None, true, true)]
 #[tokio::test]
 async fn only_the_last_outage_retry_or_an_ongoing_outage_may_degrade(

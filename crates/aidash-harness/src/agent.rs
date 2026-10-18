@@ -3146,8 +3146,9 @@ impl OrderedSemantic {
 }
 
 /// Record a step that ran with Degraded context. Only the step's first
-/// degradation emits `run.semantic_degraded`; a re-entry of the same step
-/// persists its state without another event.
+/// degradation is saved, with `run.semantic_degraded`. A re-entry of the same
+/// step saves nothing here: the degradation is already durable, and the
+/// refreshed cause rides on the step's next save.
 async fn degrade_context(
 	store: &dyn ExecutionStore,
 	run: &mut Run,
@@ -3159,10 +3160,9 @@ async fn degrade_context(
 	// must not make a later step's first failure look like its last retry.
 	run.recovery.semantic_reason = None;
 	if new_step {
-		store.degrade_sources(run, token).await
-	} else {
-		store.observe_sources(run, token).await
+		store.degrade_sources(run, token).await?;
 	}
+	Ok(())
 }
 
 async fn compact_execution(
