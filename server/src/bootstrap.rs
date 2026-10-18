@@ -65,6 +65,12 @@ pub async fn initialize(
 		.with_ansi(false)
 		.try_init();
 	let config = Config::from_settings(settings)?;
+	// A malformed Research provider declaration refuses to start (ADR 0055),
+	// before registry validation reads which providers are available.
+	crate::apps::execution::services::research::configure(
+		&settings.research_providers,
+		&crate::config::settings::profile(),
+	)?;
 	let cache_salt = settings.cache_salt.keys()?;
 	// Only availability and the current key version; never key material.
 	match &cache_salt {

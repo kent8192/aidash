@@ -7,7 +7,7 @@ use crate::{
 	ports::research::{EvidenceStore, Reservation, Reserved},
 };
 use aidash_domain::research::{
-	account::AccountProfile,
+	account::AccountTerms,
 	citations::EvidenceRef,
 	document::{ExtractedPage, Line},
 	evidence::{EvidenceFragment, Original, Purge, PurgeReason, RunUsage, SourceRecord},
@@ -502,7 +502,7 @@ struct Search {
 	destination: &'static str,
 	calls: AtomicUsize,
 	outcome: Option<Failure>,
-	account: Option<AccountProfile>,
+	account: Option<AccountTerms>,
 }
 
 impl Search {
@@ -525,7 +525,7 @@ impl SearchProvider for Search {
 			content: query.query.clone(),
 		})
 	}
-	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure> {
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
 		Ok(self.account.clone())
 	}
 	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure> {
@@ -557,11 +557,13 @@ impl SearchProvider for Search {
 struct Pages {
 	calls: AtomicUsize,
 	lines: Vec<Line>,
+	account: Option<AccountTerms>,
 }
 
 impl Pages {
 	fn new() -> Self {
 		Self {
+			account: None,
 			calls: AtomicUsize::new(0),
 			lines: vec![
 				Line {
@@ -588,6 +590,9 @@ impl PageProvider for Pages {
 			Some("localhost" | "127.0.0.1") => Err(Failure::NonPublicDestination),
 			_ => Ok(()),
 		}
+	}
+	fn account(&self) -> std::result::Result<Option<AccountTerms>, Failure> {
+		Ok(self.account.clone())
 	}
 	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure> {
 		self.calls.fetch_add(1, Ordering::SeqCst);
@@ -641,6 +646,34 @@ impl PageProvider for ScannedPdf {
 			pages_without_text: self.pages_without_text.clone(),
 			original: Some(vec![b'%'; self.original_bytes]),
 		})
+	}
+}
+
+/// Current terms of a Research account with these prices and monthly limit.
+fn terms(
+	account: &str,
+	search_price_micro_usd: Option<u64>,
+	fetch_price_micro_usd: Option<u64>,
+	monthly_limit_micro_usd: u64,
+) -> AccountTerms {
+	let now = Utc::now();
+	AccountTerms {
+		account_id: account.into(),
+		agreement_reference: "contract".into(),
+		verified_by: "deployment_administrator".into(),
+		verified_at: now - Duration::days(1),
+		review_after: now + Duration::days(1),
+		storage_permitted: true,
+		query_training_prohibited: true,
+		evaluation_permitted: true,
+		retention_days: 30,
+		deletion_after_termination_days: 30,
+		price_effective_at: now - Duration::days(1),
+		price_review_after: now + Duration::days(1),
+		search_price_micro_usd,
+		fetch_price_micro_usd,
+		monthly_base_fee_micro_usd: 0,
+		monthly_limit_micro_usd,
 	}
 }
 
@@ -998,26 +1031,13 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 		gate: &gate,
 		limits: Limits::default(),
 	};
-	let now = Utc::now();
 	let mut provider = Search::new("brave", "api.search.brave.com");
-	provider.account = Some(AccountProfile {
-		account_id: "deployment-administrator-account".into(),
-		agreement_reference: "contract".into(),
-		verified_by: "deployment_administrator".into(),
-		verified_at: now - Duration::days(1),
-		review_after: now + Duration::days(1),
-		storage_permitted: true,
-		query_training_prohibited: true,
-		evaluation_permitted: true,
-		retention_days: 30,
-		deletion_after_termination_days: 30,
-		credential_env: "AIDASH_SECRET_SEARCH".into(),
-		price_effective_at: now - Duration::days(1),
-		price_review_after: now + Duration::days(1),
-		request_price_micro_usd: 5_000,
-		monthly_base_fee_micro_usd: 0,
-		monthly_limit_micro_usd: 5_000,
-	});
+	provider.account = Some(terms(
+		"deployment-administrator-account",
+		Some(5_000),
+		None,
+		5_000,
+	));
 	let run = Uuid::new_v4();
 	let first = research
 		.search(
@@ -1047,6 +1067,77 @@ async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
 }
 
 #[tokio::test]
+async fn a_charged_page_reading_is_priced_shown_and_bounded_by_the_same_account() {
+	// Arrange
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let mut pages = Pages::new();
+	pages.account = Some(terms("reader-account", None, Some(0), 0));
+	let mut paid = Pages::new();
+	paid.account = Some(terms("paid-reader", None, Some(2_000), 1_000));
+	let run = Uuid::new_v4();
+
+	// Act
+	let free = research
+		.fetch(
+			&call(run, "k1", "research.reader@1"),
+			&pages,
+			&json!({"url":"https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+	let over = research
+		.fetch(
+			&call(run, "k2", "research.paid@1"),
+			&paid,
+			&json!({"url":"https://example.com/other"}),
+		)
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(free["status"], "approval_required", "{free}");
+	let requests = gate.requests.lock().unwrap().clone();
+	assert_eq!(
+		requests[0].attribution,
+		Some(aidash_domain::research::account::CostAttribution {
+			account_id: "reader-account".into(),
+			price_micro_usd: 0,
+		})
+	);
+	// A price beyond the month's limit is refused before any approval.
+	assert_eq!(over["error"]["code"], "budget_exhausted", "{over}");
+	assert_eq!(requests.len(), 1);
+	assert_eq!(paid.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_provider_whose_account_does_not_price_the_operation_is_unavailable() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let mut pages = Pages::new();
+	pages.account = Some(terms("search-only", Some(5_000), None, 50_000));
+	let result = research
+		.fetch(
+			&call(Uuid::new_v4(), "k1", "research.reader@1"),
+			&pages,
+			&json!({"url":"https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["code"], "account_unavailable", "{result}");
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_they_stood_when_asked()
  {
 	// Arrange
@@ -1056,26 +1147,8 @@ async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_
 		gate: &gate,
 		limits: Limits::default(),
 	};
-	let now = Utc::now();
 	let mut provider = Search::new("brave", "api.search.brave.com");
-	provider.account = Some(AccountProfile {
-		account_id: "research-account".into(),
-		agreement_reference: "contract".into(),
-		verified_by: "deployment_administrator".into(),
-		verified_at: now - Duration::days(1),
-		review_after: now + Duration::days(1),
-		storage_permitted: true,
-		query_training_prohibited: true,
-		evaluation_permitted: true,
-		retention_days: 30,
-		deletion_after_termination_days: 30,
-		credential_env: "AIDASH_SECRET_SEARCH".into(),
-		price_effective_at: now - Duration::days(1),
-		price_review_after: now + Duration::days(1),
-		request_price_micro_usd: 5_000,
-		monthly_base_fee_micro_usd: 0,
-		monthly_limit_micro_usd: 50_000,
-	});
+	provider.account = Some(terms("research-account", Some(5_000), None, 50_000));
 	let pages = Pages::new();
 	let run = Uuid::new_v4();
 
@@ -1113,7 +1186,8 @@ async fn an_approver_sees_the_research_account_price_and_the_validated_query_as_
 	assert_eq!(query["query"], "rust");
 	assert_eq!(query["language"], "en");
 	assert_eq!(query["count"], 3);
-	// A page read has neither a Research account nor a query.
+	// Aidash's own page reader charges no Research account, and a page read
+	// has no query.
 	assert_eq!(requests[1].attribution, None);
 	assert_eq!(requests[1].query, None);
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
