@@ -122,7 +122,9 @@ fn parse_exponent(text: &str) -> Option<i64> {
 /// How far Aidash trusts its own request estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EstimateConfidence {
-	Exact,
+	/// Counted with a Token Encoding: still an upper bound, never the
+	/// provider's count, since templates add tokens no encoding sees.
+	Tokenized,
 	Calibrated,
 	Conservative,
 }
@@ -130,7 +132,7 @@ pub enum EstimateConfidence {
 impl EstimateConfidence {
 	pub fn as_str(self) -> &'static str {
 		match self {
-			Self::Exact => "exact",
+			Self::Tokenized => "tokenized",
 			Self::Calibrated => "calibrated",
 			Self::Conservative => "conservative",
 		}

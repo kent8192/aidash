@@ -37,7 +37,8 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 				.with_value("tenancy", json!({}))
 				.with_value("plan_connections", json!({}))
 				.with_value("research_providers", json!({}))
-				.with_value("research_retention", json!({})),
+				.with_value("research_retention", json!({}))
+				.with_value("deployment", json!({})),
 		)
 		.build_composed::<ProjectSettings>()
 		.expect("valid native endpoint settings")

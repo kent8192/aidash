@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -108,6 +109,72 @@ class WorkspaceBoundaryTests(unittest.TestCase):
                        if package["name"] == "aidash-integrations")
         package["features"]["test-support"] = ["aidash-application/test-support"]
         self.assertEqual(BOUNDARIES.violations(metadata, ROOT), [])
+
+
+class EnterpriseReferenceTests(unittest.TestCase):
+    def references(self, files):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path, content in files.items():
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(content)
+            return BOUNDARIES.enterprise_references(root)
+
+    def test_community_build_inputs_may_not_name_enterprise(self):
+        for path, content in (
+            ("Cargo.toml", '[workspace]\nmembers = ["crates/*", "enterprise/server"]\n'),
+            ("crates/a/Cargo.toml", '[dependencies]\nb = { path = "../../enterprise/b" }\n'),
+            ("desktop/Cargo.lock", 'source = "enterprise"\n'),
+            (".cargo/config.toml", '[patch.crates-io]\nb = { path = "enterprise/b" }\n'),
+            ("Dockerfile", "COPY enterprise ./enterprise\n"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.references({path: content}),
+                    [f"Community build input names enterprise/: {path}"],
+                )
+
+    def test_enterprise_files_and_package_names_are_not_references(self):
+        self.assertEqual(self.references({
+            "Cargo.toml": "# aidash-enterprise-server composes this server.\n",
+            "enterprise/Cargo.toml": '[workspace]\nmembers = ["server"]\n',
+            "web/node_modules/x/Cargo.toml": 'path = "enterprise"\n',
+        }), [])
+
+
+class EnterpriseWorkspaceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root = ROOT / "enterprise"
+        cls.metadata, cls.community = (json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--locked", "--format-version", "1"], cwd=root,
+        )) for root in (cls.root, ROOT))
+
+    def test_locked_enterprise_workspace_composes_only_community_crates(self):
+        self.assertEqual(BOUNDARIES.enterprise_violations(self.metadata, self.root), [])
+
+    def test_local_dependencies_outside_community_crates_are_rejected(self):
+        metadata = copy.deepcopy(self.metadata)
+        metadata["packages"].append({
+            "id": "path+file:///runner#aidash-runner@0.1.0", "name": "aidash-runner",
+            "source": None, "manifest_path": str(ROOT / "runner" / "Cargo.toml"),
+        })
+        self.assertIn(
+            "Enterprise may depend locally only on Community crates: aidash-runner",
+            BOUNDARIES.enterprise_violations(metadata, self.root),
+        )
+
+    def test_community_may_not_resolve_an_enterprise_package(self):
+        metadata = copy.deepcopy(self.community)
+        metadata["packages"].append({
+            "id": "path+file:///enterprise/server#aidash-enterprise-server@0.1.0",
+            "name": "aidash-enterprise-server", "source": None,
+            "manifest_path": str(self.root / "server" / "Cargo.toml"),
+        })
+        self.assertIn(
+            "Community resolves an Enterprise package: aidash-enterprise-server",
+            BOUNDARIES.violations(metadata, ROOT),
+        )
 
 
 if __name__ == "__main__":

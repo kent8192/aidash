@@ -47,6 +47,11 @@ managers = []
 url = "/static/"
 root = "staticfiles"
 
+# The Offering this Deployment runs. The Community build runs only
+# "self-hosted", the default; the Enterprise build runs "cloud" or "dedicated".
+[deployment]
+offering = "self-hosted"
+
 [node]
 node_id = "aidash://local"
 endpoint = "http://127.0.0.1:8000"
