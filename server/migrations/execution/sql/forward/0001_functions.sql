@@ -314,7 +314,7 @@ CREATE FUNCTION public.marketplace_catalog_fence() RETURNS trigger
     AS $$
 DECLARE owner_tenant text;
 BEGIN
- SELECT metadata->'installation'->>'tenant' INTO owner_tenant FROM registry WHERE id=NEW.entry_id AND version=NEW.entry_version;
+ SELECT metadata->'installation'->>'tenant' INTO owner_tenant FROM registry WHERE tenant=NEW.tenant AND id=NEW.entry_id AND version=NEW.entry_version;
  IF owner_tenant IS NOT NULL AND (owner_tenant <> NEW.tenant OR current_setting('aidash.marketplace_writer',true) IS DISTINCT FROM '1') THEN
   RAISE EXCEPTION 'unsupported Marketplace catalog writer';
  END IF;
@@ -328,6 +328,6 @@ CREATE FUNCTION public.marketplace_overlay_fence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
- IF EXISTS (SELECT 1 FROM registry WHERE id=NEW.id AND version=NEW.version AND metadata ? 'installation') THEN RAISE EXCEPTION 'Marketplace projections cannot have legacy overlays'; END IF;
+ IF EXISTS (SELECT 1 FROM registry WHERE tenant=NEW.tenant AND id=NEW.id AND version=NEW.version AND metadata ? 'installation') THEN RAISE EXCEPTION 'Marketplace projections cannot have legacy overlays'; END IF;
  RETURN NEW;
 END $$;

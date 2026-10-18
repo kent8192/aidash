@@ -336,12 +336,7 @@ export function Channel({
     </Alert>
   );
   const decisions = (
-    <ChannelRequests
-      className="mt-3"
-      requests={scopedRequests}
-      localNode={data.node.id}
-      open={open}
-    />
+    <ChannelRequests className="mt-3" requests={scopedRequests} open={open} />
   );
   const canvas = (
     <>

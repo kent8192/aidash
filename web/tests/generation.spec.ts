@@ -96,66 +96,92 @@ test("generation dashboard manages policy, approval, completion and retained his
         ],
       },
     });
-    await api("/api/registry", {
-      id,
-      version: "1.0.0",
-      kind: "model",
-      name: { en: "Generation fixture model", ja: "生成確認モデル" },
-      description: { en: "Local generation fixture" },
-      config: {
-        provider: "openrouter",
-        model_id: "fixture",
-        endpoint: `${providerOrigin}/v1`,
-        context_window: 128000,
-        max_output_tokens: 4096,
-        modalities: ["text"],
-        cost: {},
-      },
-    });
-    await api(`/api/authorization/${tenant}/catalog`, {
-      entry: { id, version: "1.0.0" },
-      expected_revision: 0,
-      enabled: true,
-    });
-    const compactor = `${id}-jev`;
-    await api("/api/registry", {
-      id: compactor,
-      version: "1.0.0",
-      kind: "compactor",
-      name: { en: "Approved compaction", ja: "承認済み圧縮" },
-      description: { en: "Approved Jev release (never called: contexts fit)" },
-      config: {
-        provider_credential: "openrouter",
-        model: "typesafe/jev-1.13",
-        max_request_bytes: 200000,
-        max_questions: 200,
-        max_response_bytes: 16000,
-      },
-    });
-    await api(`/api/authorization/${tenant}/catalog`, {
-      entry: { id: compactor, version: "1.0.0" },
-      expected_revision: 0,
-      enabled: true,
-    });
-    const memoryDescriptor = `${id}-memory`;
-    await api("/api/registry", {
-      id: memoryDescriptor,
-      version: "1.0.0",
-      kind: "memory",
-      name: { en: "Approved semantic memory", ja: "承認済みメモリ" },
-      description: {
-        en: "Explicit semantic retrieval for the generated Agent",
-      },
-      config: { schema_version: 1, source: { adapter: "semantic_memory" } },
-    });
-    await api(`/api/authorization/${tenant}/catalog`, {
-      entry: { id: memoryDescriptor, version: "1.0.0" },
-      expected_revision: 0,
-      enabled: true,
-    });
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
+    await api(
+      "/api/registry",
+      {
+        id,
+        version: "1.0.0",
+        kind: "model",
+        name: { en: "Generation fixture model", ja: "生成確認モデル" },
+        description: { en: "Local generation fixture" },
+        config: {
+          provider: "openrouter",
+          model_id: "fixture",
+          endpoint: `${providerOrigin}/v1`,
+          context_window: 128000,
+          max_output_tokens: 4096,
+          modalities: ["text"],
+          cost: {},
+        },
+      },
+      credential.token,
+    );
+    await api(
+      `/api/authorization/${tenant}/catalog`,
+      {
+        entry: { id, version: "1.0.0" },
+        expected_revision: 0,
+        enabled: true,
+      },
+      credential.token,
+    );
+    const compactor = `${id}-jev`;
+    await api(
+      "/api/registry",
+      {
+        id: compactor,
+        version: "1.0.0",
+        kind: "compactor",
+        name: { en: "Approved compaction", ja: "承認済み圧縮" },
+        description: {
+          en: "Approved Jev release (never called: contexts fit)",
+        },
+        config: {
+          provider_credential: "openrouter",
+          model: "typesafe/jev-1.13",
+          max_request_bytes: 200000,
+          max_questions: 200,
+          max_response_bytes: 16000,
+        },
+      },
+      credential.token,
+    );
+    await api(
+      `/api/authorization/${tenant}/catalog`,
+      {
+        entry: { id: compactor, version: "1.0.0" },
+        expected_revision: 0,
+        enabled: true,
+      },
+      credential.token,
+    );
+    const memoryDescriptor = `${id}-memory`;
+    await api(
+      "/api/registry",
+      {
+        id: memoryDescriptor,
+        version: "1.0.0",
+        kind: "memory",
+        name: { en: "Approved semantic memory", ja: "承認済みメモリ" },
+        description: {
+          en: "Explicit semantic retrieval for the generated Agent",
+        },
+        config: { schema_version: 1, source: { adapter: "semantic_memory" } },
+      },
+      credential.token,
+    );
+    await api(
+      `/api/authorization/${tenant}/catalog`,
+      {
+        entry: { id: memoryDescriptor, version: "1.0.0" },
+        expected_revision: 0,
+        enabled: true,
+      },
+      credential.token,
+    );
     const embeddingConfig = {
       provider: "openai",
       endpoint: `${providerOrigin}/v1`,
@@ -187,6 +213,7 @@ test("generation dashboard manages policy, approval, completion and retained his
         );
       }
     };
+    authFixture.setToken(credential.token);
     await navigate("レジストリ");
     await page
       .getByRole("button", { name: "エンティティを登録", exact: true })
@@ -219,7 +246,10 @@ test("generation dashboard manages policy, approval, completion and retained his
     await page.route("**/api/registry", async (route) => {
       if (route.request().method() !== "POST") return route.fallback();
       const response = await route.fetch({
-        headers: { ...route.request().headers(), ...cleanupHeaders },
+        headers: {
+          ...route.request().headers(),
+          authorization: `Bearer ${credential.token}`,
+        },
       });
       expect(response.status(), await response.text()).toBe(200);
       embedder = (await response.json()).id as string;
@@ -231,15 +261,24 @@ test("generation dashboard manages policy, approval, completion and retained his
     await expect(registryDialog).toHaveCount(0);
     await page.unroute("**/api/registry");
     expect(embedder).not.toBe("");
-    expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
-      embeddingConfig,
+    expect(
+      (
+        await api(
+          `/api/registry/${embedder}/1.0.0`,
+          undefined,
+          credential.token,
+        )
+      ).config,
+    ).toEqual(embeddingConfig);
+    await api(
+      `/api/authorization/${tenant}/catalog`,
+      {
+        entry: { id: embedder, version: "1.0.0" },
+        expected_revision: 0,
+        enabled: true,
+      },
+      credential.token,
     );
-    await api(`/api/authorization/${tenant}/catalog`, {
-      entry: { id: embedder, version: "1.0.0" },
-      expected_revision: 0,
-      enabled: true,
-    });
-    authFixture.setToken(credential.token);
     await page.reload();
     await navigate("Agent生成");
     await page

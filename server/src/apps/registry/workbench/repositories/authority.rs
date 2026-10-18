@@ -34,18 +34,6 @@ pub(crate) struct Scope<'a> {
 }
 #[async_trait]
 impl DefinitionLookup for Scope<'_> {
-	async fn foreign_agent(
-		&mut self,
-		node: &str,
-		reference: &aidash_domain::registry::bindings::QualifiedRef,
-	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		if !matches!(self.actor, Actor::DeploymentAdministrator) {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		NativeScope(&mut *self.tx)
-			.foreign_agent(node, reference)
-			.await
-	}
 	async fn binding_installation(
 		&mut self,
 		p: &aidash_domain::registry::Projection,

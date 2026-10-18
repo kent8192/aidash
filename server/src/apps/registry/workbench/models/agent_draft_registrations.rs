@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[model(app_label = "registry", table_name = "agent_draft_registrations")]
 #[derive(Serialize, Deserialize)]
 pub struct AgentDraftRegistration {
+	#[field(field_type = "text")]
+	pub tenant: String,
 	#[field(primary_key = true, field_type = "uuid")]
 	pub draft_id: uuid::Uuid,
 	#[field(primary_key = true)]

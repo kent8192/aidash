@@ -101,7 +101,8 @@ mod controlled_context_composition {
 		let endpoint = model_server.url.clone();
 		let (mut policy, token, task) =
 			common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-		let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+		let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let mut agent = f.registry.get(&acme, "research", "1.0.0").await.unwrap();
 		agent.version = "1.0.1".into();
 		agent.binding_normalization = None;
 		if ordered {
@@ -113,17 +114,21 @@ mod controlled_context_composition {
 				.to_owned();
 			let mut model = f
 				.registry
-				.get(agent.config["model"]["id"].as_str().unwrap(), &version)
+				.get(
+					&acme,
+					agent.config["model"]["id"].as_str().unwrap(),
+					&version,
+				)
 				.await
 				.unwrap();
 			model.id = "ordered-model".into();
 			model.binding_normalization = None;
 			model.config["projection_versions"] = json!(["legacy", "ordered"]);
-			f.registry.register(model).await.unwrap();
+			f.registry.register(&acme, model).await.unwrap();
 			assert_eq!(
 				request(
 					&app,
-					&f.config.api_token,
+					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
 					json!({"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true})
@@ -154,13 +159,13 @@ mod controlled_context_composition {
 			}
 			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
 			f.registry
-				.register(serde_json::from_value(entry).unwrap())
+				.register(&acme, serde_json::from_value(entry).unwrap())
 				.await
 				.unwrap();
 			assert_eq!(
 				request(
 					&app,
-					&f.config.api_token,
+					&token,
 					"POST",
 					"/api/authorization/acme/catalog",
 					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
@@ -172,7 +177,7 @@ mod controlled_context_composition {
 			bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
 		}
 		agent.config["bindings"] = json!(bindings);
-		f.registry.register(agent).await.unwrap();
+		f.registry.register(&acme, agent).await.unwrap();
 		let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
 		policy["subjects"][&owner] = json!({"kind":"agent"});
 		assert_eq!(
@@ -190,7 +195,7 @@ mod controlled_context_composition {
 		assert_eq!(
 			request(
 				&app,
-				&f.config.api_token,
+				&token,
 				"POST",
 				"/api/authorization/acme/catalog",
 				json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
@@ -1774,9 +1779,10 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	.await;
 	assert!(!entries.to_string().contains(&artifact.id.to_string()));
 	// Even a Deployment Administrator cannot attach a resource from a different workspace.
+	let other_tenant = common::tenant_scope(&f.store, "other").await;
 	let other = f
 		.store
-		.create_workspace(&TEST_FIXTURE, "Other", "Isolation")
+		.create_workspace(&other_tenant, "bob", "Other", "Isolation")
 		.await
 		.unwrap();
 	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;

@@ -194,15 +194,7 @@ async fn approver_fixture(
 	let (mut c, run) = Box::pin(configure_approvals(c)).await;
 	c.policy["subjects"]["bob"]["attributes"] = json!({"capability_approver":true});
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"requester-not-an-approver","effect":"deny","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":3,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	let (status, credential) = request(
 		&c.app,
 		&c.f.config.api_token,
@@ -375,15 +367,7 @@ async fn approval_list_and_decision_restore_the_request_workspace_context(
 		"resources":{"kinds":["outbound"]},
 		"condition":{"op":"eq","left":{"source":"resource","path":"/workspace_id"},"right":{"source":"literal","value":run.workspace_id}}
 	}));
-	let (status, updated) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":4,"bundle":policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{updated}");
+	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, pending) = request(
 		&c.app,
 		&c.token,

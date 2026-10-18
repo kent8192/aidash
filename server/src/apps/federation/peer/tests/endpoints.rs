@@ -18,11 +18,11 @@ async fn identity_is_public_but_federation_requires_a_peer_credential(
 	let identity = app.anonymous.get("/.well-known/aidash").await.unwrap();
 	let missing_protocol = app
 		.anonymous
-		.post("/federation/v0.1/discover", &json!({}), "json")
+		.post("/federation/v0.1/scoped/discover", &json!({}), "json")
 		.await
 		.unwrap();
 	let invalid_peer = untrusted
-		.post("/federation/v0.1/discover", &json!({}), "json")
+		.post("/federation/v0.1/scoped/discover", &json!({}), "json")
 		.await
 		.unwrap();
 	// Assert

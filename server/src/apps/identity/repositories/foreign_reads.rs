@@ -200,7 +200,7 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 					// retained by the generation request before publication.
 					.column((Alias::new("r"), Alias::new("metadata")))
 					.from_as(Alias::new("generation_requests"), Alias::new("g")).join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("authorization_catalog"), Alias::new("c")), Expr::cust("c.tenant=g.tenant AND c.entry_id=g.agent_id AND c.entry_version=g.agent_version"))
-					.join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")), Expr::cust("r.id=g.agent_id AND r.version=g.agent_version"))
+					.join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")), Expr::cust("r.tenant=g.tenant AND r.id=g.agent_id AND r.version=g.agent_version"))
 					.and_where(SimpleExpr::CustomWithExpr("(g.tenant=? AND g.home_node=? AND g.task_id=? AND g.grant_id=? AND g.admission_id=? AND g.agent_id=? AND g.agent_version=? AND g.foreign_intent=? AND g.credential_id=? AND g.prepared AND g.status=ANY(?) AND g.quota_released AND NOT c.enabled AND g.retired_catalog_revision=c.revision)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into(), Expr::value(query_bind_6.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into(), Expr::value(query_bind_9.to_owned()).into(), crate::database::text_array(query_bind_10.to_owned())]))
 					.lock(LockType::Share).lock_tables([Alias::new("g"), Alias::new("c"), Alias::new("r")])
 					.to_string(PostgresQueryBuilder))

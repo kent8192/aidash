@@ -1259,6 +1259,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 				"modalities":["text"],"cost":{},
 				"projection_versions":["legacy","ordered"],"cache_mode":cache_mode}});
 		Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(DefinitionKind::Model)
@@ -1467,6 +1468,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1497,6 +1499,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 			.create_with_conn(
 				&mut connection,
 				&Definition::build()
+					.tenant("acme")
 					.id(id.clone())
 					.version("1.0.0")
 					.kind(DefinitionKind::Agent)
@@ -1545,6 +1548,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("parallel")
 				.version("1.0.0")
 				.kind(DefinitionKind::Agent)
@@ -1689,6 +1693,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1699,6 +1704,7 @@ async fn context_policy_migration_validates_policies_and_refuses_rollback_while_
 		.unwrap();
 	let definition = |id: &str, policy: serde_json::Value| {
 		Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(DefinitionKind::Agent)
@@ -1870,6 +1876,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("model")
 				.version("1.0.0")
 				.kind(DefinitionKind::Model)
@@ -1882,6 +1889,7 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("verified")
 				.version("1.0.0")
 				.kind(DefinitionKind::Agent)
@@ -1986,6 +1994,7 @@ async fn degraded_context_migration_admits_only_workspace_opt_ins_and_refuses_ro
 		.create_with_conn(
 			&mut connection,
 			&Definition::build()
+				.tenant("acme")
 				.id("workspace")
 				.version("1.0.0")
 				.kind(DefinitionKind::Source)
@@ -2364,6 +2373,7 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 		("exposure-agent", DefinitionKind::Agent, agent),
 	] {
 		let definition = Definition::build()
+			.tenant("acme")
 			.id(id)
 			.version("1.0.0")
 			.kind(kind)

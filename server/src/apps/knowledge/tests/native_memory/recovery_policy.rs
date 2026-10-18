@@ -56,11 +56,31 @@ async fn policy_upgrade_retires_full_archive_capacity_and_shorter_retention(
 		),
 		"128 eligible archives enforce capacity"
 	);
-	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	let mut provider = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"p",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	provider.version = "1.1.0".into();
 	provider.config["policy"]["retention"]["backup_days"] = json!(1);
-	registry.register(provider).await.unwrap();
-	let mut agent = registry.get("a", "1.0.0").await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			provider,
+		)
+		.await
+		.unwrap();
+	let mut agent = registry
+		.get(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			"a",
+			"1.0.0",
+		)
+		.await
+		.unwrap();
 	agent.version = "1.1.0".into();
 	replace_memory_binding(
 		&mut agent,
@@ -69,7 +89,13 @@ async fn policy_upgrade_retires_full_archive_capacity_and_shorter_retention(
 			version: "1.1.0".into(),
 		},
 	);
-	registry.register(agent).await.unwrap();
+	registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			agent,
+		)
+		.await
+		.unwrap();
 	memory::upgrade_participant(
 		&store,
 		&Actor::DeploymentAdministrator,

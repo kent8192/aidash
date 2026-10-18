@@ -75,7 +75,9 @@ pub(super) async fn validate_admission(
 		let settings = super::super::bank_settings::get(lease, &source.bank)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+		let policy =
+			crate::semantic::native_memory::policy(lease, &source.bank.tenant, &settings.provider)
+				.await?;
 		validate_impact(lease, id, policy.bounds.max_graph_visits).await?;
 		let ancestors: Vec<Uuid> = native::query_scalar(
 			&Query::select()

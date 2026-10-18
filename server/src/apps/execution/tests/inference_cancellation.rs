@@ -149,40 +149,13 @@ async fn releasable_provider(
 async fn cancel_stalled_inference(
 	fixture: common::ApplicationFixture,
 	mut server: StalledProvider,
-	scoped: bool,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	// The fixture uses separate notification objects for controller and worker.
 
 	let (_, subject_token, scoped_task) = bootstrap(&f, &app, &server.endpoint).await;
-	let (token, task_id) = if scoped {
-		(subject_token, scoped_task.to_string())
-	} else {
-		let token = f.config.api_token.clone();
-		let (status, workspace) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/workspaces",
-			json!({"title":"Legacy cancellation","goal":"Cancel inference"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{workspace}");
-		let (status, task) = request(
-			&app,
-			&token,
-			"POST",
-			&format!(
-				"/api/workspaces/{}/tasks",
-				workspace["id"].as_str().unwrap()
-			),
-			json!({"title":"Cancel inference","description":"No output expected"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{task}");
-		(token, task["id"].as_str().unwrap().to_owned())
-	};
+	let (token, task_id) = (subject_token, scoped_task.to_string());
 	let (status, claimed) = request(
 		&app,
 		&token,
@@ -742,12 +715,12 @@ async fn scoped_cancellation_aborts_inference_before_response_headers(
 	#[with(false)]
 	server: StalledProvider,
 ) {
-	cancel_stalled_inference(fixture, server, true).await;
+	cancel_stalled_inference(fixture, server).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn legacy_cancellation_aborts_inference_during_response_body(
+async fn scoped_cancellation_aborts_inference_during_response_body(
 	#[future(awt)]
 	#[from(cancellation_application)]
 	fixture: common::ApplicationFixture,
@@ -756,7 +729,7 @@ async fn legacy_cancellation_aborts_inference_during_response_body(
 	#[with(true)]
 	server: StalledProvider,
 ) {
-	cancel_stalled_inference(fixture, server, false).await;
+	cancel_stalled_inference(fixture, server).await;
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
