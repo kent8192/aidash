@@ -1,5 +1,6 @@
-//! Provider timeouts and Projection Version declarations survive registry HTTP
-//! requests, persisted local overrides and the database constraints.
+//! Provider timeouts, Request Estimators and Projection Version declarations
+//! survive registry HTTP requests, persisted local overrides and the database
+//! constraints.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod endpoint_fixtures;
@@ -264,6 +265,86 @@ async fn database_validates_media_route_members_for_models(
 			.kind(DefinitionKind::Model).metadata(entry.into()).finish();
 		assert_constraint(Definition::objects().create_with_conn(&mut connection, &definition)
 			.await.unwrap_err(), "registry_model_config");
+	}
+}
+
+/// The model the dashboard's registration form sends (`web/src/forms.tsx`),
+/// without its Provider Credential: this Node has no Provider Credential Store.
+#[fixture]
+fn dashboard_model() -> Value {
+	json!({"id":"","version":"1.0.0","kind":"model",
+		"name":{"en":"Dashboard fixture"},"description":{"en":"Persistence test"},
+		"capabilities":[],"languages":["ja","en"],"tags":[],"skills":[],"schema":{},
+		"config":{"provider":"openrouter","model_id":"vendor/model",
+			"endpoint":"https://openrouter.ai/api/v1",
+			"reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"media_routes":[],"cost":{},
+			"request_estimator":"calibrated"}})
+}
+
+#[rstest]
+#[tokio::test]
+async fn request_estimators_persist_through_the_registry_api(
+	#[future] endpoint: EndpointFixture,
+	dashboard_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let mut connection = app.database.lease.handle();
+	for estimator in ["calibrated", "bytes"] {
+		let id = format!("estimator-{estimator}");
+		let mut entry = dashboard_model.clone();
+		entry["id"] = json!(id);
+		entry["config"]["request_estimator"] = json!(estimator);
+		// Act
+		let created = assert_json(
+			app.deployment_administrator
+				.post("/api/registry", &entry, "json")
+				.await
+				.unwrap(),
+			200,
+		);
+		let saved = Definition::objects()
+			.filter(Definition::field_id().eq(id))
+			.get_with_db(&mut connection)
+			.await
+			.unwrap();
+		// Assert
+		assert_eq!(created["config"], entry["config"]);
+		assert_eq!(saved.metadata.0["config"], entry["config"]);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn database_limits_request_estimators_to_known_values(
+	#[future] endpoint: EndpointFixture,
+	dashboard_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let mut connection = app.database.lease.handle();
+	for (index, estimator) in [json!("exact"), json!(null), json!(1)]
+		.into_iter()
+		.enumerate()
+	{
+		let mut entry = dashboard_model.clone();
+		entry["id"] = json!(format!("raw-estimator-{index}"));
+		entry["config"]["request_estimator"] = estimator;
+		let definition = Definition::build()
+			.id(entry["id"].as_str().unwrap())
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		// Act / Assert
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_request_estimator",
+		);
 	}
 }
 

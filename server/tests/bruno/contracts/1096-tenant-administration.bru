@@ -1,5 +1,5 @@
 meta {
-  name: 1096 tenant-administration - Subject Credential bearer is never a Tenant Administrator
+  name: 1096 tenant-administration - Deployment Administrator bearer is never a Tenant Administrator
   type: http
   seq: 1096
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

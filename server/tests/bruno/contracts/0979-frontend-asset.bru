@@ -1,11 +1,11 @@
 meta {
-  name: 0979 frontend-asset - Client route falls back to the SPA
+  name: 0979 frontend-asset - Missing asset does not fall back to the SPA
   type: http
   seq: 979
 }
 
 get {
-  url: {{base_url}}/bruno-client-route
+  url: {{base_url}}/assets/missing.txt
   body: none
   auth: none
 }
@@ -15,6 +15,5 @@ headers {
 }
 
 tests {
-  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Client route falls back to the SPA contract", function () { expect(res.getBody()).to.include("Bruno frontend fixture"); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
 }

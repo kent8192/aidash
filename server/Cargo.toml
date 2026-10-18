@@ -30,7 +30,8 @@ aes-gcm = "=0.10.3"
 hkdf = "=0.12.4"
 zeroize = "1.9"
 secrecy = { version = "0.10", features = ["serde"] }
-aidash-domain.workspace = true
+# The server counts tokenized Request Estimates (ADR 0017).
+aidash-domain = { workspace = true, features = ["token-encodings"] }
 aidash-application.workspace = true
 aidash-harness.workspace = true
 aidash-runtime.workspace = true

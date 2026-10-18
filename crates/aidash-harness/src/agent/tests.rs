@@ -143,8 +143,10 @@ struct State {
 	checks: Option<completion::FakeChecks>,
 	/// The Completion Basis each commit fence persisted.
 	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
-	/// Serve a model version that opts into the calibrated estimator.
-	calibrated_model: bool,
+	/// The `request_estimator` the served model version declares.
+	request_estimator: Option<Value>,
+	/// Input tokens the provider reports; 200 when unset.
+	reported_input_tokens: Option<u64>,
 	/// Calibration samples the store returns, newest first.
 	calibration: Mutex<Vec<aidash_domain::provider::estimate::CalibrationSample>>,
 	/// URL intents recorded beside the Run's Task and inputs.
@@ -212,8 +214,13 @@ impl Backend {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
 		}
-		if self.0.calibrated_model && id != "summarizer" {
-			config["request_estimator"] = json!("calibrated");
+		if let Some(estimator) = self
+			.0
+			.request_estimator
+			.as_ref()
+			.filter(|_| id != "summarizer")
+		{
+			config["request_estimator"] = estimator.clone();
 		}
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
 	}
@@ -1197,7 +1204,7 @@ impl ModelProvider for Backend {
 			output_tokens: if self.0.omit_output_usage { 0 } else { 10 },
 			usage_complete: !self.0.omit_output_usage,
 			reported: ReportedUsage {
-				input_tokens: Some(200),
+				input_tokens: Some(self.0.reported_input_tokens.unwrap_or(200)),
 				output_tokens: (!self.0.omit_output_usage).then_some(10),
 				cache_read_tokens: Some(150),
 				..Default::default()
@@ -1354,7 +1361,8 @@ fn fixture() -> Fixture {
 		completion: None,
 		checks: None,
 		fenced: Mutex::new(vec![]),
-		calibrated_model: false,
+		request_estimator: None,
+		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
 		url_intents: vec![],
 	}));

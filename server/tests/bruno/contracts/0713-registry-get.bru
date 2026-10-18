@@ -1,18 +1,18 @@
 meta {
-  name: 0713 registry-get - Subject cannot read a definition it may not read
+  name: 0713 registry-get - Missing scoped authority cannot disclose application data
   type: http
   seq: 713
 }
 
 get {
-  url: {{base_url}}/api/registry/aidash.workspace_read/1.0.0
+  url: {{base_url}}/api/registry/__bruno_missing__/__bruno_missing__
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{deployment_administrator_token}}
 }
 
 tests {

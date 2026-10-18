@@ -1,12 +1,12 @@
 meta {
-  name: 0995 desktop-exchange - Invalid verifier cannot issue a session
+  name: 0995 desktop-exchange - Malformed broker JSON is rejected
   type: http
   seq: 995
 }
 
 post {
   url: {{base_url}}/auth/desktop/exchange
-  body: text
+  body: file
   auth: none
 }
 
@@ -15,11 +15,11 @@ headers {
   Content-Type: application/json
 }
 
-body:text {
-  {"code": "short", "state": "state", "verifier": "invalid", "redirect_uri": "http://127.0.0.1:43217/callback"}
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
 }
 
 tests {
-  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

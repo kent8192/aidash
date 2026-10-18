@@ -29,7 +29,7 @@ NOTICES = "THIRD_PARTY_NOTICES.md"
 # SHA-256 of the whole notices file, hashed like the root notice. Any sentence
 # in it can place material under a project's terms, so changing it is a
 # licensing decision. The checks below explain what a change broke.
-NOTICES_SHA256 = "4dce191efa21ea8298c8bda7bf8c9c9722e4a6b7c1c48701cde53d895470a6be"
+NOTICES_SHA256 = "a086a7facfc2dfcd0a9e7e44ef6cee445100caf19d05df94040de9f73ab34fc0"
 # Every project whose adapted material Aidash carries: the notices section that
 # describes it, its upstream provenance, the SHA-256 of its verbatim notice
 # (hashed like the root notice) and the files that hold adapted material. The
@@ -71,6 +71,27 @@ REQUIRED_NOTICES = {
             "server/src/apps/knowledge/services/memory_models.rs",
             "server/src/apps/knowledge/repositories/native_memory.rs",
             "server/src/apps/knowledge/repositories/postgres_vector.rs",
+        ),
+    },
+    # The embedded tokenizer files of the Token Encodings (#276, ADR 0017).
+    "gpt-oss": {
+        "heading": "gpt-oss",
+        "source": "https://huggingface.co/openai/gpt-oss-120b",
+        "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+        "license": "Apache-2.0",
+        "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+        "adapted": (
+            "crates/aidash-domain/assets/token-encodings/o200k_base.json.zst",
+        ),
+    },
+    "gemma-4": {
+        "heading": "Gemma 4",
+        "source": "https://huggingface.co/google/gemma-4-E4B-it",
+        "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
+        "license": "Apache-2.0",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "adapted": (
+            "crates/aidash-domain/assets/token-encodings/gemma4.json.zst",
         ),
     },
 }

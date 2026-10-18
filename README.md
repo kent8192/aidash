@@ -42,6 +42,24 @@ workers. Apps are ordinary Rust modules. The harness depends on application/doma
 contracts; application/domain do not depend on the harness. Domain/application/harness
 production dependency closures exclude runtime, integrations, the server, Reinhardt,
 Axum, SQLx, SeaORM, and reqwest; CI checks these boundaries against locked Cargo metadata.
+
+### Community and Enterprise builds
+
+The packages above form the **Community build**, which runs only the
+`self-hosted` Offering. `enterprise/` is a separate Cargo workspace with its own
+`Cargo.lock`. It composes `aidash-server` into the **Enterprise build**, which
+runs only the `cloud` and `dedicated` Offerings. Each Deployment selects its
+Offering in `[deployment] offering` of its settings, and `self-hosted` is the
+default. A build refuses to start with an Offering it does not run.
+
+```sh
+cargo test --locked --manifest-path enterprise/Cargo.toml
+cargo run --locked --manifest-path enterprise/Cargo.toml --bin aidash -- serve
+```
+
+The Enterprise server needs `offering = "cloud"` in `server/settings/local.toml`.
+See [Community and Enterprise builds](docs/operations/community-and-enterprise-builds.md)
+for the layout, the alignment and export checks, and the images.
 The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 

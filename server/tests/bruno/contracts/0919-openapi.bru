@@ -1,5 +1,5 @@
 meta {
-  name: 0919 openapi - Untrusted bearer does not restrict public reads
+  name: 0919 openapi - Public contract
   type: http
   seq: 919
 }
@@ -12,10 +12,9 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Untrusted bearer does not restrict public reads contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().openapi).to.match(/^3\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token")); });
+  test("Public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().openapi).to.match(/^3\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("deployment_administrator_token")); });
 }

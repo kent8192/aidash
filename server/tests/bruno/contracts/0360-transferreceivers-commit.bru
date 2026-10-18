@@ -1,5 +1,5 @@
 meta {
-  name: 0360 transferreceivers-commit - Require the peer bearer credential
+  name: 0360 transferreceivers-commit - Require the peer node identity
   type: http
   seq: 360
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  X-Aidash-Node: {{peer_node}}
+  Authorization: Bearer {{peer_token}}
   X-Aidash-Protocol: 0.2
 }
 

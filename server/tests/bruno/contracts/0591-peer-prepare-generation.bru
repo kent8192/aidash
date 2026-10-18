@@ -1,5 +1,5 @@
 meta {
-  name: 0591 peer-prepare-generation - Require the peer bearer credential
+  name: 0591 peer-prepare-generation - Require the peer node identity
   type: http
   seq: 591
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  X-Aidash-Node: {{peer_node}}
+  Authorization: Bearer {{peer_token}}
   X-Aidash-Protocol: 0.2
 }
 

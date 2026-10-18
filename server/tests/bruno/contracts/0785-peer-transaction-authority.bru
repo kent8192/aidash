@@ -1,5 +1,5 @@
 meta {
-  name: 0785 peer-transaction-authority - Require the peer bearer credential
+  name: 0785 peer-transaction-authority - Require the peer node identity
   type: http
   seq: 785
 }
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  X-Aidash-Node: {{peer_node}}
+  Authorization: Bearer {{peer_token}}
   X-Aidash-Protocol: 0.2
 }
 

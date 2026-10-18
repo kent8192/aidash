@@ -1,23 +1,17 @@
 meta {
-  name: 1120 tenant-subject-groups - Deployment Administrator bearer is never a Tenant Administrator
+  name: 1120 tenant-subject-groups - Anonymous request is rejected
   type: http
   seq: 1120
 }
 
 put {
-  url: {{base_url}}/api/tenants/{{tenant}}/subjects/alice/groups
-  body: text
+  url: {{base_url}}/api/tenants/{{tenant}}/subjects/__bruno_missing__/groups
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{deployment_administrator_token}}
-  Content-Type: application/json
-}
-
-body:text {
-  {"groups": [], "expected_policy_revision": 1}
 }
 
 script:pre-request {
@@ -33,6 +27,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
-  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

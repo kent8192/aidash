@@ -1,5 +1,5 @@
 meta {
-  name: 0339 sessions-logout - Revoked browser session
+  name: 0339 sessions-logout - Forged opaque session
   type: http
   seq: 339
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Cookie: {{session_cookie}}
+  Cookie: aidash-session=forged
 }
 
 tests {

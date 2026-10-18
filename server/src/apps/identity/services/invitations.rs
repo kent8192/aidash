@@ -225,9 +225,10 @@ impl Invitations {
 		self.finish(&issuer, result).await
 	}
 
-	/// The signed-in External Identity presenting a link. Tenancy Rules do not
-	/// cover identities with a Tenant Binding, so they cannot redeem.
-	async fn holder(&self, headers: &HeaderMap) -> Result<Uuid> {
+	/// The browser session of the External Identity presenting a link.
+	/// Tenancy Rules do not cover identities with a Tenant Binding, so they
+	/// cannot redeem. Redemption rechecks the session under lock.
+	async fn holder(&self, headers: &HeaderMap) -> Result<BrowserOrigin> {
 		self.require_enabled()?;
 		let f = &self.runtime;
 		let config = required_config(f)?;
@@ -251,7 +252,7 @@ impl Invitations {
 		{
 			return Err(Error::Forbidden);
 		}
-		Ok(identity.id)
+		Ok(BrowserOrigin::unmapped(config, &session))
 	}
 
 	/// Shows the inviting Tenant's label without spending the link.
@@ -290,7 +291,7 @@ impl Invitations {
 		input: InvitationLink,
 	) -> Result<Registration> {
 		validate(&input)?;
-		let identity = self.holder(&headers).await?;
+		let holder = self.holder(&headers).await?;
 		let registration = self
 			.runtime
 			.store
@@ -299,7 +300,7 @@ impl Invitations {
 				let invitation = invitations::usable(tx, &input.tenant, &input.secret, true)
 					.await?
 					.ok_or_else(invalid_link)?;
-				invitations::redeem(tx, invitation, identity).await
+				invitations::redeem(tx, invitation, &holder.session).await
 			})
 			.await?;
 		Ok(registration.contract())

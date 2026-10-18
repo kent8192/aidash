@@ -1,18 +1,17 @@
 meta {
-  name: 1193 plan-connection-models - Forged bearer cannot reach a Plan Connection
+  name: 1193 plan-connection-models - Anonymous request is rejected
   type: http
   seq: 1193
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/chatgpt/models
+  url: {{base_url}}/api/tenants/{{tenant}}/plan-connections/__bruno_missing__/models
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer forged
 }
 
 tests {

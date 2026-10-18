@@ -1,5 +1,5 @@
 meta {
-  name: 0583 peer-cancel-generation - Require the peer bearer credential
+  name: 0583 peer-cancel-generation - Require the peer node identity
   type: http
   seq: 583
 }
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  X-Aidash-Node: {{peer_node}}
+  Authorization: Bearer {{peer_token}}
   X-Aidash-Protocol: 0.2
 }
 
