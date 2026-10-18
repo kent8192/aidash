@@ -39,27 +39,22 @@ impl Drop for Scope<'_> {
 	}
 }
 struct Configuration {
-	present: bool,
+	permitted: Vec<&'static str>,
 	reads: Mutex<Vec<String>>,
 }
 impl Configuration {
 	fn new() -> Self {
 		Self {
-			present: true,
+			permitted: vec![],
 			reads: Mutex::new(vec![]),
 		}
 	}
 }
 impl ProfileConfiguration for Configuration {
-	fn require_secret(&self, name: &str) -> Result<()> {
-		self.reads.lock().unwrap().push(name.into());
-		if self.present {
-			Ok(())
-		} else {
-			Err(Error::Invalid(format!(
-				"credential reference {name} is not configured"
-			)))
-		}
+	fn destination(&self, endpoint: &str) -> Result<aidash_domain::keyless::Destination> {
+		self.reads.lock().unwrap().push(endpoint.into());
+		let permitted = aidash_domain::keyless::PermittedOrigins::parse(&self.permitted)?;
+		Ok(aidash_domain::keyless::destination(endpoint, &permitted)?)
 	}
 }
 fn reference(id: &str) -> EntityRef {
@@ -79,7 +74,6 @@ fn rule() -> RealToolRule {
 		read_only_verified: true,
 		tool: reference("tool"),
 		endpoint: "https://test.example/rpc".into(),
-		credential_env: Some("AIDASH_SECRET_TEST_TOOL".into()),
 		allowed_actions: vec!["read".into()],
 		allowed_resources: vec!["fixture".into()],
 	}
@@ -144,6 +138,22 @@ impl ProfileRepository for Repository {
 			profile("partial", true, json!([rule(), foreign])),
 		])
 	}
+	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+		assert_eq!(tenant, "tenant");
+		self.state.lock().unwrap().calls.push("administered");
+		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+			return Err(Error::Forbidden);
+		}
+		Ok(vec![profile("allowed", true, json!([rule()]))])
+	}
+	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()> {
+		assert_eq!((tenant, id), ("tenant", "profile"));
+		self.state.lock().unwrap().calls.push("authorize");
+		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
 	async fn definition(&self, tenant: &str, entry: &EntityRef) -> Result<Entry> {
 		assert_eq!((tenant, entry), ("tenant", &reference("tool")));
 		self.state.lock().unwrap().calls.push("definition");
@@ -154,6 +164,10 @@ impl ProfileRepository for Repository {
 		assert_eq!(id, "profile");
 		let mut s = self.state.lock().unwrap();
 		s.calls.push("save");
+		// The repository decides `workbench.test_profile.update` with the write.
+		if self.principal != Principal::DeploymentAdministrator && !self.authorized {
+			return Err(Error::Forbidden);
+		}
 		if input.expected_revision != self.revision {
 			return Err(Error::Conflict("test profile changed".into()));
 		}
@@ -279,10 +293,12 @@ async fn subject_profiles_are_not_read_without_current_draft_test_authority(#[ca
 		assert!(s.calls.is_empty());
 	}
 }
-#[rstest]
 #[tokio::test]
-async fn profile_writes_remain_deployment_administrator_only_before_external_reads() {
-	let r = Repository::new(subject());
+async fn a_subject_writes_no_other_tenants_profile_and_reads_nothing_first() {
+	let r = Repository::new(Principal::Subject {
+		tenant: "other".into(),
+		subject: "admin".into(),
+	});
 	let config = Configuration::new();
 	assert!(matches!(
 		put(&r, &config, "tenant".into(), "profile".into(), input()).await,
@@ -290,6 +306,29 @@ async fn profile_writes_remain_deployment_administrator_only_before_external_rea
 	));
 	assert!(r.state.lock().unwrap().calls.is_empty());
 	assert!(config.reads.lock().unwrap().is_empty());
+}
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn a_subject_writes_its_tenants_profile_under_the_action(#[case] authorized: bool) {
+	let mut r = Repository::new(subject());
+	r.authorized = authorized;
+	let result = put(
+		&r,
+		&Configuration::new(),
+		"tenant".into(),
+		"profile".into(),
+		input(),
+	)
+	.await;
+	assert_eq!(result.is_ok(), authorized);
+	assert_eq!(r.state.lock().unwrap().saved.is_some(), authorized);
+	// A refused caller is refused before any definition is read.
+	assert_eq!(
+		r.state.lock().unwrap().calls.contains(&"definition"),
+		authorized
+	);
 }
 #[rstest]
 #[case("duplicate")]
@@ -338,7 +377,7 @@ async fn validated_profiles_forward_the_original_atomic_revision_fence(
 	}
 	assert_eq!(
 		config.reads.lock().unwrap().as_slice(),
-		["AIDASH_SECRET_TEST_TOOL"]
+		["https://test.example/rpc"]
 	);
 	assert_eq!(r.state.lock().unwrap().saved.is_some(), success);
 }
@@ -348,32 +387,38 @@ async fn validated_profiles_forward_the_original_atomic_revision_fence(
 #[case("write_tool")]
 #[case("non_http")]
 #[case("non_tool")]
-#[case("missing_credential")]
+#[case("loopback")]
+#[case("private_address")]
 fn real_rule_preserves_endpoint_and_replay_isolation(#[case] denial: &str) {
 	let mut rule = rule();
 	let mut tool = tool();
-	let mut config = Configuration::new();
 	match denial {
 		"insecure" => rule.endpoint = "http://test.example/rpc".into(),
 		"production_endpoint" => rule.endpoint = "https://production.example/rpc".into(),
 		"write_tool" => rule.read_only_verified = false,
 		"non_http" => tool.config = json!({"transport":"native","operation":"read"}),
 		"non_tool" => tool.kind = "model".into(),
-		_ => config.present = false,
+		"loopback" => rule.endpoint = "https://127.0.0.1/rpc".into(),
+		_ => rule.endpoint = "https://10.0.0.7/rpc".into(),
 	}
-	assert!(validate_real_rule(&config, &rule, &tool).is_err());
+	assert!(validate_real_rule(&Configuration::new(), &rule, &tool).is_err());
 }
 #[rstest]
-#[case("https://test.example/rpc")]
-#[case("http://localhost/rpc")]
-#[case("http://127.0.0.1/rpc")]
-#[case("http://[::1]/rpc")]
-fn read_only_test_rule_accepts_the_existing_secure_and_loopback_endpoints(#[case] endpoint: &str) {
-	let config = Configuration::new();
+#[case("https://test.example/rpc", vec![])]
+#[case("http://127.0.0.1:8080/rpc", vec!["http://127.0.0.1:8080"])]
+#[case("http://test.lan/rpc", vec!["http://test.lan"])]
+fn test_endpoints_are_public_or_at_an_origin_the_deployment_permits(
+	#[case] endpoint: &str,
+	#[case] permitted: Vec<&'static str>,
+) {
+	let config = Configuration {
+		permitted,
+		reads: Mutex::new(vec![]),
+	};
 	let mut rule = rule();
 	rule.endpoint = endpoint.into();
 	validate_real_rule(&config, &rule, &tool()).unwrap();
-	assert_eq!(config.reads.lock().unwrap().len(), 1);
+	assert_eq!(config.reads.lock().unwrap().as_slice(), [endpoint]);
 }
 #[rstest]
 #[tokio::test]
@@ -393,4 +438,22 @@ async fn cancelling_current_draft_authority_releases_the_uncommitted_scope() {
 	let s = r.state.lock().unwrap();
 	assert!(!s.active && !s.committed);
 	assert!(!s.calls.contains(&"page"));
+}
+#[rstest]
+#[case::writer(subject(), true, true)]
+#[case::without_the_action(subject(), false, false)]
+#[case::another_tenant(Principal::Subject { tenant: "other".into(), subject: "admin".into() }, true, false)]
+#[tokio::test]
+async fn profile_writers_read_their_tenants_profiles_with_rules(
+	#[case] principal: Principal,
+	#[case] authorized: bool,
+	#[case] reads: bool,
+) {
+	let mut r = Repository::new(principal);
+	r.authorized = authorized;
+	let result = administered(&r, "tenant".into()).await;
+	assert_eq!(result.is_ok(), reads);
+	if reads {
+		assert_eq!(result.unwrap()[0].rules, json!([rule()]));
+	}
 }

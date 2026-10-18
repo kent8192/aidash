@@ -172,6 +172,8 @@ fn the_creator_administers_and_members_use() {
 		"marketplace.install",
 		"installation.create",
 		"tool.invoke",
+		"credential.create",
+		"semantic.index.manage",
 	] {
 		assert!(allows(&bundle, "alice", action), "{action}");
 	}
@@ -268,6 +270,28 @@ fn any_deny_on_an_administration_action_counts_against() {
 				"right":{"source":"literal","value":"sunday"}}))
 			.unwrap(),
 		),
+	});
+	bundle.validate().unwrap();
+	assert!(!has_unconditional_administrator(&bundle, [OWNER]));
+}
+
+#[test]
+fn an_administrator_who_cannot_repair_the_policy_does_not_count() {
+	let mut bundle = initial_policy("t", true).unwrap();
+	assert!(ADMINISTRATION_ACTIONS.contains(&"policy.update"));
+	bundle.policies.push(Policy {
+		id: "no-policy-writes".into(),
+		effect: Effect::Deny,
+		subjects: SubjectSelector {
+			ids: [OWNER.into()].into(),
+			..Default::default()
+		},
+		actions: ["policy.update".to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: ["policy".into()].into(),
+			ids: BTreeSet::new(),
+		},
+		condition: None,
 	});
 	bundle.validate().unwrap();
 	assert!(!has_unconditional_administrator(&bundle, [OWNER]));

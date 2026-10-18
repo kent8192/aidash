@@ -25,10 +25,14 @@ pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
 	pub(crate) actor: Actor,
 }
-pub(crate) struct Configuration;
+/// Test endpoints share the Deployment's permitted private origins with
+/// Keyless endpoints until #376 decides whether tools keep a list of their own.
+pub(crate) struct Configuration {
+	pub(crate) keyless: aidash_application::provider_access::KeylessAccess,
+}
 impl ProfileConfiguration for Configuration {
-	fn require_secret(&self, name: &str) -> Result<()> {
-		crate::config::secret(name).map(|_| ()).map_err(Into::into)
+	fn destination(&self, endpoint: &str) -> Result<aidash_domain::keyless::Destination> {
+		self.keyless.destination(endpoint)
 	}
 }
 struct Scope {
@@ -65,6 +69,45 @@ impl ProfileRepository for Repository<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn administered(&self, tenant: &str) -> Result<Vec<TestProfile>> {
+		let pool = &self.runtime.store.pool;
+		let actions = self.tenant_actions();
+		let result = pool
+			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				actions
+					.require(
+						&mut *tx,
+						pool.dashboard_policy().as_ref(),
+						tenant,
+						aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+						aidash_domain::identity::tenant_administration::COLLECTION,
+					)
+					.await?;
+				AgentTestProfile::page(tx, tenant).await
+			})
+			.await;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
+	}
+	async fn authorize_update(&self, tenant: &str, id: &str) -> Result<()> {
+		let pool = &self.runtime.store.pool;
+		let actions = self.tenant_actions();
+		let mut check = pool.begin(&TenancyScope::tenant(tenant)?).await?;
+		let result = actions
+			.require(
+				&mut check,
+				pool.dashboard_policy().as_ref(),
+				tenant,
+				aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+				id,
+			)
+			.await;
+		// Nothing is kept: `save` decides again with the write and keeps that
+		// decision; a denial is audited after the rollback.
+		check.rollback().await?;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
+	}
 	async fn definition(&self, tenant: &str, reference: &EntityRef) -> Result<Entry> {
 		self.runtime
 			.registry
@@ -77,14 +120,33 @@ impl ProfileRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 	async fn save(&self, tenant: &str, id: &str, input: &ProfileInput) -> Result<TestProfile> {
-		self.runtime
-			.store
-			.pool
+		let pool = &self.runtime.store.pool;
+		let actions = self.tenant_actions();
+		let result = pool
 			.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
+				actions
+					.require(
+						&mut *tx,
+						pool.dashboard_policy().as_ref(),
+						tenant,
+						aidash_domain::identity::tenant_administration::TEST_PROFILE_UPDATE,
+						id,
+					)
+					.await?;
 				AgentTestProfile::save(tx, tenant, id, input).await
 			})
-			.await
-			.map_err(Into::into)
+			.await;
+		actions.record_denial(pool).await?;
+		result.map_err(Into::into)
+	}
+}
+impl Repository<'_> {
+	/// A denial is audited after `pool.atomic` has rolled its transaction back.
+	fn tenant_actions(&self) -> super::authority::TenantActions {
+		super::authority::TenantActions::new(
+			self.actor.clone(),
+			self.runtime.config.node_id.clone(),
+		)
 	}
 }
 #[async_trait]

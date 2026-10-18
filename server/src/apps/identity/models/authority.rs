@@ -26,6 +26,7 @@ impl AuthorizationBundle {
 		expected_revision: i64,
 		document: Value,
 		actor: &str,
+		actor_mapping: Option<Uuid>,
 	) -> Result<i64> {
 		authority_control(tx).await?;
 		// Only the Tenant creation API makes Tenants (ADR 0050); a first policy
@@ -70,12 +71,22 @@ impl AuthorizationBundle {
 		let revision: i64 = row.get("revision").map_err(FrameworkError::from)?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(AuthorizationRevision::table_name()))
-			.columns(["tenant", "revision", "document", "actor"].map(Alias::new))
+			.columns(
+				[
+					"tenant",
+					"revision",
+					"document",
+					"actor",
+					"actor_mapping_id",
+				]
+				.map(Alias::new),
+			)
 			.values_panic([
 				IntoValue::into_value(tenant),
 				IntoValue::into_value(revision),
 				IntoValue::into_value(document),
 				IntoValue::into_value(actor),
+				IntoValue::into_value(actor_mapping),
 			])
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
@@ -117,6 +128,7 @@ impl AuthorizationCredential {
 		token_hash: Vec<u8>,
 		lifetime: i64,
 		actor: &str,
+		mapping: Option<Uuid>,
 	) -> Result<Credential> {
 		authority_control(tx).await?;
 		let (sql, values) = Query::select()
@@ -138,6 +150,7 @@ impl AuthorizationCredential {
 			expires_at: now + Duration::seconds(lifetime),
 			revoked_at: None,
 			issued_by: actor.into(),
+			mapping_id: mapping,
 		};
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
@@ -150,6 +163,7 @@ impl AuthorizationCredential {
 					"created_at",
 					"expires_at",
 					"issued_by",
+					"mapping_id",
 				]
 				.map(Alias::new),
 			)
@@ -161,6 +175,7 @@ impl AuthorizationCredential {
 				IntoValue::into_value(record.created_at),
 				IntoValue::into_value(record.expires_at),
 				IntoValue::into_value(actor),
+				IntoValue::into_value(mapping),
 			])
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
@@ -200,7 +215,7 @@ impl AuthorizationCredential {
 		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<()> {
 		let (sql, values) = Query::select()
-			.column(Alias::new("id"))
+			.columns(["id", "mapping_id"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
@@ -212,17 +227,20 @@ impl AuthorizationCredential {
 			)))
 			.lock(LockType::Share)
 			.build(PostgresQueryBuilder);
-		if tx
+		let credential = tx
 			.fetch_optional(&sql, convert_values(values))
 			.await?
-			.is_none()
-		{
-			return Err(Error::Unauthorized);
-		}
+			.ok_or(Error::Unauthorized)?;
+		let credential = QueryRow::from_backend_row(credential).data;
+		let issued_through: Option<Uuid> =
+			serde_json::from_value(credential["mapping_id"].clone())?;
 		let (sql, values) = Query::select()
 			.columns(["identity_id", "enabled", "tenant"].map(Alias::new))
 			.from(Alias::new(DashboardMapping::table_name()))
-			.and_where(Expr::col("credential_id").eq(Expr::value(id)))
+			.and_where(match issued_through {
+				Some(mapping) => Expr::col("id").eq(Expr::value(mapping)),
+				None => Expr::col("credential_id").eq(Expr::value(id)),
+			})
 			.lock(LockType::Share)
 			.build(PostgresQueryBuilder);
 		if let Some(mapping) = tx.fetch_optional(&sql, convert_values(values)).await? {

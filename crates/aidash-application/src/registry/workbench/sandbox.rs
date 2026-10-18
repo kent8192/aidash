@@ -1,8 +1,8 @@
 //! Sandbox management applies current draft authority for HTTP and background callers.
 use crate::{Error, Result, ports::registry::workbench::sandbox::SandboxRepository};
 use aidash_domain::{
-	identity::Principal,
-	registry::workbench::sandbox::{self, TestLimits, TestSession},
+	identity::tenant_administration::{COLLECTION, TEST_LIMITS_UPDATE},
+	registry::workbench::sandbox::{self, TenantTestLimits, TestLimits, TestSession},
 };
 use uuid::Uuid;
 pub fn validate_limits(repository: &dyn SandboxRepository, limits: &TestLimits) -> Result<()> {
@@ -20,22 +20,43 @@ pub async fn get_limits(repository: &dyn SandboxRepository, id: Uuid) -> Result<
 	scope.commit().await?;
 	Ok(value)
 }
+/// A Tenant's limits as it set them, with the Deployment's ceilings, under
+/// `workbench.test_limits.update` (#361).
+pub async fn tenant_limits(
+	repository: &dyn SandboxRepository,
+	tenant: String,
+) -> Result<TenantTestLimits> {
+	let mut scope = repository.begin().await?;
+	scope
+		.authorize_tenant(&tenant, TEST_LIMITS_UPDATE, COLLECTION)
+		.await?;
+	let limits = scope.stored_limits(&tenant).await?;
+	scope.commit().await?;
+	Ok(TenantTestLimits {
+		limits,
+		ceilings: repository.ceilings(),
+	})
+}
+/// Sets a Tenant's limits within the Deployment's ceilings, under
+/// `workbench.test_limits.update`, at the revision they were read at.
 pub async fn set_limits(
 	repository: &dyn SandboxRepository,
 	tenant: String,
 	input: TestLimits,
-) -> Result<TestLimits> {
-	if repository.principal() != Principal::DeploymentAdministrator {
-		return Err(Error::Forbidden);
-	}
+) -> Result<TenantTestLimits> {
 	if tenant != input.tenant {
 		return Err(Error::Invalid("tenant mismatch".into()));
 	}
-	validate_limits(repository, &input)?;
 	let mut scope = repository.begin().await?;
-	scope.save_limits(&input).await?;
+	scope
+		.authorize_tenant(&tenant, TEST_LIMITS_UPDATE, COLLECTION)
+		.await?;
+	validate_limits(repository, &input)?;
+	let ceilings = repository.ceilings();
+	ceilings.permits(&input)?;
+	let limits = scope.save_limits(&input).await?;
 	scope.commit().await?;
-	Ok(input)
+	Ok(TenantTestLimits { limits, ceilings })
 }
 pub async fn sessions(repository: &dyn SandboxRepository, id: Uuid) -> Result<Vec<TestSession>> {
 	repository.purge().await?;

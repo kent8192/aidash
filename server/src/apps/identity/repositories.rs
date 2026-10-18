@@ -88,6 +88,7 @@ impl AuthorizationTransaction for PolicyTransaction {
 			expected_revision,
 			document,
 			actor,
+			None,
 		)
 		.await?)
 	}

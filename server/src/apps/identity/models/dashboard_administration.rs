@@ -461,6 +461,7 @@ impl DashboardRegistrationRequest {
 					snapshot.revision,
 					serde_json::to_value(&snapshot.bundle)?,
 					"deployment_administrator",
+					None,
 				)
 				.await?;
 			}
@@ -519,6 +520,7 @@ impl DashboardRegistrationRequest {
 				.expires_at(now + Duration::days(3650))
 				.revoked_at(None)
 				.issued_by("dashboard-oidc".to_owned())
+				.mapping_id(None)
 				.finish();
 			AuthorizationCredential::objects()
 				.create_with_conn(tx, &credential)
@@ -1093,7 +1095,7 @@ impl DashboardMapping {
 				.pop()
 				.ok_or_else(|| Error::Conflict("mapping revision changed".into()))?;
 			// Execution leases always lock the credential before the mapping.
-			let mut credential = AuthorizationCredential::objects()
+			let credential = AuthorizationCredential::objects()
 				.filter(AuthorizationCredential::field_id().eq(mapping.credential_id()))
 				.select_for_update()
 				.all_with_executor(tx)
@@ -1101,6 +1103,15 @@ impl DashboardMapping {
 				.map_err(FrameworkError::from)?
 				.pop()
 				.ok_or_else(|| Error::NotFound("credential".into()))?;
+			// The credentials a member issued for itself end with this Mapping
+			// (ADR 0063); they are locked before the Mapping, like its own.
+			let issued = AuthorizationCredential::objects()
+				.filter(AuthorizationCredential::field_mapping_id().eq(Some(id)))
+				.filter(AuthorizationCredential::field_revoked_at().is_null())
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?;
 			let assignments: Vec<FieldAssignment> = vec![
 				(Self::field_enabled(), false).into(),
 				(
@@ -1119,8 +1130,10 @@ impl DashboardMapping {
 			if changed != 1 {
 				return Err(Error::Conflict("mapping revision changed".into()));
 			}
-			if credential.revoked_at.is_none() {
-				credential.revoked_at = Some(database_time(tx).await?);
+			let revoked_at = database_time(tx).await?;
+			let own = credential.revoked_at.is_none().then_some(credential);
+			for mut credential in own.into_iter().chain(issued) {
+				credential.revoked_at = Some(revoked_at);
 				AuthorizationCredential::objects()
 					.update_with_conn(tx, &credential)
 					.await?;

@@ -1,5 +1,6 @@
-//! Tenant Administrator rules. Assignable Groups bound the only authority a
-//! Tenant Administrator can confer; Deployment Administrator authority is never Tenant-scoped.
+//! Tenant Administrator rules. Without permission to replace the policy,
+//! Assignable Groups bound the only authority a Tenant Administrator can
+//! confer; Deployment Administrator authority is never Tenant-scoped.
 use crate::policy::{PolicyBundle, Subject, SubjectKind, identifier};
 use crate::{Error, Result};
 use serde_json::json;
@@ -14,9 +15,28 @@ pub const SUBJECT_GROUP_UPDATE: &str = "subject.group.update";
 pub const INVITATION_CREATE: &str = "invitation.create";
 pub const INVITATION_READ: &str = "invitation.read";
 pub const INVITATION_REVOKE: &str = "invitation.revoke";
+/// Reading the Tenant's policy, its revisions and simulated decisions.
+pub const POLICY_READ: &str = "policy.read";
+/// Replacing the Tenant's whole policy, which is every authority within it.
+pub const POLICY_UPDATE: &str = "policy.update";
+/// Reading the Tenant's decision log.
+pub const DECISION_READ: &str = "decision.read";
+/// Issuing a Subject Credential for one's own subject (ADR 0063).
+pub const CREDENTIAL_CREATE: &str = "credential.create";
+/// Issuing a Subject Credential for a service or agent subject that no
+/// Mapping ever named (ADR 0063).
+pub const CREDENTIAL_ISSUE: &str = "credential.issue";
+pub const CREDENTIAL_READ: &str = "credential.read";
+pub const CREDENTIAL_REVOKE: &str = "credential.revoke";
+pub const PEER_MAPPING_READ: &str = "peer_mapping.read";
+pub const PEER_MAPPING_UPDATE: &str = "peer_mapping.update";
+/// Setting the Tenant's Workbench Test Limits within the Deployment's ceilings.
+pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
+/// Writing the Tenant's Workbench Test Profiles.
+pub const TEST_PROFILE_UPDATE: &str = "workbench.test_profile.update";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 9] = [
+pub const ACTIONS: [&str; 19] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -26,12 +46,23 @@ pub const ACTIONS: [&str; 9] = [
 	INVITATION_CREATE,
 	INVITATION_READ,
 	INVITATION_REVOKE,
+	POLICY_READ,
+	POLICY_UPDATE,
+	DECISION_READ,
+	CREDENTIAL_ISSUE,
+	CREDENTIAL_READ,
+	CREDENTIAL_REVOKE,
+	PEER_MAPPING_READ,
+	PEER_MAPPING_UPDATE,
+	TEST_LIMITS_UPDATE,
+	TEST_PROFILE_UPDATE,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
-/// requests, managing Mappings and groups, and inviting people. The
-/// last-administrator check requires one other subject holding all of them.
-pub const ADMINISTRATION_ACTIONS: [&str; 7] = [
+/// requests, managing Mappings and groups, inviting people, and repairing the
+/// policy itself (ADR 0026). The last-administrator check requires one other
+/// subject holding all of them; what a policy writer can restore is not here.
+pub const ADMINISTRATION_ACTIONS: [&str; 9] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -39,6 +70,8 @@ pub const ADMINISTRATION_ACTIONS: [&str; 7] = [
 	MAPPING_DISABLE,
 	SUBJECT_GROUP_UPDATE,
 	INVITATION_CREATE,
+	POLICY_READ,
+	POLICY_UPDATE,
 ];
 
 /// Creating a definition or version in the Tenant's Registry.
@@ -59,6 +92,12 @@ pub fn resource_kind(action: &str) -> &'static str {
 		REGISTRATION_READ | REGISTRATION_APPROVE | REGISTRATION_REJECT => "registration",
 		MAPPING_READ | MAPPING_DISABLE => "mapping",
 		INVITATION_CREATE | INVITATION_READ | INVITATION_REVOKE => "invitation",
+		POLICY_READ | POLICY_UPDATE => "policy",
+		DECISION_READ => "decision",
+		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
+		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
+		TEST_LIMITS_UPDATE => "test_limits",
+		TEST_PROFILE_UPDATE => "test_profile",
 		crate::identity::tenancy::TENANT_UPDATE => "tenant",
 		REGISTRY_CREATE | CATALOG_APPROVE => "registry",
 		MARKETPLACE_INSTALL => "package",

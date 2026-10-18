@@ -5,7 +5,6 @@ use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
-use crate::apps::execution::serializers::openrouter::CatalogModel;
 use crate::apps::execution::serializers::research::{
 	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
 };
@@ -30,7 +29,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
-	contracts.response::<_, Vec<CatalogModel>>(
+	contracts.response::<_, aidash_domain::catalog::CatalogSnapshot>(
 		document,
 		views::management::openrouter_models,
 		200,

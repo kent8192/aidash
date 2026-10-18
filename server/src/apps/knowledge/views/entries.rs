@@ -17,10 +17,11 @@ use uuid::Uuid;
 )]
 pub async fn configure(
 	#[inject] service: Depends<SemanticEntries>,
+	#[inject] actor: Actor,
 	Path(workspace): Path<Uuid>,
 	Json(input): Json<ConfigureIndex>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.configure(workspace, input).await)
+	crate::http::json(service.configure(actor, workspace, input).await)
 }
 
 #[get(
@@ -125,7 +126,8 @@ pub async fn history(
 )]
 pub async fn cleanup(
 	#[inject] service: Depends<SemanticEntries>,
+	#[inject] actor: Actor,
 	Path(workspace): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.cleanup(workspace).await)
+	crate::http::json(service.cleanup(actor, workspace).await)
 }

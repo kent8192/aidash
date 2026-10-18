@@ -1,4 +1,5 @@
 use crate::endpoint::{assert_json, endpoint, subject};
+use aidash_server::apps::identity::models::AuthorizationDecision;
 use aidash_server::apps::registry::workbench::models::AgentDraft;
 use aidash_server::apps::registry::workbench::models::AgentTestLimit;
 use reinhardt::db::orm::Model;
@@ -123,4 +124,81 @@ async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
 	assert_eq!(saved.max_concurrent, 1);
 	assert_eq!(saved.max_output_tokens, 128);
 	assert_eq!(saved.max_total_tokens, 512);
+}
+
+#[rstest]
+#[tokio::test]
+async fn tenants_set_their_own_test_limits_at_the_revision_they_read(
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	credential_client: crate::endpoint::ClientFuture,
+) {
+	let app = endpoint.await;
+	let alice = subject(&app, "alice", credential_client.await).await;
+	let path = "/api/workbench/test-limits/endpoint";
+	let read = assert_json(alice.get(path).await.unwrap(), 200);
+	assert_eq!(read["limits"]["revision"], 0);
+	assert_eq!(read["ceilings"]["max_concurrent"], 32);
+	let mut limits = read["limits"].clone();
+	limits["max_concurrent"] = json!(3);
+	let saved = assert_json(alice.put(path, &limits, "json").await.unwrap(), 200);
+	assert_eq!(saved["limits"]["revision"], 1);
+	assert_eq!(saved["limits"]["max_concurrent"], 3);
+	// A write at the revision another write already advanced conflicts.
+	assert_json(alice.put(path, &limits, "json").await.unwrap(), 409);
+	limits["tenant"] = json!("other");
+	assert_json(
+		alice
+			.put("/api/workbench/test-limits/other", &limits, "json")
+			.await
+			.unwrap(),
+		403,
+	);
+	let policy = assert_json(
+		app.deployment_administrator
+			.get("/api/authorization/endpoint")
+			.await
+			.unwrap(),
+		200,
+	);
+	let mut bundle = policy["bundle"].clone();
+	// The evaluation names this Deployment's node, as every other API path does.
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"no-test-limits","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["workbench.test_limits.update"],"resources":{"kinds":["*"]},
+		"condition":{"op":"eq","left":{"source":"environment","path":"/node_id"},
+			"right":{"source":"literal","value":app.runtime.config.node_id}}
+	}));
+	assert_json(
+		app.deployment_administrator
+			.post(
+				"/api/authorization/endpoint",
+				&json!({"expected_revision":policy["revision"],"bundle":bundle}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_json(alice.get(path).await.unwrap(), 403);
+	let denied = AuthorizationDecision::objects()
+		.filter(AuthorizationDecision::field_tenant().eq("endpoint"))
+		.filter(AuthorizationDecision::field_action().eq("workbench.test_limits.update"))
+		.order_by(&["-sequence"])
+		.first_with_db(&mut app.database.lease.handle())
+		.await
+		.unwrap()
+		.expect("the denial is audited after its transaction rolled back");
+	assert_eq!(
+		denied.decision.0["allowed"], false,
+		"{:?}",
+		denied.decision.0
+	);
+	let saved = AgentTestLimit::objects()
+		.filter(AgentTestLimit::field_tenant().eq("endpoint"))
+		.get_with_db(&mut app.database.lease.handle())
+		.await
+		.unwrap();
+	assert_eq!((saved.max_concurrent, saved.revision), (3, 1));
 }
