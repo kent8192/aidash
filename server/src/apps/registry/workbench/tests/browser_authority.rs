@@ -184,7 +184,6 @@ async fn native_draft_mutations_recheck_browser_authority(
 	}
 	let (status, result) = request(&app, &wb.token, "PUT", &wb.path(), json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[],"release_notes":"Browser authority rechecked"})).await;
 	assert_eq!(status, expected_status, "{change}: {result}");
-	// The stored draft, read without any browser or subject authority.
 	let (revision, release_notes): (i64, String) =
 		sqlx::query_as("SELECT revision, release_notes FROM agent_drafts WHERE id = $1")
 			.bind(uuid::Uuid::parse_str(wb.draft["id"].as_str().unwrap()).unwrap())

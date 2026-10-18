@@ -105,8 +105,6 @@ async fn research_fixture(
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
 		json!({"kind":"agent"});
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
-	// The fixture research group is a built-in of every Tenant, which the
-	// Tenant approves with its members before use (ADR 0034).
 	let bundle =
 		c.f.registry
 			.get(
@@ -199,8 +197,6 @@ impl Research {
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"approvable-research","effect":"allow","subjects":{"any":true},"actions":["capability.request","capability.approve"],"resources":{"kinds":["research"]}}));
 		crate::common::replace_policy(&self.c.f.store, "acme", self.c.policy.clone()).await;
 	}
-	/// Registers `research@3.1.0`, which binds only Web search, at the
-	/// current policy revision.
 	async fn register_search_only_agent(&mut self) {
 		let node = self.c.f.config.node_id.clone();
 		self.c.policy["subjects"]

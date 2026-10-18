@@ -444,7 +444,6 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	.await
 	.unwrap();
 	assert_eq!(count, 1);
-	// A fresh task's scoped admission records the grant without a Run.
 	let (status, candidate) = request(
 		&aa,
 		&at,
@@ -520,7 +519,6 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		.await
 	}
 	.unwrap();
-	// Admission records the grant; only activation queues a Run.
 	assert_eq!((runs, admissions), (0, 1));
 	for f in [&a, &b] {
 		let count: i64 = sqlx::query_scalar(

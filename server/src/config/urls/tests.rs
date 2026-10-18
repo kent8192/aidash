@@ -113,7 +113,6 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		.filter(|(method, path)| !actual.contains(&(method.to_string(), path.to_string())))
 		.collect();
 	assert_eq!(missing, Vec::<(&str, &str)>::new());
-	// Unscoped execution routes are gone (ADR 0043).
 	let removed: Vec<_> = [
 		("POST", "/federation/v0.1/control"),
 		("POST", "/federation/v0.1/offers"),

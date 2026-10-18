@@ -136,8 +136,6 @@ pub(super) async fn setup_endpoint_policy(
 	// The model and embedding fixture is a Keyless endpoint on loopback (ADR 0036).
 	store.keyless.permit_origin_of(endpoint).unwrap();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
-	// The Tenant's root record is written below without Tenant creation, so its
-	// built-ins are seeded here (ADR 0033).
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
 		.await

@@ -12,7 +12,6 @@ for (const context of [
   test(`instructionless generation requires instructional context (${context.adapter})`, async ({
     page,
   }) => {
-    // Generation draws on the definitions the subject's Tenant approved.
     const subject = {
       kind: "subject",
       tenant: "fixture-tenant",

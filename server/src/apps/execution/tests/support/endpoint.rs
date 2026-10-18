@@ -236,8 +236,6 @@ pub async fn subject(
 	client
 }
 
-/// A subject of the `endpoint` Tenant allowed every action, for suites that
-/// call Tenant routes such as the Registry.
 #[allow(dead_code)]
 pub async fn tenant_subject(fixture: &EndpointFixture, name: &str) -> Arc<APIClient> {
 	subject(
@@ -248,8 +246,6 @@ pub async fn tenant_subject(fixture: &EndpointFixture, name: &str) -> Arc<APICli
 	.await
 }
 
-/// `alice` of the `acme` Tenant (see `tenant_token`) as a client and a token,
-/// for suites that do work a Deployment Administrator no longer does.
 #[allow(dead_code)]
 pub async fn tenant_member(fixture: &EndpointFixture) -> (Arc<APIClient>, String) {
 	let token = tenant_token(&fixture.runtime.store, "acme").await;
@@ -261,8 +257,6 @@ pub async fn tenant_member(fixture: &EndpointFixture) -> (Arc<APIClient>, String
 	(Arc::new(client), token)
 }
 
-/// Approves a version in a Tenant's catalog through the maintenance primitive;
-/// Registry reads by subjects see approved versions only.
 #[allow(dead_code)]
 pub async fn approve(fixture: &EndpointFixture, tenant: &str, id: &str, version: &str) {
 	aidash_server::authorization::Authorization {
@@ -294,7 +288,6 @@ pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
 pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 	let model = format!("{id}-fixture-model");
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
-	// Agent defaults bind built-ins, which a Tenant holds once seeded.
 	fixture.runtime.registry.seed(&tenant).await.unwrap();
 	for (kind, key, config) in [
 		(

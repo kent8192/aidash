@@ -355,7 +355,6 @@ async fn terminal_heartbeat_uses_claimed_run_and_cancels_lost_work(leases: Lease
 	assert_eq!(*leases.trace.lock().unwrap(), ["renew"]);
 }
 
-/// Terminal Runs whose run messages wait for delivery to their Home.
 struct Burst(Mutex<VecDeque<RunMetadata>>);
 #[async_trait]
 impl TerminalRepository for Burst {
@@ -409,7 +408,6 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(leases: Leases) 
 		30,
 		stopping,
 	));
-	// Shorter than the loop's idle sleep, so one sleep per Run cannot fit.
 	let drained = tokio::time::timeout(Duration::from_millis(250), async {
 		while !repository.0.lock().unwrap().is_empty() {
 			tokio::time::sleep(Duration::from_millis(1)).await;

@@ -97,7 +97,6 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 		assert!(rejected.1.to_string().contains("NUL"));
 	}
 	let key = Uuid::new_v4();
-	// Reference Document registration is a Tenant route (ADR 0029).
 	assert_eq!(
 		personal(&app.deployment_administrator, key, input.clone())
 			.await
@@ -148,8 +147,6 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");
 	assert_eq!(personal(subject, Uuid::new_v4(), invalid).await.0, 400);
-	// A registered version runs once the Tenant approves it and its graph;
-	// approving the agent version makes it a subject of the Tenant (ADR 0062).
 	let model = &entry.config["model"];
 	let approvals: Vec<Value> = (large_documents.then(|| model.clone()))
 		.into_iter()

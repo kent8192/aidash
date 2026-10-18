@@ -45,7 +45,6 @@ async fn observe(pool: &sqlx::PgPool) -> BTreeMap<String, Observed> {
 		.collect()
 }
 
-/// The tables #243 keys by `(tenant, id, version)` (ADR 0029).
 const REGISTRY_KEYED_BY_TENANT: &[&str] = &[
 	"agent_draft_registrations",
 	"agent_knowledge",

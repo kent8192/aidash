@@ -152,8 +152,6 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.execute(store.pool.driver())
 		.await
 		.unwrap();
-	// Admitted Runs of one workspace share its execution queue, so the healthy
-	// Run gets its own workspace.
 	let healthy_workspace = store
 		.create_workspace(&ACME, "alice", "Healthy", "Continue")
 		.await

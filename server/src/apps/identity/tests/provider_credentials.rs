@@ -983,7 +983,6 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		);
 	}
 	f.context.set_singleton(f.runtime.clone());
-	// Workbench drafts belong to a subject of the Tenant (ADR 0043).
 	let actor = reinhardt::test::fixtures::api_client_from_url(&f.server.url);
 	let issued = aidash_server::authorization::Authorization {
 		pool: f.runtime.store.pool.clone(),

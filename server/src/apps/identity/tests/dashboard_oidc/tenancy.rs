@@ -865,7 +865,6 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	assert_eq!(status, 200, "{overview}");
 	let actions = overview["actions"].as_array().unwrap();
 	assert_eq!(actions.len(), 13, "{overview}");
-	// Registry actions are allowed on the Tenant's collection.
 	for action in ["registry.create", "catalog.approve", "marketplace.install"] {
 		assert!(actions.contains(&json!(action)), "{action}: {overview}");
 	}

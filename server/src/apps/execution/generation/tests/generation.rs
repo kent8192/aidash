@@ -813,7 +813,6 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let endpoint = server.url.clone();
 
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	// task_assign is an ordinary built-in of every Tenant; it needs no approval.
 	let assignment_tool = json!({"id":"aidash.task_assign","version":"1.0.0"});
 	let mut spec = definition(&app, &token).await;
 	spec["approval_required"] = json!(false);

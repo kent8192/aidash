@@ -2,7 +2,6 @@
 #[path = "support/legacy.rs"]
 mod common;
 
-/// Fixtures own their workspaces in this Tenant (ADR 0043).
 static ACME: std::sync::LazyLock<aidash_application::tenancy::TenancyScope> =
 	std::sync::LazyLock::new(|| aidash_application::tenancy::TenancyScope::tenant("acme").unwrap());
 

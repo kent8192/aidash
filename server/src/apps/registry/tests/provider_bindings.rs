@@ -168,7 +168,6 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		.await
 		.unwrap();
 	let operations = aidash_application::registry::system::operations().collect::<Vec<_>>();
-	// The Sandboxed and research tools the Deployment offers are built-ins too.
 	let validation = aidash_server::bootstrap::registry_validation();
 	let offered: usize = aidash_application::registry::system::packages::offered(
 		&validation,

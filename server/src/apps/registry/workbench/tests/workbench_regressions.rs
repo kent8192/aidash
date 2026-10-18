@@ -64,8 +64,6 @@ impl Workbench {
 		result
 	}
 
-	/// Approves versions in one request; the approvals route admits a whole
-	/// dependency closure together (ADR 0062).
 	async fn approve(&self, references: &[Value]) {
 		let approvals: Vec<Value> = references
 			.iter()
@@ -79,7 +77,6 @@ impl Workbench {
 		.await;
 	}
 
-	/// The policy revision, which approving an agent version advances.
 	async fn policy_revision(&self) -> i64 {
 		aidash_server::authorization::Authorization {
 			pool: self.f.store.pool.clone(),
@@ -118,8 +115,6 @@ impl Workbench {
 		panic!("test session did not finish: {started}");
 	}
 
-	/// Polls the session as `subject` with a credential issued now, so
-	/// revoking the session's own credential does not hide the outcome.
 	async fn observed_finished(&self, started: &Value, subject: &str) -> Value {
 		let observer = aidash_server::authorization::Authorization {
 			pool: self.f.store.pool.clone(),
@@ -659,7 +654,6 @@ async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
 	let (wb, app) = revoked_workbench;
 	let (status, result) = request(&app, &wb.token, "PUT", &wb.path(), json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[],"release_notes":"Must not commit"})).await;
 	assert_eq!(status, 401, "revoked actor: {result}");
-	// The stored draft, read without the revoked credential.
 	let (revision, release_notes): (i64, String) =
 		sqlx::query_as("SELECT revision, release_notes FROM agent_drafts WHERE id = $1")
 			.bind(uuid::Uuid::parse_str(wb.draft["id"].as_str().unwrap()).unwrap())
@@ -765,7 +759,6 @@ async fn hidden_incident_backlog(
 	if other_tenant {
 		common::tenant_root(&wb.f, "other").await;
 		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
-		// The other Tenant holds the same version in its own Registry.
 		let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 		let other = aidash_domain::tenancy::TenantName::new("other").unwrap();
 		for id in ["fixture-model", "fixture-tool"] {
@@ -1549,7 +1542,6 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 		Ok(result) => result.unwrap(),
 		Err(_) => mutation.await.unwrap(),
 	};
-	// A transferred draft's sessions belong to its new owner.
 	let observer = if change == "transfer" { "bob" } else { "alice" };
 	let finished = wb.observed_finished(&started, observer).await;
 	assert!(

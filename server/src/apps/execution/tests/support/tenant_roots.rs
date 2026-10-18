@@ -6,7 +6,6 @@ use aidash_server::federation::Federation;
 #[allow(dead_code)]
 pub async fn tenant_root(f: &Federation, name: &str) {
 	tenant_root_in(f.store.pool.driver(), name).await;
-	// Tenant creation writes every built-in into the new Registry (ADR 0033).
 	f.registry
 		.seed(&aidash_domain::tenancy::TenantName::new(name).unwrap())
 		.await
@@ -43,9 +42,6 @@ pub async fn tenant_root_in(pool: &sqlx::PgPool, name: &str) {
 		.expect("the Tenant root record is written");
 }
 
-/// Writes a Tenant whose policy allows its subjects every action, seeds its
-/// built-ins and returns its scope; a Tenant whose policy exists is reused. Every workspace belongs to a Tenant
-/// (ADR 0043), so Store fixtures own their workspaces in one.
 #[allow(dead_code)]
 pub async fn tenant_scope(
 	store: &aidash_server::store::Store,
@@ -54,7 +50,6 @@ pub async fn tenant_scope(
 	tenant_root_in(store.pool.driver(), name).await;
 	let tenant = aidash_domain::tenancy::TenantName::new(name).unwrap();
 	let scope = aidash_application::tenancy::TenancyScope::Tenant(tenant.clone());
-	// Suites may share one fixture Tenant between a fixture and its tests.
 	let written: bool =
 		sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_bundles WHERE tenant = $1)")
 			.bind(name)
@@ -85,9 +80,6 @@ pub async fn tenant_scope(
 	scope
 }
 
-/// Queues a local Run of `agent` for `task` through the claim primitive, the
-/// persistence step of a subject's admission. No Run is accepted without one
-/// (ADR 0043).
 #[allow(dead_code)]
 pub async fn local_run(
 	store: &aidash_server::store::Store,
@@ -96,7 +88,6 @@ pub async fn local_run(
 	agent: &aidash_server::registry::Entry,
 ) -> aidash_server::domain::Run {
 	let owner = aidash_server::domain::qualified_agent(&store.node_id, &agent.id, &agent.version);
-	// A task the agent already claimed has its Run.
 	if task.owner.as_deref() != Some(owner.as_str()) {
 		store
 			.claim(scope, task.id, task.revision, &owner, agent)
@@ -112,9 +103,6 @@ pub async fn local_run(
 		.expect("the claim queues a Run")
 }
 
-/// Writes the Run a scoped receiver admission records for `task` from `home`:
-/// the workspace and task live at the home Node. Legacy acceptance of remote
-/// Runs is gone (ADR 0043), so fixtures write the row the admission would.
 #[allow(dead_code)]
 pub async fn remote_run(
 	store: &aidash_server::store::Store,
@@ -168,9 +156,6 @@ pub async fn remote_run(
 		.expect("the remote Run is readable")
 }
 
-/// Writes the Tenant as [`tenant_scope`] does and returns a Subject Credential
-/// for its `alice`, for suites that call Tenant routes and do work, which a
-/// Deployment Administrator no longer does (ADR 0043).
 #[allow(dead_code)]
 pub async fn tenant_token(store: &aidash_server::store::Store, tenant: &str) -> String {
 	tenant_scope(store, tenant).await;
@@ -183,9 +168,6 @@ pub async fn tenant_token(store: &aidash_server::store::Store, tenant: &str) -> 
 	.token
 }
 
-/// Makes `agent` runnable in `tenant`, as its Tenant Administrator would: the
-/// agent is a subject of the Tenant's policy, and it and every definition it
-/// names are approved in the catalog (built-ins need no approval).
 #[allow(dead_code)]
 pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::registry::Entry) {
 	let authorization = aidash_server::authorization::Authorization {
@@ -227,7 +209,6 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 		pending.extend(aidash_application::authorization::catalog::approvals::dependencies(&entry));
 		order.push(reference);
 	}
-	// Dependencies before the definitions that name them.
 	for reference in order.into_iter().rev() {
 		let current = authorization
 			.catalog(tenant)
@@ -253,8 +234,6 @@ pub async fn approve_agent(f: &Federation, tenant: &str, agent: &aidash_server::
 	}
 }
 
-/// Claims `task` for `agent` as the Tenant's `alice`, the scoped admission that
-/// gives a local Run its execution grant (ADR 0043), and returns the Run.
 #[allow(dead_code)]
 pub async fn admitted_run(
 	f: &Federation,
@@ -297,8 +276,6 @@ pub async fn admitted_run(
 		.expect("admission queues a Run")
 }
 
-/// Replaces a Tenant's policy at its current revision, keeping the agent
-/// subjects that Catalog Approvals of agent versions added (ADR 0062).
 #[allow(dead_code)]
 pub async fn replace_policy(
 	store: &aidash_server::store::Store,

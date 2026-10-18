@@ -1,8 +1,4 @@
-//! Acceptance of the per-Tenant Registry (#243) and of agents that become
-//! runnable through their Catalog Approval (#355). Every step after the policy
-//! set-up acts through a Tenant subject's credential, never the Deployment
-//! Administrator's.
-#![allow(clippy::disallowed_methods)] // Assertions read the database outside a tenancy scope.
+#![allow(clippy::disallowed_methods)]
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
 #[path = "../../execution/tests/support/endpoint.rs"]
@@ -21,8 +17,6 @@ use uuid::Uuid;
 
 const NODE: &str = "aidash://endpoint-test";
 
-/// A Tenant whose policy is the initial one, with `owner` administering it,
-/// `member` in `members`, and `reader` holding only `registry.read`.
 async fn tenant(fixture: &EndpointFixture, name: &str) {
 	tenant_root(&fixture.runtime, name).await;
 	let mut bundle = initial_policy(name, false).unwrap();
@@ -274,7 +268,6 @@ async fn another_tenant_cannot_read_reference_or_approve_the_definition(
 		.await,
 		0
 	);
-	// The same identifier stays free in the other Tenant's Registry.
 	assert_eq!(register(&globex, &model("model")).await.0, 200);
 }
 

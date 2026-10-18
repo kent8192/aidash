@@ -36,8 +36,6 @@ fn decoded(response: TestResponse) -> (u16, Value) {
 	(response.status_code(), response.json_value().unwrap())
 }
 async fn deployment_administrator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
-	// Registry and catalog routes are Tenant routes (ADR 0029); fixtures seed
-	// them through the persistence and maintenance primitives instead.
 	if path == "/api/registry" {
 		let entry = app
 			.runtime
@@ -262,8 +260,6 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	);
 }
 
-/// Binding a foreign agent needs its closure, which only the removed legacy
-/// peer reads imported (ADR 0043): an enabled peer does not make one available.
 #[rstest::rstest]
 #[tokio::test]
 async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import(

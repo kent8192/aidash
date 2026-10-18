@@ -31,8 +31,6 @@ const unapproved = { approval: null, history: [] };
 type Version = ReturnType<typeof registryVersion>;
 type Decision = { path: string; body: Record<string, unknown> };
 
-/** Signs in with `access`; `/api/state` lists only what discovery sees, the
- *  approved and built-in versions, and every decision is recorded. */
 async function dashboard(
   page: Page,
   access: object,
@@ -212,7 +210,6 @@ test("every version shows its approval state and newest-first history", async ({
     /Withdrawn.*Revision 2 · bob/,
     /Approved.*Revision 1 · alice/,
   ]);
-  // Without catalog.approve the state is shown, not the decision.
   await expect(approval(page).getByRole("button")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await row(page, "model").click();

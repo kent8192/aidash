@@ -796,7 +796,6 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.unwrap()
 			.failure_delivery()
 	);
-	// The Tenant withdraws or restores its Catalog Approval.
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -832,7 +831,6 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 			.status
 			.is_terminal()
 	);
-	// The Tenant withdraws or restores its Catalog Approval.
 	aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	}

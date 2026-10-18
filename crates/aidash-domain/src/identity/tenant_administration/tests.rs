@@ -68,7 +68,6 @@ fn membership_changes_retain_groups_outside_the_assignable_boundary(mut bundle: 
 		replace_assignable_memberships(&mut bundle, "root", &set(&["administrators"])),
 		Err(Error::Invalid(_))
 	));
-	// Agent subjects move between Assignable Groups too (ADR 0062).
 	assert!(replace_assignable_memberships(&mut bundle, "bot", &set(&["members"])).unwrap());
 	assert!(bundle.subjects["bot"].groups.contains("members"));
 }

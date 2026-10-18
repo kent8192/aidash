@@ -270,8 +270,6 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	entry.binding_normalization = None;
 	entry.config["bindings"] = json!([]);
 	entry.config["remove_default"] = json!([]);
-	// The Deployment offers the Sandboxed groups it can run as built-ins of
-	// every Tenant, which the Tenant approves with their members (ADR 0034).
 	let offered: Vec<aidash_server::registry::Entry> = f
 		.registry
 		.list(

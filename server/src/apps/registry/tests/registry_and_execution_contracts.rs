@@ -788,7 +788,6 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 		.await
 		.unwrap()
 		.workspace_id;
-	// Keys are scoped per actor; a second subject of the Tenant reuses one.
 	let mut policy = common::policy(&f.config.node_id);
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	let authorization = aidash_server::authorization::Authorization {

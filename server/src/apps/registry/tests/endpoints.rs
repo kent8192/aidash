@@ -40,7 +40,6 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 		.post("/api/registry", &skill, "json")
 		.await
 		.unwrap();
-	// Subjects read the versions their Tenant approves.
 	crate::endpoint::approve(&app, "endpoint", "endpoint-skill", "1.0.0").await;
 	let found = registrar
 		.get("/api/registry/endpoint-skill/1.0.0")
@@ -177,7 +176,6 @@ async fn personal_documents_commit_once_and_remain_private_on_public_registry_re
 			.unwrap(),
 		200,
 	);
-	// Subjects read the versions their Tenant approves, with their graph.
 	let source = created["config"]["bindings"]
 		.as_array()
 		.unwrap()

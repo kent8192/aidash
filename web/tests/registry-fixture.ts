@@ -1,14 +1,11 @@
 import type { Page } from "@playwright/test";
 
-/** A member of the `acme` Tenant: definitions belong to Tenants (ADR 0029). */
 export const tenantSubject = {
   kind: "subject",
   tenant: "acme",
   subject: "alice",
 } as const;
 
-/** The administration overview, listing the actions the server computed for
- *  the caller; `assignable` is listed only for a Tenant Administrator. */
 export async function routeTenantActions(
   page: Page,
   actions: readonly string[],
@@ -30,7 +27,6 @@ export async function routeTenantActions(
   );
 }
 
-/** One `GET /api/registry/versions` item, approved unless overridden. */
 export function registryVersion(
   entry: { kind: string },
   overrides: Record<string, unknown> = {},
@@ -52,7 +48,6 @@ export function registryVersion(
   };
 }
 
-/** Serves the Tenant's Registry versions; `versions` is read per request. */
 export async function routeRegistryVersions(
   page: Page,
   versions: () => unknown[],

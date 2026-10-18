@@ -257,7 +257,6 @@ export async function setup(
     remoteNativeCollision?: boolean;
     /** Run-published text citing evidence, beside a person's pasted marker. */
     citations?: boolean;
-    /** The actions the subject holds in `acme`; members create definitions. */
     tenantActions?: string[];
   } = {},
 ) {

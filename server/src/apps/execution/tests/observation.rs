@@ -27,7 +27,6 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	let app = endpoint.await;
 	endpoint_fixtures::register_fixture_agent(&app, "lead").await;
 	let f = &app.runtime;
-	// Deployment Administrators no longer create work (ADR 0043).
 	let scope = endpoint_fixtures::tenant_scope(&f.store, "acme").await;
 	let workspace: Workspace = f
 		.store

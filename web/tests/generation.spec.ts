@@ -99,7 +99,6 @@ test("generation dashboard manages policy, approval, completion and retained his
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
-    // Definitions belong to the Tenant: its subject registers and approves them.
     await api(
       "/api/registry",
       {

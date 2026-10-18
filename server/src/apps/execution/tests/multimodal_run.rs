@@ -875,7 +875,6 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.as_str(),
 		"COMPLETED"
 	);
-	// Media batching is the same for every subject; alice converses here.
 	let member = token.clone();
 	let (status, created) = request(
 		&app,

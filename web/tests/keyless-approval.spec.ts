@@ -40,7 +40,6 @@ const pendingCatalog = entry("pending-catalog-model", "model", {
 });
 const pending = { approval: null, history: [] };
 
-/** A Tenant subject's Registry; `/api/state` lists only approved versions. */
 async function registry(page: Page, actions: string[]) {
   const approved = new Set([approvedKeyless.id]);
   const versions = () =>
@@ -115,7 +114,6 @@ test("Catalog Approval says that a Keyless definition carries no data retention 
 }) => {
   await registry(page, ["catalog.approve"]);
 
-  // The Registry list shows where a Keyless definition sends requests.
   await expect(
     page
       .locator(".entity-card")
@@ -123,8 +121,6 @@ test("Catalog Approval says that a Keyless definition carries no data retention 
       .locator(".keyless-origin"),
   ).toHaveText("No retention guarantee · http://ollama.lan:11434");
 
-  // Reviewing a Keyless definition to approve warns before the decision,
-  // and the warning is announced, not only drawn.
   await open(page, "pending-keyless-embedding");
   const notice = approval(page).getByRole("status").filter({
     hasText: "no zero-data-retention guarantee",

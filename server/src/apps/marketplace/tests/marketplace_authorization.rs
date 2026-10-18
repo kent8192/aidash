@@ -43,8 +43,6 @@ async fn policy(f: &Federation, tenant: &str, revision: i64, mut value: Value) {
 		common::tenant_root(f, tenant).await;
 		0
 	} else {
-		// Approving an agent version makes it a subject and advances the
-		// revision (ADR 0062); a replacement keeps those agent subjects.
 		let current = authorization.snapshot(tenant).await.unwrap();
 		let existing = serde_json::to_value(&current.bundle).unwrap();
 		for (name, subject) in existing["subjects"].as_object().unwrap() {
@@ -81,8 +79,6 @@ fn trace_errors() {
 		.try_init();
 }
 async fn approve(f: &Federation, tenant: &str, entry: &EntityRef) {
-	// Each Tenant approves its own copy of a definition (ADR 0029); a fixture
-	// approving one registered elsewhere first copies it into this Tenant.
 	let name = aidash_domain::tenancy::TenantName::new(tenant).unwrap();
 	if f.registry
 		.get(&name, &entry.id, &entry.version)
@@ -137,7 +133,6 @@ async fn activate(
 	catalog: i64,
 	enabled: bool,
 ) -> (u16, Value) {
-	// Activation is the Tenant's own Catalog Approval, so its subject acts.
 	let approver = Authorization {
 		pool: f.store.pool.clone(),
 	}
@@ -2824,8 +2819,6 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	.unwrap();
 
-	// Activation is a Tenant's Catalog Approval; only administration acts
-	// as a Deployment Administrator.
 	let deployment_administrator = operation == "administration";
 	if deployment_administrator {
 		{

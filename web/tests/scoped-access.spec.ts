@@ -101,7 +101,6 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
-    // Definitions belong to the Tenant: its subject registers and approves them.
     for (const [kind, entryId, config] of [
       [
         "model",
@@ -143,7 +142,6 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         credential.token,
       );
     }
-    // A version is approved only after the versions it names.
     for (const entryId of [`${id}-model`, id]) {
       await api(
         `/api/authorization/${tenant}/catalog`,

@@ -146,7 +146,6 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 		json!({"expected_revision":3,"bundle":policy}),
 	)
 	.await;
-	// The destination Tenant withdraws its approval of the agent version.
 	aidash_server::authorization::Authorization {
 		pool: b.runtime.store.pool.clone(),
 	}

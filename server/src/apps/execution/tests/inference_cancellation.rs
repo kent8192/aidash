@@ -155,7 +155,6 @@ async fn cancel_stalled_inference(
 	// The fixture uses separate notification objects for controller and worker.
 
 	let (_, subject_token, scoped_task) = bootstrap(&f, &app, &server.endpoint).await;
-	// Only a subject's admitted Run executes (ADR 0043).
 	let (token, task_id) = (subject_token, scoped_task.to_string());
 	let (status, claimed) = request(
 		&app,

@@ -29,8 +29,6 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 		&json!({"title":"Foreign","description":"Other workspace"}),
 	)
 	.await;
-	// A subject naming a task outside the workspace, or one that does not
-	// exist, is refused as forbidden, which does not reveal whether it exists.
 	for (target, status) in [(json!(Uuid::new_v4()), 403), (foreign["id"].clone(), 403)] {
 		for field in ["parent_id", "dependencies"] {
 			let mut input = json!({"title":"Rejected","description":"Invalid edge"});

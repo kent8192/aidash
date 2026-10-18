@@ -756,7 +756,6 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	// Registered and approved only in another Tenant.
 	let foreign = json!({"tenant":"globex","subjects":{"carol":{"kind":"user"}},"policies":[{"id":"globex-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	crate::common::tenant_root(&d.c.f, "globex").await;
 	let (status, result) = request(

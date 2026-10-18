@@ -324,7 +324,6 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 		.get_with_db(&mut db)
 		.await
 		.unwrap();
-	// The entry records the subject that wrote it and its credential.
 	assert_eq!(record.authority.0["subject"], "member");
 	assert!(record.authority.0["credential"].is_string());
 }

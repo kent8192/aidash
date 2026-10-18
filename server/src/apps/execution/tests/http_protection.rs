@@ -223,8 +223,6 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		invalid.json_value().unwrap()["error"],
 		"invalid request fields: title"
 	);
-	// Deployment Administrators no longer create work (ADR 0043); the
-	// Tenant's workspaces produce the events the stream resumes over.
 	let scope = common::tenant_scope(&federation.store, "acme").await;
 	federation
 		.store

@@ -124,7 +124,6 @@ pub fn pair(
 				200
 			);
 		}
-		// Deployment Administrators no longer create workspaces (ADR 0043).
 		let mut workspaces = vec![];
 		for (node, title) in [(&a, "A"), (&b, "B")] {
 			let scope = tenant_roots::tenant_scope(&node.f.store, "acme").await;

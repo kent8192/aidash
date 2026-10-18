@@ -2,8 +2,6 @@ import { test, expect, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { routeTenantActions } from "./registry-fixture";
 
-/** Alice of Tenant `a`, whose Marketplace lists two pending installations;
- *  each read returns the current fences, and every decision is recorded. */
 async function approvingTenant(page: Page, locale: "en-US" | "ja-JP") {
   await installBearerDashboard(page, "fixture");
   await page.addInitScript(
@@ -180,7 +178,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         approvals: [{ expected_catalog_revision: 8 }],
       },
     });
-    // Revocation clears the retained review content.
     fences.denied = true;
     await reload.click();
     await expect(review.getByRole("alert")).toBeVisible();
@@ -213,7 +210,6 @@ test("Catalog Approval activates one installation with the current approval fenc
       enabled: true,
     },
   });
-  // Nothing approved yet: there is no approval to revoke.
   await expect(
     task.getByRole("button", { name: "Revoke this revision", exact: true }),
   ).toHaveCount(0);
@@ -700,7 +696,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         name: ja ? /最初のrevision/ : /First revision/,
       }),
     ).toBeVisible();
-    // Each Tenant approves its own installations; this view only lists them.
     await expect(
       panel.getByRole("button", {
         name: ja ? "承認して有効化" : "Approve and activate",

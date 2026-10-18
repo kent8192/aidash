@@ -629,7 +629,6 @@ async fn ordered_receiver_agent(
 	ba: &common::TestApplication,
 	source_policy: &mut Value,
 ) {
-	// Registry and catalog writes are a Tenant subject's (ADR 0029).
 	let receiver_token = common::tenant_token(&b.store, "acme").await;
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
 	let fetch = |id: &'static str| async move {
@@ -3056,8 +3055,6 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	p.close().await;
 }
 
-/// A receiver registers a foreign generation's definition unapproved (P1 Q23),
-/// so its Tenant approves the version before a grant may name it.
 async fn approve_foreign_generated(b: &Federation, ba: &common::TestApplication, agent: &Value) {
 	let (status, body) = request(
 		ba,
@@ -3366,7 +3363,6 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 		pending["request_id"].as_str().unwrap()
 	);
 	let decision = json!({"action":"approve","reason":"Approve the exact foreign preparation"});
-	// The receiver Tenant's subject approves; a Deployment Administrator cannot.
 	let approver = common::tenant_token(&p.b.store, "acme").await;
 	for _ in 0..2 {
 		let (status, body) = request(&p.ba, &approver, "POST", &control, decision.clone()).await;
@@ -3551,7 +3547,6 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 		(0, 0, 0),
 		"only unused allocations are released, exactly once"
 	);
-	// Only a Tenant subject may approve a generation; its late approval conflicts.
 	let (status, _) = request(
 		&p.ba,
 		&common::tenant_token(&p.b.store, "acme").await,
@@ -4187,7 +4182,6 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 	let artifact = snapshot.artifacts.first().unwrap();
 	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",task.workspace_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
-	// A Deployment Administrator has no untenanted work of its own (ADR 0043).
 	let (status, independent) = request(
 		&p.aa,
 		&p.a.config.api_token,

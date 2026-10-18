@@ -18,7 +18,6 @@ use uuid::Uuid;
 pub(super) struct DeploymentAdministratorFixture {
 	pub(super) inner: Fixture,
 	pub(super) principal: Principal,
-	/// The Tenant a subject was decided `catalog.approve` in.
 	pub(super) approving: Option<String>,
 	pub(super) approved: BTreeSet<(String, String)>,
 	requests: BTreeMap<String, Value>,

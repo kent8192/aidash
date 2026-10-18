@@ -29,7 +29,6 @@ use futures_util::{
 };
 use rstest::fixture;
 
-/// Store fixtures own their workspaces in this Tenant (ADR 0043).
 static ACME: std::sync::LazyLock<aidash_application::tenancy::TenancyScope> =
 	std::sync::LazyLock::new(|| aidash_application::tenancy::TenancyScope::tenant("acme").unwrap());
 
@@ -269,14 +268,11 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		)
 		.unwrap(),
 	));
-	// With a key, the workspace's Tenant salts the Run (ADR 0043: every
-	// workspace belongs to a Tenant).
 	let salted_claim = salted
 		.claim(&ACME, task.id, 0, &owner, &agent)
 		.await
 		.unwrap();
 	assert_eq!(salted_claim.revision, 1);
-	// Legacy Agents are unaffected by the missing key.
 	let other = store
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
@@ -577,7 +573,6 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		.create_workspace(&ACME, "alice", "Controls", "Keep human decisions durable")
 		.await
 		.unwrap();
-	// A local Run exists once its task is claimed (ADR 0043).
 	let task = store
 		.create_task(&ACME, workspace.id, &new_task(), "human", None)
 		.await
@@ -754,8 +749,6 @@ fn federation(
 	.shared()
 }
 
-/// A task its agent runs: alice admits the Run, which gives it the execution
-/// grant every local Run needs (ADR 0043).
 async fn running_task(
 	f: &Federation,
 	agent: &Entry,
@@ -771,8 +764,6 @@ async fn running_task(
 		.unwrap();
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
 	if parent.is_some() {
-		// A child is claimed under its parent Run's authority, not a fresh
-		// subject admission, which refuses a child behind its active parent.
 		store
 			.claim(&ACME, task.id, task.revision, &owner, agent)
 			.await
@@ -1953,7 +1944,6 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	// Registry writes and conversations are a Tenant subject's (ADR 0043).
 	common::approve_agent(&f, "acme", &agent).await;
 	let token = common::tenant_token(&store, "acme").await;
 	let app = _application.application.clone();
@@ -2336,15 +2326,12 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		)
 		.await
 		.unwrap();
-	// The delegated agent runs in the Tenant too, so it is approved and a subject.
 	common::approve_agent(&f, "acme", &agent).await;
 	let workspace = store
 		.create_workspace(&ACME, "alice", "Agent tool", "Await delegated results")
 		.await
 		.unwrap();
 	let task = running_task(&f, &delegating, workspace.id, None).await;
-	// A local Run delegates only under its worker authority (ADR 0043), so the
-	// agent tool runs through the worker, once without and once with a null parent.
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: [
 			json!({"title":"Child","description":"Delegated work"}),

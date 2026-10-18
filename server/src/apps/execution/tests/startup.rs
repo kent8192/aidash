@@ -12,8 +12,6 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 ) {
 	// Arrange
 	let mut app = native_server.await;
-	// Work belongs to a subject of a Tenant (ADR 0043); the process shares
-	// the fixture's database.
 	let store = aidash_server::store::Store::from_pool(
 		app.database.connection.clone().into_postgres().unwrap(),
 		"aidash://manage-fixture".into(),
