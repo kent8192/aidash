@@ -243,7 +243,9 @@ impl CitedEvidence {
 		let context = (!document.lines.is_empty()).then(|| {
 			SnapshotContext::around(&document.lines, fragment.line_start, fragment.line_end)
 		});
-		let expired = fragment.text.is_empty();
+		// Only the account-terms purge empties a delivered passage, and it
+		// purges the snapshot too; a fresh passage may be empty.
+		let expired = fragment.text.is_empty() && document.purged.is_some();
 		Self {
 			fragment,
 			requested_url: document.requested_url.clone(),

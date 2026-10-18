@@ -222,18 +222,19 @@ impl EvidenceStore for Evidence {
 					.begin(&self.scope)
 					.await
 					.and_then(crate::database::native::Transaction::into_executor)?;
-				// An attempt dispatched before its Run was revoked records no
-				// evidence: it settles, still charged, with a tombstone, which
-				// is also what its caller returns and persists.
+				// An attempt dispatched before its Run was revoked, or before
+				// account terms expired it, records no evidence: it settles,
+				// still charged, with a tombstone, which is also what its
+				// caller returns and persists.
 				lock(tx.as_mut(), &run_lock(run)).await?;
-				let revoked = if ResearchRevocation::exists(tx.as_mut(), run).await? {
+				let replaced = if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					ResearchAttempt::operation_of(tx.as_mut(), run, key)
 						.await?
 						.map(revoked_result)
 				} else {
-					None
+					ResearchAttempt::expired_tombstone(tx.as_mut(), run, key).await?
 				};
-				let result = revoked.as_ref().unwrap_or(result);
+				let result = replaced.as_ref().unwrap_or(result);
 				if !ResearchAttempt::settle(tx.as_mut(), run, key, outcome, result).await? {
 					return Err(crate::Error::Conflict(
 						"research attempt is not dispatched".into(),

@@ -1058,6 +1058,66 @@ impl ResearchAttempt {
 			.pop()
 			.and_then(|record| Operation::parse(&record.operation)))
 	}
+
+	/// The tombstone `key`'s result becomes once account terms expired its
+	/// attempt, which they may do before the attempt settles; `None` while
+	/// the attempt keeps its result. Call under the Run's research lock.
+	pub(crate) async fn expired_tombstone(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+	) -> Result<Option<Value>> {
+		Ok(Self::objects()
+			.filter(Self::field_run_id().eq(run))
+			.filter(Self::field_invocation_key().eq(key.to_owned()))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.filter(|record| {
+				record.purged_at.is_some()
+					&& record.purge_reason.as_deref() == Some(PurgeReason::AccountTerms.as_str())
+			})
+			.and_then(|record| Operation::parse(&record.operation))
+			.map(aidash_domain::research::expiry::tombstone))
+	}
+
+	/// The tombstone a research result stored now becomes when account terms
+	/// already expired the Provider result it carries: its own attempt's, or
+	/// the Document snapshot it was built from. Takes the Run's research lock,
+	/// so an expiry either finished before and is seen here, or runs after
+	/// and replaces what this transaction stores. `None` for other results.
+	pub(crate) async fn expired_result(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+		result: &Value,
+	) -> Result<Option<Value>> {
+		let Some(operation) = aidash_domain::research::revocation::result_operation(result) else {
+			return Ok(None);
+		};
+		lock(tx, &format!("research-run:{run}")).await?;
+		if let Some(tombstone) = Self::expired_tombstone(tx, run, key).await? {
+			return Ok(Some(tombstone));
+		}
+		let Some(document) = result["data"]["document_id"]
+			.as_str()
+			.and_then(|id| id.parse::<Uuid>().ok())
+		else {
+			return Ok(None);
+		};
+		let expired = ResearchSnapshot::objects()
+			.filter(ResearchSnapshot::field_run_id().eq(run))
+			.filter(ResearchSnapshot::field_id().eq(document))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.is_some_and(|snapshot| {
+				snapshot.purge_reason.as_deref() == Some(PurgeReason::AccountTerms.as_str())
+			});
+		Ok(expired.then(|| aidash_domain::research::expiry::tombstone(operation)))
+	}
 }
 
 /// Replace the stored tool results of research invocations with tombstones,
@@ -1385,6 +1445,11 @@ impl ExpiringAttempts {
 		at: DateTime<Utc>,
 	) -> Result<u64> {
 		lock(tx, &format!("research-run:{}", self.run)).await?;
+		// Revocation dominates later cleanup: a Run revoked after these
+		// attempts were chosen keeps its revoked tombstones (ADR 0046).
+		if ResearchRevocation::exists(tx, self.run).await? {
+			return Ok(0);
+		}
 		let searches = self.keys_of(Operation::Search);
 		let reads = self.keys_of(Operation::Fetch);
 		let all = self
@@ -1441,7 +1506,26 @@ impl ExpiringAttempts {
 				.build(PostgresQueryBuilder);
 			tx.execute(&sql, convert_values(values)).await?;
 		}
-		let mut purged = 0;
+		// An attempt still dispatched holds no result yet, though its Sources
+		// and snapshots may exist. Marked purged, it settles with a tombstone.
+		let (sql, values) = Query::update()
+			.table(Alias::new(ResearchAttempt::table_name()))
+			.value(Alias::new("purged_at"), at)
+			.value(
+				Alias::new("purge_reason"),
+				PurgeReason::AccountTerms.as_str(),
+			)
+			.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+			.and_where(
+				Expr::col("invocation_key").is_in(all.iter().map(|key| Expr::value(key.clone()))),
+			)
+			.and_where(Expr::col("result").is_null())
+			.and_where(Expr::col("purged_at").is_null())
+			.build(PostgresQueryBuilder);
+		let mut purged = tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected;
 		for operation in [Operation::Search, Operation::Fetch, Operation::Find] {
 			let tombstone = aidash_domain::research::expiry::tombstone(operation);
 			// The attempts themselves, and any attempt of the Run whose result

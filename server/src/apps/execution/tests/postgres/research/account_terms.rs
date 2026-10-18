@@ -69,12 +69,12 @@ fn terms(account: &str) -> AccountProfile {
 
 /// Date every attempt of `run` back by `days`, as if retrieved then.
 async fn age(store: &Store, run: Uuid, days: i64) {
+	// Retention counts from settlement, so the completion moves with it.
+	let at = chrono::Utc::now() - chrono::Duration::days(days);
 	let sql = Query::update()
 		.table(Alias::new("research_attempts"))
-		.value(
-			Alias::new("created_at"),
-			chrono::Utc::now() - chrono::Duration::days(days),
-		)
+		.value(Alias::new("created_at"), at)
+		.value(Alias::new("completed_at"), at)
 		.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)

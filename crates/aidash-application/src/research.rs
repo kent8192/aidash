@@ -338,11 +338,21 @@ impl Research<'_> {
 		if let Err(error) = provider.admit(&url) {
 			return Ok(failure(operation, error));
 		}
-		// A service with Research account terms returns Provider results.
+		// A service with Research account terms returns Provider results and
+		// is priced, approved and budgeted like a paid search.
 		let account = match provider.account() {
 			Ok(account) => account,
 			Err(error) => return Ok(failure(operation, error)),
 		};
+		if let Some(account) = &account {
+			let spent = self
+				.store
+				.account_spend(&account.account_id, month_start(Utc::now()))
+				.await?;
+			if !account.admits(spent) {
+				return Ok(failure(operation, Failure::BudgetExhausted));
+			}
+		}
 		let usage = self.store.usage(call.run).await?;
 		if usage.fetch_attempts >= self.limits.fetch_attempts {
 			return Ok(failure(operation, Failure::AttemptLimit));
@@ -360,10 +370,11 @@ impl Research<'_> {
 			destination: host,
 			content: url.to_string(),
 		};
-		let approval = match self
-			.disclose(call, operation, &outbound, Card::default())
-			.await?
-		{
+		let card = Card {
+			attribution: account.as_ref().map(|account| account.attribution()),
+			query: None,
+		};
+		let approval = match self.disclose(call, operation, &outbound, card).await? {
 			Ok(approval) => approval,
 			Err(blocked) => return Ok(blocked),
 		};
@@ -377,10 +388,15 @@ impl Research<'_> {
 					operation,
 					provider: call.provider.into(),
 					destination: outbound.destination,
-					attribution: None,
+					attribution: account.as_ref().map(|account| account.attribution()),
 					retention: account.as_ref().map(RetrievalTerms::of),
 					limits: self.limits,
-					budget: None,
+					budget: account.as_ref().map(|account| Budget {
+						since: month_start(Utc::now()),
+						limit_micro_usd: account
+							.monthly_limit_micro_usd
+							.saturating_sub(account.monthly_base_fee_micro_usd),
+					}),
 					source_url: source.is_none().then(|| url.to_string()),
 				},
 			)

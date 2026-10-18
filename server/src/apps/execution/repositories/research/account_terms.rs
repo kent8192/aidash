@@ -106,18 +106,34 @@ impl ProviderResultRetention for ProviderResults {
 				Alias::new(column),
 			)
 		};
-		let mut due = Expr::col(attempt("created_at")).lte(Expr::value(retrieved_before));
+		// Retention starts when the result was retrieved, at settlement. An
+		// attempt that never settled counts from its dispatch.
+		let retrieved_at = || {
+			Func::coalesce(vec![
+				Expr::col(attempt("completed_at")).into(),
+				Expr::col(attempt("created_at")).into(),
+			])
+		};
+		let mut due = retrieved_at().lte(Expr::value(retrieved_before));
 		if !accounts.is_empty() {
 			due = due.or(Expr::col(attempt("retention_account_id"))
 				.is_in(accounts.iter().map(|account| Expr::value(account.clone()))));
 		}
 		let mut query = Query::select();
 		query
-			.columns(["id", "retention_account_id", "created_at", "retention_days"].map(attempt))
+			.columns(["id", "retention_account_id", "retention_days"].map(attempt))
+			.expr_as(retrieved_at(), Alias::new("retrieved_at"))
 			.from(Alias::new(ResearchAttempt::table_name()))
 			.and_where(Expr::col(attempt("retention_account_id")).is_not_null())
 			.and_where(Expr::col(attempt("purged_at")).is_null())
-			.and_where(Expr::col(attempt("result")).is_not_null())
+			// A settled result, or provider content an unsettled attempt
+			// already stored, which a crash may leave for good.
+			.and_where(
+				Expr::col(attempt("result"))
+					.is_not_null()
+					.or(Expr::exists(produced(ResearchSource::table_name())))
+					.or(Expr::exists(produced(ResearchSnapshot::table_name()))),
+			)
 			// A revoked Run's results are tombstones already (ADR 0046).
 			.and_where(
 				Expr::col(attempt("run_id")).not_in_subquery(
@@ -147,7 +163,7 @@ impl ProviderResultRetention for ProviderResults {
 							account_id: serde_json::from_value(
 								data["retention_account_id"].clone(),
 							)?,
-							retrieved_at: serde_json::from_value(data["created_at"].clone())?,
+							retrieved_at: serde_json::from_value(data["retrieved_at"].clone())?,
 							retention_days: number(&data["retention_days"])
 								.and_then(|days| u16::try_from(days).ok())
 								.unwrap_or(1),
@@ -195,6 +211,25 @@ impl ProviderResultRetention for ProviderResults {
 			.await,
 		)
 	}
+}
+
+/// Rows of `table` that an attempt stored under its invocation key.
+fn produced(table: &str) -> reinhardt::query::SelectStatement {
+	let attempt = |column: &str| {
+		(
+			Alias::new(ResearchAttempt::table_name()),
+			Alias::new(column),
+		)
+	};
+	Query::select()
+		.expr(Expr::value(1_i64))
+		.from(Alias::new(table))
+		.and_where(Expr::col((Alias::new(table), Alias::new("run_id"))).equals(attempt("run_id")))
+		.and_where(
+			Expr::col((Alias::new(table), Alias::new("attempt_key")))
+				.equals(attempt("invocation_key")),
+		)
+		.to_owned()
 }
 
 fn number(value: &serde_json::Value) -> Option<i64> {
