@@ -54,6 +54,8 @@ mod review_lifecycle;
 mod review_pressure;
 #[path = "native_memory/review_regressions.rs"]
 mod review_regressions;
+#[path = "native_memory/retry_cycle.rs"]
+mod retry_cycle;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RecoveryFence {

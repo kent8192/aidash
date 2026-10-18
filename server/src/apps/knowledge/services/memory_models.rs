@@ -33,6 +33,10 @@ pub(crate) struct Models {
 	pub operation: Uuid,
 	pub digest: String,
 	pub run: Option<Uuid>,
+	/// The caller's Retry Cycle (ADR 0057): a native Run's
+	/// `semantic_retry_cycle` or a remote journal record's `cycle`. It is 0
+	/// for work outside a Run, such as engine jobs.
+	pub(crate) cycle: i32,
 	indexing: bool,
 	inference: tokio::sync::Mutex<Authorities>,
 	bank_id: Uuid,
@@ -228,6 +232,7 @@ impl Models {
 			operation,
 			digest,
 			run,
+			cycle: 0,
 			indexing,
 			inference: tokio::sync::Mutex::new(Authorities {
 				runs: run.into_iter().collect(),
@@ -444,8 +449,18 @@ impl Models {
 		}
 		// Every earlier attempt failed or expired, so the operation's own retry
 		// ledger ends the outage retries: a Run pauses as `RetriesExhausted`
-		// instead of failing its Task (#233).
-		if attempts.len() >= self.policy.bounds.max_retries {
+		// instead of failing its Task (#233). Only the current Retry Cycle's
+		// attempts count, so an authorized manual retry gets a fresh ledger
+		// (#291, ADR 0057). A caller still in an older cycle also counts the
+		// newer ones, so it can never reopen a spent ledger.
+		let charged = attempts
+			.iter()
+			.map(|attempt| attempt.try_get::<i32>("cycle"))
+			.collect::<std::result::Result<Vec<_>, _>>()?
+			.into_iter()
+			.filter(|cycle| *cycle >= self.cycle)
+			.count();
+		if charged >= self.policy.bounds.max_retries {
 			return Err(Error::RemoteSemantic(
 				crate::semantic::remote::Failure::RetriesExhausted,
 			));
@@ -464,6 +479,8 @@ impl Models {
 				i64::try_from(cost).map_err(|_| Error::Invalid("memory cost overflow".into()))?,
 			)
 			.ok_or_else(|| Error::Invalid("memory cost overflow".into()))?;
+		// Durable totals span every Retry Cycle: a manual retry renews the retry
+		// ledger, never the operation's call, token and cost budgets.
 		let bounds = &self.policy.bounds;
 		if calls > bounds.max_model_calls as i64
 			|| total_tokens > bounds.max_model_tokens as i64
@@ -493,6 +510,7 @@ impl Models {
 						"id",
 						"operation_id",
 						"ordinal",
+						"cycle",
 						"digest",
 						"state",
 						"tokens",
@@ -506,6 +524,7 @@ impl Models {
 						.expr(Expr::value(id))
 						.expr(Expr::value(self.operation))
 						.expr(Expr::value(ordinal as i32))
+						.expr(Expr::value(self.cycle))
 						.expr(Expr::value(digest))
 						.expr(Expr::value("pending"))
 						.expr(Expr::value(tokens as i64))
