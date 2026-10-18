@@ -5,9 +5,9 @@
 // rendered by `server/src/database/policy.rs`; a test compares them.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0032_row_level_security", "knowledge")
-		.add_dependency("knowledge", "0031_embedding_provider_keys")
-		.add_dependency("identity", "0026_tenancy_policy_functions")
+	Migration::new("0033_row_level_security", "knowledge")
+		.add_dependency("knowledge", "0032_memory_attempt_retry_cycle")
+		.add_dependency("identity", "0028_tenancy_policy_functions")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
@@ -15,7 +15,7 @@ pub(super) fn migration() -> Migration {
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0032_row_level_security.sql").to_owned(),
-			reverse_sql: Some(include_str!("sql/backward/0032_row_level_security.sql").to_owned()),
+			sql: include_str!("sql/forward/0033_row_level_security.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/0033_row_level_security.sql").to_owned()),
 		})
 }

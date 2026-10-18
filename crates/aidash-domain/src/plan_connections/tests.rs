@@ -2,6 +2,8 @@ use super::*;
 use rstest::rstest;
 
 const REDIRECT: &str = "http://127.0.0.1:43123/auth/callback";
+const OWNER: Uuid = Uuid::from_u128(0xa);
+const OTHER: Uuid = Uuid::from_u128(0xb);
 
 fn connection(state: State) -> PlanConnection {
 	let now = Utc::now();
@@ -9,6 +11,7 @@ fn connection(state: State) -> PlanConnection {
 		id: Uuid::now_v7(),
 		tenant: "brave-otter-k3m9q2xa".into(),
 		subject: "alice".into(),
+		identity_id: OWNER,
 		provider: Provider::Chatgpt,
 		client_id: "oaiapp_fixture".into(),
 		account: "user-fixture".into(),
@@ -298,4 +301,52 @@ fn revisions_detect_stale_writers() {
 	let value = connection(State::Active);
 	assert!(value.check_revision(1).is_ok());
 	assert!(value.check_revision(0).is_err());
+}
+
+fn mapped(id: Uuid, disabled: bool) -> MappedIdentity {
+	MappedIdentity { id, disabled }
+}
+
+/// A connection serves only while the identity that connected it is the one
+/// active identity mapped to its subject (#315).
+#[test]
+fn connections_serve_only_the_identity_that_connected_them() {
+	let value = connection(State::Active);
+	assert!(value.serves(&[mapped(OWNER, false)]));
+	// A disabled identity mapped alongside it changes nothing.
+	assert!(value.serves(&[mapped(OWNER, false), mapped(OTHER, true)]));
+	// Identity Disablement pauses the connection.
+	assert!(!value.serves(&[mapped(OWNER, true)]));
+	// A shared subject has no sole identity.
+	assert!(!value.serves(&[mapped(OWNER, false), mapped(OTHER, false)]));
+	// Another identity restored while the owner is disabled is the only
+	// active one, but never inherits the owner's plan.
+	assert!(!value.serves(&[mapped(OWNER, true), mapped(OTHER, false)]));
+	assert!(!value.serves(&[]));
+	assert_eq!(
+		sole_identity(&[mapped(OWNER, true), mapped(OTHER, false)]),
+		Some(OTHER)
+	);
+	assert_eq!(sole_identity(&[mapped(OWNER, true)]), None);
+}
+
+#[test]
+fn a_disabled_owner_still_holds_its_mapping() {
+	let value = connection(State::Active);
+	assert!(value.owner_mapped(&[mapped(OWNER, true)]));
+	assert!(!value.owner_mapped(&[mapped(OTHER, false)]));
+	assert!(!value.owner_mapped(&[]));
+}
+
+#[test]
+fn pins_hold_only_the_identity_they_were_admitted_for() {
+	let mut value = connection(State::Active);
+	let pin = value.pin();
+	assert!(value.holds(pin));
+	// A reconnection by another identity keeps the connection's id, but not
+	// the pins admitted before it.
+	value.identity_id = OTHER;
+	assert!(!value.holds(pin));
+	assert!(value.holds(value.pin()));
+	assert!(!connection(State::Active).holds(pin));
 }

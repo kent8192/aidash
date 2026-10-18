@@ -207,6 +207,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 						node,
 						&description.semantic,
 						&operation,
+						attempt.cycle,
 						max_tokens - overhead,
 					)
 					.await?;

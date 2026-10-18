@@ -6,8 +6,8 @@
 // definitions are SQL assets (kent8192/reinhardt-web#6507).
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0026_tenancy_policy_functions", "identity")
-		.add_dependency("identity", "0025_tenant_retention_rules_state")
+	Migration::new("0028_tenancy_policy_functions", "identity")
+		.add_dependency("identity", "0027_plan_connection_identity_reference")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
@@ -15,9 +15,9 @@ pub(super) fn migration() -> Migration {
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0026_tenancy_policy_functions.sql").to_owned(),
+			sql: include_str!("sql/forward/0028_tenancy_policy_functions.sql").to_owned(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0026_tenancy_policy_functions.sql").to_owned(),
+				include_str!("sql/backward/0028_tenancy_policy_functions.sql").to_owned(),
 			),
 		})
 }

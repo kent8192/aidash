@@ -162,7 +162,7 @@ async fn function_bodies_are_removed_but_do_blocks_are_kept() {
 		.iter()
 		.find(|migration| {
 			(migration.app_label.as_str(), migration.name.as_str())
-				== ("identity", "0026_tenancy_policy_functions")
+				== ("identity", "0028_tenancy_policy_functions")
 		})
 		.unwrap();
 	let sql = statements(functions)

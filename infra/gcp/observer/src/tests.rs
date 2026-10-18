@@ -51,10 +51,10 @@ async fn run(
 fn policies(tables: &[&str]) -> String {
 	let assets = [
 		include_str!(
-			"../../../../server/migrations/execution/sql/forward/0035_row_level_security.sql"
+			"../../../../server/migrations/execution/sql/forward/0036_row_level_security.sql"
 		),
 		include_str!(
-			"../../../../server/migrations/registry/sql/forward/0032_row_level_security.sql"
+			"../../../../server/migrations/registry/sql/forward/0033_row_level_security.sql"
 		),
 	];
 	let mut selected = String::new();
@@ -160,7 +160,7 @@ async fn database_snapshot_covers_all_rows_and_fails_closed() -> Result<(), Erro
 		run(&database, &query).await?;
 	}
 	sqlx::raw_sql(include_str!(
-		"../../../../server/migrations/identity/sql/forward/0026_tenancy_policy_functions.sql"
+		"../../../../server/migrations/identity/sql/forward/0028_tenancy_policy_functions.sql"
 	))
 	.execute(&admin)
 	.await?;

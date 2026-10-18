@@ -7,7 +7,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0010_row_level_security", "federation")
 		.add_dependency("federation", "0009_pinned_delegations_state")
-		.add_dependency("identity", "0026_tenancy_policy_functions")
+		.add_dependency("identity", "0028_tenancy_policy_functions")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
