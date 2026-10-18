@@ -3173,6 +3173,7 @@ impl Store {
 	) -> Result<RunInspection> {
 		let control = action.control();
 		let mut resumed_pending = None;
+		let mut semantic_retry = None;
 		if action == RunControlAction::Resume {
 			let raw: RawRun = {
 				let query_bind_1 = id;
@@ -3191,6 +3192,7 @@ impl Store {
 				.await?
 			};
 			resumed_pending = raw.resumed_pending()?;
+			semantic_retry = raw.manual_semantic_retry()?;
 		}
 		// Control-plane updates are emitted by upgraded code and must remain
 		// available while a pre-upgrade worker lease is fenced by run_inputs.
@@ -3213,9 +3215,35 @@ impl Store {
 		.ok_or_else(|| {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
+		let workspace = (r.metadata.home_node == self.node_id).then_some(r.metadata.workspace_id);
+		if let Some(reason) = semantic_retry {
+			// An authorized manual retry of a semantic pause opens the Run's next
+			// Retry Cycle, so its memory operations get a fresh retry ledger while
+			// keeping their operation IDs and durable budgets (ADR 0057).
+			let cycle: i32 = crate::database::native::query_scalar(
+				&Query::update()
+					.table(Alias::new("runs"))
+					.value_expr(
+						Alias::new("semantic_retry_cycle"),
+						Expr::col(Alias::new("semantic_retry_cycle")).add(Expr::value(1_i32)),
+					)
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+					.returning([Alias::new("semantic_retry_cycle")])
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			self.event(
+				tx,
+				workspace,
+				"semantic.manual_retry",
+				json!({"run_id":id,"cycle":cycle,"cause":reason,"reason":"authorized_resume"}),
+			)
+			.await?;
+		}
 		self.event(
 			tx,
-			(r.metadata.home_node == self.node_id).then_some(r.metadata.workspace_id),
+			workspace,
 			"run.control",
 			json!({"run_id":id,"action":action}),
 		)

@@ -259,6 +259,23 @@ pub(crate) async fn operate_in(
 	Ok(outcome)
 }
 
+/// The Retry Cycle of the Run a memory operation serves (ADR 0057). Work
+/// outside a Run, such as the direct API or an engine job, stays in cycle 0.
+async fn retry_cycle(lease: &mut Lease<'_>, run: Option<Uuid>) -> Result<i32> {
+	let Some(run) = run else {
+		return Ok(0);
+	};
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new("semantic_retry_cycle"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **lease.tx())
+	.await
+}
+
 /// Stage source roots until the entire tool or combined inference context succeeds.
 pub(crate) async fn operate_staged(
 	store: &Store,
@@ -444,7 +461,8 @@ pub(crate) async fn operate_staged(
 		} => Some(*id),
 		_ => run,
 	};
-	let models = super::memory_models::Models::resolve(
+	let cycle = retry_cycle(lease, run).await?;
+	let mut models = super::memory_models::Models::resolve(
 		store,
 		lease,
 		input.provider.clone(),
@@ -455,6 +473,7 @@ pub(crate) async fn operate_staged(
 		model_run,
 	)
 	.await?;
+	models.cycle = cycle;
 	let engine = aidash_application::memory::Engine {
 		provider: &input.provider,
 		policy: &policy,

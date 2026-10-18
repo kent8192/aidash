@@ -79,7 +79,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0031_embedding_provider_keys");
+	assert_eq!(knowledge[0].name, "0032_memory_attempt_retry_cycle");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -315,14 +315,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0035_policy_probe")
+		.get_migration("execution", "0036_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0034_tokenized_estimate_confidence".to_owned()
+			"0035_run_semantic_retry_cycle".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
