@@ -1,6 +1,39 @@
 //! Issue #291: an authorized manual retry opens a new Retry Cycle (ADR 0057).
-use super::*;
-use std::sync::atomic::Ordering;
+//! A library test, because a Run's memory recall goes through crate-private
+//! authority.
+use super::fixture::*;
+use super::upstream::{self, reply};
+use crate::apps::execution::test_database::{DatabaseFixture, database};
+use crate::apps::knowledge::services::native_memory as memory;
+use crate::authorization::identity::Actor;
+use crate::store::Store;
+use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_domain::memory::*;
+use reinhardt::ServerRouter as Router;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
+use rstest::{fixture, rstest};
+use serde_json::json;
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, Ordering},
+};
+use uuid::Uuid;
+
+struct RuntimeControls {
+	client: reqwest::Client,
+	notify: Arc<tokio::sync::Notify>,
+}
+#[fixture]
+fn runtime_controls(
+	#[from(reinhardt::test::fixtures::http_client)] client: reqwest::Client,
+) -> RuntimeControls {
+	RuntimeControls {
+		client,
+		notify: Arc::new(tokio::sync::Notify::new()),
+	}
+}
 
 #[derive(Clone)]
 struct OutageState {

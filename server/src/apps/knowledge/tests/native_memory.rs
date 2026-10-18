@@ -44,8 +44,6 @@ mod purge;
 mod recovery_deployment;
 #[path = "native_memory/recovery_policy.rs"]
 mod recovery_policy;
-#[path = "native_memory/retry_cycle.rs"]
-mod retry_cycle;
 #[path = "native_memory/review_capacity.rs"]
 mod review_capacity;
 #[path = "native_memory/review_delivery.rs"]
