@@ -20,6 +20,8 @@ class AppImageTests(unittest.TestCase):
         backend.mkdir(parents=True)
         (backend / "config.rs").write_text('const GOOGLE_OIDC_ISSUER: &str = "fixture";\n')
         (backend / "http.rs").write_text('const SETTING: &str = "AIDASH_AUTH_TRUSTED_PROXY_IPS";\n')
+        (self.source / "enterprise").mkdir()
+        (self.source / "enterprise/Cargo.toml").write_text("[workspace]\n")
         self.sha = "a" * 40
         self.docker = Mock()
 
@@ -42,10 +44,18 @@ class AppImageTests(unittest.TestCase):
         command = docker.call_args_list[0].args[0]
         self.assertEqual(command[:2], ["docker", "build"])
         self.assertIn("--target", command)
+        self.assertEqual(Path(command[command.index("--file") + 1]).relative_to(images.ROOT),
+                         Path("enterprise/Dockerfile"))
         self.assertEqual(command[-1], str(self.source))
         self.assertEqual(docker.call_args_list[1].args[0], [
             "docker", "save", "--output", str(self.output / "app.tar"), f"aidash-app:{self.sha}",
         ])
+
+    def test_source_without_the_enterprise_workspace_is_rejected_before_build(self):
+        (self.source / "enterprise/Cargo.toml").unlink()
+        with self.assertRaisesRegex(SystemExit, "does not contain the Enterprise workspace"):
+            self.build()
+        self.docker.assert_not_called()
 
     def test_missing_login_support_is_rejected_before_build(self):
         (self.source / "server/src/config.rs").write_text("// Unsupported source\n")
