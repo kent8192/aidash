@@ -3145,18 +3145,24 @@ impl OrderedSemantic {
 	}
 }
 
-/// Record a step that ran with Degraded context and emit `run.semantic_degraded`.
+/// Record a step that ran with Degraded context. Only the step's first
+/// degradation emits `run.semantic_degraded`; a re-entry of the same step
+/// persists its state without another event.
 async fn degrade_context(
 	store: &dyn ExecutionStore,
 	run: &mut Run,
 	token: Uuid,
 	cause: aidash_domain::semantic::degraded::OutageCause,
 ) -> Result<()> {
-	run.recovery.degraded.record(run.step, cause);
+	let new_step = run.recovery.degraded.record(run.step, cause);
 	// The outage this step absorbed is over for retry purposes; a stale reason
 	// must not make a later step's first failure look like its last retry.
 	run.recovery.semantic_reason = None;
-	store.degrade_sources(run, token).await
+	if new_step {
+		store.degrade_sources(run, token).await
+	} else {
+		store.observe_sources(run, token).await
+	}
 }
 
 async fn compact_execution(

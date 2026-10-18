@@ -69,6 +69,30 @@ async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
 }
 
 #[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn a_step_that_degrades_again_emits_one_degradation_event(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	*canonical.backend.0.memory_value.lock().unwrap() = degraded_envelope();
+	assert!(advance_sources(&mut canonical).await.is_err());
+	// The same step is entered again, as after a worker crash.
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	assert_eq!(saved(&canonical, "run.semantic_degraded").len(), 1);
+	let resaved = saved(&canonical, "run.sources_observed");
+	assert_eq!(resaved.len(), 1);
+	assert_eq!(resaved[0].recovery.degraded.count, 1);
+	assert!(resaved[0].recovery.degraded.outage);
+	assert!(resaved[0].context.source_observation.is_none());
+}
+
+#[rstest]
 #[case::first_attempt(None, None, false, false)]
 #[case::fourth_retry(Some(SemanticFailure::Unavailable), Some(4), false, false)]
 #[case::last_retry(Some(SemanticFailure::Unavailable), Some(5), false, true)]

@@ -63,19 +63,21 @@ impl DegradedContext {
 	pub fn is_empty(&self) -> bool {
 		*self == Self::default()
 	}
-	pub fn record(&mut self, step: i32, cause: OutageCause) {
+	/// Record `step` as degraded. Returns whether the step is new; a recovery
+	/// of the same step that degrades again is still one step.
+	pub fn record(&mut self, step: i32, cause: OutageCause) -> bool {
 		self.outage = true;
-		// A recovery of the same step that degrades again is still one step.
 		if let Some(last) = self.recent.last_mut()
 			&& last.step == step
 		{
 			last.cause = cause;
-			return;
+			return false;
 		}
 		self.count = self.count.saturating_add(1);
 		self.recent.push(DegradedStep { step, cause });
 		let excess = self.recent.len().saturating_sub(MAX_RECENT_DEGRADED_STEPS);
 		self.recent.drain(..excess);
+		true
 	}
 	pub fn recovered(&mut self) {
 		self.outage = false;
@@ -113,9 +115,9 @@ mod tests {
 	fn recent_steps_are_bounded_while_the_count_keeps_every_step() {
 		let mut context = DegradedContext::default();
 		for step in 0..20 {
-			context.record(step, OutageCause::EmbeddingProvider);
+			assert!(context.record(step, OutageCause::EmbeddingProvider));
 		}
-		context.record(19, OutageCause::VectorBackend);
+		assert!(!context.record(19, OutageCause::VectorBackend));
 		assert_eq!(context.count, 20);
 		assert_eq!(context.recent.len(), MAX_RECENT_DEGRADED_STEPS);
 		assert_eq!(context.recent.first().unwrap().step, 4);
