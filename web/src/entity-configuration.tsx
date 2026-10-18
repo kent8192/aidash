@@ -318,7 +318,10 @@ export function EntityConfiguration({
 
   let settings: Record<string, unknown> = {};
   try {
-    settings = JSON.parse(sourceValue || "{}");
+    const parsed: unknown = JSON.parse(sourceValue || "{}");
+    // The input reports a non-object before submitting; keep the form usable.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      settings = parsed as Record<string, unknown>;
   } catch {
     /* The input reports invalid JSON before submitting. */
   }

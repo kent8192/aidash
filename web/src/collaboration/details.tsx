@@ -409,7 +409,10 @@ export function OperationsDialog({
   );
 }
 
-/** Steps of a local Run that went without optional Workspace semantic context (ADR 0059). */
+/**
+ * Steps that went without optional Workspace semantic context (ADR 0059). Only a
+ * Run local to its executing node degrades, which need not be the viewer's node.
+ */
 function DegradedContext({ run }: { run: Run }) {
   const { t } = useI18n();
   const degraded = run.recovery?.degraded;
@@ -569,7 +572,7 @@ function RunPanel({
           {run.error}
         </p>
       )}
-      {local && <DegradedContext run={run} />}
+      <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
       {local && !managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
