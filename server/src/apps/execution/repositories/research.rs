@@ -461,7 +461,12 @@ impl EvidenceStore for Evidence {
 						digest: image.digest(),
 					},
 				);
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				lock(tx.as_mut(), &run_lock(run)).await?;
 				if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					return Ok(Err(Failure::EvidenceRevoked));
@@ -492,7 +497,12 @@ impl EvidenceStore for Evidence {
 	) -> Result<Option<(String, Vec<u8>)>> {
 		native(
 			async {
-				let mut tx = self.store.database().begin().await?;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&self.scope)
+					.await
+					.and_then(crate::database::native::Transaction::into_executor)?;
 				let image = if ResearchRevocation::exists(tx.as_mut(), run).await? {
 					None
 				} else {

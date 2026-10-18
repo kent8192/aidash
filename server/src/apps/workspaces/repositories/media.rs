@@ -213,8 +213,13 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		let Ok(reference) = reference.parse() else {
 			return Ok(None);
 		};
+		let scope = match &self.lease {
+			Some(access) => access.tenancy()?,
+			None => self.access.read().await.tenancy()?,
+		};
 		crate::apps::execution::repositories::research::Evidence {
 			store: self.store.clone(),
+			scope,
 		}
 		.page_image(self.run.id, &reference)
 		.await

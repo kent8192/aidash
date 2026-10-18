@@ -677,7 +677,7 @@ async fn a_viewed_page_is_stored_as_a_page_image_fragment_within_the_view_limit(
 ) {
 	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
-	let evidence = aidash_server::research::evidence_store(store.clone());
+	let evidence = aidash_server::research::evidence_store(store.clone(), TEST_FIXTURE);
 	let research = Research {
 		store: &evidence,
 		gate: &Permit,
@@ -736,7 +736,7 @@ async fn a_viewed_page_is_stored_as_a_page_image_fragment_within_the_view_limit(
 		json!(format!("sha256:{:x}", Sha256::digest(&bytes)))
 	);
 	let fragments = evidence
-		.fragments(run.id, &[reference.clone()])
+		.fragments(run.id, std::slice::from_ref(&reference))
 		.await
 		.unwrap();
 	assert_eq!(fragments[0].pages, vec![2]);

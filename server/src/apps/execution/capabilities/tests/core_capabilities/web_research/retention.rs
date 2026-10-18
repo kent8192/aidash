@@ -4,7 +4,7 @@ use super::*;
 use reinhardt::query::{Alias, Expr, ExprTrait, IntoIden, SimpleExpr};
 
 /// A column of the table being read.
-fn col(name: &str) -> SimpleExpr {
+pub(super) fn col(name: &str) -> SimpleExpr {
 	Expr::col(Alias::new(name)).into()
 }
 
@@ -18,7 +18,7 @@ fn array(values: Vec<SimpleExpr>) -> SimpleExpr {
 	call("jsonb_build_array", values)
 }
 
-fn to_jsonb(value: SimpleExpr) -> SimpleExpr {
+pub(super) fn to_jsonb(value: SimpleExpr) -> SimpleExpr {
 	call("to_jsonb", vec![value])
 }
 
@@ -128,7 +128,12 @@ impl Research {
 		}
 	}
 	/// One column of every row of `table` for the Run, as JSON.
-	pub(super) async fn column(&self, table: &str, expression: SimpleExpr, run: Uuid) -> Vec<Value> {
+	pub(super) async fn column(
+		&self,
+		table: &str,
+		expression: SimpleExpr,
+		run: Uuid,
+	) -> Vec<Value> {
 		use reinhardt::query::{PostgresQueryBuilder, Query};
 		let sql = Query::select()
 			.expr(expression)

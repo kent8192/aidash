@@ -94,9 +94,13 @@ async fn a_model_without_image_input_is_refused_a_page_view(
 		.1;
 	assert_eq!(viewed["error"]["code"], "image_input_required", "{viewed}");
 	assert!(
-		r.column("research_page_images", "to_jsonb(fragment_id)", run.id)
-			.await
-			.is_empty()
+		r.column(
+			"research_page_images",
+			retention::to_jsonb(retention::col("fragment_id")),
+			run.id,
+		)
+		.await
+		.is_empty()
 	);
 	r.close().await;
 }
