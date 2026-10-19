@@ -1,10 +1,15 @@
 //! Bound transport bytes before either SSE framing or JSON-RPC decoding.
+use aidash_application::Error;
 use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::{
 	model::ClientJsonRpcMessage,
-	transport::streamable_http_client::{
-		SseError, StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
+	service::{ClientInitializeError, ServiceError},
+	transport::{
+		DynamicTransportError,
+		streamable_http_client::{
+			SseError, StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
+		},
 	},
 };
 use sse_stream::{Sse, SseStream};
@@ -16,6 +21,35 @@ pub(super) struct BoundedClient(pub reqwest::Client);
 type Failure = StreamableHttpError<reqwest::Error>;
 fn invalid(message: &str) -> Failure {
 	Failure::UnexpectedServerResponse(message.to_owned().into())
+}
+
+/// rmcp wraps a transport failure without exposing it as a `source`, so the
+/// resolver's refusal of a non-public address is looked up in the wrapper.
+fn refused(error: &DynamicTransportError) -> bool {
+	matches!(
+		error.error.downcast_ref::<Failure>(),
+		Some(Failure::Client(source)) if crate::keyless::refused(source)
+	)
+}
+
+/// A refused destination is an authority failure, never a retried outage.
+pub(super) fn initialization_error(error: &ClientInitializeError) -> Error {
+	match error {
+		ClientInitializeError::TransportError { error: source, .. } if refused(source) => refusal(),
+		_ => Error::External(format!("MCP initialization failed: {error}")),
+	}
+}
+
+pub(super) fn call_error(error: &ServiceError) -> Error {
+	match error {
+		ServiceError::TransportSend(source) if refused(source) => refusal(),
+		_ => Error::External(format!("MCP call failed: {error}")),
+	}
+}
+
+fn refusal() -> Error {
+	tracing::warn!("tool endpoint refused: its host resolves to a non-public address");
+	Error::Forbidden
 }
 fn request(
 	client: &reqwest::Client,

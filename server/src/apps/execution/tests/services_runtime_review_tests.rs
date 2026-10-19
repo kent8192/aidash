@@ -64,6 +64,7 @@ async fn interruption_store(
 		node_id: "interruption-poll-test".into(),
 		semantic_client: http_client.clone(),
 		provider_clients: crate::semantic::backend::clients().unwrap(),
+		tool_clients: aidash_integrations::tools::ToolClients::new().unwrap(),
 		keyless: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 		test_limit_ceilings: Default::default(),
