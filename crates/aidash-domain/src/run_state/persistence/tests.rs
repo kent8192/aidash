@@ -16,6 +16,7 @@ fn run() -> Run {
 #[rstest]
 #[case::retry("run.retrying", true, true)]
 #[case::semantic_retry("run.semantic_retrying", true, true)]
+#[case::decider_retry("run.decider_retrying", true, true)]
 #[case::failure_delivery("run.failure_pending", true, true)]
 #[case::failed("run.failed", false, true)]
 #[case::model_completed("model.completed", false, false)]
@@ -38,6 +39,21 @@ fn worker_save_keeps_only_the_event_specific_retry_and_error_disposition(
 	assert_eq!(snapshot.error, keep_error.then_some("saved diagnostic"));
 	assert_eq!(serde_json::to_value(&run).unwrap(), before);
 	assert_eq!(snapshot.pending["recovery"]["lease_recovered"], true);
+}
+#[rstest]
+fn only_a_scheduled_decider_retry_carries_its_count_to_the_next_lease(mut run: Run) {
+	run.recovery.decider_retry = 2;
+	let scheduled = run.worker_snapshot("run.decider_retrying").unwrap();
+	assert_eq!(scheduled.pending["recovery"]["decider_retry"], 2);
+	// Any other save, a generic retry included, starts the count again.
+	for event in ["run.retrying", "run.semantic_retrying", "model.completed"] {
+		let snapshot = run.worker_snapshot(event).unwrap();
+		assert_eq!(
+			snapshot.pending["recovery"]["decider_retry"],
+			Value::Null,
+			"{event}"
+		);
+	}
 }
 #[rstest]
 fn absent_diagnostics_and_retries_remain_absent_for_retry_events(mut run: Run) {

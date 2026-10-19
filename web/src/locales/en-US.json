@@ -255,7 +255,7 @@
   "generationCompactionPerAgent": "Compaction calls per agent",
   "generationCompactionBudget": "Total compaction call allowance",
   "generationCompactionCalls": "Compaction calls charged / limit",
-  "deciderHelp": "Register an exact Jev release such as typesafe/jev-1.14, then approve this version in the tenant catalog on each Node. Jev runs through OpenRouter with the Tenant's OpenRouter connection and zero data retention. A Run whose Decider is unavailable pauses instead of being pruned.",
+  "deciderHelp": "Register an exact Jev release such as typesafe/jev-1.14, then approve this version in the tenant catalog on each Node. Jev runs through OpenRouter with the Tenant's OpenRouter connection and zero data retention. With the Clef option, Cloudflare's Clef answers on Cloudflare, DeepInfra or PrimeIntellect only when Jev is unavailable. A Run whose Decider is unavailable pauses instead of being pruned.",
   "deciderMode": "Mode",
   "deciderModeEnforce": "Enforce: apply decisions",
   "deciderModeShadow": "Shadow: record decisions only",
@@ -669,5 +669,7 @@
   "catalogHistory": "Approval history",
   "catalogNoHistory": "No approval decisions yet.",
   "catalogTenantDefinitions": "Definitions belong to Tenants. Each Tenant registers and approves its own in its Registry.",
-  "catalogRegistryUnavailable": "The Registry is unavailable with your current access."
+  "catalogRegistryUnavailable": "The Registry is unavailable with your current access.",
+  "deciderClefRoute": "Ask Cloudflare's Clef (on Cloudflare, DeepInfra or PrimeIntellect) when Jev is unavailable",
+  "catalogDeciderRecipients": "Sends Run state to"
 }
