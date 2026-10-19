@@ -163,12 +163,12 @@ variable "acme_email" {
 }
 
 variable "existing_delivery_ruleset_ids" {
-  description = "Import only fixed-name owned narrow delivery-check rulesets, keyed main/develop. Leave unrelated and classic protections unmanaged."
+  description = "Import only fixed-name owned narrow delivery-check rulesets, keyed main. Leave unrelated and classic protections unmanaged."
   type        = map(number)
   default     = {}
   validation {
-    condition     = length(setsubtract(toset(keys(var.existing_delivery_ruleset_ids)), toset(["main", "develop"]))) == 0 && alltrue([for id in values(var.existing_delivery_ruleset_ids) : id > 0 && floor(id) == id])
-    error_message = "Only the owned main/develop delivery-check ruleset IDs may be adopted."
+    condition     = length(setsubtract(toset(keys(var.existing_delivery_ruleset_ids)), toset(["main"]))) == 0 && alltrue([for id in values(var.existing_delivery_ruleset_ids) : id > 0 && floor(id) == id])
+    error_message = "Only the owned main delivery-check ruleset ID may be adopted."
   }
 }
 

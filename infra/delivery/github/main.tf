@@ -70,15 +70,14 @@ locals {
     }, var.acme_email == "" ? {} : {
     AIDASH_ACME_EMAIL = var.acme_email
   }))
+  # Development branches rely on the baseline develop/x.y.z ruleset only.
   checks = {
-    main    = "refs/heads/main"
-    develop = "refs/heads/${var.automation_branch}"
+    main = "refs/heads/main"
   }
   # Fixed names distinguish this narrow stack from the repository's broad
   # existing protections. Never import a general baseline ruleset into these.
   ruleset_names = {
-    main    = "Aidash delivery main checks"
-    develop = "Aidash delivery develop checks"
+    main = "Aidash delivery main checks"
   }
 }
 
@@ -88,11 +87,6 @@ data "github_repository" "aidash" {
 
 data "github_app" "actions" {
   slug = "github-actions"
-}
-
-data "github_app" "release" {
-  count = var.configure_variables && var.release_app != null ? 1 : 0
-  slug  = var.release_app.slug
 }
 
 resource "terraform_data" "contract" {
@@ -105,9 +99,11 @@ resource "terraform_data" "contract" {
       condition     = data.github_repository.aidash.default_branch == var.automation_branch && data.github_repository.aidash.name == local.repository_name
       error_message = "The configured execution branch must be the existing repository default; this stack does not rename branches or adopt another repository."
     }
+    # The private release App is invisible to /apps/{slug} for user tokens;
+    # app.py finalize verifies its ID, owner and installation with an App JWT.
     precondition {
-      condition     = !var.configure_variables || try(tonumber(data.github_app.release[0].id) == var.release_app.id && tonumber(data.github_app.actions.id) > 0, false)
-      error_message = "The supplied release App ID must match the actual App slug."
+      condition     = !var.configure_variables || try(tonumber(data.github_app.actions.id) > 0, false)
+      error_message = "The GitHub Actions App must resolve before checks bind to it."
     }
     precondition {
       condition = !var.configure_variables || try(alltrue([for config in [local.nonproduction, local.production] :

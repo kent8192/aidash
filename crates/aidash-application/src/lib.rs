@@ -61,6 +61,11 @@ pub enum Error {
 	/// Typed context-recovery pause; never retried as transport.
 	#[error("{0}")]
 	Context(aidash_domain::context::recovery::Failure),
+	/// Every Decider Route was unavailable in this decision. The step is
+	/// retried a bounded number of times before it pauses as
+	/// `decider_unavailable` (ADR 0066).
+	#[error("every Decider Route is unavailable")]
+	DeciderOutage,
 	/// A truncated or refused provider completion. It pauses like `Context`;
 	/// its usage still settles the call's reservation, and no tool call from
 	/// it is ever dispatched.

@@ -54,6 +54,8 @@ pub enum Error {
 	RemoteSemantic(crate::semantic::remote::Failure),
 	#[error("{0}")]
 	Context(aidash_domain::context::recovery::Failure),
+	#[error("every Decider Route is unavailable")]
+	DeciderOutage,
 	#[error("the provider reported that the request exceeded its context window")]
 	ContextOverflow,
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
@@ -120,6 +122,7 @@ impl Error {
 			),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
 			Self::Context(_) => (StatusCode::CONFLICT, self.to_string()),
+			Self::DeciderOutage => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::ContextOverflow => (
 				StatusCode::BAD_REQUEST,
 				"the request exceeded the model context window".into(),
@@ -313,6 +316,7 @@ impl From<aidash_application::Error> for Error {
 				Self::Context(reason)
 			}
 			ApplicationError::ContextOverflow => Self::ContextOverflow,
+			ApplicationError::DeciderOutage => Self::DeciderOutage,
 			error @ ApplicationError::UnsupportedProjection { .. } => {
 				Self::Invalid(error.to_string())
 			}
@@ -346,6 +350,7 @@ impl From<Error> for aidash_application::Error {
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
 			Error::Context(reason) => Self::Context(reason),
+			Error::DeciderOutage => Self::DeciderOutage,
 			Error::ContextOverflow => Self::ContextOverflow,
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
