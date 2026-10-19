@@ -842,11 +842,14 @@ async fn registration_reads_the_stored_copy_and_another_tenant_cannot(
 	let mut missing = reference.clone();
 	missing.digest = format!("sha256:{}", "0".repeat(64));
 	// Act
-	let (registered, body) =
-		register(&acme, &plugin_agent("tooled", "Help", &[reference.clone()])).await;
+	let (registered, body) = register(
+		&acme,
+		&plugin_agent("tooled", "Help", std::slice::from_ref(&reference)),
+	)
+	.await;
 	let (without_instructions, skills_only) = register(
 		&acme,
-		&plugin_agent("skills-only", "", &[reference.clone()]),
+		&plugin_agent("skills-only", "", std::slice::from_ref(&reference)),
 	)
 	.await;
 	let (changed_status, changed_body) =
@@ -855,7 +858,7 @@ async fn registration_reads_the_stored_copy_and_another_tenant_cannot(
 		register(&acme, &plugin_agent("missing", "Help", &[missing])).await;
 	let (foreign_status, foreign_body) = register(
 		&globex,
-		&plugin_agent("foreign", "Help", &[reference.clone()]),
+		&plugin_agent("foreign", "Help", std::slice::from_ref(&reference)),
 	)
 	.await;
 	let digest = reference.digest.clone();
@@ -877,8 +880,12 @@ async fn registration_reads_the_stored_copy_and_another_tenant_cannot(
 	};
 	let (owned, foreign) = (read("acme").await, read("globex").await);
 	// The Registry's own scope (the ORM path) decides the same way.
-	let entry: aidash_server::registry::Entry =
-		serde_json::from_value(plugin_agent("orm", "Help", &[reference.clone()])).unwrap();
+	let entry: aidash_server::registry::Entry = serde_json::from_value(plugin_agent(
+		"orm",
+		"Help",
+		std::slice::from_ref(&reference),
+	))
+	.unwrap();
 	let orm_owned = fixture
 		.runtime
 		.registry
