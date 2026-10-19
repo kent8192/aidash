@@ -16,6 +16,13 @@ import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
 import { requestPrice, runGrantScope } from "../research";
+import {
+  isToolCard,
+  toolCallView,
+  toolGrantScope,
+  toolLabel,
+  toolStateText,
+} from "./tool-approval-model";
 
 const DISCLOSE = "research.disclose";
 
@@ -25,6 +32,10 @@ function disclosure(item: Approval) {
 }
 
 function title(item: Approval, ja: boolean) {
+  if (item.kind === "tool_call")
+    return ja ? "ツール呼び出しの承認" : "Tool call approval";
+  if (item.kind === "grant" && isToolCard(item))
+    return ja ? "ツールの Run grant" : "Tool Run grant";
   if (item.kind === "grant")
     return disclosure(item)
       ? ja
@@ -42,6 +53,19 @@ function title(item: Approval, ja: boolean) {
         ? "ページ読み取りの開示承認"
         : "Page reading disclosure";
   return ja ? "外部接続の承認" : "Outbound request";
+}
+
+function FactList({ rows }: { rows: readonly (readonly [string, string])[] }) {
+  return (
+    <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+      {rows.map(([label, text]) => (
+        <div key={label} className="contents">
+          <dt className="text-muted-foreground">{label}</dt>
+          <dd className="[overflow-wrap:anywhere]">{text}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 const QUERY_FIELDS: [string, string, string][] = [
@@ -74,16 +98,7 @@ function QuerySummary({ query, ja }: { query: unknown; ja: boolean }) {
         : String(value);
     return [[ja ? jp : en, text] as const];
   });
-  return (
-    <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5">
-      {rows.map(([label, text]) => (
-        <div key={label} className="contents">
-          <dt className="text-muted-foreground">{label}</dt>
-          <dd className="[overflow-wrap:anywhere]">{text}</dd>
-        </div>
-      ))}
-    </dl>
-  );
+  return <FactList rows={rows} />;
 }
 
 /** What an approver needs to decide one Web disclosure without the Run. */
@@ -114,14 +129,7 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
   ];
   return (
     <>
-      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5">
-        {facts.map(([label, text]) => (
-          <div key={label} className="contents">
-            <dt className="text-muted-foreground">{label}</dt>
-            <dd className="[overflow-wrap:anywhere]">{text}</dd>
-          </div>
-        ))}
-      </dl>
+      <FactList rows={facts} />
       {item.kind === "disclosure" && (
         <>
           <QuerySummary query={item.query} ja={ja} />
@@ -138,10 +146,49 @@ function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
   );
 }
 
+/** What an approver needs to decide one call of a Tenant's tool without the Run. */
+function ToolFacts({ item, ja }: { item: Approval; ja: boolean }) {
+  const none = ja ? "なし" : "None";
+  const call = item.kind === "tool_call" ? toolCallView(item.call) : null;
+  const facts: [string, string][] = [
+    [ja ? "ツール" : "Tool", toolLabel(item)],
+    [ja ? "操作" : "Operation", item.operation ?? none],
+    [
+      "Agent",
+      item.agent_id ? `${item.agent_id}@${item.agent_version ?? ""}` : none,
+    ],
+  ];
+  if (call) facts.push([ja ? "呼び出し" : "Call", call.name ?? none]);
+  return (
+    <>
+      <FactList rows={facts} />
+      {call && (
+        <>
+          <Hint id={`${item.id}-arguments`}>
+            {ja
+              ? "引数（許可すると、この内容のまま実行されます）"
+              : "Arguments (the call runs exactly as shown once allowed)"}
+          </Hint>
+          <Pre
+            role="region"
+            aria-labelledby={`${item.id}-arguments`}
+            // A bounded block scrolls, so a keyboard user must be able to focus it.
+            tabIndex={0}
+          >
+            {call.arguments ?? none}
+          </Pre>
+        </>
+      )}
+    </>
+  );
+}
+
 function stateText(item: Approval, ja: boolean, locale: string) {
   const when = (value: string | null | undefined) =>
     value ? new Date(value).toLocaleString(locale) : "";
   const host = item.targets.join(", ");
+  const tool = toolStateText(item, ja, when);
+  if (tool) return tool;
   switch (item.state) {
     case "closed":
       return item.closed_reason === "evidence_revoked"
@@ -187,6 +234,13 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const research = disclosure(item);
+  const tool = isToolCard(item);
+  // What an "allow for this Run" decision covers, when the card can grant one.
+  const scope = research
+    ? runGrantScope(item, ja)
+    : tool
+      ? toolGrantScope(item, ja)
+      : null;
   const action = async (choice: string) => {
     setBusy(true);
     setError("");
@@ -221,12 +275,12 @@ export function ApprovalCardView({ item }: { item: Approval }) {
       <strong>{title(item, ja)}</strong>
       {research ? (
         <DisclosureFacts item={item} ja={ja} />
+      ) : tool ? (
+        <ToolFacts item={item} ja={ja} />
       ) : (
         <p>{item.targets.join(", ")}</p>
       )}
-      {item.kind === "grant" && research && (
-        <Hint>{runGrantScope(item, ja)}</Hint>
-      )}
+      {item.kind === "grant" && scope && <Hint>{scope}</Hint>}
       <Hint>
         {ja ? "要求者" : "Requester"}: {item.requester} ·{" "}
         {ja ? "承認者" : "Approver"}:{" "}
@@ -242,8 +296,8 @@ export function ApprovalCardView({ item }: { item: Approval }) {
             checked={runGrant}
             onChange={(e) => setRunGrant(e.target.checked)}
           >
-            {research
-              ? `${ja ? "この Run で許可" : "Allow for this Run"}: ${runGrantScope(item, ja)}`
+            {scope
+              ? `${ja ? "この Run で許可" : "Allow for this Run"}: ${scope}`
               : ja
                 ? "この Run で同じ接続先を期限付きで許可"
                 : "Grant the same targets for this Run until expiry"}
