@@ -105,9 +105,9 @@ def approve_fixture_external_requests(base, token=TOKEN):
 
 
 def diagnose(base, token, tenant, workspace):
-    """Print what a stalled workspace's tasks and Runs last recorded, and the Tenant's recent policy decisions."""
+    """Print a stalled workspace's tasks and Runs, and its Tenant's policy, catalog and every policy decision."""
     def show(label, value):
-        print(f"--- {label}: {json.dumps(value, ensure_ascii=False)[:4000]}", flush=True)
+        print(f"--- {label}: {json.dumps(value, ensure_ascii=False)}", flush=True)
 
     try:
         snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
@@ -115,8 +115,16 @@ def diagnose(base, token, tenant, workspace):
         tasks = {task["id"] for task in snapshot["tasks"]}
         for run in api_request(base, "/api/state", token=token)["runs"]:
             if run["task_id"] in tasks:
-                show(f"run {run['id']}", api_request(base, f"/api/runs/{run['id']}", token=token)["run"])
-        show("decisions", api_request(base, f"/api/authorization/{tenant}/decisions")[-20:])
+                detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
+                response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
+                show(f"run {run['id']}", {**{key: detail.get(key) for key in ("agent_id", "phase", "control", "step", "error")}, "tool_calls": response.get("tool_calls")})
+        show("policy", api_request(base, f"/api/authorization/{tenant}"))
+        show("catalog", api_request(base, f"/api/authorization/{tenant}/catalog", token=token))
+        decisions, after = [], 0
+        while page := api_request(base, f"/api/authorization/{tenant}/decisions?after={after}&limit=100"):
+            decisions += page
+            after = page[-1]["sequence"]
+        show("decisions", [[d["sequence"], d["created_at"][11:23], d["action"], d["decision"]["allowed"], d["subject"], d["resource_id"]] for d in decisions])
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"--- diagnosis failed: {error!r}", flush=True)
 
