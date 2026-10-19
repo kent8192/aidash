@@ -17,6 +17,7 @@ async-trait.workspace = true
 base64 = "0.22"
 chrono.workspace = true
 crc32c = "0.6"
+ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem"] }
 gcp_auth = "0.12.7"
 jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
