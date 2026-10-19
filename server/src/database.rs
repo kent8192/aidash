@@ -2,6 +2,7 @@
 pub mod classification;
 pub mod native;
 pub mod policy;
+pub mod purge;
 mod records;
 pub mod runtime;
 pub mod scope;

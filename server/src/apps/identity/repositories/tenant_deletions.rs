@@ -103,6 +103,38 @@ pub(crate) async fn is_deleted(tx: &mut dyn TransactionExecutor, tenant: &str) -
 		.is_some())
 }
 
+/// The Tenants among `names` whose data was purged.
+pub(crate) async fn purged_of<E: OrmExecutor>(
+	tx: &mut E,
+	names: Vec<String>,
+) -> Result<std::collections::BTreeSet<String>> {
+	if names.is_empty() {
+		return Ok(Default::default());
+	}
+	Ok(TenantDeletion::objects()
+		.filter(TenantDeletion::field_tenant().is_in(names))
+		.filter(TenantDeletion::field_purged_at().is_not_null())
+		.all_with_db(tx)
+		.await?
+		.into_iter()
+		.map(|deletion| deletion.tenant)
+		.collect())
+}
+
+/// Whether `tenant`'s data was purged, without locking anything.
+pub(crate) async fn is_purged(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<bool> {
+	let (sql, values) = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new(TenantDeletion::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("purged_at").is_not_null())
+		.build(PostgresQueryBuilder);
+	Ok(tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.is_some())
+}
+
 /// Records the deletion of `tenant` and stops what a restore must not bring
 /// back: its pending Invitations are revoked and its unfinished Runs stop.
 pub(crate) async fn record(
@@ -126,6 +158,12 @@ pub(crate) async fn record(
 		restored_by_kind: None,
 		restored_by_identity: None,
 		purged_at: None,
+		purge_step: None,
+		purge_failures: 0,
+		purge_error: None,
+		purge_failed_at: None,
+		purge_leased_until: None,
+		audit_erased_at: None,
 	};
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new(TenantDeletion::table_name()))
@@ -137,6 +175,7 @@ pub(crate) async fn record(
 				"deleted_by_kind",
 				"deleted_by_identity",
 				"purge_after",
+				"purge_failures",
 			]
 			.map(Alias::new),
 		)
@@ -147,6 +186,7 @@ pub(crate) async fn record(
 			IntoValue::into_value(row.deleted_by_kind.clone()),
 			IntoValue::into_value(row.deleted_by_identity),
 			IntoValue::into_value(row.purge_after),
+			IntoValue::into_value(row.purge_failures),
 		])
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
